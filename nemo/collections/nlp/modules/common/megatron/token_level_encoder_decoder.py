@@ -425,7 +425,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             enc_input = enc_input.transpose(0, 1)
             enc_seq_length = enc_input.size(0)
         # Only need to run encoder embedding and position ids if enc_input or enc_output is not provided.
-        else:
+        elif enc_input_ids is not None:
             enc_seq_length = enc_input_ids.size(1)
             if self.pre_process and self.add_encoder:
                 # We don't need position ids for RPE, because the embedding layer does not have position embeddings.
@@ -436,6 +436,9 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 enc_input = self.encoder_embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
             else:
                 enc_input = None
+        else:
+            # This should only happen with PP > 1 for enc-dec prompt learning models
+            enc_seq_length = enc_attn_mask.size(1)
 
         if self.encoder_cfg.get("position_embedding_type", "learned_absolute") == 'relative' and self.add_encoder:
             encoder_self_attention_relative_position_bias = self.encoder_relative_position_embedding(

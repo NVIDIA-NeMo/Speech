@@ -309,6 +309,9 @@ def get_tarred_dataset(
     if 'labels' not in config:
         logging.warning(f"dataset does not have explicitly defined labels")
 
+    if 'max_utts' in config:
+        raise ValueError('"max_utts" parameter is not supported for tarred datasets')
+
     for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
         zip(tarred_audio_filepaths, manifest_filepaths)
     ):
@@ -325,7 +328,6 @@ def get_tarred_dataset(
                 shuffle_n=shuffle_n,
                 max_duration=config.get('max_duration', None),
                 min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
                 blank_index=config.get('blank_index', -1),
                 unk_index=config.get('unk_index', -1),
                 normalize=config.get('normalize_transcripts', False),
@@ -347,7 +349,6 @@ def get_tarred_dataset(
                 shuffle_n=shuffle_n,
                 max_duration=config.get('max_duration', None),
                 min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
                 trim=config.get('trim_silence', False),
                 use_start_end_token=config.get('use_start_end_token', True),
                 shard_strategy=config.get('tarred_shard_strategy', 'scatter'),

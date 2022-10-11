@@ -573,7 +573,6 @@ class _TarredAudioToTextDataset(IterableDataset):
             All training files which have a duration more than max_duration
             are dropped. Note: Duration is read from the manifest JSON.
             Defaults to None.
-        max_utts (int): Limit number of utterances. 0 means no maximum.
         blank_index (int): Blank character index, defaults to -1.
         unk_index (int): Unknown character index, defaults to -1.
         normalize (bool): Dataset parameter.
@@ -624,7 +623,6 @@ class _TarredAudioToTextDataset(IterableDataset):
         shuffle_n: int = 0,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
-        max_utts: int = 0,
         trim: bool = False,
         bos_id: Optional[int] = None,
         eos_id: Optional[int] = None,
@@ -639,7 +637,7 @@ class _TarredAudioToTextDataset(IterableDataset):
             parser=parser,
             max_duration=max_duration,
             min_duration=min_duration,
-            max_utts=max_utts,
+            max_utts=0,
             bos_id=bos_id,
             eos_id=eos_id,
             pad_id=pad_id,
@@ -838,7 +836,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             All training files which have a duration more than max_duration
             are dropped. Note: Duration is read from the manifest JSON.
             Defaults to None.
-        max_utts (int): Limit number of utterances. 0 means no maximum.
         blank_index (int): Blank character index, defaults to -1.
         unk_index (int): Unknown character index, defaults to -1.
         normalize (bool): Dataset parameter.
@@ -889,7 +886,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
         shuffle_n: int = 0,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
-        max_utts: int = 0,
         blank_index: int = -1,
         unk_index: int = -1,
         normalize: bool = True,
@@ -919,7 +915,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             shuffle_n=shuffle_n,
             min_duration=min_duration,
             max_duration=max_duration,
-            max_utts=max_utts,
             trim=trim,
             bos_id=bos_id,
             eos_id=eos_id,
@@ -979,7 +974,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             All training files which have a duration more than max_duration
             are dropped. Note: Duration is read from the manifest JSON.
             Defaults to None.
-        max_utts (int): Limit number of utterances. 0 means no maximum.
         trim (bool): Whether to use trim silence from beginning and end
             of audio signal using librosa.effects.trim().
             Defaults to False.
@@ -1019,7 +1013,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
         shuffle_n: int = 0,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
-        max_utts: int = 0,
         trim: bool = False,
         use_start_end_token: bool = True,
         shard_strategy: str = "scatter",
@@ -1070,7 +1063,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             shuffle_n=shuffle_n,
             min_duration=min_duration,
             max_duration=max_duration,
-            max_utts=max_utts,
             trim=trim,
             bos_id=bos_id,
             eos_id=eos_id,

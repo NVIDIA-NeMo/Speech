@@ -1104,7 +1104,7 @@ class ModelPT(LightningModule, Model):
 
                     # Restore checkpoint into current model
                     self.load_state_dict(restored_model.state_dict(), strict=False)
-                    logging.info(f'Model checkpoint restored from pretrained chackpoint with name : `{model_name}`')
+                    logging.info(f'Model checkpoint restored from pretrained checkpoint with name : `{model_name}`')
 
                     del restored_model
                 elif isinstance(cfg.init_from_pretrained_model, (DictConfig, dict)):
@@ -1140,7 +1140,7 @@ class ModelPT(LightningModule, Model):
                     # Restore checkpoint into current model
                     self.load_state_dict(ckpt['state_dict'], strict=False)
                     logging.info(
-                        f'Model checkpoint restored from pytorch lightning chackpoint with path : `{ckpt_path}`'
+                        f'Model checkpoint restored from pytorch lightning checkpoint with path : `{ckpt_path}`'
                     )
 
                     del ckpt
@@ -1498,7 +1498,7 @@ class ModelPT(LightningModule, Model):
 
             Here we are overriding this to maintain the default Pytorch nn.module behavior:
             https://github.com/pytorch/pytorch/blob/master/torch/nn/modules/module.py#L728
-        
+
         Moves all model parameters and buffers to the GPU.
 
         This also makes associated parameters and buffers different objects. So

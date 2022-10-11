@@ -302,6 +302,7 @@ class TestEncDecCTCModel:
             'bucketing_batch_size',
             'bucketing_strategy',
             'bucketing_weights',
+            'max_utts',
         ]
 
         REMAP_ARGS = {

@@ -4,13 +4,13 @@ Models
 This section gives a brief overview of the models that NeMo's ASR collection currently supports.
 
 Each of these models can be used with the example ASR scripts (in the ``<NeMo_git_root>/examples/asr`` directory) by
-specifying the model architecture in the config file used. Examples of config files for each model can be found in 
+specifying the model architecture in the config file used. Examples of config files for each model can be found in
 the ``<NeMo_git_root>/examples/asr/conf`` directory.
 
 For more information about the config files and how they should be structured, refer to the :doc:`./configs` section.
 
-Pretrained checkpoints for all of these models, as well as instructions on how to load them, can be found in the :doc:`./results` 
-section. You can use the available checkpoints for immediate inference, or fine-tune them on your own datasets. The checkpoints section 
+Pretrained checkpoints for all of these models, as well as instructions on how to load them, can be found in the :doc:`./results`
+section. You can use the available checkpoints for immediate inference, or fine-tune them on your own datasets. The checkpoints section
 also contains benchmark results for the available ASR models.
 
 .. _Jasper_model:
@@ -18,9 +18,9 @@ also contains benchmark results for the available ASR models.
 Jasper
 ------
 
-Jasper ("Just Another Speech Recognizer") :cite:`asr-models-li2019jasper` is a deep time delay neural network (TDNN) comprising of 
-blocks of 1D-convolutional layers. The Jasper family of models are denoted as ``Jasper_[BxR]`` where ``B`` is the number of blocks 
-and ``R`` is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D convolution, batch normalization, 
+Jasper ("Just Another Speech Recognizer") :cite:`asr-models-li2019jasper` is a deep time delay neural network (TDNN) comprising of
+blocks of 1D-convolutional layers. The Jasper family of models are denoted as ``Jasper_[BxR]`` where ``B`` is the number of blocks
+and ``R`` is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D convolution, batch normalization,
 ReLU, and dropout:
 
     .. image:: images/jasper_vertical.png
@@ -34,9 +34,9 @@ QuartzNet
 ---------
 
 QuartzNet :cite:`asr-models-kriman2019quartznet` is a version of Jasper :cite:`asr-models-li2019jasper` model with separable
-convolutions and larger filters. It can achieve performance similar to Jasper but with an order of magnitude fewer parameters. 
-Similarly to Jasper, the QuartzNet family of models are denoted as ``QuartzNet_[BxR]`` where ``B`` is the number of blocks and ``R`` 
-is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D *separable* convolution, batch normalization, 
+convolutions and larger filters. It can achieve performance similar to Jasper but with an order of magnitude fewer parameters.
+Similarly to Jasper, the QuartzNet family of models are denoted as ``QuartzNet_[BxR]`` where ``B`` is the number of blocks and ``R``
+is the number of convolutional sub-blocks within a block. Each sub-block contains a 1-D *separable* convolution, batch normalization,
 ReLU, and dropout:
 
     .. image:: images/quartz_vertical.png
@@ -85,9 +85,9 @@ Conformer-CTC
 
 Conformer-CTC is a CTC-based variant of the Conformer model introduced in :cite:`asr-models-gulati2020conformer`. Conformer-CTC has a
 similar encoder as the original Conformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model.
-We also drop the LSTM decoder and instead use a linear decoder on the top of the encoder. This model uses the combination of 
-self-attention and convolution modules to achieve the best of the two approaches, the self-attention layers can learn the global 
-interaction while the convolutions efficiently capture the local correlations. The self-attention modules support both regular 
+We also drop the LSTM decoder and instead use a linear decoder on the top of the encoder. This model uses the combination of
+self-attention and convolution modules to achieve the best of the two approaches, the self-attention layers can learn the global
+interaction while the convolutions efficiently capture the local correlations. The self-attention modules support both regular
 self-attention with absolute positional encoding, and also Transformer-XL's self-attention with relative positional encodings.
 
 Here is the overall architecture of the encoder of Conformer-CTC:
@@ -98,7 +98,7 @@ Here is the overall architecture of the encoder of Conformer-CTC:
         :scale: 50%
 
 This model supports both the sub-word level and character level encodings. You can find more details on the config files for the
-Conformer-CTC models at `Conformer-CTC <./configs.html#conformer-ctc>`. The variant with sub-word encoding is a BPE-based model
+Conformer-CTC models at `Conformer-CTC <./configs.html#conformer-ctc>`_. The variant with sub-word encoding is a BPE-based model
 which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class, while the
 character-based variant is based on :class:`~nemo.collections.asr.models.EncDecCTCModel`.
 
@@ -115,9 +115,10 @@ Conformer-Transducer is the Conformer model introduced in :cite:`asr-models-gula
 It has the same encoder as Conformer-CTC but utilizes RNNT/Transducer loss/decoder which makes it an autoregressive model.
 
 Most of the config file for Conformer-Transducer models are similar to Conformer-CTC except the sections related to the decoder and loss: decoder, loss, joint, decoding.
-You may take a look at our `tutorials page <../starthere/tutorials.html>` on Transducer models to become familiar with their configs:
-`Introduction to Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Intro_to_Transducers.ipynb>` and `ASR with Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_Transducers.ipynb>`
-You can find more details on the config files for the Conformer-Transducer models at `Conformer-CTC <./configs.html#conformer-ctc>`.
+You may take a look at our `tutorials page <../starthere/tutorials.html>`_ on Transducer models to become familiar with their configs:
+`Introduction to Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Intro_to_Transducers.ipynb>`_ and
+`ASR with Transducers <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_with_Transducers.ipynb>`_
+You can find more details on the config files for the Conformer-Transducer models at `Conformer-CTC <./configs.html#conformer-ctc>`_.
 
 This model supports both the sub-word level and character level encodings. The variant with sub-word encoding is a BPE-based model
 which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecRNNTBPEModel` class, while the
@@ -192,7 +193,7 @@ Layer norm is added between the layers to stabilize the training.
 It can be trained/used in unidirectional or bidirectional mode. The unidirectional mode is fully causal and can be used easily for simple and efficient streaming. However the accuracy of this model is generally lower than other models like Conformer and Citrinet.
 
 This model supports both the sub-word level and character level encodings. You may find the example config file of RNNT model with wordpiece encoding at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml``.
-You can find more details on the config files for the RNNT models at ``LSTM-Transducer <./configs.html#lstm-transducer>``.
+You can find more details on the config files for the RNNT models at `LSTM-Transducer <./configs.html#lstm-transducer>`_.
 
 .. _LSTM-CTC_model:
 
@@ -208,7 +209,7 @@ Squeezeformer-CTC
 -----------------
 
 Squeezeformer-CTC is a CTC-based variant of the Squeezeformer model introduced in :cite:`asr-models-kim2022squeezeformer`. Squeezeformer-CTC has a
-similar encoder as the original Squeezeformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model. The vast majority of the architecture is similar to Conformer model, so please refer to `Conformer-CTC <./models.html#conformer-ctc>`.
+similar encoder as the original Squeezeformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model. The vast majority of the architecture is similar to Conformer model, so please refer to `Conformer-CTC <./models.html#conformer-ctc>`_.
 
 The model primarily differs from Conformer in the following ways :
 
@@ -224,7 +225,7 @@ Here is the overall architecture of the encoder of Squeezeformer-CTC:
         :scale: 50%
 
 This model supports both the sub-word level and character level encodings. You can find more details on the config files for the
-Squeezeformer-CTC models at `Squeezeformer-CTC <./configs.html#squeezeformer-ctc>`. The variant with sub-word encoding is a BPE-based model
+Squeezeformer-CTC models at `Squeezeformer-CTC <./configs.html#squeezeformer-ctc>`_. The variant with sub-word encoding is a BPE-based model
 which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecCTCModelBPE` class, while the
 character-based variant is based on :class:`~nemo.collections.asr.models.EncDecCTCModel`.
 

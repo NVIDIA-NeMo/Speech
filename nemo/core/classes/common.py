@@ -286,7 +286,8 @@ class Typing(ABC):
 
             elif len(out_container) > len(out_types_list) or len(out_container) < len(mandatory_out_types_list):
                 raise TypeError(
-                    "Number of output arguments provided ({}) is not as expected. It should be larger than {} and less than {}.\n"
+                    "Number of output arguments provided ({}) is not as expected. "
+                    "It should be larger or equal than {} and less or equal than {}.\n"
                     "This can be either because insufficient/extra number of output NeuralTypes were provided,"
                     "or the provided NeuralTypes {} should enable container support "
                     "(add '[]' to the NeuralType definition)".format(

@@ -16,9 +16,9 @@ Kinyarwanda Speech Dataset
 **************************
 We use `Mozilla Common Voice <https://commonvoice.mozilla.org/rw>`_ dataset for Kinyarwanda which is a large dataset with 2000+ hours of audio data.
 
-**Note**: You should download this dataset by yourself. 
+**Note**: You should download this dataset by yourself.
 
-Mozilla distributes the dataset in tsv+mp3 format. 
+Mozilla distributes the dataset in tsv+mp3 format.
 After downloading and unpacking, the dataset has the following structure
 
 .. code-block:: bash
@@ -330,12 +330,12 @@ We used the following script from NeMo toolkit to create `Sentencepiece <https:/
 
     python ${NEMO_ROOT}/scripts/tokenizers/process_asr_text_tokenizer.py \
       --manifest=dev_decoded_processed.json,train_decoded_processed.json \
-      --vocab_size=2048 \
+      --vocab_size=1024 \
       --data_root=tokenizer_bpe_maxlen_4 \
       --tokenizer="spe" \
       --spe_type=bpe \
       --spe_character_coverage=1.0 \
-      --spe_max_sentencepiece_length=4
+      --spe_max_sentencepiece_length=4 \
       --log
 
     python ${NEMO_ROOT}/scripts/tokenizers/process_asr_text_tokenizer.py \
@@ -345,7 +345,7 @@ We used the following script from NeMo toolkit to create `Sentencepiece <https:/
       --tokenizer="spe" \
       --spe_type=bpe \
       --spe_character_coverage=1.0 \
-      --spe_max_sentencepiece_length=2
+      --spe_max_sentencepiece_length=2 \
       --log
 
 Most of the arguments are similar to those explained in the `ASR with Subword Tokenization tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_with_Subword_Tokenization.ipynb>`_.

@@ -63,6 +63,13 @@ The standard text normalization based on WFST  :cite:`textprocessing-norm-zhang2
     cd NeMo/nemo_text_processing/text_normalization/
     python normalize.py --text="123" --language=en
 
+if you want to normalize a string. To normalize a text file split into sentences, run the following:
+
+.. code-block:: bash
+
+    cd NeMo/nemo_text_processing/text_normalization/
+    python normalize.py --input_file=INPUT_FILE_PATH --output_file=OUTPUT_FILE_PATH --language=en
+
 The context-aware version :cite:`textprocessing-norm-bakhturina2022shallow` is a shallow fusion of non-deterministic WFST and pretrained masked language model.
 
     .. image:: images/shallow_fusion.png
@@ -78,6 +85,7 @@ The context-aware version :cite:`textprocessing-norm-bakhturina2022shallow` is a
 
 
 
+
 Inverse Text Normalization 
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -89,7 +97,7 @@ Inverse Text Normalization
 
 Arguments:
 
-* ``text`` - Input text.
+* ``text`` - Input text. Should not exceed 500 words.
 * ``input_file`` - Input file with lines of input text. Only one of ``text`` or ``input_file`` is accepted.
 * ``output_file`` - Output file to save normalizations. Needed if ``input_file`` is specified.
 * ``language`` - language id.
@@ -99,6 +107,10 @@ Arguments:
 * ``overwrite_cache`` - Updates grammars in cache.
 * ``whitelist`` - TSV file with custom mappings of written text to spoken form.
 
+
+
+.. warning::
+   The maximum length of a single string to be (de-)normalized should not exceed 500 words. To avoid this, please split your string into sentences shorter than this limit and pass it as ``--input_file`` instead.
 
 
 Audio-based TN 

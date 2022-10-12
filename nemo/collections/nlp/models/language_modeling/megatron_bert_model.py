@@ -173,7 +173,6 @@ class MegatronBertModel(MegatronBaseModel):
     def validation_epoch_end(self, outputs):
         averaged_loss = torch.stack(outputs).mean()
         self.log('val_loss', averaged_loss, prog_bar=True)
-        self.log('consumed_samples', self.compute_consumed_samples(self.trainer.global_step - self.init_global_step))
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
@@ -315,7 +314,6 @@ class MegatronBertModel(MegatronBaseModel):
             init_consumed_samples = 0
 
         self.init_consumed_samples = init_consumed_samples
-        self.init_global_step = self.trainer.global_step
 
         if stage == 'predict':
             return

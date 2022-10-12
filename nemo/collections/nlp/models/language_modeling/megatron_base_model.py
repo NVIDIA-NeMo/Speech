@@ -164,6 +164,10 @@ class MegatronBaseModel(NLPModel):
             legacy=legacy,
         )
 
+    def on_train_start(self) -> None:
+        super().on_train_start()
+        self.init_global_step = self.trainer.global_step
+
     def _build_vocab(self):
         """
         Manipulate vocabulary (e.g., pad vocabulary for increased performance)/

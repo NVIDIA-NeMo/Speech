@@ -99,7 +99,6 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         else:
             init_consumed_samples = 0
         self.init_consumed_samples = init_consumed_samples
-        self.init_global_step = self.trainer.global_step
 
         if stage == 'predict':
             return

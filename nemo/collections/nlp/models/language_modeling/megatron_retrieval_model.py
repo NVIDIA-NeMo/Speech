@@ -341,7 +341,6 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         # formula to compute the perplexity
         # https://towardsdatascience.com/the-relationship-between-perplexity-and-entropy-in-nlp-f81888775ccc
         self.log('perplexity', torch.exp(averaged_loss), prog_bar=True)
-        self.log('consumed_samples', self.compute_consumed_samples(self.trainer.global_step - self.init_global_step))
         return averaged_loss
 
     def test_step(self, batch, batch_idx):
@@ -441,7 +440,6 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         else:
             init_consumed_samples = 0
         self.init_consumed_samples = init_consumed_samples
-        self.init_global_step = self.trainer.global_step
 
         """A PTL method to setup the training, validation and test datasets."""
         if stage == 'predict':

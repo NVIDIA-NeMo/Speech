@@ -64,8 +64,6 @@ def main(cfg) -> None:
     )
 
     with open_dict(model_cfg):
-        # work around for the fused softmax bug
-        model_cfg.masked_softmax_fusion = False
         model_cfg.precision = trainer.precision
 
     model = MegatronRetrievalModel.restore_from(

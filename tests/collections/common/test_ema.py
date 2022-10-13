@@ -28,6 +28,7 @@ from pytorch_lightning.utilities.types import STEP_OUTPUT
 from nemo.collections.common.callbacks import EMA
 from nemo.core import ModelPT
 from nemo.utils.exp_manager import exp_manager
+from tests.collections.nlp.test_gpt_model import DEVICE_CAPABILITY
 
 
 class OnesDataset(torch.utils.data.Dataset):
@@ -287,7 +288,20 @@ class TestEMAConfig:
 
 class TestEMATrain:
     @pytest.mark.unit
-    @pytest.mark.parametrize("precision", [16, "bf16", 32])
+    @pytest.mark.parametrize(
+        "precision",
+        [
+            32,
+            16,
+            pytest.param(
+                "bf16",
+                marks=pytest.mark.skipif(
+                    not DEVICE_CAPABILITY or DEVICE_CAPABILITY[0] < 8,
+                    reason='bfloat16 is not supported on this device',
+                ),
+            ),
+        ],
+    )
     @pytest.mark.parametrize("accumulate_grad_batches", [1, 2])
     @pytest.mark.parametrize("evaluate_ema_weights_instead", [True, False])
     @pytest.mark.parametrize("apex_available_mock", [True, False])

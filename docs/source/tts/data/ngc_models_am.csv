@@ -1,0 +1,8 @@
+Locale,Dataset,Sampling Rate,#Speakers,Model Name,Model Base Class,Model Card
+en-US,LJSpeech,22050Hz,Single,Tacotron2,nemo.collections.tts.models.tacotron2.Tacotron2Model,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_tacotron2
+en-US,LJSpeech,22050Hz,Single,FastPitch,nemo.collections.tts.models.fastpitch.FastPitchModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_fastpitch
+en-US,LJSpeech,22050Hz,Single,Mixer-TTS,nemo.collections.tts.models.mixer_tts.MixerTTSModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_mixertts
+en-US,LJSpeech,22050Hz,Single,Mixer-TTS-X,nemo.collections.tts.models.mixer_tts.MixerTTSModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_mixerttsx
+en-US,TBD,TBD,Single,RAD-TTS,nemo.collections.tts.models.radtts.RadTTSModel,TBD
+de-DE,HUI Audio Corpus German,44100Hz,Multiple,FastPitch,nemo.collections.tts.models.fastpitch.FastPitchModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_de_fastpitch_multispeaker_5
+de-DE,Thorsten Müller (German Neutral-TTS dataset),22050Hz,Single,FastPitch,nemo.collections.tts.models.fastpitch.FastPitchModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_de_fastpitchhifigan

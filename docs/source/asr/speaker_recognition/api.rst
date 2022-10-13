@@ -1,4 +1,4 @@
-NeMo Speaker Recogniton API
+NeMo Speaker Recognition API
 =============================
 
 

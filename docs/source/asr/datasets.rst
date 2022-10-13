@@ -176,7 +176,7 @@ versa.
 
 Each line of the manifest should be in the following format:
 
-.. code::
+.. code-block:: json
 
   {"audio_filepath": "/path/to/audio.wav", "text": "the transcription of the utterance", "duration": 23.147}
 
@@ -193,7 +193,7 @@ Since the manifest specifies the path for each utterance, the audio files do not
 in the same directory as the manifest, or even in any specific directory structure.
 
 Once there is a manifest that describes each audio file in the dataset, use the dataset by passing
-in the manifest file path in the experiment config file, e.g. as ``training_ds.manifest_filepath=<path/to/manifest,json>``.
+in the manifest file path in the experiment config file, e.g. as ``training_ds.manifest_filepath=<path/to/manifest.json>``.
 
 Tarred Datasets
 ---------------
@@ -241,9 +241,9 @@ Conversion to Tarred Datasets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 You can easily convert your existing NeMo-compatible ASR datasets using the
-`conversion script here <https://github.com/NVIDIA/NeMo/blob/main/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
+`conversion script here <https://github.com/NVIDIA/NeMo/tree/stable/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
 
-.. code::
+.. code:: bash
 
   python convert_to_tarred_audio_dataset.py \
     --manifest_path=<path to the manifest file> \
@@ -278,7 +278,7 @@ Bucketing Datasets
 
 For training ASR models, audios with different lengths may be grouped into a batch. It would make it necessary to use paddings to make all the same length.
 These extra paddings is a significant source of computation waste. Splitting the training samples into buckets with different lengths and sampling from the same bucket for each batch would increase the computation efficicncy.
-It may result into training speeedup of more than 2X. To enable and use the bucketing feature, you need to create the bucketing version of the dataset by using `conversion script here <https://github.com/NVIDIA/NeMo/blob/v1.0.2/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
+It may result into training speeedup of more than 2X. To enable and use the bucketing feature, you need to create the bucketing version of the dataset by using `conversion script here <https://github.com/NVIDIA/NeMo/tree/stable/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
 You may use --buckets_num to specify the number of buckets (Recommened to use 4 to 8 buckets). It creates multiple tarred datasets, one per bucket, based on the audio durations. The range of [min_duration, max_duration) is split into equal sized buckets.
 
 
@@ -329,7 +329,7 @@ Bucketing may improve the training speed more than 2x but may affect the final a
 Currently bucketing feature is just supported for tarred datasets.
 
 Upsampling Datasets
-------------------
+-------------------
 
 Buckets may also be 'weighted' to allow multiple runs through a target dataset during each training epoch. This can be beneficial in cases when a dataset is composed of several component sets of unequal sizes and one desires to mitigate bias towards the larger sets through oversampling.
 

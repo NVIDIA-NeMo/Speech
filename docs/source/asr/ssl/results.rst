@@ -28,7 +28,7 @@ If there is a local ``.nemo`` checkpoint that you'd like to load, use the :code:
 Where the model base class is the ASR model class of the original checkpoint, or the general ``ASRModel`` class.
 
 Loading NGC Pretrained Checkpoints
---------------------------
+----------------------------------
 
 The SSL collection has checkpoints of several models trained on various datasets. These checkpoints are 
 obtainable via NGC `NeMo Automatic Speech Recognition collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_asr>`_.
@@ -62,7 +62,7 @@ If you would like to programatically list the models available for a particular 
 
 
 Loading SSL checkpoint into Down-stream Model
--------------------------------------------
+---------------------------------------------
 After loading an SSL checkpoint as shown above, it's ``state_dict`` needs to be copied to a 
 down-stream model for fine-tuning. 
 
@@ -104,5 +104,3 @@ Below is a list of all the SSL models that are available in NeMo.
    :align: left
    :widths: 40, 10, 50
    :header-rows: 1
-
------------------------------

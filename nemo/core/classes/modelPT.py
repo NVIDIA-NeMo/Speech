@@ -179,27 +179,32 @@ class ModelPT(LightningModule, Model):
             when model.save_to("mymodel.nemo") is called.
 
             How it works:
+
             1. It always returns existing absolute path which can be used during Model constructor call
                 EXCEPTION: src is None or "" in which case nothing will be done and src will be returned
             2. It will add (config_path, model_utils.ArtifactItem()) pair to self.artifacts
 
-            If "src" is local existing path, then it will be returned in absolute path form.
-            elif "src" starts with "nemo_file:unique_artifact_name":
-                .nemo will be untarred to a temporary folder location and an actual existing path will be returned
-            else an error will be raised.
+                .. code-block::
+
+                    If "src" is local existing path:
+                        then it will be returned in absolute path form.
+                    elif "src" starts with "nemo_file:unique_artifact_name":
+                        .nemo will be untarred to a temporary folder location and an actual existing path will be returned
+                    else:
+                        an error will be raised.
 
             WARNING: use .register_artifact calls in your models' constructors.
-            The returned path is not guaranteed to exist after you have exited your model's constuctor.
+            The returned path is not guaranteed to exist after you have exited your model's constructor.
 
             Args:
                 config_path (str): Artifact key. Usually corresponds to the model config.
                 src (str): Path to artifact.
                 verify_src_exists (bool): If set to False, then the artifact is optional and register_artifact will return None even if
                                           src is not found. Defaults to True.
-                save_restore_connector (SaveRestoreConnector): Can be overrided to add custom save and restore logic.
+                save_restore_connector (SaveRestoreConnector): Can be overridden to add custom save and restore logic.
 
             Returns:
-                str: If src is not None or empty it always returns absolute path which is guaranteed to exists during model instnce life
+                str: If src is not None or empty it always returns absolute path which is guaranteed to exist during model instance life
         """
 
         app_state = AppState()
@@ -611,15 +616,18 @@ class ModelPT(LightningModule, Model):
         """
             Used to create param groups for the optimizer.
             As an example, this can be used to specify per-layer learning rates:
+
             optim.SGD([
                         {'params': model.base.parameters()},
                         {'params': model.classifier.parameters(), 'lr': 1e-3}
                         ], lr=1e-2, momentum=0.9)
+
             See https://pytorch.org/docs/stable/optim.html for more information.
             By default, ModelPT will use self.parameters().
             Override this method to add custom param groups.
             In the config file, add 'optim_param_groups' to support different LRs
             for different components (unspecified params will use the default LR):
+
             model:
                 optim_param_groups:
                     encoder:

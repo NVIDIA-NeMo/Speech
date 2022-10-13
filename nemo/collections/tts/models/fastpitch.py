@@ -671,6 +671,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
     ):
         """
         This method performs speaker interpolation between two original speakers the model is trained on.
+
         Inputs:
             original_speaker_1: Integer speaker ID of first existing speaker in the model
             original_speaker_2: Integer speaker ID of second existing speaker in the model

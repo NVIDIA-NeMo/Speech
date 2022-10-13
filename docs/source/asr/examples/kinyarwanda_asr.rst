@@ -348,7 +348,7 @@ We used the following script from NeMo toolkit to create `Sentencepiece <https:/
       --spe_max_sentencepiece_length=2 \
       --log
 
-Most of the arguments are similar to those explained in the `ASR with Subword Tokenization tutorial <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_with_Subword_Tokenization.ipynb>`_.
+Most of the arguments are similar to those explained in the `ASR with Subword Tokenization tutorial <https://github.com/NVIDIA/NeMo/tree/stable/tutorials/asr/ASR_with_Subword_Tokenization.ipynb>`_.
 
 The resulting tokenizer is a folder like that:
 
@@ -443,8 +443,8 @@ The CTC model predicts output tokens for each timestep. The outputs are assumed 
 Training scripts and configs
 ############################
 
-To train a Conformer-CTC model, we use `speech_to_text_ctc_bpe.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/asr_ctc/speech_to_text_ctc_bpe.py>`_ with the default config `conformer_ctc_bpe.yaml <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/conf/conformer/conformer_ctc_bpe.yaml>`_.
-To train a Conformer-Transducer model, we use `speech_to_text_rnnt_bpe.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py>`_ with the default config `conformer_transducer_bpe.yaml <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/conf/conformer/conformer_transducer_bpe.yaml>`_.
+To train a Conformer-CTC model, we use `speech_to_text_ctc_bpe.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_ctc/speech_to_text_ctc_bpe.py>`_ with the default config `conformer_ctc_bpe.yaml <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf/conformer/conformer_ctc_bpe.yaml>`_.
+To train a Conformer-Transducer model, we use `speech_to_text_rnnt_bpe.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_transducer/speech_to_text_rnnt_bpe.py>`_ with the default config `conformer_transducer_bpe.yaml <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf/conformer/conformer_transducer_bpe.yaml>`_.
 Any options of default config can be overwritten from command line.
 Usually we should provide the options related to the dataset and tokenizer.
 

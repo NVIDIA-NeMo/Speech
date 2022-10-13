@@ -18,7 +18,7 @@ Our BERT-based model implementation allows you to train and detect both of these
 
     Connect to an instance with a GPU (**Runtime** -> **Change runtime type** -> select **GPU** for the hardware accelerator).
 
-    An example script on how to train the model can be found here: `NeMo/examples/nlp/intent_slot_classification <https://github.com/NVIDIA/NeMo/tree/main/examples/nlp/intent_slot_classification>`__.
+    An example script on how to train the model can be found here: `NeMo/examples/nlp/intent_slot_classification <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/intent_slot_classification>`__.
 
 
 NeMo Data Format
@@ -131,7 +131,7 @@ More details about parameters in the spec file can be found below:
 +-------------------------------------------+-----------------+----------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------+
 | **model.data_dir**                        | string          | --                                                                               | The path of the data converted to the specified format.                                                      |
 +-------------------------------------------+-----------------+----------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------+
-| **model.class_balancing**                 | string          | ``null``                                                                         | Choose from ``[null, weighted_loss]``. The ``weighted_los``s enables weighted class balancing of the loss.   |
+| **model.class_balancing**                 | string          | ``null``                                                                         | Choose from ``[null, weighted_loss]``. The ``weighted_loss`` enables weighted class balancing of the loss.   |
 +-------------------------------------------+-----------------+----------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------+
 | **model.intent_loss_weight**              | float           | ``0.6``                                                                          | The elation of intent-to-slot loss in the total loss.                                                        |
 +-------------------------------------------+-----------------+----------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------+
@@ -178,9 +178,8 @@ Most of the default parameters in the existing configuration file are already se
 you may want to experiment with.
 
 - ``trainer.max_epochs``: the number of training epochs (reasonable to be between 10 to 100)
-- ``model.class_balancing`` - value ``weighted_loss`` may help to train the model when there is unbalanced set of classes
-- ``model.intent_loss_weight`` - a number between 0 to 1 that defines a weight of the intent lost versus a slot loss during training. A 
-default value 0.6 gives a slight preference for the intent lose optimization.
+- ``model.class_balancing``: value ``weighted_loss`` may help to train the model when there is unbalanced set of classes
+- ``model.intent_loss_weight``: a number between 0 to 1 that defines a weight of the intent lost versus a slot loss during training. A default value 0.6 gives a slight preference for the intent lose optimization.
 
 Training Procedure
 ^^^^^^^^^^^^^^^^^^

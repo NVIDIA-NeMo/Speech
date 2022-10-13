@@ -1,0 +1,10 @@
+Locale,Dataset,Sampling Rate,#Speakers,Model Name,Model Base Class,Model Card
+en-US,LJSpeech,22050Hz,Single,WaveGlow-88m,nemo.collections.tts.models.waveglow.WaveGlowModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_waveglow_88m
+en-US,LJSpeech,22050Hz,Single,WaveGlow-268m,nemo.collections.tts.models.waveglow.WaveGlowModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_waveglow_268m
+en-US,LJSpeech,22050Hz,Single,HiFiGAN-LJSpeech-1.0.0rc1,nemo.collections.tts.models.hifigan.HifiGanModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_hifigan
+en-US,LJSpeech,22050Hz,Single,HiFiGAN-LJSpeech-1.6.0,nemo.collections.tts.models.hifigan.HifiGanModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_hifigan
+en-US,HiFiTTS,44100Hz,Multiple,HiFiGAN-HiFiTTS,nemo.collections.tts.models.hifigan.HifiGanModel,https://ngc.nvidia.com/models/nvidia:nemo:tts_en_multispeaker_fastpitchhifigan
+en-US,LJSpeech,22050Hz,Single,UnivNet-LJSpeech,nemo.collections.tts.models.univnet.UnivNetModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_univnet
+en-US,LibriTTS,24000Hz,Single,UnivNet-LibriTTS,nemo.collections.tts.models.univnet.UnivNetModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_libritts_univnet
+de-DE,HUI Audio Corpus German,44100Hz,Multiple,HiFiGAN-HUI,nemo.collections.tts.models.hifigan.HifiGanModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_de_fastpitch_multispeaker_5
+de-DE,Thorsten Müller (German Neutral-TTS dataset),22050Hz,Single,HiFiGAN-Thorsten,nemo.collections.tts.models.hifigan.HifiGanModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_de_fastpitchhifigan

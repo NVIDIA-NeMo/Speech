@@ -190,7 +190,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     directory. exp_manager also allows for explicit folder creation via explicit_log_dir.
 
     The version can be a datetime string or an integer. Datestime version can be disabled if use_datetime_version is set
-     to False. It optionally creates TensorBoardLogger, WandBLogger, ModelCheckpoint objects from pytorch lightning.
+    to False. It optionally creates TensorBoardLogger, WandBLogger, ModelCheckpoint objects from pytorch lightning.
     It copies sys.argv, and git information if available to the logging directory. It creates a log file for each
     process to log their output into.
 
@@ -202,6 +202,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     Args:
         trainer (pytorch_lightning.Trainer): The lightning trainer.
         cfg (DictConfig, dict): Can have the following keys:
+
             - explicit_log_dir (str, Path): Can be used to override exp_dir/name/version folder creation. Defaults to
                 None, which will use exp_dir, name, and version to construct the logging directory.
             - exp_dir (str, Path): The base directory to create the logging directory. Defaults to None, which logs to
@@ -216,8 +217,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 under log_dir to log_dir/run_{int}. Defaults to False. From v1.0.0, when resume_if_exists is True,
                 we would not create version folders to make it easier to find the log folder for next runs.
             - resume_past_end (bool): exp_manager errors out if resume_if_exists is True and a checkpoint matching
-                *end.ckpt indicating a previous training run fully completed. This behaviour can be disabled, in which
-                case the *end.ckpt will be loaded by setting resume_past_end to True. Defaults to False.
+                ``*end.ckpt`` indicating a previous training run fully completed. This behaviour can be disabled, in which
+                case the ``*end.ckpt`` will be loaded by setting resume_past_end to True. Defaults to False.
             - resume_ignore_no_checkpoint (bool): exp_manager errors out if resume_if_exists is True and no checkpoint
                 could be found. This behaviour can be disabled, in which case exp_manager will print a message and
                 continue without restoring, by setting resume_ignore_no_checkpoint to True. Defaults to False.
@@ -232,7 +233,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 Defaults to None.
             - create_checkpoint_callback (bool): Whether to create a ModelCheckpoint callback and attach it to the
                 pytorch lightning trainer. The ModelCheckpoint saves the top 3 models with the best "val_loss", the most
-                recent checkpoint under *last.ckpt, and the final checkpoint after training completes under *end.ckpt.
+                recent checkpoint under ``*last.ckpt``, and the final checkpoint after training completes under ``*end.ckpt``.
                 Defaults to True.
             - files_to_copy (list): A list of files to copy to the experiment logging directory. Defaults to None which
                 copies no files.
@@ -240,6 +241,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
             - log_global_rank_0_only (bool): Whether to only create log files for global rank 0. Defaults to False.
                 Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
+
     returns:
         log_dir (Path): The final logging directory where logging files are saved. Usually the concatenation of
             exp_dir, name, and version.

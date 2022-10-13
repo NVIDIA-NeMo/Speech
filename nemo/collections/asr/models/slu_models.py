@@ -152,18 +152,20 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
         Forward pass of the model.
 
         Params:
-            input_signal: Tensor that represents a batch of raw audio signals,
-                of shape [B, T]. T here represents timesteps, with 1 second of audio represented as
-                `self.sample_rate` number of floating point values.
-            input_signal_length: Vector of length B, that contains the individual lengths of the audio
-                sequences.
+            input_signal: Tensor that represents a batch of raw audio signals, of shape [B, T]. T here represents
+            timesteps, with 1 second of audio represented as `self.sample_rate` number of floating point values.
+
+            input_signal_length: Vector of length B, that contains the individual lengths of the audio sequences.
+
             target_semantics: Tensor that represents a batch of semantic tokens, of shape [B, L].
-            target_semantics_length: Vector of length B, that contains the individual lengths of the semantic
-                sequences.
-            processed_signal: Tensor that represents a batch of processed audio signals,
-                of shape (B, D, T) that has undergone processing via some DALI preprocessor.
-            processed_signal_length: Vector of length B, that contains the individual lengths of the
-                processed audio sequences.
+
+            target_semantics_length: Vector of length B, that contains the individual lengths of the semantic sequences.
+
+            processed_signal: Tensor that represents a batch of processed audio signals, of shape (B, D, T) that has
+            undergone processing via some DALI preprocessor.
+
+            processed_signal_length: Vector of length B, that contains the individual lengths of the processed audio
+            sequences.
 
         Returns:
             A tuple of 3 elements -

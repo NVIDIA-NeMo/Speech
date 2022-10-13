@@ -54,5 +54,3 @@ Below is a list of all the Speech Intent Classification and Slot Filling models 
    :align: left
    :widths: 40, 10, 50
    :header-rows: 1
-
------------------------------

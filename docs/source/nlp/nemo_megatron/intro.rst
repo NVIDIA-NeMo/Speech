@@ -19,9 +19,15 @@ team at NVIDIA. NeMo Megatron supports several types of models:
 
    mlm_migration   
    gpt/gpt_training
-   t5/t5_training
-   batching 
+   batching
    parallelisms  
    prompt_learning
 
 
+References
+----------
+
+.. bibliography:: ../nlp_all.bib
+    :style: plain
+    :labelprefix: nlp-megatron
+    :keyprefix: nlp-megatron-

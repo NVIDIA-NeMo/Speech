@@ -323,14 +323,19 @@ class SaveRestoreConnector:
         when model.save_to("mymodel.nemo") is called.
 
         How it works:
+
         1. It always returns existing absolute path which can be used during Model constructor call
             EXCEPTION: src is None or "" in which case nothing will be done and src will be returned
         2. It will add (config_path, model_utils.ArtifactItem()) pair to self.artifacts
 
-        If "src" is local existing path, then it will be returned in absolute path form.
-        elif "src" starts with "nemo_file:unique_artifact_name":
-            .nemo will be untarred to a temporary folder location and an actual existing path will be returned
-        else an error will be raised.
+            .. code-block::
+
+              If "src" is local existing path:
+                  then it will be returned in absolute path form
+              elif "src" starts with "nemo_file:unique_artifact_name":
+                  .nemo will be untarred to a temporary folder location and an actual existing path will be returned
+              else:
+                  an error will be raised.
 
         WARNING: use .register_artifact calls in your models' constructors.
         The returned path is not guaranteed to exist after you have exited your model's constructor.

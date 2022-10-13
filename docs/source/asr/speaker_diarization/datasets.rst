@@ -24,7 +24,7 @@ Speaker diarization training is also managed by Hydra configurations based on ``
 
 Speaker diarization training and inference both require the same type of manifest files. This manifest file can be created by using the script in ``<NeMo_git_root>/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py``. The following example shows how to run ``pathfiles_to_diarize_manifest.py`` by providing path list files.
 
-.. code-block:: bash
+.. code-block:: shell-session
     
    python NeMo/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py \
         --paths2audio_files='/path/to/audio_file_path_list.txt' \
@@ -35,6 +35,7 @@ Speaker diarization training and inference both require the same type of manifes
 All three arguments are required. Note that we need to maintain consistency on unique filenames for every field (key) by only changing the filename extensions. For example, if there is an audio file named ``abcd01.wav``, the rttm file should be named as ``abcd01.rttm`` and the transcription file should be named as ``abcd01.txt``. 
 
 - Example audio file path list ``audio_file_path_list.txt``
+
 .. code-block:: bash
 
   /path/to/abcd01.wav
@@ -51,6 +52,7 @@ To train a diarization model, one needs to provide Rich Transcription Time Marke
 Make a list of RTTM files for the audio files you have in ``audio_file_path_list.txt``.
 
 - Example RTTM file path list ``rttm_file_path_list.txt``
+
 .. code-block:: bash
   
   /path/to/abcd01.rttm
@@ -60,6 +62,7 @@ Make a list of RTTM files for the audio files you have in ``audio_file_path_list
   We expect all the provided files (e.g. audio, rttm, text) to have the same base name and the name should be unique (uniq-id).
 
 As an output file, ``train_manifest.json`` will have the following line for each audio file:
+
 .. code-block:: bash
 
   {"audio_filepath": "/path/to/abcd01.wav", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": 2, "rttm_filepath": "/path/to/rttm/abcd01.rttm"}
@@ -139,12 +142,14 @@ In each line of the input manifest file, ``audio_filepath`` item is mandatory wh
 The ``--paths2audio_files`` and ``--manifest_filepath`` are required arguments. Note that we need to maintain consistency on unique filenames for every field (key) by only changing the filename extensions. For example, if there is an audio file named ``abcd.wav``, the rttm file should be named as ``abcd.rttm`` and the transcription file should be named as ``abcd.txt``. 
 
 - Example audio file path list ``audio_file_path_list.txt``
+
 .. code-block:: bash
 
   /path/to/abcd01.wav
   /path/to/abcd02.wav
 
 - Example RTTM file path list ``rttm_file_path_list.txt``
+
 .. code-block:: bash
   
   /path/to/abcd01.rttm

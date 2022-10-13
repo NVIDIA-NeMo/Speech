@@ -5,13 +5,13 @@ Best Practices
 
 The NVIDIA NeMo Toolkit is available on GitHub as `open source <https://github.com/NVIDIA/NeMo>`_ as well as
 a `Docker container on NGC <https://ngc.nvidia.com/catalog/containers/nvidia:nemo>`_. It's assumed the user has
-already installed NeMo by following the :ref:`quick-start-guide` instructions.
+already installed NeMo by following the :ref:`quick_start_guide` instructions.
 
 The conversational AI pipeline consists of three major stages:
 
 - Automatic Speech Recognition (ASR)
 - Natural Language Processing (NLP) or Natural Language Understanding (NLU)
-- Text-to-Speech (TTS) or voice synthesis
+- Text-to-Speech (TTS) Synthesis
 
 As you talk to a computer, the ASR phase converts the audio signal into text, the NLP stage interprets the question
 and generates a smart response, and finally the TTS phase converts the text into speech signals to generate audio for
@@ -78,7 +78,7 @@ Using Optimized Pretrained Models With NeMo
 `NVIDIA GPU Cloud (NGC) <https://ngc.nvidia.com/catalog>`_ is a software repository that has containers and models optimized
 for deep learning. NGC hosts many conversational AI models developed with NeMo that have been trained to state-of-the-art accuracy
 on large datasets. NeMo models on NGC can be automatically downloaded and used for transfer learning tasks. Pretrained models
-are the quickest way to get started with conversational AI on your own data. NeMo has many `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_
+are the quickest way to get started with conversational AI on your own data. NeMo has many `example scripts <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_
 and `Jupyter Notebook tutorials <https://github.com/NVIDIA/NeMo#tutorials>`_ showing step-by-step how to fine-tune pretrained NeMo
 models on your own domain-specific datasets.
 
@@ -147,7 +147,7 @@ Speech data explorer collects:
 - inspections of individual utterances (waveform, spectrogram, and audio player)
 - errors analysis (word error rate, character error rate, word match rate, mean word accuracy, and diff)
 
-In order to use the tool, it needs to be installed separately. Perform the steps `here <https://github.com/NVIDIA/NeMo/tree/main/tools/speech_data_explorer>`_ to install speech data explorer.
+In order to use the tool, it needs to be installed separately. Perform the steps `here <https://github.com/NVIDIA/NeMo/tree/stable/tools/speech_data_explorer>`_ to install speech data explorer.
 
 Using Kaldi Formatted Data
 --------------------------
@@ -182,9 +182,7 @@ BERT model checkpoints (`BERT-large-uncased <https://ngc.nvidia.com/catalog/mode
 dataset, or fine tuning downstream tasks, including GLUE benchmark tasks, Question & Answering tasks, Joint Intent & Slot detection,
 Punctuation and Capitalization, Named Entity Recognition, and Speech Recognition post processing model to correct mistakes.
 
-.. note:: Almost all NLP examples also support RoBERTa and ALBERT models for downstream fine-tuning tasks (see the list of all
-supported models by calling ``nemo.collections.nlp.modules.common.lm_utils.get_pretrained_lm_models_list()``. The user needs to specify
-the name of the model desired while running the example scripts.
+.. note:: Almost all NLP examples also support RoBERTa and ALBERT models for downstream fine-tuning tasks (see the list of all supported models by calling ``nemo.collections.nlp.modules.common.lm_utils.get_pretrained_lm_models_list()``). The user needs to specify the name of the model desired while running the example scripts.
 
 BioMegatron Medical BERT
 ------------------------
@@ -266,13 +264,13 @@ A: NeMo’s Beam Search decoder with Levenberg-Marquardt (LM) neural module supp
 - If you want to use a different language model, other than KenLM, you will need to implement a corresponding decoder module.
 - Transformer-XL example is present in OS2S. It would need to be updated to work with NeMo. `Here is the code <https://github.com/NVIDIA/OpenSeq2Seq/tree/master/external_lm_rescore>`_.
 
-**Q: How do I use text-to-speech (TTS)?**
+**Q: How do I use text-to-speech (TTS) synthesis?**
 A:
+
 - Obtain speech data ideally at 22050 Hz or alternatively at a higher sample rate and then down sample to 22050 Hz.
     - If less than 22050 Hz and at least 16000 Hz:
         - Retrain WaveGlow on your own dataset.
-        - Tweak the spectrogram generation parameters, namely the ``window_size`` and the ``window_stride`` for their fourier
-        transforms.
+        - Tweak the spectrogram generation parameters, namely the ``window_size`` and the ``window_stride`` for their fourier transforms.
     - For below 16000 Hz, look into obtaining new data.
 - In terms of bitrate/quantization, the general advice is the higher the better. We have not experimented enough to state how much
   this impacts quality.

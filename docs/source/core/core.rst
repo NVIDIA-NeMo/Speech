@@ -43,8 +43,8 @@ To see all available pretrained models for a specific NeMo model, use the ``list
 For detailed information on the available pretrained models, refer to the collections documentation: 
 
 - :ref:`Automatic Speech Recognition (ASR)`
-- :ref:`Natural Language Processing (NLP)`
-- :ref:`Speech Synthesis (TTS)`
+- :doc:`Natural Language Processing (NLP) <../nlp/models>`
+- :doc:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 Training
 --------
@@ -174,9 +174,9 @@ via PyTorch Lightning `hooks <https://pytorch-lightning.readthedocs.io/en/stable
 
 For more domain-specific information, see:
 
-- :ref:`Automatic Speech Recognition (ASR)`
-- :ref:`Natural Language Processing (NLP)`
-- :ref:`Speech Synthesis (TTS)`
+- :ref:`Automatic Speech Recognition (ASR) <../asr/intro>`
+- :ref:`Natural Language Processing (NLP) <../nlp/models>`
+- :ref:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 PyTorch Lightning Trainer
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -408,8 +408,7 @@ configuration for a Novograd optimizer with Cosine Annealing learning rate sched
             warmup_ratio: null
             min_lr: 1e-9:
 
-.. note:: `NeMo Examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ has optimizer and scheduler configurations for
-every NeMo model. 
+.. note:: `NeMo Examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ has optimizer and scheduler configurations for every NeMo model.
 
 Optimizers can be configured from the CLI as well:
 
@@ -696,9 +695,7 @@ It also means that ``.forward(...)`` and ``__call__(...)`` methods each produce 
 
 .. tip:: It is a good practice to define types and add ``@typecheck()`` decorator to your ``.forward()`` method after your module is ready for use by others.
 
-.. note:: The outputs of ``.forward(...)`` method will always be of type ``torch.Tensor`` or container of tensors and will work with any other Pytorch code. The type information is attached to every output tensor.
-If tensors without types is passed to your module, it will not fail, however the types will not be checked. Thus, it is recommended to define input/output types for all your modules, starting with
-data layers and add ``@typecheck()`` decorator to them.
+.. note:: The outputs of ``.forward(...)`` method will always be of type ``torch.Tensor`` or container of tensors and will work with any other Pytorch code. The type information is attached to every output tensor. If tensors without types is passed to your module, it will not fail, however the types will not be checked. Thus, it is recommended to define input/output types for all your modules, starting with data layers and add ``@typecheck()`` decorator to them.
 
 .. note:: To temporarily disable typechecking, you can enclose your code in ```with typecheck.disable_checks():``` statement.
 

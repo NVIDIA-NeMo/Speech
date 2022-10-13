@@ -133,7 +133,7 @@ Loss Configurations
 Neural diarizer uses a binary cross entropy (BCE) loss. A set of weights for negative (absence of the speaker's speech) and positive (presence of the speaker's speech) can be provided to the loss function.
 
 .. code-block:: yaml
-  
+
   loss: 
     _target_: nemo.collections.asr.losses.bce_loss.BCELoss
     weight: null # Weight for binary cross-entropy loss. Either `null` or list type input. (e.g. [0.5,0.5])

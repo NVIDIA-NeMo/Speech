@@ -97,6 +97,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
         We don't use torchaudio's implementation here because the original
         implementation is not the same, so for the sake of backwards-compatibility
         this will use the old FilterbankFeatures for now.
+
         Args:
             sample_rate (int): Sample rate of the input audio data.
                 Defaults to 16000
@@ -182,6 +183,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
     @property
     def output_types(self):
         """Returns definitions of module output ports.
+
         processed_signal:
             0: AxisType(BatchTag)
             1: AxisType(MelSpectrogramSignalTag)
@@ -275,6 +277,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
 class AudioToMFCCPreprocessor(AudioPreprocessor):
     """Preprocessor that converts wavs to MFCCs.
     Uses torchaudio.transforms.MFCC.
+
     Args:
         sample_rate: The sample rate of the audio.
             Defaults to 16000.
@@ -418,6 +421,7 @@ class SpectrogramAugmentation(NeuralModule):
     SpecCutout zeroes out rectangulars as described in Cutout
     (https://arxiv.org/abs/1708.04552). Arguments for use with Cutout are
     `rect_masks`, `rect_freq`, and `rect_time`.
+
     Args:
         freq_masks (int): how many frequency segments should be cut.
             Defaults to 0.
@@ -597,6 +601,7 @@ class MaskedPatchAugmentation(NeuralModule):
 class CropOrPadSpectrogramAugmentation(NeuralModule):
     """
     Pad or Crop the incoming Spectrogram to a certain shape.
+
     Args:
         audio_length (int): the final number of timesteps that is required.
             The signal will be either padded or cropped temporally to this

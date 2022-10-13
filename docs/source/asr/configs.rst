@@ -10,7 +10,7 @@ for audio files, parameters for any augmentation being performed, as well as the
 this page cover each of these in more detail.
 
 Example configuration files for all of the NeMo ASR scripts can be found in the
-`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples/asr/conf>`_.
+`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
 
 
 Dataset Configuration
@@ -371,7 +371,7 @@ not be changed.
 
 To use Citrinet instead of QuartzNet, refer to the ``citrinet_512.yaml`` configuration found inside the ``examples/asr/conf/citrinet``
 directory. Citrinet is primarily comprised of the same :class:`~nemo.collections.asr.parts.submodules.jasper.JasperBlock` as ``Jasper`` or
-``QuartzNet`.
+``QuartzNet``.
 
 While the configs for Citrinet and QuartzNet are similar, we note the additional flags used for Citrinet below. Refer to the
 ``JasperBlock`` documentation for the meaning of these arguments.
@@ -500,7 +500,7 @@ These datasets are similar to other ASR models like `QuartzNet <./models.html#Qu
 specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
 
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the 
-config files and also :doc:`nemo.collections.asr.modules.ConformerEncoder<./api.html#nemo.collections.asr.modules.ConformerEncoder>`.
+config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
 Squeezeformer-CTC
 ~~~~~~~~~~~~~~~~~
@@ -510,7 +510,7 @@ The config files for Squeezeformer-CTC model contain character-based encoding an
 respectively. Components of the configs of `Squeezeformer-CTC <./models.html#Squeezeformer-CTC>`__ are similar to Conformer config - `QuartzNet <./configs.html#Conformer-CTC>`__.
 
 The encoder section includes the details about the Squeezeformer-CTC encoder architecture. You may find more information in the
-config files and also :doc:`nemo.collections.asr.modules.SqueezeformerEncoder<./api.html#nemo.collections.asr.modules.SqueezeformerEncoder>`.
+config files and also :ref:`nemo.collections.asr.modules.SqueezeformerEncoder <squeezeformer-encoder-api>`.
 
 
 ContextNet
@@ -529,7 +529,7 @@ LSTM-Transducer and LSTM-CTC
 The config files for LSTM-Transducer and LSTM-CTC models can be found at ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_transducer_bpe.yaml`` and ``<NeMo_git_root>/examples/asr/conf/lstm/lstm_ctc_bpe.yaml`` respectively.
 Most of the of the configs of are similar to other ctc or transducer models. The main difference is the encoder part.
 The encoder section includes the details about the RNN-based encoder architecture. You may find more information in the
-config files and also :doc:`nemo.collections.asr.modules.RNNEncoder<./api.html#nemo.collections.asr.modules.RNNEncoder>`.
+config files and also :ref:`nemo.collections.asr.modules.RNNEncoder <rnn-encoder-api>`.
 
 
 Transducer Configurations
@@ -634,7 +634,7 @@ The Joint model config has several essential components which we discuss below :
 
 
 Effect of Batch Splitting / Fused Batch step
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The following information below explain why memory is an issue when training Transducer models and how NeMo tackles the issue with its Fused Batch step. The material can be read for a thorough understanding, otherwise, it can be skipped. You can also follow these steps in the "ASR_with_Transducers" tutorial.
 
@@ -770,7 +770,7 @@ Refer to the above paper for results and recommendations of ``fastemit_lambda``.
 Fine-tuning Configurations
 --------------------------
 
-All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tuturial : `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>_
+All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
 
 Pre-trained weights can be provided in multiple ways -
 

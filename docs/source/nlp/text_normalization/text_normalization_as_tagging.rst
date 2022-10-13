@@ -7,14 +7,14 @@ Inverse text normalization(ITN) converts text from spoken domain (e.g., an ASR o
 Input: ``on may third we paid one hundred and twenty three dollars``
 Output: ``on may 3 we paid $123``
 
-`ThutmoseTaggerModel <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/text_normalization_as_tagging/thutmose_tagger.py/>`__ is a single-pass tagger-based model mapping spoken-domain words to written-domain fragments.
+`ThutmoseTaggerModel <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/nlp/models/text_normalization_as_tagging/thutmose_tagger.py/>`__ is a single-pass tagger-based model mapping spoken-domain words to written-domain fragments.
 Additionally this model predicts "semiotic" classes of the spoken words (e.g., words belonging to the spans that are about times, dates, or monetary amounts)
 
 The typical workflow is to first prepare the dataset, which requires to find granular alignments between spoken-domain words and written-domain fragments.
-An example bash-script for data preparation pipeline is provided: `prepare_dataset_en.sh <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/prepare_dataset_en.sh>`__.
-After getting the dataset you can train the model. An example training script is provided: `normalization_as_tagging_train.py <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_train.py>`__.
-The script for inference from a raw text file is provided here: `normalization_as_tagging_infer.py <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_infer.py>`__. 
-An example bash-script that runs inference and evaluation is provided here: `run_infer.sh <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/run_infer.sh>`__. 
+An example bash-script for data preparation pipeline is provided: `prepare_dataset_en.sh <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/prepare_dataset_en.sh>`__.
+After getting the dataset you can train the model. An example training script is provided: `normalization_as_tagging_train.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_train.py>`__.
+The script for inference from a raw text file is provided here: `normalization_as_tagging_infer.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_infer.py>`__.
+An example bash-script that runs inference and evaluation is provided here: `run_infer.sh <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/run_infer.sh>`__.
 
 
 Quick Start Guide
@@ -66,8 +66,8 @@ Data preprocessing
 ------------------
 
 Our preprocessing is rather complicated, because we need to find granular alignments for semiotic spans that are aligned at phrase-level in Google Text Normalization Dataset.
-Right now we only provide data preparation scripts for English and Russian languages, see `prepare_dataset_en.sh <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/prepare_dataset_en.sh>`__ and `prepare_dataset_ru.sh <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/prepare_dataset_ru.sh>`__.
-Data preparation includes running the GIZA++ automatic alignment tool, see `install_requirements.sh <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/install_requirements.sh>`__ for installation details.
+Right now we only provide data preparation scripts for English and Russian languages, see `prepare_dataset_en.sh <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/prepare_dataset_en.sh>`__ and `prepare_dataset_ru.sh <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/prepare_dataset_ru.sh>`__.
+Data preparation includes running the GIZA++ automatic alignment tool, see `install_requirements.sh <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/install_requirements.sh>`__ for installation details.
 The purpose of the preprocessing scripts is to build the training dataset for the tagging model.
 The final dataset has a simple 3-column tsv format: 1) input sentence, 2) tags for input words, 3) coordinates of "semiotic" spans if any
 
@@ -79,8 +79,8 @@ The final dataset has a simple 3-column tsv format: 1) input sentence, 2) tags f
 Model Training
 --------------
 
-An example training script is provided: `normalization_as_tagging_train.py <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_train.py>`__.
-The config file used by default is `thutmose_tagger_itn_config.yaml <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/text_normalization_as_tagging/conf/thutmose_tagger_itn_config.yaml>`__.
+An example training script is provided: `normalization_as_tagging_train.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/normalization_as_tagging_train.py>`__.
+The config file used by default is `thutmose_tagger_itn_config.yaml <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/text_normalization_as_tagging/conf/thutmose_tagger_itn_config.yaml>`__.
 You can change any of the parameters directly from the config file or update them with the command-line arguments.
 
 Most arguments in the example config file are quite self-explanatory (e.g., *model.optim.lr* refers to the learning rate for training the decoder). We have set most of the hyper-parameters to

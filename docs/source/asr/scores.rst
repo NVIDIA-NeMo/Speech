@@ -223,6 +223,3 @@ ZH
     :header-rows: 1
     :align: left
     :file: data/scores/zh/conformer_zh.csv
-    
---------------------
-

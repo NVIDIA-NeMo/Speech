@@ -137,7 +137,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                 max_symbols: int, describing the maximum number of target tokens to decode per
                     timestep during greedy decoding. Setting to larger values allows longer sentences
                     to be decoded, at the cost of increased execution time.
+
                 preserve_frame_confidence: Same as above, overrides above value.
+
                 confidence_method: Same as above, overrides confidence_cfg.method.
 
             "beam":
@@ -165,7 +167,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                         By default, a float of 2.0 is used so that a target sequence can be at most twice
                         as long as the acoustic model output length T.
 
-                                maes_num_steps: Number of adaptive steps to take. From the paper, 2 steps is generally sufficient,
+                maes_num_steps: Number of adaptive steps to take. From the paper, 2 steps is generally sufficient,
                     and can be reduced to 1 to improve decoding speed while sacrificing some accuracy. int > 0.
 
                 maes_prefix_alpha: Maximum prefix length in prefix search. Must be an integer, and is advised to keep this as 1

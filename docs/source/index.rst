@@ -49,11 +49,9 @@ NVIDIA NeMo User Guide
    
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Text To Speech
+   :maxdepth: 1
+   :caption: Text To Speech (TTS)
    :name: Text To Speech
-   :includehidden:
-   :titlesonly:
 
    tts/intro
 

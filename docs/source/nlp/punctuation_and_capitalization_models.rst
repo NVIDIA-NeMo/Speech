@@ -7,7 +7,7 @@ Automatic Speech Recognition (ASR) systems typically generate text with no punct
 There are two issues with non-punctuated ASR output:
 
 - it could be difficult to read and understand
-- models for some downstream tasks, such as named entity recognition, machine translation, or text-to-speech, are
+- models for some downstream tasks, such as named entity recognition, machine translation, or text-to-speech synthesis, are
   usually trained on punctuated datasets and using raw ASR output as the input to these models could deteriorate their
   performance
 

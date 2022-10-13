@@ -47,13 +47,19 @@ Audio-based TN can be used to normalize ASR training data.
 Installation
 ------------
 
-`nemo_text_processing` is automatically installed with `NeMo <https://github.com/NVIDIA/NeMo>`_.
+`nemo_text_processing` is automatically installed with `NeMo <https://github.com/NVIDIA/NeMo>`_. But it relies on `pynini` python library, which you need to install following below steps,
+
+.. code-block:: shell-session
+
+    wget https://raw.githubusercontent.com/NVIDIA/NeMo/stable/nemo_text_processing/install_pynini.sh
+    bash install_pynini.sh
+
+
 
 Quick Start Guide
 -----------------
 
-
-Text Normalization 
+Text Normalization
 ^^^^^^^^^^^^^^^^^^
 
 The standard text normalization based on WFST  :cite:`textprocessing-norm-zhang2021nemo` is not context-aware. It is fast and can be run like this:

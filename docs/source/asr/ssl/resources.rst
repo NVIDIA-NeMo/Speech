@@ -1,9 +1,9 @@
 Resources and Documentation
 ---------------------------
 
-Refer to `SSL-for-ASR notebook <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Self_Supervised_Pre_Training.ipynb>`_ 
+Refer to `SSL-for-ASR notebook <https://github.com/NVIDIA/NeMo/tree/stable/tutorials/asr/Self_Supervised_Pre_Training.ipynb>`_
 for a hands-on tutorial. If you are a beginner to NeMo, consider trying out the 
-`ASR with NeMo <https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/ASR_with_NeMo.ipynb>`_ 
+`ASR with NeMo <https://github.com/NVIDIA/NeMo/tree/stable/tutorials/asr/ASR_with_NeMo.ipynb>`_
 tutorial. This and most other tutorials can be run on Google Colab by specifying the link to the 
 notebooks' GitHub pages on Colab.
 

@@ -5,7 +5,9 @@ This section gives a brief overview of the supported speaker diarization models 
 
 Currently speaker diarization pipeline in NeMo involves `MarbleNet <../speech_classification/models.html#marblenet-vad>`__ model for Voice Activity Detection (VAD) and `TitaNet <../speaker_recognition/models.html#titanet>`__ models for speaker embedding extraction and `Multi-scale Diarizerion Decoder` for neural diarizer,  which will be explained in this page.
 
-Multi-scale Diarization Decoder
+.. _Multi_Scale_Diarization_Decoder:
+
+Multi-Scale Diarization Decoder
 -------------------------------
 
 .. image:: images/sd_pipeline.png

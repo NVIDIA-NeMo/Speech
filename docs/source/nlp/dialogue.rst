@@ -116,7 +116,7 @@ Unfortunately other datasets are currently not available publically
 **Training/Testing a model**
 
 
-Please try the example Dialogue model in a Jupyter notebook (can run on `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/nlp/Dialogue.ipynb>`__).
+Please try the example Dialogue model in a Jupyter notebook (can run on `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/tree/stable/tutorials/nlp/Dialogue.ipynb>`__).
 
 
 Connect to an instance with a GPU (**Runtime** -> **Change runtime type** -> select **GPU** for the hardware accelerator).
@@ -126,7 +126,7 @@ An example script on how to train the model can be found here: `NeMo/examples/nl
 The following is an example of the command for training the model:
 
 
-Code for training a model with three public datasets (from above) are available in the Jupyter/Colab notebook `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/nlp/Dialogue.ipynb>`__)
+Code for training a model with three public datasets (from above) are available in the Jupyter/Colab notebook `Google's Colab <https://colab.research.google.com/github/NVIDIA/NeMo/tree/stable/tutorials/nlp/Dialogue.ipynb>`__)
 
 
 .. code::

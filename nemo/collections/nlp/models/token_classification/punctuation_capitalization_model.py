@@ -1127,7 +1127,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 predictions computation are marked with asterisk: ``[['[CLS]'*, 'h', 'e', 'l'*, '[SEP]'*],
                 ['[CLS]'*, 'e'*, 'l', 'l'*, '[SEP]'*], ['[CLS]'*, 'l'*, 'l', 'o', '[SEP]'*]]``.
             return_labels (:obj:`bool`, `optional`, defaults to :obj:`False`): whether to return labels in NeMo format
-                (see :ref:`nlp/punctuation_and_capitalization/NeMo Data Format`) instead of queries with restored
+                (see :ref:`nemo-data-format-label`) instead of queries with restored
                 punctuation and capitalization.
             dataloader_kwargs (:obj:`Dict[str, Any]`, `optional`): an optional dictionary with parameters of PyTorch
                 data loader. May include keys: ``'num_workers'``, ``'pin_memory'``, ``'worker_init_fn'``,

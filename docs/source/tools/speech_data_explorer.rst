@@ -21,7 +21,7 @@ Speech Data Explorer (SDE) is a `Dash <https://plotly.com/dash/>`__-based web ap
 SDE Demo Instance
 -----------------
 
-To demonstrate both the `CTC-Segmentation <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/tools/ctc_segmentation.html>`_ and Speech Data Explorer tools, we re-segmenting the development set as of `the LibriSpeech corpus <http://www.danielpovey.com/files/2015_icassp_librispeech.pdf>`_.
+To demonstrate both the `CTC-Segmentation <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/tools/ctc_segmentation.html>`_ and Speech Data Explorer tools, we re-segmenting the development set as of `the LibriSpeech corpus <http://www.danielpovey.com/files/2015_icassp_librispeech.pdf>`_.
 We concatenated all audio files from the dev-clean split into a single file and set up the CTC-Segmentation tool to cut the long audio file into original utterances.
 We used the CTC-based `QuartzNet15x5Base-En ASR model <https://ngc.nvidia.com/catalog/models/nvidia:nemospeechmodels>`_.
 The segmented corpus has 3.82% WER and contains 300 out of the initial 323 minutes of audio.
@@ -30,7 +30,7 @@ A `running instance of the SDE <http://18.223.252.228:8050/>`_ demonstrates the 
 
 Getting Started
 ---------------
-SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/main/tools/speech_data_explorer>`__.
+SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/stable/tools/speech_data_explorer>`__.
 
 Please install the SDE requirements:
 

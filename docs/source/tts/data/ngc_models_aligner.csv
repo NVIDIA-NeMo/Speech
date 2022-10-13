@@ -1,0 +1,2 @@
+Locale,Dataset,Sampling Rate,#Speakers,Model Name,Model Class,Model Card
+en-US,LJSpeech,22050Hz,Single,RAD-TTS Aligner,nemo.collections.tts.models.aligner.AlignerModel,https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_radtts_aligner

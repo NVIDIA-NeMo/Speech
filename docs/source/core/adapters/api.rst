@@ -55,6 +55,3 @@ Adapter Strategies
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
-
------
-

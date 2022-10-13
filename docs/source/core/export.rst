@@ -23,6 +23,7 @@ Export interface is provided by the ``Exportable`` mix-in class. If a model exte
 How to Use Model Export
 -----------------------
 The following arguments are for ``Exportable.export()``. In most cases, you should only supply the name of the output file and use all defaults:
+
 .. code-block:: Python
 
     def export(
@@ -75,9 +76,12 @@ You should not normally need to override ``Exportable`` default methods. However
         Returns:
             A tuple of input examples. 
 	 """
+
 This function should return a tuple of (normally) Tensors - one per each of model inputs (args to ``forward()``). The last element may be a ``Dict`` to specify non-positional arguments by name, as per Torch ``export()`` convention. For more information, refer to the `Using dictionaries to handle Named Arguments as model inputs
 <https://pytorch.org/docs/stable/onnx.html#using-dictionaries-to-handle-named-arguments-as-model-inputs>`_.
-  Note: ``Dict`` currently does not work with Torchscript ``trace()``.
+
+.. Note: ``Dict`` currently does not work with Torchscript ``trace()``.
+
 .. code-block:: Python
 
     @property
@@ -97,7 +101,7 @@ Those are needed for inferring in/out names and dynamic axes. If your model deri
     def output_module(self):
         return self.fastpitch
 
-Your model should also have an export-friendly ``forward()`` method - that can mean different things for ONNX ant TorchScript. For ONNX, you can't have forced named parameters without default, like ``forward(self, *, text)``. For TorchScript, you should avoid ``None`` and use ``Optional`` instead. The criterias are highly volatile and may change with every PyTorch version, so it's a trial-and-error process. There is also the general issue that in many cases, ``forward()`` for inference can be simplified and even use less inputs/outputs. To address this, ``Exportable`` looks for ``forward_for_export()`` method in your model and uses that instead of ``forward()`` to export:
+Your model should also have an export-friendly ``forward()`` method - that can mean different things for ONNX ant TorchScript. For ONNX, you can't have forced named parameters without default, like ``forward(self, *, text)``. For TorchScript, you should avoid ``None`` and use ``Optional`` instead. The criteria are highly volatile and may change with every PyTorch version, so it's a trial-and-error process. There is also the general issue that in many cases, ``forward()`` for inference can be simplified and even use less inputs/outputs. To address this, ``Exportable`` looks for ``forward_for_export()`` method in your model and uses that instead of ``forward()`` to export:
 
 .. code-block:: Python
 
@@ -166,10 +170,10 @@ Another common requirement for models that are being exported is to run certain 
         Override this method to prepare module for export. This is in-place operation.
         Base version does common necessary module replacements (Apex etc)
         """
-	# do graph modifications specific for this model
+    # do graph modifications specific for this model
         replace_1D_2D = kwargs.get('replace_1D_2D', False)
         replace_for_export(self, replace_1D_2D)
-	# call base method for common set of modifications 
+    # call base method for common set of modifications
 	Exportable._prepare_for_export(self, **kwargs)
 
 

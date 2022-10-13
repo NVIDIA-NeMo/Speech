@@ -620,9 +620,9 @@ For example, to ensemble three models /path/to/model1.nemo, /path/to/model2.nemo
 
 (c) Noisy Channel Re-ranking - Unlike ensembling and shallow fusion, noisy channel re-ranking only re-ranks the final candidates produced by beam search. It does so based on three scores 
 
-1) Forward (source to target) translation model(s) log-proabilities 
-2) Reverse (target to source) translation model(s) log-proabilities
-3) Language Model (target) log-proabilities
+1) Forward (source to target) translation model(s) log-probabilities
+2) Reverse (target to source) translation model(s) log-probabilities
+3) Language Model (target) log-probabilities
 
 .. math::
   \argmax_{i} \mathcal{S}(y_i|x) = \log P(y_i|x;\theta_{s \rightarrow t}^{ens}) + \lambda_{ncr} \big( \log P(x|y_i;\theta_{t \rightarrow s}) + \log P(y_i;\theta_{t}) \big)
@@ -630,7 +630,8 @@ For example, to ensemble three models /path/to/model1.nemo, /path/to/model2.nemo
 
 To perform noisy-channel re-ranking, first generate a `.scores` file that contains log-proabilities from the forward translation model for each hypothesis on the beam.
 
-.. code::
+.. code::  bash
+
   python examples/nlp/machine_translation/nmt_transformer_infer.py \
     --model /path/to/model1.nemo,/path/to/model2.nemo,/path/to/model3.nemo \
     --lm_model /path/to/lm.nemo \
@@ -646,7 +647,7 @@ This will generate a scores file test.en-es.translations.scores, which is provid
 
 This script also requires a reverse (target to source) translation model and a target language model.
 
-.. code::
+.. code:: bash
 
     python noisy_channel_reranking.py \
         --reverse_model=/path/to/reverse_model1.nemo,/path/to/reverse_model2.nemo \
@@ -776,7 +777,7 @@ use ``encoder.model_name=megatron_bert_cased`` for cased models with custom voca
 References
 ----------
 
-.. bibliography:: nlp_all.bib
+.. bibliography:: ../nlp_all.bib
     :style: plain
     :labelprefix: nlp-machine_translation
     :keyprefix: nlp-machine_translation-

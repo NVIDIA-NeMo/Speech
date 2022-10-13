@@ -10,6 +10,7 @@ You can use the available checkpoints for immediate inference, or fine-tune them
 The Checkpoints page also contains benchmark results for the available speaker recognition models.
 
 .. _TitaNet_model:
+
 TitaNet
 -----------
 

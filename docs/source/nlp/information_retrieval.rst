@@ -7,4 +7,4 @@ We recommend you try the Information Retrieval model in a Jupyter notebook (can 
 
 Connect to an instance with a GPU (**Runtime** -> **Change runtime type** -> select **GPU** for hardware the accelerator),
 
-An example script on how to train the model can be found here: `NeMo/examples/nlp/information_retrieval <https://github.com/NVIDIA/NeMo/tree/main/examples/nlp/information_retrieval>`__.
+An example script on how to train the model can be found here: `NeMo/examples/nlp/information_retrieval <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/information_retrieval>`__.

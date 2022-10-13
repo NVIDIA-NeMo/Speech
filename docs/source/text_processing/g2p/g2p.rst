@@ -6,7 +6,7 @@ Grapheme-to-Phoneme Models
 Grapheme-to-phoneme conversion (G2P) is the task of transducing graphemes (i.e., orthographic symbols) to phonemes (i.e., units of the sound system of a language).
 For example, for `International_Phonetic_Alphabet (IPA): <https://en.wikipedia.org/wiki/International_Phonetic_Alphabet>`__ ``"Swifts, flushed from chimneys …" → "ˈswɪfts, ˈfɫəʃt ˈfɹəm ˈtʃɪmniz …"``.
 
-Modern text-to-speech (TTS) models can learn pronunciations from raw text input and its corresponding audio data,
+Modern text-to-speech (TTS) synthesis models can learn pronunciations from raw text input and its corresponding audio data,
 but by relying on grapheme input during training, such models fail to provide a reliable way of correcting wrong pronunciations. As a result, many TTS systems use phonetic input
 during training to directly access and correct pronunciations at inference time. G2P systems allow users to enforce the desired pronunciation by providing a phonetic transcript of the input.
 
@@ -132,7 +132,7 @@ Using this unknown token forces a G2P model to produce the same masking token as
 Purpose-built BERT-based classification model for heteronym disambiguation
 --------------------------------------------------------------------------
 
-HeteronymClassificationModel is a BERT-based :cite:`g2p--ddevlin2018bert` model represents a token classification model and can handle multiple heteronyms at once. The model takes a sentence as an input, and then for every word, it selects a heteronym option out of the available forms.
+HeteronymClassificationModel is a BERT-based :cite:`g2p--devlin2018bert` model represents a token classification model and can handle multiple heteronyms at once. The model takes a sentence as an input, and then for every word, it selects a heteronym option out of the available forms.
 We mask irrelevant forms to disregard the model’s predictions for non-ambiguous words. E.g., given  the input “The Poems are simple to read and easy to comprehend.” the model scores possible {READ_PRESENT and READ_PAST} options for the word “read”.
 Possible heteronym forms are extracted from the WikipediaHomographData :cite:`g2p--gorman2018improving`.
 
@@ -197,13 +197,13 @@ Note, if the input manifest contains target "word_id", evaluation will be also p
 Requirements
 ------------
 
-G2P requires NeMo NLP and ASR collections installed. See `Installation instructions <https://github.com/NVIDIA/NeMo/blob/main/docs/source/starthere/intro.rst#installation>`__ for more details.
+G2P requires NeMo NLP and ASR collections installed. See `Installation instructions <https://github.com/NVIDIA/NeMo/tree/stable/docs/source/starthere/intro.rst#installation>`__ for more details.
 
 
 References
 ----------
 
-.. bibliography:: ../text_processing_all.bib
+.. bibliography:: ../text_processing_all.bib ../../tts/tts_all.bib ../../nlp/nlp_all.bib
     :style: plain
     :labelprefix: g2p-
     :keyprefix: g2p--

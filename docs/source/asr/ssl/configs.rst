@@ -109,7 +109,7 @@ Unlike the encoders, the decoders and corresponding losses will be specific to t
 you can discard them when transferring the model to fine-tuning.
 
 The most basic method of pre-training we can use is to have the model solve a contrastive task
-(this is the approach used in wav2vec 2.0 :cite:`wav2vec2`)
+(this is the approach used in wav2vec 2.0 :cite:`ssl-models-wav2vec2`)
 We can define the corresponding decoder and loss configs in the following way for an encoder with stride 4x.
 
 .. code-block:: yaml
@@ -168,7 +168,7 @@ with ``stride_transpose`` set to True.
 
 
 It can be beneficial to combine contrastive loss with other losses, such as a masked language modeling (mlm) loss
-(similar approach to W2V-Bert :cite:`w2v_bert`).
+(similar approach to W2V-Bert :cite:`ssl-models-w2v_bert`).
 In order to do this, instead of specifying a single ``decoder`` and ``loss`` in the config, we can specify a ``loss_list``,
 which can contain any amount of corresponding decoders and losses. For each decoder-loss pair,
 we can specify a separate named sub-config, which contains the following fields:
@@ -339,7 +339,7 @@ An example of contrastive+rnnt can look like this:
       start_step: 1000
 
 
-We can also use multiple losses, which use features from different intermediate layers of the encoder as input :cite:`ssl_inter`.
+We can also use multiple losses, which use features from different intermediate layers of the encoder as input :cite:`ssl-models-ssl_inter`.
 In the following config example, we use contrastive loss + three different mlm losses, which use encoder outputs
 respectively from 6th, 12th and final layer.
 

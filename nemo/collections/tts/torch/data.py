@@ -951,6 +951,7 @@ class VocoderDataset(Dataset):
         if not self.load_precomputed_mel:
             features = AudioSegment.segment_from_file(
                 sample["audio_filepath"],
+                target_sr=self.sample_rate,
                 n_segments=self.n_segments if self.n_segments is not None else -1,
                 trim=self.trim,
             )

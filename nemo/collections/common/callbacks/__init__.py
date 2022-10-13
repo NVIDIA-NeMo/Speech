@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from nemo.collections.common.callbacks.callbacks import LogEpochTimeCallback
+from nemo.collections.common.callbacks.ema import EMA

@@ -74,6 +74,7 @@ def main(cfg) -> None:
         )
         with open_dict(ia3_tuning_cfg):
             ia3_tuning_cfg.language_model_path = cfg.language_model_path
+            ia3_tuning_cfg.pretrained_language_model_path = cfg.language_model_path
             ia3_tuning_cfg.micro_batch_size = cfg.data.micro_batch_size
             ia3_tuning_cfg.global_batch_size = cfg.data.global_batch_size
 

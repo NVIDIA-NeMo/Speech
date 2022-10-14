@@ -74,6 +74,7 @@ def main(cfg) -> None:
         )
         with open_dict(adapter_tuning_cfg):
             adapter_tuning_cfg.language_model_path = cfg.language_model_path
+            adapter_tuning_cfg.pretrained_language_model_path = cfg.language_model_path
             adapter_tuning_cfg.micro_batch_size = cfg.data.micro_batch_size
             adapter_tuning_cfg.global_batch_size = cfg.data.global_batch_size
 

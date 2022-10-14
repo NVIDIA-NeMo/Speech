@@ -86,7 +86,7 @@ class ClassifyFst(GraphFst):
             )
             token = pynutil.insert("tokens { ") + classify + pynutil.insert(" } ")
 
-            tagger = pynini.cdrewrite(token.optimize(), "", "", NEMO_SIGMA).optimize()
+            tagger = token.optimize().star
 
             preprocessor = PreProcessor(remove_interjections=True, fullwidth_to_halfwidth=True,)
             self.fst = preprocessor.fst @ tagger

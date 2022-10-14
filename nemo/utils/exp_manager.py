@@ -281,7 +281,17 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     )
 
     if cfg.resume_if_exists:
-        check_resume(trainer, log_dir, cfg.resume_past_end, cfg.resume_ignore_no_checkpoint)
+        # Check for existing checkpoints in `dirpath` if it's specified, use <log_dir>/checkpoints otherwise
+        if cfg.checkpoint_callback_params.dirpath:
+            check_resume(
+                trainer,
+                log_dir,
+                cfg.resume_past_end,
+                cfg.resume_ignore_no_checkpoint,
+                cfg.checkpoint_callback_params.dirpath,
+            )
+        else:
+            check_resume(trainer, log_dir, cfg.resume_past_end, cfg.resume_ignore_no_checkpoint)
 
     checkpoint_name = name
     # If name returned from get_log_dir is "", use cfg.name for checkpointing
@@ -426,13 +436,14 @@ def check_resume(
     log_dir: str,
     resume_past_end: bool = False,
     resume_ignore_no_checkpoint: bool = False,
+    dirpath: str = None,
 ):
     """Checks that resume=True was used correctly with the arguments pass to exp_manager. Sets
     trainer._checkpoint_connector.resume_from_checkpoint_fit_path as necessary.
 
     Returns:
-        log_dir (Path): the log_dir
-        exp_dir (str): the base exp_dir without name nor version
+        log_dir (Path): The log_dir
+        exp_dir (str): The base exp_dir without name nor version
         name (str): The name of the experiment
         version (str): The version of the experiment
 
@@ -444,7 +455,8 @@ def check_resume(
     if not log_dir:
         raise ValueError(f"Resuming requires the log_dir {log_dir} to be passed to exp_manager")
 
-    checkpoint_dir = Path(Path(log_dir) / "checkpoints")
+    # Use <log_dir>/checkpoints/ unless `dirpath` is set
+    checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
 
     checkpoint = None
     end_checkpoints = list(checkpoint_dir.rglob("*end.ckpt"))

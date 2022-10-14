@@ -345,6 +345,38 @@ class TestExpManager:
         prev_log = Path(tmp_path / "test_resume" / "default" / "version_0" / "run_0" / "lightning_logs.txt")
         assert prev_log.exists()
 
+        # Error becasue `dirpath` specified and has no checkpoint
+        test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        dirpath_checkpoint_dir = Path(tmp_path / "test_resume" / "dirpath_test" / "ckpts")
+        dirpath_checkpoint_dir.mkdir(parents=True)
+        with pytest.raises(NotFoundError):
+            exp_manager(
+                test_trainer,
+                {
+                    "resume_if_exists": True,
+                    "checkpoint_callback_params": {"dirpath": str(dirpath_checkpoint_dir)},
+                    "explicit_log_dir": str(log_dir),
+                },
+            )
+
+        # Check that model loads from `dirpath` and not <log_dir>/checkpoints
+        dirpath_log_dir = Path(tmp_path / "test_resume" / "dirpath_test" / "logs")
+        dirpath_log_dir.mkdir(parents=True)
+        dirpath_checkpoint = Path(dirpath_checkpoint_dir / "mymodel--last.ckpt")
+        dirpath_checkpoint.touch()
+        exp_manager(
+            test_trainer,
+            {
+                "resume_if_exists": True,
+                "checkpoint_callback_params": {"dirpath": str(dirpath_checkpoint_dir)},
+                "explicit_log_dir": str(dirpath_log_dir),
+            },
+        )
+        assert (
+            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve()
+            == dirpath_checkpoint.resolve()
+        )
+
     @pytest.mark.unit
     def test_nemo_checkpoint_save_best_model_1(self, tmp_path):
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=4)

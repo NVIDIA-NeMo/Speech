@@ -398,23 +398,13 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel):
         Function to log multilingual BLEU scores with the right source-target language string instead of just the dataloader idx.
         """
         # Check if one-many or many-one and log with lang ids instead of dataloader_idx
-        reverse_lang_direction = self._cfg.train_ds.reverse_lang_direction
         if isinstance(self.src_language, ListConfig):
-            translation_lang_string = (
-                f'{self.src_language[dataloader_idx]}-{self.tgt_language}'
-                if not reverse_lang_direction
-                else f'{self.tgt_language}-{self.src_language[dataloader_idx]}'
-            )
-            self.log(f'{mode}_sacreBLEU_{translation_lang_string}', bleu_score, sync_dist=True)
-            self.log(f'{mode}_loss_{translation_lang_string}', loss, sync_dist=True)
+            translation_lang_string = f'{self.src_language[dataloader_idx]}-{self.tgt_language}'
         else:
-            translation_lang_string = (
-                f'{self.src_language}-{self.tgt_language[dataloader_idx]}'
-                if not reverse_lang_direction
-                else f'{self.tgt_language[dataloader_idx]}-{self.src_language}'
-            )
-            self.log(f'{mode}_sacreBLEU_{translation_lang_string}', bleu_score, sync_dist=True)
-            self.log(f'{mode}_loss_{translation_lang_string}', loss, sync_dist=True)
+            translation_lang_string = f'{self.src_language}-{self.tgt_language[dataloader_idx]}'
+
+        self.log(f'{mode}_sacreBLEU_{translation_lang_string}', bleu_score, sync_dist=True)
+        self.log(f'{mode}_loss_{translation_lang_string}', loss, sync_dist=True)
 
     def setup_validation_data(self, val_data_config: Optional[DictConfig]):
         if hasattr(self, '_validation_ds'):

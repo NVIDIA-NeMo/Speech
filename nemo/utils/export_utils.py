@@ -163,6 +163,20 @@ def to_onnxrt_input(ort_input_names, input_names, input_dict, input_list):
     return odict
 
 
+def verify_torchscript(model, output, input_examples, input_names, check_tolerance=0.01):
+    ts_model = torch.jit.load(output)
+
+    all_good = True
+    for input_example in input_examples:
+        input_list, input_dict = parse_input_example(input_example)
+        output_example = model.forward(*input_list, **input_dict)
+        # ts_input = to_onnxrt_input(ort_input_names, input_names, input_dict, input_list)
+        all_good = all_good and run_ts_and_compare(ts_model, input_list, input_dict, output_example, check_tolerance)
+    status = "SUCCESS" if all_good else "FAIL"
+    logging.info(f"Torchscript generated at {output} verified with torchscript forward : " + status)
+    return all_good
+
+
 def verify_runtime(model, output, input_examples, input_names, check_tolerance=0.01):
     onnx_model = onnx.load(output)
     ort_input_names = [node.name for node in onnx_model.graph.input]
@@ -186,6 +200,23 @@ def verify_runtime(model, output, input_examples, input_names, check_tolerance=0
         all_good = all_good and run_ort_and_compare(sess, ort_input, output_example, check_tolerance)
     status = "SUCCESS" if all_good else "FAIL"
     logging.info(f"ONNX generated at {output} verified with onnxruntime : " + status)
+    return all_good
+
+
+def run_ts_and_compare(ts_model, ts_input_list, ts_input_dict, output_example, check_tolerance=0.01):
+    # Verify the model can be read, and is valid
+    ts_out = ts_model(*ts_input_list, **ts_input_dict)
+
+    all_good = True
+    for i, out in enumerate(ts_out):
+        expected = output_example[i]
+
+        if torch.is_tensor(expected):
+            tout = out.to('cpu')
+            logging.info(f"Checking output {i}, shape: {expected.shape}:\n{expected}\n{tout}")
+            if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=check_tolerance):
+                all_good = False
+                logging.info(f"onnxruntime results mismatch! PyTorch(expected):\n{expected}\nTorchScript:\n{tout}")
     return all_good
 
 

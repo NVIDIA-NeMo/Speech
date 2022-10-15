@@ -166,13 +166,19 @@ class TestSaveRestore:
         cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_conformer_ctc_small")
         self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
 
-    @pytest.mark.pleasefixme
+    @pytest.mark.with_downloads()
+    @pytest.mark.unit
+    def test_EncDecCTCModelBPE_v3(self):
+        # TODO: Switch to using named configs because here we don't really care about weights
+        cn = EncDecCTCModelBPE.from_pretrained(model_name="stt_en_squeezeformer_ctc_xsmall_ls")
+        self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
+
     @pytest.mark.with_downloads()
     @pytest.mark.unit
     def test_EncDecCTCModelBPE_HF(self):
         # TODO: Switch to using named configs because here we don't really care about weights
         # Specifically use ModelPT instead of EncDecCTCModelBPE in order to test target class resolution.
-        cn = ModelPT.from_pretrained(model_name="nvidia/stt_en_conformer_ctc_medium")
+        cn = ModelPT.from_pretrained(model_name="nvidia/stt_en_citrinet_256_ls")
         self.__test_restore_elsewhere(model=cn, attr_for_eq_check=set(["decoder._feat_in", "decoder._num_classes"]))
 
     @pytest.mark.with_downloads()

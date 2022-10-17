@@ -104,19 +104,19 @@ def get_audio(name, n):
         if len(multiple_ogg_files) == 0:
             return
         elif len(multiple_ogg_files) == 1:
-            os.system("cp " + multiple_ogg_files[0] + " " + audio_path)
+            os.system("cp \"" + multiple_ogg_files[0] + "\" \"" + audio_path + "\"")
         else:
             tmp_file_name = "ffmeg_inputs.txt"
             print("tmp_file_name=", tmp_file_name)
             with open(tmp_file_name, "w", encoding="utf-8") as tmp_file:
                 for path in multiple_ogg_files:
                     tmp_file.write("file '" + path + "'\n")
-            cmd = "ffmpeg -f concat -i " + tmp_file_name + " -c copy " + audio_path
-            print("cmd=", cmd)
+            cmd = "ffmpeg -f concat -i \"" + tmp_file_name + "\" -c copy \"" + audio_path + "\""
+            print(cmd)
             os.system(cmd)
 
     output_audio_path = args.destination_folder + "/audio/" + str(n) + ".ogg"
-    os.system("cp " + audio_path + " " + output_audio_path)
+    os.system("cp \"" + audio_path + "\" " + output_audio_path)
 
 
 def get_text(name, n):
@@ -195,7 +195,6 @@ if __name__ == "__main__":
     n = 0
     for name in os.listdir(args.input_folder):
         n += 1
-
         if not os.path.exists(args.input_folder + "/" + name + "/wiki.txt"):
             print("wiki.txt does not exist in " + name)
             continue

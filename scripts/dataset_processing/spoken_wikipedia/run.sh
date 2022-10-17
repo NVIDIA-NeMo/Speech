@@ -62,6 +62,13 @@ tar -xvf en-with-audio.tar
 
 ## Some rare folders are incomplete, these will be skipped during preprocessing.
 
+## Rename some folders with special symbols because they cause problems to ffmpeg when concatening multiple .ogg files
+mv "english/The_Hitchhiker%27s_Guide_to_the_Galaxy" "english/The_Hitchhikers_guide_to_the_Galaxy"
+mv "english/SummerSlam_(2003)" "english/SummerSlam_2003"
+mv "english/Over_the_Edge_(1999)" "english/Over_the_Edge_1999"
+mv "english/Lost_(TV_series)" "english/Lost_TV_series"
+mv "english/S._A._Andr%c3%a9e%27s_Arctic_Balloon_Expedition_of_1897" "english/S_A_Andres_Arctic_Balloon_Expedition_of_1897"
+
 ## path to NeMo repository, e.g. /home/user/NeMo
 NEMO_PATH=
 

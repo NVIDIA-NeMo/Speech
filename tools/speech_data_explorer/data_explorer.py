@@ -602,12 +602,6 @@ else:
         comparison_mode,
         args.names_compared,
     )
-if 'D' in data[0]:
-    data[0].pop('D')
-if 'I' in data[0]:
-    data[0].pop('I')
-if 'D-I' in data[0]:
-    data[0].pop('D-I')
 
 print('Starting server...')
 app = dash.Dash(

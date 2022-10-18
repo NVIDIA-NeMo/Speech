@@ -129,7 +129,7 @@ def main(cfg) -> None:
     if cfg.pred_file_path is not None:
         with open(cfg.pred_file_path, "w", encoding="utf-8") as f:
             for batch in response:
-                for inp, pred in zip(batch['enc_input'], batch['predicted_token_ids']):
+                for inp, pred in zip(batch['input_text'], batch['preds_text']):
                     inp = ' '.join(inp.split('\n'))
                     pred = ' '.join(pred.split('\n'))
                     f.write(f'{inp} {pred}\n')

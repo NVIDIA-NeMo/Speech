@@ -701,7 +701,8 @@ pipeline {
                 pipeline_model_parallel_size=2 \
                 data.global_batch_size=2 \
                 data.micro_batch_size=2 \
-                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl']"
+                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                pred_file_path='examples/adapter_tuning/test_tp1_pp2/preds.txt'"
             sh "rm -rf examples/adapter_tuning/test_tp1_pp2.nemo"
             sh "rm -rf examples/adapter_tuning/test_tp1_pp2"
           }
@@ -742,7 +743,8 @@ pipeline {
                 tensor_model_parallel_size=2 \
                 data.global_batch_size=2 \
                 data.micro_batch_size=2 \
-                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl']"
+                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                pred_file_path='examples/adapter_tuning/test_tp2_pp1/preds.txt'"
             sh "rm -rf examples/adapter_tuning/test_tp2_pp1.nemo"
             sh "rm -rf examples/adapter_tuning/test_tp2_pp1"
           }
@@ -785,7 +787,8 @@ pipeline {
                 pipeline_model_parallel_size=2 \
                 data.global_batch_size=2 \
                 data.micro_batch_size=2 \
-                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl']"
+                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                pred_file_path='examples/ia3_tuning/test_tp1_pp2/preds.txt'"
             sh "rm -rf examples/ia3_tuning/test_tp1_pp2.nemo"
             sh "rm -rf examples/ia3_tuning/test_tp1_pp2"
           }
@@ -826,7 +829,8 @@ pipeline {
                 tensor_model_parallel_size=2 \
                 data.global_batch_size=2 \
                 data.micro_batch_size=2 \
-                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl']"
+                data.test_ds=['/home/TestData/nlp/prompt_learning/rte_CI_test.jsonl'] \
+                pred_file_path='examples/ia3_tuning/test_tp2_pp1/preds.txt'"
             sh "rm -rf examples/ia3_tuning/test_tp2_pp1.nemo"
             sh "rm -rf examples/ia3_tuning/test_tp2_pp1"
           }

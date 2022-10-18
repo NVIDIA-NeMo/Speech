@@ -14,6 +14,7 @@
 
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
@@ -457,7 +458,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
 
-        batch_for_pipeline = self.process_global_batch(batch)
+        batch_for_pipeline = self.process_global_batch(batch, self.cfg.global_batch_size)
         tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
         # run forward passes for an entire global batch
@@ -476,23 +477,46 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # only the last stage of the pipeline returns losses
         if losses_reduced_per_micro_batch:
-            # average loss across micro batches
-            loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
-            loss_tensor = torch.concat(loss_tensors_list)
-            loss_mean = loss_tensor.mean()
+            actual_batch_size = batch['tokens'].shape[0]  # Might be lesser than global_batch_size if drop_last=False
+            expected_batch_size = self.cfg.global_batch_size // parallel_state.get_data_parallel_world_size()
+            if actual_batch_size == expected_batch_size:
+                loss_with_batch_size_list = [
+                    [loss_reduced['avg'].item(), self.cfg.micro_batch_size]
+                    for loss_reduced in losses_reduced_per_micro_batch
+                ]
+            else:
+                loss_with_batch_size_list = []
+                total_samples_remaining = actual_batch_size
+                for loss_reduced in losses_reduced_per_micro_batch:
+                    if total_samples_remaining <= 0:
+                        break
+                    if total_samples_remaining // self.cfg.micro_batch_size >= 1:
+                        loss_with_batch_size_list.append([loss_reduced['avg'].item(), self.cfg.micro_batch_size])
+                    else:
+                        loss_with_batch_size_list.append([loss_reduced['avg'].item(), total_samples_remaining])
+                    total_samples_remaining = total_samples_remaining - self.cfg.micro_batch_size
         else:
             # we're not on the last pipeline stage so no losses
-            loss_mean = []
+            loss_with_batch_size_list = []
 
-        return loss_mean
+        return loss_with_batch_size_list
 
     def validation_epoch_end(self, outputs):
+        if parallel_state.is_pipeline_last_stage():
+            # only the last pipeline parallel stages return loss with their batch size
+            total_num_samples = 0
+            total_loss = 0
+            for loss_with_batch_size in outputs:
+                loss_with_batch_size_array = np.array(loss_with_batch_size).flatten()
+                batch_losses = loss_with_batch_size_array[0::2]
+                batch_sizes = loss_with_batch_size_array[1::2]
+                total_num_samples += sum(batch_sizes)
+                total_loss += np.dot(batch_losses, batch_sizes)
 
-        if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
-            # only the last pipeline parallel stages return loss
-            averaged_loss = torch.stack(outputs).mean()
+            avg_loss = total_loss / total_num_samples
+            averaged_loss = torch.tensor(avg_loss, dtype=torch.float32).cuda()
         else:
-            averaged_loss = torch.tensor(0.0).cuda()
+            averaged_loss = torch.tensor(0.0, dtype=torch.float32).cuda()
 
         # we can only log on one rank if it is rank zero so we broadcast from last rank
         torch.distributed.broadcast(averaged_loss, get_last_rank())
@@ -513,16 +537,43 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()  # sequence level nll
         return loss
 
-    def process_global_batch(self, global_batch):
+    def process_global_batch(self, global_batch, global_batch_size=None):
         """ Prepares the global batch for apex fwd/bwd functions.
             Global batch is a list of micro batches.
         """
+        tokens = global_batch["tokens"]
+        labels = global_batch["labels"]
+        loss_mask = global_batch["loss_mask"]
+        attention_mask = global_batch["attention_mask"]
+        position_ids = global_batch["position_ids"]
+        expected_batch_size = None
+        if global_batch_size is not None:
+            expected_batch_size = global_batch_size // parallel_state.get_data_parallel_world_size()
+        current_batch_size = tokens.shape[0]
+        if expected_batch_size is not None and expected_batch_size > current_batch_size:
+            logging.info(
+                'Got batch size of '
+                + str(current_batch_size)
+                + ' , expected batch size :'
+                + str(expected_batch_size)
+                + '. Appending dummy data.'
+            )
+            pad_length = expected_batch_size - current_batch_size
+            pad_dim = (int(pad_length), tokens.shape[1])
+            attention_mask_shape = list(attention_mask.shape)
+            attention_mask_shape[0] = int(pad_length)
+            tokens = torch.cat((tokens, torch.ones(pad_dim, dtype=tokens.dtype)))
+            labels = torch.cat((labels, torch.ones(pad_dim, dtype=labels.dtype)))
+            attention_mask = torch.cat((attention_mask, torch.zeros(attention_mask_shape, dtype=attention_mask.dtype)))
+            position_ids = torch.cat((position_ids, torch.ones(pad_dim, dtype=position_ids.dtype)))
+            loss_mask = torch.cat((loss_mask, torch.zeros(pad_dim, dtype=loss_mask.dtype)))
+
         return [
-            global_batch["tokens"],
-            global_batch["labels"],
-            global_batch["loss_mask"],
-            global_batch["attention_mask"],
-            global_batch["position_ids"],
+            tokens,
+            labels,
+            loss_mask,
+            attention_mask,
+            position_ids,
         ]
 
     def build_train_valid_test_datasets(self):
@@ -567,11 +618,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         return self._train_ds, self._validation_ds, self._test_ds
 
-    def build_pretraining_data_loader(self, dataset, consumed_samples):
+    def build_pretraining_data_loader(self, dataset, consumed_samples, dataset_type=None, drop_last=True):
         """Buld dataloader given an input dataset."""
-
-        if dataset is None:
-            return None
 
         logging.info(f'Building dataloader with consumed samples: {consumed_samples}')
         # Megatron sampler
@@ -584,7 +632,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
-                    drop_last=self.cfg.get('drop_last', True),
+                    drop_last=drop_last,
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
                 batch_sampler = MegatronPretrainingRandomBatchSampler(
@@ -689,7 +737,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             logging.info(
                 f'Setting up validation dataloader with len(len(self._validation_ds)): {len(self._validation_ds)} and consumed samples: {consumed_samples}'
             )
-            self._validation_dl = self.build_pretraining_data_loader(self._validation_ds, consumed_samples)
+            drop_last = True
+            if not self.cfg.data.get('validation_drop_last', True):
+                logging.info(f'Drop last in validation dataset is set to False')
+                drop_last = False
+            self._validation_dl = self.build_pretraining_data_loader(
+                self._validation_ds, consumed_samples, "validation", drop_last
+            )
 
     def setup_test_data(self, cfg):
         if hasattr(self, '_test_ds'):

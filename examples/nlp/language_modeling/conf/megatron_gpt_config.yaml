@@ -143,6 +143,7 @@ model:
     reset_position_ids: False # Reset position ids after end-of-document token
     reset_attention_mask: False # Reset attention mask after end-of-document token
     eod_mask_loss: False # Mask loss for the end of document tokens
+    validation_drop_last: True # Set to false if the last partial validation samples is to be consumed
 
   # Nsys profiling options
   nsys_profile:

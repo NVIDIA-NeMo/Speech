@@ -61,6 +61,7 @@ class Exportable(ABC):
         dynamic_axes=None,
         check_tolerance=0.01,
         export_modules_as_functions=False,
+        keep_initializers_as_inputs=None,
     ):
         all_out = []
         all_descr = []
@@ -99,6 +100,7 @@ class Exportable(ABC):
         dynamic_axes=None,
         check_tolerance=0.01,
         export_modules_as_functions=False,
+        keep_initializers_as_inputs=None,
     ):
         my_args = locals().copy()
         my_args.pop('self')
@@ -189,6 +191,7 @@ class Exportable(ABC):
                         do_constant_folding=do_constant_folding,
                         dynamic_axes=dynamic_axes,
                         opset_version=onnx_opset_version,
+                        keep_initializers_as_inputs=keep_initializers_as_inputs,
                         export_modules_as_functions=export_modules_as_functions,
                     )
 

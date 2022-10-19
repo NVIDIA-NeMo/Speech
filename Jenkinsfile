@@ -1,8 +1,8 @@
 pipeline {
   agent {
         docker {
-      image 'nvcr.io/nvidia/pytorch:22.09-py3'
-      args '--device=/dev/nvidia0 --gpus all -e TRANSFORMERS_OFFLINE=0 --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
+          image 'nvcr.io/nvidia/pytorch:22.09-py3'
+          args '--device=/dev/nvidia0 --gpus all --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
         }
   }
   options {
@@ -22,12 +22,6 @@ pipeline {
     stage('nvidia-smi'){
       steps{
         sh 'nvidia-smi'
-      }
-    }
-
-    stage('Transformers Offline') {
-      steps{
-        sh 'echo "TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE}'
       }
     }
 

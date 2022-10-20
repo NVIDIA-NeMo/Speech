@@ -900,6 +900,8 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         step: int,
         margin: int,
         dataloader_kwargs: Optional[Dict[str, Any]],
+        audio_queries: Optional[List[str]] = None,
+        target_sr: Optional[int] = None,
     ) -> torch.utils.data.DataLoader:
         """
         Setup function for an infer data loader.
@@ -914,13 +916,21 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 cannot be greater than ``max_seq_length-2``.
             margin (:obj:`int`): number of tokens near the edge of a segment which label probabilities are not used in
                 final prediction computation.
+            audio_queries (:obj:`List[str]`, `optional`): paths to audio files.
+            target_sr (:obj:`int`, `optional`): target sample rate for audios.
         Returns:
             :obj:`torch.utils.data.DataLoader`: inference data loader
         """
         if dataloader_kwargs is None:
             dataloader_kwargs = {}
         dataset = BertPunctuationCapitalizationInferDataset(
-            tokenizer=self.tokenizer, queries=queries, max_seq_length=max_seq_length, step=step, margin=margin
+            tokenizer=self.tokenizer,
+            queries=queries,
+            max_seq_length=max_seq_length,
+            step=step,
+            margin=margin,
+            audio_queries=audio_queries,
+            target_sr=target_sr,
         )
         return torch.utils.data.DataLoader(
             dataset=dataset,

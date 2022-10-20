@@ -941,7 +941,7 @@ class BertPunctuationCapitalizationTarredDataset(IterableDataset):
             -   ``'replicate'``: Optional shard strategy, where each node gets all the set of shards
                 available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
                 The benefit of replication is that it allows each node to sample data points from the entire
-                dataset independently of other nodes, and reduces dependence on value of param ``shuffle_n``.
+                dataset independently of other nodes, and reduces dependence on value of :param:`shuffle_n`.
 
                 .. warning::
                     Replicated strategy allows every node to sample the entire set of available tar files,
@@ -951,7 +951,6 @@ class BertPunctuationCapitalizationTarredDataset(IterableDataset):
                     occasions (when the number of shards is not divisible with ``world_size``), will not sample
                     the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
                     or test datasets.
-
     """
 
     @property

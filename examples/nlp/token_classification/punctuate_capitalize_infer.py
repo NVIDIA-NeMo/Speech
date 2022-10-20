@@ -19,7 +19,7 @@ from typing import Dict, List, Union
 
 import torch.cuda
 
-from nemo.collections.nlp.models import PunctuationCapitalizationModel
+from nemo.collections.nlp.models import PunctuationCapitalizationLexicalAudioModel, PunctuationCapitalizationModel
 
 
 """
@@ -30,6 +30,13 @@ Usage example:
 python punctuate_capitalize.py \
     --input_manifest <PATH/TO/INPUT/MANIFEST> \
     --output_manifest <PATH/TO/OUTPUT/MANIFEST>
+
+Usage example for lexical audio model:
+python punctuate_capitalize.py \
+    --input_manifest <PATH/TO/INPUT/MANIFEST> \
+    --output_manifest <PATH/TO/OUTPUT/MANIFEST> \
+    --use_audio
+    
 
 <PATH/TO/INPUT/MANIFEST> is a path to NeMo ASR manifest. Usually it is an output of
     NeMo/examples/asr/transcribe_speech.py but can be a manifest with 'text' key. Alternatively you can use
@@ -46,14 +53,20 @@ def get_args() -> argparse.Namespace:
     default_model = "punctuation_en_bert"
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="The script is for restoring punctuation and capitalization in text. Long strings are split into "
+        description="The script is for restoring punctuation and capitalization in text or text and audio. To use text and audio use '--use_audio'. Long strings are split into "
         "segments of length `--max_seq_length`. `--max_seq_length` is the length which includes [CLS] and [SEP] "
-        "tokens. Parameter `--step` controls segments overlapping. `--step` is a distance between beginnings of "
+        "tokens. Long audios are split into segments of length 4000*`--max_seq_length`. Parameter `--step` controls segments overlapping. `--step` is a distance between beginnings of "
         "consequent segments. Model outputs for tokens near the borders of tensors are less accurate and can be "
         "discarded before final predictions computation. Parameter `--margin` is number of discarded outputs near "
         "segments borders. Probabilities of tokens in overlapping parts of segments multiplied before selecting the "
         "best prediction. Default values of parameters `--max_seq_length`, `--step`, and `--margin` are optimal for "
         "IWSLT 2019 test dataset.",
+    )
+    parser.add_argument(
+        '--use_audio',
+        required=False,
+        action="store_true",
+        help="If set `PunctuationCapitalizationLexicalAudioModel` will be used for inference",
     )
     input_ = parser.add_mutually_exclusive_group(required=True)
     input_.add_argument(
@@ -71,6 +84,12 @@ def get_args() -> argparse.Namespace:
         type=Path,
         help="Path to file with text which needs punctuation and capitalization. Exactly one parameter of "
         "`--input_manifest` and `--input_text` should be provided.",
+    )
+    parser.add_argument(
+        '--audio_file',
+        required=False,
+        type=Path,
+        help="Path to file with paths to audio. One path per row. Required if '--input_text' provided. Else 'audio_filepath' from manifest will be used.",
     )
     output = parser.add_mutually_exclusive_group(required=True)
     output.add_argument(
@@ -96,7 +115,8 @@ def get_args() -> argparse.Namespace:
         help=f"The name of NGC pretrained model. No more than one of parameters `--pretrained_name`, `--model_path`"
         f"should be provided. If neither of parameters `--pretrained_name` and `--model_path` are provided, then the "
         f"script is run with `--{default_model_parameter}={default_model}`.",
-        choices=[m.pretrained_model_name for m in PunctuationCapitalizationModel.list_available_models()],
+        choices=[m.pretrained_model_name for m in PunctuationCapitalizationModel.list_available_models()]
+        + [m.pretrained_model_name for m in PunctuationCapitalizationLexicalAudioModel.list_available_models()],
     )
     model.add_argument(
         "--model_path",
@@ -156,12 +176,21 @@ def get_args() -> argparse.Namespace:
         help="Which device to use. If device is not set and CUDA is available, then GPU will be used. If device is "
         "not set and CUDA is not available, then CPU is used.",
     )
+    parser.add_argument(
+        "--sample_rate",
+        type=int,
+        default=16000,
+        help="Target sample rate for audios if `--use_audio` was passed",
+        required=False,
+    )
     args = parser.parse_args()
     if args.input_manifest is None and args.output_manifest is not None:
         parser.error("--output_manifest requires --input_manifest")
+    if args.use_audio and (args.input_manifest is None and args.audio_file is None):
+        parser.error("--use_audio and --input_text require --audio_file")
     if args.pretrained_name is None and args.model_path is None:
         setattr(args, default_model_parameter, default_model)
-    for name in ["input_manifest", "input_text", "output_manifest", "output_text", "model_path"]:
+    for name in ["input_manifest", "input_text", "output_manifest", "output_text", "model_path", "audio_file"]:
         if getattr(args, name) is not None:
             setattr(args, name, getattr(args, name).expanduser())
     return args
@@ -179,9 +208,17 @@ def load_manifest(manifest: Path) -> List[Dict[str, Union[str, float]]]:
 def main() -> None:
     args = get_args()
     if args.pretrained_name is None:
-        model = PunctuationCapitalizationModel.restore_from(args.model_path)
+        model = (
+            PunctuationCapitalizationModel.restore_from(args.model_path)
+            if not args.use_audio
+            else PunctuationCapitalizationLexicalAudioModel.restore_from(args.model_path)
+        )
     else:
-        model = PunctuationCapitalizationModel.from_pretrained(args.pretrained_name)
+        model = (
+            PunctuationCapitalizationModel.from_pretrained(args.pretrained_name)
+            if not args.use_audio
+            else PunctuationCapitalizationLexicalAudioModel.restore_from(args.model_path)
+        )
     if args.device is None:
         if torch.cuda.is_available():
             model = model.cuda()
@@ -191,23 +228,43 @@ def main() -> None:
         model = model.to(args.device)
     if args.input_manifest is None:
         texts = []
+        audios = []
         with args.input_text.open() as f:
             for line in f:
                 texts.append(line.strip())
+        if args.use_audio:
+            with args.audio_file.open() as f:
+                for line in f:
+                    audios.append(line.strip())
     else:
         manifest = load_manifest(args.input_manifest)
         text_key = "pred_text" if "pred_text" in manifest[0] else "text"
         texts = []
+        audios = []
         for item in manifest:
             texts.append(item[text_key])
-    processed_texts = model.add_punctuation_capitalization(
-        texts,
-        batch_size=args.batch_size,
-        max_seq_length=args.max_seq_length,
-        step=args.step,
-        margin=args.margin,
-        return_labels=args.save_labels_instead_of_text,
-    )
+            if args.use_audio:
+                audios.append(item["audio_filepath"])
+    if args.use_audio:
+        processed_texts = model.add_punctuation_capitalization(
+            texts,
+            batch_size=args.batch_size,
+            max_seq_length=args.max_seq_length,
+            step=args.step,
+            margin=args.margin,
+            return_labels=args.save_labels_instead_of_text,
+            audio_queries=audios,
+            target_sr=args.sample_rate,
+        )
+    else:
+        processed_texts = model.add_punctuation_capitalization(
+            texts,
+            batch_size=args.batch_size,
+            max_seq_length=args.max_seq_length,
+            step=args.step,
+            margin=args.margin,
+            return_labels=args.save_labels_instead_of_text,
+        )
     if args.output_manifest is None:
         args.output_text.parent.mkdir(exist_ok=True, parents=True)
         with args.output_text.open('w') as f:

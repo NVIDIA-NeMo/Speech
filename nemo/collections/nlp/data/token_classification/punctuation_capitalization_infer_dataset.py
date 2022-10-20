@@ -13,18 +13,27 @@
 # limitations under the License.
 
 import itertools
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from numpy import ndarray
+from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.nlp.data import get_stats
 from nemo.core import Dataset
 from nemo.core.neural_types import ChannelType, Index, MaskType, NeuralType
-from nemo.core.neural_types.elements import BoolType
+from nemo.core.neural_types.elements import AudioSignal, BoolType, LengthsType
 from nemo.utils import logging
+
+try:
+    from nemo.collections.asr.parts.preprocessing import AudioSegment
+
+    ASR_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    ASR_AVAILABLE = False
 
 
 def get_features_infer(
@@ -33,8 +42,19 @@ def get_features_infer(
     max_seq_length: int = 64,
     step: Optional[int] = 8,
     margin: Optional[int] = 16,
+    audio_queries: Optional[List[str]] = None,
+    target_sr: Optional[int] = None,
 ) -> Tuple[
-    List[List[int]], List[List[int]], List[List[int]], List[List[int]], List[int], List[int], List[bool], List[bool],
+    List[List[int]],
+    List[List[int]],
+    List[List[int]],
+    List[List[int]],
+    List[int],
+    List[int],
+    List[bool],
+    List[bool],
+    Optional[List[float]],
+    Optional[List[int]],
 ]:
     """
     Processes the data and returns features.
@@ -56,6 +76,8 @@ def get_features_infer(
             computation, margins are removed. In the next list, subtokens which logits are not used for final
             predictions computation are marked with asterisk: ``[['[CLS]'*, 'h', 'e', 'l'*, '[SEP]'*],
             ['[CLS]'*, 'e'*, 'l', 'l'*, '[SEP]'*], ['[CLS]'*, 'l'*, 'l', 'o', '[SEP]'*]]``.
+        audio_queries (:obj:`List[str]`, `optional`): paths to audio files.
+        target_sr (:obj:`int`, `optional`): target sample rate for audios.
 
     Returns:
         all_input_ids: list of input ids of all segments
@@ -71,11 +93,21 @@ def get_features_infer(
     st = []
     stm = []
     sent_lengths = []
-    for i, query in enumerate(queries):
+    audios = []
+    audio_queries = audio_queries if audio_queries else [None] * len(queries)  # Dummy if no `audio_queries` passed
+    for i, (query, audio_query) in enumerate(zip(queries, audio_queries)):
         subtokens, subtokens_mask = _get_subtokens_and_subtokens_mask(query, tokenizer)
         sent_lengths.append(len(subtokens))
         st.append(subtokens)
         stm.append(subtokens_mask)
+        if audio_query:
+            if ASR_AVAILABLE:
+                audios.append(AudioSegment.from_file(audio_query.strip(), target_sr=target_sr))
+            else:
+                raise ModuleNotFoundError(
+                    'Nemo ASR was not installed, see https://github.com/NVIDIA/NeMo#installation for installation instructions'
+                )
+    audios = audios if len(audios) else [None] * len(st)
     _check_max_seq_length_and_margin_and_step(max_seq_length, margin, step)
     if max_seq_length > max(sent_lengths) + 2:
         max_seq_length = max(sent_lengths) + 2
@@ -92,8 +124,10 @@ def get_features_infer(
     get_stats(sent_lengths)
     all_input_ids, all_segment_ids, all_subtokens_mask, all_input_mask, all_input_mask = [], [], [], [], []
     all_quantities_of_preceding_words, all_query_ids, all_is_first, all_is_last = [], [], [], []
-    for q_i, query_st in enumerate(st):
+    all_audio_queries, all_audio_lengths = [], []
+    for q_i, (query_st, query_audio) in enumerate(zip(st, audios)):
         q_inp_ids, q_segment_ids, q_subtokens_mask, q_inp_mask, q_quantities_of_preceding_words = [], [], [], [], []
+        q_audio_queries, q_audio_lengths = [], []
         for i in range(0, max(len(query_st), length) - length + step, step):
             subtokens = [tokenizer.cls_token] + query_st[i : i + length] + [tokenizer.sep_token]
             q_inp_ids.append(tokenizer.tokens_to_ids(subtokens))
@@ -101,6 +135,10 @@ def get_features_infer(
             q_subtokens_mask.append([False] + stm[q_i][i : i + length] + [False])
             q_inp_mask.append([True] * len(subtokens))
             q_quantities_of_preceding_words.append(np.count_nonzero(stm[q_i][:i]))
+            if query_audio:
+                samples = query_audio.samples[i * 4000 : (i + length) * 4000]
+                q_audio_queries.append(samples)
+                q_audio_lengths.append(len(samples))
         all_input_ids.append(q_inp_ids)
         all_segment_ids.append(q_segment_ids)
         all_subtokens_mask.append(q_subtokens_mask)
@@ -109,6 +147,9 @@ def get_features_infer(
         all_query_ids.append([q_i] * len(q_inp_ids))
         all_is_first.append([True] + [False] * (len(q_inp_ids) - 1))
         all_is_last.append([False] * (len(q_inp_ids) - 1) + [True])
+        if query_audio:
+            all_audio_queries.append(q_audio_queries)
+            all_audio_lengths.append(q_audio_lengths)
     return (
         list(itertools.chain(*all_input_ids)),
         list(itertools.chain(*all_segment_ids)),
@@ -118,6 +159,8 @@ def get_features_infer(
         list(itertools.chain(*all_query_ids)),
         list(itertools.chain(*all_is_first)),
         list(itertools.chain(*all_is_last)),
+        list(itertools.chain(*all_audio_queries)),
+        list(itertools.chain(*all_audio_lengths)),
     )
 
 
@@ -214,6 +257,19 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
     @property
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """Returns neural types of :meth:`collate_fn` output."""
+        if self.use_audio:
+            return {
+                'input_ids': NeuralType(('B', 'T'), ChannelType()),
+                'segment_ids': NeuralType(('B', 'T'), ChannelType()),
+                'input_mask': NeuralType(('B', 'T'), MaskType()),
+                'subtokens_mask': NeuralType(('B', 'T'), MaskType()),
+                'quantities_of_preceding_words': NeuralType(('B',), Index()),
+                'query_ids': NeuralType(('B',), Index()),
+                'is_first': NeuralType(('B',), BoolType()),
+                'is_last': NeuralType(('B',), BoolType()),
+                'features': NeuralType(('B', 'T'), AudioSignal()),
+                'features_length': NeuralType(('B', 'T'), LengthsType()),
+            }
         return {
             'input_ids': NeuralType(('B', 'T'), ChannelType()),
             'segment_ids': NeuralType(('B', 'T'), ChannelType()),
@@ -226,10 +282,23 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
         }
 
     def __init__(
-        self, queries: List[str], tokenizer: TokenizerSpec, max_seq_length: int = 64, step: int = 8, margin: int = 16
+        self,
+        queries: List[str],
+        tokenizer: TokenizerSpec,
+        max_seq_length: int = 64,
+        step: int = 8,
+        margin: int = 16,
+        audio_queries: Optional[List[str]] = None,
+        target_sr: Optional[int] = None,
     ):
         features = get_features_infer(
-            queries=queries, max_seq_length=max_seq_length, tokenizer=tokenizer, step=step, margin=margin
+            queries=queries,
+            max_seq_length=max_seq_length,
+            tokenizer=tokenizer,
+            step=step,
+            margin=margin,
+            audio_queries=audio_queries,
+            target_sr=target_sr,
         )
         self.all_input_ids: List[List[int]] = features[0]
         self.all_segment_ids: List[List[int]] = features[1]
@@ -239,21 +308,32 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
         self.all_query_ids: List[int] = features[5]
         self.all_is_first: List[bool] = features[6]
         self.all_is_last: List[bool] = features[7]
+        self.all_audio_queries: Optional[List[List[float]]] = features[8]
+        self.all_audio_lengths: Optional[List[List[int]]] = features[9]
+        self.use_audio = audio_queries is not None
 
     def __len__(self) -> int:
         return len(self.all_input_ids)
 
     def collate_fn(
-        self, batch: List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, bool, bool]]
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        Tuple[int, ...],
-        Tuple[int, ...],
-        Tuple[bool, ...],
-        Tuple[bool, ...],
+        self,
+        batch: List[
+            Tuple[
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                int,
+                int,
+                bool,
+                bool,
+                Optional[np.ndarray],
+                Optional[np.ndarray],
+            ]
+        ],
+    ) -> Union[
+        Tuple[Tensor, Tensor, Tensor, Tensor, Any, Any, Any, Any],
+        Tuple[Tensor, Tensor, Tensor, Tensor, Any, Any, Any, Any, Any, Any],
     ]:
         """
         Collates samples into batches.
@@ -279,8 +359,32 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
                 segment is the first segment in a query.
               - ``is_last`` (:obj:`Tuple[bool, ...]`): a tuple of booleans which elements are ``True`` if corresponding
                 segment is the last segment in a query.
+
         """
-        inp_ids, segment_ids, inp_mask, st_mask, n_preceding, query_ids, is_first, is_last = zip(*batch)
+        if not self.use_audio:
+            inp_ids, segment_ids, inp_mask, st_mask, n_preceding, query_ids, is_first, is_last = zip(*batch)
+            return (
+                pad_sequence([torch.tensor(x) for x in inp_ids], batch_first=True, padding_value=0),
+                pad_sequence([torch.tensor(x) for x in segment_ids], batch_first=True, padding_value=0),
+                pad_sequence([torch.tensor(x) for x in inp_mask], batch_first=True, padding_value=0),
+                pad_sequence([torch.tensor(x) for x in st_mask], batch_first=True, padding_value=0),
+                n_preceding,
+                query_ids,
+                is_first,
+                is_last,
+            )
+        (
+            inp_ids,
+            segment_ids,
+            inp_mask,
+            st_mask,
+            n_preceding,
+            query_ids,
+            is_first,
+            is_last,
+            features,
+            features_length,
+        ) = zip(*batch)
         return (
             pad_sequence([torch.tensor(x) for x in inp_ids], batch_first=True, padding_value=0),
             pad_sequence([torch.tensor(x) for x in segment_ids], batch_first=True, padding_value=0),
@@ -290,9 +394,16 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
             query_ids,
             is_first,
             is_last,
+            pad_sequence([torch.tensor(x) for x in features], batch_first=True, padding_value=0).float(),
+            torch.tensor(features_length, dtype=torch.long),
         )
 
-    def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, int, bool, bool]:
+    def __getitem__(
+        self, idx: int
+    ) -> Union[
+        Tuple[ndarray, ndarray, ndarray, ndarray, int, int, bool, bool],
+        Tuple[ndarray, ndarray, ndarray, ndarray, int, int, bool, bool, ndarray, List[int]],
+    ]:
         """
         Returns batch used for punctuation and capitalization inference.
 
@@ -322,6 +433,17 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
                 - ``is_last`` (:obj:`bool`): whether a query is the last query in a query. The right margin of the last
                   segment in a query is not removed.
         """
+        if not self.use_audio:
+            return (
+                np.array(self.all_input_ids[idx]),
+                np.array(self.all_segment_ids[idx]),
+                np.array(self.all_input_mask[idx], dtype=np.float32),
+                np.array(self.all_subtokens_mask[idx]),
+                self.all_quantities_of_preceding_words[idx],
+                self.all_query_ids[idx],
+                self.all_is_first[idx],
+                self.all_is_last[idx],
+            )
         return (
             np.array(self.all_input_ids[idx]),
             np.array(self.all_segment_ids[idx]),
@@ -331,4 +453,6 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
             self.all_query_ids[idx],
             self.all_is_first[idx],
             self.all_is_last[idx],
+            np.array(self.all_audio_queries[idx], dtype=np.float),
+            self.all_audio_lengths[idx],
         )

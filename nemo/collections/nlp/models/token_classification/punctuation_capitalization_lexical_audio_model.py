@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
-from typing import Dict, List, Optional, Tuple
+from math import ceil
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, open_dict
 from pytorch_lightning import Trainer
 from torch.nn import Linear
+from tqdm import tqdm
 
 from nemo.collections.common.losses.cross_entropy import CrossEntropyLoss
 from nemo.collections.nlp.models.token_classification.punctuation_capitalization_model import (
@@ -26,6 +29,7 @@ from nemo.collections.nlp.models.token_classification.punctuation_capitalization
 from nemo.collections.nlp.modules.common.transformer import TransformerDecoder
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import adapter_mixins
+from nemo.utils import logging
 
 try:
     import nemo.collections.asr as nemo_asr
@@ -107,7 +111,7 @@ class PunctuationCapitalizationLexicalAudioModel(PunctuationCapitalizationModel)
         if cfg.audio_encoder.freeze.get('is_enabled', False):
             for param in self.audio_encoder.parameters():
                 param.requires_grad = False
-            for i in range(cfg.audio_encoder.fusion.get('num_layers')):
+            for i in range(cfg.audio_encoder.freeze.get('num_layers')):
                 self.audio_encoder.add_module(
                     f'conf_encoder_{i}',
                     ConformerLayer(
@@ -259,6 +263,144 @@ class PunctuationCapitalizationLexicalAudioModel(PunctuationCapitalizationModel)
             self.seq_range = seq_range
         else:
             self.register_buffer('seq_range', seq_range, persistent=False)
+
+    def add_punctuation_capitalization(
+        self,
+        queries: List[str],
+        batch_size: int = None,
+        max_seq_length: int = 64,
+        step: int = 8,
+        margin: int = 16,
+        return_labels: bool = False,
+        dataloader_kwargs: Dict[str, Any] = None,
+        audio_queries: Optional[List[str]] = None,
+        target_sr: Optional[int] = None,
+    ) -> List[str]:
+        """
+               Adds punctuation and capitalization to the queries. Use this method for inference.
+
+               Parameters ``max_seq_length``, ``step``, ``margin`` are for controlling the way queries are split into segments
+               which are processed by the model. Parameter ``max_seq_length`` is a length of a segment after tokenization
+               including special tokens [CLS] in the beginning and [SEP] in the end of a segment. Parameter ``step`` is a
+               shift between consequent segments. Parameter ``margin`` is used to exclude negative effect of subtokens near
+               borders of segments which have only one side context.
+
+               If segments overlap, probabilities of overlapping predictions are multiplied and then the label with
+               corresponding to the maximum probability is selected.
+
+               Args:
+                   queries (:obj:`List[str]`): lower cased text without punctuation.
+                   batch_size (:obj:`List[str]`, `optional`): batch size to use during inference. If ``batch_size`` parameter
+                       is not provided, then it will be equal to length of ``queries`` list.
+                   max_seq_length (:obj:`int`, `optional`, defaults to :obj:`64`): maximum sequence length of a segment after
+                       tokenization including :code:`[CLS]` and :code:`[SEP]` tokens.
+                   step (:obj:`int`, `optional`, defaults to :obj:`8`): relative shift of consequent segments into which long
+                       queries are split. Long queries are split into segments which can overlap. Parameter ``step`` controls
+                       such overlapping. Imagine that queries are tokenized into characters, ``max_seq_length=5``, and
+                       ``step=2``. In such case, query ``"hello"`` is tokenized into segments
+                       ``[['[CLS]', 'h', 'e', 'l', '[SEP]'], ['[CLS]', 'l', 'l', 'o', '[SEP]']]``.
+                   margin (:obj:`int`, `optional`, defaults to :obj:`16`): number of subtokens in the beginning and the end of
+                       segments which are not used for prediction computation. The first segment does not have left margin and
+                       the last segment does not have right margin. For example, if an input sequence is tokenized into
+                       characters, ``max_seq_length=5``, ``step=1``, and ``margin=1``, then query ``"hello"`` will be
+                       tokenized into segments ``[['[CLS]', 'h', 'e', 'l', '[SEP]'], ['[CLS]', 'e', 'l', 'l', '[SEP]'],
+                       ['[CLS]', 'l', 'l', 'o', '[SEP]']]``. These segments are passed to the model. Before final predictions
+                       computation, margins are removed. In the next list, subtokens which logits are not used for final
+                       predictions computation are marked with asterisk: ``[['[CLS]'*, 'h', 'e', 'l'*, '[SEP]'*],
+                       ['[CLS]'*, 'e'*, 'l', 'l'*, '[SEP]'*], ['[CLS]'*, 'l'*, 'l', 'o', '[SEP]'*]]``.
+                   return_labels (:obj:`bool`, `optional`, defaults to :obj:`False`): whether to return labels in NeMo format
+                       (see :ref:`nlp/punctuation_and_capitalization/NeMo Data Format`) instead of queries with restored
+                       punctuation and capitalization.
+                   dataloader_kwargs (:obj:`Dict[str, Any]`, `optional`): an optional dictionary with parameters of PyTorch
+                       data loader. May include keys: ``'num_workers'``, ``'pin_memory'``, ``'worker_init_fn'``,
+                       ``'prefetch_factor'``, ``'persistent_workers'``.
+                   audio_queries (:obj:`List[str]`, `optional`): paths to audio files.
+                   target_sr (:obj:`int`, `optional`): target sample rate for audios.
+               Returns:
+                   :obj:`List[str]`: a list of queries with restored capitalization and punctuation if
+                   ``return_labels=False``, else a list of punctuation and capitalization labels strings for all queries
+               """
+
+        if len(queries) == 0:
+            return []
+        if batch_size is None:
+            batch_size = len(queries)
+            logging.info(f'Using batch size {batch_size} for inference')
+        result: List[str] = []
+        mode = self.training
+        try:
+            self.eval()
+            infer_datalayer = self._setup_infer_dataloader(
+                queries, batch_size, max_seq_length, step, margin, dataloader_kwargs, audio_queries, target_sr
+            )
+            # Predicted labels for queries. List of labels for every query
+            all_punct_preds: List[List[int]] = [[] for _ in queries]
+            all_capit_preds: List[List[int]] = [[] for _ in queries]
+            # Accumulated probabilities (or product of probabilities acquired from different segments) of punctuation
+            # and capitalization. Probabilities for words in a query are extracted using `subtokens_mask`. Probabilities
+            # for newly processed words are appended to the accumulated probabilities. If probabilities for a word are
+            # already present in `acc_probs`, old probabilities are replaced with a product of old probabilities
+            # and probabilities acquired from new segment. Segments are processed in an order they appear in an
+            # input query. When all segments with a word are processed, a label with the highest probability
+            # (or product of probabilities) is chosen and appended to an appropriate list in `all_preds`. After adding
+            # prediction to `all_preds`, probabilities for a word are removed from `acc_probs`.
+            acc_punct_probs: List[Optional[np.ndarray]] = [None for _ in queries]
+            acc_capit_probs: List[Optional[np.ndarray]] = [None for _ in queries]
+            d = self.device
+            for batch_i, batch in tqdm(
+                enumerate(infer_datalayer), total=ceil(len(infer_datalayer.dataset) / batch_size), unit="batch"
+            ):
+                (
+                    inp_ids,
+                    inp_type_ids,
+                    inp_mask,
+                    subtokens_mask,
+                    start_word_ids,
+                    query_ids,
+                    is_first,
+                    is_last,
+                    features,
+                    features_length,
+                ) = batch
+                punct_logits, capit_logits = self.forward(
+                    input_ids=inp_ids.to(d),
+                    token_type_ids=inp_type_ids.to(d),
+                    attention_mask=inp_mask.to(d),
+                    features=features.to(d),
+                    features_length=features_length.to(d),
+                )
+                _res = self._transform_logit_to_prob_and_remove_margins_and_extract_word_probs(
+                    punct_logits, capit_logits, subtokens_mask, start_word_ids, margin, is_first, is_last
+                )
+                punct_probs, capit_probs, start_word_ids = _res
+                for i, (q_i, start_word_id, bpp_i, bcp_i) in enumerate(
+                    zip(query_ids, start_word_ids, punct_probs, capit_probs)
+                ):
+                    for all_preds, acc_probs, b_probs_i in [
+                        (all_punct_preds, acc_punct_probs, bpp_i),
+                        (all_capit_preds, acc_capit_probs, bcp_i),
+                    ]:
+                        if acc_probs[q_i] is None:
+                            acc_probs[q_i] = b_probs_i
+                        else:
+                            all_preds[q_i], acc_probs[q_i] = self._move_acc_probs_to_token_preds(
+                                all_preds[q_i], acc_probs[q_i], start_word_id - len(all_preds[q_i]),
+                            )
+                            acc_probs[q_i] = self._update_accumulated_probabilities(acc_probs[q_i], b_probs_i)
+            for all_preds, acc_probs in [(all_punct_preds, acc_punct_probs), (all_capit_preds, acc_capit_probs)]:
+                for q_i, (pred, prob) in enumerate(zip(all_preds, acc_probs)):
+                    if prob is not None:
+                        all_preds[q_i], acc_probs[q_i] = self._move_acc_probs_to_token_preds(pred, prob, len(prob))
+            for i, query in enumerate(queries):
+                result.append(
+                    self._get_labels(all_punct_preds[i], all_capit_preds[i])
+                    if return_labels
+                    else self._apply_punct_capit_predictions(query, all_punct_preds[i], all_capit_preds[i])
+                )
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+        return result
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

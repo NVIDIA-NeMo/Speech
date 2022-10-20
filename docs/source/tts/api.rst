@@ -83,10 +83,6 @@ To read more about them, see the `Base Classes <./intro.html#Base Classes>`__ se
     :show-inheritance:
     :members:
 
-.. autoclass:: nemo.collections.tts.models.base.TextToWaveform
-    :show-inheritance:
-    :members:
-
 .. autoclass:: nemo.collections.tts.models.base.Vocoder
     :show-inheritance:
     :members:

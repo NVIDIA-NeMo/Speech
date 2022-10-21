@@ -13,13 +13,13 @@
 # limitations under the License.
 from abc import ABC, abstractmethod
 from contextlib import ExitStack, contextmanager
+from typing import List
 
 import torch
 
 from nemo.collections.tts.helpers.helpers import OperationMode
-from nemo.collections.tts.models import *  # Avoid circular imports
 from nemo.core.classes import ModelPT
-from nemo.core.classes.common import typecheck
+from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 

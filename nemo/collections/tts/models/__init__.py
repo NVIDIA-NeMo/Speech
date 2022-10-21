@@ -23,15 +23,15 @@ from nemo.collections.tts.models.univnet import UnivNetModel
 from nemo.collections.tts.models.waveglow import WaveGlowModel
 
 __all__ = [
-    "Tacotron2Model",
-    "WaveGlowModel",
-    "TwoStagesModel",
-    "GriffinLimModel",
-    "MelPsuedoInverseModel",
-    "HifiGanModel",
-    "FastPitchModel",
     "AlignerModel",
+    "FastPitchModel",
+    "GriffinLimModel",
+    "HifiGanModel",
+    "MelPsuedoInverseModel",
     "MixerTTSModel",
-    "UnivNetModel",
     "RadTTSModel",
+    "Tacotron2Model",
+    "TwoStagesModel",
+    "UnivNetModel",
+    "WaveGlowModel",
 ]

@@ -38,7 +38,7 @@ from nemo.utils import logging, model_utils
 from nemo.utils.cloud import maybe_download_from_cloud
 from nemo.utils.model_utils import import_class_by_path, maybe_update_config_version
 
-__all__ = ['Typing', 'FileIO', 'Model', 'Serialization', 'typecheck']
+__all__ = ['Typing', 'FileIO', 'Model', 'Serialization', 'typecheck', 'PretrainedModelInfo']
 
 _TYPECHECK_ENABLED = True
 # TODO @blisc: Remove _HAS_HYDRA

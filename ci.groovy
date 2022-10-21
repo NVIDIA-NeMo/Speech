@@ -91,7 +91,7 @@ spec:
                             model.decoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
                             model.encoder.pre_ln=true \
                             model.decoder.pre_ln=true \
-                            trainer.devices=[1] \
+                            trainer.devices=[0] \
                             trainer.accelerator="gpu" \
                             +trainer.fast_dev_run=true \
                             +trainer.limit_test_batches=2 \

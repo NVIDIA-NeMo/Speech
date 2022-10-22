@@ -77,7 +77,7 @@ spec:
                 // stage('L0: CPU unit tests') {
                 //             sh "pytest --cpu"         
                 // }
-
+                stage('Parallel stage') {
                 parallel{
                   stage('L1: NMT Training Pre-LN') {
                               sh 'cd examples/nlp/machine_translation && \
@@ -125,6 +125,7 @@ spec:
                               exp_manager=null \
                               '        
                             }
+                }
                 }
               }
               githubHelper.updateCommitStatus("$BUILD_URL", "Complete", GitHubCommitState.SUCCESS)

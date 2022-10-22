@@ -74,9 +74,9 @@ spec:
                             sh "NEMO_NUMBA_MINVER=0.53 pytest -m 'not pleasefixme and not torch_tts'"         
                 }
 
-                stage('L0: CPU unit tests') {
-                            sh "pytest --cpu"         
-                }
+                // stage('L0: CPU unit tests') {
+                //             sh "pytest --cpu"         
+                // }
 
                 parallel{
                   stage('L1: NMT Training Pre-LN') {

@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 
-from nemo.collections.asr.parts.utils.speaker_utils import get_rttm_speaker_index, rttm_to_labels
 from nemo.collections.common.parts.preprocessing import manifest, parsers
 from nemo.utils import logging
 
@@ -637,7 +636,7 @@ class DiarizationSpeechLabel(DiarizationLabel):
 
         Args:
             manifest_filepath (str):
-                 Path to input manifest json files.
+                Path to input manifest json files.
             emb_dict (Dict):
                 Dictionary containing cluster-average embeddings and speaker mapping information.
             clus_label_dict (Dict):
@@ -686,7 +685,17 @@ class DiarizationSpeechLabel(DiarizationLabel):
 
             # Training mode
             else:
-                sess_spk_dict = get_rttm_speaker_index(rttm_to_labels(item['rttm_file']))
+                rttm_labels = []
+                with open(item['rttm_file'], 'r') as f:
+                    for line in f.readlines():
+                        start, end, speaker = self.split_rttm_line(line, decimals=3)
+                        rttm_labels.append('{} {} {}'.format(start, end, speaker))
+                speaker_set = set()
+                for rttm_line in rttm_labels:
+                    spk_str = rttm_line.split()[-1]
+                    speaker_set.add(spk_str)
+                speaker_list = sorted(list(speaker_set))
+                sess_spk_dict = {key: val for key, val in enumerate(speaker_list)}
                 target_spks = tuple(sess_spk_dict.keys())
                 clus_speaker_digits = target_spks
                 rttm_speaker_digits = target_spks
@@ -718,6 +727,39 @@ class DiarizationSpeechLabel(DiarizationLabel):
             *args,
             **kwargs,
         )
+
+    def split_rttm_line(self, rttm_line: str, decimals: int = 3):
+        """
+        Convert a line in RTTM file to speaker label, start and end timestamps.
+
+        An example line of `rttm_line`:
+            SPEAKER abc_dev_0123 1 146.903 1.860 <NA> <NA> speaker543 <NA> <NA>
+
+        The above example RTTM line contains the following information:
+            session name: abc_dev_0123
+            segment start time: 146.903
+            segment duration: 1.860
+            speaker label: speaker543
+
+        Args:
+            rttm_line (str):
+                A line in RTTM formatted file containing offset and duration of each segment.
+            decimals (int):
+                Number of digits to be rounded.
+
+        Returns:
+            start (float):
+                Start timestamp in floating point number.
+            end (float):
+                End timestamp in floating point number.
+            speaker (str):
+                speaker string in RTTM lines.
+        """
+        rttm = rttm_line.strip().split()
+        start = round(float(rttm[3]), decimals)
+        end = round(float(rttm[4]), decimals) + round(float(rttm[3]), decimals)
+        speaker = rttm[7]
+        return start, end, speaker
 
     def __parse_item_rttm(self, line: str, manifest_file: str) -> Dict[str, Any]:
         """Parse each rttm file and save it to in Dict format"""

@@ -398,26 +398,6 @@ def rttm_to_labels(rttm_filename):
     return labels
 
 
-def get_rttm_speaker_index(rttm_labels):
-    """
-    Generate speaker mapping between integer index to RTTM speaker label names.
-
-    Args:
-        rttm_labels (list):
-            List containing string type RTTM lines
-    Returns:
-        speaker_mapping_dict (dict):
-            Dictionary containing the mapping between integer index and RTTM speaker labels.
-    """
-    speaker_set = set()
-    for rttm_line in rttm_labels:
-        spk_str = rttm_line.split()[-1]
-        speaker_set.add(spk_str)
-    speaker_list = sorted(list(speaker_set))
-    speaker_mapping_dict = {key: val for key, val in enumerate(speaker_list)}
-    return speaker_mapping_dict
-
-
 def write_cluster_labels(base_scale_idx, lines_cluster_labels, out_rttm_dir):
     """
     Write cluster labels that are generated from clustering into a file.

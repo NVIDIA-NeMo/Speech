@@ -21,7 +21,7 @@ from hydra.utils import instantiate
 from omegaconf import MISSING, DictConfig, OmegaConf
 
 from nemo.collections.tts.helpers.helpers import OperationMode, griffin_lim
-from nemo.collections.tts.models.base import LinVocoder, MelToSpec, Vocoder
+from nemo.collections.tts.models.base import MelToSpec, Vocoder
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
@@ -59,7 +59,7 @@ class MelPsuedoInverseModel(MelToSpec):
         return self
 
 
-class GriffinLimModel(LinVocoder):
+class GriffinLimModel(Vocoder):
     def __init__(self, cfg: DictConfig):
         if isinstance(cfg, dict):
             cfg = OmegaConf.create(cfg)
@@ -70,7 +70,7 @@ class GriffinLimModel(LinVocoder):
         self.n_fft = self._cfg['n_fft']
         self.l_hop = self._cfg['l_hop']
 
-    def convert_linear_spectrogram_to_audio(self, spec, Ts=None):
+    def convert_spectrogram_to_audio(self, spec, Ts=None):
         batch_size = spec.shape[0]
 
         T_max = spec.shape[2]
@@ -135,7 +135,7 @@ class TwoStagesModel(Vocoder):
     def set_mel_to_spec_model(self, mel2spec: MelToSpec):
         self.mel2spec = mel2spec
 
-    def set_linear_vocoder(self, linvocoder: LinVocoder):
+    def set_linear_vocoder(self, linvocoder: Vocoder):
         self.linvocoder = linvocoder
 
     def cuda(self, *args, **kwargs):
@@ -172,7 +172,7 @@ class TwoStagesModel(Vocoder):
         with torch.no_grad():
             exp_spec = torch.exp(spec)
             linear_spec = self.mel2spec.convert_mel_spectrogram_to_linear(exp_spec)
-            audio = self.linvocoder.convert_linear_spectrogram_to_audio(linear_spec, **kwargs)
+            audio = self.linvocoder.convert_spectrogram_to_audio(linear_spec, **kwargs)
 
         return audio
 

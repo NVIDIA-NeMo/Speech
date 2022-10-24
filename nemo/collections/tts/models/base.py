@@ -65,15 +65,18 @@ class SpectrogramGenerator(ModelPT, ABC):
 
 
 class Vocoder(ModelPT, ABC):
-    """ Base class for all TTS models that generate audio conditioned a on spectrogram """
+    """
+    A base class for models that convert spectrograms to audios. Note that this class takes as input either linear
+    or mel spectrograms.
+    """
 
     @abstractmethod
     def convert_spectrogram_to_audio(self, spec: 'torch.tensor', **kwargs) -> 'torch.tensor':
         """
-        Accepts a batch of spectrograms and returns a batch of audio
+        Accepts a batch of spectrograms and returns a batch of audio.
 
         Args:
-            spec: A torch tensor representing the spectrograms to be vocoded
+            spec:  ['B', 'n_freqs', 'T'], A torch tensor representing the spectrograms to be vocoded.
 
         Returns:
             audio
@@ -192,39 +195,6 @@ class GlowVocoder(Vocoder):
         audio_spect_denoised = torch.clamp(audio_spect_denoised, 0.0)
         audio_denoised = self.istft(audio_spect_denoised, audio_angles)
         return audio_denoised
-
-
-class LinVocoder(ModelPT, ABC):
-    """
-    A base class for models that convert from the linear (magnitude) spectrogram to audio. Note: The `Vocoder` class
-    differs from this class as the `Vocoder` class takes as input mel spectrograms.
-    """
-
-    @abstractmethod
-    def convert_linear_spectrogram_to_audio(self, spec: 'torch.tensor', **kwargs) -> 'torch.tensor':
-        """
-        Accepts a batch of linear spectrograms and returns a batch of audio
-
-        Args:
-            spec: A torch tensor representing the linear spectrograms to be vocoded ['B', 'n_freqs', 'T']
-
-        Returns:
-            audio
-        """
-
-    @classmethod
-    def list_available_models(cls) -> 'List[PretrainedModelInfo]':
-        """
-        This method returns a list of pre-trained model which can be instantiated directly from NVIDIA's NGC cloud.
-        Returns:
-            List of available pre-trained models.
-        """
-        list_of_models = []
-        for subclass in cls.__subclasses__():
-            subclass_models = subclass.list_available_models()
-            if subclass_models is not None and len(subclass_models) > 0:
-                list_of_models.extend(subclass_models)
-        return list_of_models
 
 
 class MelToSpec(ModelPT, ABC):

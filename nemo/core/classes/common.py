@@ -660,7 +660,7 @@ class Model(Typing, Serialization, FileIO):
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """
         Should list all pre-trained models available via NVIDIA NGC cloud.
-        Note: There is no check that requires model names and aliases to be unique. In the case of a collIsion, whatever
+        Note: There is no check that requires model names and aliases to be unique. In the case of a collision, whatever
         model (or alias) is listed first in the this returned list will be instantiated.
 
         Returns:

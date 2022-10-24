@@ -1,2 +1,10 @@
+attrdict
+einops
+inflect
 librosa
+matplotlib
 nltk
+pandas
+pesq
+pypinyin
+pystoi

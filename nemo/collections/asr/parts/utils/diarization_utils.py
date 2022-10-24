@@ -237,7 +237,10 @@ class ASR_DIAR_OFFLINE(object):
         diar_model = ClusteringDiarizer(cfg=diar_model_config)
         score = diar_model.diarize()
         if diar_model_config.diarizer.vad.model_path is not None and not diar_model_config.diarizer.oracle_vad:
-            self.get_frame_level_VAD(vad_processing_dir=diar_model.vad_pred_dir)
+            self.get_frame_level_VAD(
+                vad_processing_dir=diar_model.vad_pred_dir,
+                smoothing_type=diar_model_config.diarizer.vad.parameters.smoothing,
+            )
 
         diar_hyp = {}
         for k, audio_file_path in enumerate(self.audio_file_list):
@@ -246,16 +249,23 @@ class ASR_DIAR_OFFLINE(object):
             diar_hyp[uniq_id] = rttm_to_labels(pred_rttm)
         return diar_hyp, score
 
-    def get_frame_level_VAD(self, vad_processing_dir):
+    def get_frame_level_VAD(self, vad_processing_dir, smoothing_type=False):
         """
         Read frame-level VAD outputs.
 
         Args:
             vad_processing_dir (str):
                 The path where VAD results are saved.
+            smoothing_type (bool or str): [False, median, mean]
+                type of smoothing applied softmax logits to smooth the predictions.  
         """
+        if isinstance(smoothing_type, bool) and not smoothing_type:
+            ext_type = 'frame'
+        else:
+            ext_type = smoothing_type
+
         for uniq_id in self.AUDIO_RTTM_MAP:
-            frame_vad = os.path.join(vad_processing_dir, uniq_id + '.median')
+            frame_vad = os.path.join(vad_processing_dir, uniq_id + '.' + ext_type)
             frame_vad_float_list = []
             with open(frame_vad, 'r') as fp:
                 for line in fp.readlines():

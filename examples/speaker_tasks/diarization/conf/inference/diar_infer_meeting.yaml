@@ -6,7 +6,7 @@
 # {"audio_filepath": "/path/to/audio_file", "offset": 0, "duration": null, "label": "infer", "text": "-", "num_speakers": null, "rttm_filepath": "/path/to/rttm/file", "uem_filepath": "/path/to/uem/file"}
 name: &name "ClusterDiarizer"
 
-num_workers: 4
+num_workers: 1
 sample_rate: 16000
 batch_size: 64
 

@@ -26,6 +26,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils imp
     get_train_valid_test_split_,
 )
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
+from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import deallocate_indexed_dataset_memory
 from nemo.collections.nlp.data.language_modeling.megatron.indexed_dataset import make_dataset as make_indexed_dataset
 from nemo.core import Dataset
 from nemo.utils import logging
@@ -307,6 +308,7 @@ class GPTDataset(Dataset):
             seed,
             index_mapping_dir=self.index_mapping_dir,
         )
+        deallocate_indexed_dataset_memory(self.indexed_dataset)
 
     def __len__(self):
         # -1 is due to data structure used to retieve the index:

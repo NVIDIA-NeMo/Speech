@@ -26,7 +26,7 @@ from nemo.core import Dataset
 from nemo.utils import logging
 
 __all__ = ['TextMemMapDataset', 'CSVMemMapDataset', 'build_index_files']
-__idx_version__ = '0.1'  # index file version
+__idx_version__ = '0.2'  # index file version
 __idx_suffix__ = 'idx'  # index file suffix
 
 
@@ -143,23 +143,25 @@ class TextMemMapDataset(Dataset):
         # create data map
         mdata = np.memmap(fn, dtype=np.uint8, mode='r')
 
-        if os.path.exists(idx_fn):
-            idx_dict = pickle.load(open(idx_fn, 'rb'))
-            midx = idx_dict['midx']
+        if os.path.exists(idx_fn + ".npy"):
+            # load index file into memory map
+            midx = np.load(idx_fn + ".npy", allow_pickle=True, mmap_mode='r')
             # test for header
             if len(midx) < self._header_lines:
                 raise RuntimeError(f"Missing header, expected {self._header_lines} header lines")
 
+            # load meta info
+            idx_info_dict = pickle.load(open(idx_fn + ".info", 'rb'))
             # test for mismatch in expected newline_int
-            if 'newline_int' in idx_dict:
-                newline_int = idx_dict['newline_int']
+            if 'newline_int' in idx_info_dict:
+                newline_int = idx_info_dict['newline_int']
                 if self._newline_int != newline_int:
                     logging.warning(
                         f"Mismatch in newline_int, expected = {self._newline_int} but loaded {newline_int}"
                     )
 
             # test for version mismatch (useful to force recreation of index files)
-            idx_version = idx_dict.get('version', '0.0')
+            idx_version = idx_info_dict.get('version', '0.0')
             if __idx_version__ != idx_version:
                 raise RuntimeError(
                     f"Version mismatch: Please delete existing '.{__idx_suffix__}' files. Expected version = {__idx_version__}, but file version = {idx_version}. File path = {idx_fn}"
@@ -211,10 +213,10 @@ def _build_memmap_index_files(newline_int, fn):
 
     # create data map
     mdata = np.memmap(fn, dtype=np.uint8, mode='r')
-    if os.path.exists(idx_fn):
+    if os.path.exists(idx_fn + ".npy"):
         return False
     else:
-        logging.info(f"Building idx file = {idx_fn}")
+        logging.info(f"Building idx file = {idx_fn}.npy")
         midx = np.where(mdata == newline_int)[0]
         midx_dtype = midx.dtype
         # add last item in case there is no new-line
@@ -227,8 +229,10 @@ def _build_memmap_index_files(newline_int, fn):
             midx.pop(-1)
         midx = np.asarray(midx, dtype=midx_dtype)
 
-        data = dict(midx=midx, newline_int=newline_int, version=__idx_version__)
-        pickle.dump(data, open(idx_fn, "wb"))
+        data = dict(newline_int=newline_int, version=__idx_version__)
+        # save index as numpy array to enable memmap reading
+        np.save(idx_fn + ".npy", midx, allow_pickle=True)
+        pickle.dump(data, open(idx_fn + ".info", "wb"))
         mdata._mmap.close()
         del mdata
 

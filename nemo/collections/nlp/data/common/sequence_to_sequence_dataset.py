@@ -21,7 +21,6 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import (
     get_indexed_dataset_,
     get_samples_mapping,
-    make_text_memmap_bin_compatibility,
 )
 from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import TextMemMapDataset
 from nemo.core.classes import Dataset
@@ -270,11 +269,6 @@ class TextMemmapSequenceToSequenceDataset(IndexedSequenceToSequenceDataset):
     def _get_examples(self):
         self.src_indexed_dataset = TextMemMapDataset(dataset_paths=[self.src_file_name], tokenizer=self.src_tokenizer)
         self.tgt_indexed_dataset = TextMemMapDataset(dataset_paths=[self.tgt_file_name], tokenizer=self.tgt_tokenizer)
-
-        # Create compatibility with Megatron samples mapping
-        if self.max_num_samples is not None:
-            make_text_memmap_bin_compatibility(self.src_indexed_dataset)
-            make_text_memmap_bin_compatibility(self.tgt_indexed_dataset)
 
         assert len(self.src_indexed_dataset) == len(
             self.tgt_indexed_dataset

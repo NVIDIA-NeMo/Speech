@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
+import tempfile
 from typing import List, Type, Union
 
 import numpy as np
@@ -23,8 +24,10 @@ from nemo.collections.asr.data.data_simulation import (
     check_angle,
     convert_placement_to_range,
     convert_rir_to_multichannel,
+    simulate_room_mix,
     wrap_to_180,
 )
+from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
 
 class TestDataSimulationUtils:
@@ -324,3 +327,69 @@ class TestArrayGeometry:
             assert abs(dist - test_case['dist']) < max_abs_tol
             assert abs(wrap_to_180(azim - test_case['azim'])) < max_abs_tol
             assert abs(elev - test_case['elev']) < max_abs_tol
+
+
+class TestRoomSimulation:
+
+    max_diff_tol = 1e-5
+
+    @pytest.mark.unit
+    def test_simulate_room_mix(self, test_data_dir):
+        """Test room simulation for fixed parameters.
+        """
+        # Test setup
+        data_dir = os.path.join(test_data_dir, 'asr', 'data_simulation')
+
+        # Minimal configuration
+        sample_rate = 16000
+        target_cfg = {
+            'room_filepath': os.path.join(data_dir, 'test_room.h5'),
+            'source': 0,
+            'audio_filepath': os.path.join(data_dir, 'target.wav'),
+            'duration': 1.5,
+        }
+        noise_cfg = [{'audio_filepath': os.path.join(data_dir, 'noise.wav'), 'offset': 0.8, 'duration': 1.5,}]
+
+        interference_cfg = [
+            {
+                'source': 1,
+                'audio': [
+                    {'audio_filepath': os.path.join(data_dir, 'interference_1.wav'), 'offset': 0.0, 'duration': 0.8},
+                    {
+                        'audio_filepath': os.path.join(data_dir, 'interference_2.wav'),
+                        'offset': 0.05,
+                        'duration': 0.701,
+                    },
+                ],
+            }
+        ]
+
+        mix_cfg = {'rsnr': 10, 'rsir': 15, 'ref_mic': 0, 'ref_mic_rms': -30}
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            # Mix
+            base_output_filepath = os.path.join(output_dir, 'test_output')
+            simulate_room_mix(sample_rate, target_cfg, noise_cfg, interference_cfg, mix_cfg, base_output_filepath)
+
+            # Check target + noise + interference = mix
+            mix_from_parts = 0
+            for suffix in ['_target_reverberant.wav', '_noise.wav', '_interference.wav']:
+                mix_from_parts += AudioSegment.from_file(base_output_filepath + suffix).samples
+
+            mix_uut = AudioSegment.from_file(base_output_filepath + '_mic.wav')
+            mix_uut_samples = mix_uut.samples
+
+            # Compare UUT to sum of parts
+            max_diff = np.max(np.abs(mix_uut_samples - mix_from_parts))
+            assert max_diff < self.max_diff_tol
+
+            # Compare the UUT to golden reference
+            golden_mix_filepath = os.path.join(data_dir, 'test_output_mic.wav')
+            mix_golden = AudioSegment.from_file(base_output_filepath + '_mic.wav')
+
+            assert mix_uut.num_samples == mix_golden.num_samples
+            assert mix_uut.num_channels == mix_golden.num_channels
+            assert mix_uut.sample_rate == mix_golden.sample_rate
+            assert mix_uut.duration == mix_golden.duration
+            max_diff = np.max(np.abs(mix_uut_samples - mix_golden.samples))
+            assert max_diff < self.max_diff_tol

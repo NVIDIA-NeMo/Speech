@@ -1,0 +1,52 @@
+output_dir: ${hydra:job.config_name}
+num_workers: 8
+random_seed: 42
+
+sample_rate: 16000
+
+room:
+  # Paths to RIR manifests
+  train: ??? # manifest
+  dev: ??? # manifest
+  test: ??? # manifest
+
+target:
+  # Target source setup
+  train: ??? # manifest
+  dev: ??? # manifest
+  test: ??? # manifest
+  azimuth: [-180, 180] # acceptable range
+  elevation: [-90, 90] # acceptable range
+  distance: [0, 10] # acceptable range
+
+noise:
+  # Background noise setup
+  train: ??? # manifest
+  dev: ??? # manifest
+  test: ??? # manifest
+
+interference:
+  # Directional interference setup
+  train: ??? # manifest
+  dev: ??? # manifest
+  test: ??? # manifest
+  interference_probability: 0.3 # probability an interfering source is present
+  max_num_interferers: 2 # max number of interfering sources, used number will be randomly selected between 0 and max
+  min_azimuth_to_target: 20 # min separation between the target source an an interfering source
+
+mix:
+  train:
+    num: 40000
+    rsnr: [-5, 20] # reverberant signal-to-noise ratio
+    rsir: [5, 25] # reverberant signal-to-interference ratio
+  dev:
+    num: 5000
+    rsnr: [-5, 0, 5, 10, 15, 20] # Two values: uniform distribution, otherwise: random choice from the list
+    rsir: [10, 20, 30]
+  test:
+    num: 5000
+    rsnr: [-5, 0, 5, 10, 15, 20] # Two values: uniform distribution, otherwise: random choice from the list
+    rsir: [10, 20, 30]
+  ref_mic: 0 # index of the ref microphone (zero-based)
+  ref_mic_rms: [-40, -20] # desired RMS for the ref mic signal. If necessary, may be reduced to prevent clipping.
+

@@ -328,3 +328,53 @@ def transform_to_match_coherence(
     x = x.transpose()
 
     return x
+
+
+def rms(x: np.ndarray) -> float:
+    """Calculate RMS value for the input signal.
+
+    Args:
+        x: input signal
+
+    Returns:
+        RMS of the input signal.
+    """
+    return np.sqrt(np.mean(np.abs(x) ** 2))
+
+
+def mag2db(mag: float, eps: Optional[float] = 1e-16) -> float:
+    """Convert magnitude ratio from linear scale to dB.
+
+    Args:
+        mag: linear magnitude value
+        eps: small regularization constant
+
+    Returns:
+        Value in dB.
+    """
+    return 20 * np.log10(mag + eps)
+
+
+def db2mag(db: float) -> float:
+    """Convert value in dB to linear magnitude ratio.
+    
+    Args:
+        db: magnitude ratio in dB
+
+    Returns:
+        Magnitude ratio in linear scale.
+    """
+    return 10 ** (db / 20)
+
+
+def pow2db(power: float, eps: Optional[float] = 1e-16) -> float:
+    """Convert power ratio from linear scale to dB.
+
+    Args:
+        power: power ratio in linear scale
+        eps: small regularization constant
+    
+    Returns:
+        Power in dB.
+    """
+    return 10 * np.log10(power + eps)

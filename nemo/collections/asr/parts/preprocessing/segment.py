@@ -97,8 +97,10 @@ class AudioSegment(object):
             )
 
         if target_sr is not None and target_sr != sample_rate:
-            # resample along the temporal dimension (axis=0)
-            samples = librosa.core.resample(samples, orig_sr=sample_rate, target_sr=target_sr, axis=0)
+            # resample along the temporal dimension (axis=0) will be in librosa 0.10.0 (#1561)
+            samples = samples.transpose()
+            samples = librosa.core.resample(samples, orig_sr=sample_rate, target_sr=target_sr)
+            samples = samples.transpose()
             sample_rate = target_sr
         if trim:
             # librosa is using channels-first layout (num_channels, num_samples), which is transpose of AudioSegment's layout

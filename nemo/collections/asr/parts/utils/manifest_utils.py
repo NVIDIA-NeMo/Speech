@@ -372,7 +372,7 @@ def read_manifest(manifest: str) -> List[dict]:
     try:
         f = open(manifest, 'r', encoding='utf-8')
     except:
-        raise Exception("Manifest file could not be opened")
+        raise Exception(f"Manifest file could not be opened: {manifest}")
     for line in f:
         item = json.loads(line)
         data.append(item)

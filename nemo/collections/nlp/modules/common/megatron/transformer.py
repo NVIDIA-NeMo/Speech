@@ -92,35 +92,6 @@ except:
         hyperparameters: transformer hyperparameters
 """
 
-if HAVE_APEX:
-
-    class ColumnLinear(tensor_parallel.ColumnParallelLinear):
-        # redefine forward only for non-parallel inference
-        def forward(self, input_):
-            world_size = get_tensor_model_parallel_world_size()
-            if input_.requires_grad or world_size > 1:
-                return tensor_parallel.ColumnParallelLinear.forward(self, input_)
-
-            # Matrix multiply.
-            output = torch.matmul(input_, self.weight.t())
-            if not self.skip_bias_add and self.bias is not None:
-                output = output + self.bias
-
-            output_bias = self.bias if self.skip_bias_add else None
-
-            return output, output_bias
-
-
-else:
-
-    class ColumnLinear(ApexGuardDefaults):
-        def __init__(self):
-            super().__init__()
-
-            logging.warning(
-                "Apex was not found. ColumnLinear will not work. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
-            )
-
 
 class ParallelMLP(MegatronModule):
     """MLP.
@@ -167,7 +138,7 @@ class ParallelMLP(MegatronModule):
             parallel_state.get_tensor_model_parallel_world_size() == 1 or sequence_parallel
         )
         # Project to 4h.
-        self.dense_h_to_4h = ColumnLinear(
+        self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
             hidden_size,
             ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
             gather_output=False,
@@ -183,7 +154,7 @@ class ParallelMLP(MegatronModule):
         if activation in ['geglu', 'reglu', 'swiglu']:
             # Separate linear layer for *GLU activations.
             # Source: https://github.com/huggingface/transformers/blob/bee361c6f1f7704f8c688895f2f86f6e5ff84727/src/transformers/models/t5/modeling_t5.py#L292
-            self.dense_h_to_4h_2 = ColumnLinear(
+            self.dense_h_to_4h_2 = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
                 ffn_hidden_size,  # NOTE: When using *glu, divide ffn dim by 2/3 to keep overall params the same.
                 gather_output=False,
@@ -577,7 +548,7 @@ class ParallelAttention(MegatronModule):
 
         # Strided linear layer.
         if attention_type == AttnType.self_attn:
-            self.query_key_value = ColumnLinear(
+            self.query_key_value = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
                 3 * projection_size,
                 gather_output=False,
@@ -590,7 +561,7 @@ class ParallelAttention(MegatronModule):
             )
         else:
             assert attention_type == AttnType.cross_attn
-            self.query = ColumnLinear(
+            self.query = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
                 projection_size,
                 gather_output=False,
@@ -601,7 +572,7 @@ class ParallelAttention(MegatronModule):
                 gradient_accumulation_fusion=gradient_accumulation_fusion,
             )
 
-            self.key_value = ColumnLinear(
+            self.key_value = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
                 2 * projection_size,
                 gather_output=False,

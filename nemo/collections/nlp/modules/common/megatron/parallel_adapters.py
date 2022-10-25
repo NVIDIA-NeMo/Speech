@@ -23,12 +23,11 @@ import torch.nn as nn
 
 from nemo.collections.common.parts.adapter_modules import AbstractAdapterModule
 from nemo.collections.common.parts.utils import activation_registry
-from nemo.collections.nlp.modules.common.megatron.transformer import ColumnLinear
 from nemo.collections.nlp.modules.common.megatron.utils import init_method_const, init_method_normal
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
 try:
-    from apex.transformer.tensor_parallel import RowParallelLinear
+    from apex.transformer.tensor_parallel import RowParallelLinear, ColumnParallelLinear
     from apex.normalization.fused_layer_norm import MixedFusedLayerNorm
 
     HAVE_APEX = True
@@ -80,11 +79,11 @@ class ParallelLinearAdapter(AbstractAdapterModule):
         self.norm_position = norm_position
 
         if column_init_method == 'xavier':
-            self.linear_in = ColumnLinear(in_features, dim, bias=False)
+            self.linear_in = ColumnParallelLinear(in_features, dim, bias=False)
         elif column_init_method == 'normal':
-            self.linear_in = ColumnLinear(in_features, dim, bias=False, init_method=init_method_normal(0.2))
+            self.linear_in = ColumnParallelLinear(in_features, dim, bias=False, init_method=init_method_normal(0.2))
         elif column_init_method == 'zero':
-            self.linear_in = ColumnLinear(in_features, dim, bias=False, init_method=init_method_const(0.0))
+            self.linear_in = ColumnParallelLinear(in_features, dim, bias=False, init_method=init_method_const(0.0))
         else:
             raise NotImplementedError("column_init_method should be zero, normal or xavier")
 

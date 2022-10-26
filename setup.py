@@ -83,8 +83,8 @@ extras_require = {
     # Lightning Collections Packages
     'core': req_file("requirements_lightning.txt"),
     'common': req_file('requirements_common.txt'),
+    # domain packages
     'asr': req_file("requirements_asr.txt"),
-    'cv': req_file("requirements_cv.txt"),
     'nlp': req_file("requirements_nlp.txt"),
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
@@ -107,7 +107,6 @@ extras_require['test'] = list(
     )
 )
 extras_require['asr'] = list(chain([extras_require['asr'], extras_require['core'], extras_require['common']]))
-extras_require['cv'] = list(chain([extras_require['cv'], extras_require['core'], extras_require['common']]))
 extras_require['nlp'] = list(
     chain(
         [

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import enum
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -37,6 +38,18 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 
+class AdapterName(str, enum.Enum):
+    """
+    Names for adapters used in NLP Adapters and IA3. Note: changing this will break backward compatibility. 
+    """
+
+    MLP_INFUSED = "mlp_infused_adapter"
+    KEY_INFUSED = "key_infused_adapter"
+    VALUE_INFUSED = "value_infused_adapter"
+    PRE_ATTN_ADAPTER = 'adapter_1'
+    POST_ATTN_ADAPTER = 'adapter_2'
+
+
 class InfusedAdapter(AbstractAdapterModule):
     def __init__(
         self, in_features: int, adapter_strategy: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig = None,
@@ -51,11 +64,25 @@ class InfusedAdapter(AbstractAdapterModule):
         return x
 
 
+class MLPInfusedAdapter(InfusedAdapter):
+    """
+    MLPInfusedAdapter is basically a clone of InfusedAdapter. We do this to make the adapter_mixin agnostic to adapter names
+    and only check adapter class types. 
+    """
+
+    pass
+
+
 @dataclass
 class InfusedAdapterConfig:
     in_features: int
     adapter_strategy: Optional[dict] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
     _target_: str = "{0}.{1}".format(InfusedAdapter.__module__, InfusedAdapter.__name__)
+
+
+@dataclass
+class MLPInfusedAdapterConfig(InfusedAdapterConfig):
+    _target_: str = "{0}.{1}".format(MLPInfusedAdapter.__module__, MLPInfusedAdapter.__name__)
 
 
 class ParallelLinearAdapter(AbstractAdapterModule):

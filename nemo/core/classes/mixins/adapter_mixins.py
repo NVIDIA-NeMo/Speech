@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
+from sympy import true
 
 from nemo.utils import logging, model_utils
 
@@ -150,6 +151,29 @@ class AdapterModuleMixin(ABC):
     adapter_global_cfg_key = "global_cfg"
     adapter_metadata_cfg_key = "adapter_meta_cfg"
 
+    def set_accepted_adapter_types(self, adapter_types: List[str]) -> None:
+        """
+        The module with this mixin can define a list of adapter names that it will accept.
+        This method should be called in the modules init method and set the adapter names the module will expect to be added.
+        """
+        if hasattr(self, "_accepted_adapter_types"):
+            raise RuntimeError("accepted adapter types can only be set once.")
+        self._accepted_adapter_types = [model_utils.import_class_by_path(s) for s in adapter_types]
+
+    def get_accepted_adapter_types(self,) -> List[str]:
+        """
+        Returns the list of accepted adapter types.
+        """
+        if hasattr(self, '_accepted_adapter_types'):
+            return self._accepted_adapter_types
+        else:
+            return []
+
+    def get_from_adapter_layer(self, name: str):
+        if hasattr(self, "adapter_layer"):
+            return self.adapter_layer[name] if name in self.adapter_layer else None
+        return None
+
     def add_adapter(self, name: str, cfg: DictConfig):
         """
         Add an Adapter module to this module.
@@ -159,6 +183,20 @@ class AdapterModuleMixin(ABC):
             cfg: A DictConfig or Dataclass that contains at the bare minimum `__target__` to instantiate a
                 new Adapter module.
         """
+        _types = self.get_accepted_adapter_types()
+        _pass_types = False
+        if len(_types) > 0:
+            test = model_utils.import_class_by_path(cfg._target_)
+            for _type in _types:
+                # TODO: (@adithyare) should revisit if subclass is the best check...
+                if issubclass(test, _type):
+                    _pass_types = True
+                    break
+            if not _pass_types:
+                raise ValueError(
+                    f"Config {cfg} creates adapter class {test} is not in the list of accepted adapter types."
+                )
+
         # Convert to DictConfig from dict or Dataclass
         if is_dataclass(cfg):
             cfg = OmegaConf.structured(cfg)

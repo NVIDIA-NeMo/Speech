@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import tempfile
 from typing import List, Type, Union
@@ -20,6 +21,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+from nemo.collections.asr.parts.preprocessing.perturb import NoisePerturbation
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.audio_utils import select_channels
 
@@ -120,3 +122,58 @@ class TestAudioSegment:
             assert uut.duration == self.signal_duration_sec
             max_diff = np.max(np.abs(uut.samples - golden_samples))
             assert max_diff < self.max_diff_tol
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("data_channels", [1, 4])
+    @pytest.mark.parametrize("noise_channels", [1, 4])
+    def test_noise_perturb_channels(self, data_channels, noise_channels):
+        """Test loading a signal from a file.
+        """
+        with tempfile.TemporaryDirectory() as test_dir:
+            # Prepare a wav file
+            audio_file = os.path.join(test_dir, 'audio.wav')
+            if data_channels == 1:
+                # samples is a one-dimensional vector for single-channel signal
+                samples = np.random.rand(self.num_samples)
+            else:
+                samples = np.random.rand(self.num_samples, data_channels)
+            sf.write(audio_file, samples, self.sample_rate, 'float')
+
+            noise_file = os.path.join(test_dir, 'noise.wav')
+            if noise_channels == 1:
+                # samples is a one-dimensional vector for single-channel signal
+                samples = np.random.rand(self.num_samples)
+            else:
+                samples = np.random.rand(self.num_samples, noise_channels)
+            sf.write(noise_file, samples, self.sample_rate, 'float')
+
+            manifest_file = os.path.join(test_dir, 'noise_manifest.json')
+            with open(manifest_file, 'w') as fout:
+                item = {'audio_filepath': os.path.abspath(noise_file), 'label': '-', 'duration': 0.1, 'offset': 0.0}
+                fout.write(f'{json.dumps(item)}\n')
+
+            perturber = NoisePerturbation(manifest_file)
+            audio = AudioSegment.from_file(audio_file)
+            noise = AudioSegment.from_file(noise_file)
+
+            if data_channels == noise_channels:
+                try:
+                    _ = perturber.perturb_with_input_noise(audio, noise, ref_mic=0)
+                except ValueError as e:
+                    assert False, "perturb_with_input_noise failed with ref_mic=0"
+
+                with pytest.raises(ValueError):
+                    _ = perturber.perturb_with_input_noise(audio, noise, ref_mic=data_channels)
+
+                try:
+                    _ = perturber.perturb_with_foreground_noise(audio, noise, ref_mic=0)
+                except ValueError as e:
+                    assert False, "perturb_with_foreground_noise failed with ref_mic=0"
+
+                with pytest.raises(ValueError):
+                    _ = perturber.perturb_with_foreground_noise(audio, noise, ref_mic=data_channels)
+            else:
+                with pytest.raises(ValueError):
+                    _ = perturber.perturb_with_input_noise(audio, noise)
+                with pytest.raises(ValueError):
+                    _ = perturber.perturb_with_foreground_noise(audio, noise)

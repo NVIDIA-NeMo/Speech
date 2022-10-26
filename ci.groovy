@@ -58,8 +58,8 @@ spec:
                 
                 parallel(
                 [
-                    "foo": stage('A') { sh "nvidia-smi" },
-                    "bar": stage('B') { sh "ls -l" }
+                    "foo": { sh "nvidia-smi" },
+                    "bar": { sh "ls -l" }
                 ]
                 )
 

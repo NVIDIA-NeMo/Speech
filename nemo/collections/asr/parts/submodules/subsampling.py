@@ -347,3 +347,55 @@ class TimeReductionModule(nn.Module):
             torch.nn.init.uniform_(self.dw_conv.bias, -dw_max, dw_max)
             torch.nn.init.uniform_(self.pw_conv.weight, -pw_max, pw_max)
             torch.nn.init.uniform_(self.pw_conv.bias, -pw_max, pw_max)
+
+
+class SubsamplingReductionModule(nn.Module):
+    """Downsamples the audio signal in time dimension."""
+
+    def __init__(self, reduction: str, d_model: int, reduction_factor: int = 2):
+        super().__init__()
+
+        assert reduction in ['pooling', 'striding']
+
+        self.reduction = reduction
+        self.d_model = d_model
+        self._sampling_num = int(math.log(reduction_factor, 2))
+
+        if reduction == 'pooling':
+            self.reduction_enc = nn.MaxPool1d(kernel_size=reduction_factor)
+            self.padding = 0
+            self.kernel_size = self.reduction_enc.kernel_size
+            self.stride = self.reduction_enc.stride
+        elif reduction == 'striding':
+            self.reduction_enc = ConvSubsampling(
+                subsampling='striding',
+                subsampling_factor=reduction_factor,
+                feat_in=d_model,
+                feat_out=d_model,
+                conv_channels=d_model,
+                activation=nn.ReLU(),
+                is_causal=False,
+            )
+
+    def forward(self, x, lengths):
+        """Shapes:
+            - x: [B, T, C]
+            - lengths: [B]
+        """
+
+        if self.reduction == 'striding':
+            x, lengths = self.reduction_enc(x=x, lengths=lengths)
+        else:
+            x = torch.transpose(x, 1, 2)  # [B, C, T]
+            lengths = calc_length(
+                lengths=lengths,
+                all_paddings=self.padding,
+                kernel_size=self.kernel_size,
+                stride=self.stride,
+                ceil_mode=False,
+                repeat_num=self._sampling_num,
+            )
+            x = self.reduction_enc(x)
+            x = torch.transpose(x, 1, 2)  # [B, T, C]
+
+        return x, lengths

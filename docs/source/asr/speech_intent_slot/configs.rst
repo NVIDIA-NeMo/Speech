@@ -73,7 +73,7 @@ An example config for the model can be:
   pretrained_encoder:
     name: stt_en_conformer_ctc_large  # which model use to initialize the encoder, set to null if not using any. Only used to initialize training, not used in resuming from checkpoint.
     freeze: false  # whether to freeze the encoder during training.
-    
+
   model:
     sample_rate: 16000
     encoder:
@@ -87,6 +87,13 @@ An example config for the model can be:
       subsampling: striding # vggnet or striding, vggnet may give better results but needs more memory
       subsampling_factor: 4 # must be power of 2
       subsampling_conv_channels: -1 # -1 sets it to d_model
+
+      # Reduction parameters: Can be used to add another subsampling layer at a given position.
+      # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
+      # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
+      reduction: null # pooling, striding, or null
+      reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
+      reduction_factor: 1
 
       # Feed forward module's params
       ff_expansion_factor: 4

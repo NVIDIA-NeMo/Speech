@@ -113,6 +113,13 @@ model:
     subsampling_factor: 4 # must be power of 2 for striding and vggnet
     subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
 
+    # Reduction parameters: Can be used to add another subsampling layer at a given position.
+    # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
+    # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
+    reduction: null # pooling, striding, or null
+    reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
+    reduction_factor: 1
+
     # Feed forward module's params
     ff_expansion_factor: 4
 

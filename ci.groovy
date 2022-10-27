@@ -55,13 +55,6 @@ spec:
                     submoduleCfg: [],
                     userRemoteConfigs: [[credentialsId: 'github-token', url: githubHelper.getCloneUrl(), refspec: '+refs/pull/*/head:refs/remotes/origin/pr/*']]]              
                 }
-                
-                parallel(
-                [
-                    "foo": { sh "nvidia-smi" },
-                    "bar": { sh "ls -l" }
-                ]
-                )
 
                 stage('Code Style') {
                         sh "apt-get update && \
@@ -77,6 +70,39 @@ spec:
                 stage('L0: GPU unit tests') {
                             sh "NEMO_NUMBA_MINVER=0.53 pytest -m 'not pleasefixme and not torch_tts'"         
                 }
+
+                parallel( //USE CUDA_VISIBLE_DEVICES to execute 2 single GPU tests in parallel here
+                [
+                    "L1: NMT Training Pre-LN": { sh 'CUDA_VISIBLE_DEVICES=0 python examples/nlp/machine_translation/enc_dec_nmt.py \
+                            --config-path=conf \
+                            --config-name=aayn_base \
+                            do_testing=true \
+                            model.train_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.train_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
+                            model.validation_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.validation_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.test_ds.src_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.test_ds.tgt_file_name=/testdata/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
+                            model.encoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
+                            model.decoder_tokenizer.tokenizer_model=/testdata/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
+                            model.encoder.pre_ln=true \
+                            model.decoder.pre_ln=true \
+                            trainer.devices=[0] \
+                            trainer.accelerator="gpu" \
+                            +trainer.fast_dev_run=true \
+                            +trainer.limit_test_batches=2 \
+                            exp_manager=null \
+                            '},
+                    "L1: Speech to text": { sh 'CUDA_VISIBLE_DEVICES=1 python examples/asr/asr_ctc/speech_to_text_ctc.py \
+                            model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
+                            model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
+                            trainer.devices=[0] \
+                            trainer.accelerator="gpu" \
+                            +trainer.fast_dev_run=True \
+                            exp_manager=null \
+                            '}
+                ]
+                )//end of parallel
 
                 stage('L1: NMT Training Pre-LN') {
                             sh 'cd examples/nlp/machine_translation && \

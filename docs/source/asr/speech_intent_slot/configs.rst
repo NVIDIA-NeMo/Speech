@@ -113,6 +113,7 @@ An example config for the model can be:
 
       ### regularization
       dropout: 0.1 # The dropout used in most of the Conformer Modules
+      dropout_pre_encoder: 0.1 # The dropout used before the encoder
       dropout_emb: 0.0 # The dropout used for embeddings
       dropout_att: 0.1 # The dropout for multi-headed attention modules
 

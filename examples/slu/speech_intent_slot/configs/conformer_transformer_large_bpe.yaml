@@ -5,7 +5,7 @@ name: "Conformer-Transformer-BPE"
 pretrained_encoder:
   name: stt_en_conformer_ctc_large
   freeze: false
-  
+
 model:
   sample_rate: 16000
   log_prediction: true # enables logging sample predictions in the output during training
@@ -106,6 +106,7 @@ model:
 
     ### regularization
     dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
     dropout_emb: 0.0 # The dropout used for embeddings
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 

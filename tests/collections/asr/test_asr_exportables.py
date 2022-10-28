@@ -609,6 +609,7 @@ def conformer_model():
             'pos_emb_max_len': 500,
             'conv_kernel_size': 31,
             'dropout': 0.1,
+            'dropout_pre_encoder': 0.1,
             'dropout_emb': 0.0,
             'dropout_att': 0.1,
         },

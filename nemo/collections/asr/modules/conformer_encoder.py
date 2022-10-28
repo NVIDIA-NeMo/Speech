@@ -90,6 +90,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
             Defaults to 'batch_norm'.
         dropout (float): the dropout rate used in all layers except the attention layers
             Defaults to 0.1.
+        dropout_pre_encoder (float): the dropout rate used before the encoder
+            Defaults to 0.1.
         dropout_emb (float): the dropout rate used for the positional embeddings
             Defaults to 0.1.
         dropout_att (float): the dropout rate used for the attention layer
@@ -178,6 +180,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         conv_norm_type='batch_norm',
         conv_context_size=None,
         dropout=0.1,
+        dropout_pre_encoder=0.1,
         dropout_emb=0.1,
         dropout_att=0.0,
     ):
@@ -293,7 +296,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         if self_attention_model == "rel_pos":
             self.pos_enc = RelPositionalEncoding(
                 d_model=d_model,
-                dropout_rate=dropout,
+                dropout_rate=dropout_pre_encoder,
                 max_len=pos_emb_max_len,
                 xscale=self.xscale,
                 dropout_rate_emb=dropout_emb,
@@ -302,7 +305,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
             pos_bias_u = None
             pos_bias_v = None
             self.pos_enc = PositionalEncoding(
-                d_model=d_model, dropout_rate=dropout, max_len=pos_emb_max_len, xscale=self.xscale
+                d_model=d_model, dropout_rate=dropout_pre_encoder, max_len=pos_emb_max_len, xscale=self.xscale
             )
         else:
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")

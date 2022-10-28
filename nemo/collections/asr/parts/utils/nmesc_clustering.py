@@ -31,7 +31,6 @@
 # https://arxiv.org/pdf/2003.02405.pdf and the implementation from
 # https://github.com/tango4j/Auto-Tuning-Spectral-Clustering.
 
-from collections import Counter
 from typing import Dict, List
 
 import torch
@@ -403,11 +402,13 @@ def getCosAffinityMatrix(emb: torch.Tensor):
     """
     Calculate cosine similarity values among speaker embeddings then min-max normalize
     the affinity matrix.
+
     Args:
         emb (Tensor):
             Matrix containing embedding vectors. emb variable should be float(FP32) type to make the data-type
             compatible with torch.mm operation for both CPU and GPU(CUDA).
             dimension: (Number of embedding vectors) x (embedding dimension)
+
     Returns:
         sim_d (Tensor):
             Matrix containing cosine similarity values among the given embedding vectors.
@@ -549,35 +550,43 @@ def addAnchorEmb(emb: torch.Tensor, anchor_sample_n: int, anchor_spk_n: int, sig
 
 def getEnhancedSpeakerCount(
     emb: torch.Tensor,
-    cuda: bool,
     random_test_count: int = 5,
     anchor_spk_n: int = 3,
     anchor_sample_n: int = 10,
     sigma: float = 50,
+    cuda: bool = False,
 ):
     """
-    Calculate the number of speakers using NME analysis with anchor embeddings.
+    Calculate the number of speakers using NME analysis with anchor embeddings. Add dummy speaker
+    embedding vectors and run speaker counting multiple times to enhance the speaker counting accuracy
+    for the short audio samples.
 
-    emb (torch.Tensor):
-        The input embedding from the embedding extractor.
-    cuda (bool):
-        Use cuda for the operations if cuda==True.
-    random_test_count (int):
-        Number of trials of the enhanced counting with randomness.
-        The higher the count, the more accurate the enhanced counting is.
-    anchor_spk_n (int):
-        Number of speakers for synthetic embedding.
-        anchor_spk_n = 3 is recommended.
-    anchor_sample_n (int):
-        Number of embedding samples per speaker.
-        anchor_sample_n = 10 is recommended.
-    sigma (float):
-        The amplitude of synthetic noise for each embedding vector.
-        If the sigma value is too small, under-counting could happen.
-        If the sigma value is too large, over-counting could happen.
-        sigma = 50 is recommended.
+    Args:
+        emb (Tensor):
+            The input embedding from the embedding extractor.
+        cuda (bool):
+            Use cuda for the operations if cuda==True.
+        random_test_count (int):
+            Number of trials of the enhanced counting with randomness.
+            The higher the count, the more accurate the enhanced counting is.
+        anchor_spk_n (int):
+            Number of speakers for synthetic embedding.
+            anchor_spk_n = 3 is recommended.
+        anchor_sample_n (int):
+            Number of embedding samples per speaker.
+            anchor_sample_n = 10 is recommended.
+        sigma (float):
+            The amplitude of synthetic noise for each embedding vector.
+            If the sigma value is too small, under-counting could happen.
+            If the sigma value is too large, over-counting could happen.
+            sigma = 50 is recommended.
+
+    Returns:
+        comp_est_num_of_spk (Tensor):
+            The estimated number of speakers. `anchor_spk_n` is subtracted from the estimated
+            number of speakers to factor out the dummy speaker embedding vectors.
     """
-    est_num_of_spk_list = []
+    est_num_of_spk_list: List[int] = []
     for seed in range(random_test_count):
         torch.manual_seed(seed)
         emb_aug = addAnchorEmb(emb, anchor_sample_n, anchor_spk_n, sigma)
@@ -592,10 +601,9 @@ def getEnhancedSpeakerCount(
             nme_mat_size=300,
             cuda=cuda,
         )
-        est_num_of_spk, _ = nmesc.NMEanalysis()
-        est_num_of_spk_list.append(est_num_of_spk)
-    ctt = Counter(est_num_of_spk_list)
-    comp_est_num_of_spk = max(ctt.most_common(1)[0][0] - anchor_spk_n, 1)
+        est_num_of_spk, _ = nmesc.forward()
+        est_num_of_spk_list.append(est_num_of_spk.item())
+    comp_est_num_of_spk = torch.mode(torch.tensor(est_num_of_spk_list))[0] - anchor_spk_n
     return comp_est_num_of_spk
 
 
@@ -762,7 +770,7 @@ class SpectralClustering:
                 Torch device variable
 
         Returns:
-            labels (torch.Tensor):
+            labels (Tensor):
                 clustering label output
         """
         laplacian = getLaplacian(affinity_mat)
@@ -1034,6 +1042,7 @@ class SpeakerClustering(torch.nn.Module):
         self,
         max_num_speaker: int = 8,
         min_samples_for_nmesc: int = 6,
+        enhanced_count_thres: int = 80,
         nme_mat_size: int = 300,
         max_rp_threshold: float = 0.15,
         sparse_search: bool = True,
@@ -1055,6 +1064,12 @@ class SpeakerClustering(torch.nn.Module):
                 The minimum number of samples required for NME clustering. This avoids
                 zero p_neighbour_lists. If the input has fewer segments than min_samples,
                 it is directed to the enhanced speaker counting mode.
+            enhanced_count_thres: (int)
+                For the short audio recordings under 60 seconds, clustering algorithm cannot
+                accumulate enough amount of speaker profile for each cluster.
+                Thus, function `getEnhancedSpeakerCount`employs anchor embeddings
+                (dummy representations) to mitigate the effect of cluster sparsity.
+                enhanced_count_thres = 80 is recommended.
             max_rp_threshold (float):
                 Limits the range of parameter search.
                 Clustering performance can vary depending on this range.
@@ -1083,6 +1098,7 @@ class SpeakerClustering(torch.nn.Module):
         super().__init__()
         self.max_num_speaker: int = max_num_speaker
         self.min_samples_for_nmesc: int = min_samples_for_nmesc
+        self.enhanced_count_thres: int = enhanced_count_thres
         self.nme_mat_size: int = nme_mat_size
         self.max_rp_threshold: float = max_rp_threshold
         self.sparse_search: bool = sparse_search
@@ -1121,6 +1137,8 @@ class SpeakerClustering(torch.nn.Module):
                 This tensor has dimensions of (Number of scales)
                 Example:
                     [31, 52, 84, 105, 120]
+            oracle_num_speakers (LongTensor):
+                The number of speakers in a session from the reference transcript
 
         Returns:
             Y (torch.tensor[int])
@@ -1130,10 +1148,15 @@ class SpeakerClustering(torch.nn.Module):
         self.embeddings_in_scales, self.timestamps_in_scales = split_input_data(
             embeddings_in_scales, timestamps_in_scales, multiscale_segment_counts
         )
-        emb = embeddings_in_scales[multiscale_segment_counts.shape[0] - 1]
+
+        emb = self.embeddings_in_scales[multiscale_segment_counts.shape[0] - 1]
 
         if emb.shape[0] == 1:
             return torch.zeros((1,), dtype=torch.int64)
+        elif emb.shape[0] <= max(self.enhanced_count_thres, self.min_samples_for_nmesc) and oracle_num_speakers < 0:
+            est_num_of_spk_enhanced = getEnhancedSpeakerCount(emb=emb, cuda=self.cuda)
+        else:
+            est_num_of_spk_enhanced = torch.tensor(-1)
 
         oracle_num_speakers = int(oracle_num_speakers.item())
 
@@ -1167,6 +1190,8 @@ class SpeakerClustering(torch.nn.Module):
 
         if oracle_num_speakers > 0:
             est_num_of_spk = torch.tensor(oracle_num_speakers).to(self.device)
+        elif est_num_of_spk_enhanced > 0:
+            est_num_of_spk = est_num_of_spk_enhanced
 
         spectral_model = SpectralClustering(n_clusters=est_num_of_spk, cuda=self.cuda, device=self.device)
         Y = spectral_model.forward(affinity_mat)

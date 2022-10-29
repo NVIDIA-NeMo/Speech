@@ -45,7 +45,7 @@ ZIPPED_FOLDER = "thorsten-de_v02.tgz"
 EXTRACTED_FOLDER = "thorsten-de"
 
 
-def __process_transcript(file_path: str):
+def __process_transcript(file_path: Path):
     # Create normalizer
     text_normalizer = Normalizer(
         lang="de", input_case="cased", overwrite_cache=True, cache_dir=str(file_path / "cache_dir"),

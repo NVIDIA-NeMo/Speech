@@ -66,7 +66,7 @@ def main(cfg: DictConfig) -> None:
     logging.info(f'Config: {OmegaConf.to_yaml(cfg)}')
 
     try:
-        strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
+        strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=True,)
     except (ImportError, ModuleNotFoundError):
         strategy = None
 

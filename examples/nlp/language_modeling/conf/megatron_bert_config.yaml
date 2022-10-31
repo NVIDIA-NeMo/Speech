@@ -42,6 +42,7 @@ exp_manager:
 model:
   # model parallelism 
   micro_batch_size: 4
+  global_batch_size: 8
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1
 
@@ -75,12 +76,17 @@ model:
   fp32_residual_connection: False # Move residual connections to fp32
   fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
 
+  # Megatron O2-style half-precision
+  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
+  grad_allreduce_chunk_size_mb: 125
+  grad_div_ar_fusion: False 
 
   # miscellaneous
   seed: 1234
   use_cpu_initialization: False # Init weights on the CPU (slow for large models)
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
-
+  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  
   # not implemented in NeMo yet
   activations_checkpoint_method: null # 'uniform', 'block'
   activations_checkpoint_num_layers: 1 

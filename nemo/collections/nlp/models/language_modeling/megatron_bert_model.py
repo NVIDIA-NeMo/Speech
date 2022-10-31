@@ -19,13 +19,14 @@ import torch.nn.functional as F
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
-from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
-    MegatronPretrainingRandomSampler,
-    MegatronPretrainingSampler,
-)
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import build_train_valid_test_datasets
+from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (
+    MegatronPretrainingBatchSampler,
+    MegatronPretrainingRandomBatchSampler,
+)
 from nemo.collections.nlp.models.language_modeling.megatron.bert_model import BertModel
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
+from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_params_for_weight_decay_optimization,
@@ -35,7 +36,8 @@ from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer import parallel_state, tensor_parallel
+    from apex.transformer import parallel_state
+    from apex.transformer.pipeline_parallel.schedules.fwd_bwd_no_pipelining import forward_backward_no_pipelining
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -54,7 +56,18 @@ class MegatronBertModel(MegatronBaseModel):
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super().__init__(cfg, trainer=trainer, no_lm_init=False)
+        self._validate_trainer()
         self.cfg = cfg
+        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+
+        if self.trainer.precision == 32:
+            self.autocast_dtype = torch.float
+        elif self.trainer.precision == 16:
+            self.autocast_dtype = torch.half
+        elif self.trainer.precision == 'bf16':
+            self.autocast_dtype = torch.bfloat16
+        else:
+            raise ValueError('precision must be in [32, 16, "bf16"]')
 
         # used in NVIDIA NGC PyTorch containers
         # buffer used during train_step for logging average loss over gradient accumulation steps
@@ -91,8 +104,46 @@ class MegatronBertModel(MegatronBaseModel):
             add_binary_head=cfg.bert_binary_head,
             megatron_legacy=cfg.get('megatron_legacy', False),
         )
-        # not using amp o2
-        self.megatron_amp_o2 = False
+
+        if self.megatron_amp_o2:
+            self.model.cuda(torch.cuda.current_device())
+            self.model = Float16Module(module=self.model, precision=cfg.precision)
+
+    def _validate_trainer(self):
+        """ Certain trainer configurations can break training.
+            Here we try to catch them and raise an error.
+        """
+        if self.trainer.accumulate_grad_batches > 1:
+            raise ValueError(
+                f'Gradient accumulation is done within training_step. trainer.accumulate_grad_batches must equal 1'
+            )
+
+    def get_forward_output_and_loss_func(self):
+        def fwd_output_and_loss_func(batch, model):
+
+            batch = [x.cuda(non_blocking=True) for x in batch]
+            tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = batch
+            if not self.cfg.bert_binary_head:
+                types = None
+
+            output_tensor = self.forward(tokens, padding_mask, types, lm_labels)
+
+            def loss_func(output_tensor):
+                loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
+                if 'sop loss' in loss_dict:
+                    lm_loss = loss_dict['lm loss']
+                    sop_loss = loss_dict['sop loss']
+                    loss = lm_loss + sop_loss
+                    reduced_loss = average_losses_across_data_parallel_group([loss, lm_loss, sop_loss])
+                else:
+                    lm_loss = loss_dict['lm loss']
+                    loss = lm_loss
+                    reduced_loss = average_losses_across_data_parallel_group([loss, lm_loss])
+                return loss, {'avg': reduced_loss}
+
+            return output_tensor, loss_func
+
+        return fwd_output_and_loss_func
 
     def forward(self, input_ids, attention_mask, token_type_ids, lm_labels=None):
         output_tensor = self.model(input_ids, attention_mask, token_type_ids=token_type_ids, lm_labels=lm_labels)
@@ -112,25 +163,45 @@ class MegatronBertModel(MegatronBaseModel):
         return output_tensor
 
     def training_step(self, batch, batch_idx):
-        tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = self.process_batch(batch)
-        if not self.cfg.bert_binary_head:
-            types = None
-        output_tensor = self(tokens, padding_mask, token_type_ids=types, lm_labels=lm_labels)
-        loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
-        if 'sop loss' in loss_dict:
-            lm_loss = loss_dict['lm loss']
-            sop_loss = loss_dict['sop loss']
-            loss = lm_loss + sop_loss
-            reduced_loss = average_losses_across_data_parallel_group([loss, lm_loss, sop_loss])
-            self._reduced_loss_buffer.append(reduced_loss[0])
-            self._reduced_lm_loss_buffer.append(reduced_loss[1])
-            self._reduced_sop_loss_buffer.append(reduced_loss[2])
+
+        self._optimizer.zero_grad()
+        batch_for_pipeline = self.process_batch(batch)
+        tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
+
+        if self.megatron_amp_o2:
+            custom_sync_context_handler = self._optimizer.no_sync
         else:
-            lm_loss = loss_dict['lm loss']
-            loss = lm_loss
-            reduced_loss = average_losses_across_data_parallel_group([loss, lm_loss])
-            self._reduced_loss_buffer.append(reduced_loss[0])
-            self._reduced_lm_loss_buffer.append(reduced_loss[1])
+            # TODO: enable async grad all reduce for O1/autocast mixed precision training
+            custom_sync_context_handler = None
+
+        losses_reduced_per_micro_batch = forward_backward_no_pipelining(
+            forward_step_func=self.get_forward_output_and_loss_func(),
+            batch=batch_for_pipeline,
+            model=self.model,
+            forward_only=False,
+            tensor_shape=tensor_shape,
+            dtype=self.autocast_dtype,
+            grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+            custom_sync_context_handler=custom_sync_context_handler,
+        )
+
+        loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
+        loss_tensor = torch.vstack(loss_tensors_list)
+        loss_mean = loss_tensor.mean(axis=0)
+
+        self._reduced_loss_buffer.append(loss_mean[0])
+        self._reduced_lm_loss_buffer.append(loss_mean[1])
+        if len(loss_mean) == 3:
+            self._reduced_sop_loss_buffer.append(loss_mean[2])
+
+        # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
+        # so we all-reduce gradients after the pipeline
+        self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
+
+        if self.cfg.precision == 16:
+            loss_scale = self.trainer.precision_plugin.scaler._scale
+            if loss_scale is not None:
+                self.log('loss_scale', loss_scale)
 
         if (batch_idx + 1) % self.trainer.accumulate_grad_batches == 0:
             # Reduced loss for logging.
@@ -152,23 +223,25 @@ class MegatronBertModel(MegatronBaseModel):
             self._reduced_loss_buffer = []
             self._reduced_lm_loss_buffer = []
             self._reduced_sop_loss_buffer = []
-        return loss
+
+        return loss_mean[0]
 
     def validation_step(self, batch, batch_idx):
-        tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = self.process_batch(batch)
-        if not self.cfg.bert_binary_head:
-            types = None
-        output_tensor = self(tokens, padding_mask, token_type_ids=types, lm_labels=lm_labels)
-        loss_dict = self.loss_func(loss_mask, sentence_order, output_tensor)
-        if 'sop loss' in loss_dict:
-            lm_loss = loss_dict['lm loss']
-            sop_loss = loss_dict['sop loss']
-            loss = lm_loss + sop_loss
-        else:
-            lm_loss = loss_dict['lm loss']
-            loss = lm_loss
-        reduced_loss = average_losses_across_data_parallel_group([loss])
-        return reduced_loss
+        batch_for_pipeline = self.process_batch(batch)
+        tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
+
+        losses_reduced_per_micro_batch = forward_backward_no_pipelining(
+            forward_step_func=self.get_forward_output_and_loss_func(),
+            batch=batch_for_pipeline,
+            model=self.model,
+            forward_only=True,
+            tensor_shape=tensor_shape,
+            dtype=self.autocast_dtype,
+        )
+        loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
+        loss_tensor = torch.vstack(loss_tensors_list)
+        loss_mean = loss_tensor.mean(axis=0)
+        return loss_mean[0]
 
     def validation_epoch_end(self, outputs):
         averaged_loss = torch.stack(outputs).mean()
@@ -207,29 +280,22 @@ class MegatronBertModel(MegatronBaseModel):
 
     def process_batch(self, batch):
         """Build the batch."""
-        # Items and their type.
-        keys = ['text', 'types', 'labels', 'is_random', 'loss_mask', 'padding_mask']
-        datatype = torch.int64
-
-        data = batch
-        data_b = tensor_parallel.broadcast_data(keys, data, datatype)
-
         # Unpack.
-        tokens = data_b['text'].long()
-        types = data_b['types'].long()
-        sentence_order = data_b['is_random'].long()
-        loss_mask = data_b['loss_mask'].float()
-        lm_labels = data_b['labels'].long()
-        padding_mask = data_b['padding_mask'].long()
-        return tokens, types, sentence_order, loss_mask, lm_labels, padding_mask
+        tokens = batch['text'].long()
+        types = batch['types'].long()
+        sentence_order = batch['is_random'].long()
+        loss_mask = batch['loss_mask'].float()
+        lm_labels = batch['labels'].long()
+        padding_mask = batch['padding_mask'].long()
+        return [tokens, types, sentence_order, loss_mask, lm_labels, padding_mask]
 
     def _build_train_valid_test_datasets(self):
         logging.info('Building Bert datasets.')
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
-        global_batch_size = self.trainer.world_size * self.cfg.micro_batch_size / self.cfg.tensor_model_parallel_size
+        global_batch_size = self.cfg.global_batch_size
         # Compute trianing micro-batch steps: total_global_batch_steps x grad_acumms_per_global_batch
-        max_train_steps = self.trainer.max_steps * self.trainer.accumulate_grad_batches
+        max_train_steps = self.trainer.max_steps
         eval_iters = (max_train_steps // self.trainer.val_check_interval + 1) * self.trainer.limit_val_batches
         test_iters = self.trainer.limit_test_batches
 
@@ -271,29 +337,45 @@ class MegatronBertModel(MegatronBaseModel):
         logging.info(f'Finished building Bert datasets.')
         return self._train_ds, self._validation_ds, self._test_ds
 
+    def backward(self, *args, **kwargs):
+        """ LightningModule hook to do backward.
+            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+            No need to call it here.
+        """
+        return
+
+    def optimizer_zero_grad(self, *args, **kwargs):
+        """ LightningModule hook to zero grad.
+            We want this to do nothing as we are zeroing grads during the training_step.
+        """
+        return
+
     def build_pretraining_data_loader(self, dataset, consumed_samples):
         """Buld dataloader given an input dataset."""
 
         if dataset is None:
             return None
-
         # Megatron sampler
         if hasattr(self.cfg.data, 'dataloader_type') and self.cfg.data.dataloader_type is not None:
             if self.cfg.data.dataloader_type == 'single':
-                batch_sampler = MegatronPretrainingSampler(
+                batch_sampler = MegatronPretrainingBatchSampler(
                     total_samples=len(dataset),
                     consumed_samples=consumed_samples,
                     micro_batch_size=self.cfg.micro_batch_size,
+                    global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
+                    drop_last=self.cfg.get('drop_last', True),
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
-                batch_sampler = MegatronPretrainingRandomSampler(
+                batch_sampler = MegatronPretrainingRandomBatchSampler(
                     total_samples=len(dataset),
                     consumed_samples=consumed_samples,
                     micro_batch_size=self.cfg.micro_batch_size,
+                    global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
+                    drop_last=self.cfg.get('drop_last', True),
                 )
             else:
                 raise ValueError('cfg.data.dataloader_type must be "single" or "cyclic"')
@@ -396,7 +478,7 @@ class MegatronBertModel(MegatronBaseModel):
 
     def setup_optimizer_param_groups(self):
         """ModelPT override. Optimizer will get self._optimizer_param_groups"""
-        self._optimizer_param_groups = get_params_for_weight_decay_optimization([self.model])
+        self._optimizer_param_groups = get_params_for_weight_decay_optimization(self.model)
 
     # Required for ONNX export
     @property

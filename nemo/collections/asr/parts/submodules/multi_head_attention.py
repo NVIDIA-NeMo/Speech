@@ -331,7 +331,6 @@ class RelPositionalEncoding(PositionalEncoding):
         # positive positions would be used for left positions and negative for right positions
         positions = torch.arange(length - 1, -length, -1, dtype=torch.float32, device=device).unsqueeze(1)
         self.create_pe(positions=positions)
-        self.center_pos = torch.tensor(self.pe.size(1) // 2 + 1, dtype=torch.int32, device=device)
 
     def forward(self, x, cache_len=0):
         """Compute positional encoding.
@@ -350,8 +349,9 @@ class RelPositionalEncoding(PositionalEncoding):
         # negative positions would be used for right and positive for left tokens
         # for input of length L, 2*L-1 positions are needed, positions from (L-1) to -(L-1)
         input_len = x.size(1) + cache_len
-        start_pos = self.center_pos - input_len
-        end_pos = self.center_pos + input_len - 1
+        center_pos = self.pe.size(1) // 2 + 1
+        start_pos = center_pos - input_len
+        end_pos = center_pos + input_len - 1
         pos_emb = self.pe[:, start_pos:end_pos]
         if self.dropout_emb:
             pos_emb = self.dropout_emb(pos_emb)

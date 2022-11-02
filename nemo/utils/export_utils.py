@@ -108,7 +108,7 @@ def exportable_ScaledMaskedSoftmax(input, mask, scale):
 def get_export_format(filename: str):
     _, ext = os.path.splitext(filename)
     try:
-        return _EXT_DICT[ext]
+        return _EXT_DICT[ext.lower()]
     except KeyError:
         raise ValueError(f"Export file {filename} extension does not correspond to any export format!")
 
@@ -186,12 +186,10 @@ def verify_runtime(model, output, input_examples, input_names, check_tolerance=0
         logging.warning(f"ONNX generated at {output}, not verified - please install onnxruntime_gpu package.\n")
         onnx.checker.check_model(onnx_model, full_check=True)
         return
-
+    del onnx_model
     onnx_session_opt = onnxruntime.SessionOptions()
     onnx_session_opt.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
-    sess = onnxruntime.InferenceSession(
-        onnx_model.SerializeToString(), sess_options=onnx_session_opt, providers=['CUDAExecutionProvider']
-    )
+    sess = onnxruntime.InferenceSession(output, sess_options=onnx_session_opt, providers=['CUDAExecutionProvider'])
     all_good = True
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)

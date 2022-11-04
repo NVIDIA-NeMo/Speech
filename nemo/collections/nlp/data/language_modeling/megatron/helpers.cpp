@@ -99,7 +99,8 @@ py::array build_sample_idx(const py::array_t<int32_t>& sizes_,
 			   const py::array_t<int32_t>& doc_idx_,
 			   const int32_t seq_length,
 			   const int32_t num_epochs,
-			   const int64_t tokens_per_epoch) {
+			   const int64_t tokens_per_epoch,
+         const bool drop_last = true) {
     /* Sample index (sample_idx) is used for gpt2 like dataset for which
        the documents are flattened and the samples are built based on this
        1-D flatten array. It is a 2D array with sizes [number-of-samples + 1, 2]
@@ -116,7 +117,12 @@ py::array build_sample_idx(const py::array_t<int32_t>& sizes_,
     auto doc_idx = doc_idx_.unchecked<1>();
 
     // Mapping and it's length (1D).
-    int64_t num_samples = (num_epochs * tokens_per_epoch - 1) / seq_length;
+    int64_t num_samples = 0;
+    if (drop_last == false) {
+      num_samples = ceil(float(num_epochs * tokens_per_epoch - 1) / seq_length);
+    } else {
+      num_samples = (num_epochs * tokens_per_epoch - 1) / seq_length;
+    }
     int32_t* sample_idx = new int32_t[2*(num_samples+1)];
 
     cout << "    using:" << endl << std::flush;
@@ -158,6 +164,11 @@ py::array build_sample_idx(const py::array_t<int32_t>& sizes_,
 	  remaining_seq_length = 0;
 	} else {
 	  // Otherwise, start from the begining of the next document.
+    if (doc_idx_index == (doc_idx_.shape(0) - 1)) {
+      assert(sample_index == num_samples);
+      doc_offset = sizes[doc_idx[doc_idx_index]] - 1;
+      break;
+    }
 	  ++doc_idx_index;
 	  doc_offset = 0;
 	}

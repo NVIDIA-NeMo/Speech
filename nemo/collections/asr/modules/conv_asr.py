@@ -934,7 +934,7 @@ class JasperEncoderConfig:
 @dataclass
 class ConvASREncoderConfig:
     _target_: str = 'nemo.collections.asr.modules.ConvASREncoder'
-    jasper: Optional[JasperEncoderConfig] = field(default_factory=list)
+    jasper: Optional[List[JasperEncoderConfig]] = field(default_factory=list)
     activation: str = MISSING
     feat_in: int = MISSING
     normalization_mode: str = "batch"

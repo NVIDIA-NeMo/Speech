@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass, is_dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
@@ -57,6 +57,7 @@ class AbstractAdapterModule(nn.Module, access_mixins.AccessMixin):
 
 
 class LinearAdapter(AbstractAdapterModule):
+
     """
     Simple Linear Feedforward Adapter module with LayerNorm and singe hidden layer with activation function.
     Note: The adapter explicitly initializes its final layer with all zeros in order to avoid affecting the
@@ -66,7 +67,7 @@ class LinearAdapter(AbstractAdapterModule):
         in_features: Input dimension of the module. Note that for adapters, input_dim == output_dim.
         dim: Hidden dimension of the feed forward network.
         activation: Str name for an activation function.
-        norm_position: Str, can be `pre` or `post`. Defaults to `post`. Determines whether the normalization
+        norm_position: Str, can be `pre` or `post`. Defaults to `pre`. Determines whether the normalization
             will occur in the first layer or the last layer. Certain architectures may prefer one over the other.
         dropout: float value, whether to perform dropout on the output of the last layer of the adapter.
         adapter_strategy: By default, ResidualAddAdapterStrategyConfig. An adapter composition function object.
@@ -77,7 +78,7 @@ class LinearAdapter(AbstractAdapterModule):
         in_features: int,
         dim: int,
         activation: str = 'swish',
-        norm_position: str = "post",
+        norm_position: str = 'pre',
         dropout: float = 0.0,
         adapter_strategy: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig = None,
     ):
@@ -142,7 +143,7 @@ class LinearAdapterConfig:
     in_features: int
     dim: int
     activation: str = 'swish'
-    norm_position: str = 'post'
+    norm_position: str = 'pre'
     dropout: float = 0.0
-    adapter_strategy: Optional[dict] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
+    adapter_strategy: Optional[Any] = adapter_mixin_strategies.ResidualAddAdapterStrategyConfig()
     _target_: str = "{0}.{1}".format(LinearAdapter.__module__, LinearAdapter.__name__)

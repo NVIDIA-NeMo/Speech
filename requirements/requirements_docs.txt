@@ -1,6 +1,7 @@
 latexcodec
 sphinx>=3.0
 sphinx-book-theme
+sphinx-copybutton
 sphinxcontrib-bibtex
 wrapt
 numpy

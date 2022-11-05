@@ -91,7 +91,8 @@ import hydra
 import librosa
 import soundfile
 import tqdm
-from datasets import Audio, IterableDataset, load_dataset
+from datasets import Audio, Dataset, IterableDataset, load_dataset
+from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
 
@@ -110,10 +111,13 @@ class HFDatasetConvertionConfig:
     # NeMo dataset conversion
     sampling_rate: int = 16000
     streaming: bool = False  # Whether to use Streaming dataset API. [NOT RECOMMENDED]
+    num_proc: int = -1
 
     # Placeholders. Generated internally.
     resolved_output_dir: str = ''
     split_output_dir: Optional[str] = None
+
+    hydra: HydraConf = HydraConf(run=RunDir(dir="."))
 
 
 def prepare_output_dirs(cfg: HFDatasetConvertionConfig):
@@ -173,12 +177,17 @@ def prepare_audio_filepath(audio_filepath):
     if not os.path.exists(audio_basefilepath):
         os.makedirs(audio_basefilepath, exist_ok=True)
 
+    # Remove temporary fmt file
     if os.path.exists(audio_filepath):
         os.remove(audio_filepath)
 
     # replace any ext with .wav
     audio_filepath, ext = os.path.splitext(audio_filepath)
     audio_filepath = audio_filepath + '.wav'
+
+    # Remove previous run file
+    if os.path.exists(audio_filepath):
+        os.remove(audio_filepath)
     return audio_filepath
 
 
@@ -216,7 +225,7 @@ def build_map_dataset_to_nemo_func(cfg: HFDatasetConvertionConfig, basedir):
 
 
 def convert_offline_dataset_to_nemo(
-    dataset: IterableDataset, cfg: HFDatasetConvertionConfig, basedir: str, manifest_filepath: str
+    dataset: Dataset, cfg: HFDatasetConvertionConfig, basedir: str, manifest_filepath: str
 ):
     """
     Converts a HF dataset to a audio-preprocessed Nemo dataset in Offline mode.
@@ -228,7 +237,11 @@ def convert_offline_dataset_to_nemo(
         basedir: Base output directory.
         manifest_filepath: Filepath of manifest.
     """
-    dataset = dataset.map(build_map_dataset_to_nemo_func(cfg, basedir))
+    num_proc = cfg.num_proc
+    if num_proc < 0:
+        num_proc = max(1, os.cpu_count() // 2)
+
+    dataset = dataset.map(build_map_dataset_to_nemo_func(cfg, basedir), num_proc=num_proc)
     ds_iter = iter(dataset)
 
     with open(manifest_filepath, 'w') as manifest_f:

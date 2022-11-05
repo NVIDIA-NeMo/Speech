@@ -20,7 +20,6 @@ import torch
 import torch.nn as nn
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf, open_dict
-from sympy import true
 
 from nemo.utils import logging, model_utils
 

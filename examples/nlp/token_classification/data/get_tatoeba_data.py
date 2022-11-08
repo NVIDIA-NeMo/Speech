@@ -17,9 +17,9 @@ import logging
 import os
 import random
 import re
-import string
 import subprocess
 
+from nemo.collections.nlp.data.token_classification.token_classification_utils import create_text_and_labels
 from nemo.utils import logging
 
 URL = {'tatoeba': 'https://downloads.tatoeba.org/exports/sentences.csv'}
@@ -118,68 +118,6 @@ def __split_into_train_dev(in_file: str, train_file: str, dev_file: str, percent
     dev_size = int(len(lines) * percent_dev)
     train_file.write(' '.join(lines[:-dev_size]))
     dev_file.write(' '.join(lines[-dev_size:]))
-
-
-def remove_punctuation(word: str):
-    """
-    Removes all punctuation marks from a word except for '
-    that is often a part of word: don't, it's, and so on
-    """
-    all_punct_marks = string.punctuation.replace("'", '')
-    return re.sub('[' + all_punct_marks + ']', '', word)
-
-
-def create_text_and_labels(output_dir: str, file_path: str, punct_marks: str = ',.?'):
-    """
-    Create datasets for training and evaluation.
-
-    Args:
-      output_dir: path to the output data directory
-      file_path: path to file name
-      punct_marks: supported punctuation marks
-
-    The data will be split into 2 files: text.txt and labels.txt. \
-    Each line of the text.txt file contains text sequences, where words\
-    are separated with spaces. The labels.txt file contains \
-    corresponding labels for each word in text.txt, the labels are \
-    separated with spaces. Each line of the files should follow the \
-    format:  \
-    [WORD] [SPACE] [WORD] [SPACE] [WORD] (for text.txt) and \
-    [LABEL] [SPACE] [LABEL] [SPACE] [LABEL] (for labels.txt).'
-    """
-    if not os.path.exists(file_path):
-        raise ValueError(f'{file_path} not found')
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    base_name = os.path.basename(file_path)
-    labels_file = os.path.join(output_dir, 'labels_' + base_name)
-    text_file = os.path.join(output_dir, 'text_' + base_name)
-
-    with open(file_path, 'r') as f:
-        with open(text_file, 'w') as text_f:
-            with open(labels_file, 'w') as labels_f:
-                for line in f:
-                    line = line.split()
-                    text = ''
-                    labels = ''
-                    for word in line:
-                        label = word[-1] if word[-1] in punct_marks else 'O'
-                        word = remove_punctuation(word)
-                        if len(word) > 0:
-                            if word[0].isupper():
-                                label += 'U'
-                            else:
-                                label += 'O'
-
-                            word = word.lower()
-                            text += word + ' '
-                            labels += label + ' '
-
-                    text_f.write(text.strip() + '\n')
-                    labels_f.write(labels.strip() + '\n')
-
-    print(f'{text_file} and {labels_file} created from {file_path}.')
 
 
 def __delete_file(file_to_del: str):

@@ -24,9 +24,9 @@ import shutil
 import subprocess
 import tarfile
 
-from examples.nlp.token_classification.data.get_tatoeba_data import create_text_and_labels
 from tqdm import tqdm
 
+from nemo.collections.nlp.data.token_classification.token_classification_utils import create_text_and_labels
 from nemo.utils import logging
 
 URL = {

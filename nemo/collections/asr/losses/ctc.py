@@ -79,5 +79,4 @@ class CTCLoss(nn.CTCLoss, Serialization, Typing):
         )
         if self._apply_reduction:
             loss = self.reduce(loss, target_lengths)
-            loss = torch.mean(loss)
         return loss

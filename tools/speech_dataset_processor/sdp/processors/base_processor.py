@@ -34,6 +34,17 @@ class DataEntry:
 
 
 class BaseProcessor(ABC):
+    """
+    Abstract class for SDP processors.
+
+    Args
+    output_manifest_file: path of where the output manifest file will be located.
+    input_manifest_file: path of where the input manifest file is located. This arg 
+        is optional - some processors may not take in an input manifest because they
+        need to create an initial manifest from scratch (ie from some transcript file
+        that is in a format different to the NeMo manifest format).
+    """
+
     def __init__(self, output_manifest_file, input_manifest_file=None):
         self.output_manifest_file = output_manifest_file
         self.input_manifest_file = input_manifest_file
@@ -55,13 +66,15 @@ class BaseProcessor(ABC):
 
 class BaseParallelProcessor(BaseProcessor):
     """
-    TBD
+    Processor class which allows operations on each utterance to be parallelized. Parallelization 
+    is done using tqdm.contrib.concurrent.process_map.
 
-    input_manifest_file should always be specified unless it's the first
-    processor that reads from original dataset representation.
+    Args:
+        max_workers: maximum number of workers that will be spawned during parallel processing.
+        chunksize: the size of the chunks that will be sent to worker processes. 
     """
 
-    def __init__(self, max_workers=-1, chunksize=100, **kwargs):
+    def __init__(self, max_workers: int = -1, chunksize: int = 100, **kwargs):
         super().__init__(**kwargs)
         if max_workers == -1:
             max_workers = multiprocessing.cpu_count()

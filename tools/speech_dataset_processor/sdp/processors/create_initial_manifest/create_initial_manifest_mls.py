@@ -25,8 +25,27 @@ TEST_DATA_PATH = str(Path(__file__).parents[2] / "tests" / "test_data" / "mls_{l
 
 
 class CreateInitialManifestMLS(BaseParallelProcessor):
+    """
+    Downloads and unzips raw MLS data for the specified language, and creates an initial manifest using
+    the transcripts provided in the raw data. 
+
+    Args:
+        language: the language of the data you wish to be downloaded. This will be used to format the 
+            URL from which we attempt to download the data.
+        download_dir: the directory where the downloaded data will be saved.
+        data_split: the data split for which the initial manifest will be created.
+        resampled_audio_dir: the directory where the resampled (16kHz) wav files will be stored.
+        use_test_data: if `True`, will use the test data manifest located at `TEST_DATA_PATH` to carry out tests.
+    """
+
     def __init__(
-        self, language, download_dir, resampled_audio_dir, data_split, use_test_data=False, **kwargs,
+        self,
+        language: str,
+        download_dir: str,
+        resampled_audio_dir: str,
+        data_split: str,
+        use_test_data: bool = False,
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.language = language
@@ -65,7 +84,7 @@ class CreateInitialManifestMLS(BaseParallelProcessor):
 
         return dataset_entries
 
-    def process_dataset_entry(self, data_entry):
+    def process_dataset_entry(self, data_entry: str):
         if len(data_entry.split("\t")) != 2:
             raise RuntimeError(f"have more than one tab in line {data_entry}")
 

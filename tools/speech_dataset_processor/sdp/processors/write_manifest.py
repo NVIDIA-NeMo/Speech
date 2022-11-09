@@ -13,13 +13,24 @@
 # limitations under the License.
 
 import json
+from typing import List
 
 from sdp.processors.base_processor import BaseProcessor
 from tqdm import tqdm
 
 
 class WriteManifest(BaseProcessor):
-    def __init__(self, output_manifest_file, input_manifest_file, fields_to_save):
+    """
+    Saves a copy of a manifest but only with the fields specified in fields_to_save.
+
+    Args:
+        output_manifest_file: path of where the output file will be saved.
+        input_manifest_file: path of where the input file that we will be copying is saved.
+        fields_to_save: list of the fields in the input manifest that we want to copy over. 
+            The output file will only contain these fields.
+    """
+
+    def __init__(self, output_manifest_file: str, input_manifest_file: str, fields_to_save: List[str]):
         self.output_manifest_file = output_manifest_file
         self.input_manifest_file = input_manifest_file
         self.fields_to_save = fields_to_save

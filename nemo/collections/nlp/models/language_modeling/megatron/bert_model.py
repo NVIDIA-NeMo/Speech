@@ -234,8 +234,13 @@ class BertModel(MegatronModule):
     def forward(self, bert_model_input, attention_mask, token_type_ids=None, lm_labels=None):
 
         extended_attention_mask = bert_extended_attention_mask(attention_mask)
-        input_ids = bert_model_input
-        position_ids = build_position_ids(input_ids)
+
+        if parallel_state.is_pipeline_first_stage():
+            input_ids = bert_model_input
+            position_ids = build_position_ids(input_ids)
+        else:
+            position_ids = None
+            input_ids = None
 
         lm_output = self.language_model(
             input_ids, position_ids, extended_attention_mask, token_type_ids=token_type_ids

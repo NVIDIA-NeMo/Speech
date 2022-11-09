@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -31,13 +31,22 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_params_for_weight_decay_optimization,
 )
+from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import AppState, logging
 
 try:
     from apex.transformer import parallel_state
+
+    from apex.transformer.pipeline_parallel.schedules.common import build_model
     from apex.transformer.pipeline_parallel.schedules.fwd_bwd_no_pipelining import forward_backward_no_pipelining
+    from apex.transformer.pipeline_parallel.schedules.fwd_bwd_pipelining_without_interleaving import (
+        forward_backward_pipelining_without_interleaving,
+    )
+    from apex.transformer.pipeline_parallel.schedules.fwd_bwd_pipelining_with_interleaving import (
+        _forward_backward_pipelining_with_interleaving,
+    )
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):
@@ -55,10 +64,12 @@ class MegatronBertModel(MegatronBaseModel):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        super().__init__(cfg, trainer=trainer, no_lm_init=False)
-        self._validate_trainer()
-        self.cfg = cfg
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+        super().__init__(cfg, trainer=trainer, no_lm_init=False)
+
+        self._validate_trainer()
+
+        self.cfg = cfg
 
         if self.trainer.precision == 32:
             self.autocast_dtype = torch.float
@@ -74,9 +85,18 @@ class MegatronBertModel(MegatronBaseModel):
         self._reduced_lm_loss_buffer = []
         self._reduced_sop_loss_buffer = []
 
+        # build_model returns a list of modules which are used for interleaved pipeline parallelism
+        self.model = build_model(model_provider_func=self.model_provider_func, wrap_with_ddp=False,)[0]
+
+        if self.megatron_amp_o2:
+            self.model.cuda(torch.cuda.current_device())
+            self.model = Float16Module(module=self.model, precision=cfg.precision)
+
+    def model_provider_func(self, pre_process, post_process):
+        cfg = self.cfg
         num_tokentypes = 2 if cfg.bert_binary_head else 0
 
-        self.model = BertModel(
+        model = BertModel(
             vocab_size=self.padded_vocab_size,
             hidden_size=cfg.hidden_size,
             max_position_embeddings=cfg.max_position_embeddings,
@@ -87,8 +107,8 @@ class MegatronBertModel(MegatronBaseModel):
             ffn_hidden_size=cfg.ffn_hidden_size,
             num_tokentypes=num_tokentypes,
             parallel_output=True,
-            pre_process=cfg.get('pre_process', True),
-            post_process=cfg.get('post_process', True),
+            pre_process=pre_process,
+            post_process=post_process,
             init_method_std=cfg.get('init_method_std', 0.02),
             fp16_lm_cross_entropy=cfg.get('fp16_lm_cross_entropy', False),
             use_cpu_initialization=cfg.get('use_cpu_initialization', False),
@@ -105,9 +125,7 @@ class MegatronBertModel(MegatronBaseModel):
             megatron_legacy=cfg.get('megatron_legacy', False),
         )
 
-        if self.megatron_amp_o2:
-            self.model.cuda(torch.cuda.current_device())
-            self.model = Float16Module(module=self.model, precision=cfg.precision)
+        return model
 
     def _validate_trainer(self):
         """ Certain trainer configurations can break training.
@@ -118,14 +136,39 @@ class MegatronBertModel(MegatronBaseModel):
                 f'Gradient accumulation is done within training_step. trainer.accumulate_grad_batches must equal 1'
             )
 
+    def _get_fwd_bwd_function(self):
+        fwd_bwd_function = None
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+            fwd_bwd_function = forward_backward_pipelining_without_interleaving
+        else:
+            fwd_bwd_function = forward_backward_no_pipelining
+        return fwd_bwd_function
+
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(batch, model):
+            if parallel_state.get_pipeline_model_parallel_world_size() == 1:
+                batch = [x.cuda(non_blocking=True) for x in batch]
+                tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = batch
+            else:
+                if parallel_state.is_pipeline_first_stage():
+                    tokens = batch[0].cuda(non_blocking=True)
+                    types = batch[1].cuda(non_blocking=True)
+                    sentence_order = batch[2].cuda(non_blocking=True)
+                    padding_mask = batch[5].cuda(non_blocking=True)
+                    loss_mask, lm_labels = None, None
+                elif parallel_state.is_pipeline_last_stage():
+                    loss_mask = batch[3].cuda(non_blocking=True)
+                    lm_labels = batch[4].cuda(non_blocking=True)
+                    sentence_order = batch[2].cuda(non_blocking=True)
+                    padding_mask = batch[5].cuda(non_blocking=True)
+                    tokens, types = None, None
+                else:
+                    padding_mask = batch[5].cuda(non_blocking=True)
+                    sentence_order = batch[2].cuda(non_blocking=True)
+                    tokens, types, loss_mask, lm_labels = None, None, None, None
 
-            batch = [x.cuda(non_blocking=True) for x in batch]
-            tokens, types, sentence_order, loss_mask, lm_labels, padding_mask = batch
             if not self.cfg.bert_binary_head:
                 types = None
-
             output_tensor = self.forward(tokens, padding_mask, types, lm_labels)
 
             def loss_func(output_tensor):
@@ -147,18 +190,17 @@ class MegatronBertModel(MegatronBaseModel):
 
     def forward(self, input_ids, attention_mask, token_type_ids, lm_labels=None):
         output_tensor = self.model(input_ids, attention_mask, token_type_ids=token_type_ids, lm_labels=lm_labels)
+        if parallel_state.is_pipeline_last_stage():
+            # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
+            if torch.is_tensor(output_tensor):
+                output_tensor = output_tensor.transpose(1, 0).contiguous()
+            else:
+                lm_loss_, sop_logits = output_tensor
 
-        # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
-        if torch.is_tensor(output_tensor):
-            output_tensor = output_tensor.transpose(1, 0).contiguous()
-        else:
-            lm_loss_, sop_logits = output_tensor
-
-            lm_loss_ = lm_loss_.transpose(1, 0).contiguous()
-            if sop_logits is not None:
-                sop_logits = sop_logits.transpose(1, 0).contiguous()
-
-            output_tensor = (lm_loss_, sop_logits)
+                lm_loss_ = lm_loss_.transpose(1, 0).contiguous()
+                if sop_logits is not None:
+                    sop_logits = sop_logits.transpose(1, 0).contiguous()
+                output_tensor = (lm_loss_, sop_logits)
 
         return output_tensor
 
@@ -174,7 +216,11 @@ class MegatronBertModel(MegatronBaseModel):
             # TODO: enable async grad all reduce for O1/autocast mixed precision training
             custom_sync_context_handler = None
 
-        losses_reduced_per_micro_batch = forward_backward_no_pipelining(
+        # run forward and backwards passes for an entire global batch
+        # we do this inside training_step to support pipeline parallelism
+        fwd_bwd_function = self._get_fwd_bwd_function()
+
+        losses_reduced_per_micro_batch = fwd_bwd_function(
             forward_step_func=self.get_forward_output_and_loss_func(),
             batch=batch_for_pipeline,
             model=self.model,
@@ -185,18 +231,26 @@ class MegatronBertModel(MegatronBaseModel):
             custom_sync_context_handler=custom_sync_context_handler,
         )
 
-        loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
-        loss_tensor = torch.vstack(loss_tensors_list)
-        loss_mean = loss_tensor.mean(axis=0)
+        if losses_reduced_per_micro_batch:
+            loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
+            loss_tensor = torch.vstack(loss_tensors_list)
+            loss_mean = loss_tensor.mean(axis=0)
+        else:
+            loss_mean = torch.tensor([0.0, 0.0]).cuda()
 
-        self._reduced_loss_buffer.append(loss_mean[0])
-        self._reduced_lm_loss_buffer.append(loss_mean[1])
-        if len(loss_mean) == 3:
-            self._reduced_sop_loss_buffer.append(loss_mean[2])
+        if self.megatron_amp_o2 and self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+            # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
+            self._optimizer.allreduce_main_grads()
+        else:
+            # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
+            # so we all-reduce gradients after the pipeline
+            self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
 
-        # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
-        # so we all-reduce gradients after the pipeline
-        self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
+        if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
+            # when using pipeline parallelism the first and last stage must keep embeddings in sync
+            self.allreduce_first_last_embeddings()
+
+        torch.distributed.broadcast(loss_mean, get_last_rank())
 
         if self.cfg.precision == 16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
@@ -205,13 +259,10 @@ class MegatronBertModel(MegatronBaseModel):
 
         if (batch_idx + 1) % self.trainer.accumulate_grad_batches == 0:
             # Reduced loss for logging.
-            average_reduced_loss = sum(self._reduced_loss_buffer) / len(self._reduced_loss_buffer)
-            self.log('reduced_train_loss', average_reduced_loss, prog_bar=True)
-            if len(self._reduced_sop_loss_buffer) > 0:
-                average_reduced_lm_loss = sum(self._reduced_lm_loss_buffer) / len(self._reduced_lm_loss_buffer)
-                average_reduced_sop_loss = sum(self._reduced_sop_loss_buffer) / len(self._reduced_sop_loss_buffer)
-                self.log('reduced_lm_train_loss', average_reduced_lm_loss, prog_bar=True)
-                self.log('reduced_sop_train_loss', average_reduced_sop_loss, prog_bar=True)
+            self.log('reduced_train_loss', loss_mean[0], prog_bar=True)
+            if len(loss_mean) > 2:
+                self.log('reduced_lm_train_loss', loss_mean[1], prog_bar=True)
+                self.log('reduced_sop_train_loss', loss_mean[2], prog_bar=True)
             lr = self._optimizer.param_groups[0]['lr']
             self.log('lr', lr)
             self.log('global_step', self.trainer.global_step, prog_bar=True)
@@ -220,17 +271,37 @@ class MegatronBertModel(MegatronBaseModel):
                 self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
                 prog_bar=True,
             )
-            self._reduced_loss_buffer = []
-            self._reduced_lm_loss_buffer = []
-            self._reduced_sop_loss_buffer = []
 
         return loss_mean[0]
+
+    def allreduce_first_last_embeddings(self):
+
+        # Modified from megatron-lm: https://github.com/NVIDIA/Megatron-LM/blob/d41696840ed0a7edb7e0499eb82a48ae112d9bb3/megatron/training.py#L407
+        # All-reduce word_embeddings' grad across first and last stages to ensure
+        # that word_embeddings parameters stay in sync.
+        # This should only run for models that support pipelined model parallelism
+        # (BERT and GPT-2).
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1 and (
+            parallel_state.is_pipeline_first_stage(ignore_virtual=True)
+            or parallel_state.is_pipeline_last_stage(ignore_virtual=True)
+        ):
+            module = self.model
+            if module.share_token_embeddings:
+                word_embeddings_weight = module.word_embeddings_weight()
+                if self.megatron_amp_o2:
+                    # O2 recipe stores a "main" copy of weights and grads
+                    grad = word_embeddings_weight.main_grad
+                else:
+                    grad = word_embeddings_weight.grad
+                torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
     def validation_step(self, batch, batch_idx):
         batch_for_pipeline = self.process_batch(batch)
         tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
-        losses_reduced_per_micro_batch = forward_backward_no_pipelining(
+        fwd_bwd_function = self._get_fwd_bwd_function()
+
+        losses_reduced_per_micro_batch = fwd_bwd_function(
             forward_step_func=self.get_forward_output_and_loss_func(),
             batch=batch_for_pipeline,
             model=self.model,
@@ -238,13 +309,24 @@ class MegatronBertModel(MegatronBaseModel):
             tensor_shape=tensor_shape,
             dtype=self.autocast_dtype,
         )
-        loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
-        loss_tensor = torch.vstack(loss_tensors_list)
-        loss_mean = loss_tensor.mean(axis=0)
+
+        if losses_reduced_per_micro_batch:
+            loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
+            loss_tensor = torch.vstack(loss_tensors_list)
+            loss_mean = loss_tensor.mean(axis=0)
+        else:
+            loss_mean = torch.tensor([0.0]).cuda()
+
         return loss_mean[0]
 
     def validation_epoch_end(self, outputs):
-        averaged_loss = torch.stack(outputs).mean()
+        if parallel_state.is_pipeline_last_stage():
+            averaged_loss = torch.stack(outputs).mean()
+        else:
+            averaged_loss = torch.tensor(0.0, dtype=torch.float32).cuda()
+
+        torch.distributed.broadcast(averaged_loss, get_last_rank())
+
         self.log('val_loss', averaged_loss, prog_bar=True)
 
     def test_step(self, batch, batch_idx):
@@ -388,6 +470,27 @@ class MegatronBertModel(MegatronBaseModel):
         )
 
     def setup(self, stage=None):
+        num_parameters_on_device = sum([p.nelement() for p in self.model.parameters()])
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1 and parallel_state.is_pipeline_last_stage(
+            ignore_virtual=True
+        ):
+            # substract the embedding weights on the last stage
+            num_word_embedding_parameters = sum([p.nelement() for p in self.model.word_embeddings_weight()])
+
+            num_parameters_on_device -= num_word_embedding_parameters
+
+        # to be summed across data parallel group
+        total_num_parameters = torch.tensor(num_parameters_on_device).cuda()
+
+        torch.distributed.all_reduce(total_num_parameters, group=parallel_state.get_model_parallel_group())
+
+        logging.info(
+            f'Pipeline model parallel rank: {parallel_state.get_pipeline_model_parallel_rank()}, '
+            f'Tensor model parallel rank: {parallel_state.get_tensor_model_parallel_rank()}, '
+            f'Number of model parameters on device: {num_parameters_on_device:.2e}. '
+            f'Total number of model parameters: {total_num_parameters:.2e}.'
+        )
+
         resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
 
         if resume_checkpoint_path:
@@ -396,6 +499,7 @@ class MegatronBertModel(MegatronBaseModel):
             init_consumed_samples = 0
 
         self.init_consumed_samples = init_consumed_samples
+        self.init_global_step = self.trainer.global_step
 
         if stage == 'predict':
             return
@@ -405,6 +509,10 @@ class MegatronBertModel(MegatronBaseModel):
         self.setup_training_data(self.cfg.data)
         self.setup_validation_data(self.cfg.data)
         self.setup_test_data(self.cfg.data)
+
+        # when using pipeline model parallel the final stage need to initialize word embeddings
+        if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+            self.model.sync_initial_word_embeddings()
 
     def setup_training_data(self, cfg):
         if hasattr(self, '_train_ds'):
@@ -429,6 +537,17 @@ class MegatronBertModel(MegatronBaseModel):
                 f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
             )
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
+
+    def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
+        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+            When using pipeline parallelism, we need the global batch to remain on the CPU,
+            since the memory overhead will be too high when using a large number of microbatches.
+            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """
+        return batch
+
+    def parameters(self):
+        return self.model.parameters()
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:

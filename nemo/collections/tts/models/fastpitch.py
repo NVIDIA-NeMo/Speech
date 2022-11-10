@@ -611,6 +611,15 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         )
         list_of_models.append(model)
 
+        # es, 174 speakers, 44100Hz, OpenSLR
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_es_fastpitch_multispeaker",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_es_multispeaker_fastpitchhifigan/versions/1.14.0/files/tts_es_fastpitch_multispeaker.nemo",
+            description="This model is trained on 174 speakers in 6 crowdsourced Latin American Spanish OpenSLR datasets sampled at 44100Hz and can be used to generate male and female Spanish voices with Latin American accents.",
+            class_=cls,
+        )
+        list_of_models.append(model)
+
         return list_of_models
 
     # Methods for model exportability

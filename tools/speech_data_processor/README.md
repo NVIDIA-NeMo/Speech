@@ -1,6 +1,6 @@
-# Speech Dataset Processor
+# Speech Data Processor
 
-Speech Dataset Processor (SDP) is a toolkit to make it easy to:
+Speech Data Processor (SDP) is a toolkit to make it easy to:
 1. write code to process a new dataset, minimizing the amount of boilerplate code required.
 2. share the steps for processing a speech dataset. Sharing processing steps can be as easy as sharing a YAML file.
 
@@ -8,7 +8,7 @@ SDP's philosophy is to represent processing operations as 'processor' classes. M
 
 SDP is specifically intended for the use case when you have an existing dataset with the audio & text pairs already specified in some form, and you wish to create a JSON manifest suitable for use with NeMo. SDP allows for intermediate cleaning and filtering steps which involve amending the 'ground truth' `"text"` or dropping utterances which are deemed to be too inaccurate for training on.
 
-## Quick intro to Speech Dataset Processor
+## Quick intro to Speech Data Processor
 
 * The steps to process a dataset are specified by a YAML config file.
 * The YAML config file contains a list of processor classes & the args to pass into the constructor.
@@ -44,7 +44,7 @@ processors:
     ...
 ```
 ## Existing processor classes
-In addition to those mentioned in the example config file, many more classes are already included in Speech Dataset Processor, for example:
+In addition to those mentioned in the example config file, many more classes are already included in Speech Data Processor, for example:
 * `sdp.processors.ASRInference` will run inference on the manifest using a specified `pretrained_model`.
 * `sdp.processors.DropHighWER` will compute WER between `text` and `pred_text` of each utterance and remove the utterance if WER is greater than the specified `wer_threshold`.
 * `sdp.processors.DropHighLowCharrate` will compute the character rate in the utterance using `text` and `duration`, and drop the utterance if it is outside the bounds of the specified `high_charrate_threshold` and `low_charrate_threshold`. Carefully chosen thresholds will allow us to drop utterances with incorrect ground truth `text`.

@@ -364,6 +364,7 @@ class GPTPromptLearningDataset(Dataset):
     def pad_batch_and_build_loss_mask(self, input_ids, batch_max, answer_starts):
         """ Pad input_ids in batch to max batch length while building loss mask """
         batch_loss_masks = []
+        padded_input_ids = []
         for ids, answer_start_idx in zip(input_ids, answer_starts):
             if answer_start_idx is not None:
                 # Loss mask where answer tokens are 1.0 and all other tokens are 0.0
@@ -375,17 +376,19 @@ class GPTPromptLearningDataset(Dataset):
             # Pad to max length
             input_length = len(ids)
             padding_length = batch_max - input_length
-            ids.extend([self.pad_token_id] * padding_length)
+            pad_extend = [self.pad_token_id] * padding_length
+            ids = ids + pad_extend
+            padded_input_ids.append(ids)
 
             # Account for padding in loss mask
             loss_mask.extend([0.0] * padding_length)
             batch_loss_masks.append(torch.tensor(loss_mask, dtype=torch.float))
 
         # Make into torch tensors
-        input_ids = torch.tensor(input_ids, dtype=torch.long)
+        padded_input_ids = torch.tensor(padded_input_ids, dtype=torch.long)
         batch_loss_masks = torch.stack(batch_loss_masks)
 
-        return input_ids, batch_loss_masks
+        return padded_input_ids, batch_loss_masks
 
     def inference_collate_fn(self, batch):
         """

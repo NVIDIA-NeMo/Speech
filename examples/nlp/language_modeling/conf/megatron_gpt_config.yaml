@@ -176,6 +176,7 @@ model:
     reset_attention_mask: False # Reset attention mask after end-of-document token
     eod_mask_loss: False # Mask loss for the end of document tokens
     validation_drop_last: True # Set to false if the last partial validation samples is to be consumed
+    pad_samples_to_global_batch_size: True # Set to True if you want to pad the last partial batch with -1's to equal global batch size
 
   # Nsys profiling options
   nsys_profile:

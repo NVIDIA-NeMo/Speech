@@ -59,6 +59,7 @@ class BaseMegatronBatchSampler:
         data_parallel_rank: int,
         data_parallel_size: int,
         drop_last: bool,
+        pad_samples_to_global_batch_size=False,
     ) -> None:
         """Constructor of Megatron-LM style Batch Sampler.
 
@@ -94,6 +95,7 @@ class BaseMegatronBatchSampler:
         self.data_parallel_rank: int = data_parallel_rank
         self.data_parallel_size: int = data_parallel_size
         self.drop_last: bool = drop_last
+        self.pad_samples_to_global_batch_size = pad_samples_to_global_batch_size
 
         self.update_global_batch_size(global_batch_size)
 
@@ -161,7 +163,9 @@ class MegatronPretrainingBatchSampler(BaseMegatronBatchSampler):
         if len(batch) > 0 and not self.drop_last:
             # start_idx, end_idx = self.get_start_end_idx()
             indices = [batch[i] for i in range(self.data_parallel_rank, len(batch), self.data_parallel_size)]
-            # yield batch[start_idx:end_idx]
+            if self.pad_samples_to_global_batch_size:
+                num_pad = self._global_batch_size // self.data_parallel_size - len(indices)
+                indices = indices + [-1] * num_pad
             yield indices
 
 

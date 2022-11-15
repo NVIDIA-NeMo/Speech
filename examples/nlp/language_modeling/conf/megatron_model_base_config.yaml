@@ -33,3 +33,6 @@ activations_checkpoint_method: null # 'uniform', 'block'
 activations_checkpoint_num_layers: 1 
 megatron_legacy: False # Whether to use the legacy Megatron model. This affects the way q,k,v is partitioned from the mixed q,k,v layer in ParallelAttention. This needs to be True for models converted from HF.
 normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.
+num_moe_experts: 1 # When >1, FFNs are changed to MoE layers
+moe_frequency: 1 # every Nth ffn layer will be made MoE 
+moe_dropout: 0.0 # Dropout value for MoE layers

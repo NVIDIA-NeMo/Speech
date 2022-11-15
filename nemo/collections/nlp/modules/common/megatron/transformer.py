@@ -286,6 +286,135 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         return output, output_bias
 
 
+class SwitchMLP(MegatronModule):
+    """Top-1 MoE
+    
+    Curently supports Sinkhorn based expert routing."""
+
+    def __init__(
+        self,
+        num_experts,
+        init_method,
+        output_layer_init_method,
+        hidden_size,
+        ffn_hidden_size,
+        use_cpu_initialization=False,
+        bias_activation_fusion=True,
+        openai_gelu=False,
+        onnx_safe=False,
+        activation='gelu',
+        bias=True,
+        transformer_block_type='pre_ln',
+        normalization='layernorm',
+        layernorm_epsilon=1e-5,
+        persist_layer_norm=False,
+        sequence_parallel=False,
+        gradient_accumulation_fusion=False,
+        dropout=0.0,
+    ):
+        super(SwitchMLP, self).__init__()
+
+        self.num_experts = num_experts
+        self.route_algo = SwitchMLP.sinkhorn
+        self.router = tensor_parallel.RowParallelLinear(
+            hidden_size,
+            num_experts,
+            input_is_parallel=False,
+            init_method=init_method,
+            skip_bias_add=False,
+            use_cpu_initialization=use_cpu_initialization,
+            bias=bias,
+            sequence_parallel_enabled=sequence_parallel,
+            gradient_accumulation_fusion=gradient_accumulation_fusion,
+        )
+
+        mlp_args = {
+            'init_method': init_method,
+            'output_layer_init_method': output_layer_init_method,
+            'hidden_size': hidden_size,
+            'ffn_hidden_size': ffn_hidden_size,
+            'use_cpu_initialization': use_cpu_initialization,
+            'bias_activation_fusion': bias_activation_fusion,
+            'openai_gelu': openai_gelu,
+            'onnx_safe': onnx_safe,
+            'activation': activation,
+            'bias': bias,
+            'transformer_block_type': transformer_block_type,
+            'normalization': normalization,
+            'layernorm_epsilon': layernorm_epsilon,
+            'persist_layer_norm': persist_layer_norm,
+            'sequence_parallel': sequence_parallel,
+            'gradient_accumulation_fusion': gradient_accumulation_fusion,
+            'dropout': dropout,
+        }
+        self.experts = torch.nn.ModuleList([ParallelMLP(**mlp_args) for _ in range(num_experts)])
+
+    def forward(self, hidden_states):
+        hidden_shape = hidden_states.shape
+        route, _ = self.router(hidden_states)
+        route = route.view(-1, self.num_experts)
+        if self.training:
+            with torch.no_grad():
+                norm_route = self.route_algo(
+                    route.detach().to(dtype=torch.float32)
+                )  # explicit fp32 conversion for stability
+                _, max_ind = torch.max(norm_route, dim=1)
+            route = torch.sigmoid(route)
+            max_prob = route[torch.arange(route.size(0)), max_ind]
+        else:
+            route = torch.sigmoid(route)
+            max_prob, max_ind = torch.max(route, dim=1)
+        max_prob = torch.unsqueeze(max_prob, 1)
+
+        hidden_states = hidden_states.view(-1, hidden_shape[-1])
+
+        local_indices = (max_ind == 0).nonzero()
+        hidden = hidden_states[local_indices, :]
+        output, output_bias = self.experts[0](hidden)
+        output_bias = output_bias.expand_as(output)
+
+        output_total = torch.empty_like(hidden_states, dtype=output.dtype)
+        output_bias_total = torch.empty_like(hidden_states, dtype=output_bias.dtype)
+
+        output_total[local_indices, :] = output
+        output_bias_total[local_indices, :] = output_bias
+
+        for expert_num, expert in enumerate(self.experts):
+            if expert_num == 0:
+                continue
+            local_indices = (max_ind == expert_num).nonzero()
+            hidden = hidden_states[local_indices, :]
+            output, output_bias = expert(hidden)
+            output_bias = output_bias.expand_as(output)
+            output_total[local_indices, :] = output
+            output_bias_total[local_indices, :] = output_bias
+
+        output_total = output_total * max_prob
+        output_bias_total = output_bias_total * max_prob
+        output_total = output_total.view(hidden_shape)
+        output_bias_total = output_bias_total.view(hidden_shape)
+
+        return output_total, output_bias_total
+
+    @classmethod
+    def sinkhorn(cls, cost, tol=0.0001):
+        "Megatron-LMs sinkhorn implementation"
+
+        cost = torch.exp(cost)
+        d0 = torch.ones(cost.size(0), device=cost.device, dtype=cost.dtype)
+        d1 = torch.ones(cost.size(1), device=cost.device, dtype=cost.dtype)
+
+        eps = 0.00000001
+        error = 1e9
+        d1_old = d1
+        while error > tol:
+            d0 = (1 / d0.size(0)) * 1 / (torch.sum(d1 * cost, 1) + eps)
+            d1 = (1 / d1.size(0)) * 1 / (torch.sum(d0.unsqueeze(1) * cost, 0) + eps)
+            error = torch.mean(torch.abs(d1_old - d1))
+            d1_old = d1
+        return d1 * cost * d0.unsqueeze(1)
+
+
 class CoreAttention(MegatronModule):
     """ Region where selective activation recomputation is applied.
         See Figure 3. in Reducing Activation Recomputation in Large Transformer Models
@@ -1128,6 +1257,9 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         activations_checkpoint_granularity=None,
         sequence_parallel=False,
         normalize_attention_scores=True,
+        num_moe_experts=1,
+        moe_frequency=1,
+        moe_dropout=0.0,
     ):
         super(ParallelTransformerLayer_, self).__init__()
 
@@ -1335,25 +1467,47 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 self.post_inter_attention_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
 
         # MLP
-        self.mlp = ParallelMLP(
-            init_method=init_method,
-            output_layer_init_method=output_layer_init_method,
-            hidden_size=hidden_size,
-            ffn_hidden_size=ffn_hidden_size,
-            use_cpu_initialization=use_cpu_initialization,
-            bias_activation_fusion=bias_activation_fusion,
-            openai_gelu=openai_gelu,
-            onnx_safe=onnx_safe,
-            activation=activation,
-            bias=bias,
-            transformer_block_type=transformer_block_type,
-            normalization=normalization,
-            layernorm_epsilon=layernorm_epsilon,
-            persist_layer_norm=persist_layer_norm,
-            sequence_parallel=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
-            dropout=ffn_dropout,
-        )
+        if num_moe_experts > 1 and self.layer_number % moe_frequency == 0:
+            self.mlp = SwitchMLP(
+                num_experts=num_moe_experts,
+                init_method=init_method,
+                output_layer_init_method=output_layer_init_method,
+                hidden_size=hidden_size,
+                ffn_hidden_size=ffn_hidden_size,
+                use_cpu_initialization=use_cpu_initialization,
+                bias_activation_fusion=bias_activation_fusion,
+                openai_gelu=openai_gelu,
+                onnx_safe=onnx_safe,
+                activation=activation,
+                bias=bias,
+                transformer_block_type=transformer_block_type,
+                normalization=normalization,
+                layernorm_epsilon=layernorm_epsilon,
+                persist_layer_norm=persist_layer_norm,
+                sequence_parallel=sequence_parallel,
+                gradient_accumulation_fusion=gradient_accumulation_fusion,
+                dropout=moe_dropout,
+            )
+        else:
+            self.mlp = ParallelMLP(
+                init_method=init_method,
+                output_layer_init_method=output_layer_init_method,
+                hidden_size=hidden_size,
+                ffn_hidden_size=ffn_hidden_size,
+                use_cpu_initialization=use_cpu_initialization,
+                bias_activation_fusion=bias_activation_fusion,
+                openai_gelu=openai_gelu,
+                onnx_safe=onnx_safe,
+                activation=activation,
+                bias=bias,
+                transformer_block_type=transformer_block_type,
+                normalization=normalization,
+                layernorm_epsilon=layernorm_epsilon,
+                persist_layer_norm=persist_layer_norm,
+                sequence_parallel=sequence_parallel,
+                gradient_accumulation_fusion=gradient_accumulation_fusion,
+                dropout=ffn_dropout,
+            )
 
     def _get_bias_droput_add_func(self, transformer_block_type='pre_ln', position_after='attention'):
         """
@@ -1596,6 +1750,9 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
         sequence_parallel=False,
         gradient_accumulation_fusion=False,
         normalize_attention_scores=True,
+        num_moe_experts=1,
+        moe_frequency=1,
+        moe_dropout=0.0,
     ):
         super(ParallelTransformerLayer, self).__init__(
             init_method=init_method,
@@ -1632,6 +1789,9 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
             sequence_parallel=sequence_parallel,
             gradient_accumulation_fusion=gradient_accumulation_fusion,
             normalize_attention_scores=normalize_attention_scores,
+            num_moe_experts=num_moe_experts,
+            moe_frequency=moe_frequency,
+            moe_dropout=moe_dropout,
         )
 
         if precision == 32:
@@ -1848,6 +2008,9 @@ class ParallelTransformer(MegatronModule):
         fp8_amax_compute_algo='most_recent',
         use_emha=False,
         normalize_attention_scores=True,
+        num_moe_experts=1,
+        moe_frequency=1,
+        moe_dropout=0.0,
     ):
         super(ParallelTransformer, self).__init__()
 
@@ -1943,6 +2106,7 @@ class ParallelTransformer(MegatronModule):
                 num_layers % parallel_state.get_pipeline_model_parallel_world_size() == 0
             ), 'num_layers must be divisible by pipeline_model_parallel_size'
 
+        assert moe_frequency <= num_layers, 'MoE frequency must be <= number of transformer layers'
         # TODO: Add similar assert for encoder-decoder.
 
         self.num_layers = self.get_num_layers(num_layers)
@@ -2014,6 +2178,9 @@ class ParallelTransformer(MegatronModule):
                     activations_checkpoint_granularity=activations_checkpoint_granularity,
                     sequence_parallel=sequence_parallel,
                     normalize_attention_scores=normalize_attention_scores,
+                    num_moe_experts=num_moe_experts,
+                    moe_frequency=moe_frequency,
+                    moe_dropout=moe_dropout,
                 )
 
         if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:

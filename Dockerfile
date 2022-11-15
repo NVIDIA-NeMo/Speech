@@ -92,5 +92,9 @@ COPY tests /workspace/nemo/tests
 COPY tutorials /workspace/nemo/tutorials
 # COPY README.rst LICENSE /workspace/nemo/
 
+# Temporary fix CUDA issue
+RUN sed -i "s/, all_gpu_ids//g" /opt/conda/lib/python3.8/site-packages/pytorch_lightning/accelerators/cuda.py
+RUN sed -i "s/all_gpu_ids =/\# all_gpu_ids =/g" /opt/conda/lib/python3.8/site-packages/pytorch_lightning/accelerators/cuda.py
+
 RUN printf "#!/bin/bash\njupyter lab --no-browser --allow-root --ip=0.0.0.0" >> start-jupyter.sh && \
     chmod +x start-jupyter.sh

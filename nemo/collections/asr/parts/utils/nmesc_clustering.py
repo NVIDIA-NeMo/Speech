@@ -1051,7 +1051,7 @@ class SpeakerClustering(torch.nn.Module):
         nme_mat_size: int = 300,
         sparse_search: bool = True,
         maj_vote_spk_count: bool = False,
-        parallelism: bool = False,
+        parallelism: bool = True,
         cuda: bool = False,
     ):
         """
@@ -1059,38 +1059,16 @@ class SpeakerClustering(torch.nn.Module):
         NME-SC part is converted to torch.tensor based operations in NeMo 1.9.
 
         Args:
-            max_num_speakers (int):
-                The maximum number of clusters to consider for each session
             min_samples_for_nmesc (int):
                 The minimum number of samples required for NME clustering. This avoids
                 zero p_neighbour_lists. If the input has fewer segments than min_samples,
                 it is directed to the enhanced speaker counting mode.
-            enhanced_count_thres: (int)
-                For the short audio recordings under 60 seconds, clustering algorithm cannot
-                accumulate enough amount of speaker profile for each cluster.
-                Thus, function `getEnhancedSpeakerCount`employs anchor embeddings
-                (dummy representations) to mitigate the effect of cluster sparsity.
-                enhanced_count_thres = 80 is recommended.
-            max_rp_threshold (float):
-                Limits the range of parameter search.
-                Clustering performance can vary depending on this range.
-                Default is 0.15.
             sparse_search (bool):
                 Toggle sparse search mode. If True, limit the size of p_value_list to sparse_search_volume.
-            sparse_search_volume (int):
-                Number of p_values we search during NME analysis.
-                Default is 30. The lower the value, the faster NME-analysis becomes.
-                Lower than 20 might cause a poor parameter estimation.
             maj_vote_spk_count (bool):
                 If True, take a majority vote on all p-values in the given range to estimate the number of speakers.
                 The majority voting may contribute to surpress overcounting of the speakers and improve speaker
                 counting accuracy.
-            fixed_thres (float):
-                If fixed_thres value is provided, NME-analysis process will be skipped.
-                This value should be optimized on a development set to obtain a quality result.
-                Default is None and performs NME-analysis to estimate the threshold.
-            multiscale_weights (Tensor):
-                Multi-scale weights that are used when affinity scores are merged.
             parallelism (bool):
                 Use dynamic parallelism feature in torch.jit compiler to accelerate the p-value search.
             cuda (bool):
@@ -1107,18 +1085,62 @@ class SpeakerClustering(torch.nn.Module):
         self.timestamps_in_scales: List[torch.Tensor] = [torch.Tensor(0)]
         self.device = torch.device("cuda") if self.cuda else torch.device("cpu")
 
-    def forward(
+    def forward(self, param_dict: Dict[str, torch.Tensor]) -> torch.LongTensor:
+        """
+        A function wrapper designed for inference in exported script format.
+        
+        Note:
+            Dict is used to allow easy inference of the exported jit model in Triton server using easy to understand
+            naming convention.
+            See https://github.com/triton-inference-server/server/blob/main/docs/user_guide/model_configuration.md#special-conventions-for-pytorch-backend
+
+
+        Args:
+            param_dict (dict):
+                    Dictionary containing the arguments for speaker clustering.
+                    See `forward_infer` function for the argument information.
+
+            Returns:
+                Y (LongTensor):
+                    Speaker labels for the segments in the given input embeddings.
+        """
+        embeddings_in_scales = param_dict['embeddings']
+        timestamps_in_scales = param_dict['timestamps']
+        multiscale_segment_counts = param_dict['multiscale_segment_counts']
+        multiscale_weights = param_dict['multiscale_weights']
+
+        oracle_num_speakers = int(param_dict['oracle_num_speakers'].item())
+        max_num_speakers = int(param_dict['max_num_speakers'].item())
+        enhanced_count_thres = int(param_dict['enhanced_count_thres'].item())
+        sparse_search_volume = int(param_dict['sparse_search_volume'].item())
+        max_rp_threshold = float(param_dict['max_rp_threshold'].item())
+        fixed_thres = float(param_dict['fixed_thres'].item())
+
+        return self.forward_infer(
+            embeddings_in_scales=embeddings_in_scales,
+            timestamps_in_scales=timestamps_in_scales,
+            multiscale_segment_counts=multiscale_segment_counts,
+            multiscale_weights=multiscale_weights,
+            oracle_num_speakers=oracle_num_speakers,
+            max_rp_threshold=max_rp_threshold,
+            max_num_speakers=max_num_speakers,
+            enhanced_count_thres=enhanced_count_thres,
+            sparse_search_volume=sparse_search_volume,
+            fixed_thres=fixed_thres,
+        )
+
+    def forward_infer(
         self,
         embeddings_in_scales: torch.Tensor,
         timestamps_in_scales: torch.Tensor,
         multiscale_segment_counts: torch.LongTensor,
         multiscale_weights: torch.Tensor,
-        oracle_num_speakers: torch.LongTensor,
-        max_rp_threshold: torch.Tensor = torch.tensor(0.15),
-        max_num_speakers: torch.LongTensor = torch.tensor(8, dtype=torch.long),
-        enhanced_count_thres: torch.LongTensor = torch.tensor(80, dtype=torch.long),
-        sparse_search_volume: torch.LongTensor = torch.tensor(30, dtype=torch.long),
-        fixed_thres: torch.Tensor = torch.tensor(-1.0),
+        oracle_num_speakers: int = -1,
+        max_rp_threshold: float = 0.15,
+        max_num_speakers: int = 8,
+        enhanced_count_thres: int = 80,
+        sparse_search_volume: int = 30,
+        fixed_thres: float = -1.0,
     ) -> torch.LongTensor:
         """
         Calculate affinity matrix using timestamps and speaker embeddings, run NME analysis to estimate the best
@@ -1128,10 +1150,11 @@ class SpeakerClustering(torch.nn.Module):
             For the sake of compatibility with libtorch, python boolean `False` is replaced with `torch.LongTensor(-1)`.
 
         Args:
-            embeddings_in_scales (Tensor):
+            Dict containing following keys associated with tensors.
+            embeddings (Tensor):
                 Concatenated Torch tensor containing embeddings in multiple scales
                 This tensor has dimensions of (Number of base segments) x (Embedding Dimension)
-            timestamps_in_scales (Tensor):
+            timestamps (Tensor):
                 Concatenated Torch tensor containing timestamps in multiple scales.
                 This tensor has dimensions of (Total number of segments all scales) x 2
                 Example:
@@ -1149,32 +1172,32 @@ class SpeakerClustering(torch.nn.Module):
                 Example:
                     >>> multiscale_weights = torch.tensor([1.4, 1.3, 1.2, 1.1, 1.0])
 
-            oracle_num_speakers (LongTensor):
+            oracle_num_speakers (int):
                 The number of speakers in a session from the reference transcript
-            max_num_speakers (LongTensor):
+            max_num_speakers (int):
                 The upper bound for the number of speakers in each session
-            enhanced_count_thres: (LongTensor)
+            max_rp_threshold (float):
+                Limits the range of parameter search.
+                Clustering performance can vary depending on this range.
+                Default is 0.15.
+            enhanced_count_thres: (int)
                 For the short audio recordings, clustering algorithm cannot
                 accumulate enough amount of speaker profile for each cluster.
                 Thus, function `getEnhancedSpeakerCount` employs anchor embeddings
                 (dummy representations) to mitigate the effect of cluster sparsity.
                 enhanced_count_thres = 80 is recommended.
-            max_rp_threshold (Tensor):
-                Limits the range of parameter search.
-                Clustering performance can vary depending on this range.
-                Default is 0.15.
-            sparse_search_volume (LongTensor):
+            sparse_search_volume (int):
                 Number of p_values we search during NME analysis.
                 Default is 30. The lower the value, the faster NME-analysis becomes.
                 Lower than 20 might cause a poor parameter estimation.
-            fixed_thres (Tensor):
+            fixed_thres (float):
                 If fixed_thres value is provided, NME-analysis process will be skipped.
                 This value should be optimized on a development set to obtain a quality result.
                 Default is None and performs NME-analysis to estimate the threshold.
 
         Returns:
-            Y (Tensor):
-                Speaker label for each segment.
+            Y (LongTensor):
+                Speaker labels for the segments in the given input embeddings.
         """
         self.embeddings_in_scales, self.timestamps_in_scales = split_input_data(
             embeddings_in_scales, timestamps_in_scales, multiscale_segment_counts
@@ -1199,11 +1222,11 @@ class SpeakerClustering(torch.nn.Module):
 
         nmesc = NMESC(
             mat,
-            max_num_speakers=int(max_num_speakers.item()),
-            max_rp_threshold=float(max_rp_threshold.item()),
+            max_num_speakers=max_num_speakers,
+            max_rp_threshold=max_rp_threshold,
             sparse_search=self.sparse_search,
-            sparse_search_volume=int(sparse_search_volume.item()),
-            fixed_thres=float(fixed_thres.item()),
+            sparse_search_volume=sparse_search_volume,
+            fixed_thres=fixed_thres,
             nme_mat_size=self.nme_mat_size,
             maj_vote_spk_count=self.maj_vote_spk_count,
             parallelism=self.parallelism,
@@ -1221,7 +1244,7 @@ class SpeakerClustering(torch.nn.Module):
 
         # n_clusters is number of speakers estimated from spectral clustering.
         if oracle_num_speakers > 0:
-            n_clusters = int(oracle_num_speakers.item())
+            n_clusters = int(oracle_num_speakers)
         elif est_num_of_spk_enhanced > 0:
             n_clusters = int(est_num_of_spk_enhanced.item())
         else:

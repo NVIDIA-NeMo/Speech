@@ -425,7 +425,7 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
 
     cuda = True
     if not torch.cuda.is_available():
-        logging.warning("cuda=False, using CPU for Eigen decomposition. This might slow down the clustering process.")
+        logging.warning("cuda=False, using CPU for eigen decomposition. This might slow down the clustering process.")
         cuda = False
 
     speaker_clustering = SpeakerClustering(maj_vote_spk_count=clustering_params.maj_vote_spk_count, cuda=cuda)
@@ -445,15 +445,15 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         else:
             num_speakers = -1
 
-        cluster_labels = speaker_clustering.forward(
+        cluster_labels = speaker_clustering.forward_infer(
             embeddings_in_scales=uniq_embs_and_timestamps['embeddings'],
             timestamps_in_scales=uniq_embs_and_timestamps['timestamps'],
             multiscale_segment_counts=uniq_embs_and_timestamps['multiscale_segment_counts'],
             multiscale_weights=uniq_embs_and_timestamps['multiscale_weights'],
-            oracle_num_speakers=torch.tensor(num_speakers, dtype=torch.long),
-            max_num_speakers=torch.tensor(clustering_params.max_num_speakers, dtype=torch.long),
-            max_rp_threshold=torch.tensor(clustering_params.max_rp_threshold),
-            sparse_search_volume=torch.tensor(clustering_params.sparse_search_volume, dtype=torch.long),
+            oracle_num_speakers=int(num_speakers),
+            max_num_speakers=int(clustering_params.max_num_speakers),
+            max_rp_threshold=float(clustering_params.max_rp_threshold),
+            sparse_search_volume=int(clustering_params.sparse_search_volume),
         )
 
         base_scale_idx = uniq_embs_and_timestamps['multiscale_segment_counts'].shape[0] - 1
@@ -1155,7 +1155,7 @@ def prepare_split_data(manifest_filepath, _out_dir, multiscale_args_dict, global
 
 def extract_timestamps(manifest_file: str):
     """
-    This method extracts timestamps from segments passed through manifest_file. 
+    This method extracts timestamps from segments passed through manifest_file.
 
     Args:
         manifest_file (str):

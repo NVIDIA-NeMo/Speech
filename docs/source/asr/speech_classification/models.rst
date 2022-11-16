@@ -68,7 +68,7 @@ MarbleNet models can be instantiated using the :class:`~nemo.collections.asr.mod
 AmberNet (Lang ID) 
 ------------------
 
-AmberNet is an end-to-end neural network for language identification moden based on `TitanNet <../speaker_recognition/models.html#titanet>`__.
+AmberNet is an end-to-end neural network for language identification moden based on `TitaNet <../speaker_recognition/models.html#titanet>`__.
 
 It can reach state-of-the art performance on the `Voxlingua107 dataset <http://bark.phon.ioc.ee/voxlingua107/>`_ while having significantly fewer parameters than similar models.
 AmberNet models can be instantiated using the :class:`~nemo.collections.asr.models.EncDecSpeakerLabelModel` class.

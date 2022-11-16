@@ -61,7 +61,7 @@ For extracting embeddings from a single file:
 .. code-block:: python
 
   speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name="<pretrained_model_name or path/to/nemo/file>")
-  embs = speaker_model.get_embedding('audio_path')
+  embs = speaker_model.get_embedding('<audio_path>')
 
 For extracting embeddings from a bunch of files:
 
@@ -78,7 +78,14 @@ This python call will download best pretrained model from NGC and writes embeddi
 .. code-block:: bash
   
     python examples/speaker_tasks/recognition/extract_speaker_embeddings.py --manifest=manifest.json
-  
+   
+or you can run `batch_inference()` to perform inference on the manifest with seleted batch_size to get embeddings
+
+.. code-block:: python
+
+  speaker_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<pretrained_model_name or path/to/nemo/file>")
+  embs, logits, gt_labels, mapped_labels = speaker_model.batch_inference(manifest, batch_size=32)
+
 Speaker Verification Inference
 ------------------------------
 

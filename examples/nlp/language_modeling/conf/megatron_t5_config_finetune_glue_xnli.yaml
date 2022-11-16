@@ -37,9 +37,13 @@ exp_manager:
     save_best_model: True
 
 model:
-  restore_from_path: ???
+  restore_from_path: null # Path to a trained T5 .nemo file
+  pretrained_checkpoint:
+    checkpoint_dir: null # Path to a folder that contains a .ckpt file
+    checkpoint_name: null # Name of the .ckpt file within the checkpoint_dir.
+    hparams_file: null # Path to a .yaml file that contains the hyperparameters of the checkpoint.
   tensor_model_parallel_size: 1
-  pipeline_model_parallel_size: 2
+  pipeline_model_parallel_size: 1
   pipeline_model_parallel_split_rank: 1
   gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
   resume_from_checkpoint: null

@@ -132,22 +132,9 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             self.setup_training_data()
 
     def _process_global_batch(self, global_batch):
-        """Process a list of microbatches into a global batch."""
-        # If there is no language information in the global batch (ex: English MNLI), we can use the parent global batch processor as is.
-        if 'lang' not in global_batch[0]:
-            return self._process_global_batch_without_megatron_batch_sampler(global_batch)
-
-        # For validation data (XNLI), we need to process the global batch and and then deal with language info separately.
-        else:
-            assert all(['lang' in micro_batch for micro_batch in global_batch])
-            langs_list = []
-            processed_global_batch = self._process_global_batch_without_megatron_batch_sampler(
-                [{k: v for k, v in micro_batch.items() if k != 'lang'} for micro_batch in global_batch]
-            )
-            for micro_batch in global_batch:
-                langs_list.extend(micro_batch['lang'])
-            processed_global_batch['lang'] = langs_list
-            return processed_global_batch
+        """Optionally processes a global batch."""
+        # TODO: maybe remove this now that we've refactored data batch sizes.
+        return global_batch
 
     def on_validation_epoch_start(self):
         app_state = AppState()
@@ -160,7 +147,26 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         )
         return super().on_validation_epoch_start()
 
+    def on_test_epoch_start(self):
+        app_state = AppState()
+        _reconfigure_microbatch_calculator(
+            rank=app_state.global_rank,
+            rampup_batch_size=None,
+            global_batch_size=self.cfg.data.test_ds.global_batch_size,
+            micro_batch_size=self.cfg.data.test_ds.micro_batch_size,
+            data_parallel_size=parallel_state.get_data_parallel_world_size(),
+        )
+        return super().on_test_epoch_start()
+
+    def on_test_epoch_end(self):
+        self.on_inference_epoch_end(self.cfg.data.test_ds)
+        return super().on_test_epoch_end()
+
     def on_validation_epoch_end(self):
+        self.on_inference_epoch_end(self.cfg.data.validation_ds)
+        return super().on_validation_epoch_end()
+
+    def on_inference_epoch_end(self, ds):
         app_state = AppState()
         if hasattr(self, "_train_ds"):
             _reconfigure_microbatch_calculator(
@@ -176,12 +182,10 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             _reconfigure_microbatch_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
-                global_batch_size=self.cfg.data.validation_ds.global_batch_size,
-                micro_batch_size=self.cfg.data.validation_ds.micro_batch_size,
+                global_batch_size=ds.global_batch_size,
+                micro_batch_size=ds.micro_batch_size,
                 data_parallel_size=parallel_state.get_data_parallel_world_size(),
             )
-
-        return super().on_validation_epoch_end()
 
     def on_train_epoch_start(self) -> None:
         # Same logic as validation epoch end, but this may be need if there is no validation sanity check to trigger validation_epoch_end()
@@ -189,22 +193,21 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         return super().on_train_epoch_start()
 
     def training_step(self, batch, batch_idx):
-        micro_batch_size = batch[0]['text_enc'].size(0)
+        global_batch_size_per_gpu = batch['text_enc'].size(0)
         # This should happen only on the last batch of the dataset.
-        if micro_batch_size != self.cfg.data.train_ds.micro_batch_size:
+        if (
+            global_batch_size_per_gpu
+            != self.cfg.data.train_ds.global_batch_size // parallel_state.get_data_parallel_world_size()
+        ):
+            # NOTE: This should never really be called since `drop_last=True` is required for training datasets.
             app_state = AppState()
             _reconfigure_microbatch_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
-                global_batch_size=micro_batch_size
-                * parallel_state.get_data_parallel_world_size()
-                * get_num_microbatches(),
-                micro_batch_size=micro_batch_size,
+                global_batch_size=global_batch_size_per_gpu * parallel_state.get_data_parallel_world_size(),
+                micro_batch_size=global_batch_size_per_gpu // get_num_microbatches(),
                 data_parallel_size=parallel_state.get_data_parallel_world_size(),
             )
-        # At this point batch is a list of dictionaries where eatch dict is a microbatch.
-        # After the process_global_batch call, batch will be a single dictionary containing the global batch.
-        # This is required since the parent class expects a single global batch dictioanry.
         batch = self._process_global_batch(batch)
         return super().training_step(batch, batch_idx)
 
@@ -263,33 +266,30 @@ class MegatronT5FinetuneModel(MegatronT5Model):
 
         return pred, label
 
-    def _reconfigure_and_process_inference_batch(self, batch):
-        micro_batch_size = batch[0]['text_enc'].size(0)
+    def _reconfigure_and_process_inference_batch(self, batch, ds_config):
+        global_batch_size_per_gpu = batch['text_enc'].size(0)
         # This should happen only on the last batch of the dataset.
-        if micro_batch_size != self.cfg.data.validation_ds.micro_batch_size:
+        if global_batch_size_per_gpu != ds_config.global_batch_size // parallel_state.get_data_parallel_world_size():
+            # NOTE: This is reconfiguring to make sure there is no grad-acc for validation batches.
             app_state = AppState()
             _reconfigure_microbatch_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
-                global_batch_size=micro_batch_size
-                * parallel_state.get_data_parallel_world_size()
-                * get_num_microbatches(),
-                micro_batch_size=micro_batch_size,
+                global_batch_size=global_batch_size_per_gpu * parallel_state.get_data_parallel_world_size(),
+                micro_batch_size=global_batch_size_per_gpu,
                 data_parallel_size=parallel_state.get_data_parallel_world_size(),
             )
 
-        # At this point processed_batch is a list of dictionaries where eatch dict is a microbatch.
-        # After the process_global_batch call, processed_batch will be a single dictionary containing the global batch.
-        # This is required since the parent class expects a single global batch dictioanry.
         processed_batch = self._process_global_batch(batch)
-
         return processed_batch
 
     def inference_step(self, batch, batch_idx, mode, dataloader_idx=0):
         # Regular finetuning datasets will return a list of dicts for each microbatch. But T0 datasets will return a single dict for the global batch.
         batch_has_lang_information = isinstance(batch, list) and len(batch[0]) == 7
 
-        processed_batch = self._reconfigure_and_process_inference_batch(batch)
+        processed_batch = self._reconfigure_and_process_inference_batch(
+            batch, self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
+        )
 
         # Call parent validation step to get the loss.
         # NOTE: There could be extra keys in the processed_batch dictionary such as "langs" for XNLI, this will be ignored in the parent class.
@@ -317,8 +317,12 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                 pred=pred,
                 label=label,
                 metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
-                class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None),
-                labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False),
+                class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None)
+                if mode == 'validation'
+                else self.cfg.data.test_ds.metric.get('class_labels', None),
+                labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False)
+                if mode == 'validation'
+                else self.cfg.data.test_ds.metric.get('labels_are_strings', False),
             )
             if batch_has_lang_information:
                 _ = metric(pred, label, category)
@@ -505,15 +509,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         _ = self.inference_epoch_end(outputs, 'test', self.cfg.data.test_ds)
 
     def build_data_loader(
-        self,
-        dataset,
-        micro_batch_size,
-        global_batch_size,
-        shuffle,
-        num_workers,
-        pin_memory,
-        drop_last,
-        check_validation_interval,
+        self, dataset, global_batch_size, shuffle, num_workers, pin_memory, drop_last,
     ):
         """Buld dataloader given an input dataset."""
 
@@ -525,20 +521,6 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, num_replicas=world_size, rank=rank, shuffle=shuffle
         )
-        # This check makes sure the val_check_interval is less than the number of global batches.
-        # Normally, PTL would do this check and properly account for gradient accumulation.
-        # But now, it is implicit in the apex fwd/bwd functions and so we need to check for this somewhere.
-        # The consequence of not doing this is that training loop will never run validation.
-        # NOTE: Prog bar is also broken as a result of this.
-        global_batch_size_per_gpu = micro_batch_size * get_num_microbatches()
-        if (
-            self.trainer.val_check_interval > (sampler.num_samples // global_batch_size_per_gpu)
-            and check_validation_interval
-        ):
-            raise ValueError(
-                f"trainer.val_check_interval {self.trainer.val_check_interval} is > number of global batches {sampler.num_samples // global_batch_size}"
-            )
-
         if isinstance(dataset, ConcatMapDataset):
             collate_fn = dataset.datasets[0].collate_fn
         else:
@@ -548,7 +530,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             dataset,
             collate_fn=collate_fn,
             sampler=sampler,
-            batch_size=micro_batch_size,
+            batch_size=global_batch_size // parallel_state.get_data_parallel_world_size(),
             num_workers=num_workers,
             pin_memory=pin_memory,
             drop_last=drop_last,
@@ -557,13 +539,11 @@ class MegatronT5FinetuneModel(MegatronT5Model):
     def setup_training_data(self):
         self._train_dl = self.build_data_loader(
             self._train_ds,
-            micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
             global_batch_size=self.cfg.data.train_ds.global_batch_size,
             shuffle=self.cfg.data.train_ds.shuffle,
             num_workers=self.cfg.data.train_ds.num_workers,
             pin_memory=self.cfg.data.train_ds.pin_memory,
             drop_last=self.cfg.data.train_ds.drop_last,
-            check_validation_interval=True,
         )
 
     def setup_eval_data(self, datasets, data_cfg):
@@ -571,13 +551,11 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         for dataset in datasets:
             eval_dl = self.build_data_loader(
                 dataset,
-                micro_batch_size=data_cfg.micro_batch_size,
                 global_batch_size=data_cfg.global_batch_size,
                 shuffle=data_cfg.shuffle,
                 num_workers=data_cfg.num_workers,
                 pin_memory=data_cfg.pin_memory,
                 drop_last=data_cfg.drop_last,
-                check_validation_interval=False,
             )
             dataloaders.append(eval_dl)
         return dataloaders
@@ -689,15 +667,3 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             return
         self._train_ds = self._build_train_dataset(self.cfg.data.train_ds)
         logging.info(f'Finished building datasets ...')
-
-    def on_train_start(self) -> None:
-        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
-        self.trainer.fit_loop._data_fetcher = GlobalBatchDataFetcher()
-
-    def on_validation_start(self) -> None:
-        """PTL hook used to override DataFetcher with GlobalBatchDataFetcher """
-        self.trainer.fit_loop.epoch_loop.val_loop._data_fetcher = GlobalBatchDataFetcher()
-        self.trainer.validate_loop._data_fetcher = GlobalBatchDataFetcher()
-
-    def on_test_start(self) -> None:
-        self.trainer.test_loop._data_fetcher = GlobalBatchDataFetcher()

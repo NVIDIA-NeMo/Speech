@@ -36,7 +36,11 @@ exp_manager:
     save_best_model: True
 
 model:
-  restore_from_path: ??? # Path to a trained T5 or LM-adapted T5 .nemo file
+  restore_from_path: null # Path to a trained T5 .nemo file
+  pretrained_checkpoint:
+    checkpoint_dir: null # Path to a folder that contains a .ckpt file
+    checkpoint_name: null # Name of the .ckpt file within the checkpoint_dir.
+    hparams_file: null # Path to a .yaml file that contains the hyperparameters of the checkpoint.
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1
   pipeline_model_parallel_split_rank: 0
@@ -82,7 +86,7 @@ model:
         num_classes: null
       replace_bos_with_pad: ${data.train_ds.replace_bos_with_pad}
       add_bos_to_input: ${data.train_ds.add_bos_to_input}
-      add_eos_to_input: ${data.train_ds.replace_bos_with_pad}
+      add_eos_to_input: ${data.train_ds.add_eos_to_input}
       seed: 1234
 
   optim:

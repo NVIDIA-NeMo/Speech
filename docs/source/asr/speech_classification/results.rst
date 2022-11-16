@@ -33,7 +33,7 @@ Transcribing/Inference
    
 The audio files should be 16KHz monochannel wav files.
 
-**Transcribe speech command segment:**
+`Transcribe speech command segment:`
   
 You may perform inference and transcribe a sample of speech after loading the model by using its 'transcribe()' method:
 
@@ -47,7 +47,7 @@ Setting argument ``logprobs`` to True would return the log probabilities instead
 Learn how to fine tune on your own data or on subset classes in ``<NeMo_git_root>/tutorials/asr/Speech_Commands.ipynb``
 
 
-**Run VAD inference:**
+`Run VAD inference:`
 
 .. code-block:: bash 
 
@@ -72,6 +72,23 @@ Filtering:
   - ``filter_speech_first`` to control whether to perform short speech segment deletion first.
 
 
+`Identify language of utterance`
+
+You may load the model and identify the language of an audio file by using `get_label()` method:
+
+.. code-block:: python
+
+  langid_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<MODEL_NAME>")
+  lang = langid_model.get_label('<audio_path>')
+  
+or you can run `batch_inference()` to perform inference on a manifest with seleted batch_size to get mapped_labels
+
+.. code-block:: python
+
+  langid_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<MODEL_NAME>")
+  lang_embs, logits, gt_labels, mapped_labels = langid_model.batch_inference(manifest_filepath, batch_size=32)
+
+  
 NGC Pretrained Checkpoints
 --------------------------
 

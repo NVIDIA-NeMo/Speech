@@ -282,6 +282,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
         # handle asynchronous grad reduction
+        custom_sync_context_handler = None
+        custom_grad_sync_func = None
         if self.with_distributed_adam:
             if self.megatron_amp_o2:
                 # copy grads to main grad
@@ -289,6 +291,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             else:
                 # keep grad tensors around
                 custom_sync_context_handler = lambda: self._optimizer.no_sync(greedy_grad_copy=False)
+            custom_grad_sync_func = self.reduce_overlap_gradients
         else:
             if self.megatron_amp_o2 and not self.cfg.get('sequence_parallel', False):
                 custom_sync_context_handler = self._optimizer.no_sync
@@ -309,6 +312,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             dtype=self.autocast_dtype,
             grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
             custom_sync_context_handler=custom_sync_context_handler,
+            custom_grad_sync_func=custom_grad_sync_func,
             sequence_parallel_enabled=self.cfg.get('sequence_parallel', False),
             sync_batch_comm=self.cfg.get('sync_batch_comm', True),
             num_micro_batches_with_partial_activation_checkpoints=self.cfg.get(
@@ -330,11 +334,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.allreduce_sequence_parallel_gradients()
 
         if self.with_distributed_adam:
-            # launch grad reductions
-            # Note: grads in first pipeline stage have already been
-            # reduced
-            if not parallel_state.is_pipeline_first_stage():
-                self.reduce_overlap_gradients()
+            # gradients are reduced internally in distributed optimizer
+            pass
         elif self.megatron_amp_o2:
             # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1 or self.cfg.get('sequence_parallel', False):

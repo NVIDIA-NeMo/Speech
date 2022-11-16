@@ -57,6 +57,16 @@ class CardinalFst(GraphFst):
             graph_hundred_component_at_least_one_none_zero_digit
         )
 
+        # Transducer for eleven hundred -> 1100 or twenty one hundred eleven -> 2111
+        graph_hundred_as_thousand = pynini.union(graph_teen, graph_ties + delete_space + graph_digit)
+        graph_hundred_as_thousand += delete_space + graph_hundred
+        graph_hundred_as_thousand += delete_space + pynini.union(
+            graph_teen | pynutil.insert("00"),
+            (graph_ties | pynutil.insert("0")) + delete_space + (graph_digit | pynutil.insert("0")),
+        )
+
+        graph_hundreds = graph_hundred_component | graph_hundred_as_thousand
+
         graph_thousands = pynini.union(
             graph_hundred_component_at_least_one_none_zero_digit + delete_space + pynutil.delete("thousand"),
             pynutil.insert("000", weight=0.1),
@@ -102,7 +112,7 @@ class CardinalFst(GraphFst):
             + delete_space
             + graph_thousands
             + delete_space
-            + graph_hundred_component,
+            + graph_hundreds,
             graph_zero,
         )
 

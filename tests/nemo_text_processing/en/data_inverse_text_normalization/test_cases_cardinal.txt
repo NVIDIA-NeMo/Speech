@@ -22,3 +22,7 @@ eighteen million four hundred fifty thousand nine hundred ninety~18450990
 eighteen million nine hundred forty thousand seven hundred twenty two~18940722
 eighteen million six hundred ninety thousand nine hundred sixteen~18690916
 eighteen thousand eight hundred eighty~18880
+eleven hundred~1100
+twenty one hundred~2100
+twenty one hundred and eleven~2111
+eleven hundred twenty one~1121

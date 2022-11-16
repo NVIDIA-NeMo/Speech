@@ -78,6 +78,7 @@ def _get_year_graph():
     def _get_thousands_graph():
         graph_ties = _get_ties_graph()
         graph_hundred_component = (graph_digit + delete_space + pynutil.delete("hundred")) | pynutil.insert("0")
+        optional_end = pynini.closure(pynutil.delete("and "), 0, 1)
         graph = (
             graph_digit
             + delete_space
@@ -85,7 +86,7 @@ def _get_year_graph():
             + delete_space
             + graph_hundred_component
             + delete_space
-            + (graph_teen | graph_ties)
+            + (graph_teen | graph_ties | (optional_end + pynutil.insert("0") + graph_digit))
         )
         return graph
 

@@ -47,3 +47,6 @@ eighteen thousand one hundred twenty four dollars~$18124
 eighteen thousand one hundred twenty nine dollars~$18129
 one thousand fifty five dollars~$1055
 one fifty five dollars~$155
+fifteen hundred dollars~$1500
+ninety nine hundred dollars~$9900
+ninety nine hundred and fifteen dollars and one cent~$9915.01

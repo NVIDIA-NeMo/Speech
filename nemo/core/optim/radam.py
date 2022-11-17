@@ -81,8 +81,8 @@ class RAdam(Optimizer):
                 exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
                 beta1, beta2 = group['betas']
 
-                exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
-                exp_avg.mul_(beta1).add_(1 - beta1, grad)
+                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=(1.0 - beta2))
+                exp_avg.mul_(beta1).add_(grad, alpha=(1.0 - beta1))
 
                 state['step'] += 1
                 buffered = self.buffer[int(state['step'] % 10)]

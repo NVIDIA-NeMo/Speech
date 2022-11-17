@@ -27,7 +27,6 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import Bas
 from nemo.collections.tts.helpers.helpers import plot_alignment_to_numpy
 from nemo.collections.tts.losses.radttsloss import AttentionBinarizationLoss, RADTTSLoss
 from nemo.collections.tts.models.base import SpectrogramGenerator
-from nemo.collections.tts.modules.submodules import PartialConv1d
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types.elements import Index, MelSpectrogramType, TokenIndex
@@ -159,7 +158,7 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         loss_outputs['binarization_loss'] = (binarization_loss, 1.0)
 
         for k, (v, w) in loss_outputs.items():
-            self.log("train/" + k, loss_outputs[k][0])
+            self.log("train/" + k, loss_outputs[k][0], on_step=True)
 
         return {'loss': loss}
 
@@ -229,7 +228,7 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
 
         for k, v in loss_outputs.items():
             if k != "binarization_loss":
-                self.log("val/" + k, loss_outputs[k][0])
+                self.log("val/" + k, loss_outputs[k][0], sync_dist=True, on_epoch=True)
 
         attn = outputs[0]["attn"]
         attn_soft = outputs[0]["attn_soft"]
@@ -407,17 +406,3 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
 
     def forward_for_export(self, text, lens, speaker_id, speaker_id_text, speaker_id_attributes):
         return self.model.forward_for_export(text, lens, speaker_id, speaker_id_text, speaker_id_attributes)
-
-    def get_export_subnet(self, subnet=None):
-        return self.model.get_export_subnet(subnet)
-
-    def _prepare_for_export(self, **kwargs):
-        """
-        Override this method to prepare module for export. This is in-place operation.
-        Base version does common necessary module replacements (Apex etc)
-        """
-        PartialConv1d.forward = PartialConv1d.forward_no_cache
-        super()._prepare_for_export(**kwargs)
-
-    def _export_teardown(self):
-        PartialConv1d.forward = PartialConv1d.forward_with_cache

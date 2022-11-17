@@ -13,7 +13,7 @@
 # limitations under the License.
 import time
 
-from pytorch_lightning.callbacks.base import Callback
+from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities import rank_zero_only
 
 # from sacrebleu import corpus_bleu

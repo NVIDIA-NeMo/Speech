@@ -385,7 +385,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             if is_concat:
                 dataset = audio_to_text_dataset.get_concat_tarred_dataset(
                     config=config,
-                    tokenizer=self.tokenizer,
                     shuffle_n=shuffle_n,
                     global_rank=self.global_rank,
                     world_size=self.world_size,
@@ -394,7 +393,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             else:
                 dataset = audio_to_text_dataset.get_tarred_dataset(
                     config=config,
-                    tokenizer=self.tokenizer,
                     shuffle_n=shuffle_n,
                     global_rank=self.global_rank,
                     world_size=self.world_size,

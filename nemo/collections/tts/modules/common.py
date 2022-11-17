@@ -29,7 +29,7 @@ from nemo.collections.tts.helpers.splines import (
     piecewise_linear_transform,
     unbounded_piecewise_quadratic_transform,
 )
-from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm
+from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm, MaskedInstanceNorm1d
 
 
 @torch.jit.script
@@ -44,7 +44,7 @@ def get_mask_from_lengths_and_val(lengths, val):
     max_len = val.shape[-1]
     ids = torch.arange(0, max_len, device=lengths.device)
     mask = ids < lengths.unsqueeze(1)
-    return mask.float()
+    return mask
 
 
 @torch.jit.script
@@ -123,30 +123,31 @@ class BiLSTM(nn.Module):
         seq = nn.utils.rnn.pack_padded_sequence(
             context, lens.long().cpu(), batch_first=True, enforce_sorted=enforce_sorted
         )
-        if not torch.jit.is_scripting():
+        if not (torch.jit.is_scripting() or torch.jit.is_tracing()):
             self.bilstm.flatten_parameters()
-        ret, _ = self.bilstm(seq)
+        if hasattr(self.bilstm, 'forward'):
+            ret, _ = self.bilstm.forward(seq)
+        else:
+            ret, _ = self.bilstm.forward_1(seq)
         return nn.utils.rnn.pad_packed_sequence(ret, batch_first=True)
 
     @torch.jit.export
     def lstm_sequence(self, seq: PackedSequence) -> Tuple[Tensor, Tensor]:
-        if not torch.jit.is_scripting():
+        if not (torch.jit.is_scripting() or torch.jit.is_tracing()):
             self.bilstm.flatten_parameters()
-        ret, _ = self.bilstm(seq)
+        if hasattr(self.bilstm, 'forward'):
+            ret, _ = self.bilstm.forward(seq)
+        elif hasattr(self.bilstm, 'forward_1'):
+            ret, _ = self.bilstm.forward_1(seq)
         return nn.utils.rnn.pad_packed_sequence(ret, batch_first=True)
 
     @torch.jit.export
     def sort_and_lstm_tensor(self, context: Tensor, lens: Tensor) -> Tensor:
-        lens_sorted, ids_sorted = torch.sort(lens, descending=True)
-        unsort_ids = torch.zeros_like(ids_sorted)
-        for i in range(ids_sorted.shape[0]):
-            unsort_ids[ids_sorted[i]] = i
-        context = context[ids_sorted]
+        context, lens_sorted, unsort_ids = sort_tensor(context, lens)
         seq = nn.utils.rnn.pack_padded_sequence(
             context, lens_sorted.long().cpu(), batch_first=True, enforce_sorted=True
         )
-        ret, _ = self.bilstm(seq)
-        return nn.utils.rnn.pad_packed_sequence(ret, batch_first=True)[0][unsort_ids]
+        return self.lstm_sequence(seq)[0][unsort_ids]
 
 
 class ConvLSTMLinear(BiLSTM):
@@ -160,14 +161,14 @@ class ConvLSTMLinear(BiLSTM):
         p_dropout=0.1,
         use_partial_padding=False,
         norm_fn=None,
-        lstm_norm_fn="spectral",
     ):
         super(ConvLSTMLinear, self).__init__(n_channels, int(n_channels // 2), 1)
-        self.out_dim = out_dim
+        self.convolutions = nn.ModuleList()
 
         if n_layers > 0:
             self.dropout = nn.Dropout(p=p_dropout)
-            self.convolutions = nn.ModuleList()
+
+        use_weight_norm = norm_fn is None
 
         for i in range(n_layers):
             conv_layer = ConvNorm(
@@ -178,14 +179,13 @@ class ConvLSTMLinear(BiLSTM):
                 padding=int((kernel_size - 1) / 2),
                 dilation=1,
                 w_init_gain='relu',
-                use_weight_norm=False,
+                use_weight_norm=use_weight_norm,
                 use_partial_padding=use_partial_padding,
                 norm_fn=norm_fn,
             )
             if norm_fn is not None:
                 print("Applying {} norm to {}".format(norm_fn, conv_layer))
             else:
-                conv_layer = torch.nn.utils.weight_norm(conv_layer.conv)
                 print("Applying weight norm to {}".format(conv_layer))
             self.convolutions.append(conv_layer)
 
@@ -193,57 +193,23 @@ class ConvLSTMLinear(BiLSTM):
         if out_dim is not None:
             self.dense = nn.Linear(n_channels, out_dim)
 
-    @torch.jit.export
-    def conv_to_sequence(self, context: Tensor, lens: Tensor, enforce_sorted: bool = False) -> PackedSequence:
-        context_embedded = []
-        bs: int = context.shape[0]
-        b_ind: int = 0
-        for b_ind in range(bs):  # TODO: speed up
-            curr_context = context[b_ind : b_ind + 1, :, : lens[b_ind]].clone()
-            for conv in self.convolutions:
-                curr_context = self.dropout(F.relu(conv(curr_context)))
-            context_embedded.append(curr_context[0].transpose(0, 1))
-        seq = torch.nn.utils.rnn.pack_sequence(context_embedded, enforce_sorted=enforce_sorted)
-        return seq
-
-    @torch.jit.export
-    def conv_to_padded_tensor(self, context: Tensor, lens: Tensor) -> Tensor:
-        context_embedded = []
-        bs: int = context.shape[0]
-        b_ind: int = 0
-        for b_ind in range(bs):  # TODO: speed up
-            curr_context = context[b_ind : b_ind + 1, :, : lens[b_ind]].clone()
-            for conv in self.convolutions:
-                curr_context = self.dropout(F.relu(conv(curr_context)))
-            context_embedded.append(curr_context[0].transpose(0, 1))
-        ret = torch.nn.utils.rnn.pad_sequence(context_embedded, batch_first=True)
-        return ret
-
-    @torch.jit.export
     def masked_conv_to_sequence(self, context: Tensor, lens: Tensor, enforce_sorted: bool = False) -> PackedSequence:
         mask = get_mask_from_lengths_and_val(lens, context)
-        mask = mask.unsqueeze(1)
+        mask = mask.to(dtype=context.dtype).unsqueeze(1)
         for conv in self.convolutions:
             context = self.dropout(F.relu(conv(context, mask)))
-        context = torch.mul(context, mask)
+
         context = context.transpose(1, 2)
         seq = torch.nn.utils.rnn.pack_padded_sequence(
             context, lens.long().cpu(), batch_first=True, enforce_sorted=enforce_sorted
         )
         return seq
 
-    def forward(self, context: Tensor, lens: Optional[Tensor] = None) -> Tensor:
-        if lens is None:
-            for conv in self.convolutions:
-                context = self.dropout(F.relu(conv(context)))
-            context = context.transpose(1, 2)
-            context, _ = self.bilstm(context)
-        else:
-            # borisf : does not match ADLR (values, lengths)
-            # seq = self.masked_conv_to_sequence(context, lens, enforce_sorted=False)
-            # borisf : does match ADLR
-            seq = self.conv_to_sequence(context, lens, enforce_sorted=False)
-            context, _ = self.lstm_sequence(seq)
+    def forward(self, context: Tensor, lens: Tensor) -> Tensor:
+        context, lens, unsort_ids = sort_tensor(context, lens)
+        seq = self.masked_conv_to_sequence(context, lens, enforce_sorted=True)
+        context, _ = self.lstm_sequence(seq)
+        context = context[unsort_ids]
 
         if self.dense is not None:
             context = self.dense(context).permute(0, 2, 1)
@@ -251,12 +217,8 @@ class ConvLSTMLinear(BiLSTM):
         return context
 
 
-def getRadTTSEncoder(
-    encoder_n_convolutions=3,
-    encoder_embedding_dim=512,
-    encoder_kernel_size=5,
-    norm_fn=nn.BatchNorm1d,
-    lstm_norm_fn=None,
+def get_radtts_encoder(
+    encoder_n_convolutions=3, encoder_embedding_dim=512, encoder_kernel_size=5, norm_fn=MaskedInstanceNorm1d,
 ):
     return ConvLSTMLinear(
         in_dim=encoder_embedding_dim,
@@ -266,7 +228,6 @@ def getRadTTSEncoder(
         p_dropout=0.5,
         use_partial_padding=True,
         norm_fn=norm_fn,
-        lstm_norm_fn=lstm_norm_fn,
     )
 
 
@@ -274,7 +235,7 @@ class Invertible1x1ConvLUS(torch.nn.Module):
     def __init__(self, c):
         super(Invertible1x1ConvLUS, self).__init__()
         # Sample a random orthonormal matrix to initialize weights
-        W = torch.qr(torch.FloatTensor(c, c).normal_())[0]
+        W, _ = torch.linalg.qr(torch.FloatTensor(c, c).normal_())
         # Ensure determinant is 1.0 not -1.0
         if torch.det(W) < 0:
             W[:, 0] = -1 * W[:, 0]

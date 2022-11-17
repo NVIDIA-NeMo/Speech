@@ -139,13 +139,14 @@ def nemo_export(argv):
         with autocast(), torch.no_grad(), torch.inference_mode():
             model.to(device=args.device).freeze()
             model.eval()
-            input_example = model.input_module.input_example(**in_args)
             if check_trace and len(in_args) > 0:
+                input_example = model.input_module.input_example(**in_args)
                 check_trace = [input_example]
-                for key, arg in in_args:
+                for key, arg in in_args.items():
                     in_args[key] = (arg + 1) // 2
                 input_example2 = model.input_module.input_example(**in_args)
                 check_trace.append(input_example2)
+                logging.info(f"Using additional check args: {in_args}")
 
             _, descriptions = model.export(
                 out,

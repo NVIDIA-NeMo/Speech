@@ -196,15 +196,6 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
 
-        if "phoneme_dict" in cfg.text_tokenizer:
-            text_tokenizer_kwargs["phoneme_dict"] = self.register_artifact(
-                "text_tokenizer.phoneme_dict", cfg.text_tokenizer.phoneme_dict,
-            )
-        if "heteronyms" in cfg.text_tokenizer:
-            text_tokenizer_kwargs["heteronyms"] = self.register_artifact(
-                "text_tokenizer.heteronyms", cfg.text_tokenizer.heteronyms,
-            )
-
         if "g2p" in cfg.text_tokenizer:
             g2p_kwargs = {}
 

@@ -127,9 +127,9 @@ class MultiHeadAttn(nn.Module):
         head_k = head_k.view(inp.size(0), inp.size(1), n_head, d_head)
         head_v = head_v.view(inp.size(0), inp.size(1), n_head, d_head)
 
-        q = head_q.permute(0, 2, 1, 3).reshape(-1, inp.size(1), d_head)
-        k = head_k.permute(0, 2, 1, 3).reshape(-1, inp.size(1), d_head)
-        v = head_v.permute(0, 2, 1, 3).reshape(-1, inp.size(1), d_head)
+        q = head_q.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
+        k = head_k.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
+        v = head_v.permute(2, 0, 1, 3).reshape(-1, inp.size(1), d_head)
 
         attn_score = torch.bmm(q, k.transpose(1, 2))
         attn_score.mul_(self.scale)

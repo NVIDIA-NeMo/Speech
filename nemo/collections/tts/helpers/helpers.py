@@ -130,8 +130,8 @@ def binarize_attention_parallel(attn, in_lens, out_lens):
             attn: B x 1 x max_mel_len x max_text_len
         """
     with torch.no_grad():
-        attn_cpu = attn.data.cpu().numpy()
-        attn_out = b_mas(attn_cpu, in_lens.cpu().numpy(), out_lens.cpu().numpy(), width=1)
+        log_attn_cpu = torch.log(attn.data).cpu().numpy()
+        attn_out = b_mas(log_attn_cpu, in_lens.cpu().numpy(), out_lens.cpu().numpy(), width=1)
     return torch.from_numpy(attn_out).to(attn.device)
 
 
@@ -175,43 +175,41 @@ def mas(attn_map, width=1):
 
 
 @jit(nopython=True)
-def mas_width1(attn_map):
+def mas_width1(log_attn_map):
     """mas with hardcoded width=1"""
     # assumes mel x text
-    opt = np.zeros_like(attn_map)
-    attn_map = np.log(attn_map)
-    attn_map[0, 1:] = -np.inf
-    log_p = np.zeros_like(attn_map)
-    log_p[0, :] = attn_map[0, :]
-    prev_ind = np.zeros_like(attn_map, dtype=np.int64)
-    for i in range(1, attn_map.shape[0]):
-        for j in range(attn_map.shape[1]):  # for each text dim
-            prev_log = log_p[i - 1, j]
-            prev_j = j
-
-            if j - 1 >= 0 and log_p[i - 1, j - 1] >= log_p[i - 1, j]:
-                prev_log = log_p[i - 1, j - 1]
-                prev_j = j - 1
-
-            log_p[i, j] = attn_map[i, j] + prev_log
-            prev_ind[i, j] = prev_j
+    neg_inf = log_attn_map.dtype.type(-np.inf)
+    log_p = log_attn_map.copy()
+    log_p[0, 1:] = neg_inf
+    for i in range(1, log_p.shape[0]):
+        prev_log1 = neg_inf
+        for j in range(log_p.shape[1]):
+            prev_log2 = log_p[i - 1, j]
+            log_p[i, j] += max(prev_log1, prev_log2)
+            prev_log1 = prev_log2
 
     # now backtrack
-    curr_text_idx = attn_map.shape[1] - 1
-    for i in range(attn_map.shape[0] - 1, -1, -1):
-        opt[i, curr_text_idx] = 1
-        curr_text_idx = prev_ind[i, curr_text_idx]
-    opt[0, curr_text_idx] = 1
+    opt = np.zeros_like(log_p)
+    one = opt.dtype.type(1)
+    j = log_p.shape[1] - 1
+    for i in range(log_p.shape[0] - 1, 0, -1):
+        opt[i, j] = one
+        if log_p[i - 1, j - 1] >= log_p[i - 1, j]:
+            j -= 1
+            if j == 0:
+                opt[1:i, j] = one
+                break
+    opt[0, j] = one
     return opt
 
 
 @jit(nopython=True, parallel=True)
-def b_mas(b_attn_map, in_lens, out_lens, width=1):
+def b_mas(b_log_attn_map, in_lens, out_lens, width=1):
     assert width == 1
-    attn_out = np.zeros_like(b_attn_map)
+    attn_out = np.zeros_like(b_log_attn_map)
 
-    for b in prange(b_attn_map.shape[0]):
-        out = mas_width1(b_attn_map[b, 0, : out_lens[b], : in_lens[b]])
+    for b in prange(b_log_attn_map.shape[0]):
+        out = mas_width1(b_log_attn_map[b, 0, : out_lens[b], : in_lens[b]])
         attn_out[b, 0, : out_lens[b], : in_lens[b]] = out
     return attn_out
 

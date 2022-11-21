@@ -87,13 +87,13 @@ def prepare_manifest(config: dict) -> str:
                     p.imap(write_vad_infer_manifest_star, inputs),
                     total=len(input_list),
                     desc='splitting manifest',
-                    leave=False,
+                    leave=True,
                 )
             )
     else:
         results = [
             write_vad_infer_manifest(input_el, args_func)
-            for input_el in tqdm(input_list, desc='splitting manifest', leave=False)
+            for input_el in tqdm(input_list, desc='splitting manifest', leave=True)
         ]
 
     if os.path.exists(manifest_vad_input):
@@ -282,12 +282,12 @@ def generate_overlap_vad_seq(
                     p.imap(generate_overlap_vad_seq_per_file_star, inputs),
                     total=len(frame_filepathlist),
                     desc='generating preds',
-                    leave=False,
+                    leave=True,
                 )
             )
 
     else:
-        for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=False):
+        for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=True):
             generate_overlap_vad_seq_per_file(frame_filepath, per_args)
 
     return overlap_out_dir
@@ -731,12 +731,12 @@ def generate_vad_segment_table(
                     p.imap(generate_vad_segment_table_per_file_star, inputs),
                     total=len(vad_pred_filepath_list),
                     desc='creating speech segments',
-                    leave=False,
+                    leave=True,
                 )
             )
 
     else:
-        for vad_pred_filepath in tqdm(vad_pred_filepath_list, desc='creating speech segments', leave=False):
+        for vad_pred_filepath in tqdm(vad_pred_filepath_list, desc='creating speech segments', leave=True):
             generate_vad_segment_table_per_file(vad_pred_filepath, per_args)
 
     return table_out_dir

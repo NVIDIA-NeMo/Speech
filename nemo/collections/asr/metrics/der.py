@@ -108,6 +108,54 @@ def score_labels(
         return None
 
 
+def evaluate_der(audio_rttm_map_dict, all_reference, all_hypothesis, diar_eval_mode='all'):
+    """
+    Evaluate with a selected diarization evaluation scheme
+
+    AUDIO_RTTM_MAP (dict):
+        Dictionary containing information provided from manifestpath
+    all_reference (list[uniq_name,annotation]):
+        reference annotations for score calculation
+    all_hypothesis (list[uniq_name,annotation]):
+        hypothesis annotations for score calculation
+    diar_eval_mode (str):
+        Diarization evaluation modes
+
+        diar_eval_mode == "full":
+            DIHARD challenge style evaluation, the most strict way of evaluating diarization
+            (collar, ignore_overlap) = (0.0, False)
+        diar_eval_mode == "fair":
+            Evaluation setup used in VoxSRC challenge
+            (collar, ignore_overlap) = (0.25, False)
+        diar_eval_mode == "forgiving":
+            Traditional evaluation setup
+            (collar, ignore_overlap) = (0.25, True)
+        diar_eval_mode == "all":
+            Compute all three modes (default)
+    """
+    eval_settings = []
+    if diar_eval_mode == "full":
+        eval_settings = [(0.0, False)]
+    elif diar_eval_mode == "fair":
+        eval_settings = [(0.25, False)]
+    elif diar_eval_mode == "forgiving":
+        eval_settings = [(0.25, True)]
+    elif diar_eval_mode == "all":
+        eval_settings = [(0.0, False), (0.25, False), (0.25, True)]
+    else:
+        raise ValueError("`diar_eval_mode` variable contains an unsupported value")
+
+    for collar, ignore_overlap in eval_settings:
+        diar_score = score_labels(
+            AUDIO_RTTM_MAP=audio_rttm_map_dict,
+            all_reference=all_reference,
+            all_hypothesis=all_hypothesis,
+            collar=collar,
+            ignore_overlap=ignore_overlap,
+        )
+    return diar_score
+
+
 def calculate_session_cpWER_bruteforce(spk_hypothesis: List[str], spk_reference: List[str]) -> Tuple[float, str, str]:
     """
     Calculate cpWER with actual permutations in brute-force way when LSA algorithm cannot deliver the correct result.

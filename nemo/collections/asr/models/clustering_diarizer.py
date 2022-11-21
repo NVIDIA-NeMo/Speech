@@ -213,7 +213,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             data.append(get_uniqname_from_filepath(file))
 
         status = get_vad_stream_status(data)
-        for i, test_batch in enumerate(tqdm(self._vad_model.test_dataloader(), desc='vad', leave=False)):
+        for i, test_batch in enumerate(tqdm(self._vad_model.test_dataloader(), desc='vad', leave=True)):
             test_batch = [x.to(self._device) for x in test_batch]
             with autocast():
                 log_probs = self._vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
@@ -342,7 +342,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         all_embs = torch.empty([0])
         for test_batch in tqdm(
-            self._speaker_model.test_dataloader(), desc=f'[{scale_idx}/{num_scales}] extract embeddings', leave=False
+            self._speaker_model.test_dataloader(), desc=f'[{scale_idx+1}/{num_scales}] extract embeddings', leave=True
         ):
             test_batch = [x.to(self._device) for x in test_batch]
             audio_signal, audio_signal_len, labels, slices = test_batch

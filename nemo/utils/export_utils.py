@@ -15,7 +15,7 @@
 import os
 from contextlib import nullcontext
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Type
+from typing import Callable, Dict, Optional, Type
 
 import onnx
 import torch
@@ -135,14 +135,16 @@ def to_onnxrt_input(ort_input_names, input_names, input_dict, input_list):
 
 
 def verify_torchscript(model, output, input_examples, input_names, check_tolerance=0.01):
-    ts_model = torch.jit.load(output)
-
     all_good = True
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)
         output_example = model.forward(*input_list, **input_dict)
-
-        all_good = all_good and run_ts_and_compare(ts_model, input_list, input_dict, output_example, check_tolerance)
+        # We disable autocast here to make sure exported TS will run under Triton or other C++ env
+        with torch.cuda.amp.autocast(enabled=False):
+            ts_model = torch.jit.load(output)
+            all_good = all_good and run_ts_and_compare(
+                ts_model, input_list, input_dict, output_example, check_tolerance
+            )
     status = "SUCCESS" if all_good else "FAIL"
     logging.info(f"Torchscript generated at {output} verified with torchscript forward : " + status)
     return all_good
@@ -183,9 +185,15 @@ def run_ts_and_compare(ts_model, ts_input_list, ts_input_dict, output_example, c
         if torch.is_tensor(expected):
             tout = out.to('cpu')
             logging.debug(f"Checking output {i}, shape: {expected.shape}:\n{expected}\n{tout}")
-            if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=check_tolerance):
+            this_good = True
+            try:
+                if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=check_tolerance):
+                    this_good = False
+            except Exception:  # there may ne size mismatch and it may be OK
+                this_good = False
+            if not this_good:
+                logging.info(f"Results mismatch! PyTorch(expected):\n{expected}\nTorchScript:\n{tout}")
                 all_good = False
-                logging.info(f"onnxruntime results mismatch! PyTorch(expected):\n{expected}\nTorchScript:\n{tout}")
     return all_good
 
 
@@ -199,9 +207,15 @@ def run_ort_and_compare(sess, ort_input, output_example, check_tolerance=0.01):
         if torch.is_tensor(expected):
             tout = torch.from_numpy(out)
             logging.debug(f"Checking output {i}, shape: {expected.shape}:\n{expected}\n{tout}")
-            if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=100 * check_tolerance):
-                all_good = False
+            this_good = True
+            try:
+                if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=100 * check_tolerance):
+                    this_good = False
+            except Exception:  # there may ne size mismatch and it may be OK
+                this_good = False
+            if not this_good:
                 logging.info(f"onnxruntime results mismatch! PyTorch(expected):\n{expected}\nONNXruntime:\n{tout}")
+                all_good = False
     return all_good
 
 
@@ -387,8 +401,7 @@ def replace_modules(
 
 
 def script_module(m: nn.Module):
-    m1 = torch.jit.script(m)
-    return m1
+    return torch.jit.script(m)
 
 
 default_replacements = {
@@ -399,7 +412,6 @@ default_replacements = {
 
 script_replacements = {
     "BiLSTM": script_module,
-    "ConvLSTMLinear": script_module,
 }
 
 

@@ -345,9 +345,7 @@ class RadTTSModule(NeuralModule, Exportable):
                     context_w_spkvec = torch.cat((context_w_spkvec, energy_avg), 1)
 
             unfolded_out_lens = out_lens // self.n_group_size
-            context_lstm_padded_output = self.context_lstm.sort_and_lstm_tensor(
-                context_w_spkvec.transpose(1, 2), unfolded_out_lens
-            )
+            context_lstm_padded_output = self.context_lstm(context_w_spkvec.transpose(1, 2), unfolded_out_lens)
             context_w_spkvec = context_lstm_padded_output.transpose(1, 2)
 
         if not self.context_lstm_w_f0_and_energy:
@@ -772,8 +770,8 @@ class RadTTSModule(NeuralModule, Exportable):
         """
         par = next(self.parameters())
         sz = (max_batch, max_dim)
-        inp = torch.randint(0, 16, sz, device=par.device, dtype=torch.int64)
-        lens = torch.randint(16, max_dim, (max_batch,), device=par.device, dtype=torch.int)
+        inp = torch.randint(16, 32, sz, device=par.device, dtype=torch.int64)
+        lens = torch.randint(max_dim // 4, max_dim // 2, (max_batch,), device=par.device, dtype=torch.int)
         speaker = torch.randint(0, 1, (max_batch,), device=par.device, dtype=torch.int64)
         inputs = {
             'text': inp,

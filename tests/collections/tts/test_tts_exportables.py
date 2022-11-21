@@ -15,6 +15,7 @@ import os
 import tempfile
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.tts.models import FastPitchModel, HifiGanModel, RadTTSModel
@@ -79,4 +80,5 @@ class TestExportable:
         model = radtts_model.cuda()
         with tempfile.TemporaryDirectory() as tmpdir:
             filename = os.path.join(tmpdir, 'rad.ts')
-            model.export(output=filename, verbose=True, check_trace=True)
+            with torch.cuda.amp.autocast(enabled=True):
+                model.export(output=filename, verbose=True, check_trace=True)

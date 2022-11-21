@@ -13,6 +13,7 @@ In particular, we wanted to decouple the task-dependent, model-independent compo
 
 .. image:: dialogue_UML.png
   :alt: Dialogue-UML
+  :width: 800px
 
 **Supported Tasks** 
 

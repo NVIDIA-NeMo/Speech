@@ -435,7 +435,7 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         speaker_clustering = torch.jit.script(speaker_clustering)
         torch.jit.save(speaker_clustering, 'speaker_clustering_script.pt')
 
-    for uniq_id, audio_rttm_values in tqdm(AUDIO_RTTM_MAP.items(), desc='clustering', leave=False):
+    for uniq_id, audio_rttm_values in tqdm(AUDIO_RTTM_MAP.items(), desc='clustering', leave=True):
         uniq_embs_and_timestamps = embs_and_timestamps[uniq_id]
 
         if clustering_params.oracle_num_speakers:

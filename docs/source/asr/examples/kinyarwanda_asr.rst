@@ -483,7 +483,7 @@ The figure below shows the training dynamics when we train Kinyarwanda models **
     .. image:: ../images/kinyarwanda_from_scratch.png
         :align: center
         :alt: Training dynamics of Kinyarwanda models trained from scratch
-        :scale: 50%
+        :width: 800px
 
 Finetuning from another model
 #############################
@@ -530,7 +530,7 @@ The figure below compares the training dynamics for three Conformer-Transducer m
     .. image:: ../images/kinyarwanda_finetuning.png
         :align: center
         :alt: Training dynamics of Kinyarwanda models trained from scratch and finetuned from different pretrained checkpoints
-        :scale: 50%
+        :width: 800px
 
 ************************
 Inference and evaluation

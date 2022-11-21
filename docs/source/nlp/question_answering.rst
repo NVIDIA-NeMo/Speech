@@ -72,6 +72,7 @@ Similarly, the BaseQAModel module handles common model tasks like creating datal
 
 .. image:: question_answering_arch.png
   :alt: Question-Answerin-Architecture
+  :width: 800px
 
 Configuration
 =============

@@ -83,15 +83,17 @@ SDE application has two pages:
 
     .. image:: images/sde_base_stats.png
         :align: center
+        :width: 800px
         :alt: SDE Statistics
-        :scale: 50%
+        
 
 * `Samples` (to allow navigation across the entire dataset and exploration of individual utterances)
 
     .. image:: images/sde_player.png
         :align: center
+        :width: 800px
         :alt: SDE Statistics
-        :scale: 50%
+        
 
 Plotly Dash Datatable provides core SDE's interactive features (navigation, filtering, and sorting).
 SDE has two datatables:
@@ -100,15 +102,17 @@ SDE has two datatables:
 
     .. image:: images/sde_words.png
         :align: center
+        :width: 800px
         :alt: Vocabulary
-        :scale: 50%
+        
 
 * Data (that visualizes all dataset's utterances on `Samples` page)
 
     .. image:: images/sde_utterances.png
         :align: center
+        :width: 800px
         :alt: Data
-        :scale: 50%
+        
 
 Every column of the DataTable has the following interactive features:
 
@@ -116,22 +120,25 @@ Every column of the DataTable has the following interactive features:
 
     .. image:: images/datatable_toggle.png
         :align: center
+        :width: 800px
         :alt: Toggling
-        :scale: 80%
+        
 
 * sorting (by clicking on small triangle icons in the column's header cell): unordered (two triangles point up and down), ascending (a triangle points up), descending (a triangle points down)
 
     .. image:: images/datatable_sort.png
         :align: center
+        :width: 800px
         :alt: Sorting
-        :scale: 80%
+        
 
 * filtering (by entering a filtering expression in a cell below the header's cell): SDE supports ``<``, ``>``, ``<=``, ``>=``, ``=``, ``!=``, and ``contains`` operators; to match a specific substring, the quoted substring can be used as a filtering expression
 
     .. image:: images/datatable_filter.png
         :align: center
+        :width: 800px
         :alt: Filtering
-        :scale: 80%
+        
 
 
 Analysis of Speech Datasets
@@ -154,22 +161,25 @@ After that it is worth to check words with zero accuracy.
 
     .. image:: images/sde_mls_words.png
         :align: center
+        :width: 800px
         :alt: MLS Words
-        :scale: 50%
+        
 
 And then look at high CER utterances.
 
     .. image:: images/sde_mls_cer.png
         :align: center
+        :width: 800px
         :alt: MLS CER
-        :scale: 50%
+        
 
 Listening to the audio recording helps to validate the corresponding reference transcript.
 
     .. image:: images/sde_mls_player.png
         :align: center
+        :width: 800px
         :alt: MLS Player
-        :scale: 50%
+        
 
 
 

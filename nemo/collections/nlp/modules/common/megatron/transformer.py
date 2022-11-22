@@ -2332,13 +2332,13 @@ class ParallelTransformer(MegatronModule):
                     for index in range(start, end):
                         layer = self._get_layer(index)
                         hidden_states = layer(
-                            hidden_states,
-                            attention_mask,
-                            encoder_output,
-                            enc_dec_attn_mask,
-                            rotary_pos_emb,
-                            self_attention_relative_position_bias,
-                            cross_attention_relative_position_bias,
+                            hidden_states=hidden_states,
+                            attention_mask=attention_mask,
+                            encoder_output=encoder_output,
+                            enc_dec_attn_mask=enc_dec_attn_mask,
+                            rotary_pos_emb=rotary_pos_emb,
+                            self_attention_relative_position_bias=self_attention_relative_position_bias,
+                            cross_attention_relative_position_bias=cross_attention_relative_position_bias,
                         )
                         if isinstance(hidden_states, tuple):
                             pass

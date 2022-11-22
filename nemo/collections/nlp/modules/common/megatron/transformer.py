@@ -2519,7 +2519,7 @@ class ParallelTransformer(MegatronModule):
                 fp8_context = nullcontext()
 
             with fp8_context:
-                if self.activations_checkpoint_granularity == 'full':
+                if self.activations_checkpoint_granularity == 'full' and self.activations_checkpoint_num_layers > 0:
                     hidden_states = self._checkpointed_forward(
                         hidden_states,
                         attention_mask,

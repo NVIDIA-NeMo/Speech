@@ -26,7 +26,7 @@ SOUND_VELOCITY = 343.0  # m/s
 ChannelSelectorType = Union[int, Iterable[int], str]
 
 
-def get_samples(audio_file: str, target_sr: int = 16000):
+def get_samples(audio_file: str, target_sr: int = 16000, dtype: str = 'float32'):
     """
     Read the samples from the given audio_file path. If not specified, the input audio file is automatically
     resampled to 16kHz.
@@ -41,12 +41,10 @@ def get_samples(audio_file: str, target_sr: int = 16000):
             Time-series sample data from the given audio file
     """
     with sf.SoundFile(audio_file, 'r') as f:
-        sample_rate = f.samplerate
-        samples = f.read()
-        if sample_rate != target_sr:
-            samples = librosa.core.resample(samples, orig_sr=sample_rate, target_sr=target_sr)
+        samples = f.read(dtype=dtype)
+        if f.samplerate != target_sr:
+            samples = librosa.core.resample(samples, orig_sr=f.samplerate, target_sr=target_sr)
         samples = samples.transpose()
-        del f
     return samples
 
 

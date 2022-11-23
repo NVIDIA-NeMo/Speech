@@ -576,7 +576,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 loss_sum = (
                     torch.vstack(loss_sum_tensors_list).sum(axis=0)
                     if len(loss_sum_tensors_list) > 0
-                    else torch.tensor(0.0)
+                    else torch.tensor([0.0, 0.0]).cuda()
                 )
                 return loss_sum
         else:

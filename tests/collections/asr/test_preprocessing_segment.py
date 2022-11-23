@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from nemo.collections.asr.parts.preprocessing.perturb import NoisePerturbation
+from nemo.collections.asr.parts.preprocessing.perturb import NoisePerturbation, SilencePerturbation
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.audio_utils import select_channels
 
@@ -177,3 +177,27 @@ class TestAudioSegment:
                     _ = perturber.perturb_with_input_noise(audio, noise)
                 with pytest.raises(ValueError):
                     _ = perturber.perturb_with_foreground_noise(audio, noise)
+
+    def test_silence_perturb(self):
+        """Test loading a signal from a file and apply silence perturbation
+        """
+        with tempfile.TemporaryDirectory() as test_dir:
+            # Prepare a wav file
+            audio_file = os.path.join(test_dir, 'audio.wav')
+            # samples is a one-dimensional vector for single-channel signal
+            samples = np.random.rand(self.num_samples)
+            sf.write(audio_file, samples, self.sample_rate, 'float')
+
+            dur = 2
+            perturber = SilencePerturbation(
+                min_start_silence_secs=dur,
+                max_start_silence_secs=dur,
+                min_end_silence_secs=dur,
+                max_end_silence_secs=dur,
+            )
+
+            audio = AudioSegment.from_file(audio_file)
+            ori_audio_len = len(audio._samples)
+            _ = perturber.perturb(audio)
+
+            assert len(audio._samples) == ori_audio_len + 2 * dur * self.sample_rate

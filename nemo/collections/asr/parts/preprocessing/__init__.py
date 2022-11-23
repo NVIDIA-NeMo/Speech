@@ -23,6 +23,7 @@ from nemo.collections.asr.parts.preprocessing.perturb import (
     Perturbation,
     RirAndNoisePerturbation,
     ShiftPerturbation,
+    SilencePerturbation,
     SpeedPerturbation,
     TimeStretchPerturbation,
     TranscodePerturbation,

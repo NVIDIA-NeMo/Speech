@@ -26,7 +26,7 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchASR
-from nemo.utils import logging
+from nemo.utils import logging, model_utils
 
 
 def get_buffered_pred_feat_rnnt(

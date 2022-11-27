@@ -1,5 +1,33 @@
 ASR:
 - nemo/collections/asr/**/*
+- examples/asr/**/*
+- tutorials/asr/**/*
+- docs/source/asr/**/*
 
 NLP:
 - nemo/collections/nlp/**/*
+- examples/nlp/**/*
+- tutorials/nlp/**/*
+- docs/source/nlp/**/*
+
+Speaker Tasks:
+- examples/speaker_tasks/**/*
+- tutorials/speaker_tasks/**/*
+
+TTS:
+- nemo/collections/tts/**/*
+- examples/tts/**/*
+- tutorials/tts/**/*
+- docs/source/tts/**/*
+
+core:
+- nemo/core/**/*
+
+common:
+- nemo/collections/common/**/*
+
+CI:
+- .github/**/*
+- Jenkinsfile
+- Dockerfile
+- ci.groovy

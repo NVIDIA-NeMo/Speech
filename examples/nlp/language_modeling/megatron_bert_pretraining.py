@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning_lite.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks.timer import Timer
-from pytorch_lightning.plugins.environments.torchelastic_environment import TorchElasticEnvironment
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel

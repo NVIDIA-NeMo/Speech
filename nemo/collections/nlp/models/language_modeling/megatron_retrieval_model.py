@@ -309,16 +309,16 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
                 # If the grad scaler skipped its optimizer step due to infs/nans,
                 # decrement the step of all schedulers.
                 if grad_scaler.optimizer_update_skipped is not None and grad_scaler.optimizer_update_skipped is True:
-                    schedulers = self.trainer.lr_schedulers
+                    scheduler_cfgs = self.trainer.lr_scheduler_configs
 
-                    if not schedulers or not self.trainer.lightning_module.automatic_optimization:
+                    if not scheduler_cfgs or not self.trainer.lightning_module.automatic_optimization:
                         return
 
-                    for scheduler in schedulers:
+                    for scheduler_cfg in scheduler_cfgs:
                         # Decrement the counter by 2, then perform a scheduler.step() to perform a no-up
                         # as well as update the optimizer lr in all param groups
-                        scheduler['scheduler'].last_epoch -= 2
-                        scheduler['scheduler'].step()
+                        scheduler_cfg.scheduler.last_epoch -= 2
+                        scheduler_cfg.scheduler.step()
 
                     # Increase the max step count by 1
 

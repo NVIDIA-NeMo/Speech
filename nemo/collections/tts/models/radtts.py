@@ -21,7 +21,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import LoggerCollection, TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
 from nemo.collections.tts.helpers.helpers import plot_alignment_to_numpy
@@ -388,11 +388,10 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             if self.logger is None and self.logger.experiment is None:
                 return None
             tb_logger = self.logger.experiment
-            if isinstance(self.logger, LoggerCollection):
-                for logger in self.logger:
-                    if isinstance(logger, TensorBoardLogger):
-                        tb_logger = logger.experiment
-                        break
+            for logger in self.trainer.loggers:
+                if isinstance(logger, TensorBoardLogger):
+                    tb_logger = logger.experiment
+                    break
             self._tb_logger = tb_logger
         return self._tb_logger
 

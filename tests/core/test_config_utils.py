@@ -116,11 +116,8 @@ class TestConfigUtils:
     @pytest.mark.unit
     def test_ptl_config(self):
         PTL_DEPRECATED = [
-            'distributed_backend',
-            'automatic_optimization',
             'gpus',
             'num_processes',
-            'weights_save_path',
         ]
 
         result = config_utils.assert_dataclass_signature_match(ptl.Trainer, TrainerConfig, ignore_args=PTL_DEPRECATED)

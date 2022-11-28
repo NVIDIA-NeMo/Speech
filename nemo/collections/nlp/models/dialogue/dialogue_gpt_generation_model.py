@@ -216,7 +216,7 @@ class DialogueGPTGenerationModel(NLPModel):
         return loss
 
     def setup(self, stage=None):
-        super().setup()
+        super().setup(stage)
         if self.cfg.library == "megatron" and self.prompt_learning:
             self.language_model.init_new_prompts()
 

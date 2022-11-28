@@ -11,11 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 from abc import ABC
 from typing import List, Union
 
 import torch
+from pytorch_lightning.core.module import _jit_is_scripting
 from torch.onnx import TrainingMode
 
 from nemo.core.classes import typecheck
@@ -128,7 +128,7 @@ class Exportable(ABC):
             # Set module mode
             with torch.onnx.select_model_mode_for_export(
                 self, training
-            ), torch.inference_mode(), torch.no_grad(), torch.jit.optimized_execution(True):
+            ), torch.inference_mode(), torch.no_grad(), torch.jit.optimized_execution(True), _jit_is_scripting():
 
                 if input_example is None:
                     input_example = self.input_module.input_example()

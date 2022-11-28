@@ -84,6 +84,7 @@ class TrainerConfig:
     strategy: Any = None
     enable_checkpointing: bool = False
     enable_model_summary: bool = True
+    inference_mode: bool = True
 
 
 # Register the trainer config.

@@ -226,7 +226,7 @@ class SGDQAModel(NLPModel):
         all_start_char_idx = []
         all_end_char_idx = []
 
-        if self.trainer.devices and self.trainer.world_size > 1:
+        if self.trainer.num_devices and self.trainer.world_size > 1:
             world_size = self.trainer.world_size
             for ind in range(world_size):
                 all_example_id_num.append(torch.empty_like(example_id_num))

@@ -69,7 +69,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.world_size = 1
         if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_gpus
+            self.world_size = trainer.num_nodes * trainer.num_devices
 
         self.mode = cfg.model_name.lower()
 

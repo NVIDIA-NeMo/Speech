@@ -19,7 +19,6 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning import Trainer
-from pytorch_lightning.utilities.distributed import rank_zero_only
 
 from nemo.core import ModelPT
 from nemo.utils import logging

@@ -58,7 +58,7 @@ class T5G2PModel(G2PModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.world_size = 1
         if trainer is not None:
-            self.world_size = trainer.num_nodes * trainer.num_gpus
+            self.world_size = trainer.num_nodes * trainer.num_devices
 
         # Load appropriate tokenizer from HuggingFace
         self.model_name = cfg.model_name

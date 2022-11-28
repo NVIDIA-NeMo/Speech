@@ -22,9 +22,9 @@ import torch
 from packaging import version
 
 from nemo.collections.asr.parts.numba.spec_augment import SpecAugmentNumba, spec_augment_launch_heuristics
-from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
+from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures, FilterbankFeaturesTA
 from nemo.collections.asr.parts.submodules.spectr_augment import SpecAugment, SpecCutout
-from nemo.core.classes import NeuralModule, typecheck
+from nemo.core.classes import Exportable, NeuralModule, typecheck
 from nemo.core.neural_types import (
     AudioSignal,
     LengthsType,
@@ -92,11 +92,8 @@ class AudioPreprocessor(NeuralModule, ABC):
         pass
 
 
-class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
+class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
     """Featurizer module that converts wavs to mel spectrograms.
-        We don't use torchaudio's implementation here because the original
-        implementation is not the same, so for the sake of backwards-compatibility
-        this will use the old FilterbankFeatures for now.
 
         Args:
             sample_rate (int): Sample rate of the input audio data.
@@ -158,6 +155,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
                 Defaults to 0.0
             nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
                 Defaults to 4000
+            use_torchaudio: Whether to use the `torchaudio` implementation.
             stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
             stft_conv: Deprecated argument, kept for compatibility with older checkpoints.
         """
@@ -222,6 +220,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
+        use_torchaudio: bool = False,
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
@@ -239,7 +238,12 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
         if window_stride:
             n_window_stride = int(window_stride * self._sample_rate)
 
-        self.featurizer = FilterbankFeatures(
+        # Given the long and similar argument list, point to the class and instantiate it by reference
+        if not use_torchaudio:
+            featurizer_class = FilterbankFeatures
+        else:
+            featurizer_class = FilterbankFeaturesTA
+        self.featurizer = featurizer_class(
             sample_rate=self._sample_rate,
             n_window_size=n_window_size,
             n_window_stride=n_window_stride,
@@ -265,6 +269,14 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor):
             stft_exact_pad=stft_exact_pad,  # Deprecated arguments; kept for config compatibility
             stft_conv=stft_conv,  # Deprecated arguments; kept for config compatibility
         )
+
+    def input_example(self, max_batch: int = 8, max_dim: int = 32000, min_length: int = 200):
+        batch_size = torch.randint(low=1, high=max_batch, size=[1]).item()
+        max_length = torch.randint(low=min_length, high=max_dim, size=[1]).item()
+        signals = torch.rand(size=[batch_size, max_length]) * 2 - 1
+        lengths = torch.randint(low=min_length, high=max_dim, size=[batch_size])
+        lengths[0] = max_length
+        return signals, lengths
 
     def get_features(self, input_signal, length):
         return self.featurizer(input_signal, length)
@@ -699,6 +711,7 @@ class AudioToMelSpectrogramPreprocessorConfig:
     rng: Optional[str] = None
     nb_augmentation_prob: float = 0.0
     nb_max_freq: int = 4000
+    use_torchaudio: bool = False
     stft_exact_pad: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_conv: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
 

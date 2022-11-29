@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import torch
 
+from nemo.collections.asr.losses.rnnt import RNNTLossPytorch
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_numpy import RNNTLoss as RNNTLoss_Numpy
 from nemo.collections.asr.parts.numba.rnnt_loss.rnnt_pytorch import RNNTLossNumba
 from nemo.core.utils import numba_utils
@@ -85,6 +86,9 @@ class TestRNNTLossPytorch:
         fn_np = RNNTLoss_Numpy()
         np_cost, np_grads = wrap_and_call(fn_np, acts, labels, device)
 
+        fn_ag = RNNTLossPytorch(blank=0, reduction='sum')  # ag for automatic gradient computation
+        ag_cost, ag_grads = wrap_and_call(fn_ag, acts, labels, device)
+
         expected_cost = 4.495666
         expected_grads = np.array(
             [
@@ -109,6 +113,9 @@ class TestRNNTLossPytorch:
         assert np.allclose(pt_cost, np_cost, rtol=1e-6), "small_test costs mismatch."
         assert np.allclose(pt_grads, np_grads), "small_test gradient mismatch."
 
+        assert np.allclose(ag_cost, np_cost, rtol=1e-6), "small_test costs mismatch."
+        assert np.allclose(ag_grads, np_grads), "small_test gradient mismatch."
+
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
     def test_case_small_random(self, device):
@@ -125,8 +132,14 @@ class TestRNNTLossPytorch:
         fn_np = RNNTLoss_Numpy()
         np_cost, np_grads = wrap_and_call(fn_np, acts, labels, device)
 
+        fn_ag = RNNTLossPytorch(blank=0, reduction='sum')  # ag for automatic gradient computation
+        ag_cost, ag_grads = wrap_and_call(fn_ag, acts, labels, device)
+
         assert np.allclose(pt_cost, np_cost, rtol=1e-6), "small_random_test costs mismatch."
         assert np.allclose(pt_grads, np_grads), "small_random_test gradient mismatch."
+
+        assert np.allclose(pt_cost, ag_cost, rtol=1e-6), "small_random_test costs mismatch."
+        assert np.allclose(pt_grads, ag_grads), "small_random_test gradient mismatch."
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
@@ -259,11 +272,17 @@ class TestRNNTLossPytorch:
         fn_np = RNNTLoss_Numpy()
         np_costs, np_grads = wrap_and_call(fn_np, activations, labels, device)
 
+        fn_ag = RNNTLossPytorch(blank=0, reduction='sum')
+        ag_costs, ag_grads = wrap_and_call(fn_ag, activations, labels, device)
+
         assert np.allclose(pt_costs, sum(expected_costs)), "big_test average costs mismatch."
         assert np.allclose(pt_grads, expected_grads, rtol=1e-3), "big_test grads for average cost mismatch."
 
         assert np.allclose(pt_costs, np_costs), "big_test average costs mismatch."
         assert np.allclose(pt_grads, np_grads, rtol=1e-3), "big_test grads for average cost mismatch."
+
+        assert np.allclose(pt_costs, ag_costs), "big_test average costs mismatch."
+        assert np.allclose(pt_grads, ag_grads, rtol=1e-3), "big_test grads for average cost mismatch."
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)
@@ -286,8 +305,13 @@ class TestRNNTLossPytorch:
         fn_np = RNNTLoss_Numpy()
         np_cost, np_grads = wrap_and_call(fn_np, acts, labels, device)
 
+        fn_ag = RNNTLossPytorch(blank=0, reduction='sum')
+        ag_cost, ag_grads = wrap_and_call(fn_ag, acts, labels, device)
+
         assert np.allclose(pt_cost, np_cost, atol=1e-5, rtol=1e-3), "large_random_test costs mismatch."
+        assert np.allclose(ag_cost, np_cost, atol=1e-5, rtol=1e-3), "large_random_test costs mismatch."
         assert np.allclose(pt_grads, np_grads, atol=1e-5, rtol=1e-3), "large_random_test gradient mismatch."
+        assert np.allclose(ag_grads, np_grads, atol=1e-5, rtol=1e-3), "large_random_test gradient mismatch."
 
     @pytest.mark.unit
     @pytest.mark.parametrize('device', DEVICES)

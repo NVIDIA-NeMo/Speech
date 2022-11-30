@@ -93,17 +93,7 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
     # try to attach the parent directory of manifest to the audio path.
     # Revert to the original path if the new path still doesn't exist.
     # Assume that the audio path is like "wavs/xxxxxx.wav".
-    manifest_dir = Path(manifest_file).parent
-    audio_file = Path(item['audio_file'])
-    if (len(str(audio_file)) < 255) and not audio_file.is_file() and not audio_file.is_absolute():
-        # assume the "wavs/" dir and manifest are under the same parent dir
-        audio_file = manifest_dir / audio_file
-        if audio_file.is_file():
-            item['audio_file'] = str(audio_file.absolute())
-        else:
-            item['audio_file'] = expanduser(item['audio_file'])
-    else:
-        item['audio_file'] = expanduser(item['audio_file'])
+    item['audio_file'] = get_full_path(audio_file=item['audio_file'], manifest_file=manifest_file)
 
     # Duration.
     if 'duration' not in item:
@@ -132,3 +122,35 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
     )
 
     return item
+
+
+def get_full_path(audio_file: str, manifest_file: str, audio_file_len_limit: int = 255) -> str:
+    """Get full path to audio_file.
+
+    If the audio_file is a relative path and does not exist,
+    try to attach the parent directory of manifest to the audio path.
+    Revert to the original path if the new path still doesn't exist.
+    Assume that the audio path is like "wavs/xxxxxx.wav".
+
+    Args:
+        audio_file: path to an audio file, either absolute or assumed relative
+                    to the manifest directory
+        manifest_file: path to a manifest file
+        audio_file_len_limit: limit for length of audio_file when using relative paths
+
+    Returns:
+        Full path to audio_file.
+    """
+    audio_file = Path(audio_file)
+    manifest_dir = Path(manifest_file).parent
+
+    if (len(str(audio_file)) < audio_file_len_limit) and not audio_file.is_file() and not audio_file.is_absolute():
+        # assume audio_file path is relative to manifest_dir
+        audio_file_path = manifest_dir / audio_file
+        if audio_file_path.is_file():
+            audio_file = str(audio_file_path.absolute())
+        else:
+            audio_file = expanduser(audio_file)
+    else:
+        audio_file = expanduser(audio_file)
+    return audio_file

@@ -16,7 +16,7 @@ import collections
 import json
 import os
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import pandas as pd
 
@@ -784,3 +784,181 @@ class DiarizationSpeechLabel(DiarizationLabel):
             offset=item.get('offset', None),
         )
         return item
+
+
+class Audio(_Collection):
+    """Prepare a list of all audio items, filtered by duration.
+    """
+
+    OUTPUT_TYPE = collections.namedtuple(typename='Audio', field_names='audio_files duration offset text')
+
+    def __init__(
+        self,
+        audio_files_list: List[Dict[str, str]],
+        duration_list: List[float],
+        offset_list: List[float],
+        text_list: List[str],
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_number: Optional[int] = None,
+        do_sort_by_duration: bool = False,
+    ):
+        """Instantiantes an list of audio files.
+
+        Args:
+            audio_files_list: list of dictionaries with mapping from audio_key to audio_filepath
+            duration_list: list of durations of input files
+            offset_list: list of offsets
+            text_list: list of texts
+            min_duration: Minimum duration to keep entry with (default: None).
+            max_duration: Maximum duration to keep entry with (default: None).
+            max_number: Maximum number of samples to collect.
+            do_sort_by_duration: True if sort samples list by duration.
+        """
+
+        output_type = self.OUTPUT_TYPE
+        data, total_duration = [], 0.0
+        num_filtered, duration_filtered = 0, 0.0
+
+        for audio_files, duration, offset, text in zip(audio_files_list, duration_list, offset_list, text_list):
+            # Duration filters
+            if min_duration is not None and duration < min_duration:
+                duration_filtered += duration
+                num_filtered += 1
+                continue
+
+            if max_duration is not None and duration > max_duration:
+                duration_filtered += duration
+                num_filtered += 1
+                continue
+
+            total_duration += duration
+            data.append(output_type(audio_files, duration, offset, text))
+
+            # Max number of entities filter
+            if len(data) == max_number:
+                break
+
+        if do_sort_by_duration:
+            data.sort(key=lambda entity: entity.duration)
+
+        logging.info("Dataset loaded with %d files totalling %.2f hours", len(data), total_duration / 3600)
+        logging.info("%d files were filtered totalling %.2f hours", num_filtered, duration_filtered / 3600)
+
+        super().__init__(data)
+
+
+class AudioCollection(Audio):
+    """List of audio files from a manifest file. 
+    """
+
+    def __init__(
+        self, manifest_files: Union[str, List[str]], audio_to_manifest_key: Dict[str, str], *args, **kwargs,
+    ):
+        """Instantiates a list of audio files loaded from a manifest file.
+
+        Args:
+            manifest_files: path to a single manifest file or a list of paths
+            audio_to_manifest_key: dictionary mapping audio signals to keys of the manifest
+        """
+        # Support for comma-separated manifests
+        if type(manifest_files) == str:
+            manifest_files = manifest_files.split(',')
+
+        for audio_key, manifest_key in audio_to_manifest_key.items():
+            # Support for comma-separated keys
+            if type(manifest_key) == str and ',' in manifest_key:
+                audio_to_manifest_key[audio_key] = manifest_key.split(',')
+
+        # Keys from manifest which contain audio
+        self.audio_to_manifest_key = audio_to_manifest_key
+
+        # Initialize data
+        audio_files_list, duration_list, offset_list, text_list = [], [], [], []
+
+        # Parse manifest files
+        for item in manifest.item_iter(manifest_files, parse_func=self.__parse_item):
+            audio_files_list.append(item['audio_files'])
+            duration_list.append(item['duration'])
+            offset_list.append(item['offset'])
+            text_list.append(item['text'])
+
+        super().__init__(audio_files_list, duration_list, offset_list, text_list, *args, **kwargs)
+
+    def __parse_item(self, line: str, manifest_file: str) -> Dict[str, Any]:
+        """Parse a single line from a manifest file.
+
+        Args:
+            line: a string representing a line from a manifest file in JSON format
+            manifest_file: path to the manifest file. Used to resolve relative paths.
+
+        Returns:
+            Dictionary with audio_files, duration, and offset.
+        """
+        # Local utility function
+        def get_audio_file(item: Dict, manifest_key: Union[str, List[str]]):
+            """Get item[key] if key is string, or a list
+            of strings by combining item[key[0]], item[key[1]], etc.
+            """
+            # Prepare audio file(s)
+            if manifest_key is None:
+                # Support for inference, when a target key is None
+                audio_file = None
+            elif isinstance(manifest_key, str):
+                # Load files from a single manifest key
+                audio_file = item[manifest_key]
+            elif isinstance(manifest_key, Iterable):
+                # Load files from multiple manifest keys
+                audio_file = []
+                for key in manifest_key:
+                    item_key = item[key]
+                    if isinstance(item_key, str):
+                        audio_file.append(item_key)
+                    elif isinstance(item_key, list):
+                        audio_file += item_key
+                    else:
+                        raise ValueError(f'Unexpected type {type(item_key)} of item for key {key}: {item_key}')
+            else:
+                raise ValueError(f'Unexpected type {type(manifest_key)} of manifest_key: {manifest_key}')
+
+            return audio_file
+
+        # Convert JSON line to a dictionary
+        item = json.loads(line)
+
+        # Handle all audio files
+        audio_files = {}
+        for audio_key, manifest_key in self.audio_to_manifest_key.items():
+
+            audio_file = get_audio_file(item, manifest_key)
+
+            # Get full path to audio file(s)
+            if isinstance(audio_file, str):
+                # This dictionary entry points to a single file
+                audio_files[audio_key] = manifest.get_full_path(audio_file, manifest_file)
+            elif isinstance(audio_file, Iterable):
+                # This dictionary entry points to multiple files
+                # Get the files and keep the list structure for this key
+                audio_files[audio_key] = [manifest.get_full_path(f, manifest_file) for f in audio_file]
+            elif audio_file is None and audio_key.startswith('target'):
+                # For inference, we don't need the target
+                audio_files[audio_key] = None
+            else:
+                raise ValueError(f'Unexpected type {type(audio_file)} of audio_file: {audio_file}')
+        item['audio_files'] = audio_files
+
+        # Handle duration
+        if 'duration' not in item:
+            raise ValueError(f'Duration not available in line: {line}. Manifest file: {manifest_file}')
+
+        # Handle offset
+        if 'offset' not in item:
+            item['offset'] = 0.0
+
+        # Handle text
+        if 'text' not in item:
+            item['text'] = None
+
+        return dict(
+            audio_files=item['audio_files'], duration=item['duration'], offset=item['offset'], text=item['text']
+        )

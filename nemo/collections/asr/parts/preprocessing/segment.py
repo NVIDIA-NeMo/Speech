@@ -257,12 +257,22 @@ class AudioSegment(object):
 
     @classmethod
     def segment_from_file(
-        cls, audio_file, target_sr=None, n_segments=0, trim=False, orig_sr=None, channel_selector=None,
+        cls, audio_file, target_sr=None, n_segments=0, trim=False, orig_sr=None, channel_selector=None, offset=None
     ):
-        """Grabs n_segments number of samples from audio_file randomly from the
-        file as opposed to at a specified offset.
+        """Grabs n_segments number of samples from audio_file.
+        If offset is not provided, n_segments are selected randomly.
+        If offset is provided, it is used to calculate the starting sample.
 
         Note that audio_file can be either the file path, or a file-like object.
+
+        :param audio_file: path to a file or a file-like object
+        :param target_sr: sample rate for the output samples
+        :param n_segments: desired number of samples
+        :param trim: if true, trim leading and trailing silence from an audio signal
+        :param orig_sr: the original sample rate
+        :param channel selector: select a subset of channels. If set to `None`, the original signal will be used.
+        :param offset: fixed offset in seconds
+        :return: numpy array of samples
         """
         is_segmented = False
         try:
@@ -275,13 +285,20 @@ class AudioSegment(object):
 
                 if 0 < n_segments_at_original_sr < len(f):
                     max_audio_start = len(f) - n_segments_at_original_sr
-                    audio_start = random.randint(0, max_audio_start)
+                    if offset is None:
+                        audio_start = random.randint(0, max_audio_start)
+                    else:
+                        audio_start = math.floor(offset * sample_rate)
+                        if audio_start > max_audio_start:
+                            raise RuntimeError(
+                                f'Provided audio start ({audio_start_seconds} seconds = {audio_start} samples) is larger than the maximum possible ({max_audio_start})'
+                            )
                     f.seek(audio_start)
                     samples = f.read(n_segments_at_original_sr, dtype='float32')
                     is_segmented = True
-                elif n_segments_at_original_sr >= len(f):
+                elif n_segments_at_original_sr > len(f):
                     logging.warning(
-                        f"Number of segments is greater than the length of the audio file {audio_file}. This may lead to shape mismatch errors."
+                        f"Number of segments ({n_segments_at_original_sr}) is greater than the length ({len(f)}) of the audio file {audio_file}. This may lead to shape mismatch errors."
                     )
                     samples = f.read(dtype='float32')
                 else:
@@ -363,8 +380,7 @@ class AudioSegment(object):
         :param end_time: End of subsegment in seconds.
         :type end_time: float
         :raise ValueError: If start_time or end_time is incorrectly set,
-        e.g. out
-                           of bounds in time.
+        e.g. out of bounds in time.
         """
         start_time = 0.0 if start_time is None else start_time
         end_time = self.duration if end_time is None else end_time

@@ -25,6 +25,7 @@ from nemo.collections.asr.parts.utils.audio_utils import (
     db2mag,
     estimated_coherence,
     generate_approximate_noise_field,
+    get_segment_start,
     mag2db,
     pow2db,
     rms,
@@ -268,3 +269,28 @@ class TestAudioUtilsElements:
         assert all(np.abs(mag - 10 ** (mag_db / 20)) < abs_threshold)
         assert all(np.abs(db2mag(mag_db) - 10 ** (mag_db / 20)) < abs_threshold)
         assert all(np.abs(pow2db(mag ** 2) - mag_db) < abs_threshold)
+
+    @pytest.mark.unit
+    def test_get_segment_start(self):
+        random_seed = 42
+        num_examples = 50
+        num_samples = 2000
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_examples):
+            # Generate signal
+            signal = _rng.normal(size=num_samples)
+            # Random start in the first half
+            start = _rng.integers(low=0, high=num_samples // 2)
+            # Random length
+            end = _rng.integers(low=start, high=num_samples)
+            # Selected segment
+            segment = signal[start:end]
+
+            # UUT
+            estimated_start = get_segment_start(signal=signal, segment=segment)
+
+            assert (
+                estimated_start == start
+            ), f'Example {n}: estimated start ({estimated_start}) not matching the actual start ({start})'

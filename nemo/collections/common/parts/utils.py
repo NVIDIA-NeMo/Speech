@@ -14,11 +14,11 @@
 
 import math
 import os
-from typing import List
+from typing import Iterable, List
 
 import torch.nn as nn
 
-__all__ = ['if_exist', '_compute_softmax']
+__all__ = ['if_exist', '_compute_softmax', 'flatten']
 
 activation_registry = {
     "identity": nn.Identity,
@@ -67,3 +67,32 @@ def _compute_softmax(scores):
     for score in exp_scores:
         probs.append(score / total_sum)
     return probs
+
+
+def flatten_iterable(iter: Iterable) -> Iterable:
+    """Flatten an iterable which contains values or
+    iterables with values.
+
+    Args:
+        iter: iterable containing values at the deepest level.
+
+    Returns:
+        A flat iterable containing values.
+    """
+    for it in iter:
+        if isinstance(it, str) or not isinstance(it, Iterable):
+            yield it
+        else:
+            yield from flatten_iterable(it)
+
+
+def flatten(list_in: List) -> List:
+    """Flatten a list of (nested lists of) values into a flat list.
+
+    Args:
+        list_in: list of values, possibly nested
+
+    Returns:
+        A flat list of values.
+    """
+    return list(flatten_iterable(list_in))

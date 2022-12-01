@@ -13,10 +13,8 @@ sup_data_types: ["align_prior_matrix", "pitch", "speaker_id"]
 pitch_fmin: 65.40639132514966
 pitch_fmax: 2093.004522404789
 
-# these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
-# by running `scripts/dataset_processing/tts/extract_sup_data.py`
-pitch_mean: ???  # e.g. 178.86880493164062 for 174 speakers in https://research.google/pubs/pub49150/
-pitch_std:  ???  # e.g.  60.64979553222656 for 174 speakers in https://research.google/pubs/pub49150/
+# See "scripts/tts_dataset_files/openslr_es/pitch_stats.json" for format example
+pitch_stats_path: ???
 
 sample_rate: 44100
 n_mel_channels: 80
@@ -42,9 +40,6 @@ model:
 
   pitch_fmin: ${pitch_fmin}
   pitch_fmax: ${pitch_fmax}
-
-  pitch_mean: ${pitch_mean}
-  pitch_std: ${pitch_std}
 
   sample_rate: ${sample_rate}
   n_mel_channels: ${n_mel_channels}
@@ -91,8 +86,7 @@ model:
       pitch_fmin: ${model.pitch_fmin}
       pitch_fmax: ${model.pitch_fmax}
       pitch_norm: true
-      pitch_mean: ${model.pitch_mean}
-      pitch_std: ${model.pitch_std}
+      pitch_stats_path: ${pitch_stats_path}
 
     dataloader_params:
       drop_last: false
@@ -122,8 +116,7 @@ model:
       pitch_fmin: ${model.pitch_fmin}
       pitch_fmax: ${model.pitch_fmax}
       pitch_norm: true
-      pitch_mean: ${model.pitch_mean}
-      pitch_std: ${model.pitch_std}
+      pitch_stats_path: ${pitch_stats_path}
 
     dataloader_params:
       drop_last: false

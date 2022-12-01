@@ -164,7 +164,9 @@ class TTSDataset(Dataset):
             pitch_fmax (Optional[float]): The fmax input to librosa.pyin. Defaults to librosa.note_to_hz('C7').
             pitch_mean (Optional[float]): The mean that we use to normalize the pitch.
             pitch_std (Optional[float]): The std that we use to normalize the pitch.
-            pitch_norm (Optional[bool]): Whether to normalize pitch (via pitch_mean and pitch_std) or not.
+            pitch_norm (Optional[bool]): Whether to normalize pitch or not. If True, requires providing either
+                pitch_stats_path or (pitch_mean and pitch_std).
+            pitch_stats_path (Optional[Path, str]): Path to file containing speaker level pitch statistics.
         """
         super().__init__()
 
@@ -416,6 +418,23 @@ class TTSDataset(Dataset):
         self.pitch_mean = kwargs.pop("pitch_mean", None)
         self.pitch_std = kwargs.pop("pitch_std", None)
         self.pitch_norm = kwargs.pop("pitch_norm", False)
+        pitch_stats_path = kwargs.pop("pitch_stats_path", None)
+
+        if self.pitch_norm:
+            # XOR to validate that both or neither pitch mean and std are provided
+            assert (self.pitch_mean is None) == (
+                self.pitch_std is None
+            ), f"Found only 1 of (pitch_mean, pitch_std): ({self.pitch_mean}, {self.pitch_std})"
+
+            # XOR to validate that exactly 1 of (pitch_mean, pitch_std) or pitch_stats_path is provided.
+            assert (self.pitch_mean is None) != (pitch_stats_path is None), (
+                f"pitch_norm requires exactly 1 of (pitch_mean, pitch_std) or pitch_stats_path. "
+                f"Provided: ({self.pitch_mean}, {self.pitch_std}) and {pitch_stats_path}"
+            )
+
+        if pitch_stats_path is not None:
+            with open(Path(pitch_stats_path), 'r', encoding="utf-8") as pitch_f:
+                self.pitch_stats = json.load(pitch_f)
 
     # saving voiced_mask and p_voiced with pitch
     def add_voiced_mask(self, **kwargs):
@@ -554,12 +573,26 @@ class TTSDataset(Dataset):
 
         # normalize pitch if requested.
         if pitch is not None:
-            if self.pitch_mean is not None and self.pitch_std is not None and self.pitch_norm:
-                pitch -= self.pitch_mean
-                pitch[pitch == -self.pitch_mean] = 0.0  # Zero out values that were previously zero
-                pitch /= self.pitch_std
-
             pitch_length = torch.tensor(len(pitch)).long()
+            if self.pitch_norm:
+                if self.pitch_mean is not None and self.pitch_std is not None:
+                    sample_pitch_mean = self.pitch_mean
+                    sample_pitch_std = self.pitch_std
+                elif self.pitch_stats:
+                    if "speaker_id" in sample and str(sample["speaker_id"]) in self.pitch_stats:
+                        pitch_stats = self.pitch_stats[str(sample["speaker_id"])]
+                    elif "default" in self.pitch_stats:
+                        pitch_stats = self.pitch_stats["default"]
+                    else:
+                        raise ValueError(f"Could not find pitch stats for {sample}.")
+                    sample_pitch_mean = pitch_stats["pitch_mean"]
+                    sample_pitch_std = pitch_stats["pitch_std"]
+                else:
+                    raise ValueError(f"Missing statistics for pitch normalization.")
+
+                pitch -= sample_pitch_mean
+                pitch[pitch == -sample_pitch_mean] = 0.0  # Zero out values that were previously zero
+                pitch /= sample_pitch_std
 
         # Load energy if needed
         energy, energy_length = None, None

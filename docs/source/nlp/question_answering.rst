@@ -22,7 +22,7 @@ For every word in our training dataset the model predicts:
 Given a question and a context, both in natural language, generate an answer for the question. Unlike the BERT-like models, there is no constraint that the answer should be a span within the context.
 
 Supported Tasks
-===============
+---------------
 
 +----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
 | **Task**                         |   **Models**    | **Supported Options for model.language_model.pretrained_model_name** | **Supported options for model.library**  |                                                                       
@@ -35,7 +35,7 @@ Supported Tasks
 +----------------------------------+-----------------+----------------------------------------------------------------------+------------------------------------------+
 
 Available models
-^^^^^^^^^^^^^^^^
+----------------
 
 Following BERT-like models are available for Extractive Question-Answering
 
@@ -63,7 +63,7 @@ Following BERT-like models are available for Extractive Question-Answering
      - https://ngc.nvidia.com/catalog/models/nvidia:nemo:qa_squadv2_0_megatron_uncased
 
 Module Design
-=============
+-------------
 
 The module is decouple data and model components to support idependent integration of various model achitectures and datasets.
 QAProcessor, QAExample, and the base QADataset modules are responsible for model-independent data handling utilites like loading SQuAD format dataset files and parsing examples.
@@ -75,7 +75,7 @@ Similarly, the BaseQAModel module handles common model tasks like creating datal
   :width: 800px
 
 Configuration
-=============
+-------------
 
 The default sample model training configuration can be found at: `NeMo/examples/nlp/question_answering/conf/qa_conf.yaml`
 
@@ -108,7 +108,7 @@ Arguments that very commonly need to be edited for all models and datasets
 - :code:`model.tokens_to_generate`: maximum answer tokens to be generated for the generative models
 
 Data Format
-===========
+-----------
 
 The QA models expect datasets to be present in the SQuAD format. For using datasets other than the standard SQuAD v1.1 and v2.0, the datasets should be first converted into the SQuAD format.
 
@@ -154,7 +154,7 @@ The following is an example of the expected SQuAD data format (JSON file):
    For datasets of generative nature where the answer might not be an exact span within the context, the :code:`answer_start` field can be set to -1.
 
 Downloading Datasets
-====================
+--------------------
 
 Following sections describes how to download the SQuAD datasets, along with an example of converting a non-SQuAD dataset (MS-MARCO) into the SQuAD format for the QA models.
 
@@ -232,7 +232,7 @@ The conversion to SQuAD format can be performed using the following script:
    - setting :code:`keep_only_relevant_passages` to ``True`` will exclude passages that have ``is_selected=0`` in the MS-MARCO dataset
 
 Training, Validation, Testing 
-=============================
+-----------------------------
 
 A step-by-step guide to training and testing QA models, as well as running inference can be found at `NeMo/tutorials/nlp/Question_Answering.ipynb`. Following is an example of training a QA model using the example script provided at `NeMo/examples/nlp/question_answering/question_answering.py`:
 

@@ -105,7 +105,7 @@ model:
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
-  sync_batch_comm: True # Enable stream synchronization after each p2p communication between pipeline stages
+  sync_batch_comm: False # Enable stream synchronization after each p2p communication between pipeline stages
 
   ## Activation Checkpointing
   # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.

@@ -45,3 +45,51 @@ def initialize_distributed(args, backend='nccl'):
     init_method += master_ip + ':' + master_port
     torch.distributed.init_process_group(backend=backend, world_size=world_size, rank=rank, init_method=init_method)
     return local_rank, rank, world_size
+
+
+def gather_objects(partial_results_list, main_rank=None):
+    """
+    Collect objects (e.g., results) from all GPUs.
+    Useful for inference over multiple GPUs with DDP.
+    
+    Use main_rank to specify which rank will be used to gather results.
+    This allows to continue execution on the main_rank only after the gather.
+
+    Args:
+        partial_results_list: list of partial results from each GPU
+        main_rank: rank of the main process to collect results from all GPUs (useful for collecting results in a target rank)
+    
+    
+    Example:
+        predictions = gather_objects(predictions,main_rank=0)
+        # all but rank 0 will return None
+        if predictions is None:
+            return
+        
+        # from here only rank 0 should contiue
+        pickle.dump(predictions, open(output_fname, "wb"))
+    """
+    # do not fail when DDP is not initialized
+    if parallel_state.is_unitialized():
+        return partial_results_list
+
+    rank = parallel_state.get_data_parallel_rank()
+    world_size = parallel_state.get_data_parallel_world_size()
+    # return input when no DDP is used
+    if world_size == 1:
+        return partial_results_list
+
+    gathered_results = [None for _ in range(world_size)]
+    torch.distributed.all_gather_object(gathered_results, partial_results_list)
+
+    # return None to non-main ranks
+    if main_rank is not None:
+        if rank != main_rank:
+            return None
+
+    # return collected results
+    results_list = []
+    for r in gathered_results:
+        results_list.extend(r)
+
+    return results_list

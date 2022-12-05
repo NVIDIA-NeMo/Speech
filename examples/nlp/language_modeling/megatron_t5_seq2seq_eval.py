@@ -127,7 +127,7 @@ def main(cfg) -> None:
             t5_cfg = MegatronT5FinetuneModel.restore_from(
                 restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True
             )
-            model = load_from_nemo(MegatronT5FinetuneModel, cfg, trainer, modify_confg_fn=_modify_config)
+            model = load_from_nemo(MegatronT5FinetuneModel, cfg, trainer, t5_cfg, modify_confg_fn=_modify_config)
         else:
             validate_checkpoint_loading_args(cfg.model.pretrained_checkpoint)
             model = load_from_checkpoint_dir(MegatronT5FinetuneModel, cfg, trainer, modify_confg_fn=_modify_config)

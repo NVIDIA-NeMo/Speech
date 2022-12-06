@@ -362,7 +362,7 @@ class StreamingFeatureBufferer:
         '''
 
         self.NORM_CONSTANT = 1e-5
-        if asr_model.cfg.preprocessor.log:
+        if hasattr(asr_model.preprocessor, 'log') and asr_model.preprocessor.log:
             self.ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
         else:
             self.ZERO_LEVEL_SPEC_DB_VAL = 0.0
@@ -576,7 +576,7 @@ class FeatureFrameBufferer:
           frame_overlap: duration of overlaps before and after current frame, seconds
           offset: number of symbols to drop for smooth streaming
         '''
-        if asr_model.cfg.preprocessor.log:
+        if hasattr(asr_model.preprocessor, 'log') and asr_model.preprocessor.log:
             self.ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
         else:
             self.ZERO_LEVEL_SPEC_DB_VAL = 0.0
@@ -963,6 +963,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         self.all_alignments = [[] for _ in range(self.batch_size)]
         self.all_preds = [[] for _ in range(self.batch_size)]
+        self.all_timestamps = [[] for _ in range(self.batch_size)]
         self.previous_hypotheses = None
         self.batch_index_map = {
             idx: idx for idx in range(self.batch_size)
@@ -990,6 +991,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
 
         self.all_alignments = [[] for _ in range(self.batch_size)]
         self.all_preds = [[] for _ in range(self.batch_size)]
+        self.all_timestamps = [[] for _ in range(self.batch_size)]
         self.previous_hypotheses = None
         self.batch_index_map = {idx: idx for idx in range(self.batch_size)}
 
@@ -1109,6 +1111,14 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             has_signal_ended = self.frame_bufferer.signal_end[global_index_key]
             if not has_signal_ended:
                 self.all_preds[global_index_key].append(pred.cpu().numpy())
+
+        timestamps = [hyp.timestep for hyp in best_hyp]
+        for idx, timestep in enumerate(timestamps):
+            global_index_key = new_batch_keys[idx]  # get index of this sample in the global batch
+
+            has_signal_ended = self.frame_bufferer.signal_end[global_index_key]
+            if not has_signal_ended:
+                self.all_timestamps[global_index_key].append(timestep)
 
         if self.stateful_decoding:
             # State resetting is being done on sub-batch only, global index information is not being updated

@@ -445,7 +445,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 # keep the original predictions, wrap with the number of repetitions per token and alignments
                 # this is done so that `rnnt_decoder_predictions_tensor()` can process this hypothesis
                 # in order to compute exact time stamps.
-                alignments = hypotheses_list[ind].alignments
+                alignments = copy.deepcopy(hypotheses_list[ind].alignments)
                 token_repetitions = [1] * len(alignments)  # preserve number of repetitions per token
                 hypothesis = (prediction, alignments, token_repetitions)
             else:

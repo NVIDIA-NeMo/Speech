@@ -1,7 +1,7 @@
 pipeline {
   agent {
         docker {
-          image 'nvcr.io/nvidia/pytorch:22.09-py3'
+          image 'nvcr.io/nvidia/pytorch:22.11-py3'
           args '--device=/dev/nvidia0 --gpus all --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g'
         }
   }
@@ -58,12 +58,12 @@ pipeline {
     }
 
     // TODO: remove this when PTL updates their torchtext import logic
-    stage('Remove torchtext from PTL Imports') {
-      steps {
-        sh "sed -i 's/_module_available(\"torchtext\")/False/g' /opt/conda/lib/python3.8/site-packages/pytorch_lightning/utilities/imports.py"
-        sh "cat /opt/conda/lib/python3.8/site-packages/pytorch_lightning/utilities/imports.py"
-      }
-    }
+    // stage('Remove torchtext from PTL Imports') {
+    //   steps {
+    //     sh "sed -i 's/_module_available(\"torchtext\")/False/g' /opt/conda/lib/python3.8/site-packages/pytorch_lightning/utilities/imports.py"
+    //     sh "cat /opt/conda/lib/python3.8/site-packages/pytorch_lightning/utilities/imports.py"
+    //   }
+    // }
 
     stage('PyTorch Lightning version') {
       steps {
@@ -102,18 +102,6 @@ pipeline {
       }
     }
 
-    stage('L0: Unit Tests Speech Data Processor') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      steps {
-        sh 'pip install -r tools/speech_data_processor/requirements.txt'
-        sh 'cd tools/speech_data_processor && CUDA_VISIBLE_DEVICES="" pytest tests -m "not pleasefixme"'
-      }
-    }
 
     stage('L0: TN/ITN Tests CPU') {
       when {

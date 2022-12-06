@@ -74,6 +74,7 @@ class TestExportable:
             filename = os.path.join(tmpdir, 'hfg.pt')
             model.export(output=filename, verbose=True, check_trace=True)
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_RadTTSModel_export_to_torchscript(self, radtts_model):

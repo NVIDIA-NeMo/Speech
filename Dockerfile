@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.09-py3
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.11-py3
 
 
 # build an image that includes only the nemo dependencies, ensures that dependencies

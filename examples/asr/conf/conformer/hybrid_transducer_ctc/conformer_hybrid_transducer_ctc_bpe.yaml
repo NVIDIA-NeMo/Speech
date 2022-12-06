@@ -1,0 +1,275 @@
+# It contains the default values for training a Conformer-Hybrid-Transducer-CTC ASR model, large size (~120M) with Transducer loss and sub-word encoding.
+# The model would have two decoders: RNNT (Transducer) and CTC
+
+# Architecture and training config:
+# Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
+# batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
+# Here are the recommended configs for different variants of Conformer-Transducer, other parameters are the same as in this config file.
+#
+#  +-------------+---------+---------+----------+--------------+--------------------------+
+#  | Model       | d_model | n_heads | n_layers | weight_decay | pred_hidden/joint_hidden |
+#  +=============+=========+========+===========+==============+==========================+
+#  | Small  (14M)|   176   |    4   |    16     |     0.0      |           320            |
+#  +-------------+---------+--------+-----------+--------------+--------------------------+
+#  | Medium (32M)|   256   |    4   |    16     |     1e-3     |           640            |
+#  +-------------+---------+--------+-----------+--------------+--------------------------+
+#  | Large (120M)|   512   |    8   |    17     |     1e-3     |           640            |
+#  +-----------------------------------------------------------+--------------------------+
+#
+
+# You may find more info about Conformer-Transducer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer
+# Pre-trained models of Conformer-Transducer can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
+# The checkpoint of the large model trained on NeMo ASRSET with this recipe can be found here: https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_conformer_transducer_large
+
+name: "Conformer-Hybrid-Transducer-CTC-BPE"
+
+model:
+  sample_rate: 16000
+  compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
+  log_prediction: true # enables logging sample predictions in the output during training
+  skip_nan_grad: false
+
+  model_defaults:
+    enc_hidden: ${model.encoder.d_model}
+    pred_hidden: 640
+    joint_hidden: 640
+
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16 # you may increase batch_size if your memory allows
+    shuffle: true
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+    trim_silence: false
+    max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
+    min_duration: 0.1
+    # tarred datasets
+    is_tarred: false
+    tarred_audio_filepaths: null
+    shuffle_n: 2048
+    # bucketing params
+    bucketing_strategy: "synced_randomized"
+    bucketing_batch_size: null
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+
+  test_ds:
+    manifest_filepath: null
+    sample_rate: ${model.sample_rate}
+    batch_size: 16
+    shuffle: false
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+
+  # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
+  tokenizer:
+    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (for wpe)
+    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: 0.025
+    window_stride: 0.01
+    window: "hann"
+    features: 80
+    n_fft: 512
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 0
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 2 # set to zero to disable it
+    time_masks: 10 # set to zero to disable it
+    freq_width: 27
+    time_width: 0.05
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
+    n_layers: 17
+    d_model: 512
+
+    # Sub-sampling parameters
+    subsampling: striding # vggnet, striding, stacking or stacking_norm, dw_striding
+    subsampling_factor: 4 # must be power of 2 for striding and vggnet
+    subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
+    causal_downsampling: false
+
+    # Reduction parameters: Can be used to add another subsampling layer at a given position.
+    # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
+    # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
+    reduction: null # pooling, striding, or null
+    reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
+    reduction_factor: 1
+
+    # Feed forward module's params
+    ff_expansion_factor: 4
+
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 8 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [-1, -1] # -1 means unlimited context
+    att_context_style: regular # regular or chunked_limited
+    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    untie_biases: true # unties the biases of the TransformerXL layers
+    pos_emb_max_len: 5000
+
+    # Convolution module's params
+    conv_kernel_size: 31
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+    conv_context_size: null
+
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+  decoder:
+    _target_: nemo.collections.asr.modules.RNNTDecoder
+    normalization_mode: null # Currently only null is supported for export.
+    random_state_sampling: false # Random state sampling: https://arxiv.org/pdf/1910.11455.pdf
+    blank_as_pad: true # This flag must be set in order to support exporting of RNNT models + efficient inference.
+
+    prednet:
+      pred_hidden: ${model.model_defaults.pred_hidden}
+      pred_rnn_layers: 1
+      t_max: null
+      dropout: 0.2
+
+  joint:
+    _target_: nemo.collections.asr.modules.RNNTJoint
+    log_softmax: null  # 'null' would set it automatically according to CPU/GPU device
+    preserve_memory: false  # dramatically slows down training, but might preserve some memory
+
+    # Fuses the computation of prediction net + joint net + loss + WER calculation
+    # to be run on sub-batches of size `fused_batch_size`.
+    # When this flag is set to true, consider the `batch_size` of *_ds to be just `encoder` batch size.
+    # `fused_batch_size` is the actual batch size of the prediction net, joint net and transducer loss.
+    # Using small values here will preserve a lot of memory during training, but will make training slower as well.
+    # An optimal ratio of fused_batch_size : *_ds.batch_size is 1:1.
+    # However, to preserve memory, this ratio can be 1:8 or even 1:16.
+    # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
+    fuse_loss_wer: true
+    fused_batch_size: 16
+
+    jointnet:
+      joint_hidden: ${model.model_defaults.joint_hidden}
+      activation: "relu"
+      dropout: 0.2
+
+  decoding:
+    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
+
+    # greedy strategy config
+    greedy:
+      max_symbols: 10
+
+    # beam strategy config
+    beam:
+      beam_size: 2
+      return_best_hypothesis: False
+      score_norm: true
+      tsd_max_sym_exp: 50  # for Time Synchronous Decoding
+      alsd_max_target_len: 2.0  # for Alignment-Length Synchronous Decoding
+
+  # The section which would contain the decoder and decoding configs of the auxiliary CTC decoder
+  aux_ctc:
+    ctc_loss_weight: 0.5 # the weight used to combine the CTC loss with the RNNT loss
+    use_cer: false
+    ctc_reduction: 'mean_batch'
+    decoder:
+      _target_: nemo.collections.asr.modules.ConvASRDecoder
+      feat_in: null
+      num_classes: -1
+      vocabulary: []
+    decoding:
+      strategy: "greedy"
+
+  loss:
+    loss_name: "default"
+
+    warprnnt_numba_kwargs:
+      # FastEmit regularization: https://arxiv.org/abs/2010.11148
+      # You may enable FastEmit to reduce the latency of the model for streaming
+      fastemit_lambda: 0.0  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
+
+  # Adds Gaussian noise to the gradients of the decoder to avoid overfitting
+  variational_noise:
+    start_step: 0
+    std: 0.0
+
+  optim:
+    name: adamw
+    lr: 5.0
+    # optimizer arguments
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+
+    # scheduler setup
+    sched:
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      # scheduler config override
+      warmup_steps: 10000
+      warmup_ratio: null
+      min_lr: 1e-6
+
+trainer:
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: 500
+  max_steps: -1 # computed at runtime if not set
+  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
+  strategy: ddp
+  accumulate_grad_batches: 1
+  gradient_clip_val: 0.0
+  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  log_every_n_steps: 10  # Interval of logging.
+  enable_progress_bar: True
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
+  sync_batchnorm: true
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_wer"
+    mode: "min"
+    save_top_k: 5
+    always_save_nemo: True # saves the checkpoints as nemo files instead of PTL checkpoints
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
+
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

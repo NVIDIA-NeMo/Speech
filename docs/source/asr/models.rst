@@ -181,7 +181,7 @@ You may find the example config files of cache-aware streaming Conformer models 
 ``<NeMo_git_root>/examples/asr/conf/conformer/streaming/conformer_transducer_bpe_streaming.yaml`` for Transducer variant and
 at ``<NeMo_git_root>/examples/asr/conf/conformer/streaming/conformer_ctc_bpe.yaml`` for CTC variant.
 
-To simulate cache-aware stremaing, you may use the script at ``<NeMo_git_root>/examples/asr/asr_streaming/speech_to_text_streaming_infer.py``. It can simulate streaming in single stream or multi-stream mode (in batches) for an ASR model.
+To simulate cache-aware streaming, you may use the script at ``<NeMo_git_root>/examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py``. It can simulate streaming in single stream or multi-stream mode (in batches) for an ASR model.
 This script can be used for models trained offline with full-context but the accuracy would not be great unless the chunk size is large enough which would result in high latency.
 It is recommended to train a model in streaming model with limited context for this script. More info can be found in the script.
 
@@ -235,6 +235,27 @@ character-based variant is based on :class:`~nemo.collections.asr.models.EncDecC
 You may find the example config files of Squeezeformer-CTC model with character-based encoding at
 ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and
 with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``.
+
+.. _Hybrid-Transducer_CTC_model:
+
+Hybrid-Transducer-CTC
+---------------------
+
+Hybrid RNNT-CTC models is a group of models with both the RNNT and CTC decoders. Training a unified model would speedup the convergence for the CTC models and would enable
+the user to use a single model which works as both a CTC and RNNT model. This category can be used with any of the ASR models.
+Hybrid models uses two decoders of CTC and RNNT on the top of the encoder. The default decoding strategy after the training is done is RNNT.
+User may use the ``asr_model.change_decoding_strategy(decoder_type='ctc' or 'rnnt')`` to change the default decoding.
+
+The variant with sub-word encoding is a BPE-based model
+which can be instantiated using the :class:`~nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModel` class, while the
+character-based variant is based on :class:`~nemo.collections.asr.models.EncDecHybridRNNTCTCModel`.
+
+You may use the example scripts under ``<NeMo_git_root>/examples/asr/asr_hybrid_transducer_ctc`` for both the char-based encoding and sub-word encoding.
+These examples can be used to train any Hybrid ASR model like Conformer, Citrinet, QuartzNet, etc.
+
+You may find the example config files of Conformer variant of such hybrid models with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc_bpe.yaml``.
 
 
 References

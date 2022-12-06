@@ -512,7 +512,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         """
         streaming_cfg = CacheAwareStreamingConfig()
         if chunk_size is not None:
-            if chunk_size <= 1:
+            if chunk_size < 1:
                 raise ValueError("chunk_size needs to be a number larger or equal to one.")
             lookahead_steps = chunk_size - 1
             streaming_cfg.cache_drop_size = chunk_size - shift_size

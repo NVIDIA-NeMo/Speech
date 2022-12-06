@@ -562,6 +562,54 @@ pipeline {
     //         sh 'rm -rf examples/asr/speech_to_text_rnnt_wpe_results'
     //       }
     //     }
+    //     stage('L3: Speech to Text Hybrid Transducer-CTC WPE') {
+    //       steps {
+    //         sh 'STRICT_NUMBA_COMPAT_CHECK=false python examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe.py \
+    //         --config-path="../conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc/" --config-name="conformer_hybrid_transducer_ctc_bpe.yaml" \
+    //         model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
+    //         model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
+    //         model.encoder.n_layers= 2 \
+    //         model.train_ds.batch_size=2 \
+    //         model.validation_ds.batch_size=2 \
+    //         model.tokenizer.dir="/home/TestData/asr_tokenizers/an4_wpe_128/" \
+    //         model.tokenizer.type="wpe" \
+    //         trainer.devices=[0] \
+    //         trainer.accelerator="gpu" \
+    //         +trainer.fast_dev_run=True \
+    //         exp_manager.exp_dir=examples/asr/speech_to_text_hybrid_transducer_ctc_wpe_results'
+    //         sh 'rm -rf examples/asr/speech_to_text_hybrid_transducer_ctc_wpe_results'
+    //       }
+    //     }
+    //   }
+    // }
+
+    // stage('L2: Hybrid ASR RNNT-CTC dev run') {
+    //   when {
+    //     anyOf {
+    //       branch 'main'
+    //       changeRequest target: 'main'
+    //     }
+    //   }
+    //   failFast true
+    //   parallel {
+    //     stage('Speech to Text Hybrid Transducer-CTC WPE') {
+    //       steps {
+    //         sh 'STRICT_NUMBA_COMPAT_CHECK=false python examples/asr/asr_hybrid_transducer_ctc/speech_to_text_hybrid_rnnt_ctc_bpe.py \
+    //         --config-path="../conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc/" --config-name="conformer_hybrid_transducer_ctc_bpe.yaml" \
+    //         model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
+    //         model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
+    //         model.encoder.n_layers= 2 \
+    //         model.train_ds.batch_size=2 \
+    //         model.validation_ds.batch_size=2 \
+    //         model.tokenizer.dir="/home/TestData/asr_tokenizers/an4_wpe_128/" \
+    //         model.tokenizer.type="wpe" \
+    //         trainer.devices=[0] \
+    //         trainer.accelerator="gpu" \
+    //         +trainer.fast_dev_run=True \
+    //         exp_manager.exp_dir=examples/asr/speech_to_text_hybrid_transducer_ctc_wpe_results'
+    //         sh 'rm -rf examples/asr/speech_to_text_hybrid_transducer_ctc_wpe_results'
+    //       }
+    //     }
     //   }
     // }
 

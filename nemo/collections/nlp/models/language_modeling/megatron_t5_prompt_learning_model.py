@@ -464,15 +464,6 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
         else:
             encoder_input = torch.zeros((batch_size, seq_length, self.hidden_size), dtype=self.autocast_dtype).cuda()
 
-        if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
-            # Broadcasting encoder inputs to all ranks for now, but this is inefficent.
-            # TODO: Make Enc-Dec improvement to only boardcast encoder_ids/embeddings when needed
-            torch.distributed.broadcast(
-                encoder_input,
-                parallel_state.get_pipeline_model_parallel_first_rank(),
-                group=parallel_state.get_pipeline_model_parallel_group(),
-            )
-
         predicted_token_ids, log_probs = self.frozen_model.decode(
             tokens_enc=input_ids,
             enc_mask=enc_mask,

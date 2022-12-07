@@ -24,7 +24,13 @@ import torch
 
 from nemo.collections.asr.metrics.rnnt_wer import RNNTWER
 from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER
-from nemo.collections.asr.metrics.wer import WER, CTCDecoding, CTCDecodingConfig, word_error_rate
+from nemo.collections.asr.metrics.wer import (
+    WER,
+    CTCDecoding,
+    CTCDecodingConfig,
+    word_error_rate,
+    word_error_rate_detail,
+)
 from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers import CharTokenizer
@@ -102,6 +108,31 @@ class TestWordErrorRate:
         assert word_error_rate(hypotheses=['ducati motorcycle'], references=['motorcycle']) == 1.0
         assert word_error_rate(hypotheses=['ducati motorcycle'], references=['ducuti motorcycle']) == 0.5
         assert word_error_rate(hypotheses=['a B c'], references=['a b c']) == 1.0 / 3.0
+
+        assert word_error_rate_detail(hypotheses=['cat'], references=['cot'])[0] == 1.0
+        assert word_error_rate_detail(hypotheses=['GPU'], references=['G P U'])[0] == 1.0
+        assert word_error_rate_detail(hypotheses=['G P U'], references=['GPU'])[0] == 3.0
+        assert word_error_rate_detail(hypotheses=['ducati motorcycle'], references=['motorcycle'])[0] == 1.0
+        assert word_error_rate_detail(hypotheses=['ducati motorcycle'], references=['ducuti motorcycle'])[0] == 0.5
+        assert word_error_rate_detail(hypotheses=['a B c'], references=['a b c'])[0] == 1.0 / 3.0
+
+        assert word_error_rate_detail(hypotheses=['cat'], references=['']) == (
+            float("inf"),
+            0,
+            float("inf"),
+            float("inf"),
+            float("inf"),
+        )
+        assert word_error_rate_detail(hypotheses=['cat', ''], references=['', 'gpu']) == (2.0, 1, 1.0, 1.0, 0.0,)
+        assert word_error_rate_detail(hypotheses=['cat'], references=['cot']) == (1.0, 1, 0.0, 0.0, 1.0)
+        assert word_error_rate_detail(hypotheses=['G P U'], references=['GPU']) == (3.0, 1, 2.0, 0.0, 1.0)
+        assert word_error_rate_detail(hypotheses=[''], references=['ducuti motorcycle'], use_cer=True) == (
+            1.0,
+            17,
+            0.0,
+            1.0,
+            0.0,
+        )
 
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_dim_index", [0, 1])

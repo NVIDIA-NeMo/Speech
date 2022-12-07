@@ -352,17 +352,15 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
 
     # Handle logging to file
-    # Logs local rank 0 only
-    if local_rank == 0 and cfg.log_local_rank_0_only is True and nemo_testing is False:
-        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-        logging.add_file_handler(log_file)
-    # Logs only on global rank 0
-    elif global_rank == 0 and cfg.log_global_rank_0_only is True and not nemo_testing is False:
-        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
-        logging.add_file_handler(log_file)
-    # Logs on all ranks.
+    log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
+    if cfg.log_local_rank_0_only is True and not nemo_testing:
+        if local_rank == 0:
+            logging.add_file_handler(log_file)
+    elif cfg.log_global_rank_0_only is True and not nemo_testing:
+        if global_rank == 0:
+            logging.add_file_handler(log_file)
     else:
-        log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
+        # Logs on all ranks.
         logging.add_file_handler(log_file)
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks

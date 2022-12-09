@@ -17,7 +17,12 @@ from typing import List, Tuple
 
 import torch
 
-from nemo.collections.nlp.modules.common.megatron.retrieval_service import FaissRetrievalService
+from nemo.collections.nlp.modules.common.megatron.retrieval_service import (
+    ComboRetrievalService,
+    DynamicFaissRetrievalService,
+    FaissRetrievalService,
+    start_sentence_bert_server,
+)
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 
 try:
@@ -87,7 +92,7 @@ class TextGenerationStrategy:
         """
         tokenizer = self.model.tokenizer
         if add_BOS:
-            context_tokens = [[tokenizer.eos_id] + tokenizer.text_to_ids(s) for s in sentences]
+            context_tokens = [[tokenizer.bos_id] + tokenizer.text_to_ids(s) for s in sentences]
         else:
             context_tokens = [tokenizer.text_to_ids(s) for s in sentences]
         context_tokens, context_lengths = pad_batch(context_tokens, tokenizer.eos_id, max_len)
@@ -282,9 +287,96 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
         super().__init__(model)
         self.forward_model = self.model.model
         self.frequent_query = args['frequent_query']
-        del args['frequent_query']
+        self.pad_token_for_retrieval = args['pad_tokens']
         self.neighbors = args['neighbors']
-        self.service = FaissRetrievalService(tokenizer=self.model.tokenizer, **args)
+        self.store_retrieved = args['store_retrieved']
+        weights = args['weights']
+        # start the sentence bert server
+        start_sentence_bert_server(tokenizer=self.model.tokenizer, **args['sentence_bert'])
+        services = []
+        for service_conf in args['services']:
+            if service_conf['type'] == 'FaissRetrievalService':
+                del service_conf['type']
+                service = FaissRetrievalService(tokenizer=self.model.tokenizer, **service_conf)
+                services.append(service)
+            elif service_conf['type'] == 'DynamicFaissRetrievalService':
+                del service_conf['type']
+                service = DynamicFaissRetrievalService(tokenizer=self.model.tokenizer, **service_conf)
+                services.append(service)
+            else:
+                raise ValueError(f'no such service {service_conf["type"]} implemented')
+        self.service = ComboRetrievalService(retrieval_services=services, weights=weights)
+        self.retrieved = []
+        self.retrieved_text = []
+        self.chunk_size = self.service.chunk_size
+
+    def update_neighbors(self, neighbors):
+        # dynamically change the number of neighbors during the query
+        self.neighbors = neighbors
+
+    def update_weights(self, weights):
+        # dynamically change the weights between different retrieval services
+        self.service.update_weights(weights)
+
+    def tokenize_batch(self, sentences, max_len, add_BOS):
+        """
+        convert the sentences into lists of tokens, pad them to the same length, add bos tokens if it is needed
+        Args:
+            sentences (List[str]): list of input sentences in str format.
+            max_len (int): max number of tokens to generate.
+            add_BOS (bool): whether to add the BOS token at the beginning
+        Returns:
+            Tuple[torch.Tensor], the tokenized and padded torch tensor and the token context length tensor.
+        """
+        tokenizer = self.model.tokenizer
+        if add_BOS:
+            context_tokens = [[tokenizer.bos_id] + tokenizer.text_to_ids(s) for s in sentences]
+        else:
+            context_tokens = [tokenizer.text_to_ids(s) for s in sentences]
+        if self.pad_token_for_retrieval:
+            padded = []
+            for line in context_tokens:
+                if len(line) < self.chunk_size:
+                    pad_len = self.chunk_size - len(line)
+                    padded.append([tokenizer.pad_id] * pad_len + line)
+                else:
+                    padded.append(line)
+            context_tokens = padded
+        context_tokens, context_lengths = pad_batch(context_tokens, tokenizer.eos_id, max_len)
+        context_tokens_tensor = torch.cuda.LongTensor(context_tokens)
+        context_length_tensor = torch.cuda.LongTensor(context_lengths)
+        return context_tokens_tensor, context_length_tensor
+
+    def tokenize_batch_with_context_and_completion(self, sentences, max_len, add_BOS):
+        """
+        convert the sentences into lists of tokens, pad them to the same length, add bos tokens if it is needed
+        Args:
+            sentences (List[str]): list of input sentences in str format.
+            max_len (int): max number of tokens to generate.
+            add_BOS (bool): whether to add the BOS token at the beginning
+        Returns:
+            Tuple[torch.Tensor], the tokenized and padded torch tensor and the token context length tensor.
+        """
+        tokenizer = self.model.tokenizer
+        if add_BOS:
+            context_tokens = [
+                [[tokenizer.bos_id] + tokenizer.text_to_ids(s[0]), tokenizer.text_to_ids(s[1])] for s in sentences
+            ]
+        else:
+            context_tokens = [[tokenizer.text_to_ids(s[0]), tokenizer.text_to_ids(s[1])] for s in sentences]
+        if self.pad_token_for_retrieval:
+            padded = []
+            for line in context_tokens:
+                if len(line[0]) < self.chunk_size:
+                    pad_len = self.chunk_size - len(line[0])
+                    padded.append([tokenizer.pad_id] * pad_len + line[0] + line[1])
+                else:
+                    padded.append(line[0] + line[1])
+            context_tokens = padded
+        context_tokens, context_lengths = pad_batch(context_tokens, tokenizer.eos_id, max_len)
+        context_tokens_tensor = torch.cuda.LongTensor(context_tokens)
+        context_length_tensor = torch.cuda.LongTensor(context_lengths)
+        return context_tokens_tensor, context_length_tensor
 
     def clip_max_len(self, maxlen: int) -> int:
         """ clip the max len based on the LM model max sequence length"""
@@ -292,8 +384,21 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
             maxlen = self.model.cfg.encoder_seq_length + 1
         return maxlen
 
+    def _store_retrieved(self, tokens, neighbors):
+        tokenizer = self.model.tokenizer
+        for batch_id in range(len(tokens)):
+            item = {}
+            query_text = tokenizer.ids_to_text(tokens[batch_id])
+            item['query'] = query_text
+            item['neighbors'] = []
+            for context_id in range(len(neighbors[batch_id])):
+                neighbor_text = tokenizer.ids_to_text(neighbors[batch_id][context_id])
+                item['neighbors'].append(neighbor_text)
+            self.retrieved_text.append(item)
+
     def init_batch(self, context_tokens: torch.Tensor, context_length: int):
         self.retrieved = []
+        self.retrieved_text = []
         """initialize the batch data before the inference steps."""
         # Move to GPU.
         tokenizer = self.model.tokenizer
@@ -302,7 +407,9 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
         for i in range(0, context_length, 64):
             if i > 0:
                 tokens = context_tokens[:, i - 64 : i]
-                chunks = self.service.get_knn(tokens)
+                chunks = self.service.get_knn(tokens, self.neighbors)
+                if self.store_retrieved:
+                    self._store_retrieved(tokens, chunks)
                 self.retrieved.append(chunks)
 
     def prepare_batch_at_step(
@@ -313,11 +420,15 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
         if context_length % 64 == 0:
             # added a new retrieval context
             token_context = tokens[:, context_length - 64 : context_length]
-            chunks = self.service.get_knn(token_context)
+            chunks = self.service.get_knn(token_context, self.neighbors)
+            if self.store_retrieved:
+                self._store_retrieved(token_context, chunks)
             self.retrieved.append(chunks)
         elif self.frequent_query and len(self.retrieved) > 0:
             token_context = tokens[:, context_length - 64 : context_length]
-            chunks = self.service.get_knn(token_context)
+            chunks = self.service.get_knn(token_context, self.neighbors)
+            if self.store_retrieved:
+                self._store_retrieved(token_context, chunks)
             self.retrieved[-1] = chunks
 
         # types2use = None
@@ -349,7 +460,11 @@ class RetroModelTextGenerationStrategy(TextGenerationStrategy):
             [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
         )
         len_array = torch.tensor([maxlen] * micro_batch_size, device=torch.cuda.current_device())
-        neighbors_array = torch.tensor([self.neighbors] * micro_batch_size, device=torch.cuda.current_device())
+        if self.neighbors == 0:
+            # no retrieval, use 1 padding
+            neighbors_array = torch.tensor([1] * micro_batch_size, device=torch.cuda.current_device())
+        else:
+            neighbors_array = torch.tensor([self.neighbors] * micro_batch_size, device=torch.cuda.current_device())
 
         batch = [
             tokens2use,
@@ -373,7 +488,7 @@ def model_inference_strategy_dispatcher(model, **args):
 
     if isinstance(model, MegatronGPTPromptLearningModel):
         return PromptLearningModelTextGenerationStrategy(model, **args)
-    if isinstance(model, MegatronGPTModel):
+    elif isinstance(model, MegatronGPTModel):
         return GPTModelTextGenerationStrategy(model)
     elif isinstance(model, MegatronRetrievalModel):
         return RetroModelTextGenerationStrategy(model, **args)

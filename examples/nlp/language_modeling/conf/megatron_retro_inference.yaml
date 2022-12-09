@@ -34,11 +34,28 @@ prompts: # prompts for RETRO model inference
  
 ########### Faiss service parameters ########
 retrieval_service:
-  faiss_devices: '0,1,2'
-  faiss_index: null  # the faiss index file that is used to find KNN
-  nprobe: 100
-  retrieval_index: null
-  sentence_bert: 'all-mpnet-base-v2' 
-  sentence_bert_batch: 4
   neighbors: 4
   frequent_query: False  # for the current token generation, frequently update the retrieval context. If false, update it every 64 tokens 
+  pad_tokens: True # pad the tokens at the beginning to make it minimum of 64 tokens for retrieving at least once
+  store_retrieved: False # whether store the retrieved documents, so it can be checked
+  weights: [0.5, 0.5] # weight for different retrieval services
+  sentence_bert:
+    devices: '0,1,2'
+    sentence_bert: 'all-mpnet-base-v2' 
+    sentence_bert_batch: 4
+  services: 
+    - type: FaissRetrievalService
+      faiss_devices: '0,1,2'
+      faiss_index: null  # the faiss index file that is used to find KNN
+      nprobe: 100
+      retrieval_index: null
+    - type: DynamicFaissRetrievalService
+      faiss_devices: '0,1,2'
+      chunk_size: 64
+      stride: 32
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client

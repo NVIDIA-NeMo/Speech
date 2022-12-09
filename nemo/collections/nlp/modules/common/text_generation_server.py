@@ -20,6 +20,7 @@ import torch
 from flask import Flask, jsonify, request
 from flask_restful import Api, Resource
 
+from nemo.collections.nlp.modules.common.text_generation_strategy import RetroModelTextGenerationStrategy
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.utils import logging
 
@@ -44,8 +45,9 @@ API_ALLOWED_KEYS = set(
 
 
 class MegatronGenerate(Resource):
-    def __init__(self, model):
+    def __init__(self, model, inference_strategy=None):
         self.model = model
+        self.inference_strategy = inference_strategy
 
     @staticmethod
     def send_do_generate():
@@ -142,11 +144,36 @@ class MegatronGenerate(Resource):
             if min_tokens_to_generate < 0:
                 return "min_tokens_to_generate must be an integer no less than 0"
 
+        neighbors = None
+        if "neighbors" in request.get_json():
+            neighbors = request.get_json()["neighbors"]
+            if not isinstance(neighbors, int):
+                return "num of neighbors must be an integer no less than 0"
+            if neighbors < 0:
+                return "num of neighbors must be an integer no less than 0"
+
+        weights = None
+        if "weights" in request.get_json():
+            weights = request.get_json()["weights"]
+            if not (type(weights) == int or type(weights) == float):
+                return "weights must be a positive number less than or equal to 1.0"
+            if not (0.0 <= weights <= 1.0):
+                return "weights must be a positive number less than or equal to 1.0"
+
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
             extra = {}
             if task_ids is not None:
                 extra['task_ids'] = task_ids
+            if self.inference_strategy is not None:
+                extra['strategy'] = self.inference_strategy
+                # RETRO specific arguments
+                if isinstance(self.inference_strategy, RetroModelTextGenerationStrategy):
+                    if neighbors is not None:
+                        self.inference_strategy.update_neighbors(neighbors)
+                    if weights is not None:
+                        self.inference_strategy.update_weights([weights, 1 - weights])
+
             output = generate(
                 self.model,
                 sentences,
@@ -166,14 +193,19 @@ class MegatronGenerate(Resource):
                     output[k] = output[k].tolist()
         if not all_probs:
             del output['full_logprob']
+
+        if self.inference_strategy is not None:
+            if isinstance(self.inference_strategy, RetroModelTextGenerationStrategy):
+                retrieved_doc = self.inference_strategy.retrieved_text
+                output['retrieved'] = retrieved_doc
         return jsonify(output)
 
 
 class MegatronServer(object):
-    def __init__(self, model):
+    def __init__(self, model, inference_strategy=None):
         self.app = Flask(__name__, static_url_path='')
         api = Api(self.app)
-        api.add_resource(MegatronGenerate, '/generate', resource_class_args=[model])
+        api.add_resource(MegatronGenerate, '/generate', resource_class_args=[model, inference_strategy])
 
     def run(self, url, port=5000):
         self.app.run(url, threaded=True, port=port, debug=False)

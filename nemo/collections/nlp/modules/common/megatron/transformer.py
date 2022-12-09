@@ -2259,7 +2259,7 @@ class ParallelTransformer(MegatronModule):
                     num_layers = num_layers // num_ranks_in_encoder
                 else:
                     num_layers = num_layers // num_ranks_in_decoder
-            else:
+            elif self.model_type == ModelType.encoder_or_decoder:
                 assert (
                     num_layers % parallel_state.get_pipeline_model_parallel_world_size() == 0
                 ), 'num_layers must be divisible by pipeline_model_parallel_size'

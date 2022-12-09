@@ -495,8 +495,12 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             ), f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'  # need to add extra chunk size, since it will be shifted
 
         if retrieved_emb is not None:
+            # -63, -62, ... 63  will be cut into -> [0, ... 63] in the chunk cross attention layer
             cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1, offset=-self.chunk_size + 1)
             cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=0)
+            # TODO, the first 64 tokens in retrieved is from the last chunk, align the continuation part with the query tokens
+            # use the following in the future. [-63, -62, ..., 63, 64]
+            # cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=-self.chunk_size + 1)
             attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
         else:
             attn_pos_emb = (self_attn_emb, None, None)

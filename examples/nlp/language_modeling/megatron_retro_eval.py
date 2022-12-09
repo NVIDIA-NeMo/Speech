@@ -13,17 +13,28 @@
 # limitations under the License.
 
 import os
+import threading
 
+import torch
 from examples.nlp.language_modeling.megatron_gpt_eval import RequestDataSet
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
+from nemo.collections.nlp.modules.common.megatron_web_server import get_retro_demo
+from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
+from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
 
+try:
+    from apex.transformer import parallel_state
+
+    HAVE_APEX = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_APEX = False
 
 """
 This is the script to run RETRO Model text generation.
@@ -86,26 +97,55 @@ def main(cfg) -> None:
         "compute_logprob": cfg.inference.compute_logprob,
     }
 
-    if not cfg.use_predict_method:
-        # First method of running text generation, call model.generate method
-        response = model.generate(
-            inputs=OmegaConf.to_container(cfg.prompts),
-            length_params=length_params,
-            sampling_params=sampling_params,
-            **cfg.retrieval_service,
-        )
-    else:
-        # Second method of running text generation, call trainer.predict
-        ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
-        request_dl = DataLoader(dataset=ds, batch_size=cfg.inference_batch_size)
-        config = OmegaConf.to_container(cfg.inference)
-        retrieval_service = OmegaConf.to_container(cfg.retrieval_service)
-        model.set_inference_config(config, retrieval_service)
-        response = trainer.predict(model, request_dl)
+    # check whether the DDP is initialized
+    if parallel_state.is_unitialized():
 
-    print("***************************")
-    print(response)
-    print("***************************")
+        def dummy():
+            return
+
+        if model.trainer.strategy.launcher is not None:
+            model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
+        model.trainer.strategy.setup_environment()
+
+    config = OmegaConf.to_container(cfg.inference)
+    retrieval_service = OmegaConf.to_container(cfg.retrieval_service)
+    model.set_inference_config(config, retrieval_service)
+
+    # running text generation, use inference server
+    if cfg.server:
+        if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
+            if cfg.web_server:
+                thread = threading.Thread(
+                    target=get_retro_demo, daemon=True, args=(cfg.share, cfg.username, cfg.password)
+                )
+                thread.start()
+            server = MegatronServer(model.cuda(), inference_strategy=model.inference_strategy)
+            server.run("0.0.0.0", port=cfg.port)
+
+        while True:
+            choice = torch.cuda.LongTensor(1)
+            torch.distributed.broadcast(choice, 0)
+            if choice[0].item() == 0:
+                generate(model.cuda(), strategy=model.inference_strategy)
+    else:
+
+        if not cfg.use_predict_method:
+            # First method of running text generation, call model.generate method
+            response = model.generate(
+                inputs=OmegaConf.to_container(cfg.prompts),
+                length_params=length_params,
+                sampling_params=sampling_params,
+                strategy=model.inference_strategy,
+            )
+        else:
+            # Second method of running text generation, call trainer.predict
+            ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
+            request_dl = DataLoader(dataset=ds, batch_size=cfg.inference_batch_size)
+            response = trainer.predict(model, request_dl)
+
+        print("***************************")
+        print(response)
+        print("***************************")
 
 
 if __name__ == '__main__':

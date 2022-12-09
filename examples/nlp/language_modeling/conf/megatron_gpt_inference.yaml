@@ -28,6 +28,9 @@ hparams_file: null # model configuration file, only used for PTL checkpoint load
 prompts: # prompts for GPT inference
   - "Q: How are you?"
   - "Q: How big is the universe?"
-server: False  # whether launch the inference server
+server: False  # whether launch the API server
 port: 5555 # the port number for the inference server
- 
+web_server: False # whether launch the web inference server
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client

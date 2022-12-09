@@ -71,13 +71,16 @@ class MuReadout(MegatronModule):
         self.bias.partition_dim = 0
         self.bias.stride = 1
         self.parallel_output = parallel_output
+        self.warn_once = False
 
     def forward(self, hidden_states, word_embeddings_weight):
         if hasattr(word_embeddings_weight, 'infshape'):
             width_mult = word_embeddings_weight.infshape.width_mult()
         else:
             width_mult = 1.0
-            logging.warning("need to set_shape before use mu-Transfer readout layer")
+            if not self.warn_once:
+                logging.warning("need to set_shape before use mu-Transfer readout layer")
+            self.warn_once = True
         async_tensor_model_parallel_allreduce = parallel_state.get_tensor_model_parallel_world_size() > 1
         output = parallel_lm_logits(
             hidden_states / width_mult,

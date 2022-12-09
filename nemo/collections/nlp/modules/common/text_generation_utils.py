@@ -16,6 +16,7 @@
 
 from collections.abc import Iterable
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -213,6 +214,19 @@ def repetition_penalty(logits, repetition_penalty, used_tokens):
     return logits
 
 
+def get_model_parallel_src_rank():
+    """Calculate the global rank corresponding to the first local rank
+    in the model parallel group."""
+    world_size = torch.distributed.get_world_size()
+    all_ranks = np.arange(world_size)
+    tp_size = parallel_state.get_tensor_model_parallel_world_size()
+    pp_size = parallel_state.get_pipeline_model_parallel_world_size()
+    # [pipeline dim, data parallel, tensor dim]
+    all_ranks = all_ranks.reshape(pp_size, -1, tp_size)
+    dp_rank = parallel_state.get_data_parallel_rank()
+    return all_ranks[:, dp_rank, :].min()
+
+
 def send_generate_info(
     context_tokens_tensor,
     context_length_tensor,
@@ -228,6 +242,8 @@ def send_generate_info(
     """
     Needs to be synced up with receive_generate_info
     """
+    model_parallel_group = parallel_state.get_model_parallel_group()
+    src = get_model_parallel_src_rank()
     # Send the sizes of the tensors
     input_info = [
         context_tokens_tensor.size(0),  # batch_size
@@ -242,19 +258,21 @@ def send_generate_info(
         min_tokens_to_generate,
     ]
     input_info_tensor = torch.cuda.FloatTensor(input_info)
-    torch.distributed.broadcast(input_info_tensor, 0)
+    torch.distributed.broadcast(input_info_tensor, src, model_parallel_group)
 
     # Send variables to all ranks
-    torch.distributed.broadcast(context_length_tensor, 0)
-    torch.distributed.broadcast(context_tokens_tensor, 0)
+    torch.distributed.broadcast(context_length_tensor, src, model_parallel_group)
+    torch.distributed.broadcast(context_tokens_tensor, src, model_parallel_group)
 
 
 def receive_generate_info():
     """
     Needs to be synced up with send_generate_info
     """
+    model_parallel_group = parallel_state.get_model_parallel_group()
+    src = get_model_parallel_src_rank()
     input_info_tensor = torch.empty(10, dtype=torch.float32, device=torch.cuda.current_device())
-    torch.distributed.broadcast(input_info_tensor, 0)
+    torch.distributed.broadcast(input_info_tensor, src, model_parallel_group)
     batch_size = int(input_info_tensor[0].item())
     seq_len = int(input_info_tensor[1].item())
     tokens_to_generate = int(input_info_tensor[2].item())
@@ -269,8 +287,8 @@ def receive_generate_info():
     context_length_tensor = torch.empty(batch_size, dtype=torch.int64, device=torch.cuda.current_device())
     context_tokens_tensor = torch.empty(batch_size, seq_len, dtype=torch.int64, device=torch.cuda.current_device())
     # Send variables to all ranks
-    torch.distributed.broadcast(context_length_tensor, 0)
-    torch.distributed.broadcast(context_tokens_tensor, 0)
+    torch.distributed.broadcast(context_length_tensor, src, model_parallel_group)
+    torch.distributed.broadcast(context_tokens_tensor, src, model_parallel_group)
 
     return (
         context_length_tensor,
@@ -408,7 +426,7 @@ def generate(
     else:
         inference_strategy = model_inference_strategy_dispatcher(model, **strategy_args)
     tokenizer = model.tokenizer
-    if torch.distributed.get_rank() == 0:
+    if torch.distributed.get_rank() == get_model_parallel_src_rank():
         if isinstance(inputs, tuple):
             context_tokens_tensor, context_length_tensor = inputs
         else:

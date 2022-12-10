@@ -17,6 +17,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,6 +145,13 @@ def execute_job(
     # https://stackoverflow.com/questions/39607172/python-subprocess-popen-poll-seems-to-hang-but-communicate-works
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
 
+    # Setup data thread for stderr
+    std_error_buffer = []
+    # Trivial thread just reads lines from stdout into the list
+    drainerthread = threading.Thread(target=std_error_buffer.extend, args=(proc.stderr,))
+    drainerthread.daemon = True
+    drainerthread.start()
+
     # Construct JobReturn object for Hydra
     res = JobReturn()
     res.cfg = task_cfg
@@ -152,7 +160,7 @@ def execute_job(
     res.working_dir = os.getcwd()
     res.return_value = None
 
-    return proc, res
+    return proc, res, (std_error_buffer, drainerthread)
 
 
 def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: int,) -> Sequence[JobReturn]:
@@ -213,6 +221,10 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
     subprocess_list = []  # Buffer of subprocess
     results = []  # Buffer of JobResult
 
+    # STD ERROR cache
+    std_error_buffers = []  # type: List[List[str]]
+    std_error_threads = []  # type: threading.Thread
+
     # Run over all job combinations
     while job_idx < num_overrides:
         # Fill up subprocess buffer while its size is smaller than multiplex batch size
@@ -222,7 +234,7 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
                 break
 
             # Submit a job as a new process
-            process, res = execute_job(
+            process, res, error_tup = execute_job(
                 initial_job_idx + job_idx,
                 overrides[job_idx],
                 launcher.hydra_context,
@@ -235,13 +247,45 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
             subprocess_list.append(process)
             results.append(res)
 
+            # Manage stderror thread data
+            std_error_buffers.append(error_tup[0])
+            std_error_threads.append(error_tup[1])
+
             job_idx += 1
             gpu_idx += 1
 
         # Poll for samples in batch to finish.
         if len(subprocess_list) > 0:
+            finished_processes = [0] * len(subprocess_list)
+
+            # Check if all processes are completed or not
+            # This is busy waiting, this is actually quite necessary
+            # Turns out that when you do proc.communicate(), you block all other threads immediately.
+            # IE they may fill up their buffers entirely, and hang while they wait for the first thread
+            # who called communicate() to finish its work or crash.
+            # Effectively it entirely stops multiprocessing jobs or multiplexed runs.
+            # Must poll and busy wait to keep threads alive, along with drain the pipes with thread buffers.
+            while sum(finished_processes) < len(subprocess_list):
+                # Check all processes to make sure they have a retcode (doesnt matter yet if 0 or not)
+                for proc_idx, proc in enumerate(subprocess_list):
+                    # poll() is cheaper op than communicate()
+                    retcode = proc.poll()
+
+                    if retcode is not None:
+                        # Log that the process with some ID has finished
+                        if finished_processes[proc_idx] == 0:
+                            logging.info(f"Processed job : {len(ret) + proc_idx}")
+
+                        finished_processes[proc_idx] = 1
+
+                        # Join this thread and merge its stderror buffer
+                        std_error_threads[proc_idx].join()
+                        std_error_buffers[proc_idx] = b''.join(std_error_buffers[proc_idx])
+
+                time.sleep(1.0)
+
             # Process all the subprocess results
-            for proc, res in zip(subprocess_list, results):
+            for proc_idx, (proc, res) in enumerate(zip(subprocess_list, results)):
                 # Wait until completion of process
                 output, error = proc.communicate()
 
@@ -260,7 +304,7 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
                         f"\nHyperparameter Arguments : {proc.args}\n"
                         f"Process Return code : {proc.returncode}\n"
                         f"Error Trace :\n"
-                        f"{str(error, encoding='utf-8').encode('utf-8').decode('utf-8')}"
+                        f"{str(std_error_buffers[proc_idx], encoding='utf-8').encode('utf-8').decode('utf-8')}"
                     )
                     res.return_value = Exception(error_msg)
                     res.status = JobStatus.FAILED

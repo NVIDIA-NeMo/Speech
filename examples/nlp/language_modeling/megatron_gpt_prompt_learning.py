@@ -23,6 +23,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_
 )
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
+    MegatronHalfPrecisionPlugin,
     NLPDDPStrategy,
     NLPSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
@@ -47,18 +48,25 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
+    megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
+
     plugins = []
     strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
-    if cfg.trainer.precision == 16:
-        scaler = GradScaler(
-            init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
-            growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
-            hysteresis=cfg.model.get('hysteresis', 2),
-            enabled=False
-            if cfg.model.pipeline_model_parallel_size > 1
-            else True,  # turn off the grad scale for pipeline parallel LM model
-        )
-        plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+    if cfg.trainer.precision in [16, 'bf16']:
+        scaler = None
+        if cfg.trainer.precision == 16:
+            scaler = GradScaler(
+                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
+                growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
+                hysteresis=cfg.model.get('hysteresis', 2),
+                enabled=False
+                if cfg.model.pipeline_model_parallel_size > 1
+                else True,  # turn off the grad scale for pipeline parallel LM model
+            )
+        if megatron_amp_o2:
+            plugins.append(MegatronHalfPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+        else:
+            plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())

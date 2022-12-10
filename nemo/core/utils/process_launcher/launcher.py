@@ -240,25 +240,6 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
 
         # Poll for samples in batch to finish.
         if len(subprocess_list) > 0:
-            finished_processes = [0] * len(subprocess_list)
-
-            # Check if all processes are completed or not
-            # TODO: This is busy waiting, need to check if its really needed or we can do one time communicate()
-            while sum(finished_processes) < len(subprocess_list):
-                # Check all processes to make sure they have a retcode (doesnt matter yet if 0 or not)
-                for proc_idx, proc in enumerate(subprocess_list):
-                    # poll() is cheaper op than communicate()
-                    retcode = proc.poll()
-
-                    if retcode is not None:
-                        # Log that the process with some ID has finished
-                        if finished_processes[proc_idx] == 0:
-                            logging.info(f"Processed job : {len(ret) + proc_idx}")
-
-                        finished_processes[proc_idx] = 1
-
-                time.sleep(1.0)
-
             # Process all the subprocess results
             for proc, res in zip(subprocess_list, results):
                 # Wait until completion of process

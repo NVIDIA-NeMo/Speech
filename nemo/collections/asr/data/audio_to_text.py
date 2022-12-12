@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import io
+import json
 import math
+import multiprocessing
 import os
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -21,6 +23,7 @@ import numpy as np
 import torch
 import webdataset as wd
 from torch.utils.data import ChainDataset
+from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
@@ -29,6 +32,14 @@ from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import *
 from nemo.utils import logging
+from nemo.utils.data_utils import (
+    DataStoreObject,
+    datastore_object_get,
+    datastore_path_to_webdataset_url,
+    is_datastore_cache_shared,
+    is_datastore_path,
+)
+from nemo.utils.get_rank import is_global_rank_zero
 
 __all__ = [
     'AudioToCharDataset',
@@ -182,6 +193,11 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
         # Brace expand
         audio_tar_filepaths = list(braceexpand.braceexpand(audio_tar_filepaths))
 
+    # Expand store paths into WebDataset URLs
+    audio_tar_filepaths = [
+        datastore_path_to_webdataset_url(p) if is_datastore_path(p) else p for p in audio_tar_filepaths
+    ]
+
     # Check for distributed and partition shards accordingly
     if world_size > 1:
         if shard_strategy == 'scatter':
@@ -206,6 +222,127 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
             raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
 
     return audio_tar_filepaths
+
+
+def cache_datastore_manifests(
+    manifest_filepaths: Union[str, List[str]],
+    cache_audio: bool = False,
+    shared_cache: Optional[bool] = None,
+    num_workers: Optional[int] = None,
+    max_num_workers: int = 20,
+):
+    """Cache manifests and audio from an object store.
+    It is assumed that remote manifests are using relative paths.
+
+    Args:
+        manifest_filepaths: list of paths to manifest files (list of strings or a string with `,` as separator)
+        cache_audio: If True, audio from manifest will also be cached
+        shared_cache: Optional, True if cache is shared across all nodes
+        num_workers: Optional, number of workers to be used for download
+        max_num_workers: max number of workers to be used for download, used when setting num_workers automatically
+    """
+    if isinstance(manifest_filepaths, str):
+        manifest_filepaths = manifest_filepaths.split(',')
+
+    num_datastore_manifests = sum([is_datastore_path(f) for f in manifest_filepaths])
+
+    if num_datastore_manifests > 0:
+        # Local utility function
+        def cache_data(manifest_filepaths, cache_audio, num_workers, max_num_workers):
+            """Cache manifests and audio data from object store.
+            """
+            # Determine the number of workers to use
+            if num_workers is None:
+                num_workers = os.cpu_count() - 1
+            num_workers = min(num_workers, max_num_workers)
+
+            # Process each manifest file
+            for manifest_file in manifest_filepaths:
+                # If manifest is on a data store, then cache it.
+                # Otherwise, nothing to do.
+                if is_datastore_path(manifest_file):
+                    logging.info('Cache manifest file: %s', manifest_file)
+                    cached_manifest_file = DataStoreObject(manifest_file).get()
+                    logging.info('Cached at: %s', str(cached_manifest_file))
+
+                    if cache_audio:
+                        # Each audio file from manifest will be cached.
+                        logging.info('Cache audio from manifest file: %s', manifest_file)
+                        # Assumes that manifest is using relative paths
+                        manifest_dir = os.path.dirname(manifest_file)
+                        # Prepare all store objects
+                        audio_objects = []
+                        with open(cached_manifest_file, 'r') as f:
+                            for line in f:
+                                item = json.loads(line)
+                                store_path = os.path.join(manifest_dir, item['audio_filepath'])
+                                audio_objects.append(DataStoreObject(store_path=store_path))
+
+                        if num_workers is not None and num_workers > 1:
+                            logging.debug('Using multiprocessing with num_workers: %d.', num_workers)
+                            with multiprocessing.Pool(processes=num_workers) as p:
+                                result = list(
+                                    tqdm(p.imap(datastore_object_get, audio_objects), total=len(audio_objects))
+                                )
+                        else:
+                            logging.debug('Using a single process.')
+                            result = []
+                            for audio_object in tqdm(audio_objects):
+                                result.append(audio_object.get() is not None)
+
+                        if not all(result):
+                            raise RuntimeError('Some files not downloaded successfully')
+                        logging.info('Caching complete')
+
+                else:
+                    # Nothing to do here
+                    logging.debug('Manifest is not on a data store: %s', manifest_file)
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            logging.debug('Distributed environment is available and initialized.')
+
+            # Handle distributed environment
+            if shared_cache is None:
+                shared_cache = is_datastore_cache_shared()
+
+            if shared_cache:
+                logging.debug('Cache is shared among nodes, cache data on global rank zero.')
+                is_rank_zero = is_global_rank_zero()
+            else:
+                logging.debug('Cache is not shared among nodes, cache data on local rank zero.')
+                local_rank = int(os.environ.get("LOCAL_RANK", 0))
+                is_rank_zero = local_rank == 0
+
+            if is_rank_zero:
+                logging.info('Cache data from %s rank 0', 'global' if shared_cache else 'local')
+                cache_data(
+                    manifest_filepaths=manifest_filepaths,
+                    cache_audio=cache_audio,
+                    num_workers=num_workers,
+                    max_num_workers=max_num_workers,
+                )
+            logging.debug('Reached barrier')
+            torch.distributed.barrier()
+
+        elif is_global_rank_zero():
+            # Handle non-distributed environment, e.g., if running on a single GPU
+            logging.warning(
+                'Torch distributed is not initialized and caching may be prone to data race conditions. '
+                'Now caching data from global rank 0. If there are other ranks and they pass this '
+                'before rank 0, errors might result.'
+            )
+            cache_data(
+                manifest_filepaths=manifest_filepaths,
+                cache_audio=cache_audio,
+                num_workers=num_workers,
+                max_num_workers=max_num_workers,
+            )
+        else:
+            raise RuntimeError(
+                'Torch distributed is not initialized and caching on nodes other than global rank zero is disabled '
+                'to avoid race condition between different ranks. To ensure distributed environment is '
+                'initialized, please update data config to use `defer_setup = True`.'
+            )
 
 
 class _AudioTextDataset(Dataset):
@@ -265,6 +402,9 @@ class _AudioTextDataset(Dataset):
     ):
         if type(manifest_filepath) == str:
             manifest_filepath = manifest_filepath.split(",")
+
+        # If necessary, cache manifests and audio from object store
+        cache_datastore_manifests(manifest_filepaths=manifest_filepath, cache_audio=True)
 
         self.manifest_processor = ASRManifestProcessor(
             manifest_filepath=manifest_filepath,
@@ -633,6 +773,9 @@ class _TarredAudioToTextDataset(IterableDataset):
         world_size: int = 0,
         return_sample_id: bool = False,
     ):
+        # If necessary, cache manifests from object store
+        cache_datastore_manifests(manifest_filepaths=manifest_filepath)
+
         self.manifest_processor = ASRManifestProcessor(
             manifest_filepath=manifest_filepath,
             parser=parser,

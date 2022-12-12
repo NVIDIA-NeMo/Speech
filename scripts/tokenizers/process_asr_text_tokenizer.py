@@ -89,6 +89,7 @@ import os
 import tokenizers
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import create_spt_model
+from nemo.utils.data_utils import DataStoreObject
 
 parser = argparse.ArgumentParser(description='Create tokenizer')
 group = parser.add_mutually_exclusive_group(required=True)
@@ -161,7 +162,7 @@ def __build_document_from_manifests(
     num_lines = 0
     with open(document_path, 'w') as out_writer:
         for manifest in manifests:
-            with open(manifest, 'r') as in_reader:
+            with open(DataStoreObject(manifest).get(), 'r') as in_reader:
                 for line in in_reader:
                     item = json.loads(line)
                     text = item['text']

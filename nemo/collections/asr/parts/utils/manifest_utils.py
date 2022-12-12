@@ -29,6 +29,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     segments_manifest_to_subsegments_manifest,
     write_rttm2manifest,
 )
+from nemo.utils.data_utils import DataStoreObject
 
 
 def rreplace(s: str, old: str, new: str) -> str:
@@ -368,9 +369,11 @@ def read_manifest(manifest: str) -> List[dict]:
     Returns:
         data (list): List of JSON items
     """
+    manifest = DataStoreObject(manifest)
+
     data = []
     try:
-        f = open(manifest, 'r', encoding='utf-8')
+        f = open(manifest.get(), 'r', encoding='utf-8')
     except:
         raise Exception(f"Manifest file could not be opened: {manifest}")
     for line in f:

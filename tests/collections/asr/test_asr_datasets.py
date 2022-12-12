@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import copy
+import filecmp
 import json
 import os
+import shutil
 import tempfile
+from unittest import mock
 
 import numpy as np
 import pytest
@@ -32,7 +34,12 @@ from nemo.collections.asr.data.audio_to_audio import (
     AudioToTargetWithReferenceDataset,
     _audio_collate_fn,
 )
-from nemo.collections.asr.data.audio_to_text import TarredAudioToBPEDataset, TarredAudioToCharDataset
+from nemo.collections.asr.data.audio_to_text import (
+    DataStoreObject,
+    TarredAudioToBPEDataset,
+    TarredAudioToCharDataset,
+    cache_datastore_manifests,
+)
 from nemo.collections.asr.data.audio_to_text_dali import (
     __DALI_MINIMUM_VERSION__,
     AudioToBPEDALIDataset,
@@ -1535,3 +1542,87 @@ class TestAudioDatasets:
                     assert np.isclose(
                         item_factory_signal, golden_signal, atol=atol
                     ).all(), f'Test 1: Failed for factory example {n}, signal {signal} (random seed {random_seed})'
+
+
+class TestUtilityFunctions:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('cache_audio', [False, True])
+    def test_cache_datastore_manifests(self, cache_audio: bool):
+        """Test caching of manifest and audio files.
+        """
+        # Data setup
+        random_seed = 42
+        sample_rate = 16000
+        num_examples = 10
+        num_manifests = 2
+        data_duration = 1.0
+
+        # Generate random signals
+        _rng = np.random.default_rng(seed=random_seed)
+
+        # Input and target signals have the same duration
+        data_duration_samples = int(data_duration * sample_rate)
+
+        with tempfile.TemporaryDirectory() as test_dir:
+            test_store_dir = os.path.join(test_dir, 'store')
+            os.mkdir(test_store_dir)
+
+            # Prepare metadata and audio files
+            manifest_filepaths = []
+            audio_files = []
+            for m in range(num_manifests):
+                manifest_dir = os.path.join(test_store_dir, f'manifest_{m}')
+                os.mkdir(manifest_dir)
+                manifest_filepath = os.path.join(manifest_dir, 'manifest.json')
+
+                metadata = []
+                data = _rng.uniform(low=-0.5, high=0.5, size=(data_duration_samples, num_examples))
+                for n in range(num_examples):
+                    audio_filepath = f'manifest_{m}_audio_{n:02d}.wav'
+                    audio_file = os.path.join(manifest_dir, audio_filepath)
+                    # Write audio file
+                    sf.write(audio_file, data[:, n], sample_rate, 'float')
+                    # Update metadata
+                    metadata.append(
+                        {
+                            'audio_filepath': audio_filepath,
+                            'duration': data_duration,
+                            'text': f'text for example {n:02d}',
+                        }
+                    )
+                    # Update audio files
+                    audio_files.append(audio_file)
+
+                # Save manifest
+                write_manifest(manifest_filepath, metadata)
+                manifest_filepaths.append(manifest_filepath)
+
+            # Cache location
+            test_cache_dir = os.path.join(test_dir, 'cache')
+
+            # Instead of using AIS, copy object from store dir to cache dir
+            def fake_get(self):
+                # Object path relative to store path
+                object_path = os.path.relpath(self.store_path, start=test_store_dir)
+                # Copy to fake local path
+                self._local_path = os.path.join(test_cache_dir, object_path)
+                os.makedirs(os.path.dirname(self.local_path), exist_ok=True)
+                shutil.copy(self.store_path, self.local_path)
+                # Return path as in the original get
+                return self.local_path
+
+            with mock.patch(
+                'nemo.collections.asr.data.audio_to_text.is_datastore_path', lambda x: True
+            ), mock.patch.object(DataStoreObject, 'get', fake_get):
+                cache_datastore_manifests(manifest_filepaths, cache_audio=cache_audio)
+
+            # Manifests need to be compared
+            store_files_to_compare = manifest_filepaths
+            if cache_audio:
+                # Audio needs to be compared
+                store_files_to_compare += audio_files
+
+            # Compare files
+            for f_store in store_files_to_compare:
+                f_cache = os.path.join(test_cache_dir, os.path.relpath(f_store, test_store_dir))
+                assert filecmp.cmp(f_store, f_cache, shallow=False), f'Files {f_store} and {f_cache} do not match.'

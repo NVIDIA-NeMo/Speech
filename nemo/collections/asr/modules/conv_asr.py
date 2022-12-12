@@ -441,6 +441,9 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         )
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
+        accepted_adapters = [adapter_utils.LINEAR_ADAPTER_CLASSPATH]
+        self.set_accepted_adapter_types(accepted_adapters)
+
     @typecheck()
     def forward(self, encoder_output):
         # Adapter module forward step
@@ -885,6 +888,8 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
     def add_adapter(self, name: str, cfg: dict):
         for jasper_block in self.encoder:  # type: adapter_mixins.AdapterModuleMixin
             cfg = self._update_adapter_cfg_input_dim(jasper_block, cfg)
+
+            jasper_block.set_accepted_adapter_types([adapter_utils.LINEAR_ADAPTER_CLASSPATH])
             jasper_block.add_adapter(name, cfg)
 
     def is_adapter_available(self) -> bool:

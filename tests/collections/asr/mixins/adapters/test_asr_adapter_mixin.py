@@ -17,12 +17,14 @@ import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo.collections.asr.models import ASRModel, EncDecCTCModel, EncDecRNNTModel
+from nemo.collections.asr.parts.submodules.adapters import multi_head_attention_adapter_module
+from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts import adapter_modules
 from nemo.core.classes.mixins.access_mixins import AccessMixin
 from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin, get_registered_adapter
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
-from nemo.utils import config_utils
+from nemo.utils import config_utils, model_utils
 
 NUMBA_RNNT_LOSS_AVAILABLE = numba_utils.numba_cpu_is_supported(
     __NUMBA_MINIMUM_VERSION__
@@ -56,6 +58,125 @@ def model():
     decoder = {
         '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
         'feat_in': 50,
+        'num_classes': 28,
+        'vocabulary': [
+            ' ',
+            'a',
+            'b',
+            'c',
+            'd',
+            'e',
+            'f',
+            'g',
+            'h',
+            'i',
+            'j',
+            'k',
+            'l',
+            'm',
+            'n',
+            'o',
+            'p',
+            'q',
+            'r',
+            's',
+            't',
+            'u',
+            'v',
+            'w',
+            'x',
+            'y',
+            'z',
+            "'",
+        ],
+    }
+    modelConfig = DictConfig(
+        {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
+    )
+
+    model_instance = EncDecCTCModel(cfg=modelConfig)
+    return model_instance
+
+
+@pytest.fixture()
+def conformer_ctc_adapter():
+    preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+    encoder = {
+        '_target_': 'nemo.collections.asr.modules.ConformerEncoderAdapter',
+        'feat_in': 64,
+        'feat_out': -1,
+        'n_layers': 2,
+        'd_model': 128,
+        'subsampling': 'striding',
+        'subsampling_factor': 4,
+        'self_attention_model': 'rel_pos',
+        'n_heads': 4,
+        'conv_kernel_size': 31,
+    }
+
+    decoder = {
+        '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+        'feat_in': 128,
+        'num_classes': 28,
+        'vocabulary': [
+            ' ',
+            'a',
+            'b',
+            'c',
+            'd',
+            'e',
+            'f',
+            'g',
+            'h',
+            'i',
+            'j',
+            'k',
+            'l',
+            'm',
+            'n',
+            'o',
+            'p',
+            'q',
+            'r',
+            's',
+            't',
+            'u',
+            'v',
+            'w',
+            'x',
+            'y',
+            'z',
+            "'",
+        ],
+    }
+    modelConfig = DictConfig(
+        {'preprocessor': DictConfig(preprocessor), 'encoder': DictConfig(encoder), 'decoder': DictConfig(decoder)}
+    )
+
+    model_instance = EncDecCTCModel(cfg=modelConfig)
+    return model_instance
+
+
+@pytest.fixture()
+def squeezeformer_ctc_adapter():
+    preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+    encoder = {
+        '_target_': 'nemo.collections.asr.modules.SqueezeformerEncoderAdapter',
+        'feat_in': 64,
+        'feat_out': -1,
+        'n_layers': 2,
+        'd_model': 128,
+        'time_reduce_idx': 1,
+        'subsampling': 'dw_striding',
+        'subsampling_factor': 4,
+        'self_attention_model': 'rel_pos',
+        'n_heads': 4,
+        'conv_kernel_size': 31,
+    }
+
+    decoder = {
+        '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+        'feat_in': 128,
         'num_classes': 28,
         'vocabulary': [
             ' ',
@@ -165,19 +286,70 @@ def rnnt_model():
     return model_instance
 
 
-def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre'):
-    cfg = adapter_modules.LinearAdapterConfig(in_features=in_features, dim=dim, norm_position=norm_pos)
+def get_adapter_cfg(in_features=50, dim=100, norm_pos='pre', atype='linear', **kwargs):
+    valid_types = ['linear', 'mha', 'relmha']
+    if atype not in valid_types:
+        raise ValueError(f"Invalid type. Valid types = {atype}")
+
+    if atype == 'linear':
+        cfg = adapter_modules.LinearAdapterConfig(in_features=in_features, dim=dim, norm_position=norm_pos)
+    elif atype == 'mha':
+        cfg = multi_head_attention_adapter_module.MultiHeadAttentionAdapterConfig(
+            n_head=kwargs.get('n_head', 1), n_feat=in_features
+        )
+    elif atype == 'relmha':
+        cfg = multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapterConfig(
+            n_head=kwargs.get('n_head', 1), n_feat=in_features
+        )
+
+    print(cfg._target_)
+
     cfg = OmegaConf.structured(cfg)
     return cfg
 
 
 class TestASRAdapterMixin:
     @pytest.mark.unit
+    def test_class_paths_are_correct(self):
+        # Resolve all object names in module
+        obj_keys = list(dir(adapter_utils))
+        for key in obj_keys:
+            if 'CLASSPATH' in key:
+                classpath = getattr(adapter_utils, key)
+                # This will raise import error if it fails
+                _ = model_utils.import_class_by_path(classpath)
+
+                # Try getting thmulti_head_attention_adapter_module.pye config of the class
+                config_path = classpath + "Config"
+                _ = model_utils.import_class_by_path(config_path)
+
+    @pytest.mark.unit
     def test_asr_model_constructor(self, model):
         original_num_params = model.num_weights
 
         model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
         new_num_params = model.num_weights
+        assert new_num_params > original_num_params
+
+    @pytest.mark.unit
+    def test_asr_model_constructor_mha_adapter(self, model):
+        with pytest.raises(ValueError):
+            model.add_adapter(name='adapter_0', cfg=get_adapter_cfg(atype='mha'))
+
+    @pytest.mark.unit
+    def test_conformer_constructor_mha_adapter(self, conformer_ctc_adapter):
+        original_num_params = conformer_ctc_adapter.num_weights
+
+        conformer_ctc_adapter.add_adapter(name='adapter_0', cfg=get_adapter_cfg(atype='relmha'))
+        new_num_params = conformer_ctc_adapter.num_weights
+        assert new_num_params > original_num_params
+
+    @pytest.mark.unit
+    def test_squeezeformer_constructor_mha_adapter(self, squeezeformer_ctc_adapter):
+        original_num_params = squeezeformer_ctc_adapter.num_weights
+
+        squeezeformer_ctc_adapter.add_adapter(name='adapter_0', cfg=get_adapter_cfg(atype='relmha'))
+        new_num_params = squeezeformer_ctc_adapter.num_weights
         assert new_num_params > original_num_params
 
     @pytest.mark.unit
@@ -260,6 +432,38 @@ class TestASRAdapterMixin:
 
         model.add_adapter(name=name, cfg=get_adapter_cfg(norm_pos='post'))
         new_output = model(input_signal=input_signal, input_signal_length=input_signal_length)[0]
+
+        assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('name', ['adapter_0', 'encoder:adapter_0'])
+    def test_conformer_forward_mha(self, conformer_ctc_adapter, name):
+        conformer_ctc_adapter.eval()
+        torch.random.manual_seed(0)
+        input_signal = torch.randn(2, 512)
+        input_signal_length = torch.tensor([512, 512], dtype=torch.int32)
+
+        origial_output = conformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[0]
+
+        conformer_ctc_adapter.add_adapter(name=name, cfg=get_adapter_cfg(in_features=128, atype='mha'))
+        new_output = conformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[0]
+
+        assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('name', ['adapter_0', 'encoder:adapter_0'])
+    def test_squeezeformer_forward_mha(self, squeezeformer_ctc_adapter, name):
+        squeezeformer_ctc_adapter.eval()
+        torch.random.manual_seed(0)
+        input_signal = torch.randn(2, 512)
+        input_signal_length = torch.tensor([512, 512], dtype=torch.int32)
+
+        origial_output = squeezeformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[
+            0
+        ]
+
+        squeezeformer_ctc_adapter.add_adapter(name=name, cfg=get_adapter_cfg(in_features=128, atype='mha'))
+        new_output = squeezeformer_ctc_adapter(input_signal=input_signal, input_signal_length=input_signal_length)[0]
 
         assert torch.mean(torch.abs(origial_output - new_output)) < 1e-5
 

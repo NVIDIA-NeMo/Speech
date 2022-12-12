@@ -274,7 +274,7 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
                     if retcode is not None:
                         # Log that the process with some ID has finished
                         if finished_processes[proc_idx] == 0:
-                            logging.info(f"Processed job : {len(ret) + proc_idx}")
+                            logging.info(f"Processed job : {len(ret) + proc_idx} :: Ret code = {retcode}")
 
                         finished_processes[proc_idx] = 1
 

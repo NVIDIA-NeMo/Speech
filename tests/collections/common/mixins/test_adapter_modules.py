@@ -48,7 +48,7 @@ class TestAdapterModules:
                 assert adapter.module[-1].bias.sum() == 0
 
             out = adapter(x)
-            assert out.sum() <= 1e-8
+            assert out.sum().abs() <= 1e-8
 
     @pytest.mark.unit
     def test_linear_adapter_dropout(self):
@@ -63,7 +63,7 @@ class TestAdapterModules:
                 assert adapter.module[-1].bias.sum() == 0
 
             out = adapter(x)
-            assert out.sum() <= 1e-8
+            assert out.sum().abs() <= 1e-8
 
     @pytest.mark.unit
     @pytest.mark.parametrize('norm_position', ['pre', 'post'])
@@ -79,7 +79,7 @@ class TestAdapterModules:
                 assert adapter.module[-1].bias.sum() == 0
 
             out = adapter(x)
-            assert out.sum() <= 1e-8
+            assert out.sum().abs() <= 1e-8
 
     @pytest.mark.unit
     def test_linear_adapter_strategy(self):

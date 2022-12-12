@@ -19,6 +19,19 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.utils import logging
 
+# Constants
+LINEAR_ADAPTER_CLASSPATH = "nemo.collections.common.parts.adapter_modules.LinearAdapter"
+MHA_ADAPTER_CLASSPATH = (
+    "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.MultiHeadAttentionAdapter"
+)
+RELMHA_ADAPTER_CLASSPATH = "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapter"
+POS_ENCODING_ADAPTER_CLASSPATH = (
+    "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.PositionalEncodingAdapter"
+)
+REL_POS_ENCODING_ADAPTER_CLASSPATH = (
+    "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionalEncodingAdapter"
+)
+
 
 def convert_adapter_cfg_to_dict_config(cfg: DictConfig):
     # Convert to DictConfig from dict or Dataclass
@@ -45,16 +58,26 @@ def update_adapter_cfg_input_dim(module: torch.nn.Module, cfg: DictConfig, *, mo
     """
     cfg = convert_adapter_cfg_to_dict_config(cfg)
 
-    if 'in_features' in cfg:
-        in_planes = cfg['in_features']
+    input_dim_valid_keys = ['in_features', 'n_feat']
+    input_key = None
 
-        if in_planes != module_dim:
-            logging.info(f"Updating {module.__class__.__name__} Adapter input dim from {in_planes} to {module_dim}")
-            in_planes = module_dim
+    for key in input_dim_valid_keys:
+        if key in cfg:
+            input_key = key
+            break
 
-        cfg['in_features'] = in_planes
-        return cfg
-    else:
+    if input_key is None:
         raise ValueError(
-            f"Failed to infer the input dimension of the Adapter cfg. Provided config : \n" f"{OmegaConf.to_yaml(cfg)}"
+            f"Failed to infer the input dimension of the Adapter cfg. \nExpected one of : {input_dim_valid_keys}.\n"
+            f"Provided config : \n"
+            f"{OmegaConf.to_yaml(cfg)}"
         )
+
+    input_dim = cfg[input_key]
+
+    if input_dim != module_dim:
+        logging.info(f"Updating {module.__class__.__name__} Adapter input dim from {input_dim} to {module_dim}")
+        input_dim = module_dim
+
+    cfg[input_key] = input_dim
+    return cfg

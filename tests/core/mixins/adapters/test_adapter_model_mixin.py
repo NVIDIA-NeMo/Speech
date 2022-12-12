@@ -934,6 +934,83 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("decoder", ["adapter_0",])  # "decoder:adapter_0"
+    @pytest.mark.parametrize("encoder", ["adapter_1",])  # "encoder:adapter_1"
+    def test_multiple_save_load_adapter_with_multiple_load(self, decoder, encoder):
+        # create a model config, but do not add global_cfg to it
+        # we want to test just module level adapter
+        cfg = get_model_config(in_features=50)
+
+        model = DefaultAdapterModel(cfg)
+        original_num_params = model.num_weights
+
+        model.add_adapter(name=decoder, cfg=get_adapter_cfg(dim=5))
+        model.add_adapter(name=encoder, cfg=get_adapter_cfg(dim=5))
+        new_num_params = model.num_weights
+        assert new_num_params > original_num_params
+
+        assert len(model.get_enabled_adapters()) == 2
+
+        # save restore test
+        with tempfile.TemporaryDirectory() as outer_tmpdir:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                adapter_path = os.path.join(tmpdir, 'temp.pt')
+                adapter_path_2 = os.path.join(tmpdir, 'temp-2.pt')
+                print("saving adapter ", decoder)
+                model.save_adapters(adapter_path, name=decoder)
+                print("Saving adapter ", encoder)
+                model.save_adapters(adapter_path_2, name=encoder)
+
+                model_path = os.path.join('temp.nemo')
+                model.save_to(model_path)
+
+                shutil.move(adapter_path, outer_tmpdir)
+                shutil.move(adapter_path_2, outer_tmpdir)
+                shutil.move(model_path, outer_tmpdir)
+
+            outer_adapter_path = os.path.join(outer_tmpdir, 'temp.pt')
+            outer_adapter_path_2 = os.path.join(outer_tmpdir, 'temp-2.pt')
+            outer_model_path = os.path.join(outer_tmpdir, 'temp.nemo')
+
+            # Assert size of this params
+            adapter_filesize = os.path.getsize(outer_adapter_path)
+            adapter_2_filesize = os.path.getsize(outer_adapter_path_2)
+            model_filesize = os.path.getsize(outer_model_path)
+
+            assert model_filesize > adapter_filesize
+            assert model_filesize > adapter_2_filesize
+
+            # restore adapter to new model (without any decoder adapter)
+            new_model = DefaultAdapterModel(cfg)
+            new_model.load_adapters(outer_adapter_path, name=decoder)
+            # Seperately load another adapter after the first one
+            new_model.load_adapters(outer_adapter_path_2, name=encoder)
+
+        assert isinstance(new_model, AdapterModelPTMixin)
+        assert len(new_model.get_enabled_adapters()) > 0
+        assert model.num_weights == new_model.num_weights  # the new model has only one adapter not both
+        assert new_model.encoder.is_adapter_available() is True  # encoder adaper is available in new model
+
+        adapter_cfg = new_model.cfg.adapters
+        meta_cfg = adapter_cfg[model.adapter_global_cfg_key][model.adapter_metadata_cfg_key]
+        modules_cfg = meta_cfg['modules']
+
+        assert modules_cfg is not None
+        enabled_adapters = new_model.get_enabled_adapters()
+        assert len(enabled_adapters) == 2
+
+        if "decoder:" in decoder:
+            original_state_dict = model.decoder.adapter_layer.state_dict()
+            restored_state_dict = new_model.decoder.adapter_layer.state_dict()
+        else:
+            # Default adapter position is on encoder
+            original_state_dict = model.encoder.adapter_layer.state_dict()
+            restored_state_dict = new_model.encoder.adapter_layer.state_dict()
+
+        for ogkey, newkey in zip(original_state_dict.keys(), restored_state_dict.keys()):
+            assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
+
+    @pytest.mark.unit
     def test_multiple_decoder_save_load_adapter_dual_name(self):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter

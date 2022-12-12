@@ -50,6 +50,14 @@ Adapter Strategies
 
 -----
 
+.. autoclass:: nemo.core.classes.mixins.adapter_mixin_strategies.ReturnResultAdapterStrategy
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+    :undoc-members: adapter_module_names
+
+-----
+
 .. autoclass:: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
     :show-inheritance:
     :members:

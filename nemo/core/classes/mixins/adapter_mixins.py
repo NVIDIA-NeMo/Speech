@@ -14,7 +14,7 @@
 
 from abc import ABC
 from dataclasses import dataclass, is_dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -150,29 +150,6 @@ class AdapterModuleMixin(ABC):
     adapter_global_cfg_key = "global_cfg"
     adapter_metadata_cfg_key = "adapter_meta_cfg"
 
-    def set_accepted_adapter_types(self, adapter_types: List[str]) -> None:
-        """
-        The module with this mixin can define a list of adapter names that it will accept.
-        This method should be called in the modules init method and set the adapter names the module will expect to be added.
-        """
-        if hasattr(self, "_accepted_adapter_types"):
-            raise RuntimeError("accepted adapter types can only be set once.")
-        self._accepted_adapter_types = [model_utils.import_class_by_path(s) for s in adapter_types]
-
-    def get_accepted_adapter_types(self,) -> List[str]:
-        """
-        Returns the list of accepted adapter types.
-        """
-        if hasattr(self, '_accepted_adapter_types'):
-            return self._accepted_adapter_types
-        else:
-            return []
-
-    def get_from_adapter_layer(self, name: str):
-        if hasattr(self, "adapter_layer"):
-            return self.adapter_layer[name] if name in self.adapter_layer else None
-        return None
-
     def add_adapter(self, name: str, cfg: DictConfig):
         """
         Add an Adapter module to this module.
@@ -182,18 +159,21 @@ class AdapterModuleMixin(ABC):
             cfg: A DictConfig or Dataclass that contains at the bare minimum `__target__` to instantiate a
                 new Adapter module.
         """
-        _types = self.get_accepted_adapter_types()
+        adapter_types = self.get_accepted_adapter_types()
         _pass_types = False
-        if len(_types) > 0:
+        if len(adapter_types) > 0:
             test = model_utils.import_class_by_path(cfg._target_)
-            for _type in _types:
+            for _type in adapter_types:
                 # TODO: (@adithyare) should revisit if subclass is the best check...
                 if issubclass(test, _type):
                     _pass_types = True
                     break
             if not _pass_types:
                 raise ValueError(
-                    f"Config {cfg} creates adapter class {test} is not in the list of accepted adapter types."
+                    f"Config: \n{OmegaConf.to_yaml(cfg)}\n"
+                    f"It creates adapter class {test} \n"
+                    f"that is not in the list of accepted adapter types.\n"
+                    f"Accepted adapters: {[t for t in adapter_types]}"
                 )
 
         # Convert to DictConfig from dict or Dataclass
@@ -306,6 +286,9 @@ class AdapterModuleMixin(ABC):
         if hasattr(self, 'adapter_layer'):
             available_module_names.update(list(self.adapter_layer.keys()))
 
+        # populate list of allowed adapter classes
+        adapter_types = self.get_accepted_adapter_types()
+
         enabled_adapters = []
         for name, config in self.adapter_cfg.items():
             # Skip the global adapter config
@@ -314,11 +297,62 @@ class AdapterModuleMixin(ABC):
 
             # If name is in the current available modules, and it is enabled in the config
             if name in available_module_names and self.adapter_cfg[name]['enabled']:
-                enabled_adapters.append(name)
+                # Check if type is supported (if available) and is an enabled adapter
+                if len(adapter_types) > 0:
+                    module = self.get_adapter_module(name)
+
+                    for adapter_type in adapter_types:
+                        if isinstance(module, adapter_type):
+                            enabled_adapters.append(name)
+                            break
+
+                else:
+                    # Ignore type checking and fall back to adding all enabled adapters
+                    enabled_adapters.append(name)
 
         return enabled_adapters
 
-    # Inherited methods that dont need to be overridden
+    # Inherited methods that don't need to be overridden
+
+    def get_adapter_module(self, name: str):
+        """
+        Gets an adapter module by name if possible, otherwise returns None.
+
+        Args:
+            name: A str name (resolved or not) corresponding to an Adapter.
+
+        Returns:
+            An nn.Module if the name could be resolved and matched, otherwise None/
+        """
+        _, name = self.resolve_adapter_module_name_(name)
+
+        if hasattr(self, "adapter_layer"):
+            return self.adapter_layer[name] if name in self.adapter_layer else None
+        return None
+
+    def set_accepted_adapter_types(self, adapter_types: List[str]) -> None:
+        """
+        The module with this mixin can define a list of adapter names that it will accept.
+        This method should be called in the modules init method and set the adapter names the module will expect to be added.
+
+        Args:
+            adapter_types: A list of str paths that correspond to classes. The class paths will be instantiated to
+                ensure that the class path is correct.
+        """
+        # Let user update and set accepted adapter types.
+        self._accepted_adapter_types = set([model_utils.import_class_by_path(s) for s in adapter_types])
+
+    def get_accepted_adapter_types(self,) -> Set[type]:
+        """
+        Utility function to get the set of all classes that are accepted by the module.
+
+        Returns:
+            Returns the set of accepted adapter types as classes, otherwise an empty set.
+        """
+        if hasattr(self, '_accepted_adapter_types'):
+            return self._accepted_adapter_types
+        else:
+            return set([])
 
     def unfreeze_enabled_adapters(self, freeze_batchnorm: bool = True) -> None:
         """
@@ -755,17 +789,25 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                 # It must have the attribute `adapter_name`.
                 # It must match the adapter name provided by the user.
                 for module in self.modules():
-                    if (
-                        isinstance(module, AdapterModuleMixin)
-                        and hasattr(module, 'adapter_name')
-                        and module.adapter_name == adapter_name
-                    ):
+                    if isinstance(module, AdapterModuleMixin):
                         # If all match, extract the state dict into a list of state dicts.
                         # This is because one name can be shared within one model by multiple adapters bearing
                         # a common name. This can occur when the adapter is common to a module which has multiple
                         # layers and blocks, all of which require an adapter.
-                        state_dict = module.state_dict()
-                        output_dict[key].append(state_dict)
+                        adapter_module = module.get_adapter_module(adapter_name)
+                        if adapter_module is not None:
+                            # If the module was found, then extract the entire adapter ModuleDict state_dict(),
+                            # Then select only the parts of the state dict that correspond to the current adapter_name.
+                            # This is done so that it preserves the relation ship of the module name : parameters
+                            # inside of the state dict.
+                            # It will be normalized in the corresponding `load_adapters()` call.
+                            adapter_state_dict = module.adapter_layer.state_dict()
+                            state_dict = {}
+                            for k, v in adapter_state_dict.items():
+                                if adapter_name in k:
+                                    state_dict[k] = v
+
+                            output_dict[key].append(state_dict)
 
         # Preserve the binary OmegaConf dictionary of the model's adapter config
         output_dict['__cfg__'] = self.cfg.adapters
@@ -856,12 +898,10 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             # between state dict and the adapters parameters will be allowed.
             modules_to_load = []  # type: List[torch.nn.Module]
             for module in self.modules():
-                if (
-                    isinstance(module, AdapterModuleMixin)
-                    and hasattr(module, 'adapter_name')
-                    and module.adapter_name == adapter_name
-                ):
-                    modules_to_load.append(module)
+                if isinstance(module, AdapterModuleMixin):
+                    adapter_module = module.get_adapter_module(adapter_name)
+                    if adapter_module is not None:
+                        modules_to_load.append(adapter_module)
 
             # Assert that the number of states in the state dict matches the newly created adapter
             if len(adapter_state) != len(modules_to_load):
@@ -873,7 +913,18 @@ class AdapterModelPTMixin(AdapterModuleMixin):
 
             # For the pair of (adapter_state_in_checkpoint, adapter_in_model), restore the weights
             for state, module in zip(adapter_state, modules_to_load):
-                module.load_state_dict(state, strict=strict)
+                # Note that state is a list of multiple state dicts for 1:1 Module mapping.
+                # However, the state_dict keys are of the form `adapter_name.<module hierarchy with dots>`.
+                # We therefore strip the `adapter_name.` part of the state dict
+                # And then directly load each module with its 1:1 state dict.
+                sub_dict = {}
+                for k, v in state.items():
+                    if adapter_name in k:
+                        k_ = k.replace(f"{adapter_name}.", "")
+                        sub_dict[k_] = v
+
+                module.load_state_dict(sub_dict, strict=strict)
+                del sub_dict
 
             # delete the dictionaries to preserve memory for next adapter
             del adapter_state, modules_to_load

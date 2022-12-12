@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import glob
 import os
 import re
 import subprocess
@@ -1042,3 +1043,29 @@ class SkipResumeTrainingValidationLoop(TrainingEpochLoop):
         if self.restarting and self.global_step % self.trainer.val_check_batch == 0:
             return False
         return super()._should_check_val_fx()
+
+
+def clean_exp_ckpt(exp_log_dir: Union[str, Path], remove_ckpt: bool = True, remove_nemo: bool = False):
+    """
+    Helper method that removes Pytorch Lightning .ckpt files or NeMo .nemo files from the checkpoint directory
+
+    Args:
+        exp_log_dir: str path to the root directory of the current experiment.
+        remove_ckpt: bool, whether to remove all *.ckpt files in the checkpoints directory.
+        remove_nemo: bool, whether to remove all *.nemo files in the checkpoints directory.
+    """
+    exp_log_dir = str(exp_log_dir)
+
+    if remove_ckpt:
+        logging.info("Deleting *.ckpt files ...")
+        ckpt_files = glob.glob(os.path.join(exp_log_dir, "checkpoints", "*.ckpt"))
+        for filepath in ckpt_files:
+            os.remove(filepath)
+            logging.info(f"Deleted file : {filepath}")
+
+    if remove_nemo:
+        logging.info("Deleting *.nemo files ...")
+        nemo_files = glob.glob(os.path.join(exp_log_dir, "checkpoints", "*.nemo"))
+        for filepath in nemo_files:
+            os.remove(filepath)
+            logging.info(f"Deleted file : {filepath}")

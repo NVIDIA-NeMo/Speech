@@ -138,7 +138,7 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         for name, module in self.frozen_model.named_modules():
             if isinstance(module, adapter_mixins.AdapterModuleMixin) and module.is_adapter_available():
                 for adapter_key in self.adapter_name_keys:
-                    adapter_module = module.get_from_adapter_layer(adapter_key)
+                    adapter_module = module.get_adapter_module(adapter_key)
                     if adapter_module:
                         state_adapter_key = ':'.join([name, adapter_key])
                         state_dict_[state_adapter_key] = adapter_module.state_dict()
@@ -154,7 +154,7 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         for name, module in self.frozen_model.named_modules():
             if isinstance(module, adapter_mixins.AdapterModuleMixin) and module.is_adapter_available():
                 for adapter_key in self.adapter_name_keys:
-                    adapter_module = module.get_from_adapter_layer(adapter_key)
+                    adapter_module = module.get_adapter_module(adapter_key)
                     if adapter_module:
                         state_adapter_key = ':'.join([name, adapter_key])
                         adapter_module.load_state_dict(state_dict[state_adapter_key], strict)

@@ -22,7 +22,7 @@ from typing import Any, Optional
 import torch
 import torch.nn as nn
 
-from nemo.collections.common.parts.adapter_modules import AbstractAdapterModule
+from nemo.collections.common.parts.adapter_modules import AdapterModuleUtil
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.collections.nlp.modules.common.megatron.utils import init_method_const, init_method_normal
 from nemo.core.classes.mixins import adapter_mixin_strategies
@@ -50,7 +50,7 @@ class AdapterName(str, enum.Enum):
     POST_ATTN_ADAPTER = 'adapter_2'
 
 
-class InfusedAdapter(AbstractAdapterModule):
+class InfusedAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
         self, in_features: int, adapter_strategy: adapter_mixin_strategies.ResidualAddAdapterStrategyConfig = None,
     ) -> None:
@@ -85,7 +85,7 @@ class MLPInfusedAdapterConfig(InfusedAdapterConfig):
     _target_: str = "{0}.{1}".format(MLPInfusedAdapter.__module__, MLPInfusedAdapter.__name__)
 
 
-class ParallelLinearAdapter(AbstractAdapterModule):
+class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
         self,
         in_features: int,

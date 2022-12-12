@@ -232,3 +232,45 @@ Hypotheses
 .. autoclass:: nemo.collections.asr.parts.utils.rnnt_utils.NBestHypotheses
     :show-inheritance:
     :no-members:
+
+Adapter Networks
+~~~~~~~~~~~~~~~~
+
+.. autoclass:: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.MultiHeadAttentionAdapter
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+-----
+
+.. autoclass:: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapter
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+-----
+
+.. autoclass:: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.PositionalEncodingAdapter
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+-----
+
+.. autoclass:: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionalEncodingAdapter
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+
+Adapter Strategies
+~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.MHAResidualAddAdapterStrategy
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+    :undoc-members: adapter_module_names
+
+-----
+

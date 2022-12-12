@@ -615,6 +615,14 @@ class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixi
 
     # Higher level forwarding
     def add_adapter(self, name: str, cfg: dict):
+        self.set_accepted_adapter_types(
+            [
+                adapter_utils.LINEAR_ADAPTER_CLASSPATH,
+                adapter_utils.MHA_ADAPTER_CLASSPATH,
+                adapter_utils.RELMHA_ADAPTER_CLASSPATH,
+            ]
+        )
+
         cfg = self._update_adapter_cfg_input_dim(cfg)
         for conformer_layer in self.layers:  # type: adapter_mixins.AdapterModuleMixin
             conformer_layer.add_adapter(name, cfg)

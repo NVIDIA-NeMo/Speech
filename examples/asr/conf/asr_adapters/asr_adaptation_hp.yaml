@@ -60,24 +60,46 @@ model:
   log_prediction: false # enables logging sample predictions in the output during training
 
   adapter:
-    # Config of the adapter training/eval script.
+    ### Config of the adapter training/eval script ###
     adapter_name: ???  # Name of the adapter, used by the script
+    adapter_type: "linear"  # Type of the adapter. Corresponds to the subconfigs below.
     adapter_module_name: null  # Name of the adapter module. Combine multiple modules with '+' between module names.
     adapter_state_dict_name: "adapters.pt"  # If the individual adapters must be saved, a file name can be provided here. null disables this.
 
-    # Config of the adapter module itself
-    _target_: nemo.collections.common.parts.adapter_modules.LinearAdapter
-    in_features: ???  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
-    dim: 32  # The hidden dimension of the adapter, as chosen by user, but small values are preferred to reduce param count.
-    activation: swish
-    norm_position: 'pre'  # Can be `pre` or `post`
-    dropout: 0.0  # float, dropout for the adapter
+    ### Adapter Configs ###
+    # Linear / Houlsby Adapter (https://arxiv.org/abs/1902.00751)
+    linear:
+      # Config of the adapter module itself
+      _target_: nemo.collections.common.parts.adapter_modules.LinearAdapter
+      in_features: ???  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
+      dim: 32  # The hidden dimension of the adapter, as chosen by user, but small values are preferred to reduce param count.
+      activation: swish
+      norm_position: 'pre'  # Can be `pre` or `post`
+      dropout: 0.0  # float, dropout for the adapter
 
-    # Adapter strategy config
-    adapter_strategy:
-      _target_: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
-      stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
-      l2_lambda: 0.0  # float, setting to > 0 will enable l2 norm auxiliary loss for each adapter's output.
+      # Adapter strategy config
+      adapter_strategy:
+        _target_: nemo.core.classes.mixins.adapter_mixin_strategies.ResidualAddAdapterStrategy
+        stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
+        l2_lambda: 0.0  # float, setting to > 0 will enable l2 norm auxiliary loss for each adapter's output.
+
+    # Tiny-Attention Adapter (https://arxiv.org/abs/2211.01979)
+    # NOTE: Only supported for Attention based encoders. Make sure to pass `adapter_module_name` as "encoder"
+    tinyattn:
+      # Config of the adapter module itself
+      # Defaults to Relative Positional Encoding MHA
+      # _target_ can instead be <import_path>.MultiHeadAttentionAdapter if Conformer was originally using Absolute Positional Encoding.
+      _target_: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionMultiHeadAttentionAdapter
+      n_feat: ???  # User must provide the output dimension of the layers of the model, which is the input dimension of this adapter.
+      n_head: 1  # Number of heads for attention.
+      proj_dim: -1  # Can be `null` - to avoid projection, > 0 for explicit dim, or -1 to default to `n_head`
+      dropout_rate: 0.0  # float, dropout for the adapter
+
+      # Adapter strategy config
+      adapter_strategy:
+        _target_: nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.MHAResidualAddAdapterStrategy
+        stochastic_depth: 0.0  # float, setting to > 0 will enable stochastic depth for each adapter block.
+        l2_lambda: 0.0  # float, setting to > 0 will enable l2 norm auxiliary loss for each adapter's output.
 
     # Optional global config available to all adapters at a global level.
     # A global config is shared across every layer of the adapters, defining global properties rather
@@ -179,7 +201,12 @@ exp_manager:
   # Add a unique name for all hyperparameter arguments to allow continued training.
   # NOTE: It is necessary to add all hyperparameter arguments to the name !
   # This ensures successful restoration of model runs in case HP search crashes.
-  name: ${name}-lr-${model.optim.lr}-adim-${model.adapter.dim}-sd-${model.adapter.adapter_strategy.stochastic_depth}
+
+  ### `linear` adapter experiment name ###
+  name: ${name}-lr-${model.optim.lr}-adim-${model.adapter.linear.dim}-sd-${model.adapter.linear.adapter_strategy.stochastic_depth}
+
+  ### `tiny_attn` adapter experiment name ###
+  # name: ${name}-lr-${model.optim.lr}-pdim-${model.adapter.tiny_attn.proj_dim}-nhead-${model.adapter.tiny_attn.n_head}-sd-${model.adapter.tiny_attn.adapter_strategy.stochastic_depth}
 
   create_tensorboard_logger: true
   create_checkpoint_callback: true
@@ -209,16 +236,25 @@ defaults:
   - override hydra/launcher: nemo_launcher
 
 # Hydra arguments necessary for hyperparameter optimization
+# NOTE: This is for the `linear` adapter type ! Please change sweep.params for other adapter types !
 hydra:
   sweep:
     dir: "."
     subdir: "."
 
   sweeper:
+    ### `linear` adapter configuration ###
     params:  # place all the parameters you wish to search over here (corresponding to the rest of the config)
       model.optim.lr: 0.001,0.0001
-      model.adapter.dim: 32,64,96,128
-      model.adapter.adapter_strategy.stochastic_depth: 0.0,0.5,0.6,0.7,0.8,0.9
+      model.adapter.linear.dim: 32,64,96,128
+      model.adapter.linear.adapter_strategy.stochastic_depth: 0.0,0.5,0.6,0.7,0.8,0.9
+
+    ### `tiny_attn` adapter configuration ###
+#    params:
+#      model.optim.lr: 0.001,0.0001
+#      model.adapter.tiny_attn.n_head: 1  # Note if you use > 1 heads, the *minimum* proj_dim below should match your *max* n_head !
+#      model.adapter.tiny_attn.proj_dim: 1,8,16,32,64  # 1,4,8,16,32,64
+#      model.adapter.tiny_attn.adapter_strategy.stochastic_depth: 0.0,0.5,0.6,0.7,0.8,0.9
 
   # Arguments to the hyperparameter runner
   launcher:

@@ -721,7 +721,7 @@ class ModelPT(LightningModule, Model):
                 and self._cfg.validation_ds.get('defer_setup', False)
             )
             if self.val_dataloader() is None and val_deferred_setup:
-                self.setup_validation_data(self._cfg.validation_ds)
+                self.setup_multiple_validation_data(val_data_config=self._cfg.validation_ds)
 
         if stage == 'test':
             test_deferred_setup = (
@@ -730,7 +730,7 @@ class ModelPT(LightningModule, Model):
                 and self._cfg.test_ds.get('defer_setup', False)
             )
             if self.test_dataloader() is None and test_deferred_setup:
-                self.setup_test_data(self._cfg.test_ds)
+                self.setup_multiple_test_data(test_data_config=self._cfg.test_ds)
 
     def train_dataloader(self):
         if self._train_dl is not None:

@@ -51,8 +51,6 @@ import numpy as np
 import torch
 from numba import jit, prange
 from numpy import ndarray
-from pesq import pesq
-from pystoi import stoi
 
 from nemo.collections.tts.torch.tts_data_types import DATA_STR2DATA_CLASS, MAIN_DATA_TYPES, WithLens
 from nemo.utils import logging
@@ -478,38 +476,6 @@ def remove(conv_list):
         old_conv = torch.nn.utils.remove_weight_norm(old_conv)
         new_conv_list.append(old_conv)
     return new_conv_list
-
-
-def eval_tts_scores(
-    y_clean: ndarray, y_est: ndarray, T_ys: Sequence[int] = (0,), sampling_rate=22050
-) -> Dict[str, float]:
-    """
-    calculate metric using EvalModule. y can be a batch.
-    Args:
-        y_clean: real audio
-        y_est: estimated audio
-        T_ys: length of the non-zero parts of the histograms
-        sampling_rate: The used Sampling rate.
-
-    Returns:
-        A dictionary mapping scoring systems (string) to numerical scores.
-        1st entry: 'STOI'
-        2nd entry: 'PESQ'
-    """
-
-    if y_clean.ndim == 1:
-        y_clean = y_clean[np.newaxis, ...]
-        y_est = y_est[np.newaxis, ...]
-    if T_ys == (0,):
-        T_ys = (y_clean.shape[1],) * y_clean.shape[0]
-
-    clean = y_clean[0, : T_ys[0]]
-    estimated = y_est[0, : T_ys[0]]
-    stoi_score = stoi(clean, estimated, sampling_rate, extended=False)
-    pesq_score = pesq(16000, np.asarray(clean), estimated, 'wb')
-    ## fs was set 16,000, as pesq lib doesnt currently support felxible fs.
-
-    return {'STOI': stoi_score, 'PESQ': pesq_score}
 
 
 def regulate_len(durations, enc_out, pace=1.0, mel_max_len=None):

@@ -5,6 +5,4 @@ librosa
 matplotlib
 nltk
 pandas
-pesq
 pypinyin
-pystoi

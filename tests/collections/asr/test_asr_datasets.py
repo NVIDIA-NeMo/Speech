@@ -1546,7 +1546,8 @@ class TestAudioDatasets:
 
 class TestUtilityFunctions:
     @pytest.mark.unit
-    @pytest.mark.parametrize('cache_audio', [False, True])
+    # TEMP WORKAROUND: Skip `True`, multiprocessing failing in CI (#5607)
+    @pytest.mark.parametrize('cache_audio', [False])
     def test_cache_datastore_manifests(self, cache_audio: bool):
         """Test caching of manifest and audio files.
         """

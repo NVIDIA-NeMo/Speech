@@ -23,7 +23,7 @@ from typing import Callable, DefaultDict, List, Optional, Set, Tuple, Union
 
 import nltk
 import torch
-from nemo_text_processing.g2p.data.data_utils import english_word_tokenize, ipa_word_tokenize
+from nemo_text_processing.g2p.data.data_utils import any_locale_word_tokenize, english_word_tokenize
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.utils import logging
@@ -235,9 +235,9 @@ class EnglishG2p(BaseG2p):
                 prons.extend(word)
                 continue
 
-            word_by_hyphen = word.split("-")
-
-            pron, is_handled = self.parse_one_word(word)
+            word_str = word[0]
+            word_by_hyphen = word_str.split("-")
+            pron, is_handled = self.parse_one_word(word_str)
 
             if not is_handled and len(word_by_hyphen) > 1:
                 pron = []
@@ -354,7 +354,7 @@ class IPAG2P(BaseG2p):
         if locale == "en-US":
             word_tokenize_func = english_word_tokenize
         else:
-            word_tokenize_func = ipa_word_tokenize
+            word_tokenize_func = any_locale_word_tokenize
 
         super().__init__(
             phoneme_dict=self.phoneme_dict,
@@ -497,9 +497,10 @@ class IPAG2P(BaseG2p):
                 prons.extend(word)
                 continue
 
-            pron, is_handled = self.parse_one_word(word)
+            word_str = word[0]
+            word_by_hyphen = word_str.split("-")
+            pron, is_handled = self.parse_one_word(word_str)
 
-            word_by_hyphen = word.split("-")
             if not is_handled and len(word_by_hyphen) > 1:
                 pron = []
                 for sub_word in word_by_hyphen:

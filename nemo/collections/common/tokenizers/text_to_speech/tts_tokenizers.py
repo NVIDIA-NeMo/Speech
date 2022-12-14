@@ -20,10 +20,10 @@ from contextlib import contextmanager
 from typing import List, Optional
 
 from nemo_text_processing.g2p.data.data_utils import (
+    any_locale_text_preprocessing,
     chinese_text_preprocessing,
     english_text_preprocessing,
     german_text_preprocessing,
-    ipa_text_preprocessing,
     spanish_text_preprocessing,
 )
 
@@ -583,7 +583,7 @@ class IPATokenizer(BaseTokenizer):
         if locale == "en-US":
             self.text_preprocessing_func = lambda text: english_text_preprocessing(text, lower=False)
         else:
-            self.text_preprocessing_func = ipa_text_preprocessing
+            self.text_preprocessing_func = any_locale_text_preprocessing
 
     def encode(self, text):
         """See base class for more information."""

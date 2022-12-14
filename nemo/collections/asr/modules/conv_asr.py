@@ -13,7 +13,7 @@
 # limitations under the License.
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional, Set, Union
 
 import torch
 import torch.distributed
@@ -889,7 +889,7 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
         for jasper_block in self.encoder:  # type: adapter_mixins.AdapterModuleMixin
             cfg = self._update_adapter_cfg_input_dim(jasper_block, cfg)
 
-            jasper_block.set_accepted_adapter_types([adapter_utils.LINEAR_ADAPTER_CLASSPATH])
+            jasper_block.set_accepted_adapter_types(self.get_accepted_adapter_types())
             jasper_block.add_adapter(name, cfg)
 
     def is_adapter_available(self) -> bool:
@@ -910,6 +910,16 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
     def _update_adapter_cfg_input_dim(self, block: JasperBlock, cfg):
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=block.planes)
         return cfg
+
+    def get_accepted_adapter_types(self,) -> Set[type]:
+        types = super().get_accepted_adapter_types()
+
+        if len(types) == 0:
+            self.set_accepted_adapter_types(
+                [adapter_utils.LINEAR_ADAPTER_CLASSPATH,]
+            )
+            types = self.get_accepted_adapter_types()
+        return types
 
 
 @dataclass

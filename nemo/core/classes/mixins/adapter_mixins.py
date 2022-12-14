@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 from abc import ABC
 from dataclasses import dataclass, is_dataclass
 from typing import List, Optional, Set, Tuple, Union
@@ -159,6 +160,9 @@ class AdapterModuleMixin(ABC):
             cfg: A DictConfig or Dataclass that contains at the bare minimum `__target__` to instantiate a
                 new Adapter module.
         """
+        if not isinstance(cfg, DictConfig):
+            cfg = DictConfig(cfg)
+
         adapter_types = self.get_accepted_adapter_types()
         _pass_types = False
         if len(adapter_types) > 0:
@@ -330,7 +334,7 @@ class AdapterModuleMixin(ABC):
             return self.adapter_layer[name] if name in self.adapter_layer else None
         return None
 
-    def set_accepted_adapter_types(self, adapter_types: List[str]) -> None:
+    def set_accepted_adapter_types(self, adapter_types: List[Union[type, str]]) -> None:
         """
         The module with this mixin can define a list of adapter names that it will accept.
         This method should be called in the modules init method and set the adapter names the module will expect to be added.
@@ -340,7 +344,17 @@ class AdapterModuleMixin(ABC):
                 ensure that the class path is correct.
         """
         # Let user update and set accepted adapter types.
-        self._accepted_adapter_types = set([model_utils.import_class_by_path(s) for s in adapter_types])
+        types = []
+        for s in adapter_types:
+            if inspect.isclass(s):
+                if not issubclass(s, nn.Module):
+                    raise ValueError(f"Attempted to add class ({s}) but is not a subclass of torch.nn.Module")
+
+                types.append(s)
+            else:
+                types.append(model_utils.import_class_by_path(s))
+
+        self._accepted_adapter_types = set(types)
 
     def get_accepted_adapter_types(self,) -> Set[type]:
         """

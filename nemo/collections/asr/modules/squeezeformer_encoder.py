@@ -14,7 +14,7 @@
 
 import math
 from collections import OrderedDict
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import torch
 import torch.distributed
@@ -395,14 +395,6 @@ class SqueezeformerEncoderAdapter(SqueezeformerEncoder, adapter_mixins.AdapterMo
 
     # Higher level forwarding
     def add_adapter(self, name: str, cfg: dict):
-        self.set_accepted_adapter_types(
-            [
-                adapter_utils.LINEAR_ADAPTER_CLASSPATH,
-                adapter_utils.MHA_ADAPTER_CLASSPATH,
-                adapter_utils.RELMHA_ADAPTER_CLASSPATH,
-            ]
-        )
-
         cfg = self._update_adapter_cfg_input_dim(cfg)
         for conformer_layer in self.layers:  # type: adapter_mixins.AdapterModuleMixin
             conformer_layer.add_adapter(name, cfg)
@@ -425,6 +417,20 @@ class SqueezeformerEncoderAdapter(SqueezeformerEncoder, adapter_mixins.AdapterMo
     def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.d_model)
         return cfg
+
+    def get_accepted_adapter_types(self,) -> Set[type]:
+        types = super().get_accepted_adapter_types()
+
+        if len(types) == 0:
+            self.set_accepted_adapter_types(
+                [
+                    adapter_utils.LINEAR_ADAPTER_CLASSPATH,
+                    adapter_utils.MHA_ADAPTER_CLASSPATH,
+                    adapter_utils.RELMHA_ADAPTER_CLASSPATH,
+                ]
+            )
+            types = self.get_accepted_adapter_types()
+        return types
 
 
 """

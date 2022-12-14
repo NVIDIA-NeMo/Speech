@@ -90,9 +90,30 @@ class TestDataUtils:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
-    def test_ipa_word_tokenize_with_numbers(self):
-        input_text = "The 3D movie on 4-1-2022"
-        expected_output = self._create_expected_output(["the", " ", "3d", " ", "movie", " ", "on", " ", "4-1-2022"])
+    def test_ipa_word_tokenize_with_non_latin_chars(self):
+        input_text = "Three times× four^teen ÷divided by [movies] on \slash."
+        expected_output = self._create_expected_output(
+            [
+                "three",
+                " ",
+                "times",
+                "× ",
+                "four",
+                "^",
+                "teen",
+                " ÷",
+                "divided",
+                " ",
+                "by",
+                " [",
+                "movies",
+                "] ",
+                "on",
+                " \\",
+                "slash",
+                ".",
+            ]
+        )
 
         output = ipa_word_tokenize(input_text)
         assert output == expected_output

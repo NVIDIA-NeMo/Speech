@@ -37,9 +37,17 @@ SYNOGLYPH2ASCII = {g: asc for asc, glyphs in _synoglyphs.items() for g in glyphs
 # 3rd group -- punctuation marks.
 # Text (first line) and mask of groups for every char (second line).
 # config file must contain |EY1 EY1|, B, C, D, E, F, and G.
-# 111111311113111131111111322222222233133133133133133111313
-_WORDS_RE = re.compile(r"([a-zA-Z]+(?:[a-zA-Z-']*[a-zA-Z]+)*)|(\|[^|]*\|)|([^a-zA-Z|]+)")
-_WORDS_RE_IPA = re.compile(r"([a-zA-ZÀ-ÿ\d]+(?:[a-zA-ZÀ-ÿ\d\-']*[a-zA-ZÀ-ÿ\d]+)*)|(\|[^|]*\|)|([^a-zA-ZÀ-ÿ\d|]+)")
+
+# define char set based on https://en.wikipedia.org/wiki/List_of_Unicode_characters
+LATIN_ALPHABET_BASIC = "A-Za-z"
+ACCENTED_CHARS = "À-ÖØ-öø-ÿ"
+LATIN_CHARS_ALL = f"{LATIN_ALPHABET_BASIC}{ACCENTED_CHARS}"
+_WORDS_RE = re.compile(
+    fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
+)
+_WORDS_RE_IPA = re.compile(
+    fr"([{LATIN_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}|]+)"
+)
 
 # -
 
@@ -77,7 +85,7 @@ def read_wordids(wordid_map: str):
 
 def get_wordid_to_nemo(wordid_to_nemo_cmu_file: str = "../../../scripts/tts_dataset_files/wordid_to_nemo_cmu.tsv"):
     """
-    WikiHomograph and NeMo use slightly differene phoneme sets, this funtion reads WikiHomograph word_ids to NeMo
+    WikiHomograph and NeMo use slightly different phoneme sets, this function reads WikiHomograph word_ids to NeMo
     IPA heteronyms mapping
     """
     wordid_to_nemo_cmu = {}

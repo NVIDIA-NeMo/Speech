@@ -18,6 +18,13 @@ import torch
 
 from nemo.utils import logging
 
+try:
+    from apex.transformer import parallel_state
+
+    HAVE_APEX = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_APEX = False
+
 
 def initialize_distributed(args, backend='nccl'):
     """Initialize torch.distributed."""

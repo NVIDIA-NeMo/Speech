@@ -24,6 +24,7 @@ from omegaconf import OmegaConf
 from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
     prepare_audio_data,
@@ -44,10 +45,14 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   pretrained_name: name of pretrained ASR model (from NGC registry)
   audio_dir: path to directory with audio files
   dataset_manifest: path to dataset JSON manifest file (in NeMo format)
-    
+
   compute_timestamps: Bool to request greedy time stamp information (if the model supports it)
   compute_langs: Bool to request language ID information (if the model supports it)
   
+  (Optionally: You can limit the type of timestamp computations using below overrides)
+  ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word])
+  rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word])
+
   (Optionally: You can limit the type of timestamp computations using below overrides)
   ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word])
   rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word])
@@ -59,7 +64,7 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   amp: Bool to decide if Automatic Mixed Precision should be used during inference
   audio_type: Str filetype of the audio. Supported = wav, flac, mp3
 
-  overwrite_transcripts: Bool which when set allowes repeated transcriptions to overwrite previous results.
+  overwrite_transcripts: Bool which when set allows repeated transcriptions to overwrite previous results.
 
   rnnt_decoding: Decoding sub-config for RNNT. Refer to documentation for specific values.
 
@@ -84,6 +89,13 @@ python transcribe_speech.py \
     append_pred=False \
     pred_name_postfix="<remove or use another model name for output filename>"
 """
+
+
+@dataclass
+class ModelChangeConfig:
+
+    # Sub-config for changes specific to the Conformer Encoder
+    conformer: ConformerChangeConfig = ConformerChangeConfig()
 
 
 @dataclass
@@ -127,6 +139,9 @@ class TranscriptionConfig:
 
     # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Joint RNNT/CTC models
     decoder_type: Optional[str] = None
+
+    # Use this for model-specific changes before transcription
+    model_change: ModelChangeConfig = ModelChangeConfig()
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)

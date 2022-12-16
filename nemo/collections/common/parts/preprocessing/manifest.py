@@ -92,7 +92,7 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
         item['audio_file'] = item.pop('audio_filename')
     elif 'audio_filepath' in item:
         item['audio_file'] = item.pop('audio_filepath')
-    else:
+    elif 'audio_file' not in item:
         raise ValueError(
             f"Manifest file {manifest_file} has invalid json line structure: {line} without proper audio file key."
         )
@@ -117,18 +117,45 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
             item['text'] = f.read().replace('\n', '')
     elif 'normalized_text' in item:
         item['text'] = item['normalized_text']
+    else:
+        item['text'] = ""
+
+    # Optional RTTM file
+    if 'rttm_file' in item:
+        pass
+    elif 'rttm_filename' in item:
+        item['rttm_file'] = item.pop('rttm_filename')
+    elif 'rttm_filepath' in item:
+        item['rttm_file'] = item.pop('rttm_filepath')
+    else:
+        item['rttm_file'] = None
+    if item['rttm_file'] is not None:
+        item['rttm_file'] = get_full_path(audio_file=item['rttm_file'], manifest_file=manifest_file)
+
+    # Optional audio feature file
+    if 'feature_file' in item:
+        pass
+    elif 'feature_filename' in item:
+        item['feature_file'] = item.pop('feature_filename')
+    elif 'feature_filepath' in item:
+        item['feature_file'] = item.pop('feature_filepath')
+    else:
+        item['feature_file'] = None
+    if item['feature_file'] is not None:
+        item['feature_file'] = get_full_path(audio_file=item['feature_file'], manifest_file=manifest_file)
 
     item = dict(
         audio_file=item['audio_file'],
         duration=item['duration'],
-        text=item.get('text', ""),
+        text=item['text'],
+        rttm_file=item['rttm_file'],
+        feature_file=item['feature_file'],
         offset=item.get('offset', None),
         speaker=item.get('speaker', None),
         orig_sr=item.get('orig_sample_rate', None),
         token_labels=item.get('token_labels', None),
         lang=item.get('lang', None),
     )
-
     return item
 
 

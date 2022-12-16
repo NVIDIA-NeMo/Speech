@@ -19,7 +19,7 @@ import os
 import shutil
 from itertools import repeat
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import IPython.display as ipd
 import librosa
@@ -287,7 +287,7 @@ def generate_overlap_vad_seq(
             )
 
     else:
-        for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=True):
+        for frame_filepath in tqdm(frame_filepathlist, desc='generating preds', leave=False):
             generate_overlap_vad_seq_per_file(frame_filepath, per_args)
 
     return overlap_out_dir
@@ -669,17 +669,23 @@ def generate_vad_segment_table_per_file(pred_filepath: str, per_args: dict) -> s
     out_dir, per_args_float = prepare_gen_segment_table(sequence, per_args)
 
     preds = generate_vad_segment_table_per_tensor(sequence, per_args_float)
-    save_name = name + ".txt"
+    ext = ".rttm" if per_args.get("use_rttm", False) else ".txt"
+    save_name = name + ext
     save_path = os.path.join(out_dir, save_name)
 
-    if preds.shape == torch.Size([0]):
+    if preds.shape[0] == 0:
         with open(save_path, "w", encoding='utf-8') as fp:
-            fp.write(f"0 0 speech\n")
-
+            if per_args.get("use_rttm", False):
+                fp.write(f"SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
+            else:
+                fp.write(f"0 0 speech\n")
     else:
         with open(save_path, "w", encoding='utf-8') as fp:
             for i in preds:
-                fp.write(f"{i[0]:.4f} {i[2]:.4f} speech\n")
+                if per_args.get("use_rttm", False):
+                    fp.write(f"SPEAKER {name} 1 {i[0]:.4f} {i[2]:.4f} <NA> <NA> speech <NA> <NA>\n")
+                else:
+                    fp.write(f"{i[0]:.4f} {i[2]:.4f} speech\n")
 
     return save_path
 
@@ -722,7 +728,7 @@ def generate_vad_segment_table(
         "out_dir": table_out_dir,
     }
     per_args = {**per_args, **postprocessing_params}
-
+    num_workers = None
     if num_workers is not None and num_workers > 1:
         with multiprocessing.Pool(num_workers) as p:
             inputs = zip(vad_pred_filepath_list, repeat(per_args))
@@ -1048,7 +1054,12 @@ def extract_labels(path2ground_truth_label: str, time: list) -> list:
 
 
 def generate_vad_frame_pred(
-    vad_model, window_length_in_sec: float, shift_length_in_sec: float, manifest_vad_input: str, out_dir: str
+    vad_model,
+    window_length_in_sec: float,
+    shift_length_in_sec: float,
+    manifest_vad_input: str,
+    out_dir: str,
+    use_feat: bool = False,
 ) -> str:
     """
     Generate VAD frame level prediction and write to out_dir
@@ -1065,10 +1076,13 @@ def generate_vad_frame_pred(
     logging.info(f"Inference on {len(data)} audio files/json lines!")
 
     status = get_vad_stream_status(data)
-    for i, test_batch in enumerate(vad_model.test_dataloader()):
+    for i, test_batch in enumerate(tqdm(vad_model.test_dataloader(), total=len(vad_model.test_dataloader()))):
         test_batch = [x.to(vad_model.device) for x in test_batch]
         with autocast():
-            log_probs = vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
+            if use_feat:
+                log_probs = vad_model(processed_signal=test_batch[0], processed_signal_length=test_batch[1])
+            else:
+                log_probs = vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
             probs = torch.softmax(log_probs, dim=-1)
             pred = probs[:, 1]
 
@@ -1217,3 +1231,77 @@ def construct_manifest_eval(
             fout.flush()
 
     return aligned_vad_asr_output_manifest
+
+
+def extract_audio_features(vad_model: EncDecClassificationModel, manifest_vad_input: str, out_dir: str) -> str:
+    """
+    Extract audio features and write to out_dir
+    """
+
+    file_list = []
+    with open(manifest_vad_input, 'r', encoding='utf-8') as fin:
+        for line in fin.readlines():
+            file_list.append(Path(json.loads(line)['audio_filepath']).stem)
+
+    logging.info(f"Extracting features on {len(file_list)} audio files/json lines!")
+
+    for i, test_batch in enumerate(tqdm(vad_model.test_dataloader(), total=len(vad_model.test_dataloader()))):
+        test_batch = [x.to(vad_model.device) for x in test_batch]
+        with autocast():
+            processed_signal, processed_signal_length = vad_model.preprocessor(
+                input_signal=test_batch[0], length=test_batch[1],
+            )
+            processed_signal = processed_signal.squeeze(0)[:, :processed_signal_length]
+            processed_signal = processed_signal.cpu()
+            outpath = os.path.join(out_dir, file_list[i] + ".pt")
+            torch.save(processed_signal, outpath)
+        del test_batch
+    return out_dir
+
+
+def load_rttm_file(filepath: str) -> pd.DataFrame:
+    """
+    Load rttm file and extract speech segments
+    """
+    if not Path(filepath).exists():
+        raise ValueError(f"File not found: {filepath}")
+    data = pd.read_csv(filepath, sep=" ", delimiter=None, header=None)
+    data = data.rename(columns={3: "start", 4: "dur", 7: "speaker"})
+
+    data['start'] = data['start'].astype(float)
+    data['dur'] = data['dur'].astype(float)
+    data['end'] = data['start'] + data['dur']
+
+    data = data.sort_values(by=['start'])
+    data['segment'] = list(zip(data['start'], data['end']))
+
+    return data
+
+
+def merge_intervals(intervals: List[List[float]]) -> List[List[float]]:
+    """
+    Merge speech segments into non-overlapping segments
+    """
+    intervals.sort(key=lambda x: x[0])
+    merged = []
+    for interval in intervals:
+        # if the list of merged intervals is empty or if the current
+        # interval does not overlap with the previous, simply append it.
+        if not merged or merged[-1][1] < interval[0]:
+            merged.append(interval)
+        else:
+            # otherwise, there is overlap, so we merge the current and previous
+            # intervals.
+            merged[-1][1] = max(merged[-1][1], interval[1])
+    return merged
+
+
+def load_speech_segments_from_rttm(rttm_file: str) -> List[List[float]]:
+    """
+    load speech segments from rttm file, where each segment is represented
+    as [start, end] interval
+    """
+    speech_segments = list(load_rttm_file(rttm_file)['segment'])
+    speech_segments = [list(x) for x in speech_segments]
+    speech_segments = merge_intervals(speech_segments)
+    return speech_segments

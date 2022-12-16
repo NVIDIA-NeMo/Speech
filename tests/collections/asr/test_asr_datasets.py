@@ -47,6 +47,7 @@ from nemo.collections.asr.data.audio_to_text_dali import (
     is_dali_supported,
 )
 from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
+from nemo.collections.asr.data.feature_to_text import FeatureToBPEDataset, FeatureToCharDataset
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.parts.utils.audio_utils import get_segment_start
 from nemo.collections.asr.parts.utils.manifest_utils import write_manifest
@@ -591,6 +592,172 @@ class TestASRDatasets:
                 err = np.abs(a - b)
                 assert np.mean(err) < 0.0001
                 assert np.max(err) < 0.01
+
+    @pytest.mark.unit
+    def test_feature_to_text_char_dataset(self):
+        num_samples = 5
+        golden_feat_shape = (80, 5)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                for i in range(num_samples):
+                    feat_file = os.path.join(tmpdir, f"feat_{i}.pt")
+                    torch.save(torch.randn(80, 5), feat_file)
+                    entry = {'audio_filepath': "", 'feature_file': feat_file, 'duration': 100000, "text": "a b c"}
+                    fp.write(json.dumps(entry) + '\n')
+
+            dataset = FeatureToCharDataset(manifest_path, labels=self.labels)
+            cnt = 0
+            for item in dataset:
+                cnt += 1
+                feat = item[0]
+                token_len = item[3]
+                assert feat.shape == golden_feat_shape
+                assert torch.equal(token_len, torch.tensor(5))
+            assert cnt == num_samples
+
+    @pytest.mark.unit
+    def test_feature_to_text_bpe_dataset(self, test_data_dir):
+        num_samples = 5
+        golden_feat_shape = (80, 5)
+        tokenizer_path = os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt')
+        tokenizer = tokenizers.AutoTokenizer(pretrained_model_name='bert-base-cased', vocab_file=tokenizer_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                for i in range(num_samples):
+                    feat_file = os.path.join(tmpdir, f"feat_{i}.pt")
+                    torch.save(torch.randn(80, 5), feat_file)
+                    entry = {'audio_filepath': "", 'feature_file': feat_file, 'duration': 100000, "text": "a b c"}
+                    fp.write(json.dumps(entry) + '\n')
+
+            dataset = FeatureToBPEDataset(manifest_path, tokenizer=tokenizer)
+            cnt = 0
+            for item in dataset:
+                cnt += 1
+                feat = item[0]
+                token_len = item[3]
+                assert feat.shape == golden_feat_shape
+                assert torch.equal(token_len, torch.tensor(5))
+            assert cnt == num_samples
+
+    @pytest.mark.unit
+    def test_feature_with_rttm_to_text_char_dataset(self):
+        num_samples = 2
+        golden_feat_shape = (80, 10)
+        sample = torch.ones(80, 10)
+        masked_sample = sample * FeatureToCharDataset.ZERO_LEVEL_SPEC_DB_VAL
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                feat_file = os.path.join(tmpdir, f"feat_0.pt")
+                torch.save(sample, feat_file)
+
+                rttm_file = os.path.join(tmpdir, f"rttm_0.rttm")
+                with open(rttm_file, "w") as fout:
+                    fout.write(f"SPEAKER <NA> 1 0 1 <NA> <NA> speech <NA> <NA>\n")
+
+                entry = {
+                    'audio_filepath': "",
+                    'feature_file': feat_file,
+                    'rttm_file': rttm_file,
+                    'duration': 100000,
+                    "text": "a b c",
+                }
+                fp.write(json.dumps(entry) + '\n')
+
+                # second sample where all frames are not masked
+                feat_file = os.path.join(tmpdir, f"feat_1.pt")
+                torch.save(sample, feat_file)
+
+                rttm_file = os.path.join(tmpdir, f"rttm_1.rttm")
+                with open(rttm_file, "w") as fout:
+                    fout.write(f"SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
+
+                entry = {
+                    'audio_filepath': "",
+                    'feature_file': feat_file,
+                    'rttm_file': rttm_file,
+                    'duration': 100000,
+                    "text": "a b c",
+                }
+                fp.write(json.dumps(entry) + '\n')
+
+            dataset = FeatureToCharDataset(manifest_path, labels=self.labels, normalize=None, use_rttm=True)
+            cnt = 0
+            for item in dataset:
+                cnt += 1
+                feat = item[0]
+                token_len = item[3]
+                assert feat.shape == golden_feat_shape
+                assert torch.equal(token_len, torch.tensor(5))
+
+                if cnt == 1:
+                    assert torch.equal(feat, sample)
+                else:
+                    assert torch.equal(feat, masked_sample)
+
+            assert cnt == num_samples
+
+    @pytest.mark.unit
+    def test_feature_with_rttm_to_text_bpe_dataset(self, test_data_dir):
+        tokenizer_path = os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128", 'vocab.txt')
+        tokenizer = tokenizers.AutoTokenizer(pretrained_model_name='bert-base-cased', vocab_file=tokenizer_path)
+        num_samples = 2
+        golden_feat_shape = (80, 10)
+        sample = torch.ones(80, 10)
+        masked_sample = sample * FeatureToCharDataset.ZERO_LEVEL_SPEC_DB_VAL
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest_path = os.path.join(tmpdir, 'manifest_input.json')
+            with open(manifest_path, 'w', encoding='utf-8') as fp:
+                feat_file = os.path.join(tmpdir, f"feat_0.pt")
+                torch.save(sample, feat_file)
+
+                rttm_file = os.path.join(tmpdir, f"rttm_0.rttm")
+                with open(rttm_file, "w") as fout:
+                    fout.write(f"SPEAKER <NA> 1 0 1 <NA> <NA> speech <NA> <NA>\n")
+
+                entry = {
+                    'audio_filepath': "",
+                    'feature_file': feat_file,
+                    'rttm_file': rttm_file,
+                    'duration': 100000,
+                    "text": "a b c",
+                }
+                fp.write(json.dumps(entry) + '\n')
+
+                # second sample where all frames are not masked
+                feat_file = os.path.join(tmpdir, f"feat_1.pt")
+                torch.save(sample, feat_file)
+
+                rttm_file = os.path.join(tmpdir, f"rttm_1.rttm")
+                with open(rttm_file, "w") as fout:
+                    fout.write(f"SPEAKER <NA> 1 0 0 <NA> <NA> speech <NA> <NA>\n")
+
+                entry = {
+                    'audio_filepath': "",
+                    'feature_file': feat_file,
+                    'rttm_file': rttm_file,
+                    'duration': 100000,
+                    "text": "a b c",
+                }
+                fp.write(json.dumps(entry) + '\n')
+
+            dataset = FeatureToBPEDataset(manifest_path, tokenizer=tokenizer, normalize=None, use_rttm=True)
+            cnt = 0
+            for item in dataset:
+                cnt += 1
+                feat = item[0]
+                token_len = item[3]
+                assert feat.shape == golden_feat_shape
+                assert torch.equal(token_len, torch.tensor(5))
+
+                if cnt == 1:
+                    assert torch.equal(feat, sample)
+                else:
+                    assert torch.equal(feat, masked_sample)
+
+            assert cnt == num_samples
 
 
 class TestAudioDatasets:

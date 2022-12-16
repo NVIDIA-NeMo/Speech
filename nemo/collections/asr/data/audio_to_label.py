@@ -168,7 +168,7 @@ def _vad_frame_seq_collate_fn(self, batch):
     """
     slice_length = int(self.featurizer.sample_rate * self.window_length_in_sec)
     _, audio_lengths, _, tokens_lengths = zip(*batch)
-    slice_length = min(slice_length, max(audio_lengths))
+    slice_length = int(min(slice_length, max(audio_lengths)))
     shift = int(self.featurizer.sample_rate * self.shift_length_in_sec)
     has_audio = audio_lengths[0] is not None
 

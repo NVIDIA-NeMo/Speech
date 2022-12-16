@@ -2,39 +2,48 @@
     "categories": [
       {
         "title": "## ASR \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["asr"]
+        "labels": ["asr"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## TTS \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["tts"]
+        "labels": ["tts"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## NLP / NMT \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["nlp", "nmt", "megatron"]
+        "labels": ["nlp", "nmt", "megatron"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## Text Normalization / Inverse Text Normalization \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["tn", "itn"]
+        "labels": ["tn", "itn"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## NeMo Tools \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["tools"]
+        "labels": ["tools"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## Export \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["export"]
+        "labels": ["export"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## Documentation \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["docs"]
+        "labels": ["docs"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## Bugfixes \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["bug"]
+        "labels": ["bug"],
+        "exclude_labels": ["cherry-pick"]
       },
       {
         "title": "## Cherrypick \n\n<details><summary>Changelog</summary>\n\n</details>\n\n",
-        "labels": ["cherrypick"]
+        "labels": ["cherry-pick"],
+        "exclude_labels": ["cherry-pick"]
       }
     ],
     "ignore_labels": [
@@ -122,3 +131,4 @@
       "method": "semver"
     }
 }
+

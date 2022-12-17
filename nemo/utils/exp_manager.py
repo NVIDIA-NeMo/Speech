@@ -42,6 +42,7 @@ from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
 from nemo.utils import logging, timers
 from nemo.utils.app_state import AppState
+from nemo.utils.dllogger import DLLogger
 from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
@@ -104,6 +105,13 @@ class MLFlowParams:
 
 
 @dataclass
+class DLLoggerParams:
+    verbose: Optional[bool] = False
+    stdout: Optional[bool] = False
+    json_file: Optional[str] = "./dllogger.json"
+
+
+@dataclass
 class StepTimingParams:
     reduction: Optional[str] = "mean"
     # if True torch.cuda.synchronize() is called on start/stop
@@ -139,6 +147,8 @@ class ExpManagerConfig:
     wandb_logger_kwargs: Optional[Dict[Any, Any]] = None
     create_mlflow_logger: Optional[bool] = False
     mlflow_logger_kwargs: Optional[MLFlowParams] = MLFlowParams()
+    create_dllogger_logger: Optional[bool] = False
+    dllogger_logger_kwargs: Optional[DLLoggerParams] = DLLoggerParams()
     # Checkpointing parameters
     create_checkpoint_callback: Optional[bool] = True
     checkpoint_callback_params: Optional[CallbackParams] = CallbackParams()
@@ -207,7 +217,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     directory. exp_manager also allows for explicit folder creation via explicit_log_dir.
 
     The version can be a datetime string or an integer. Datestime version can be disabled if use_datetime_version is set
-     to False. It optionally creates TensorBoardLogger, WandBLogger, MLFlowLogger, ModelCheckpoint objects from pytorch lightning.
+     to False. It optionally creates TensorBoardLogger, WandBLogger, DLLogger, MLFlowLogger, ModelCheckpoint objects from pytorch lightning.
     It copies sys.argv, and git information if available to the logging directory. It creates a log file for each
     process to log their output into.
 
@@ -251,6 +261,9 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             - create_mlflow_logger (bool): Whether to create an MLFlow logger and attach it to the pytorch lightning
                 training. Defaults to False
             - mlflow_logger_kwargs (dict): optional parameters for the MLFlow logger
+            - create_dllogger_logger (bool): Whether to create an DLLogger logger and attach it to the pytorch lightning
+                training. Defaults to False
+            - dllogger_logger_kwargs (dict): optional parameters for the DLLogger logger
             - create_checkpoint_callback (bool): Whether to create a ModelCheckpoint callback and attach it to the
                 pytorch lightning trainer. The ModelCheckpoint saves the top 3 models with the best "val_loss", the most
                 recent checkpoint under ``*last.ckpt``, and the final checkpoint after training completes under ``*end.ckpt``.
@@ -366,7 +379,12 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
 
     # For some reason, LearningRateLogger requires trainer to have a logger. Safer to create logger on all ranks
     # not just global rank 0.
-    if cfg.create_tensorboard_logger or cfg.create_wandb_logger or cfg.create_mlflow_logger:
+    if (
+        cfg.create_tensorboard_logger
+        or cfg.create_wandb_logger
+        or cfg.create_mlflow_logger
+        or cfg.create_dllogger_logger
+    ):
         configure_loggers(
             trainer,
             exp_dir,
@@ -378,6 +396,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             cfg.wandb_logger_kwargs,
             cfg.create_mlflow_logger,
             cfg.mlflow_logger_kwargs,
+            cfg.create_dllogger_logger,
+            cfg.dllogger_logger_kwargs,
         )
 
     # add loggers timing callbacks
@@ -433,7 +453,8 @@ def error_checks(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictC
     """
     Checks that the passed trainer is compliant with NeMo and exp_manager's passed configuration. Checks that:
         - Throws error when hydra has changed the working directory. This causes issues with lightning's DDP
-        - Throws error when trainer has loggers defined but create_tensorboard_logger or create_WandB_logger  or create_mlflow_logger is True
+        - Throws error when trainer has loggers defined but create_tensorboard_logger or create_wandB_logger
+            or create_mlflow_logger or create_dllogger_logger is True
         - Prints error messages when 1) run on multi-node and not Slurm, and 2) run on multi-gpu without DDP
     """
     if HydraConfig.initialized() and get_original_cwd() != os.getcwd():
@@ -447,7 +468,8 @@ def error_checks(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictC
         raise LoggerMisconfigurationError(
             "The pytorch lightning trainer that was passed to exp_manager contained a logger, and either "
             f"create_tensorboard_logger: {cfg.create_tensorboard_logger} or create_wandb_logger: "
-            f"{cfg.create_wandb_logger} or create_mlflow_logger: {cfg.create_mlflow_logger} was set to True. "
+            f"{cfg.create_wandb_logger} or create_mlflow_logger: {cfg.create_mlflow_logger}"
+            f"or create_dllogger_logger: {cfg.create_mlflow_logger} was set to True. "
             "These can only be used if trainer does not already have a logger."
         )
     if trainer.num_nodes > 1 and not check_slurm(trainer):
@@ -700,11 +722,14 @@ def configure_loggers(
     wandb_kwargs: dict,
     create_mlflow_logger: bool,
     mlflow_kwargs: dict,
+    create_dllogger_logger: bool,
+    dllogger_kwargs: dict,
 ):
-    """ Creates TensorboardLogger and/or WandBLogger / MLFlowLogger and attach them to trainer. Raises ValueError if
-    summary_writer_kwargs or wandb_kwargs are misconfigured.
     """
-    # Potentially create tensorboard logger and/or WandBLogger / MLFlowLogger
+    Creates TensorboardLogger and/or WandBLogger / MLFlowLogger / DLlogger and attach them to trainer.
+    Raises ValueError if summary_writer_kwargs or wandb_kwargs are misconfigured.
+    """
+    # Potentially create tensorboard logger and/or WandBLogger / MLFlowLogger / DLLogger
     logger_list = []
     if create_tensorboard_logger:
         if summary_writer_kwargs is None:
@@ -737,7 +762,13 @@ def configure_loggers(
         mlflow_logger = MLFlowLogger(run_name=version, **mlflow_kwargs)
 
         logger_list.append(mlflow_logger)
-        logging.info('MLFlowLogger has been set up')
+        logging.info("MLFlowLogger has been set up")
+
+    if create_dllogger_logger:
+        dllogger_logger = DLLogger(**dllogger_kwargs)
+
+        logger_list.append(dllogger_logger)
+        logging.info("DLLogger has been set up")
 
     trainer._logger_connector.configure_logger(logger_list)
 

@@ -16,7 +16,6 @@
 from lightning_lite.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
 
 from nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model import MegatronT5InfusedAdapterModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -28,7 +27,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-from nemo.utils.exp_manager import StatelessTimer, exp_manager
+from nemo.utils.exp_manager import exp_manager
 
 
 """
@@ -86,11 +85,6 @@ def main(cfg) -> None:
 
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.exp_manager)
-
-    # Override timer callback to a stateless one
-    for idx, callback in enumerate(trainer.callbacks):
-        if isinstance(callback, Timer):
-            trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):

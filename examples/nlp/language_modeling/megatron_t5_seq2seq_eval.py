@@ -16,7 +16,6 @@ from lightning_lite.plugins.environments import TorchElasticEnvironment
 from megatron_t5_seq2seq_finetune import load_from_checkpoint_dir, load_from_nemo, validate_checkpoint_loading_args
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 
 from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
@@ -25,7 +24,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_t0_model import Mega
 from nemo.collections.nlp.parts.nlp_overrides import GradScaler, MegatronHalfPrecisionPlugin, NLPDDPStrategy
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-from nemo.utils.exp_manager import StatelessTimer, exp_manager
+from nemo.utils.exp_manager import exp_manager
 
 
 def _modify_config(t5_cfg, cfg, add_cfg_to_tree=False):
@@ -98,11 +97,6 @@ def main(cfg) -> None:
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
 
     exp_manager(trainer, cfg.exp_manager)
-
-    # Override timer callback to a stateless one
-    for idx, callback in enumerate(trainer.callbacks):
-        if isinstance(callback, Timer):
-            trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
     if hasattr(cfg.model.data.validation_ds, 'task_name'):
         if cfg.model.restore_from_path:

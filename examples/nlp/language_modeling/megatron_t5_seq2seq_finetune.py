@@ -18,7 +18,6 @@ import tempfile
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
@@ -34,7 +33,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import AppState, logging
-from nemo.utils.exp_manager import StatelessTimer, exp_manager
+from nemo.utils.exp_manager import exp_manager
 from nemo.utils.model_utils import inject_model_parallel_rank
 
 mp.set_start_method("spawn", force=True)
@@ -170,10 +169,6 @@ def main(cfg) -> None:
     logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
 
     trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
-    # Override timer callback to a stateless one
-    for idx, callback in enumerate(trainer.callbacks):
-        if isinstance(callback, Timer):
-            trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
     if hasattr(cfg.model.data.train_ds, 'task_name'):
         if cfg.model.restore_from_path:

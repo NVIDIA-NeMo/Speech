@@ -15,7 +15,6 @@
 from lightning_lite.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
@@ -26,7 +25,7 @@ from nemo.core.config import hydra_runner
 from nemo.core.config.optimizers import AdamParams, AdamWParams
 from nemo.core.optim.optimizers import register_optimizer
 from nemo.utils import logging
-from nemo.utils.exp_manager import StatelessTimer, exp_manager
+from nemo.utils.exp_manager import exp_manager
 
 
 @hydra_runner(config_path="conf", config_name="megatron_retro_mutransfer")
@@ -70,10 +69,6 @@ def main(cfg) -> None:
     logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
 
     trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
-    # Override timer callback to a stateless one
-    for idx, callback in enumerate(trainer.callbacks):
-        if isinstance(callback, Timer):
-            trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):

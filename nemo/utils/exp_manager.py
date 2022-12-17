@@ -163,6 +163,8 @@ class ExpManagerConfig:
     # disable initial validation when resuming from a checkpoint saved during validation
     disable_validation_on_resume: Optional[bool] = True
     ema: Optional[EMAParams] = EMAParams()
+    # Wall clock time limit
+    max_time_per_run: Optional[str] = None
 
 
 class TimingCallback(Callback):
@@ -274,6 +276,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
                 Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
             - log_global_rank_0_only (bool): Whether to only create log files for global rank 0. Defaults to False.
                 Set this to True if you are using DDP with many GPUs and do not want many log files in your exp dir.
+            - max_time (str): The maximum wall clock time *per run*. This is intended to be used on clusters where you want 
+                a checkpoint to be saved after this specified time and be able to resume from that checkpoint. Defaults to None.
 
     returns:
         log_dir (Path): The final logging directory where logging files are saved. Usually the concatenation of
@@ -422,6 +426,24 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     if cfg.disable_validation_on_resume:
         # extend training loop to skip initial validation when resuming from checkpoint
         configure_no_restart_validation_training_loop(trainer)
+
+    # Setup a stateless timer for use on clusters.
+    if cfg.max_time_per_run is not None:
+        found_ptl_timer = False
+        for idx, callback in enumerate(trainer.callbacks):
+            if isinstance(callback, Timer):
+                # NOTE: PTL does not expose a `trainer.max_time`. By the time we are in this function, PTL has already setup a timer if the user specifies `trainer.max_time` so best we can do is replace that.
+                # Working: If only `trainer.max_time` is set - it behaves as a normal PTL timer. If only `exp_manager.max_time_per_run` is set - it behaves as a StateLessTimer. If both are set, it also behaves as a StateLessTimer.
+                logging.warning(
+                    f'Found a PTL Timer callback, replacing with a StatelessTimer callback. This will happen if you set trainer.max_time as well as exp_manager.max_time_per_run.'
+                )
+                trainer.callbacks[idx] = StatelessTimer(cfg.max_time_per_run)
+                found_ptl_timer = True
+                break
+
+        if not found_ptl_timer:
+            trainer.max_time = cfg.max_time_per_run
+            trainer.callbacks.append(StatelessTimer(cfg.max_time_per_run))
 
     if is_global_rank_zero():
         # Move files_to_copy to folder and add git information if present

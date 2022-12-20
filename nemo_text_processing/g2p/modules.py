@@ -316,23 +316,7 @@ class IPAG2P(BaseG2p):
         else:
             self.use_chars = use_chars
 
-        # parse the dictionary, update it, and generate symbol set.
-        if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
-            # load the dictionary file where there may exist a digit suffix after a word, which
-            # represents the pronunciation variant of that word.
-            phoneme_dict_obj = defaultdict(list)
-            _alt_re = re.compile(r"\([0-9]+\)")
-            with open(phoneme_dict, "r") as fdict:
-                for line in fdict:
-                    if len(line) and ('A' <= line[0] <= 'Z' or line[0] == "'"):
-                        parts = line.strip().split(maxsplit=1)
-                        word = re.sub(_alt_re, "", parts[0])
-                        prons = re.sub(r"\s+", "", parts[1])
-                        phoneme_dict_obj[word].append(list(prons))
-        else:
-            # Load phoneme_dict as dictionary object
-            logging.info("Loading phoneme_dict as a Dict object.")
-            phoneme_dict_obj = phoneme_dict
+        phoneme_dict_obj = self._parse_phoneme_dict(phoneme_dict)
 
         # verify if phoneme dict obj is empty
         if phoneme_dict_obj:
@@ -371,6 +355,33 @@ class IPAG2P(BaseG2p):
         )
         if set_graphemes_upper and heteronyms:
             self.heteronyms = [het.upper() for het in self.heteronyms]
+
+    @staticmethod
+    def _parse_phoneme_dict(phoneme_dict: Union[str, pathlib.Path]):
+        # parse the dictionary, update it, and generate symbol set.
+        if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
+            # load the dictionary file where there may exist a digit suffix after a word, which
+            # represents the pronunciation variant of that word.
+            phoneme_dict_obj = defaultdict(list)
+            _alt_re = re.compile(r"\([0-9]+\)")
+            with open(phoneme_dict, "r") as fdict:
+                for line in fdict:
+                    if len(line) and ('A' <= line[0] <= 'Z' or line[0] == "'"):
+                        parts = line.strip().split(maxsplit=1)
+                        word = re.sub(_alt_re, "", parts[0])
+                        prons = re.sub(r"\s+", "", parts[1])
+                        phoneme_dict_obj[word].append(list(prons))
+        else:
+            # Load phoneme_dict as dictionary object
+            logging.info("Loading phoneme_dict as a Dict object.")
+            phoneme_dict_obj = phoneme_dict
+        return phoneme_dict_obj
+
+    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path]):
+        """
+        Replace model's phoneme dictionary with a custom one
+        """
+        self.phoneme_dict = self._parse_phoneme_dict(phoneme_dict)
 
     @staticmethod
     def _parse_file_by_lines(p: Union[str, pathlib.Path]) -> List[str]:

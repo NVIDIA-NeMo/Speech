@@ -2006,6 +2006,7 @@ class ParallelTransformer(MegatronModule):
         fp8_interval=1,
         fp8_amax_history_len=1,
         fp8_amax_compute_algo='most_recent',
+        reduce_amax=True,
         use_emha=False,
         normalize_attention_scores=True,
         num_moe_experts=1,
@@ -2079,6 +2080,7 @@ class ParallelTransformer(MegatronModule):
         self.fp8_interval = fp8_interval
         self.fp8_amax_history_len = fp8_amax_history_len
         self.fp8_amax_compute_algo = fp8_amax_compute_algo
+        self.reduce_amax = reduce_amax
 
         self.fp8_recipe = None
 
@@ -2093,6 +2095,7 @@ class ParallelTransformer(MegatronModule):
                 fp8_format=fp8_format,
                 amax_history_len=self.fp8_amax_history_len,
                 amax_compute_algo=self.fp8_amax_compute_algo,
+                reduce_amax=reduce_amax,
             )
 
         self.is_first_microbatch = True

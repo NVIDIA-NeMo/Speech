@@ -190,6 +190,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             fp8_interval=self.cfg.get('fp8_interval', 1),
             fp8_amax_history_len=self.cfg.get('fp8_amax_history_len', 1),
             fp8_amax_compute_algo=self.cfg.get('fp8_amax_compute_algo', 'most_recent'),
+            reduce_amax=self.cfg.get('reduce_amax', True),
             use_emha=self.cfg.get('use_emha', False),
         )
 

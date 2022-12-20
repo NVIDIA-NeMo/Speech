@@ -149,6 +149,7 @@ model:
   fp8_interval: 1 # scaling update interval
   fp8_amax_history_len: 1 # Number of steps for which amax history is recorded per tensor
   fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
+  reduce_amax: True # Perform reduction to sync amax tensors across GPUs after every iteration
   use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
 
   data:

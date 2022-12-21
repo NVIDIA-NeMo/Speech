@@ -16,7 +16,6 @@ import torch.multiprocessing as mp
 from lightning_lite.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model import (
     MegatronGPTPromptLearningModel,

@@ -64,6 +64,10 @@ class AbstractRNNTJoint(NeuralModule, ABC):
     def num_classes_with_blank(self):
         raise NotImplementedError()
 
+    @property
+    def num_extra_outputs(self):
+        raise NotImplementedError()
+
 
 class AbstractRNNTDecoder(NeuralModule, ABC):
     """

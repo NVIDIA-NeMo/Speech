@@ -1446,6 +1446,742 @@ class TorchscriptGreedyBatchedRNNTInfer(ExportedModelGreedyBatchedRNNTInfer):
         return input_states
 
 
+class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
+    """A greedy transducer decoder for multi-blank RNN-T.
+
+    Sequence level greedy decoding, performed auto-repressively.
+
+    Args:
+        decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
+        joint_model: rnnt_utils.AbstractRNNTJoint implementation.
+        blank_index: int index of the blank token. Must be len(vocabulary) for multi-blank RNNTs.
+        big_blank_durations: a list containing durations for big blanks the model supports.
+        max_symbols_per_step: Optional int. The maximum number of symbols that can be added
+            to a sequence in a single time step; if set to None then there is
+            no limit.
+        preserve_alignments: Bool flag which preserves the history of alignments generated during
+            greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
+            Tuple(Tensor (of length V + 1 + num-big-blanks), Tensor(scalar, label after argmax)).
+            The length of the list corresponds to the Acoustic Length (T).
+            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
+            U is the number of target tokens for the current timestep Ti.
+        preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores generated
+            during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of List of floats.
+            The length of the list corresponds to the Acoustic Length (T).
+            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
+            U is the number of target tokens for the current timestep Ti.
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+            confidence scores.
+            name: The method name (str).
+                Supported values:
+                    - 'max_prob' for using the maximum token probability as a confidence.
+                    - 'entropy' for using normalized entropy of a log-likelihood vector.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                Supported values:
+                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                        Note that for this entropy, the temperature should comply the following inequality:
+                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                    - 'renui' for the Rényi entropy.
+                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the temperature equals one, scaling is not applied to 'max_prob',
+                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+            entropy_norm: A mapping of the entropy value to the interval [0,1].
+                Supported values:
+                    - 'lin' for using the linear mapping.
+                    - 'exp' for using exponential mapping with linear shift.
+    """
+
+    def __init__(
+        self,
+        decoder_model: rnnt_abstract.AbstractRNNTDecoder,
+        joint_model: rnnt_abstract.AbstractRNNTJoint,
+        blank_index: int,
+        big_blank_durations: list,
+        max_symbols_per_step: Optional[int] = None,
+        preserve_alignments: bool = False,
+        preserve_frame_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
+    ):
+        super().__init__(
+            decoder_model=decoder_model,
+            joint_model=joint_model,
+            blank_index=blank_index,
+            max_symbols_per_step=max_symbols_per_step,
+            preserve_alignments=preserve_alignments,
+            preserve_frame_confidence=preserve_frame_confidence,
+            confidence_method_cfg=confidence_method_cfg,
+        )
+        self.big_blank_durations = big_blank_durations
+        self._SOS = blank_index - len(big_blank_durations)
+
+    @torch.no_grad()
+    def _greedy_decode(
+        self, x: torch.Tensor, out_len: torch.Tensor, partial_hypotheses: Optional[rnnt_utils.Hypothesis] = None
+    ):
+        # x: [T, 1, D]
+        # out_len: [seq_len]
+
+        # Initialize blank state and empty label set in Hypothesis
+        hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
+
+        if partial_hypotheses is not None:
+            hypothesis.last_token = partial_hypotheses.last_token
+            hypothesis.y_sequence = (
+                partial_hypotheses.y_sequence.cpu().tolist()
+                if isinstance(partial_hypotheses.y_sequence, torch.Tensor)
+                else partial_hypotheses.y_sequence
+            )
+            if partial_hypotheses.dec_state is not None:
+                hypothesis.dec_state = self.decoder.batch_concat_states([partial_hypotheses.dec_state])
+                hypothesis.dec_state = _states_to_device(hypothesis.dec_state, x.device)
+
+        if self.preserve_alignments:
+            # Alignments is a 2-dimensional dangling list representing T x U
+            hypothesis.alignments = [[]]
+
+        if self.preserve_frame_confidence:
+            hypothesis.frame_confidence = [[]]
+
+        # if this variable is > 1, it means the last emission was a big-blank and we need to skip frames.
+        big_blank_duration = 1
+
+        # For timestep t in X_t
+        for time_idx in range(out_len):
+            if big_blank_duration > 1:
+                # skip frames until big_blank_duration == 1.
+                big_blank_duration -= 1
+                continue
+            # Extract encoder embedding at timestep t
+            # f = x[time_idx, :, :].unsqueeze(0)  # [1, 1, D]
+            f = x.narrow(dim=0, start=time_idx, length=1)
+
+            # Setup exit flags and counter
+            not_blank = True
+            symbols_added = 0
+
+            # While blank is not predicted, or we dont run out of max symbols per timestep
+            while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
+                # In the first timestep, we initialize the network with RNNT Blank
+                # In later timesteps, we provide previous predicted label as input.
+                if hypothesis.last_token is None and hypothesis.dec_state is None:
+                    last_label = self._SOS
+                else:
+                    last_label = label_collate([[hypothesis.last_token]])
+
+                # Perform prediction network and joint network steps.
+                g, hidden_prime = self._pred_step(last_label, hypothesis.dec_state)
+                # If preserving per-frame confidence, log_normalize must be true
+                logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                    0, 0, 0, :
+                ]
+
+                del g
+
+                # torch.max(0) op doesnt exist for FP 16.
+                if logp.dtype != torch.float32:
+                    logp = logp.float()
+
+                # get index k, of max prob
+                v, k = logp.max(0)
+                k = k.item()  # K is the label at timestep t_s in inner loop, s >= 0.
+
+                # Note, we have non-blanks in the vocab first, followed by big blanks, and standard blank at last.
+                # here we check if it's a big blank and if yes, set the duration variable.
+                if k >= self._blank_index - len(self.big_blank_durations) and k < self._blank_index:
+                    big_blank_duration = self.big_blank_durations[self._blank_index - k - 1]
+
+                if self.preserve_alignments:
+                    # insert logprobs into last timestep
+                    hypothesis.alignments[-1].append((logp.to('cpu'), torch.tensor(k, dtype=torch.int32)))
+
+                if self.preserve_frame_confidence:
+                    # insert confidence into last timestep
+                    hypothesis.frame_confidence[-1].append(self._get_confidence(logp))
+
+                del logp
+
+                # If any type of blank token is predicted, exit inner loop, move onto next timestep t
+                if k >= self._blank_index - len(self.big_blank_durations):
+                    not_blank = False
+
+                    if self.preserve_alignments:
+                        # convert Ti-th logits into a torch array
+                        hypothesis.alignments.append([])  # blank buffer for next timestep
+
+                    if self.preserve_frame_confidence:
+                        hypothesis.frame_confidence.append([])  # blank buffer for next timestep
+                else:
+                    # Append token to label set, update RNN state.
+                    hypothesis.y_sequence.append(k)
+                    hypothesis.score += float(v)
+                    hypothesis.timestep.append(time_idx)
+                    hypothesis.dec_state = hidden_prime
+                    hypothesis.last_token = k
+
+                # Increment token counter.
+                symbols_added += 1
+
+        # Remove trailing empty list of Alignments
+        if self.preserve_alignments:
+            if len(hypothesis.alignments[-1]) == 0:
+                del hypothesis.alignments[-1]
+
+        # Remove trailing empty list of per-frame confidence
+        if self.preserve_frame_confidence:
+            if len(hypothesis.frame_confidence[-1]) == 0:
+                del hypothesis.frame_confidence[-1]
+
+        # Unpack the hidden states
+        hypothesis.dec_state = self.decoder.batch_select_state(hypothesis.dec_state, 0)
+
+        return hypothesis
+
+
+class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
+    """A batch level greedy transducer decoder.
+    Batch level greedy decoding, performed auto-repressively.
+    Args:
+        decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
+        joint_model: rnnt_utils.AbstractRNNTJoint implementation.
+        blank_index: int index of the blank token. Must be len(vocabulary) for multi-blank RNNTs.
+        big_blank_durations: a list containing durations for big blanks the model supports.
+        max_symbols_per_step: Optional int. The maximum number of symbols that can be added
+            to a sequence in a single time step; if set to None then there is
+            no limit.
+        preserve_alignments: Bool flag which preserves the history of alignments generated during
+            greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `alignments` in it. Here, `alignments` is a List of List of
+            Tuple(Tensor (of length V + 1 + num-big-blanks), Tensor(scalar, label after argmax)).
+            The length of the list corresponds to the Acoustic Length (T).
+            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
+            U is the number of target tokens for the current timestep Ti.
+        preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores generated
+            during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of List of floats.
+            The length of the list corresponds to the Acoustic Length (T).
+            Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
+            U is the number of target tokens for the current timestep Ti.
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+            confidence scores.
+            name: The method name (str).
+                Supported values:
+                    - 'max_prob' for using the maximum token probability as a confidence.
+                    - 'entropy' for using normalized entropy of a log-likelihood vector.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                Supported values:
+                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                        Note that for this entropy, the temperature should comply the following inequality:
+                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                    - 'renui' for the Rényi entropy.
+                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the temperature equals one, scaling is not applied to 'max_prob',
+                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+            entropy_norm: A mapping of the entropy value to the interval [0,1].
+                Supported values:
+                    - 'lin' for using the linear mapping.
+                    - 'exp' for using exponential mapping with linear shift.
+    """
+
+    def __init__(
+        self,
+        decoder_model: rnnt_abstract.AbstractRNNTDecoder,
+        joint_model: rnnt_abstract.AbstractRNNTJoint,
+        blank_index: int,
+        big_blank_durations: List[int],
+        max_symbols_per_step: Optional[int] = None,
+        preserve_alignments: bool = False,
+        preserve_frame_confidence: bool = False,
+        confidence_method_cfg: Optional[DictConfig] = None,
+    ):
+        super().__init__(
+            decoder_model=decoder_model,
+            joint_model=joint_model,
+            blank_index=blank_index,
+            max_symbols_per_step=max_symbols_per_step,
+            preserve_alignments=preserve_alignments,
+            preserve_frame_confidence=preserve_frame_confidence,
+            confidence_method_cfg=confidence_method_cfg,
+        )
+        self.big_blank_durations = big_blank_durations
+
+        # Depending on availability of `blank_as_pad` support
+        # switch between more efficient batch decoding technique
+        if self.decoder.blank_as_pad:
+            self._greedy_decode = self._greedy_decode_blank_as_pad
+        else:
+            self._greedy_decode = self._greedy_decode_masked
+        self._SOS = blank_index - len(big_blank_durations)
+
+    def _greedy_decode_blank_as_pad(
+        self,
+        x: torch.Tensor,
+        out_len: torch.Tensor,
+        device: torch.device,
+        partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+    ):
+        if partial_hypotheses is not None:
+            raise NotImplementedError("`partial_hypotheses` support is not supported")
+
+        with torch.inference_mode():
+            # x: [B, T, D]
+            # out_len: [B]
+            # device: torch.device
+
+            # Initialize list of Hypothesis
+            batchsize = x.shape[0]
+            hypotheses = [
+                rnnt_utils.Hypothesis(score=0.0, y_sequence=[], timestep=[], dec_state=None) for _ in range(batchsize)
+            ]
+
+            # Initialize Hidden state matrix (shared by entire batch)
+            hidden = None
+
+            # If alignments need to be preserved, register a danling list to hold the values
+            if self.preserve_alignments:
+                # alignments is a 3-dimensional dangling list representing B x T x U
+                for hyp in hypotheses:
+                    hyp.alignments = [[]]
+
+            # If confidence scores need to be preserved, register a danling list to hold the values
+            if self.preserve_frame_confidence:
+                # frame_confidence is a 3-dimensional dangling list representing B x T x U
+                for hyp in hypotheses:
+                    hyp.frame_confidence = [[]]
+                    hyp.y_3best = [[]]
+                    hyp.frame_confidence_3best = [[[]]]
+                    hyp.logp = [[]]
+
+            # Last Label buffer + Last Label without blank buffer
+            # batch level equivalent of the last_label
+            last_label = torch.full([batchsize, 1], fill_value=self._SOS, dtype=torch.long, device=device)
+
+            # this mask is true for if the emission is *any type* of blank.
+            blank_mask = torch.full([batchsize], fill_value=0, dtype=torch.bool, device=device)
+
+            # Get max sequence length
+            max_out_len = out_len.max()
+
+            # We have a mask for each big blank. A mask is "true" means: the previous emission is exactly the big-blank
+            # with the corresponding duration, or has larger duration. E.g., for big_blank_mask for duration 2, it will
+            # be set true if the previous emission was a big blank with duration 4, or 3 or 2; but false if prevoius
+            # emission was a standard blank (with duration = 1).
+            big_blank_masks = [torch.full([batchsize], fill_value=0, dtype=torch.bool, device=device)] * len(
+                self.big_blank_durations
+            )
+
+            # if this variable > 1, it means the previous emission was big-blank and we need to skip frames.
+            big_blank_duration = 1
+
+            for time_idx in range(max_out_len):
+                if big_blank_duration > 1:
+                    # skip frames until big_blank_duration == 1
+                    big_blank_duration -= 1
+                    continue
+                f = x.narrow(dim=1, start=time_idx, length=1)  # [B, 1, D]
+
+                # Prepare t timestamp batch variables
+                not_blank = True
+                symbols_added = 0
+
+                # Reset all blank masks
+                blank_mask.mul_(False)
+                for i in range(len(big_blank_masks)):
+                    big_blank_masks[i].mul_(False)
+
+                # Update blank mask with time mask
+                # Batch: [B, T, D], but Bi may have seq len < max(seq_lens_in_batch)
+                # Forcibly mask with "blank" tokens, for all sample where current time step T > seq_len
+                blank_mask = time_idx >= out_len
+                for i in range(len(big_blank_masks)):
+                    big_blank_masks[i] = time_idx >= out_len
+
+                # Start inner loop
+                while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
+                    # Batch prediction and joint network steps
+                    # If very first prediction step, submit SOS tag (blank) to pred_step.
+                    # This feeds a zero tensor as input to AbstractRNNTDecoder to prime the state
+                    if time_idx == 0 and symbols_added == 0 and hidden is None:
+                        g, hidden_prime = self._pred_step(self._SOS, hidden, batch_size=batchsize)
+                    else:
+                        # Perform batch step prediction of decoder, getting new states and scores ("g")
+                        g, hidden_prime = self._pred_step(last_label, hidden, batch_size=batchsize)
+
+                    # Batched joint step - Output = [B, V + 1 + num-big-blanks]
+                    # If preserving per-frame confidence, log_normalize must be true
+                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                        :, 0, 0, :
+                    ]
+
+                    if logp.dtype != torch.float32:
+                        logp = logp.float()
+
+                    # Get index k, of max prob for batch
+                    v, k = logp.max(1)
+                    del g
+
+                    # Update blank mask with current predicted blanks
+                    # This is accumulating blanks over all time steps T and all target steps min(max_symbols, U)
+                    k_is_blank = k >= self._blank_index - len(self.big_blank_durations)
+                    blank_mask.bitwise_or_(k_is_blank)
+
+                    for i in range(len(big_blank_masks)):
+                        # using <= since as we mentioned before, the mask doesn't store exact matches.
+                        # instead, it is True when the predicted blank's duration is >= the duration that the
+                        # mask corresponds to.
+                        k_is_big_blank = k <= self._blank_index - 1 - i
+
+                        # need to do a bitwise_and since it could also be a non-blank.
+                        k_is_big_blank.bitwise_and_(k_is_blank)
+                        big_blank_masks[i].bitwise_or_(k_is_big_blank)
+
+                    del k_is_blank
+
+                    # If preserving alignments, check if sequence length of sample has been reached
+                    # before adding alignment
+                    if self.preserve_alignments:
+                        # Insert logprobs into last timestep per sample
+                        logp_vals = logp.to('cpu')
+                        logp_ids = logp_vals.max(1)[1]
+                        for batch_idx in range(batchsize):
+                            if time_idx < out_len[batch_idx]:
+                                hypotheses[batch_idx].alignments[-1].append(
+                                    (logp_vals[batch_idx], logp_ids[batch_idx])
+                                )
+                        del logp_vals
+
+                    # If preserving per-frame confidence, check if sequence length of sample has been reached
+                    # before adding confidence scores
+                    if self.preserve_frame_confidence:
+                        # Insert probabilities into last timestep per sample
+                        confidence = self._get_confidence(logp)
+                        for batch_idx in range(batchsize):
+                            if time_idx < out_len[batch_idx]:
+                                hypotheses[batch_idx].frame_confidence[-1].append(confidence[batch_idx])
+                    del logp
+
+                    # If all samples predict / have predicted prior blanks, exit loop early
+                    # This is equivalent to if single sample predicted k
+                    if blank_mask.all():
+                        not_blank = False
+
+                        for i in range(len(big_blank_masks) + 1):
+                            # The task here is find the shortest blank duration of all batches.
+                            # so we start from the shortest blank duration and go up,
+                            # and stop once we found the duration whose corresponding mask isn't all True.
+                            if i == len(big_blank_masks) or not big_blank_masks[i].all():
+                                big_blank_duration = self.big_blank_durations[i - 1] if i > 0 else 1
+                                break
+
+                        # If preserving alignments, convert the current Uj alignments into a torch.Tensor
+                        # Then preserve U at current timestep Ti
+                        # Finally, forward the timestep history to Ti+1 for that sample
+                        # All of this should only be done iff the current time index <= sample-level AM length.
+                        # Otherwise ignore and move to next sample / next timestep.
+                        if self.preserve_alignments:
+
+                            # convert Ti-th logits into a torch array
+                            for batch_idx in range(batchsize):
+
+                                # this checks if current timestep <= sample-level AM length
+                                # If current timestep > sample-level AM length, no alignments will be added
+                                # Therefore the list of Uj alignments is empty here.
+                                if len(hypotheses[batch_idx].alignments[-1]) > 0:
+                                    hypotheses[batch_idx].alignments.append([])  # blank buffer for next timestep
+
+                        # Do the same if preserving per-frame confidence
+                        if self.preserve_frame_confidence:
+
+                            for batch_idx in range(batchsize):
+                                if len(hypotheses[batch_idx].frame_confidence[-1]) > 0:
+                                    hypotheses[batch_idx].frame_confidence.append([])  # blank buffer for next timestep
+                                    hypotheses[batch_idx].y_3best.append([])
+                                    hypotheses[batch_idx].frame_confidence_3best.append([])
+                                    hypotheses[batch_idx].logp.append([])
+                    else:
+                        # Collect batch indices where blanks occurred now/past
+                        blank_indices = (blank_mask == 1).nonzero(as_tuple=False)
+
+                        # Recover prior state for all samples which predicted blank now/past
+                        if hidden is not None:
+                            # LSTM has 2 states
+                            hidden_prime = self.decoder.batch_copy_states(hidden_prime, hidden, blank_indices)
+
+                        elif len(blank_indices) > 0 and hidden is None:
+                            # Reset state if there were some blank and other non-blank predictions in batch
+                            # Original state is filled with zeros so we just multiply
+                            # LSTM has 2 states
+                            hidden_prime = self.decoder.batch_copy_states(hidden_prime, None, blank_indices, value=0.0)
+
+                        # Recover prior predicted label for all samples which predicted blank now/past
+                        k[blank_indices] = last_label[blank_indices, 0]
+
+                        # Update new label and hidden state for next iteration
+                        last_label = k.clone().view(-1, 1)
+                        hidden = hidden_prime
+
+                        # Update predicted labels, accounting for time mask
+                        # If blank was predicted even once, now or in the past,
+                        # Force the current predicted label to also be blank
+                        # This ensures that blanks propogate across all timesteps
+                        # once they have occured (normally stopping condition of sample level loop).
+                        for kidx, ki in enumerate(k):
+                            if blank_mask[kidx] == 0:
+                                hypotheses[kidx].y_sequence.append(ki)
+                                hypotheses[kidx].timestep.append(time_idx)
+                                hypotheses[kidx].score += float(v[kidx])
+
+                        symbols_added += 1
+
+            # Remove trailing empty list of alignments at T_{am-len} x Uj
+            if self.preserve_alignments:
+                for batch_idx in range(batchsize):
+                    if len(hypotheses[batch_idx].alignments[-1]) == 0:
+                        del hypotheses[batch_idx].alignments[-1]
+
+            # Remove trailing empty list of confidence scores at T_{am-len} x Uj
+            if self.preserve_frame_confidence:
+                for batch_idx in range(batchsize):
+                    if len(hypotheses[batch_idx].frame_confidence[-1]) == 0:
+                        del hypotheses[batch_idx].frame_confidence[-1]
+                        del hypotheses[batch_idx].y_3best[-1]
+                        del hypotheses[batch_idx].frame_confidence_3best[-1]
+                        del hypotheses[batch_idx].logp[-1]
+
+        # Preserve states
+        for batch_idx in range(batchsize):
+            hypotheses[batch_idx].dec_state = self.decoder.batch_select_state(hidden, batch_idx)
+
+        return hypotheses
+
+    def _greedy_decode_masked(
+        self,
+        x: torch.Tensor,
+        out_len: torch.Tensor,
+        device: torch.device,
+        partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
+    ):
+        if partial_hypotheses is not None:
+            raise NotImplementedError("`partial_hypotheses` support is not supported")
+
+        if self.big_blank_durations != [1] * len(self.big_blank_durations):
+            raise NotImplementedError(
+                "Efficient frame-skipping version for multi-blank masked decoding is not supported."
+            )
+
+        # x: [B, T, D]
+        # out_len: [B]
+        # device: torch.device
+
+        # Initialize state
+        batchsize = x.shape[0]
+        hypotheses = [
+            rnnt_utils.Hypothesis(score=0.0, y_sequence=[], timestep=[], dec_state=None) for _ in range(batchsize)
+        ]
+
+        # Initialize Hidden state matrix (shared by entire batch)
+        hidden = None
+
+        # If alignments need to be preserved, register a danling list to hold the values
+        if self.preserve_alignments:
+            # alignments is a 3-dimensional dangling list representing B x T x U
+            for hyp in hypotheses:
+                hyp.alignments = [[]]
+        else:
+            hyp.alignments = None
+
+        # If confidence scores need to be preserved, register a danling list to hold the values
+        if self.preserve_frame_confidence:
+            # frame_confidence is a 3-dimensional dangling list representing B x T x U
+            for hyp in hypotheses:
+                hyp.frame_confidence = [[]]
+
+        # Last Label buffer + Last Label without blank buffer
+        # batch level equivalent of the last_label
+        last_label = torch.full([batchsize, 1], fill_value=self._blank_index, dtype=torch.long, device=device)
+        last_label_without_blank = last_label.clone()
+
+        # Mask buffers
+        blank_mask = torch.full([batchsize], fill_value=0, dtype=torch.bool, device=device)
+
+        # Get max sequence length
+        max_out_len = out_len.max()
+
+        with torch.inference_mode():
+            for time_idx in range(max_out_len):
+                f = x.narrow(dim=1, start=time_idx, length=1)  # [B, 1, D]
+
+                # Prepare t timestamp batch variables
+                not_blank = True
+                symbols_added = 0
+
+                # Reset blank mask
+                blank_mask.mul_(False)
+
+                # Update blank mask with time mask
+                # Batch: [B, T, D], but Bi may have seq len < max(seq_lens_in_batch)
+                # Forcibly mask with "blank" tokens, for all sample where current time step T > seq_len
+                blank_mask = time_idx >= out_len
+
+                # Start inner loop
+                while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
+                    # Batch prediction and joint network steps
+                    # If very first prediction step, submit SOS tag (blank) to pred_step.
+                    # This feeds a zero tensor as input to AbstractRNNTDecoder to prime the state
+                    if time_idx == 0 and symbols_added == 0 and hidden is None:
+                        g, hidden_prime = self._pred_step(self._SOS, hidden, batch_size=batchsize)
+                    else:
+                        # Set a dummy label for the blank value
+                        # This value will be overwritten by "blank" again the last label update below
+                        # This is done as vocabulary of prediction network does not contain "blank" token of RNNT
+                        last_label_without_blank_mask = last_label >= self._blank_index
+                        last_label_without_blank[last_label_without_blank_mask] = 0  # temp change of label
+                        last_label_without_blank[~last_label_without_blank_mask] = last_label[
+                            ~last_label_without_blank_mask
+                        ]
+
+                        # Perform batch step prediction of decoder, getting new states and scores ("g")
+                        g, hidden_prime = self._pred_step(last_label_without_blank, hidden, batch_size=batchsize)
+
+                    # Batched joint step - Output = [B, V + 1 + num-big-blanks]
+                    # If preserving per-frame confidence, log_normalize must be true
+                    logp = self._joint_step(f, g, log_normalize=True if self.preserve_frame_confidence else None)[
+                        :, 0, 0, :
+                    ]
+
+                    if logp.dtype != torch.float32:
+                        logp = logp.float()
+
+                    # Get index k, of max prob for batch
+                    v, k = logp.max(1)
+                    del g
+
+                    # Update blank mask with current predicted blanks
+                    # This is accumulating blanks over all time steps T and all target steps min(max_symbols, U)
+                    k_is_blank = k == self._blank_index
+                    blank_mask.bitwise_or_(k_is_blank)
+
+                    # If preserving alignments, check if sequence length of sample has been reached
+                    # before adding alignment
+                    if self.preserve_alignments:
+                        # Insert logprobs into last timestep per sample
+                        logp_vals = logp.to('cpu')
+                        logp_ids = logp_vals.max(1)[1]
+                        for batch_idx in range(batchsize):
+                            if time_idx < out_len[batch_idx]:
+                                hypotheses[batch_idx].alignments[-1].append(
+                                    (logp_vals[batch_idx], logp_ids[batch_idx])
+                                )
+                        del logp_vals
+
+                    # If preserving per-frame confidence, check if sequence length of sample has been reached
+                    # before adding confidence scores
+                    if self.preserve_frame_confidence:
+                        # Insert probabilities into last timestep per sample
+                        confidence = self._get_confidence(logp)
+                        for batch_idx in range(batchsize):
+                            if time_idx < out_len[batch_idx]:
+                                hypotheses[batch_idx].frame_confidence[-1].append(confidence[batch_idx])
+                    del logp
+
+                    # If all samples predict / have predicted prior blanks, exit loop early
+                    # This is equivalent to if single sample predicted k
+                    if blank_mask.all():
+                        not_blank = False
+
+                        # If preserving alignments, convert the current Uj alignments into a torch.Tensor
+                        # Then preserve U at current timestep Ti
+                        # Finally, forward the timestep history to Ti+1 for that sample
+                        # All of this should only be done iff the current time index <= sample-level AM length.
+                        # Otherwise ignore and move to next sample / next timestep.
+                        if self.preserve_alignments:
+
+                            # convert Ti-th logits into a torch array
+                            for batch_idx in range(batchsize):
+
+                                # this checks if current timestep <= sample-level AM length
+                                # If current timestep > sample-level AM length, no alignments will be added
+                                # Therefore the list of Uj alignments is empty here.
+                                if len(hypotheses[batch_idx].alignments[-1]) > 0:
+                                    hypotheses[batch_idx].alignments.append([])  # blank buffer for next timestep
+
+                        # Do the same if preserving per-frame confidence
+                        if self.preserve_frame_confidence:
+
+                            for batch_idx in range(batchsize):
+                                if len(hypotheses[batch_idx].frame_confidence[-1]) > 0:
+                                    hypotheses[batch_idx].frame_confidence.append([])  # blank buffer for next timestep
+                    else:
+                        # Collect batch indices where blanks occurred now/past
+                        blank_indices = (blank_mask == 1).nonzero(as_tuple=False)
+
+                        # Recover prior state for all samples which predicted blank now/past
+                        if hidden is not None:
+                            # LSTM has 2 states
+                            hidden_prime = self.decoder.batch_copy_states(hidden_prime, hidden, blank_indices)
+
+                        elif len(blank_indices) > 0 and hidden is None:
+                            # Reset state if there were some blank and other non-blank predictions in batch
+                            # Original state is filled with zeros so we just multiply
+                            # LSTM has 2 states
+                            hidden_prime = self.decoder.batch_copy_states(hidden_prime, None, blank_indices, value=0.0)
+
+                        # Recover prior predicted label for all samples which predicted blank now/past
+                        k[blank_indices] = last_label[blank_indices, 0]
+
+                        # Update new label and hidden state for next iteration
+                        last_label = k.view(-1, 1)
+                        hidden = hidden_prime
+
+                        # Update predicted labels, accounting for time mask
+                        # If blank was predicted even once, now or in the past,
+                        # Force the current predicted label to also be blank
+                        # This ensures that blanks propogate across all timesteps
+                        # once they have occured (normally stopping condition of sample level loop).
+                        for kidx, ki in enumerate(k):
+                            if blank_mask[kidx] == 0:
+                                hypotheses[kidx].y_sequence.append(ki)
+                                hypotheses[kidx].timestep.append(time_idx)
+                                hypotheses[kidx].score += float(v[kidx])
+
+                    symbols_added += 1
+
+        # Remove trailing empty list of alignments at T_{am-len} x Uj
+        if self.preserve_alignments:
+            for batch_idx in range(batchsize):
+                if len(hypotheses[batch_idx].alignments[-1]) == 0:
+                    del hypotheses[batch_idx].alignments[-1]
+
+        # Remove trailing empty list of confidence scores at T_{am-len} x Uj
+        if self.preserve_frame_confidence:
+            for batch_idx in range(batchsize):
+                if len(hypotheses[batch_idx].frame_confidence[-1]) == 0:
+                    del hypotheses[batch_idx].frame_confidence[-1]
+
+        # Preserve states
+        for batch_idx in range(batchsize):
+            hypotheses[batch_idx].dec_state = self.decoder.batch_select_state(hidden, batch_idx)
+
+        return hypotheses
+
+
 @dataclass
 class GreedyRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10

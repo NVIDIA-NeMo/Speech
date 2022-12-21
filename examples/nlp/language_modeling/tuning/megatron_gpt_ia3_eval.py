@@ -14,6 +14,7 @@
 
 
 import torch
+import torch.multiprocessing as mp
 from apex.transformer import parallel_state
 from omegaconf import OmegaConf
 from omegaconf.omegaconf import open_dict
@@ -22,6 +23,8 @@ from pytorch_lightning.trainer.trainer import Trainer
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_adapter_model import MegatronGPTInfusedAdapterModel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.core.config import hydra_runner
+
+mp.set_start_method("spawn", force=True)
 
 """
 This is the script to run an Adapter Tuned GPT Model for text generation.
@@ -101,6 +104,7 @@ def main(cfg) -> None:
         tokens_to_generate=cfg.inference.tokens_to_generate,
         drop_last=False,
         shuffle=False,
+        num_workers=cfg.get("num_workers", 1),
     )
 
     config = OmegaConf.to_container(cfg.inference)

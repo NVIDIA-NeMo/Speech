@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+import torch.multiprocessing as mp
 from apex.transformer import parallel_state
 from omegaconf import OmegaConf
 from omegaconf.omegaconf import open_dict
@@ -25,6 +26,7 @@ from nemo.collections.nlp.modules.common.transformer.text_generation import Leng
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.core.config import hydra_runner
 
+mp.set_start_method("spawn", force=True)
 
 """
 This is the script to run GPT text generation.
@@ -143,6 +145,7 @@ def main(cfg) -> None:
         tokens_to_generate=length_params["max_length"],
         drop_last=False,
         shuffle=False,
+        num_workers=cfg.get("num_workers", 1),
     )
 
     config = OmegaConf.to_container(cfg.inference)

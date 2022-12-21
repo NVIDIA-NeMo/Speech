@@ -116,7 +116,7 @@ model:
     validation_ds: ???  # expects a paths to validation data files
     add_eos: True
     shuffle: True
-    num_workers: 0
+    num_workers: 8
     pin_memory: True
 
 

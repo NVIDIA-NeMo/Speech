@@ -24,4 +24,5 @@ gpt_model_file: null  # GPT nemo file path
 virtual_prompt_model_file: ??? # path to a MegatronGPTPromptLearningModel model if you want to use soft prompts
 pred_file_path: ??? # Path will model predictions will be written
 data_paths: # paths to .jsonl files you want to perform inference on
+num_workers: 8
  

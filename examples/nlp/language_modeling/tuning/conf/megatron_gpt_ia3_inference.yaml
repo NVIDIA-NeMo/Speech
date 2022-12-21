@@ -29,3 +29,4 @@ checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint l
 hparams_file: null # model configuration file, only used for PTL checkpoint loading
 data_paths: ??? # prompts for GPT inference
 batch_size: 8 
+num_workers: 8

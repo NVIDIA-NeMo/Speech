@@ -1041,7 +1041,7 @@ def configure_checkpointing(
                 f"). It is very likely this run will fail with ModelCheckpoint(monitor='{params.monitor}') not found "
                 "in the returned metrics. Please ensure that validation is run within trainer.max_epochs."
             )
-        elif trainer.max_steps is not None:
+        elif trainer.max_steps is not None and trainer.max_steps != -1:
             logging.warning(
                 "The checkpoint callback was told to monitor a validation value and trainer's max_steps was set to "
                 f"{trainer.max_steps}. Please ensure that max_steps will run for at least "

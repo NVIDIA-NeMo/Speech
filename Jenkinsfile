@@ -334,21 +334,21 @@ pipeline {
       }
       failFast true
       parallel {
-        // Temp disable this test due to long duration. TODO: bring it back
-        // stage('Speaker Recognition') {
-        //   steps {
-        //     sh 'python examples/speaker_tasks/recognition/speaker_reco.py \
-        //     model.train_ds.batch_size=10 \
-        //     model.validation_ds.batch_size=2 \
-        //     model.train_ds.manifest_filepath=/home/TestData/an4_speaker/train.json \
-        //     model.validation_ds.manifest_filepath=/home/TestData/an4_speaker/dev.json \
-        //     trainer.devices=[1] \
-        //     trainer.accelerator="gpu" \
-        //     +trainer.fast_dev_run=True \
-        //     exp_manager.exp_dir=examples/speaker_tasks/recognition/speaker_recognition_results'
-        //     sh 'rm -rf examples/speaker_tasks/recognition/speaker_recognition_results'
-        //   }
-        // }
+        stage('Speaker Recognition') {
+          steps {
+            sh 'python examples/speaker_tasks/recognition/speaker_reco.py \
+            model.train_ds.batch_size=10 \
+            model.validation_ds.batch_size=2 \
+            model.train_ds.manifest_filepath=/home/TestData/an4_speaker/train.json \
+            model.validation_ds.manifest_filepath=/home/TestData/an4_speaker/dev.json \
+            trainer.max_epochs=10 \
+            trainer.devices=[1] \
+            trainer.accelerator="gpu" \
+            +trainer.fast_dev_run=True \
+            exp_manager.exp_dir=examples/speaker_tasks/recognition/speaker_recognition_results'
+            sh 'rm -rf examples/speaker_tasks/recognition/speaker_recognition_results'
+          }
+        }
 
         stage('Speaker Diarization') {
           steps {

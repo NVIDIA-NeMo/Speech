@@ -15,7 +15,7 @@ spec:
       path: /vol/scratch1/scratch.okuchaiev_blossom
   containers:
   - name: latestdlfw
-    image: nvcr.io/nvidia/pytorch:22.11-py3
+    image: nvcr.io/nvidia/pytorch:22.12-py3
     command:
     - cat
     volumeMounts:

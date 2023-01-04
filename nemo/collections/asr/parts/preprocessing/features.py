@@ -290,7 +290,7 @@ class FilterbankFeatures(nn.Module):
             win_length=self.win_length,
             center=False if exact_pad else True,
             window=self.window.to(dtype=torch.float),
-            return_complex=False,
+            return_complex=True,
         )
 
         self.normalize = normalize
@@ -393,11 +393,10 @@ class FilterbankFeatures(nn.Module):
         with torch.cuda.amp.autocast(enabled=False):
             x = self.stft(x)
 
-        # torch returns real, imag; so convert to magnitude
+        # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
         # guard is needed for sqrt if grads are passed through
         guard = 0 if not self.use_grads else CONSTANT
-        if x.dtype in [torch.cfloat, torch.cdouble]:
-            x = torch.view_as_real(x)
+        x = torch.view_as_real(x)
         x = torch.sqrt(x.pow(2).sum(-1) + guard)
 
         if self.training and self.nb_augmentation_prob > 0.0:

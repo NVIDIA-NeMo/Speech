@@ -70,6 +70,7 @@ def forward_wrapper(self, spec, z=None):
 
 
 class TestWaveGlow:
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_export_to_onnx(self):

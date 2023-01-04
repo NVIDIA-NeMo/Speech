@@ -146,9 +146,15 @@ class GlowVocoder(Vocoder):
                 ) from e
 
             def yet_another_patch(audio, n_fft, hop_length, win_length, window):
-                spec = torch.stft(audio, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window)
-                if spec.dtype in [torch.cfloat, torch.cdouble]:
-                    spec = torch.view_as_real(spec)
+                spec = torch.stft(
+                    audio,
+                    n_fft=n_fft,
+                    hop_length=hop_length,
+                    win_length=win_length,
+                    window=window,
+                    return_complex=True,
+                )
+                spec = torch.view_as_real(spec)
                 return torch.sqrt(spec.pow(2).sum(-1)), torch.atan2(spec[..., -1], spec[..., 0])
 
             self.stft = lambda x: yet_another_patch(

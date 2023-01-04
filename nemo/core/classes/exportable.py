@@ -79,6 +79,7 @@ class Exportable(ABC):
                 dynamic_axes=dynamic_axes,
                 check_tolerance=check_tolerance,
                 export_modules_as_functions=export_modules_as_functions,
+                keep_initializers_as_inputs=keep_initializers_as_inputs,
             )
             # Propagate input example (default scenario, may need to be overriden)
             if input_example is not None:

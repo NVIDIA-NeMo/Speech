@@ -139,6 +139,9 @@ To run a tutorial:
    * - NLP
      - P-Tuning/Prompt-Tuning
      - `P-Tuning/Prompt-Tuning <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/Multitask_Prompt_and_PTuning.ipynb>`_
+   * - NLP
+     - Synthetic Tabular Data Generation 
+     - `Synthetic Tabular Data Generation <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/Megatron_Synthetic_Tabular_Data_Generation.ipynb>`_
    * - TTS
      - NeMo TTS Primer
      - `NeMo TTS Primer <https://colab.research.google.com/github/NVIDIA/NeMo/tree/stable/tutorials/tts/NeMo_TTS_Primer.ipynb>`_

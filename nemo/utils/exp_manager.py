@@ -990,6 +990,14 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         else:
             super()._save_checkpoint(trainer, filepath)
 
+    def _remove_checkpoint(self, trainer: "pytorch_lightning.Trainer", filepath: str) -> None:
+        super()._remove_checkpoint(trainer, filepath)
+        ema_callback = self._ema_callback(trainer)
+        if ema_callback is not None:
+            # remove EMA copy of the state dict as well.
+            filepath = self._ema_format_filepath(filepath)
+            super()._remove_checkpoint(trainer, filepath)
+
     def _ema_format_filepath(self, filepath: str) -> str:
         return filepath.replace(self.FILE_EXTENSION, f'-EMA{self.FILE_EXTENSION}')
 

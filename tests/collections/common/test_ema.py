@@ -27,7 +27,10 @@ from nemo.collections.common.callbacks import EMA
 from nemo.collections.common.callbacks.ema import EMAOptimizer
 from nemo.core import ModelPT
 from nemo.utils.exp_manager import exp_manager
-from tests.collections.nlp.test_gpt_model import DEVICE_CAPABILITY
+
+DEVICE_CAPABILITY = None
+if torch.cuda.is_available():
+    DEVICE_CAPABILITY = torch.cuda.get_device_capability()
 
 
 def extract_ema_weights(pl_module, trainer):
@@ -69,13 +72,22 @@ class ExampleModel(ModelPT):
         dataset = RandomDataset(32, 16)
         return torch.utils.data.DataLoader(dataset, batch_size=2)
 
+    def test_dataloader(self):
+        dataset = RandomDataset(32, 16)
+        dl = torch.utils.data.DataLoader(dataset, batch_size=2)
+        self._test_names = ['test_{}_'.format(idx) for idx in range(len(dl))]
+        return dl
+
     def forward(self, batch):
         return self.l1(self.bn(batch)).sum()
+
+    def training_step(self, batch, batch_idx):
+        return self(batch)
 
     def validation_step(self, batch, batch_idx):
         return self(batch)
 
-    def training_step(self, batch, batch_idx):
+    def test_step(self, batch, batch_idx):
         return self(batch)
 
     def configure_optimizers(self):
@@ -88,6 +100,9 @@ class ExampleModel(ModelPT):
         pass
 
     def setup_validation_data(self, val_data_config: Union[DictConfig, Dict]):
+        pass
+
+    def setup_test_data(self, val_data_config: Union[DictConfig, Dict]):
         pass
 
     def validation_epoch_end(self, loss):
@@ -248,6 +263,27 @@ class TestEMAConfig:
         for saved_weight, ema_weight in zip(duplicate_model.state_dict().values(), ema_weights):
             assert torch.allclose(saved_weight.cpu(), ema_weight.cpu())
 
+    @pytest.mark.unit
+    def test_exp_manager_ema_weights_topk(self, tmpdir):
+        """Test to ensure that EMA correctly ensures we only keep topk checkpoints."""
+        tmp_path = tmpdir / "exp_manager_test"
+        model = ExampleModel()
+        save_top_k = 3
+
+        trainer = Trainer(max_epochs=10, enable_checkpointing=False, logger=False, devices=1)
+        exp_manager(
+            trainer,
+            {
+                "ema": {"enable": True},
+                "explicit_log_dir": str(tmp_path),
+                "checkpoint_callback_params": {"save_top_k": save_top_k},
+            },
+        )
+        trainer.fit(model)
+
+        # we save 3 checkpoints for the model, 3 accompanied EMA weights, the last checkpoint and nemo model.
+        assert len(os.listdir(tmp_path / "checkpoints/")) == (save_top_k + 1) * 2 + 1
+
 
 class TestEMATrain:
     @pytest.mark.unit
@@ -319,6 +355,23 @@ class TestEMATrain:
         trainer.callbacks.append(EMAAssertCallback())
         trainer.callbacks.insert(0, EMAValidationAssertCallback())
         trainer.fit(model=model, val_dataloaders=model.train_dataloader())
+
+    @pytest.mark.unit
+    def test_ema_run_with_save_best_model(self, tmpdir):
+        """Test to ensure that we save the model correctly when save best model is set to True."""
+        tmp_path = tmpdir / "exp_manager_test"
+        model = ExampleModel()
+
+        trainer = Trainer(max_epochs=1, enable_checkpointing=False, logger=False, devices=1, limit_train_batches=1)
+        exp_manager(
+            trainer,
+            {
+                "ema": {"enable": True},
+                "explicit_log_dir": str(tmp_path),
+                "checkpoint_callback_params": {"save_best_model": True},
+            },
+        )
+        trainer.fit(model)
 
 
 class EMAAssertCallback(Callback):

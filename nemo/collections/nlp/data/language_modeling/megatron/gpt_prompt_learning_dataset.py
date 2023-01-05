@@ -165,7 +165,15 @@ class GPTPromptLearningDataset(Dataset):
 
             # Try to truncate input text to fit into the max sequence length
             if len(input_ids) > self.max_seq_length:
-                input_ids = self._truncate_input(truncation_field, input_ids, taskname, doc)
+                input_ids = self._truncate_input(
+                    truncation_field,
+                    input_ids,
+                    taskname,
+                    doc,
+                    prompt_template,
+                    prompt_template_fields,
+                    virtual_token_splits,
+                )
 
             # Skip example if the final length doesn't fit length requirements even after truncation
             if self.min_seq_length <= len(input_ids) <= self.max_seq_length:
@@ -264,7 +272,9 @@ class GPTPromptLearningDataset(Dataset):
 
         return input_example
 
-    def _truncate_input(self, truncation_field, input_ids, taskname, doc):
+    def _truncate_input(
+        self, truncation_field, input_ids, taskname, doc, prompt_template, prompt_template_fields, virtual_token_splits
+    ):
         """ Try to truncate input text to fit into the max sequence length """
         logging.info(
             f"Input greater than max sequence length. Attempting to truncate: '{truncation_field}' in task: '{taskname}'"
@@ -272,17 +282,22 @@ class GPTPromptLearningDataset(Dataset):
 
         # Truncate the text ids in this part of input to try and fit max sequence length
         if truncation_field is not None and truncation_field in doc.keys():
-            truncation_length = len(input_ids) - self.max_seq_length
+            truncation_length = (len(input_ids) - self.max_seq_length) + 1
             field_text = doc[truncation_field]
-            field_text = self._add_leading_space(taskname, truncation_field, field_text)
 
             # Truncate field text
             field_text_ids = self.tokenizer.text_to_ids(field_text)
             truncated_text_ids = field_text_ids[: -min(truncation_length, len(field_text_ids))]
+            truncated_field_text = self.tokenizer.ids_to_text(truncated_text_ids)
+            doc[truncation_field] = truncated_field_text
 
-            # Replace original text ids with truncated text ids
-            field_start, field_end = find_subsequence_location(input_ids, field_text_ids)
-            input_ids = input_ids[:field_start] + truncated_text_ids + input_ids[field_end + 1 :]
+            # Re-insert the truncated text string into the text prompt
+            input_example = prompt_template
+            input_example = self._insert_text_in_template(input_example, prompt_template_fields, doc)
+            input_example = self._insert_virtual_token_placeholders(input_example, virtual_token_splits)
+
+            # Re-tokenize the whole prompt
+            input_ids = self.tokenizer.text_to_ids(input_example)
 
         return input_ids
 
@@ -405,35 +420,3 @@ class GPTPromptLearningDataset(Dataset):
         input_ids = torch.cuda.LongTensor(input_ids)
 
         return task_id_nums, (input_ids, input_lengths)
-
-
-def find_subsequence_location(sequence, subsequence):
-    """ Finds the start and end index of the first occurance 
-        of a given subsequence within a larger list. Returns 
-        the two indices corresponding to the postition of 
-        the first and last token of the subseqeunce.
-        Assumes subsequence is known to be in sequence. 
-    """
-    assert len(sequence) >= len(subsequence), "subsequence too long"
-
-    start_idx = None
-    next_subseq_token = subsequence[0]
-    next_subsequence_idx = 1
-
-    for seq_idx, token in enumerate(sequence):
-        if token == next_subseq_token:
-            if start_idx is None:
-                start_idx = seq_idx
-
-            if next_subsequence_idx == len(subsequence):
-                end_idx = seq_idx
-                return start_idx, end_idx
-            else:
-                next_subseq_token = subsequence[next_subsequence_idx]
-                next_subsequence_idx += 1
-        else:
-            start_idx = None
-            next_subseq_token = subsequence[0]
-            next_subsequence_idx = 1
-
-    raise ValueError("Subsequence not found in sequence")

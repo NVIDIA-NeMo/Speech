@@ -406,7 +406,7 @@ class HifiGanModel(Vocoder, Exportable):
         # Spanish, multi-speaker, 44100 Hz, Latin American Spanish OpenSLR
         model = PretrainedModelInfo(
             pretrained_model_name="tts_es_hifigan_ft_fastpitch_multispeaker",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_es_multispeaker_fastpitchhifigan/versions/1.14.0/files/tts_es_hifigan_ft_fastpitch_multispeaker.nemo",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_es_multispeaker_fastpitchhifigan/versions/1.15.0/files/tts_es_hifigan_ft_fastpitch_multispeaker.nemo",
             description="This model is trained on the audio from 6 crowdsourced Latin American Spanish OpenSLR "
             "datasets and finetuned on the mel-spectrograms generated from the FastPitch checkpoint "
             "`tts_es_fastpitch_multispeaker`. This model has been tested on generating male and female "

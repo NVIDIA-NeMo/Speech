@@ -403,7 +403,6 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             # Setup exit flags and counter
             not_blank = True
             symbols_added = 0
-
             # While blank is not predicted, or we dont run out of max symbols per timestep
             while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
                 # In the first timestep, we initialize the network with RNNT Blank
@@ -632,13 +631,13 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             # Initialize Hidden state matrix (shared by entire batch)
             hidden = None
 
-            # If alignments need to be preserved, register a danling list to hold the values
+            # If alignments need to be preserved, register a dangling list to hold the values
             if self.preserve_alignments:
                 # alignments is a 3-dimensional dangling list representing B x T x U
                 for hyp in hypotheses:
                     hyp.alignments = [[]]
 
-            # If confidence scores need to be preserved, register a danling list to hold the values
+            # If confidence scores need to be preserved, register a dangling list to hold the values
             if self.preserve_frame_confidence:
                 # frame_confidence is a 3-dimensional dangling list representing B x T x U
                 for hyp in hypotheses:
@@ -670,7 +669,6 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                 # Batch: [B, T, D], but Bi may have seq len < max(seq_lens_in_batch)
                 # Forcibly mask with "blank" tokens, for all sample where current time step T > seq_len
                 blank_mask = time_idx >= out_len
-
                 # Start inner loop
                 while not_blank and (self.max_symbols is None or symbols_added < self.max_symbols):
                     # Batch prediction and joint network steps
@@ -699,6 +697,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     # This is accumulating blanks over all time steps T and all target steps min(max_symbols, U)
                     k_is_blank = k == self._blank_index
                     blank_mask.bitwise_or_(k_is_blank)
+                    all_blanks = torch.all(blank_mask)
 
                     del k_is_blank
 
@@ -708,8 +707,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                         # Insert logprobs into last timestep per sample
                         logp_vals = logp.to('cpu')
                         logp_ids = logp_vals.max(1)[1]
-                        for batch_idx in range(batchsize):
-                            if time_idx < out_len[batch_idx]:
+                        for batch_idx, is_blank in enumerate(blank_mask):
+                            # we only want to update non-blanks, unless we are at the last step in the loop where
+                            # all elements produced blanks, otherwise there will be duplicate predictions
+                            # saved in alignments
+                            if time_idx < out_len[batch_idx] and (all_blanks or not is_blank):
                                 hypotheses[batch_idx].alignments[-1].append(
                                     (logp_vals[batch_idx], logp_ids[batch_idx])
                                 )
@@ -720,14 +722,14 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     if self.preserve_frame_confidence:
                         # Insert probabilities into last timestep per sample
                         confidence = self._get_confidence(logp)
-                        for batch_idx in range(batchsize):
-                            if time_idx < out_len[batch_idx]:
+                        for batch_idx, is_blank in enumerate(blank_mask):
+                            if time_idx < out_len[batch_idx] and (all_blanks or not is_blank):
                                 hypotheses[batch_idx].frame_confidence[-1].append(confidence[batch_idx])
                     del logp
 
                     # If all samples predict / have predicted prior blanks, exit loop early
                     # This is equivalent to if single sample predicted k
-                    if blank_mask.all():
+                    if all_blanks:
                         not_blank = False
 
                         # If preserving alignments, convert the current Uj alignments into a torch.Tensor
@@ -787,7 +789,6 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                                 hypotheses[kidx].y_sequence.append(ki)
                                 hypotheses[kidx].timestep.append(time_idx)
                                 hypotheses[kidx].score += float(v[kidx])
-
                         symbols_added += 1
 
             # Remove trailing empty list of alignments at T_{am-len} x Uj
@@ -912,6 +913,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     # This is accumulating blanks over all time steps T and all target steps min(max_symbols, U)
                     k_is_blank = k == self._blank_index
                     blank_mask.bitwise_or_(k_is_blank)
+                    all_blanks = torch.all(blank_mask)
 
                     # If preserving alignments, check if sequence length of sample has been reached
                     # before adding alignment
@@ -919,11 +921,15 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                         # Insert logprobs into last timestep per sample
                         logp_vals = logp.to('cpu')
                         logp_ids = logp_vals.max(1)[1]
-                        for batch_idx in range(batchsize):
-                            if time_idx < out_len[batch_idx]:
+                        for batch_idx, is_blank in enumerate(blank_mask):
+                            # we only want to update non-blanks, unless we are at the last step in the loop where
+                            # all elements produced blanks, otherwise there will be duplicate predictions
+                            # saved in alignments
+                            if time_idx < out_len[batch_idx] and (all_blanks or not is_blank):
                                 hypotheses[batch_idx].alignments[-1].append(
                                     (logp_vals[batch_idx], logp_ids[batch_idx])
                                 )
+
                         del logp_vals
 
                     # If preserving per-frame confidence, check if sequence length of sample has been reached
@@ -931,8 +937,8 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     if self.preserve_frame_confidence:
                         # Insert probabilities into last timestep per sample
                         confidence = self._get_confidence(logp)
-                        for batch_idx in range(batchsize):
-                            if time_idx < out_len[batch_idx]:
+                        for batch_idx, is_blank in enumerate(blank_mask):
+                            if time_idx < out_len[batch_idx] and (all_blanks or not is_blank):
                                 hypotheses[batch_idx].frame_confidence[-1].append(confidence[batch_idx])
                     del logp
 

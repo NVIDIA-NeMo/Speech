@@ -988,6 +988,22 @@ pipeline {
         }
       }
     }
+    stage('L2: Transducer alignment') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('Running pytest') {
+          steps {
+            sh 'pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1'
+          }
+        }
+      }
+    }
 
     stage('L2: Segmentation Tool') {
       when {

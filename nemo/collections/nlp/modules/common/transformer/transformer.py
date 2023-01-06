@@ -92,6 +92,7 @@ class TransformerEncoderNM(EncoderModule, Exportable):
         mask_future: bool = False,
         pre_ln: bool = False,
         pre_ln_final_layer_norm: bool = True,
+        padding_idx: int = 0,
     ):
         super().__init__()
 
@@ -106,6 +107,7 @@ class TransformerEncoderNM(EncoderModule, Exportable):
             num_token_types=num_token_types,
             embedding_dropout=embedding_dropout,
             learn_positional_encodings=learn_positional_encodings,
+            padding_idx=padding_idx,
         )
 
         self._encoder = TransformerEncoder(
@@ -179,6 +181,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
         hidden_act: str = 'relu',
         pre_ln: bool = False,
         pre_ln_final_layer_norm: bool = True,
+        padding_idx: int = 0,
     ):
         super().__init__()
 
@@ -197,6 +200,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             num_token_types=num_token_types,
             embedding_dropout=embedding_dropout,
             learn_positional_encodings=learn_positional_encodings,
+            padding_idx=padding_idx,
         )
 
         self._decoder = TransformerDecoder(

@@ -29,6 +29,7 @@ def get_nemo_transformer(
     config_dict: Optional[Union[dict, DictConfig]] = None,
     encoder: bool = True,
     pre_ln_final_layer_norm: bool = True,
+    padding_idx: int = 0,
 ) -> Union[TransformerEncoderNM, TransformerDecoderNM]:
     """Returns NeMo transformer.
     The following configurations are mandatory:
@@ -85,6 +86,7 @@ def get_nemo_transformer(
                 pre_ln=cfg.get('pre_ln', False),
                 pre_ln_final_layer_norm=pre_ln_final_layer_norm,
                 num_token_types=cfg.get('num_token_types', 2),
+                padding_idx=padding_idx,
             )
         elif arch in TransformerBottleneckEncoderNM._SUPPORTED_ARCH:
             model = TransformerBottleneckEncoderNM(
@@ -109,6 +111,7 @@ def get_nemo_transformer(
                 hidden_blocks=cfg.get('hidden_blocks', 1),
                 hidden_init_method=cfg.get('hidden_init_method', 'default'),
                 return_mask=cfg.get('return_mask', True),
+                padding_idx=padding_idx,
             )
         else:
             raise ValueError(f"Unknown arch = {arch}")
@@ -129,6 +132,7 @@ def get_nemo_transformer(
             pre_ln=cfg.get('pre_ln', False),
             pre_ln_final_layer_norm=pre_ln_final_layer_norm,
             num_token_types=cfg.get('num_token_types', 2),
+            padding_idx=padding_idx,
         )
 
     return model

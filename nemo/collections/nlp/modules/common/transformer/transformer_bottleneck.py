@@ -82,6 +82,7 @@ class TransformerBottleneckEncoderNM(TransformerEncoderNM):
         hidden_steps: int = -1,
         hidden_blocks: int = 1,
         hidden_init_method: str = "default",
+        padding_idx: int = 0,
         # default whether forward() method returns hidden or (hidden, mask)
         return_mask=True,
     ):
@@ -102,6 +103,7 @@ class TransformerBottleneckEncoderNM(TransformerEncoderNM):
             mask_future=mask_future,
             pre_ln=pre_ln,
             pre_ln_final_layer_norm=pre_ln_final_layer_norm,
+            padding_idx=padding_idx,
         )
 
         self._arch = arch

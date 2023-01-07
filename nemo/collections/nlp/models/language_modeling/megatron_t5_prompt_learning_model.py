@@ -429,7 +429,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
         rank = parallel_state.get_data_parallel_rank()
         world_size = parallel_state.get_data_parallel_world_size()
         sampler = torch.utils.data.distributed.DistributedSampler(
-            dataset, num_replicas=world_size, rank=rank, shuffle=shuffle
+            dataset, num_replicas=world_size, rank=rank, shuffle=shuffle, seed=self.cfg.seed
         )
 
         dataloader = torch.utils.data.DataLoader(

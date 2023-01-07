@@ -848,7 +848,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         rank = parallel_state.get_data_parallel_rank()
         data_parallel_size = parallel_state.get_data_parallel_world_size()
         sampler = torch.utils.data.distributed.DistributedSampler(
-            dataset, num_replicas=data_parallel_size, rank=rank, shuffle=shuffle
+            dataset, num_replicas=data_parallel_size, rank=rank, shuffle=shuffle, seed=self.cfg.seed
         )
 
         assert batch_size % data_parallel_size == 0, "Global batch size must be evenly divisible by data parallel size"

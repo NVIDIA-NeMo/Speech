@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from argparse import Namespace
 from pathlib import Path
 
+from lightning_utilities.core.apply_func import apply_to_collection
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from pytorch_lightning.loggers import Logger
+from pytorch_lightning.utilities.logger import _convert_params, _flatten_dict, _sanitize_callable_params
+from pytorch_lightning.utilities.parsing import AttributeDict
 
 from nemo.utils import logging
 
@@ -57,6 +62,13 @@ class DLLogger(Logger):
         dllogger.init(backends=backends)
 
     def log_hyperparams(self, params, *args, **kwargs):
+        if isinstance(params, Namespace):
+            params = vars(params)
+        elif isinstance(params, AttributeDict):
+            params = dict(params)
+        params = apply_to_collection(params, (DictConfig, ListConfig), OmegaConf.to_container, resolve=True)
+        params = apply_to_collection(params, Path, str)
+        params = _sanitize_callable_params(_flatten_dict(_convert_params(params)))
         dllogger.log(step="PARAMETER", data=params)
 
     def log_metrics(self, metrics, step=None):

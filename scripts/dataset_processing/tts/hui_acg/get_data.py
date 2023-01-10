@@ -55,7 +55,8 @@ def get_args():
         description="Download HUI-Audio-Corpus-German and create manifests with predefined split. "
         "Please check details about the corpus in https://github.com/iisys-hof/HUI-Audio-Corpus-German.",
     )
-    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--data-root", required=True, type=Path, help="where the resulting dataset will reside.")
+    parser.add_argument("--manifests-root", required=True, type=Path, help="where the manifests files will reside.")
     parser.add_argument("--set-type", default="clean", choices=["full", "clean"], type=str)
     parser.add_argument("--min-duration", default=0.1, type=float)
     parser.add_argument("--max-duration", default=15, type=float)
@@ -211,6 +212,7 @@ def __text_normalization(json_file, num_workers=-1):
 def main():
     args = get_args()
     data_root = args.data_root
+    manifests_root = args.manifests_root
     set_type = args.set_type
 
     dataset_root = data_root / f"HUI-Audio-Corpus-German-{set_type}"
@@ -291,14 +293,14 @@ def main():
     # save speaker stats.
     df = pd.DataFrame.from_records(speaker_entries)
     df.sort_values(by="hours", ascending=False, inplace=True)
-    spk2id_file_path = dataset_root / "spk2id.csv"
+    spk2id_file_path = manifests_root / "spk2id.csv"
     df.to_csv(spk2id_file_path, index=False)
     logging.info(f"Saving Speaker to ID mapping to {spk2id_file_path}.")
 
     # save json splits.
-    train_json = dataset_root / "train_manifest.json"
-    val_json = dataset_root / "val_manifest.json"
-    test_json = dataset_root / "test_manifest.json"
+    train_json = manifests_root / "train_manifest.json"
+    val_json = manifests_root / "val_manifest.json"
+    test_json = manifests_root / "test_manifest.json"
     __save_json(train_json, entries_train)
     __save_json(val_json, entries_val)
     __save_json(test_json, entries_test)

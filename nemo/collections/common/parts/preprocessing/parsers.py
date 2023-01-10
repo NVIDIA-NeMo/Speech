@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-'''
+"""
 A collection of simple character based parsers. These parser handle cleaning and tokenization by default.
 We currently support English.
-'''
+"""
 
 import string
 from typing import List, Optional
@@ -223,7 +223,7 @@ def make_parser(labels: Optional[List[str]] = None, name: str = 'base', **kwargs
 
     Args:
         labels: List of labels to allocate indexes for. If set to
-            None then labels would be ascii table list. Essentially, this is a
+            None then labels would be ascii table list. Essentially, this is an
             id to str mapping (default: None).
         name: Concise name of parser to create (default: 'base').
             (default: -1).

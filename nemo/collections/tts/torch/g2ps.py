@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO (xueyang): deprecate this file since no other places import modules from here anymore. However,
+# TODO @xueyang: deprecate this file since no other places import modules from here anymore. However,
 #  all checkpoints uploaded in ngc used this path. So it requires to update all ngc checkpoints g2p path as well.
 from nemo_text_processing.g2p.modules import IPAG2P, BaseG2p, EnglishG2p

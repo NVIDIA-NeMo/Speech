@@ -118,7 +118,6 @@ class TTSDataset(Dataset):
                     "normalized_text": <NORMALIZED_TRANSCRIPT> (Optional),
                     "mel_filepath": <PATH_TO_LOG_MEL_PT> (Optional),
                     "duration": <Duration of audio clip in seconds> (Optional),
-                    "is_phoneme": <0: default, 1: if normalized_text is phonemes> (Optional)
             sample_rate (int): The sample rate of the audio. Or the sample rate that we will resample all files to.
             text_tokenizer (Optional[Union[BaseTokenizer, Callable[[str], List[int]]]]): BaseTokenizer or callable which represents text tokenizer.
             tokens (Optional[List[str]]): Tokens from text_tokenizer. Should be specified if text_tokenizer is not BaseTokenizer.
@@ -224,7 +223,6 @@ class TTSDataset(Dataset):
                         "mel_filepath": item["mel_filepath"] if "mel_filepath" in item else None,
                         "duration": item["duration"] if "duration" in item else None,
                         "speaker_id": item["speaker"] if "speaker" in item else None,
-                        "is_phoneme": item["is_phoneme"] if "is_phoneme" in item else None,
                     }
 
                     if "normalized_text" in item:
@@ -487,8 +485,6 @@ class TTSDataset(Dataset):
         # Let's keep audio name and all internal directories in rel_audio_path_as_text_id to avoid any collisions
         rel_audio_path = Path(sample["audio_filepath"]).relative_to(self.base_data_dir).with_suffix("")
         rel_audio_path_as_text_id = str(rel_audio_path).replace("/", "_")
-        if sample["is_phoneme"] == 1:
-            rel_audio_path_as_text_id += "_phoneme"
 
         # Load audio
         features = self.featurizer.process(

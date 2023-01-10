@@ -95,6 +95,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
                 assert self.vocab is not None
                 input_fft_kwargs["n_embed"] = len(self.vocab.tokens)
                 input_fft_kwargs["padding_idx"] = self.vocab.pad
+            # TODO @xueyang: remove AudioToCharWithPriorAndPitchDataset because it has been deprecated already.
             elif self.ds_class_name == "AudioToCharWithPriorAndPitchDataset":
                 logging.warning(
                     "AudioToCharWithPriorAndPitchDataset class has been deprecated. No support for"
@@ -211,6 +212,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
 
+        # TODO @xueyang: rename the instance of tokenizer because vocab is misleading.
         self.vocab = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     @property
@@ -506,7 +508,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):
             raise ValueError(f"No dataset for {name}")
         if "dataloader_params" not in cfg or not isinstance(cfg.dataloader_params, DictConfig):
-            raise ValueError(f"No dataloder_params for {name}")
+            raise ValueError(f"No dataloader_params for {name}")
         if shuffle_should_be:
             if 'shuffle' not in cfg.dataloader_params:
                 logging.warning(

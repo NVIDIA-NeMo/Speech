@@ -21,7 +21,10 @@ dataset:
   max_duration: null
   min_duration: 0.1
   ignore_file: null
-  trim: false
+  trim: true
+  trim_top_db: 50
+  trim_frame_length: ${dataset.win_length}
+  trim_hop_length: ${dataset.hop_length}
   pitch_fmin: 65.40639132514966
   pitch_fmax: 2093.004522404789
 
@@ -41,4 +44,3 @@ dataset:
     punct: true
     apostrophe: true
     pad_with_space: true
-    phonemes: true

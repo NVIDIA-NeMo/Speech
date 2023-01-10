@@ -81,7 +81,7 @@ class TestTTSTokenizers:
     @pytest.mark.unit
     def test_german_chars_tokenizer(self):
         input_text = "Was ist dein Lieblingsgetränk?"
-        expected_output = "was ist dein lieblingsgetränk?"
+        expected_output = "Was ist dein Lieblingsgetränk?"
 
         tokenizer = GermanCharsTokenizer()
         chars, tokens = self._parse_text(tokenizer, input_text)

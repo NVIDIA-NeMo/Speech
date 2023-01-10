@@ -40,8 +40,6 @@ def get_sup_data_file_path(entry: dict, base_audio_path: Path, sup_data_path: Pa
     audio_path = Path(entry["audio_filepath"])
     rel_audio_path = audio_path.relative_to(base_audio_path).with_suffix("")
     audio_id = str(rel_audio_path).replace(os.sep, "_")
-    if "is_phoneme" in entry and entry["is_phoneme"] == 1:
-        audio_id += "_phoneme"
     file_name = f"{audio_id}.pt"
     file_path = Path(os.path.join(sup_data_path, file_name))
     return file_path

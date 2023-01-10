@@ -15,8 +15,8 @@ pitch_fmax: 2093.004522404789
 
 # these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
 # by running `scripts/dataset_processing/tts/extract_sup_data.py`
-pitch_mean: ???  # e.g. 132.524658203125 for http://www.openslr.org/95/
-pitch_std: ???   # e.g.  37.389366149902 for http://www.openslr.org/95/
+pitch_mean: ???  # e.g. 132.524658203125 for https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1
+pitch_std: ???   # e.g.  37.389366149902 for https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1
 
 # Default values for dataset with sample_rate=22050
 sample_rate: 22050
@@ -70,7 +70,6 @@ model:
     punct: true
     apostrophe: true
     pad_with_space: true
-    phonemes: true
 
   train_ds:
     dataset:
@@ -86,10 +85,13 @@ model:
       n_mels: ${model.n_mel_channels}
       lowfreq: ${model.lowfreq}
       highfreq: ${model.highfreq}
-      max_duration: 14 # change to null to include longer audios.
+      max_duration: 15  # change to null to include longer audios.
       min_duration: 0.1
       ignore_file: null
-      trim: false
+      trim: true
+      trim_top_db: 50
+      trim_frame_length: ${model.n_window_size}
+      trim_hop_length: ${model.n_window_stride}
       pitch_fmin: ${model.pitch_fmin}
       pitch_fmax: ${model.pitch_fmax}
       pitch_norm: true
@@ -101,6 +103,7 @@ model:
       shuffle: true
       batch_size: 32
       num_workers: 12
+      pin_memory: true
 
   validation_ds:
     dataset:
@@ -116,10 +119,13 @@ model:
       n_mels: ${model.n_mel_channels}
       lowfreq: ${model.lowfreq}
       highfreq: ${model.highfreq}
-      max_duration: 14 # change to null to include longer audios.
+      max_duration: 15  # change to null to include longer audios.
       min_duration: 0.1
       ignore_file: null
-      trim: false
+      trim: true
+      trim_top_db: 50
+      trim_frame_length: ${model.n_window_size}
+      trim_hop_length: ${model.n_window_stride}
       pitch_fmin: ${model.pitch_fmin}
       pitch_fmax: ${model.pitch_fmax}
       pitch_norm: true
@@ -130,7 +136,8 @@ model:
       drop_last: false
       shuffle: false
       batch_size: 32
-      num_workers: 2
+      num_workers: 8
+      pin_memory: true
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
@@ -203,8 +210,7 @@ model:
   optim:
     name: adamw
     lr: 1e-3
-    # optimizer arguments
-    betas: [0.9, 0.999]
+    betas: [ 0.9, 0.999 ]
     weight_decay: 1e-6
 
     sched:
@@ -215,15 +221,15 @@ model:
 
 trainer:
   num_nodes: 1
-  devices: -1 # number of gpus
+  devices: -1  # specify all GPUs regardless of its availability
   accelerator: gpu
   strategy: ddp
   precision: 16
-  max_epochs: 1000
+  max_epochs: 1500
   accumulate_grad_batches: 1
   gradient_clip_val: 1000.0
-  enable_checkpointing: false # Provided by exp_manager
-  logger: false # Provided by exp_manager
+  enable_checkpointing: false  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
   log_every_n_steps: 100
   check_val_every_n_epoch: 5
   benchmark: false

@@ -130,6 +130,36 @@ def english_text_preprocessing(text, lower=True):
     return text
 
 
+def german_text_preprocessing(text: str) -> str:
+    """
+    TODO @xueyang: Apply NFC form may be too aggressive since it would ignore some accented characters that do not exist
+      in predefined German alphabet (nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon.IPA_CHARACTER_SETS),
+      such as 'é'. This is not expected. A better solution is to add an extra normalization with NFD to discard the
+      diacritics and consider 'é' and 'e' produce similar pronunciations.
+
+    Note that the tokenizer needs to run `unicodedata.normalize("NFC", x)` before calling `encode` function,
+    especially for the characters that have diacritics, such as 'ö' in the German alphabet. 'ö' can be encoded as
+    b'\xc3\xb6' (one char) as well as b'o\xcc\x88' (two chars). Without the normalization of composing two chars
+    together and without a complete predefined set of diacritics, when the tokenizer reads the input sentence
+    char-by-char, it would skip the combining diaeresis b'\xcc\x88', resulting in indistinguishable pronunciations
+    for 'ö' and 'o'.
+
+    Args:
+        text (str): the original input sentence.
+
+    Returns:
+        NFC normalized sentence (str).
+    """
+    res = []
+    for c in unicodedata.normalize("NFC", text):
+        if c in ['’']:  # right single quotation mark as an apostrophe, U+2019, decimal 8217
+            res.append("'")
+        else:
+            res.append(c)
+
+    return ''.join(res)
+
+
 def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], bool]]:
     """
     Process a list of words and attach indicators showing if each word is unchangeable or not. Each word representation
@@ -199,10 +229,6 @@ def any_locale_word_tokenize(text):
 
 
 def any_locale_text_preprocessing(text):
-    return text.lower()
-
-
-def german_text_preprocessing(text):
     return text.lower()
 
 

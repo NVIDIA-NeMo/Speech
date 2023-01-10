@@ -27,7 +27,11 @@ from nemo_text_processing.g2p.data.data_utils import (
     spanish_text_preprocessing,
 )
 
-from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import get_ipa_punctuation_list, validate_locale
+from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
+    get_grapheme_character_set,
+    get_ipa_punctuation_list,
+    validate_locale,
+)
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
@@ -85,6 +89,7 @@ class BaseTokenizer(ABC):
 
 class BaseCharsTokenizer(BaseTokenizer):
     # fmt: off
+    # TODO @xueyang: unify definition of the default PUNCT_LIST and import from ipa_lexicon.py
     PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
         ',', '.', '!', '?', '-',
         ':', ';', '/', '"', '(',
@@ -138,13 +143,13 @@ class BaseCharsTokenizer(BaseTokenizer):
 
         text = self.text_preprocessing_func(text)
         for c in text:
-            # Add space if last one isn't one
+            # Add a whitespace if the current char is a whitespace while the previous char is not a whitespace.
             if c == space and len(cs) > 0 and cs[-1] != space:
                 cs.append(c)
-            # Add next char
+            # Add the current char that is an alphanumeric or an apostrophe.
             elif (c.isalnum() or c == "'") and c in tokens:
                 cs.append(c)
-            # Add punct
+            # Add a punctuation that has a single char.
             elif (c in self.PUNCT_LIST) and self.punct:
                 cs.append(c)
             # Warn about unknown char
@@ -195,25 +200,22 @@ class EnglishCharsTokenizer(BaseCharsTokenizer):
 
 
 class GermanCharsTokenizer(BaseCharsTokenizer):
-    # fmt: off
-    PUNCT_LIST = (  # Derived from LJSpeech and "/" additionally
-        ',', '.', '!', '?', '-',
-        ':', ';', '/', '"', '(',
-        ')', '[', ']', '{', '}',
-    )
-    # fmt: on
+
+    _LOCALE = "de-DE"
+    _PUNCT_LIST = get_ipa_punctuation_list(_LOCALE)
+    _CHARSET_STR = get_grapheme_character_set(locale=_LOCALE, case="mixed")
 
     def __init__(
         self,
+        chars=_CHARSET_STR,
         punct=True,
         apostrophe=True,
         add_blank_at=None,
         pad_with_space=False,
-        non_default_punct_list=None,
+        non_default_punct_list=_PUNCT_LIST,
         text_preprocessing_func=german_text_preprocessing,
-        phonemes=True,
     ):
-        """Deutsch char-based tokenizer.
+        """German grapheme-based tokenizer.
         Args:
             punct: Whether to reserve grapheme for basic punctuation or not.
             apostrophe: Whether to use apostrophe or not.
@@ -221,16 +223,11 @@ class GermanCharsTokenizer(BaseCharsTokenizer):
              if None then no blank in labels.
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             non_default_punct_list: List of punctuation marks which will be used instead default.
-            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Currently, it only applies lower() function.
+            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer. By default, it
+            would keep any word unchanged.
         """
-
-        de_alphabet = "abcdefghijklmnopqrstuvwxyzäöüß"
-        if phonemes:
-            de_ipa = "ʊʃŋɜːɛɾəɪçɔøɡœɑÜ„1Q̃ɒʒÄɹÖʌθàó̈ðéɐá"
-            de_alphabet += de_ipa
         super().__init__(
-            chars=de_alphabet,
+            chars=chars,
             punct=punct,
             apostrophe=apostrophe,
             add_blank_at=add_blank_at,
@@ -394,7 +391,7 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
              Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
+             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
         """
 
         self.phoneme_probability = None
@@ -661,7 +658,6 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         g2p,
         punct=True,
         non_default_punct_list=None,
-        chars=False,
         *,
         space=' ',
         silence=None,
@@ -676,7 +672,6 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             g2p: Grapheme to phoneme module.
             punct: Whether to reserve grapheme for basic punctuation or not.
             non_default_punct_list: List of punctuation marks which will be used instead default.
-            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return chars too.
             space: Space token as string.
             silence: Silence token as string (will be disabled if it is None).
             apostrophe: Whether to use apostrophe or not.
@@ -686,7 +681,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
              Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't applied here, in case the text contains phonemes (it will be handled by g2p).
+             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
         """
         tokens = []
         self.space, tokens = len(tokens), tokens + [space]  # Space

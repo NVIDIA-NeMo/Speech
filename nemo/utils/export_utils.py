@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nemo.utils import CastToFloat, logging
+from nemo.utils import CastToFloat, CastToFloatAll, logging
 
 try:
     import onnxruntime
@@ -117,13 +117,13 @@ def to_onnxrt_input(ort_input_names, input_names, input_dict, input_list):
     return odict
 
 
-def verify_torchscript(model, output, input_examples, input_names, check_tolerance=0.01):
+def verify_torchscript(model, output, input_examples, check_tolerance=0.01):
     all_good = True
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)
-        output_example = model.forward(*input_list, **input_dict)
         # We disable autocast here to make sure exported TS will run under Triton or other C++ env
         with torch.cuda.amp.autocast(enabled=False):
+            output_example = model.forward(*input_list, **input_dict)
             ts_model = torch.jit.load(output)
             all_good = all_good and run_ts_and_compare(
                 ts_model, input_list, input_dict, output_example, check_tolerance
@@ -404,16 +404,7 @@ def script_module(m: nn.Module):
     return torch.jit.script(m)
 
 
-default_replacements = {
-    "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
-    "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
-    "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
-    "MatchedScaleMaskSoftmax": wrap_module(None, replace_MatchedScaleMaskSoftmax),
-}
-
-script_replacements = {
-    "BiLSTM": script_module,
-}
+script_replacements = {}
 
 
 def replace_for_export(model: nn.Module) -> nn.Module:
@@ -426,6 +417,17 @@ def replace_for_export(model: nn.Module) -> nn.Module:
     Returns:
         model, possibly modified in-place
     """
+    from nemo.collections.tts.modules.submodules import MaskedInstanceNorm1d
+
+    default_replacements = {
+        "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
+        "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
+        "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
+        "InstanceNorm1d": wrap_module(nn.InstanceNorm1d, CastToFloat),
+        "MaskedInstanceNorm1d": wrap_module(MaskedInstanceNorm1d, CastToFloatAll),
+        "MatchedScaleMaskSoftmax": wrap_module(None, replace_MatchedScaleMaskSoftmax),
+    }
+
     replace_modules(model, default_Apex_replacements)
     replace_modules(model, default_replacements)
     # This one has to be the last

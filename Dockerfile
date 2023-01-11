@@ -16,7 +16,6 @@
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:22.12-py3
 
-
 # build an image that includes only the nemo dependencies, ensures that dependencies
 # are included first for optimal caching, and useful for building a development
 # image (by specifying build target as `nemo-deps`)

@@ -15,8 +15,8 @@
 import torch
 from torch.nn import functional as F
 
+from nemo.collections.tts.helpers.helpers import get_mask_from_lengths
 from nemo.collections.tts.losses.aligner_loss import ForwardSumLoss
-from nemo.collections.tts.modules.common import get_mask_from_lengths
 from nemo.core.classes import Loss
 
 

@@ -92,7 +92,7 @@ class DAP(AttributeProcessing):
         outputs = {'x_hat': x_hat, 'x': x}
         return outputs
 
-    def infer(self, z, txt_enc, spk_emb, lens=None):
+    def infer(self, txt_enc, spk_emb, lens=None):
         x_hat = self.forward(txt_enc, spk_emb, x=None, lens=lens)['x_hat']
         x_hat = self.denormalize(x_hat)
         return x_hat

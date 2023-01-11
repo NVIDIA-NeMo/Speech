@@ -68,9 +68,8 @@ class Tacotron2Loss(Loss):
             spec_pred_dec = torch.nn.functional.pad(spec_pred_dec, (0, pad_amount), value=pad_value)
             spec_pred_postnet = torch.nn.functional.pad(spec_pred_postnet, (0, pad_amount), value=pad_value)
             gate_pred = torch.nn.functional.pad(gate_pred, (0, pad_amount), value=1e3)
-            max_len = spec_pred_dec.shape[2]
 
-        mask = ~get_mask_from_lengths(spec_target_len, max_len=max_len)
+        mask = ~get_mask_from_lengths(spec_target_len, spec_pred_dec)
         mask = mask.expand(spec_target.shape[1], mask.size(0), mask.size(1))
         mask = mask.permute(1, 0, 2)
         spec_pred_dec.data.masked_fill_(mask, pad_value)

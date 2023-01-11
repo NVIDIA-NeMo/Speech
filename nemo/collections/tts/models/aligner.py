@@ -117,7 +117,7 @@ class AlignerModel(ModelPT):
             attn_soft, attn_logprob = self.alignment_encoder(
                 queries=spec,
                 keys=self.embed(text).transpose(1, 2),
-                mask=get_mask_from_lengths(text_len).unsqueeze(-1) == 0,
+                mask=get_mask_from_lengths(text_len).unsqueeze(-1),
                 attn_prior=attn_prior,
             )
 

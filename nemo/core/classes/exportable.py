@@ -16,7 +16,6 @@ from typing import List, Union
 
 import torch
 from pytorch_lightning.core.module import _jit_is_scripting
-from torch.onnx import TrainingMode
 
 from nemo.core.classes import typecheck
 from nemo.core.utils.neural_type_utils import get_dynamic_axes, get_io_names
@@ -56,7 +55,6 @@ class Exportable(ABC):
         verbose=False,
         do_constant_folding=True,
         onnx_opset_version=None,
-        training=TrainingMode.EVAL,
         check_trace: Union[bool, List[torch.Tensor]] = False,
         dynamic_axes=None,
         check_tolerance=0.01,
@@ -74,7 +72,6 @@ class Exportable(ABC):
                 verbose=verbose,
                 do_constant_folding=do_constant_folding,
                 onnx_opset_version=onnx_opset_version,
-                training=training,
                 check_trace=check_trace,
                 dynamic_axes=dynamic_axes,
                 check_tolerance=check_tolerance,
@@ -96,7 +93,6 @@ class Exportable(ABC):
         verbose=False,
         do_constant_folding=True,
         onnx_opset_version=None,
-        training=TrainingMode.EVAL,
         check_trace: Union[bool, List[torch.Tensor]] = False,
         dynamic_axes=None,
         check_tolerance=0.01,
@@ -105,6 +101,10 @@ class Exportable(ABC):
     ):
         my_args = locals().copy()
         my_args.pop('self')
+
+        self.eval()
+        for param in self.parameters():
+            param.requires_grad = False
 
         exportables = []
         for m in self.modules():
@@ -115,9 +115,9 @@ class Exportable(ABC):
         format = get_export_format(output)
         output_descr = f"{qual_name} exported to {format}"
 
-        # Pytorch's default for None is too low, can't pass None through
+        # Pytorch's default opset version is too low, using reasonable latest one
         if onnx_opset_version is None:
-            onnx_opset_version = 13
+            onnx_opset_version = 16
 
         try:
             # Disable typechecks
@@ -127,9 +127,7 @@ class Exportable(ABC):
             forward_method, old_forward_method = wrap_forward_method(self)
 
             # Set module mode
-            with torch.onnx.select_model_mode_for_export(
-                self, training
-            ), torch.inference_mode(), torch.no_grad(), torch.jit.optimized_execution(True), _jit_is_scripting():
+            with torch.inference_mode(), torch.no_grad(), torch.jit.optimized_execution(True), _jit_is_scripting():
 
                 if input_example is None:
                     input_example = self.input_module.input_example()
@@ -153,9 +151,8 @@ class Exportable(ABC):
                         check_trace_input = [input_example]
                     else:
                         check_trace_input = check_trace
-
+                jitted_model = self
                 if format == ExportFormat.TORCHSCRIPT:
-
                     jitted_model = torch.jit.trace_module(
                         self,
                         {"forward": tuple(input_list) + tuple(input_dict.values())},
@@ -163,24 +160,21 @@ class Exportable(ABC):
                         check_trace=check_trace,
                         check_tolerance=check_tolerance,
                     )
-                    if not self.training:
-                        jitted_model = torch.jit.optimize_for_inference(torch.jit.freeze(jitted_model))
+                    jitted_model = torch.jit.optimize_for_inference(torch.jit.freeze(jitted_model))
                     if verbose:
                         logging.info(f"JIT code:\n{jitted_model.code}")
                     jitted_model.save(output)
                     jitted_model = torch.jit.load(output)
 
                     if check_trace:
-                        verify_torchscript(jitted_model, output, check_trace_input, input_names, check_tolerance)
-
+                        verify_torchscript(jitted_model, output, check_trace_input, check_tolerance)
                 elif format == ExportFormat.ONNX:
                     # dynamic axis is a mapping from input/output_name => list of "dynamic" indices
                     if dynamic_axes is None:
                         dynamic_axes = get_dynamic_axes(self.input_module.input_types, input_names)
                         dynamic_axes.update(get_dynamic_axes(self.output_module.output_types, output_names))
-
                     torch.onnx.export(
-                        self,
+                        jitted_model,
                         input_example,
                         output,
                         input_names=input_names,

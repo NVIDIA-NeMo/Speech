@@ -16,6 +16,7 @@
 from nemo.utils.app_state import AppState
 from nemo.utils.cast_utils import (
     CastToFloat,
+    CastToFloatAll,
     avoid_bfloat16_autocast_context,
     avoid_float16_autocast_context,
     cast_all,

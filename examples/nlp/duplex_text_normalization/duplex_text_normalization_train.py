@@ -34,7 +34,7 @@ line arguments by `--config-name=CONFIG_FILE_PATH'. Probably it is worth looking
 at the example config file to see the list of parameters used for training.
 
 USAGE Example:
-1. Obtain a processed dataset (refer to the `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization.rst>`)
+1. Obtain a processed dataset (refer to the `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization/nn_text_normalization.rst>`)
 2. Run:
 # python duplex_text_normalization_train.py \
         data.validation_ds.data_path=PATH_TO_VALIDATION_FILE \
@@ -65,6 +65,11 @@ Or you can also train only a decoder (without training a tagger):
         mode={tn,itn,joint} \
         lang={en,ru,de} \
         tagger_model.do_training=false
+
+To use tarred dataset for decoder training set:
+
+    data.train_ds.use_tarred_dataset=True \
+    data.train_ds.tar_metadata_file=\PATH_TO\<TARRED_DATA_OUTPUT_DIR>\metadata.json
 
 Information on the arguments:
 

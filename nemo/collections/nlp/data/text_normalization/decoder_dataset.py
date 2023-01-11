@@ -33,7 +33,7 @@ from nemo.collections.nlp.data.text_normalization.utils import read_data_file
 from nemo.core.classes import Dataset
 from nemo.utils import logging
 
-__all__ = ['TextNormalizationDecoderDataset']
+__all__ = ['TextNormalizationDecoderDataset', 'TarredTextNormalizationDecoderDataset']
 
 
 class TextNormalizationDecoderDataset(Dataset):
@@ -45,7 +45,7 @@ class TextNormalizationDecoderDataset(Dataset):
     Args:
         input_file: path to the raw data file (e.g., train.tsv).
             For more info about the data format, refer to the
-            `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization.rst>`.
+            `text_normalization doc <https://github.com/NVIDIA/NeMo/blob/main/docs/source/nlp/text_normalization/nn_text_normalization.rst>`.
         raw_instances: processed raw instances in the Google TN dataset format (used for tarred dataset)
         tokenizer: tokenizer of the model that will be trained on the dataset
         tokenizer_name: name of the tokenizer,

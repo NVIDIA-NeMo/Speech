@@ -1,3 +1,4 @@
+Jinja2<3.1
 latexcodec
 numpy
 sphinx>=3.0

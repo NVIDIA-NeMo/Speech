@@ -116,8 +116,12 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         return_hypotheses: bool = False,
         num_workers: int = 0,
         channel_selector: Optional[ChannelSelectorType] = None,
+        augmentor: DictConfig = None,
     ) -> List[str]:
         """
+        If modify this function, please remember update transcribe_partial_audio() in 
+        nemo/collections/asr/parts/utils/trancribe_utils.py
+
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
 
         Args:
@@ -131,7 +135,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
-
+            augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
         """
@@ -181,6 +185,9 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
                     'num_workers': num_workers,
                     'channel_selector': channel_selector,
                 }
+
+                if augmentor:
+                    config['augmentor'] = augmentor
 
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
                 for test_batch in tqdm(temporary_datalayer, desc="Transcribing"):
@@ -724,6 +731,8 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             'pin_memory': True,
             'channel_selector': config.get('channel_selector', None),
         }
+        if config.get("augmentor"):
+            dl_config['augmentor'] = config.get("augmentor")
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
         return temporary_datalayer

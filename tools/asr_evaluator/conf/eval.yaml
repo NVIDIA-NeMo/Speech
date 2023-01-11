@@ -1,0 +1,69 @@
+env:
+    save_git_hash: True
+
+engine:    
+    model_path: null  
+    pretrained_name: null
+
+    inference: 
+        mode: offline # choose from offline, chunked or offline_by_chunked
+        chunk_len_in_secs: 1.6 #null # Need to specify if use buffered inference (default for offline_by_chunked is 20)
+        total_buffer_in_secs: 4 #null # Need to specify if use buffered inference (default for offline_by_chunked is 22)
+        model_stride: 4 # Model downsampling factor, 8 for Citrinet models and 4 for Conformer models
+    
+    test_ds:
+        manifest_filepath: null
+        sample_rate: 16000
+        batch_size: 32
+        
+        augmentor:
+          silence:
+            prob: 0.8
+            min_start_silence_secs: 0
+            max_start_silence_secs: 5
+            min_end_silence_secs: 0
+            max_end_silence_secs: 5
+            
+          noise:
+            manifest_path: null
+            prob: 0.8
+            min_snr_db: 0
+            max_snr_db: 15
+
+    output_filename: null
+    random_seed: 42
+
+analyst:
+    metric_calculator:
+        clean_groundtruth_text: True
+        langid: "en" # speciify language to clean text. Note use text normalization in NeMo for better performancce
+        output_filename: null # specify it if wanna skip engine and use previously generated manifest
+        use_cer: False
+
+    metadata:
+        duration: 
+            enable: True
+            slot: [[0,2],[2,5],[5,10],[10,20],[20,100000]] # a slot accepts List[List[str]] or List[List[float]]. i.e. 1.8s belongs to slot [0,2]
+            save_wer_per_class: False # whether to save wer for each presented class.
+            
+        gender:
+            enable: False
+            slot: [["female"]] # One could also report only one group/class though there are multiple classes in the data. 
+            save_wer_per_class: True
+            
+        speaker:
+            enable: True
+            save_wer_per_class: False
+            
+        age:
+            enable: False
+            slot: null
+            save_wer_per_class: False
+            
+        emotion: 
+            enable: True
+            slot: [['happy','laugh'],['neutral'],['sad']] 
+            save_wer_per_class: False
+                 
+writer:
+    report_filename: null

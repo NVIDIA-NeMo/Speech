@@ -105,9 +105,9 @@ Tarred datasets can be created as follows:
 
 .. code::
 
-    python examples/nlp/duplex_text_normalization/create_tarred_dataset.py \
-        --input_files = "</PATH_TO/output-00099-of-00100>" \
-        --input_files = "</PATH_TO/output-00098-of-00100>" \
+    python examples/nlp/duplex_text_normalization/data/create_tarred_dataset.py \
+        --input_files = "<trained_processed/output-00099-of-00100>" \
+        --input_files = "<trained_processed/output-00098-of-00100>" \
         --out_dir="<TARRED_DATA_OUTPUT_DIR>"
 
 

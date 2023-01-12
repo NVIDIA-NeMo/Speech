@@ -49,6 +49,7 @@ class TabularTokenizer(TokenizerSpec):
         self.delimiter = delimiter
         self.eod_id = self.special_tokens[END_OF_TEXT]
         self.eos_id = self.eod_id
+        self.bos_id = self.eos_id
 
     def __len__(self):
         return self.vocab_size

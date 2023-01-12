@@ -1725,8 +1725,7 @@ class TestAudioDatasets:
 
 class TestUtilityFunctions:
     @pytest.mark.unit
-    # TEMP WORKAROUND: Skip `True`, multiprocessing failing in CI (#5607)
-    @pytest.mark.parametrize('cache_audio', [False])
+    @pytest.mark.parametrize('cache_audio', [False, True])
     def test_cache_datastore_manifests(self, cache_audio: bool):
         """Test caching of manifest and audio files.
         """
@@ -1794,7 +1793,8 @@ class TestUtilityFunctions:
             with mock.patch(
                 'nemo.collections.asr.data.audio_to_text.is_datastore_path', lambda x: True
             ), mock.patch.object(DataStoreObject, 'get', fake_get):
-                cache_datastore_manifests(manifest_filepaths, cache_audio=cache_audio)
+                # Use a single worker for this test to avoid failure with mock & multiprocessing (#5607)
+                cache_datastore_manifests(manifest_filepaths, cache_audio=cache_audio, num_workers=1)
 
             # Manifests need to be compared
             store_files_to_compare = manifest_filepaths

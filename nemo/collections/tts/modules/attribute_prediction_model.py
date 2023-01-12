@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
 
-from nemo.collections.tts.modules.common import ConvLSTMLinear, ConvNorm
+from nemo.collections.tts.helpers.helpers import get_mask_from_lengths
+from nemo.collections.tts.modules.common import ConvLSTMLinear
+from nemo.collections.tts.modules.submodules import ConvNorm, MaskedInstanceNorm1d
 
 
 def get_attribute_prediction_model(config):
@@ -54,18 +56,20 @@ class BottleneckLayerLayer(nn.Module):
         reduced_dim = int(in_dim / reduction_factor)
         self.out_dim = reduced_dim
         if self.reduction_factor > 1:
-            fn = ConvNorm(in_dim, reduced_dim, kernel_size=3)
             if norm == 'weightnorm':
-                fn = torch.nn.utils.weight_norm(fn.conv, name='weight')
+                norm_args = {"use_weight_norm": True}
             elif norm == 'instancenorm':
-                fn = nn.Sequential(fn, nn.InstanceNorm1d(reduced_dim, affine=True))
-
+                norm_args = {"norm_fn": MaskedInstanceNorm1d}
+            else:
+                norm_args = {}
+            fn = ConvNorm(in_dim, reduced_dim, kernel_size=3, **norm_args)
             self.projection_fn = fn
             self.non_linearity = non_linearity
 
-    def forward(self, x):
+    def forward(self, x, lens):
         if self.reduction_factor > 1:
-            x = self.projection_fn(x)
+            mask = get_mask_from_lengths(lens, x).unsqueeze(1)
+            x = self.projection_fn(x, mask)
             if self.non_linearity == 'relu':
                 x = F.relu(x)
             elif self.non_linearity == 'leakyrelu':
@@ -77,7 +81,6 @@ class DAP(AttributeProcessing):
     def __init__(self, n_speaker_dim, bottleneck_hparams, take_log_of_input, arch_hparams):
         super(DAP, self).__init__(take_log_of_input)
         self.bottleneck_layer = BottleneckLayerLayer(**bottleneck_hparams)
-
         arch_hparams['in_dim'] = self.bottleneck_layer.out_dim + n_speaker_dim
         self.feat_pred_fn = ConvLSTMLinear(**arch_hparams)
 
@@ -85,7 +88,7 @@ class DAP(AttributeProcessing):
         if x is not None:
             x = self.normalize(x)
 
-        txt_enc = self.bottleneck_layer(txt_enc)
+        txt_enc = self.bottleneck_layer(txt_enc, lens)
         spk_emb_expanded = spk_emb[..., None].expand(-1, -1, txt_enc.shape[2])
         context = torch.cat((txt_enc, spk_emb_expanded), 1)
         x_hat = self.feat_pred_fn(context, lens)

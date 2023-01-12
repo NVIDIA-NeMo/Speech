@@ -395,6 +395,15 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             self._tb_logger = tb_logger
         return self._tb_logger
 
+    def load_state_dict(self, state_dict, strict=True):
+        # Override load_state_dict to be backward-compatible with old checkpoints
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            k = k.replace("projection_fn.weight", "projection_fn.conv.weight")
+            k = k.replace("projection_fn.bias", "projection_fn.conv.bias")
+            new_state_dict[k] = v
+        super().load_state_dict(new_state_dict, strict=strict)
+
     @property
     def input_module(self):
         return self.model

@@ -149,6 +149,7 @@ class CTCBPEDecoding(AbstractCTCDecoding):
                 vocab_dict = self.tokenizer.tokenizer.get_vocab()
                 vocab = list(vocab_dict.keys())
                 self.decoding.set_vocabulary(vocab)
+                self.decoding.set_tokenizer(tokenizer)
             else:
                 logging.warning("Could not resolve the vocabulary of the tokenizer !")
 

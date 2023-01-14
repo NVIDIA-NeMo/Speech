@@ -153,7 +153,7 @@ def beam_search_eval(
     chars_count = 0
     sample_idx = 0
     if preds_output_file:
-        out_file = open(preds_output_file, 'w')
+        out_file = open(preds_output_file, 'w', encoding='utf_8', newline='\n')
 
     if progress_bar:
         it = tqdm(
@@ -257,7 +257,7 @@ def main(cfg: EvalBeamSearchNGramConfig):
 
     target_transcripts = []
     manifest_dir = Path(cfg.input_manifest).parent
-    with open(cfg.input_manifest, 'r') as manifest_file:
+    with open(cfg.input_manifest, 'r', encoding='utf_8') as manifest_file:
         audio_file_paths = []
         for line in tqdm(manifest_file, desc=f"Reading Manifest {cfg.input_manifest} ...", ncols=120):
             data = json.loads(line)

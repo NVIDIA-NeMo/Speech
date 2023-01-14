@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple, Union
@@ -19,6 +20,7 @@ from typing import Iterable, List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.utils import rnnt_utils
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.utils import logging
@@ -94,6 +96,7 @@ class AbstractBeamCTCInfer(Typing):
         # Variables set by corresponding setter methods
         self.vocab = None
         self.decoding_type = None
+        self.tokenizer = None
 
         # Internal variable, used to prevent double reduction of consecutive tokens (ctc collapse)
         self.override_fold_consecutive_value = None
@@ -124,6 +127,15 @@ class AbstractBeamCTCInfer(Typing):
             )
 
         self.decoding_type = decoding_type
+
+    def set_tokenizer(self, tokenizer: TokenizerSpec):
+        """
+        Set the tokenizer of the decoding framework.
+
+        Args:
+            tokenizer: NeMo tokenizer object, which inherits from TokenizerSpec.
+        """
+        self.tokenizer = tokenizer
 
     @typecheck()
     def forward(
@@ -173,6 +185,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         beam_alpha: float = 1.0,
         beam_beta: float = 0.0,
         kenlm_path: str = None,
+        flashlight_cfg: Optional['FlashlightConfig'] = None,
         # pyctcdecode_cfg: Optional['PyCTCDecodeConfig'] = None,
     ):
         super().__init__(blank_id=blank_id, beam_size=beam_size)
@@ -193,6 +206,8 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             self.search_algorithm = self._pyctcdecode_beam_search
 
             raise NotImplementedError(f"The search type of `pyctcdecode` is currently not supported.\n" f"")
+        elif search_type == "flashlight":
+            self.search_algorithm = self.flashlight_beam_search
         else:
             raise NotImplementedError(
                 f"The search type ({search_type}) supplied is not supported!\n"
@@ -210,9 +225,14 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         #     pyctcdecode_cfg = PyCTCDecodeConfig()
         # self.pyctcdecode_cfg = pyctcdecode_cfg  # type: PyCTCDecodeConfig
 
+        if flashlight_cfg is None:
+            flashlight_cfg = FlashlightConfig()
+        self.flashlight_cfg = flashlight_cfg
+
         # Default beam search scorer functions
         self.default_beam_scorer = None
         self.pyctcdecode_beam_scorer = None
+        self.flashlight_beam_scorer = None
         self.token_offset = 0
 
     @typecheck()
@@ -417,6 +437,91 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         #
         # return nbest_hypotheses
 
+    @torch.no_grad()
+    def flashlight_beam_search(
+        self, x: torch.Tensor, out_len: torch.Tensor
+    ) -> List[Union[rnnt_utils.Hypothesis, rnnt_utils.NBestHypotheses]]:
+        """
+
+        Args:
+            x: Tensor of shape [B, T, V+1]
+            out_len:
+
+        Returns:
+
+        """
+        if self.compute_timestamps:
+            raise ValueError(
+                f"Beam Search with strategy `{self.search_type}` does not support time stamp calculation!"
+            )
+
+        if self.flashlight_beam_scorer is None:
+            # Check for filepath
+            if self.kenlm_path is None or not os.path.exists(self.kenlm_path):
+                raise FileNotFoundError(
+                    f"KenLM binary file not found at : {self.kenlm_path}. "
+                    f"Please set a valid path in the decoding config."
+                )
+
+            # perform token offset for subword models
+            # if self.decoding_type == 'subword':
+            #    vocab = [chr(idx + self.token_offset) for idx in range(len(self.vocab))]
+            # else:
+            #    # char models
+            #    vocab = self.vocab
+
+            # Must import at runtime to avoid circular dependency due to module level import.
+            from nemo.collections.asr.modules.flashlight_decoder import FlashLightKenLMBeamSearchDecoder
+
+            self.flashlight_beam_scorer = FlashLightKenLMBeamSearchDecoder(
+                lm_path=self.kenlm_path,
+                vocabulary=self.vocab,
+                tokenizer=self.tokenizer,
+                lexicon_path=self.flashlight_cfg.lexicon_path,
+                beam_size=self.beam_size,
+                beam_size_token=self.flashlight_cfg.beam_size_token,
+                beam_threshold=self.flashlight_cfg.beam_threshold,
+                lm_weight=self.beam_alpha,
+                word_score=self.beam_beta,
+                unk_weight=self.flashlight_cfg.unk_weight,
+                sil_weight=self.flashlight_cfg.sil_weight,
+                unit_lm=self.flashlight_cfg.unit_lm,
+            )
+
+        x = x.to('cpu')
+
+        with typecheck.disable_checks():
+            beams_batch = self.flashlight_beam_scorer.forward(log_probs=x)
+
+        # For each sample in the batch
+        nbest_hypotheses = []
+        for beams_idx, beams in enumerate(beams_batch):
+            # For each beam candidate / hypothesis in each sample
+            hypotheses = []
+            for candidate_idx, candidate in enumerate(beams):
+                hypothesis = rnnt_utils.Hypothesis(
+                    score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None
+                )
+
+                # We preserve the token ids and the score for this hypothesis
+                hypothesis.y_sequence = candidate['tokens'].tolist()
+                hypothesis.score = candidate['score']
+
+                # If alignment must be preserved, we preserve a view of the output logprobs.
+                # Note this view is shared amongst all beams within the sample, be sure to clone it if you
+                # require specific processing for each sample in the beam.
+                # This is done to preserve memory.
+                if self.preserve_alignments:
+                    hypothesis.alignments = x[beams_idx][: out_len[beams_idx]]
+
+                hypotheses.append(hypothesis)
+
+            # Wrap the result in NBestHypothesis.
+            hypotheses = rnnt_utils.NBestHypotheses(hypotheses)
+            nbest_hypotheses.append(hypotheses)
+
+        return nbest_hypotheses
+
     def set_decoding_type(self, decoding_type: str):
         super().set_decoding_type(decoding_type)
 
@@ -440,6 +545,16 @@ class PyCTCDecodeConfig:
 
 
 @dataclass
+class FlashlightConfig:
+    lexicon_path: Optional[str] = None
+    beam_size_token: int = 16
+    beam_threshold: float = 20.0
+    unk_weight: float = -math.inf
+    sil_weight: float = 0.0
+    unit_lm: bool = False
+
+
+@dataclass
 class BeamCTCInferConfig:
     beam_size: int
     search_type: str = 'default'
@@ -452,3 +567,4 @@ class BeamCTCInferConfig:
     kenlm_path: Optional[str] = None
 
     # pyctcdecode_cfg: PyCTCDecodeConfig = PyCTCDecodeConfig()
+    flashlight_cfg: Optional[FlashlightConfig] = FlashlightConfig()

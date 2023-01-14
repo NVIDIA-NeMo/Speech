@@ -52,7 +52,7 @@ def get_buffered_pred_feat_rnnt(
 
     if manifest:
         filepaths = []
-        with open(manifest, "r") as mfst_f:
+        with open(manifest, "r", encoding='utf_8') as mfst_f:
             print("Parsing manifest files...")
             for l in mfst_f:
                 row = json.loads(l.strip())
@@ -141,7 +141,7 @@ def get_buffered_pred_feat(
             hyp = asr.transcribe(tokens_per_chunk, delay)
             hyps.append(hyp)
     else:
-        with open(manifest, "r") as mfst_f:
+        with open(manifest, "r", encoding='utf_8') as mfst_f:
             for l in tqdm(mfst_f, desc="Sample:"):
                 asr.reset()
                 row = json.loads(l.strip())
@@ -217,7 +217,7 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
             return None
 
         manifest_dir = Path(cfg.dataset_manifest).parent
-        with open(cfg.dataset_manifest, 'r') as f:
+        with open(cfg.dataset_manifest, 'r', encoding='utf_8') as f:
             has_two_fields = []
             for line in f:
                 item = json.loads(line)
@@ -289,7 +289,7 @@ def write_transcription(
     else:
         pred_text_attr_name = 'pred_text'
 
-    with open(cfg.output_filename, 'w', encoding='utf-8') as f:
+    with open(cfg.output_filename, 'w', encoding='utf-8', newline='\n') as f:
         if cfg.audio_dir is not None:
             for idx, transcription in enumerate(transcriptions):  # type: rnnt_utils.Hypothesis
                 item = {'audio_filepath': filepaths[idx], pred_text_attr_name: transcription.text}
@@ -308,7 +308,7 @@ def write_transcription(
 
                 f.write(json.dumps(item) + "\n")
         else:
-            with open(cfg.dataset_manifest, 'r') as fr:
+            with open(cfg.dataset_manifest, 'r', encoding='utf_8') as fr:
                 for idx, line in enumerate(fr):
                     item = json.loads(line)
                     item[pred_text_attr_name] = transcriptions[idx].text

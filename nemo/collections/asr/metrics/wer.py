@@ -278,7 +278,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         self.batch_dim_index = self.cfg.get('batch_dim_index', 0)
         self.word_seperator = self.cfg.get('word_seperator', ' ')
 
-        possible_strategies = ['greedy', 'beam']
+        possible_strategies = ['greedy', 'beam', 'flashlight']
         if self.cfg.strategy not in possible_strategies:
             raise ValueError(f"Decoding strategy must be one of {possible_strategies}. Given {self.cfg.strategy}")
 
@@ -343,6 +343,23 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 beam_beta=self.cfg.beam.get('beam_beta', 0.0),
                 kenlm_path=self.cfg.beam.get('kenlm_path', None),
                 # pyctcdecode_cfg=self.cfg.beam.get('pyctcdecode_cfg', None),
+            )
+
+            self.decoding.override_fold_consecutive_value = False
+
+        elif self.cfg.strategy == 'flashlight':
+
+            self.decoding = ctc_beam_decoding.BeamCTCInfer(
+                blank_id=blank_id,
+                beam_size=self.cfg.beam.get('beam_size', 1),
+                search_type='flashlight',
+                return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
+                preserve_alignments=self.preserve_alignments,
+                compute_timestamps=self.compute_timestamps,
+                beam_alpha=self.cfg.beam.get('beam_alpha', 1.0),
+                beam_beta=self.cfg.beam.get('beam_beta', 0.0),
+                kenlm_path=self.cfg.beam.get('kenlm_path', None),
+                flashlight_cfg=self.cfg.beam.get('flashlight_cfg', None),
             )
 
             self.decoding.override_fold_consecutive_value = False

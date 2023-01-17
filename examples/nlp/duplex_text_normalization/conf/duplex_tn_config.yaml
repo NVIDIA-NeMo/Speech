@@ -118,8 +118,8 @@ decoder_exp_manager:
 # Data
 data:
   train_ds:
-    data_path: train.tsv # provide the full path to the file
-    batch_size: 64
+    data_path: train.tsv # provide the full path to the file. Ignored when using tarred dataset, tar_metadata_file is used instead.
+    batch_size: 64 # local training batch size for each worker. Ignored when using tarred dataset, the batch size of the tarred dataset is used instead.
     shuffle: true
     max_insts: -1 # Maximum number of instances (-1 means no limit)
     # Refer to the text_normalization doc for more information about data augmentation

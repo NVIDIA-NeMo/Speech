@@ -108,8 +108,15 @@ Tarred datasets can be created as follows:
     python examples/nlp/duplex_text_normalization/data/create_tarred_dataset.py \
         --input_files = "<trained_processed/output-00099-of-00100>" \
         --input_files = "<trained_processed/output-00098-of-00100>" \
-        --out_dir="<TARRED_DATA_OUTPUT_DIR>"
+        --batch_size = "<batch size>" \
+        --out_dir= "<TARRED_DATA_OUTPUT_DIR>"
 
+
+.. warning::
+  The batch size used for creating the tarred dataset will be the batch size used in training regardless of what the user specifies in the configuration yaml file. 
+  The number of shards should be divisible by the world size to ensure an even
+  split among workers. If it is not divisible, logging will give a warning but training will proceed, but likely hang at the last epoch.
+  
 
 Model Training
 --------------

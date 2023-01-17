@@ -187,7 +187,10 @@ if __name__ == '__main__':
     )
     parser.add_argument('--n_jobs', type=int, default=-2, help='The maximum number of concurrently running jobs.')
     parser.add_argument(
-        '--batch_size', type=int, default=16, help='Batch size, i.e., number of examples in a single pickle file'
+        '--batch_size',
+        type=int,
+        default=16,
+        help='Batch size, i.e., number of examples in a single pickle file. This batch size will override the training size.',
     )
     parser.add_argument(
         '--factor', default=8, type=int, help='The final number of tar files will be divisible by the "factor" value'

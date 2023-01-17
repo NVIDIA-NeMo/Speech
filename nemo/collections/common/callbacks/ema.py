@@ -19,9 +19,9 @@ from typing import Any, Dict, Iterable
 
 import pytorch_lightning as pl
 import torch
-from lightning_utilities.core.rank_zero import rank_zero_info
 from pytorch_lightning import Callback
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
+from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
 
 class EMA(Callback):

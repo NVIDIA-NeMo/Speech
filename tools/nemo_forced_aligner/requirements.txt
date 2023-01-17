@@ -1,0 +1,2 @@
+nemo_toolkit[all]
+pytest

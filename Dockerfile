@@ -24,6 +24,7 @@ FROM ${BASE_IMAGE} as nemo-deps
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y \
     libsndfile1 sox \
     libfreetype6 \

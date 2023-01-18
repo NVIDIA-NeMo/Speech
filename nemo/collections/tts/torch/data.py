@@ -15,8 +15,10 @@
 
 import json
 import math
+import os
 import pickle
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
@@ -102,6 +104,10 @@ class TTSDataset(Dataset):
         n_mels: int = 80,
         lowfreq: int = 0,
         highfreq: Optional[int] = None,
+        segment_max_duration: Optional[int] = None,
+        pitch_augment: bool = False,
+        cache_pitch_augment: bool = True,
+        pad_multiple: int = 1,
         **kwargs,
     ):
         """Dataset which can be used for training spectrogram generators and end-to-end TTS models.
@@ -163,6 +169,10 @@ class TTSDataset(Dataset):
             pitch_fmax (Optional[float]): The fmax input to librosa.pyin. Defaults to librosa.note_to_hz('C7').
             pitch_mean (Optional[float]): The mean that we use to normalize the pitch.
             pitch_std (Optional[float]): The std that we use to normalize the pitch.
+            segment_max_duration (Optional[float]): If audio length is greater than segment_max_duration, take a random segment of segment_max_duration (Used for SV task in SSLDisentangler)
+            pitch_augment (bool): Whether to apply pitch-shift transform and return a pitch-shifted audio. If set as False, audio_shifted will be None (used in SSLDisentangler)
+            cache_pitch_augment (bool): Whether to cache pitch augmented audio or not. Defaults to False (used in SSLDisentangler)
+            pad_multiple (int): If audio length is not divisible by pad_multiple, pad the audio with zeros to make it divisible by pad_multiple (used in SSLDisentangler)
             pitch_norm (Optional[bool]): Whether to normalize pitch or not. If True, requires providing either
                 pitch_stats_path or (pitch_mean and pitch_std).
             pitch_stats_path (Optional[Path, str]): Path to file containing speaker level pitch statistics.
@@ -265,6 +275,10 @@ class TTSDataset(Dataset):
         self.trim_frame_length = trim_frame_length if trim_frame_length is not None else 2048
         self.trim_hop_length = trim_hop_length if trim_hop_length is not None else 512
 
+        self.segment_max_duration = segment_max_duration
+        self.pitch_augment = pitch_augment
+        self.cache_pitch_augment = cache_pitch_augment
+
         self.n_fft = n_fft
         self.n_mels = n_mels
         self.lowfreq = lowfreq
@@ -322,6 +336,8 @@ class TTSDataset(Dataset):
 
         for data_type in self.sup_data_types:
             getattr(self, f"add_{data_type.name}")(**kwargs)
+
+        self.pad_multiple = pad_multiple
 
     @staticmethod
     def filter_files(data, ignore_file, min_duration, max_duration, total_duration):
@@ -479,6 +495,30 @@ class TTSDataset(Dataset):
             log_mel = torch.log(torch.clamp(mel, min=torch.finfo(mel.dtype).tiny))
         return log_mel
 
+    def pitch_shift(self, audio, sr, rel_audio_path_as_text_id):
+        audio_shifted_path = Path(self.sup_data_path) / f"{rel_audio_path_as_text_id}_pitch_shift.pt"
+        if audio_shifted_path.exists() and self.cache_pitch_augment:
+            audio_shifted = torch.load(audio_shifted_path)
+            return audio_shifted
+        else:
+            choice1 = np.random.uniform(-4, -1)
+            choice2 = np.random.uniform(1, 4)
+            shift_val = random.choice([choice1, choice2])
+            audio_shifted = librosa.effects.pitch_shift(audio, sr=sr, n_steps=shift_val)
+            # save audio_shifted
+            audio_shifted = torch.tensor(audio_shifted)
+            if self.cache_pitch_augment:
+                torch.save(audio_shifted, audio_shifted_path)
+            return audio_shifted
+
+    def _pad_wav_to_multiple(self, wav):
+        if self.pad_multiple > 1:
+            if wav.shape[0] % self.pad_multiple != 0:
+                wav = torch.cat(
+                    [wav, torch.zeros(self.pad_multiple - wav.shape[0] % self.pad_multiple, dtype=torch.float)]
+                )
+        return wav
+
     def __getitem__(self, index):
         sample = self.data[index]
 
@@ -486,16 +526,47 @@ class TTSDataset(Dataset):
         rel_audio_path = Path(sample["audio_filepath"]).relative_to(self.base_data_dir).with_suffix("")
         rel_audio_path_as_text_id = str(rel_audio_path).replace("/", "_")
 
-        # Load audio
-        features = self.featurizer.process(
-            sample["audio_filepath"],
-            trim=self.trim,
-            trim_ref=self.trim_ref,
-            trim_top_db=self.trim_top_db,
-            trim_frame_length=self.trim_frame_length,
-            trim_hop_length=self.trim_hop_length,
-        )
-        audio, audio_length = features, torch.tensor(features.shape[0]).long()
+        if (
+            self.segment_max_duration is not None
+            and 'duration' in sample
+            and sample['duration'] > self.segment_max_duration
+        ):
+            # this case has been added for segmenting audio for speaker verification task of SSLDisentangler
+            n_segments = int(self.segment_max_duration * self.sample_rate)
+            features = AudioSegment.segment_from_file(
+                sample["audio_filepath"], target_sr=self.sample_rate, n_segments=n_segments, trim=self.trim
+            )
+            audio_shifted = None
+
+            # should not have pitch shift augmented data for speaker verification
+            assert not self.pitch_augment
+
+            features = torch.tensor(features.samples)
+            if self.pad_multiple > 1:
+                features = self._pad_wav_to_multiple(features)
+            audio, audio_length = features, torch.tensor(features.shape[0]).long()
+        else:
+            features = self.featurizer.process(
+                sample["audio_filepath"],
+                trim=self.trim,
+                trim_ref=self.trim_ref,
+                trim_top_db=self.trim_top_db,
+                trim_frame_length=self.trim_frame_length,
+                trim_hop_length=self.trim_hop_length,
+            )
+
+            if self.pad_multiple > 1:
+                features = self._pad_wav_to_multiple(features)
+            audio_shifted = None
+            if self.pitch_augment:
+                audio_shifted = self.pitch_shift(
+                    features.cpu().detach().numpy(), self.sample_rate, rel_audio_path_as_text_id
+                )
+                assert audio_shifted.size() == features.size(), "{} != {}".format(
+                    audio_shifted.size(), features.size()
+                )
+
+            audio, audio_length = features, torch.tensor(features.shape[0]).long()
 
         if "text_tokens" in sample:
             text = torch.tensor(sample["text_tokens"]).long()
@@ -625,6 +696,7 @@ class TTSDataset(Dataset):
             speaker_id,
             voiced_mask,
             p_voiced,
+            audio_shifted,
         )
 
     def __len__(self):
@@ -657,6 +729,7 @@ class TTSDataset(Dataset):
             _,
             voiced_masks,
             p_voiceds,
+            _,
         ) = zip(*batch)
 
         max_audio_len = max(audio_lengths).item()
@@ -678,7 +751,19 @@ class TTSDataset(Dataset):
             if AlignPriorMatrix in self.sup_data_types_set
             else []
         )
-        audios, tokens, log_mels, durations_list, pitches, energies, speaker_ids, voiced_masks, p_voiceds = (
+        (
+            audios,
+            tokens,
+            log_mels,
+            durations_list,
+            pitches,
+            energies,
+            speaker_ids,
+            voiced_masks,
+            p_voiceds,
+            audios_shifted,
+        ) = (
+            [],
             [],
             [],
             [],
@@ -707,6 +792,7 @@ class TTSDataset(Dataset):
                 speaker_id,
                 voiced_mask,
                 p_voiced,
+                audio_shifted,
             ) = sample_tuple
 
             audio = general_padding(audio, audio_len.item(), max_audio_len)
@@ -714,6 +800,10 @@ class TTSDataset(Dataset):
 
             token = general_padding(token, token_len.item(), max_tokens_len, pad_value=self.text_tokenizer_pad_id)
             tokens.append(token)
+
+            if audio_shifted is not None:
+                audio_shifted = general_padding(audio_shifted, audio_len.item(), max_audio_len)
+                audios_shifted.append(audio_shifted)
 
             if LogMel in self.sup_data_types_set:
                 log_mels.append(general_padding(log_mel, log_mel_len, max_log_mel_len, pad_value=log_mel_pad))
@@ -757,6 +847,7 @@ class TTSDataset(Dataset):
             "speaker_id": torch.stack(speaker_ids) if SpeakerID in self.sup_data_types_set else None,
             "voiced_mask": torch.stack(voiced_masks) if Voiced_mask in self.sup_data_types_set else None,
             "p_voiced": torch.stack(p_voiceds) if P_voiced in self.sup_data_types_set else None,
+            "audio_shifted": torch.stack(audios_shifted) if audio_shifted is not None else None,
         }
 
         return data_dict
@@ -821,6 +912,7 @@ class MixerTTSXDataset(TTSDataset):
             speaker_id,
             voiced_mask,
             p_voiced,
+            _,  # audio_shifted (only needed for SSLDisentangler)
         ) = super().__getitem__(index)
 
         lm_tokens = None
@@ -1007,6 +1099,336 @@ class VocoderDataset(Dataset):
                 audio = torch.nn.functional.pad(audio, (0, self.n_segments - len(audio)))
 
             return audio, len(audio), mel
+
+    def __len__(self):
+        return len(self.data)
+
+
+class FastPitchSSLDataset(Dataset):
+    def __init__(
+        self,
+        manifest_filepath: Union[str, Path, List[str], List[Path]],
+        sample_rate: int,
+        ssl_content_emb_type: str,
+        pad_multiple: Optional[int] = 1024,
+        max_duration: Optional[float] = None,
+        min_duration: Optional[float] = None,
+        ignore_file: Optional[Union[str, Path]] = None,
+        trim: Optional[bool] = False,
+        pitch_conditioning: Optional[bool] = False,
+        pitch_mean: Optional[float] = None,
+        pitch_std: Optional[float] = None,
+        pitch_normalization: Optional[str] = None,
+        sup_data_dir: Optional[Union[str, Path]] = None,
+        speaker_stats_pitch_fp: Optional[Union[str, Path]] = None,
+        speaker_conditioning_type: Optional[str] = "per_sample",  # per_sample, mean, interpolate,
+    ):
+
+        """Dataset used for training FastPitchModel_SSL model.
+        Requires supplementary data created using scripts/ssl_tts/make_supdata.py
+        Args:
+            manifest_filepath (Union[str, Path, List[str], List[Path]]): Path(s) to the .json manifests containing
+            information on the dataset. Each line in the .json file should be valid json. Note: the .json file itself
+            is not valid json. Each line should contain the following:
+                "audio_filepath": <PATH_TO_WAV>,
+                "speaker" : <SPEAKER NUM>
+                "duration": <Duration of audio clip in seconds> (Optional)
+            sample_rate (int): The sample rate of the audio. Or the sample rate that we will resample all files to.
+            ssl_content_emb_type (str): One of ["probs", "embedding", "log_probs", "embedding_and_probs"]. 
+                Indicated which output to use as content embedding.
+            max_duration (Optional[float]): Max duration of audio clips in seconds. All samples exceeding this will be
+                pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
+                audio to compute duration. Defaults to None which does not prune.
+            min_duration (Optional[float]): Min duration of audio clips in seconds. All samples lower than this will be
+                pruned prior to training. Note: Requires "duration" to be set in the manifest file. It does not load
+                audio to compute duration. Defaults to None which does not prune.
+            ignore_file (Optional[Union[str, Path]]): The location of a pickle-saved list of audio paths
+                that will be pruned prior to training. Defaults to None which does not prune.
+            trim (bool): Whether to apply `librosa.effects.trim` to trim leading and trailing silence from an audio
+                signal. Defaults to False.
+            pitch_conditioning (bool): Whether to load pitch contour or not
+            pitch_mean (Optional[float]): If using global normalization, normalize using these statistics. 
+                Also used if speaker stats are not available for the given speaker
+            pitch_std (Optional[float]): If using global normalization, normalize using these statistics. 
+                Also used if speaker stats are not available for the given speaker
+            pitch_normalization (str): Can be one of ['speaker_wise', 'global', 'none']. Indicates the kind of pitch normalization.
+            sup_data_dir (Optional[Union[str, Path]]): Data directory containing pre-computed embeddings/statistics. If set as 
+            speaker_stats_pitch_fp (Optional[Union[str, Path]]): Path to the json containing speaker pitch stats. 
+                If set as None, tries to lookup for a default filename (speaker_pitch_stats.json) in sup_data_dir. 
+                Needed if we use pitch_normalization is "speaker_wise"
+            speaker_conditioning_type (Optional[str]): Can be one of ["per_sample", "mean", "interpolate"]. Defaults to "per_sample"
+                per_sample: Speaker embedding computed from the same utterance
+                mean: Speaker embedding for all utterances of a given speaker is the same and equal to the mean speaker embedding. 
+                interpolate: Interpolate b/w per_sample and mean speaker embedding.
+        """
+        assert ssl_content_emb_type in ["probs", "embedding", "log_probs", "embedding_and_probs"]
+
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = [manifest_filepath]
+        self.manifest_filepath = manifest_filepath
+
+        data = []
+        total_duration = 0
+        # TODO: Reuse code for reading manifests across all tts datasets
+        for manifest_file in self.manifest_filepath:
+            with open(Path(manifest_file).expanduser(), 'r') as f:
+                logging.info(f"Loading dataset from {manifest_file}.")
+                for line in tqdm(f):
+                    item = json.loads(line)
+                    if "speaker" not in item:
+                        item["speaker"] = 0
+                    file_info = {
+                        "audio_filepath": item["audio_filepath"],
+                        "duration": item["duration"] if "duration" in item else None,
+                        "speaker": item["speaker"] if "speaker" in item else 0,
+                        "dataset_id": item["dataset_id"] if "dataset_id" in item else 0,
+                    }
+
+                    data.append(file_info)
+
+                    if file_info["duration"] is None:
+                        logging.info(
+                            "Not all audio files have duration information. Duration logging will be disabled."
+                        )
+                        total_duration = None
+
+                    if total_duration is not None:
+                        total_duration += item["duration"]
+
+        logging.info(f"Loaded dataset with {len(data)} files.")
+        if total_duration is not None:
+            logging.info(f"Dataset contains {total_duration / 3600:.2f} hours.")
+
+        self.data = TTSDataset.filter_files(data, ignore_file, min_duration, max_duration, total_duration)
+        self.base_data_dir = get_base_dir([item["audio_filepath"] for item in self.data])
+
+        self.featurizer = WaveformFeaturizer(sample_rate=sample_rate)
+        self.sample_rate = sample_rate
+        self.trim = trim
+
+        self.pad_multiple = pad_multiple
+        self.pitch_normalization = pitch_normalization
+        self.pitch_mean = pitch_mean
+        self.pitch_std = pitch_std
+        self.pitch_conditioning = pitch_conditioning
+        self.speaker_conditioning_type = speaker_conditioning_type
+        self.ssl_content_emb_type = ssl_content_emb_type
+
+        if sup_data_dir is None:
+            sup_data_dir = os.path.join(self.base_data_dir, "sup_data")
+        self.sup_data_dir = sup_data_dir
+
+        if self.pitch_normalization == "speaker_wise":
+            self.speaker_stats = {}
+            if speaker_stats_pitch_fp is None:
+                speaker_stats_pitch_fp = os.path.join(sup_data_dir, "speaker_pitch_stats.json")
+
+            assert os.path.exists(
+                speaker_stats_pitch_fp
+            ), "speaker_stats_pitch_fp {} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training.".format(
+                speaker_stats_pitch_fp
+            )
+
+            with open(speaker_stats_pitch_fp, "r") as f:
+                speaker_stats_raw = json.load(f)
+                for key in speaker_stats_raw:
+                    self.speaker_stats[int(key)] = speaker_stats_raw[key]
+
+    def _get_wav_from_filepath(self, audio_filepath):
+        features = AudioSegment.segment_from_file(
+            audio_filepath, target_sr=self.sample_rate, n_segments=-1, trim=self.trim,
+        )
+        audio_samples = features.samples
+
+        audio, audio_length = torch.tensor(audio_samples), torch.tensor(audio_samples.shape[0]).long()
+
+        # pad audio to a multiple of self.pad_multiple
+        if audio.shape[0] % self.pad_multiple != 0:
+            audio = torch.cat(
+                [audio, torch.zeros(self.pad_multiple - audio.shape[0] % self.pad_multiple, dtype=torch.float)]
+            )
+            audio_length = torch.tensor(audio.shape[0]).long()
+
+        return audio, audio_length
+
+    def get_ssl_features(self, wav_text_id):
+        content_emb_fn = f"{self.ssl_content_emb_type}_content_embedding_{wav_text_id}.pt"
+        speaker_emb_fn = f"speaker_embedding_{wav_text_id}.pt"
+        duration_fn = f"duration_embedding_{wav_text_id}.pt"  # embedding just for namesake
+        content_emb_fp = os.path.join(self.sup_data_dir, content_emb_fn)
+        speaker_emb_fp = os.path.join(self.sup_data_dir, speaker_emb_fn)
+        duration_fp = os.path.join(self.sup_data_dir, duration_fn)
+
+        if os.path.exists(content_emb_fp):
+            content_embedding = torch.load(content_emb_fp)
+        else:
+            raise ValueError(
+                f"Content embedding file {content_emb_fp} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training."
+            )
+
+        if os.path.exists(speaker_emb_fp):
+            speaker_embedding = torch.load(speaker_emb_fp)
+        else:
+            raise ValueError(
+                f"Speaker embedding file {speaker_emb_fp} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training."
+            )
+
+        if os.path.exists(duration_fp):
+            duration = torch.load(duration_fp)
+        else:
+            raise ValueError(
+                f"Duration file {duration_fp} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training."
+            )
+
+        encoded_len = torch.tensor(content_embedding.shape[1]).long()
+
+        return content_embedding, speaker_embedding, encoded_len, duration
+
+    def get_pitch_contour(self, wav_text_id):
+        pitch_contour_fn = f"pitch_contour_{wav_text_id}.pt"
+        pitch_contour_fp = os.path.join(self.sup_data_dir, pitch_contour_fn)
+        if os.path.exists(pitch_contour_fp):
+            return torch.load(pitch_contour_fp)
+        else:
+            raise ValueError(
+                f"Pitch contour file {pitch_contour_fp} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training."
+            )
+
+    def get_mel_spectrogram(self, wav_text_id):
+        mel_spec_fn = f"mel_spec_{wav_text_id}.pt"
+        mel_spec_fp = os.path.join(self.sup_data_dir, mel_spec_fn)
+        if os.path.exists(mel_spec_fp):
+            return torch.load(mel_spec_fp)
+        else:
+            raise ValueError(
+                f"Mel spectrogram file {mel_spec_fp} does not exist. Make sure to run scripts/ssl_tts/make_supdata.py before training."
+            )
+
+    def pad_collate_fn(self, batch):
+        """
+        Collate function for FastPitchModel_SSL.
+        Pads the tensors in the batch with zeros to match length of the longest sequence in the batch.
+        Used in fastpitch_ssl.py
+        """
+        final_batch = defaultdict(list)
+        for row in batch:
+            for key in row:
+                final_batch[key].append(row[key])
+
+        max_audio_len = max([_audio_len.item() for _audio_len in final_batch["audio_len"]])
+        max_mel_len = max([_mel_len.item() for _mel_len in final_batch["mel_len"]])
+        max_encoded_len = max([_encoded_len.item() for _encoded_len in final_batch["encoded_len"]])
+
+        audios_padded = []
+        for audio in final_batch["audio"]:
+            audio_padded = torch.nn.functional.pad(audio, (0, max_audio_len - audio.size(0)), value=0)
+            audios_padded.append(audio_padded)
+
+        mels_padded = []
+        for mel in final_batch["mel_spectrogram"]:
+            mel_padded = torch.nn.functional.pad(mel, (0, max_mel_len - mel.size(1)), value=0)
+            mels_padded.append(mel_padded)
+
+        pitch_contours_padded = []
+        for pitch_contour in final_batch["pitch_contour"]:
+            pitch_contour_padded = torch.nn.functional.pad(
+                pitch_contour, (0, max_mel_len - pitch_contour.size(0)), value=0
+            )
+            pitch_contours_padded.append(pitch_contour_padded)
+
+        content_embeddings_padded = []
+        for encoded in final_batch["content_embedding"]:
+            encoded_padded = torch.nn.functional.pad(encoded, (0, max_encoded_len - encoded.size(1)), value=0)
+            content_embeddings_padded.append(encoded_padded)
+
+        durations_padded = []
+        for duration in final_batch["duration"]:
+            duration_padded = torch.nn.functional.pad(duration, (0, max_encoded_len - duration.size(0)), value=0.0)
+            durations_padded.append(duration_padded)
+
+        final_batch["audio"] = audios_padded
+        final_batch["mel_spectrogram"] = mels_padded
+        final_batch["pitch_contour"] = pitch_contours_padded
+        final_batch["content_embedding"] = content_embeddings_padded
+        final_batch["duration"] = durations_padded
+
+        for key in final_batch:
+            final_batch[key] = torch.stack(final_batch[key])
+
+        return final_batch
+
+    def __getitem__(self, index):
+        sample = self.data[index]
+        rel_audio_path = Path(sample["audio_filepath"]).relative_to(self.base_data_dir).with_suffix("")
+        rel_audio_path_as_text_id = str(rel_audio_path).replace("/", "_")
+        speaker = torch.tensor(sample["speaker"]).long()
+        dataset_id = torch.tensor(sample["dataset_id"]).long()
+
+        audio, audio_length = self._get_wav_from_filepath(sample["audio_filepath"])
+
+        pitch_contour = None
+        if self.pitch_conditioning:
+            pitch_contour = self.get_pitch_contour(rel_audio_path_as_text_id)
+
+        content_embedding, speaker_embedding, encoded_len, duration = self.get_ssl_features(rel_audio_path_as_text_id)
+
+        if self.speaker_conditioning_type == "mean":
+            assert sample["speaker"] in self.mean_speaker_embeddings, "{} not in speaker emb".format(sample['speaker'])
+            speaker_embedding = self.mean_speaker_embeddings[sample["speaker"]]
+
+        elif self.speaker_conditioning_type == "interpolate":
+            assert sample["speaker"] in self.mean_speaker_embeddings, "{} not in speaker emb".format(sample['speaker'])
+            e1 = self.mean_speaker_embeddings[sample["speaker"]]
+            e2 = speaker_embedding
+            interpolate_factor = np.random.uniform(0, 1)
+            speaker_embedding = e1 * (1 - interpolate_factor) + e2 * interpolate_factor
+            l2_norm = torch.norm(speaker_embedding, p=2)
+            speaker_embedding = speaker_embedding / l2_norm
+
+        mel_spectrogram = None
+        mel_len = None
+
+        mel_spectrogram = self.get_mel_spectrogram(rel_audio_path_as_text_id)
+        mel_len = torch.tensor(mel_spectrogram.shape[1]).long()
+
+        if pitch_contour is not None:
+            if self.pitch_normalization in ["speaker_wise", "global"]:
+                mean, std = self.pitch_mean, self.pitch_std
+                if self.pitch_normalization == "speaker_wise":
+                    mean = self.speaker_stats[sample["speaker"]]["pitch_mean"]
+                    std = self.speaker_stats[sample["speaker"]]["pitch_std"]
+                    if np.isnan(mean) or np.isnan(std) or mean == 0 or std == 0:
+                        logging.warning("NaN found in pitch mean/std for speaker {}".format(sample["speaker"]))
+                        mean = self.pitch_mean
+                        std = self.pitch_std
+                elif self.pitch_normalization == "global":
+                    mean = self.pitch_mean
+                    std = self.pitch_std
+
+                pitch_contour = pitch_contour - mean
+                pitch_contour[pitch_contour == -mean] = 0.0
+                pitch_contour = pitch_contour / std
+
+            if pitch_contour.dtype != torch.float32:
+                logging.warning("invalid pitch contour for {}".format(sample["audio_filepath"]))
+                logging.warning("Setting pitch contour to 0")
+                pitch_contour = torch.zeros(mel_spectrogram.shape[1])
+
+        item = {
+            'audio': audio,
+            'audio_len': audio_length,
+            'content_embedding': content_embedding,
+            'speaker_embedding': speaker_embedding,
+            'encoded_len': encoded_len,
+            'pitch_contour': pitch_contour,
+            'speaker': speaker,
+            'mel_spectrogram': mel_spectrogram,
+            'mel_len': mel_len,
+            'dataset_id': dataset_id,
+            'duration': duration,
+        }
+
+        return item
 
     def __len__(self):
         return len(self.data)

@@ -1,0 +1,191 @@
+# This config contains the default values for self-supervised pre-training of a Conformer ASR model, large size (~120M).
+
+# Architecture and training config:
+# Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
+# batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
+# Here are the recommended configs for different variants of Conformer-CTC, other parameters are the same as in this config file.
+# One extra layer (compared to original paper) is added to the medium and large variants to compensate for replacing the LSTM decoder with a linear one.
+#
+#  +-------------+---------+---------+----------+------------+-----+
+#  | Model       | d_model | n_heads | n_layers | time_masks | lr  |
+#  +=============+=========+========+===========+============+=====+
+#  | Small  (13M)|   176   |    4   |    16     |     5      | 5.0 |
+#  +-------------+---------+--------+-----------+------------+-----+
+#  | Medium (30M)|   256   |    4   |    18     |     5      | 5.0 |
+#  +-------------+---------+--------+-----------+------------+-----+
+#  | Large (121M)|   512   |    8   |    18     |     10     | 2.0 |
+#  +---------------------------------------------------------------+
+#
+# If you do not want to train with AMP, you may use weight decay of 0.0 or reduce the number of time maskings to 2
+# with time_width=100. It may help when you want to train for fewer epochs and need faster convergence.
+# With weight_decay=0.0, learning rate may need to get reduced to 2.0.
+
+name: "Conformer-SSL"
+init_from_pretrained_model: "ssl_en_conformer_large"
+
+model:
+  sample_rate: 22050
+  combined_loss: true
+  pitch_augment: true
+  augment_sim_alpha: 1.0
+  stop_gradient: false
+  augment_ctc: true
+  aug_loss_type: "cosine"
+  pad_multiple: 1
+  train_ds:
+    manifest_speaker_verification_fp: ???
+    manifest_content_fp: ???
+    sample_rate: ${model.sample_rate}
+    batch_size_content: 8 # you may increase batch_size if your memory allows
+    batch_size_sv: 20
+    shuffle: true
+    num_workers_sv: 4
+    num_workers_content: 6
+    pin_memory: false
+    max_duration_content: 16.7
+    min_duration_content: 8.0
+    segment_max_duration: 2
+    sup_data_path: ???
+    pitch_augment: ${model.pitch_augment}
+    cache_pitch_augment: true
+    pad_multiple: ${model.pad_multiple}
+
+  validation_ds:
+    manifest_speaker_verification_fp: ???
+    manifest_content_fp: ???
+    sample_rate: ${model.sample_rate}
+    batch_size_content: 4 # you may increase batch_size if your memory allows
+    batch_size_sv: 8
+    shuffle: false
+    num_workers_sv: 0
+    num_workers_content: 0
+    pin_memory: true
+    use_start_end_token: false
+    max_duration_content: 16.7
+    min_duration_content: 8.0
+    segment_max_duration: 2
+    sup_data_path: ???
+    pitch_augment: ${model.pitch_augment}
+    cache_pitch_augment: true
+    pad_multiple: ${model.pad_multiple}
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: null
+    window_stride: null
+    n_window_size: 1024
+    n_window_stride: 256
+    window: "hann"
+    features: 80
+    n_fft: 1024
+    log: true
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 16
+    pad_value: 0.0
+
+  spec_augment:
+    _target_: nemo.collections.asr.modules.MaskedPatchAugmentation
+    freq_masks: 3
+    freq_width: 20
+    patch_size: 48
+    mask_patches: 0.5
+
+  downstream_heads:
+    task_names: ['speaker_verification', 'content']
+    speaker_embed_size: 256
+    num_speakers: 5994
+    content_embed_size: 128
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
+    n_layers: 18
+    d_model: 512
+
+    # Sub-sampling params
+    subsampling: striding # vggnet or striding, vggnet may give better results but needs more memory
+    subsampling_factor: 4 # must be power of 2
+    subsampling_conv_channels: -1 # -1 sets it to d_model
+
+    # Feed forward module's params
+    ff_expansion_factor: 4
+
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 8 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [-1, -1] # -1 means unlimited context
+    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    untie_biases: true # unties the biases of the TransformerXL layers
+    pos_emb_max_len: 5000
+
+    # Convolution module's params
+    conv_kernel_size: 31
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm
+
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+  decoder_out: 128
+
+
+  optim_backbone:
+    _target_: torch.optim.Adam
+    lr: 5e-5
+    sched:
+      min_lr: 1e-6
+      warmup_steps: 2000
+  
+  optim_downstream:
+    _target_: torch.optim.Adam
+    lr: 1e-4
+    sched:
+      min_lr: 1e-6
+      warmup_steps: 1000
+
+
+trainer:
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: 1000
+  max_steps: 500000 # computed at runtime if not set
+  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
+  strategy: ddp
+  accumulate_grad_batches: 1
+  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
+  log_every_n_steps: 10  # Interval of logging.
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
+  sync_batchnorm: true
+  enable_checkpointing: False # Provided by exp_manager
+  logger: false  # Provided by exp_manager
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 5
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false
+
+  # You may use this section to create a W&B logger
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

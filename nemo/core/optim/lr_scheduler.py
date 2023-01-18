@@ -72,7 +72,7 @@ class WarmupPolicy(_LRScheduler):
         if step <= self.warmup_steps and self.warmup_steps > 0:
             return self._get_warmup_lr(step)
 
-        if step > self.max_steps:
+        if (self.max_steps is not None) and (step > self.max_steps):
             return [self.min_lr for _ in self.base_lrs]
 
         return self._get_lr(step)

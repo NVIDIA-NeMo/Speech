@@ -686,12 +686,12 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
             moe_dropout=moe_dropout,
         )
 
-        if precision == 32:
-            self.dtype = torch.float32
-        elif precision == 16:
-            self.dtype = torch.float16
-        elif precision == 'bf16':
+        if precision == 'bf16':
             self.dtype = torch.bfloat16
+        elif int(precision) == 16:
+            self.dtype = torch.float16
+        elif int(precision) == 32:
+            self.dtype = torch.float32
         else:
             raise ValueError
 

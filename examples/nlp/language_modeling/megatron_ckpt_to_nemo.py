@@ -29,7 +29,7 @@ from argparse import ArgumentParser
 
 import torch
 from apex.transformer import parallel_state
-from lightning_lite.plugins.environments import TorchElasticEnvironment
+from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_bart_model import MegatronBARTModel

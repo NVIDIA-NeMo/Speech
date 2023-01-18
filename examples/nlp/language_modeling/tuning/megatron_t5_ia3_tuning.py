@@ -14,9 +14,9 @@
 
 
 import torch.multiprocessing as mp
-from lightning_lite.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
+from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 
 from nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model import MegatronT5InfusedAdapterModel
 from nemo.collections.nlp.parts.nlp_overrides import (

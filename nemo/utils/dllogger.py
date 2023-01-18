@@ -18,7 +18,6 @@ from pathlib import Path
 from lightning_utilities.core.apply_func import apply_to_collection
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pytorch_lightning.loggers import Logger
-from pytorch_lightning.utilities.logger import _convert_params, _flatten_dict, _sanitize_callable_params
 from pytorch_lightning.utilities.parsing import AttributeDict
 
 from nemo.utils import logging
@@ -30,6 +29,13 @@ try:
     HAVE_DLLOGGER = True
 except (ImportError, ModuleNotFoundError):
     HAVE_DLLOGGER = False
+
+try:
+    from lightning_fabric.utilities.logger import _convert_params, _flatten_dict, _sanitize_callable_params
+
+    PL_LOGGER_UTILITIES = True
+except (ImportError, ModuleNotFoundError):
+    PL_LOGGER_UTILITIES = False
 
 
 class DLLogger(Logger):
@@ -46,6 +52,11 @@ class DLLogger(Logger):
             raise ImportError(
                 "DLLogger was not found. Please see the README for installation instructions: "
                 "https://github.com/NVIDIA/dllogger"
+            )
+        if not PL_LOGGER_UTILITIES:
+            raise ImportError(
+                "DLLogger utilities were not found. You probably need to update PyTorch Lightning>=1.9.0. "
+                "pip install pytorch-lightning -U"
             )
         verbosity = Verbosity.VERBOSE if verbose else Verbosity.DEFAULT
         backends = []

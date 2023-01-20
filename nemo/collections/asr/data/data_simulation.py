@@ -622,7 +622,7 @@ class MultiSpeakerSimulator(object):
         )
 
         # initialize sentence, text, words, alignments
-        self._sentence = torch.zeros(0)
+        self._sentence = torch.zeros(0, dtype=torch.float64)
         self._text = ""
         self._words = []
         self._alignments = []

@@ -900,7 +900,7 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         step: int,
         margin: int,
         dataloader_kwargs: Optional[Dict[str, Any]],
-        audio_queries: Optional[List[str]] = None,
+        audio_queries: Optional[Union[List[bytes], List[str]]] = None,
         target_sr: Optional[int] = None,
     ) -> torch.utils.data.DataLoader:
         """
@@ -1176,11 +1176,9 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 enumerate(infer_datalayer), total=ceil(len(infer_datalayer.dataset) / batch_size), unit="batch"
             ):
                 inp_ids, inp_type_ids, inp_mask, subtokens_mask, start_word_ids, query_ids, is_first, is_last = batch
-                print("inp_ids:\n", inp_ids, "inp_type_ids:\n", inp_type_ids, "inp_mask:\n", inp_mask)
                 punct_logits, capit_logits = self.forward(
                     input_ids=inp_ids.to(d), token_type_ids=inp_type_ids.to(d), attention_mask=inp_mask.to(d),
                 )
-                print("punct_logits:\n", punct_logits, "capit_logits:\n", capit_logits)
                 _res = self._transform_logit_to_prob_and_remove_margins_and_extract_word_probs(
                     punct_logits, capit_logits, subtokens_mask, start_word_ids, margin, is_first, is_last
                 )

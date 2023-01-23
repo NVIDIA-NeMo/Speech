@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import itertools
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -42,7 +43,7 @@ def get_features_infer(
     max_seq_length: int = 64,
     step: Optional[int] = 8,
     margin: Optional[int] = 16,
-    audio_queries: Optional[List[str]] = None,
+    audio_queries: Optional[Union[List[bytes], List[str]]] = None,
     target_sr: Optional[int] = None,
 ) -> Tuple[
     List[List[int]],
@@ -102,7 +103,10 @@ def get_features_infer(
         stm.append(subtokens_mask)
         if audio_query:
             if ASR_AVAILABLE:
-                audios.append(AudioSegment.from_file(audio_query.strip(), target_sr=target_sr))
+                if isinstance(audio_query, bytes):
+                    audios.append(AudioSegment.from_file(io.BytesIO(audio_query), target_sr=target_sr))
+                elif isinstance(audio_query, str):
+                    audios.append(AudioSegment.from_file(audio_query.strip(), target_sr=target_sr))
             else:
                 raise ModuleNotFoundError(
                     'Nemo ASR was not installed, see https://github.com/NVIDIA/NeMo#installation for installation instructions'
@@ -288,7 +292,7 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
         max_seq_length: int = 64,
         step: int = 8,
         margin: int = 16,
-        audio_queries: Optional[List[str]] = None,
+        audio_queries: Optional[Union[List[bytes], List[str]]] = None,
         target_sr: Optional[int] = None,
     ):
         features = get_features_infer(

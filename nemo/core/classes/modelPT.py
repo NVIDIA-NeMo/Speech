@@ -62,7 +62,7 @@ class ModelPT(LightningModule, Model):
         """
         if trainer is not None and not isinstance(trainer, Trainer):
             raise ValueError(
-                f"trainer constructor argument must be either None or pytroch_lightning.Trainer. But got {type(trainer)} instead."
+                f"trainer constructor argument must be either None or pytorch_lightning.Trainer. But got {type(trainer)} instead."
             )
         super().__init__()
 

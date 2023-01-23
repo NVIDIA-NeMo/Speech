@@ -19,11 +19,19 @@ import re
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Callable, DefaultDict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 import nltk
 import torch
-from nemo_text_processing.g2p.data.data_utils import any_locale_word_tokenize, english_word_tokenize
+from nemo_text_processing.g2p.data.data_utils import (
+    GRAPHEME_CASE_MIXED,
+    GRAPHEME_CASE_UPPER,
+    LATIN_CHARS_ALL,
+    any_locale_word_tokenize,
+    english_word_tokenize,
+    normalize_unicode_text,
+    set_grapheme_case,
+)
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import validate_locale
 from nemo.utils import logging
@@ -257,8 +265,8 @@ class IPAG2P(BaseG2p):
     # fmt: off
     STRESS_SYMBOLS = ["ˈ", "ˌ"]
     # Regex for roman characters, accented characters, and locale-agnostic numbers/digits
-    CHAR_REGEX = re.compile(r"[a-zA-ZÀ-ÿ\d]")
-    PUNCT_REGEX = re.compile(r"[^a-zA-ZÀ-ÿ\d]")
+    CHAR_REGEX = re.compile(fr"[{LATIN_CHARS_ALL}\d]")
+    PUNCT_REGEX = re.compile(fr"[^{LATIN_CHARS_ALL}\d]")
     # fmt: on
 
     def __init__(
@@ -271,37 +279,54 @@ class IPAG2P(BaseG2p):
         use_chars: bool = False,
         phoneme_probability: Optional[float] = None,
         use_stresses: Optional[bool] = True,
-        set_graphemes_upper: Optional[bool] = True,
+        grapheme_case: Optional[str] = GRAPHEME_CASE_UPPER,
+        grapheme_prefix: Optional[str] = "",
         mapping_file: Optional[str] = None,
     ) -> None:
-        """Generic IPA G2P module. This module converts words from grapheme to International Phonetic Alphabet representations.
-        Optionally, it can ignore heteronyms, ambiguous words, or words marked as unchangeable by word_tokenize_func (see code for details).
-        Ignored words are left unchanged or passed through apply_to_oov_word for handling.
+        """
+        Generic IPA G2P module. This module converts words from graphemes to International Phonetic Alphabet
+        representations. Optionally, it can ignore heteronyms, ambiguous words, or words marked as unchangeable
+        by `word_tokenize_func` (see code for details). Ignored words are left unchanged or passed through
+        `apply_to_oov_word` for handling.
 
         Args:
-            phoneme_dict (str, Path, Dict): Path to file in CMUdict format or a IPA dict object with CMUdict-like entries.
-                a dictionary file example: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
-                a dictionary object example: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}
-            locale: Locale used to determine default tokenization logic.
-                Supports ["en-US", "de-DE", "es-ES"]. Defaults to "en-US".
-                Specify None if implementing custom logic for a new locale.
-            apply_to_oov_word: Function that will be applied to out of phoneme_dict word.
-            ignore_ambiguous_words: Whether to not handle word via phoneme_dict with ambiguous phoneme sequences.
+            phoneme_dict (str, Path, or Dict): Path to file in CMUdict format or an IPA dict object with CMUdict-like
+                entries. For example,
+                a dictionary file: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
+                a dictionary object: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}.
+            locale (str): Locale used to determine a locale-specific tokenization logic. Currently, it supports "en-US",
+                "de-DE", and "es-ES". Defaults to "en-US". Specify None if implementing custom logic for a new locale.
+            apply_to_oov_word (Callable): Function that deals with the out-of-vocabulary (OOV) words that do not exist
+                in the `phoneme_dict`.
+            ignore_ambiguous_words (bool): Whether to handle word via phoneme_dict with ambiguous phoneme sequences.
                 Defaults to True.
-            heteronyms (str, Path, List): Path to file with heteronyms (every line is new word) or list of words.
-            use_chars: Whether to include chars/graphemes in the token list. This should be set to True if phoneme_probability is used
-                or if apply_to_oov_word ever returns graphemes.
-            phoneme_probability (Optional[float]): The probability (0.<var<1.) that each word is phonemized. Defaults to None which is the same as 1.
-                Note that this code path is only run if the word can be phonemized. For example: If the word does not have an entry in the g2p dict, it will be returned
-                as characters. If the word has multiple entries and ignore_ambiguous_words is True, it will be returned as characters.
-            use_stresses (Optional[bool]): Whether or not to include the stress symbols (ˈ and ˌ).
-            set_graphemes_upper (Optional[bool]): Whether or not to convert all graphemes to uppercase (if not converted to phonemes).
-                You may want to set this if there is an overlap between grapheme/IPA symbols.
-                Defaults to True.
+            heteronyms (str, Path, List[str]): Path to file that includes heteronyms (one word entry per line), or a
+                list of words.
+            use_chars (bool): Whether to include chars/graphemes in the token list. It is True if `phoneme_probability`
+                is not None or if `apply_to_oov_word` function ever returns graphemes.
+            phoneme_probability (Optional[float]): The probability (0.0 <= ε <= 1.0) that is used to balance the action
+                that a word in a sentence is whether transliterated into a sequence of phonemes, or kept as a sequence
+                of graphemes. If a random number for a word is greater than ε, then the word is kept as graphemes;
+                otherwise, the word is transliterated as phonemes. Defaults to None which is equivalent to setting it
+                to 1.0, meaning always transliterating the word into phonemes. Note that this code path is only run if
+                the word can be transliterated into phonemes, otherwise, if a word does not have an entry in the g2p
+                dict, it will be kept as graphemes. If a word has multiple pronunciations as shown in the g2p dict and
+                `ignore_ambiguous_words` is True, it will be kept as graphemes as well.
+            use_stresses (Optional[bool]): Whether to include the stress symbols (ˈ and ˌ).
+            grapheme_case (Optional[str]): Trigger converting all graphemes to uppercase, lowercase, or keeping them as
+                original mix-cases. You may want to use this feature to distinguish the grapheme set from the phoneme
+                set if there is an overlap in between. Defaults to `upper` because phoneme set only uses lowercase
+                symbols. You could explicitly prepend `grapheme_prefix` to distinguish them.
+            grapheme_prefix (Optional[str]): Prepend a special symbol to any graphemes in order to distinguish graphemes
+                from phonemes because there may be overlaps between the two set. It is suggested to choose a prefix that
+                is not used or preserved somewhere else. "#" could be a good candidate. Default to "".
+            TODO @borisfom: add docstring for newly added `mapping_file` argument.
         """
         self.use_stresses = use_stresses
-        self.set_graphemes_upper = set_graphemes_upper
+        self.grapheme_case = grapheme_case
+        self.grapheme_prefix = grapheme_prefix
         self.phoneme_probability = phoneme_probability
+        self.locale = locale
         self._rng = random.Random()
 
         if locale is not None:
@@ -332,8 +357,8 @@ class IPAG2P(BaseG2p):
                 "you may see unexpected deletions in your input."
             )
 
-        # word_tokenize_func returns a List[Tuple[Union[str, List[str]], bool]] where every tuple denotes
-        # a word representation (word or list tokens) and a flag indicating whether to process the word or
+        # word_tokenize_func returns a List[Tuple[List[str], bool]] where every tuple denotes
+        # a word representation (a list tokens) and a flag indicating whether to process the word or
         # leave it unchanged.
         if locale == "en-US":
             word_tokenize_func = english_word_tokenize
@@ -348,36 +373,82 @@ class IPAG2P(BaseG2p):
         )
 
         self.ignore_ambiguous_words = ignore_ambiguous_words
-        self.heteronyms = (
-            set(self._parse_file_by_lines(heteronyms))
-            if isinstance(heteronyms, str) or isinstance(heteronyms, pathlib.Path)
-            else heteronyms
-        )
-        if set_graphemes_upper and heteronyms:
-            self.heteronyms = [het.upper() for het in self.heteronyms]
+        if isinstance(heteronyms, str) or isinstance(heteronyms, pathlib.Path):
+            self.heteronyms = set(self._parse_file_by_lines(heteronyms))
+        elif isinstance(heteronyms, list) and all(isinstance(het, str) for het in heteronyms):
+            self.heteronyms = set(heteronyms)
+        else:
+            self.heteronyms = None
+
+        if self.heteronyms:
+            self.heteronyms = {set_grapheme_case(het, case=self.grapheme_case) for het in self.heteronyms}
 
     @staticmethod
-    def _parse_phoneme_dict(phoneme_dict: Union[str, pathlib.Path]):
-        # parse the dictionary, update it, and generate symbol set.
+    def _parse_phoneme_dict(
+        phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]
+    ) -> Dict[str, List[List[str]]]:
+        """
+        parse an input IPA dictionary and save it as a dict object.
+
+        Args:
+            phoneme_dict (Union[str, pathlib.Path, dict]): Path to file in CMUdict format or an IPA dict object with
+                CMUdict-like entries. For example,
+                a dictionary file: scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.06.txt;
+                a dictionary object: {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}.
+
+        Returns: a dict object (Dict[str, List[List[str]]]).
+        """
         if isinstance(phoneme_dict, str) or isinstance(phoneme_dict, pathlib.Path):
-            # load the dictionary file where there may exist a digit suffix after a word, which
+            # load the dictionary file where there may exist a digit suffix after a word, e.g. "Word(2)", which
             # represents the pronunciation variant of that word.
             phoneme_dict_obj = defaultdict(list)
             _alt_re = re.compile(r"\([0-9]+\)")
             with open(phoneme_dict, "r") as fdict:
                 for line in fdict:
-                    if len(line) and ('A' <= line[0] <= 'Z' or line[0] == "'"):
+                    # skip the empty lines
+                    if len(line) == 0:
+                        continue
+
+                    # Note that latin character pattern should be consistent with
+                    # nemo_text_processing.g2p.data.data_utils.LATIN_CHARS_ALL. It is advised to extend its character
+                    # coverage if adding the support of new languages.
+                    # TODO @xueyang: unify hardcoded range of characters with LATIN_CHARS_ALL to avoid duplicates.
+                    line = normalize_unicode_text(line)
+
+                    if (
+                        'A' <= line[0] <= 'Z'
+                        or 'a' <= line[0] <= 'z'
+                        or 'À' <= line[0] <= 'Ö'
+                        or 'Ø' <= line[0] <= 'ö'
+                        or 'ø' <= line[0] <= 'ÿ'
+                        or line[0] == "'"
+                    ):
                         parts = line.strip().split(maxsplit=1)
                         word = re.sub(_alt_re, "", parts[0])
                         prons = re.sub(r"\s+", "", parts[1])
                         phoneme_dict_obj[word].append(list(prons))
         else:
             # Load phoneme_dict as dictionary object
-            logging.info("Loading phoneme_dict as a Dict object.")
-            phoneme_dict_obj = phoneme_dict
+            logging.info("Loading phoneme_dict as a Dict object, and validating its entry format.")
+
+            phoneme_dict_obj = {}
+            for word, prons in phoneme_dict.items():
+                # validate dict entry format
+                assert isinstance(
+                    prons, list
+                ), f"Pronunciation type <{type(prons)}> is not supported. Please convert to <list>."
+
+                # normalize word with NFC form
+                word = normalize_unicode_text(word)
+
+                # normalize phonemes with NFC form
+                prons = [[normalize_unicode_text(p) for p in pron] for pron in prons]
+
+                phoneme_dict_obj.update({word: prons})
+
         return phoneme_dict_obj
 
-    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path]):
+    def replace_dict(self, phoneme_dict: Union[str, pathlib.Path, Dict[str, List[List[str]]]]):
         """
         Replace model's phoneme dictionary with a custom one
         """
@@ -386,15 +457,18 @@ class IPAG2P(BaseG2p):
     @staticmethod
     def _parse_file_by_lines(p: Union[str, pathlib.Path]) -> List[str]:
         with open(p, 'r') as f:
-            return [l.rstrip() for l in f.readlines()]
+            return [line.rstrip() for line in f.readlines()]
 
-    def _normalize_dict(self, phoneme_dict_obj: dict) -> Tuple[DefaultDict[str, List[List[str]]], Set]:
+    def _prepend_prefix_for_one_word(self, word: str) -> List[str]:
+        return [f"{self.grapheme_prefix}{character}" for character in word]
+
+    def _normalize_dict(self, phoneme_dict_obj: Dict[str, List[List[str]]]) -> Tuple[Dict[str, List[List[str]]], Set]:
         """
         Parse a python dict object according to the decision on word cases and removal of lexical stress markers.
 
         Args:
-            phoneme_dict_obj (dict): a dictionary object.
-                e.g. {..., "WIRE": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}
+            phoneme_dict_obj (Dict[str, List[List[str]]]): a dictionary object.
+                e.g. {..., "Wire": [["ˈ", "w", "a", "ɪ", "ɚ"], ["ˈ", "w", "a", "ɪ", "ɹ"]], ...}
 
         Returns:
             g2p_dict (dict): processed dict.
@@ -404,39 +478,53 @@ class IPAG2P(BaseG2p):
         g2p_dict = defaultdict(list)
         symbols = set()
         for word, prons in phoneme_dict_obj.items():
+            # process word
             # update word cases.
-            if self.set_graphemes_upper:
-                word_new = word.upper()
-            else:
-                word_new = word.lower()
+            word_new = set_grapheme_case(word, case=self.grapheme_case)
 
             # add grapheme symbols if `use_chars=True`.
             if self.use_chars:
-                # remove punctuations after a word.
+                # remove punctuations within a word. Punctuations can exist at the start, middle, and end of a word.
                 word_no_punct = self.PUNCT_REGEX.sub('', word_new)
-                symbols.update(word_no_punct)
 
+                # add prefix to distinguish graphemes from phonemes.
+                symbols.update(self._prepend_prefix_for_one_word(word_no_punct))
+
+            # process IPA pronunciations
             # update phoneme symbols by removing lexical stress markers if `use_stresses=False`.
             prons_new = list()
             if not self.use_stresses:
                 for pron in prons:
-                    pron_no_stress = [symbol for symbol in pron if symbol not in self.STRESS_SYMBOLS]
-                    prons_new.append(pron_no_stress)
-                    symbols.update(pron_no_stress)
+                    prons_new.append([symbol for symbol in pron if symbol not in self.STRESS_SYMBOLS])
             else:
                 prons_new = prons
-                for pron in prons:
-                    symbols.update(pron)  # This will insert each char individually
 
-            # update final dict
+            # update symbols
+            for pron in prons_new:
+                symbols.update(pron)  # This will insert each char individually
+
+            # update dict entry
             g2p_dict[word_new] = prons_new
+
+            # duplicate word entries if grapheme_case is mixed. Even though grapheme_case is set to mixed, the words in
+            # the original input text and the g2p_dict remain unchanged, so they could still be either lowercase,
+            # uppercase, or mixed-case as defined in `set_grapheme_case` func. When mapping an uppercase word, e.g.
+            # "HELLO", into phonemes using the g2p_dict with {"Hello": [["həˈɫoʊ"]]}, "HELLO" can't find its
+            # pronunciations in the g2p_dict due to the case-mismatch of the words. Augmenting the g2p_dict with its
+            # uppercase word entry, e.g. {"Hello": [["həˈɫoʊ"]], "HELLO": [["həˈɫoʊ"]]} would provide possibility to
+            # find "HELLO"'s pronunciations rather than directly considering it as an OOV.
+            if self.grapheme_case == GRAPHEME_CASE_MIXED and not word_new.isupper():
+                g2p_dict[word_new.upper()] = prons_new
 
         return g2p_dict, symbols
 
+    # TODO @xueyang: deprecate this function because it is useless. If unknown graphemes appear, then apply_to_oov_words
+    #   should handle it.
     def add_symbols(self, symbols: str) -> None:
-        """By default the G2P symbols will be inferred from the words & pronunciations in the phoneme_dict.
+        """By default, the G2P symbols will be inferred from the words & pronunciations in the phoneme_dict.
         Use this to add characters in the vocabulary that are not present in the phoneme_dict.
         """
+        symbols = normalize_unicode_text(symbols)
         self.symbols.update(symbols)
 
     def is_unique_in_phoneme_dict(self, word: str) -> bool:
@@ -445,82 +533,119 @@ class IPAG2P(BaseG2p):
     def parse_one_word(self, word: str) -> Tuple[List[str], bool]:
         """Returns parsed `word` and `status` (bool: False if word wasn't handled, True otherwise).
         """
-        if self.set_graphemes_upper:
-            word = word.upper()
-
-        if self.phoneme_probability is not None and self._rng.random() > self.phoneme_probability:
-            return list(word), True
+        word = set_grapheme_case(word, case=self.grapheme_case)
 
         # Punctuation (assumes other chars have been stripped)
         if self.CHAR_REGEX.search(word) is None:
             return list(word), True
 
+        # Keep graphemes of a word with a probability.
+        if self.phoneme_probability is not None and self._rng.random() > self.phoneme_probability:
+            return self._prepend_prefix_for_one_word(word), True
+
         # Heteronyms
         if self.heteronyms and word in self.heteronyms:
-            return list(word), True
+            return self._prepend_prefix_for_one_word(word), True
 
-        # `'s` suffix (with apostrophe) - not in phoneme dict
-        if (
-            len(word) > 2
-            and word.endswith("'s")
-            and (word not in self.phoneme_dict)
-            and (word[:-2] in self.phoneme_dict)
-            and (not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word[:-2]))
-        ):
-            if word[-3] == 'T':
-                # Case like "airport's"
-                return self.phoneme_dict[word[:-2]][0] + ["s"], True
-            elif word[-3] == 'S':
-                # Case like "jones's"
-                return self.phoneme_dict[word[:-2]][0] + ["ɪ", "z"], True
-            else:
-                return self.phoneme_dict[word[:-2]][0] + ["z"], True
+        # special cases for en-US when transliterating a word into a list of phonemes.
+        # TODO @xueyang: add special cases for any other languages upon new findings.
+        if self.locale == "en-US":
+            # `'s` suffix (with apostrophe) - not in phoneme dict
+            if len(word) > 2 and (word.endswith("'s") or word.endswith("'S")):
+                word_found = None
+                if (word not in self.phoneme_dict) and (word.upper() not in self.phoneme_dict):
+                    if word[:-2] in self.phoneme_dict:
+                        word_found = word[:-2]
+                    elif word[:-2].upper() in self.phoneme_dict:
+                        word_found = word[:-2].upper()
 
-        # `s` suffix (without apostrophe) - not in phoneme dict
-        if (
-            len(word) > 1
-            and word.endswith("s")
-            and (word not in self.phoneme_dict)
-            and (word[:-1] in self.phoneme_dict)
-            and (not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word[:-1]))
-        ):
-            if word[-2] == 'T':
-                # Case like "airports"
-                return self.phoneme_dict[word[:-1]][0] + ["s"], True
-            else:
-                return self.phoneme_dict[word[:-1]][0] + ["z"], True
+                if word_found is not None and (
+                    not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word_found)
+                ):
+                    if word_found[-1] in ['T', 't']:
+                        # for example, "airport's" doesn't exist in the dict while "airport" exists. So append a phoneme
+                        # /s/ at the end of "airport"'s first pronunciation.
+                        return self.phoneme_dict[word_found][0] + ["s"], True
+                    elif word_found[-1] in ['S', 's']:
+                        # for example, "jones's" doesn't exist in the dict while "jones" exists. So append two phonemes,
+                        # /ɪ/ and /z/ at the end of "jones"'s first pronunciation.
+                        return self.phoneme_dict[word_found][0] + ["ɪ", "z"], True
+                    else:
+                        return self.phoneme_dict[word_found][0] + ["z"], True
 
-        # Phoneme dict lookup for unique words (or default pron if ignore_ambiguous_words=False)
+            # `s` suffix (without apostrophe) - not in phoneme dict
+            if len(word) > 1 and (word.endswith("s") or word.endswith("S")):
+                word_found = None
+                if (word not in self.phoneme_dict) and (word.upper() not in self.phoneme_dict):
+                    if word[:-1] in self.phoneme_dict:
+                        word_found = word[:-1]
+                    elif word[:-1].upper() in self.phoneme_dict:
+                        word_found = word[:-1].upper()
+
+                if word_found is not None and (
+                    not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word_found)
+                ):
+                    if word_found[-1] in ['T', 't']:
+                        # for example, "airports" doesn't exist in the dict while "airport" exists. So append a phoneme
+                        # /s/ at the end of "airport"'s first pronunciation.
+                        return self.phoneme_dict[word_found][0] + ["s"], True
+                    else:
+                        return self.phoneme_dict[word_found][0] + ["z"], True
+
+        # For the words that have a single pronunciation, directly look it up in the phoneme_dict; for the
+        # words that have multiple pronunciation variants, if we don't want to ignore them, then directly choose their
+        # first pronunciation variant as the target phonemes.
+        # TODO @xueyang: this is a temporary solution, but it is not optimal if always choosing the first pronunciation
+        #  variant as the target if a word has multiple pronunciation variants. We need explore better approach to
+        #  select its optimal pronunciation variant aligning with its reference audio.
         if word in self.phoneme_dict and (not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word)):
             return self.phoneme_dict[word][0], True
+
+        if (
+            self.grapheme_case == GRAPHEME_CASE_MIXED
+            and word not in self.phoneme_dict
+            and word.upper() in self.phoneme_dict
+        ):
+            word = word.upper()
+            if not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word):
+                return self.phoneme_dict[word][0], True
 
         if self.apply_to_oov_word is not None:
             return self.apply_to_oov_word(word), True
         else:
-            return list(word), False
+            return self._prepend_prefix_for_one_word(word), False
 
     def __call__(self, text: str) -> List[str]:
-        words = self.word_tokenize_func(text)
+        text = normalize_unicode_text(text)
+        words_list_of_tuple = self.word_tokenize_func(text)
 
         prons = []
-        for word, without_changes in words:
+        for words, without_changes in words_list_of_tuple:
             if without_changes:
-                prons.extend(word)
-                continue
+                # for example: (["NVIDIA", "unchanged"], True). "NVIDIA" is considered as a single token.
+                prons.extend([f"{self.grapheme_prefix}{word}" for word in words])
+            else:
+                assert (
+                    len(words) == 1
+                ), f"{words} should only have a single item when `without_changes` is False, but found {len(words)}."
 
-            word_str = word[0]
-            word_by_hyphen = word_str.split("-")
-            pron, is_handled = self.parse_one_word(word_str)
+                word = words[0]
+                pron, is_handled = self.parse_one_word(word)
 
-            if not is_handled and len(word_by_hyphen) > 1:
-                pron = []
-                for sub_word in word_by_hyphen:
-                    p, _ = self.parse_one_word(sub_word)
-                    pron.extend(p)
-                    pron.extend(["-"])
-                pron.pop()
+                # If `is_handled` is False, then the only possible case is that the word is an OOV. The OOV may have a
+                # hyphen so that it doesn't show up in the g2p dictionary. We need split it into sub-words by a hyphen,
+                # and parse the sub-words again just in case any sub-word exists in the g2p dictionary.
+                if not is_handled:
+                    subwords_by_hyphen = word.split("-")
+                    if len(subwords_by_hyphen) > 1:
+                        pron = []  # reset the previous pron
+                        for sub_word in subwords_by_hyphen:
+                            p, _ = self.parse_one_word(sub_word)
+                            pron.extend(p)
+                            pron.append("-")
+                        pron.pop()  # remove the redundant hyphen that is previously appended at the end of the word.
 
-            prons.extend(pron)
+                prons.extend(pron)
 
         return prons
 

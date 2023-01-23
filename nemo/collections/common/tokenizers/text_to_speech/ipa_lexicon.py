@@ -115,6 +115,8 @@ def get_ipa_punctuation_list(locale):
     validate_locale(locale)
 
     punct_set = set(DEFAULT_PUNCTUATION)
+    # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
+    #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
     if locale in ["de-DE", "es-ES"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])

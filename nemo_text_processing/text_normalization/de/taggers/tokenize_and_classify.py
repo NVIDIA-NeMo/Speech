@@ -43,8 +43,8 @@ from nemo.utils import logging
 
 class ClassifyFst(GraphFst):
     """
-    Final class that composes all other classification grammars. This class can process an entire sentence, that is lower cased.
-    For deployment, this grammar will be compiled and exported to OpenFst Finate State Archiv (FAR) File. 
+    Final class that composes all other classification grammars. This class can process an entire sentence, that is
+    lower cased. For deployment, this grammar will be compiled and exported to OpenFst Finite State Archive (FAR) File.
     More details to deployment at NeMo/tools/text_processing_deployment.
 
     Args:

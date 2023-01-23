@@ -24,14 +24,18 @@ __all__ = [
     "read_wordids",
     "chinese_text_preprocessing",
     "english_text_preprocessing",
-    "german_text_preprocessing",
     "any_locale_text_preprocessing",
     "spanish_text_preprocessing",
     "any_locale_word_tokenize",
     "english_word_tokenize",
+    "LATIN_CHARS_ALL",
+    "set_grapheme_case",
+    "normalize_unicode_text",
+    "GRAPHEME_CASE_UPPER",
+    "GRAPHEME_CASE_LOWER",
+    "GRAPHEME_CASE_MIXED",
 ]
 
-# +
 # Derived from LJSpeech
 _synoglyphs = {
     "'": ['’'],
@@ -58,7 +62,10 @@ _WORDS_RE_ANY_LOCALE = re.compile(
     fr"([{LATIN_CHARS_ALL}]+(?:[{LATIN_CHARS_ALL}\-']*[{LATIN_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{LATIN_CHARS_ALL}|]+)"
 )
 
-# -
+# define grapheme cases.
+GRAPHEME_CASE_UPPER = "upper"
+GRAPHEME_CASE_LOWER = "lower"
+GRAPHEME_CASE_MIXED = "mixed"
 
 
 def read_wordids(wordid_map: str):
@@ -130,7 +137,26 @@ def english_text_preprocessing(text, lower=True):
     return text
 
 
-def german_text_preprocessing(text: str) -> str:
+def any_locale_text_preprocessing(text: str) -> str:
+    """
+    Normalize unicode text with "NFC", and convert right single quotation mark (U+2019, decimal 8217) as an apostrophe.
+
+    Args:
+        text (str): the original input sentence.
+
+    Returns: normalized text (str).
+    """
+    res = []
+    for c in normalize_unicode_text(text):
+        if c in ['’']:  # right single quotation mark (U+2019, decimal 8217) as an apostrophe
+            res.append("'")
+        else:
+            res.append(c)
+
+    return ''.join(res)
+
+
+def normalize_unicode_text(text: str) -> str:
     """
     TODO @xueyang: Apply NFC form may be too aggressive since it would ignore some accented characters that do not exist
       in predefined German alphabet (nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon.IPA_CHARACTER_SETS),
@@ -150,14 +176,11 @@ def german_text_preprocessing(text: str) -> str:
     Returns:
         NFC normalized sentence (str).
     """
-    res = []
-    for c in unicodedata.normalize("NFC", text):
-        if c in ['’']:  # right single quotation mark as an apostrophe, U+2019, decimal 8217
-            res.append("'")
-        else:
-            res.append(c)
+    # normalize word with NFC form
+    if not unicodedata.is_normalized("NFC", text):
+        text = unicodedata.normalize("NFC", text)
 
-    return ''.join(res)
+    return text
 
 
 def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], bool]]:
@@ -180,11 +203,11 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
 
     .. code-block:: python
         [
-            (["hello"], False),
+            (["Hello"], False),
             ([" "], False),
-            (["world"], False),
+            (["World"], False),
             ([" "], False),
-            (["nvidia", "unchanged"], True),
+            (["NVIDIA", "unchanged"], True),
             (["!"], False)
         ]
 
@@ -201,7 +224,7 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
 
         without_changes = False
         if maybe_word != '':
-            token = [maybe_word.lower()]
+            token = [maybe_word]
         elif maybe_punct != '':
             token = [maybe_punct]
         elif maybe_without_changes != '':
@@ -218,23 +241,33 @@ def _word_tokenize(words: List[Tuple[str, str, str]]) -> List[Tuple[List[str], b
     return result
 
 
-def english_word_tokenize(text):
+def english_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
     words = _WORDS_RE_EN.findall(text)
     return _word_tokenize(words)
 
 
-def any_locale_word_tokenize(text):
+def any_locale_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
     words = _WORDS_RE_ANY_LOCALE.findall(text)
     return _word_tokenize(words)
 
 
-def any_locale_text_preprocessing(text):
-    return text.lower()
-
-
+# TODO @xueyang: deprecate language-specific text preprocessing and use any_locale_text_preprocessing.
 def spanish_text_preprocessing(text):
     return text.lower()
 
 
 def chinese_text_preprocessing(text):
     return text.lower()
+
+
+def set_grapheme_case(text: str, case: str = "upper") -> str:
+    if case == "upper":
+        text_new = text.upper()
+    elif case == "lower":
+        text_new = text.lower()
+    elif case == "mixed":  # keep as-is, mix-cases
+        text_new = text
+    else:
+        raise ValueError(f"Case <{case}> is not supported. Please specify either 'upper', 'lower', or 'mixed'.")
+
+    return text_new

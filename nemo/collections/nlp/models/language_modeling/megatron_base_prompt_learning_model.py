@@ -496,9 +496,9 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         if self.cfg.data.get('validation_ds', None):
             self._validation_ds, self._validation_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.validation_ds,
-                batch_size=self.cfg.global_batch_size,
+                batch_size=self.cfg.get("validation_global_batch_size", self.cfg.global_batch_size),
                 for_train=True,
-                drop_last=True,
+                drop_last=self.cfg.get("validation_drop_last", True),
                 shuffle=False,
                 num_workers=self.cfg.data.num_workers,
                 pin_memory=True,
@@ -508,7 +508,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         if self.cfg.data.get('test_ds', None):
             self._test_ds, self._test_dl = self.build_virtual_prompt_dataset(
                 dataset_paths=self.cfg.data.test_ds,
-                batch_size=self.cfg.global_batch_size,
+                batch_size=self.cfg.get("validation_global_batch_size", self.cfg.global_batch_size),
                 for_train=False,
                 drop_last=False,
                 shuffle=False,

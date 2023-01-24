@@ -307,11 +307,21 @@ def launch(launcher, job_overrides: Sequence[Sequence[str]], initial_job_idx: in
                     # raising the error for the first one.
                     # This is done so that even if some jobs fail (say OOM or something),
                     # other jobs can still run.
+                    err_buffer = std_error_buffers[proc_idx]
+                    if isinstance(err_buffer, (list, tuple)):
+                        err_string = ""
+                        for err_line in err_buffer:
+                            err_string = (
+                                err_string + f"{str(err_line, encoding='utf-8').encode('utf-8').decode('utf-8')}"
+                            )
+                    else:
+                        err_string = err_buffer
+
                     error_msg = (
                         f"\nHyperparameter Arguments : {proc.args}\n"
                         f"Process Return code : {proc.returncode}\n"
                         f"Error Trace :\n"
-                        f"{str(std_error_buffers[proc_idx], encoding='utf-8').encode('utf-8').decode('utf-8')}"
+                        f"{err_string}"
                     )
                     res.return_value = Exception(error_msg)
                     res.status = JobStatus.FAILED

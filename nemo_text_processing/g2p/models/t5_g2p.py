@@ -146,9 +146,7 @@ class T5G2PModel(G2PModel):
             infer_datalayer = self._setup_infer_dataloader(DictConfig(config))
             for batch in infer_datalayer:
                 input_ids, _ = batch
-                generated_str, _, _ = self._generate_predictions(
-                    input_ids=input_ids.to(device), model_max_target_len=None
-                )
+                generated_str, _, _ = self._generate_predictions(input_ids=input_ids.to(device))
                 all_preds.extend(generated_str)
                 del batch
         finally:
@@ -205,14 +203,13 @@ class T5G2PModel(G2PModel):
         self.multi_validation_epoch_end(outputs, dataloader_idx, split="test")
 
     @torch.no_grad()
-    def _generate_predictions(self, input_ids: torch.Tensor, model_max_target_len: int = None):
+    def _generate_predictions(self, input_ids: torch.Tensor, model_max_target_len: int = 512):
         """
         Generates predictions and converts IDs to text.
         """
         outputs = self.model.generate(
             input_ids, output_scores=True, return_dict_in_generate=True, max_length=model_max_target_len
         )
-
         generated_ids, sequence_toks_scores = outputs['sequences'], outputs['scores']
         generated_texts = self._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 

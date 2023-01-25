@@ -63,7 +63,7 @@ For each utterance specified in a line of `manifest_filepath`, several CTM files
 * a CTM file containing word-level alignments at `<output_dir>/words/<utt_id>.ctm`,
 * if `additional_ctm_grouping_separator` is specified, there will also be a CTM file containing those segments at `output_dir/additional_segments`.
 Each CTM file will contain lines of the format:
-`<utt_id> 1 <start time in samples> <duration in samples> <text, ie token/word/segment>`.
+`<utt_id> 1 <start time in seconds> <duration in seconds> <text, ie token/word/segment>`.
 Note the second item in the line (the 'channel ID', which is required by the CTM file format) is always 1, as NFA operates on single channel audio.
 
 # Output JSON manifest file format

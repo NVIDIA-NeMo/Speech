@@ -67,22 +67,6 @@ def is_entry_in_all_lines(manifest_filepath, entry):
     return True
 
 
-def get_audio_sr(manifest_filepath):
-    """
-    Measure the sampling rate of the audio file in the first line
-    of the manifest at manifest_filepath
-    """
-    with open(manifest_filepath, "r") as f_manifest:
-        first_line = json.loads(f_manifest.readline())
-
-    audio_file = first_line["audio_filepath"]
-    if not os.path.exists(audio_file):
-        raise RuntimeError(f"Did not find filepath {audio_file} which was specified in manifest {manifest_filepath}.")
-
-    with sf.SoundFile(audio_file, "r") as f_audio:
-        return f_audio.samplerate
-
-
 def get_manifest_lines_batch(manifest_filepath, start, end):
     manifest_lines_batch = []
     with open(manifest_filepath, "r") as f:

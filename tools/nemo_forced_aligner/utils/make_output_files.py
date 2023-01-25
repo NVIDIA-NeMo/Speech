@@ -108,7 +108,6 @@ def make_ctm(
     remove_blank_tokens_from_ctm,
     audio_filepath_parts_in_utt_id,
     minimum_timestamp_duration,
-    audio_sr,
 ):
     """
     Function to save CTM files for all the utterances in the incoming batch.
@@ -145,8 +144,8 @@ def make_ctm(
                 start_sample = boundary_info_["t_start"] * timestep_to_sample_ratio
                 end_sample = (boundary_info_["t_end"] + 1) * timestep_to_sample_ratio - 1
 
-                start_time = start_sample / audio_sr
-                end_time = end_sample / audio_sr
+                start_time = start_sample / model.cfg.sample_rate
+                end_time = end_sample / model.cfg.sample_rate
 
                 if minimum_timestamp_duration > 0 and minimum_timestamp_duration > end_time - start_time:
                     # make the predicted duration of the token/word/segment longer, growing it outwards equal

@@ -16,6 +16,7 @@ data_simulator:
     dominance_var: 0.11 # Variance in speaker dominance (where each speaker's dominance is sampled from a normal distribution centered on 1/`num_speakers`, and then the dominance values are together normalized to 1)
     min_dominance: 0.05 # Minimum percentage of speaking time per speaker (note that this can cause the dominance of the other speakers to be slightly reduced)
     turn_prob: 0.875 # Probability of switching speakers after each utterance
+    min_turn_prob: 0.5 # Minimum turn probability when enforce mode is True to prevent from making excessive session length
     mean_overlap: 0.19 # Mean proportion of overlap in the overall speaking time (overlap lengths are sampled from half normal distribution)
     mean_silence: 0.15 # Mean proportion of silence to speaking time in the audio session (overlap lengths are sampled from half normal distribution)
     overlap_prob: 0.5 # Proportion of overlap occurrences versus silence between utterances (used to balance the length of silence gaps and overlapping segments, so a value close to `mean_overlap`/(`mean_silence`+`mean_overlap`) is suggested)
@@ -44,7 +45,7 @@ data_simulator:
     snr: 60 # SNR for background noise (using average speaker power)
 
   speaker_enforcement:
-    enforce_num_speakers: false # Enforce that all requested speakers are present in the output wav file
+    enforce_num_speakers: true # Enforce that all requested speakers are present in the output wav file
     enforce_time:  # Percentage of the way through the audio session that enforcement mode is triggered (sampled between time 1 and 2)
     - 0.25
     - 0.75

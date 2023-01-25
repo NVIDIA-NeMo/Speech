@@ -28,8 +28,8 @@ lowfreq: 0
 highfreq: null
 window: hann
 
-phoneme_dict_path: "scripts/tts_dataset_files/de/de_nv221025.dict"
-heteronyms_path: "scripts/tts_dataset_files/de/de_heteronyms_nv221025.wlist"
+phoneme_dict_path: "scripts/tts_dataset_files/de/de_nv230119.dict"
+heteronyms_path: "scripts/tts_dataset_files/de/de_nv230119.heteronyms"
 whitelist_path: "nemo_text_processing/text_normalization/de/data/whitelist.tsv"
 
 model:

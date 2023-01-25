@@ -19,7 +19,6 @@ from typing import Optional
 import torch
 from omegaconf import OmegaConf
 from utils.data_prep import (
-    get_audio_sr,
     get_batch_starts_ends,
     get_batch_tensors_and_boundary_info,
     get_manifest_lines_batch,
@@ -188,13 +187,6 @@ def main(cfg: AlignmentConfig):
             " Currently only instances of EncDecCTCModels are supported"
         )
 
-    audio_sr = get_audio_sr(cfg.manifest_filepath)
-    logging.info(
-        f"Detected audio sampling rate {audio_sr}Hz in first audio in manifest at {cfg.manifest_filepath}. "
-        "Will assume all audios in manifest have this sampling rate. Sampling rate will be used to determine "
-        "timestamps in output CTM."
-    )
-
     if cfg.minimum_timestamp_duration > 0:
         logging.warning(
             f"cfg.minimum_timestamp_duration has been set to {cfg.minimum_timestamp_duration} seconds. "
@@ -242,7 +234,6 @@ def main(cfg: AlignmentConfig):
             cfg.remove_blank_tokens_from_ctm,
             cfg.audio_filepath_parts_in_utt_id,
             cfg.minimum_timestamp_duration,
-            audio_sr,
         )
 
         make_ctm(
@@ -255,7 +246,6 @@ def main(cfg: AlignmentConfig):
             False,  # dont try to remove blank tokens because we dont expect them to be there anyway
             cfg.audio_filepath_parts_in_utt_id,
             cfg.minimum_timestamp_duration,
-            audio_sr,
         )
 
         if cfg.additional_ctm_grouping_separator:
@@ -269,7 +259,6 @@ def main(cfg: AlignmentConfig):
                 False,  # dont try to remove blank tokens because we dont expect them to be there anyway
                 cfg.audio_filepath_parts_in_utt_id,
                 cfg.minimum_timestamp_duration,
-                audio_sr,
             )
 
     make_new_manifest(

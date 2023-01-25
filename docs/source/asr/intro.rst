@@ -54,5 +54,6 @@ The full documentation tree is as follows:
    api
    resources
    examples/kinyarwanda_asr.rst
+   examples/esperanto_asr/esperanto_asr.rst
 
 .. include:: resources.rst

@@ -132,6 +132,9 @@ def get_features_infer(
     for q_i, (query_st, query_audio) in enumerate(zip(st, audios)):
         q_inp_ids, q_segment_ids, q_subtokens_mask, q_inp_mask, q_quantities_of_preceding_words = [], [], [], [], []
         q_audio_queries, q_audio_lengths = [], []
+        if query_audio and length < len(query_st):
+            logging.info(f'Ignoring query with id {q_i}')
+            continue
         for i in range(0, max(len(query_st), length) - length + step, step):
             subtokens = [tokenizer.cls_token] + query_st[i : i + length] + [tokenizer.sep_token]
             q_inp_ids.append(tokenizer.tokens_to_ids(subtokens))
@@ -140,7 +143,7 @@ def get_features_infer(
             q_inp_mask.append([True] * len(subtokens))
             q_quantities_of_preceding_words.append(np.count_nonzero(stm[q_i][:i]))
             if query_audio:
-                samples = query_audio.samples[i * 4000 : (i + length) * 4000]
+                samples = query_audio.samples
                 q_audio_queries.append(samples)
                 q_audio_lengths.append(len(samples))
         all_input_ids.append(q_inp_ids)

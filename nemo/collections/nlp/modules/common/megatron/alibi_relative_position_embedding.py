@@ -38,11 +38,13 @@ def get_slopes(n):
     return slopes
 
 
-def build_slopes(num_attention_heads, alibi_num_heads):
+def build_slopes(num_attention_heads, num_attention_heads_alibi):
     """
     Builds a slopes tensor.
     """
-    slopes = torch.Tensor(get_slopes(alibi_num_heads) + [0] * (num_attention_heads - alibi_num_heads)).cuda()
+    slopes = torch.Tensor(
+        get_slopes(num_attention_heads_alibi) + [0] * (num_attention_heads - num_attention_heads_alibi)
+    ).cuda()
     return slopes.unsqueeze(-1).unsqueeze(-1)
 
 
@@ -65,23 +67,25 @@ class ALiBiRelativePositionEmbedding(torch.nn.Module):
     Based on https://arxiv.org/bas/2108.12409
     """
 
-    def __init__(self, bidirectional, num_attention_heads, layer_type, alibi_num_heads=None, max_seq_len=512):
+    def __init__(
+        self, bidirectional, num_attention_heads, layer_type, num_attention_heads_alibi=None, max_seq_len=512
+    ):
         """
         Args:
             bidirectional: Whether to use bidirectional relative position embedding
             num_attention_heads: Number of attention heads
             layer_type: Layer type. Can be one of [LayerType.encoder or LayerType.decoder]. Willdetermine the bias construction
-            alibi_num_heads: Number of attention heads for which alibi bias will be used
+            num_attention_heads_alibi: Number of attention heads for which alibi bias will be used
             max_seq_len: Maximum sequence length for precomputed relative positions. Larger sizes will result in more memory usage by computing alibi mask on-the-fly.
         """
         super().__init__()
 
-        if alibi_num_heads is None:
-            alibi_num_heads = num_attention_heads
+        if (num_attention_heads_alibi is None) or (num_attention_heads_alibi <= 0):
+            num_attention_heads_alibi = num_attention_heads
 
-        if alibi_num_heads > num_attention_heads:
+        if num_attention_heads_alibi > num_attention_heads:
             raise ValueError(
-                f"alibi_num_heads ({alibi_num_heads}) cannot be larger than num_attention_heads ({num_attention_heads})"
+                f"num_attention_heads_alibi ({num_attention_heads_alibi}) cannot be larger than num_attention_heads ({num_attention_heads})"
             )
 
         self.bidirectional = bidirectional
@@ -90,12 +94,12 @@ class ALiBiRelativePositionEmbedding(torch.nn.Module):
         self.layer_type = layer_type
         # define the size of pre-computed relative position slopes.
         # define the number of attention heads for which alibi mask will be pre-computed (the rest are disabled).
-        self.alibi_num_heads = alibi_num_heads
+        self.num_attention_heads_alibi = num_attention_heads_alibi
         # Larger sizes will result in more memory usage by computing alibi mask on-the-fly.
         self.max_seq_len = max_seq_len
 
         # cache the slopes
-        self.slopes = build_slopes(num_attention_heads, alibi_num_heads)
+        self.slopes = build_slopes(num_attention_heads, num_attention_heads_alibi)
         # cache the relative position bias. shape (num_attention_heads, max_seq_len, max_seq_len)
         self.relative_position = build_relative_position(max_seq_len, max_seq_len, num_attention_heads)
 
@@ -113,4 +117,4 @@ class ALiBiRelativePositionEmbedding(torch.nn.Module):
             relative_position = torch.tril(relative_position)
 
         # shape (1, num_heads, query_length, key_length)
-        return relative_position.unsqueeze(0) * self.slopes
+        return -relative_position.unsqueeze(0) * self.slopes

@@ -162,7 +162,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     bidirectional=True,
                     num_attention_heads=encoder_cfg.num_attention_heads,
                     layer_type=LayerType.encoder,
-                    alibi_num_heads=None,
+                    num_attention_heads_alibi=None,
                     max_seq_len=max_position_embeddings,
                 )
                 self._encoder_relative_position_embedding_key = "encoder_relative_position_embedding"
@@ -282,7 +282,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     bidirectional=False,
                     num_attention_heads=decoder_cfg.num_attention_heads,
                     layer_type=LayerType.decoder,
-                    alibi_num_heads=None,
+                    num_attention_heads_alibi=None,
                     max_seq_len=max_position_embeddings,
                 )
                 self._decoder_relative_position_embedding_key = "decoder_relative_position_embedding"

@@ -558,7 +558,9 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             mapped_labels = list(mapped_labels)
 
         featurizer = WaveformFeaturizer(sample_rate=sample_rate)
-        dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
+        dataset = AudioToSpeechLabelDataset(
+            manifest_filepath=manifest_filepath, labels=mapped_labels, featurizer=featurizer
+        )
 
         dataloader = torch.utils.data.DataLoader(
             dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,

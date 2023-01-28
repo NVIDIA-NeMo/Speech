@@ -198,9 +198,8 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
                     self._file = open(path, 'wb')
 
                     self._file.write(cls._HDR_MAGIC)
-                    self._file.write(struct.pack('<Q', 1))
-                    self._file.write(struct.pack('<B', code(dtype)))
-
+                    # write index file version
+                    self._file.write(struct.pack('<L', 1))
                     return self
 
                 @staticmethod
@@ -218,7 +217,9 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
                     return pointers
 
                 @staticmethod
-                def _get_chunk_id_and_address(sizes, chunk_size):
+                def _get_chunk_id_and_address(sizes, chunk_size, stride):
+                    if chunk_size % stride != 0:
+                        raise ValueError(f"the chunk size {chunk_size} should be the multiple of {stride}")
                     dtype_size = dtype().itemsize
                     chunk_ids = []
                     last_id = 0
@@ -226,21 +227,27 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
                     pointers = []
                     for size in sizes:
                         chunk_ids.append(last_id)
-                        num_of_chunks = size // chunk_size
+                        num_of_chunks = len(range(0, size - chunk_size + 1, stride))
                         if size % chunk_size != 0:
                             raise ValueError(f"the document size {size} should be the multiple of {chunk_size}")
-                        for _ in range(num_of_chunks):
+                        for i in range(0, size - chunk_size + 1, stride):
                             pointers.append(address)
-                            address += chunk_size * dtype_size
+                            if i == size - chunk_size:
+                                address += chunk_size * dtype_size
+                            else:
+                                address += stride * dtype_size
                         if retrieval_db:
                             # if it is retrieval db, the the last chunk is reserved for padding
                             address += chunk_size * dtype_size
                         last_id += num_of_chunks
                     return chunk_ids, pointers
 
-                def write(self, sizes, chunk_size):
+                def write(self, sizes, chunk_size, stride=64):
                     pointers = self._get_pointers(sizes, chunk_size)
-                    chunk_ids, chunk_address = self._get_chunk_id_and_address(sizes, chunk_size)
+                    chunk_ids, chunk_address = self._get_chunk_id_and_address(sizes, chunk_size, stride)
+                    # write index chunk stride step
+                    self._file.write(struct.pack('<L', stride))
+                    self._file.write(struct.pack('<B', code(dtype)))
 
                     self._file.write(struct.pack('<Q', len(sizes)))
                     self._file.write(struct.pack('<Q', chunk_size))
@@ -274,8 +281,13 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
                     'Index file doesn\'t match expected format. '
                     'Make sure that --dataset-impl is configured properly.'
                 )
-                version = struct.unpack('<Q', stream.read(8))
+                version = struct.unpack('<L', stream.read(4))
                 assert (1,) == version
+                # load the stride size
+                (self.stride,) = struct.unpack('<L', stream.read(4))
+                # for legacy compatibility
+                if self.stride == 0:
+                    self.stride = 64
 
                 (dtype_code,) = struct.unpack('<B', stream.read(1))
                 self._dtype = dtypes[dtype_code]
@@ -324,9 +336,9 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
         def get_chunk_id(self, sentence_id, position):
             """ get the chunk id from sentence idx and offset position.
             """
-            chunk_offset = position // self.chunk_size
+            chunk_offset = position // self.stride
             size = self._sizes[sentence_id]
-            if chunk_offset * self.chunk_size >= size:
+            if chunk_offset * self.stride >= size:
                 raise ValueError('offset is too large')
             return (self._chunk_id_start[sentence_id] + chunk_offset).item()
 
@@ -522,13 +534,14 @@ class MMapRetrievalIndexedDataset(torch.utils.data.Dataset):
 
 
 class MMapRetrievalIndexedDatasetBuilder(object):
-    def __init__(self, out_file, chunk_size, pad_id, retrieval_db=False, dtype=np.int64):
+    def __init__(self, out_file, chunk_size, pad_id, retrieval_db=False, dtype=np.int64, stride=64):
         self._data_file = open(out_file, 'wb')
         self._dtype = dtype
         self.chunk_size = chunk_size
         self._sizes = []
         self.retrieval_db = retrieval_db
         self.pad_id = pad_id
+        self.stride = stride
 
     def add_item(self, tensor):
         """
@@ -573,4 +586,4 @@ class MMapRetrievalIndexedDatasetBuilder(object):
         self._data_file.close()
 
         with MMapRetrievalIndexedDataset.Index.writer(index_file, self._dtype, self.retrieval_db) as index:
-            index.write(self._sizes, self.chunk_size)
+            index.write(self._sizes, self.chunk_size, stride=self.stride)

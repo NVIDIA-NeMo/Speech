@@ -240,6 +240,9 @@ def get_args():
     group = parser.add_argument_group(title='runtime')
     group.add_argument('--workers', type=int, default=1, help='Number of worker processes to launch')
     group.add_argument('--chunk_size', type=int, default=64, help='chunk size used for retrieval')
+    group.add_argument(
+        '--chunk_stride_size', type=int, default=64, help='the stride size for neighbor chunks used for retrieval'
+    )
 
     group.add_argument('--log-interval', type=int, default=100, help='Interval between progress updates')
     group.add_argument(
@@ -309,6 +312,7 @@ def main():
             pad_id=tokenizer.pad_id if hasattr(tokenizer, "pad_id") else 0,
             retrieval_db=args.retrieval_db,
             vocab_size=tokenizer.vocab_size,
+            stride=args.chunk_stride_size,
         )
 
     startup_end = time.time()

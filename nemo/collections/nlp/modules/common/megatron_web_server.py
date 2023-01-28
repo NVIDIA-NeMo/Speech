@@ -115,7 +115,7 @@ def get_demo(share, username, password):
                 top_p = gr.Slider(minimum=0.0, maximum=1.0, step=0.02, value=0.9, label='Top P')
                 top_k = gr.Slider(minimum=0, maximum=10000, step=2, value=0, label='Top K')
                 repetition_penality = gr.Slider(
-                    minimum=0.0, maximum=5.0, step=0.02, value=1.2, label='Repetition penalty'
+                    minimum=1.0, maximum=5.0, step=0.02, value=1.2, label='Repetition penalty'
                 )
             with gr.Column(scale=1, min_width=800):
                 input_prompt = gr.Textbox(
@@ -147,22 +147,22 @@ def get_retro_demo(share, username, password):
     with gr.Blocks(css="table, th, td { border: 1px solid blue; table-layout: fixed; width: 100%; }") as demo:
         with gr.Row():
             with gr.Column(scale=2, width=200):
-                greedy_flag = gr.Checkbox(label="Greedy")
+                greedy_flag = gr.Checkbox(label="Greedy", value=True)
                 add_BOS = gr.Checkbox(label="Add BOS token", value=False)
-                token_to_gen = gr.Number(label='Number of Tokens to generate', value=300, type=int)
+                token_to_gen = gr.Number(label='Number of Tokens to generate', value=30, type=int)
                 min_token_to_gen = gr.Number(label='Min number of Tokens to generate', value=1, type=int)
                 temperature = gr.Slider(minimum=0.0, maximum=10.0, value=1.0, label='Temperature', step=0.1)
                 top_p = gr.Slider(minimum=0.0, maximum=1.0, step=0.02, value=0.9, label='Top P')
                 top_k = gr.Slider(minimum=0, maximum=10000, step=2, value=0, label='Top K')
                 repetition_penality = gr.Slider(
-                    minimum=0.0, maximum=5.0, step=0.02, value=1.2, label='Repetition penalty'
+                    minimum=1.0, maximum=5.0, step=0.02, value=1.2, label='Repetition penalty'
                 )
                 k_neighbors = gr.Slider(minimum=0, maximum=50, step=1, value=2, label='Retrieved Documents')
                 weights = gr.Slider(
-                    minimum=0.0, maximum=1.0, value=0.5, label='Weight for the first Retrieval', step=0.02
+                    minimum=0.0, maximum=1.0, value=1.0, label='Weight for the first Retrieval', step=0.02
                 )
                 add_retrival_doc = gr.Textbox(label="Add New Retrieval Doc", value="", lines=5,)
-                add_EOS = gr.Checkbox(label="Add EOS token to Retrieval Doc", value=True)
+                add_EOS = gr.Checkbox(label="Add EOS token to Retrieval Doc", value=False)
                 with gr.Row():
                     add_btn = gr.Button(value="Add")
                     reset_btn = gr.Button(value="Reset Index")
@@ -177,8 +177,8 @@ def get_retro_demo(share, username, password):
                     lines=5,
                 )
                 output_box = gr.Textbox(value="", label="Output")
-                output_retrieval = gr.HTML()
                 btn = gr.Button(value="Submit")
+                output_retrieval = gr.HTML()
                 btn.click(
                     get_retro_generation,
                     inputs=[

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
@@ -19,7 +21,13 @@ from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionP
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler, MegatronHalfPrecisionPlugin, NLPDDPStrategy
+from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+from nemo.collections.nlp.parts.nlp_overrides import (
+    GradScaler,
+    MegatronHalfPrecisionPlugin,
+    NLPDDPStrategy,
+    NLPSaveRestoreConnector,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -68,8 +76,20 @@ def main(cfg) -> None:
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):
         cfg.model.precision = cfg.trainer.precision
-
-    model = MegatronRetrievalModel(cfg.model, trainer)
+    # load existing nemo retro model
+    if cfg.get("restore_from_path", None) is not None:
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(cfg.restore_from_path):
+            save_restore_connector.model_extracted_dir = cfg.restore_from_path
+        model = MegatronRetrievalModel.restore_from(
+            restore_path=cfg.restore_from_path,
+            trainer=trainer,
+            override_config_path=cfg.model,
+            save_restore_connector=save_restore_connector,
+            strict=False,
+        )
+    else:
+        model = MegatronRetrievalModel(cfg.model, trainer)
 
     trainer.fit(model)
 

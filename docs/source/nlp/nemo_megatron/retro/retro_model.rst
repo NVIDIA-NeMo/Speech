@@ -65,22 +65,25 @@ An example script to prepare data for RETRO training is:
         --append-eod \
         --retrieval-db \
         --chunk_size=64 \
+        --chunk_stride_size=64 \
         --workers=48
 
-The RETRO model processes chunked documents using 64 tokens as the default chunk size. The RETRO memory map dataset will add padding 
-tokens to the end of each document to make it a multiple of 64. The ``--need-pad-id`` argument adds a padding token to the tokenizer
+The RETRO model processes chunked documents using 64 tokens as the default chunk size. The ``--chunk_stride_size`` argument argument 
+determines the distance between consecutive chunks. To ensure the documents are a multiple of ``--chunk_size``` tokens, the RETRO memory map dataset 
+adds padding tokens to the end of each document. The ``--need-pad-id`` argument adds a padding token to the tokenizer
 if it doesn't already have one. The ``--append-eod`` argument controls whether to add ``end-of-document`` tokens to the preprocessed 
 data, and the ``--retrieval-db`` argument indicates whether to create a retrieval database for the preprocessed data. If ``--retrieval-db``
-is used, it will add an additional 64 padding tokens at the end of the document. The ``--chunk_size`` and ``--workers`` arguments 
+is used, it will add an additional ``--chunk_size``` padding tokens at the end of the document. The ``--chunk_size`` and ``--workers`` arguments 
 control the size of the data chunks to be processed and the number of worker processes to use, respectively.
 
 Following is the retro memory map index data format:
 
 .. list-table::
-   :widths: 25 25 25 25 25 25
+   :widths: 25 25 25 25 25 25 25
 
    * - 'MMIDRET\x00\x00' (header 9 bytes)
-     - 1 (version 8 byte)
+     - 1 (version 4 byte)
+     - 64 (stride 4 byte)
      - dtype code :sup:`1` (1 byte)
      - sentence count (8 byte)
      - chunk size (8 byte)
@@ -90,6 +93,7 @@ Following is the retro memory map index data format:
      - start of sentence address in byte (int64 array)	
      - start of chunk id (int64 array)
      - chunk id address in byte (int64 array)
+     -
      -
 
 :sup:`1` 1: np.uint8, 2: np.int8, 3: np.int16, 4: np.int32, 5: np.int64, 6: np.float, 7: np.double, 8: np.uint16
@@ -443,7 +447,7 @@ We have built a simple web client that makes it easy for users to play around wi
         retro_model_file=megatron_retro.nemo \
         tensor_model_parallel_size=8 \
         pipeline_model_parallel_size=1 \
-        retrieval_service.sentence_bert.devices=\'0,1,2,3,4,5,6,7\' \
+        retrieval_service.sentence_bert.default.devices=\'0,1,2,3,4,5,6,7\' \
         retrieval_service.services.0.faiss_devices=\'0,1,2,3,4,5,6,7\' \
         retrieval_service.services.1.faiss_devices=\'0,1,2,3,4,5,6,7\' \
         retrieval_service.services.0.faiss_index=/result/pubmed_faiss_final.index \

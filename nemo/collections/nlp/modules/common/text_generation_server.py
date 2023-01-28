@@ -20,7 +20,10 @@ import torch
 from flask import Flask, jsonify, request
 from flask_restful import Api, Resource
 
-from nemo.collections.nlp.modules.common.text_generation_strategy import RetroModelTextGenerationStrategy
+from nemo.collections.nlp.modules.common.retro_inference_strategies import (
+    RetroModelTextGenerationStrategy,
+    RetroQAModelTextGenerationStrategy,
+)
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.utils import logging
 
@@ -38,6 +41,8 @@ API_ALLOWED_KEYS = set(
         "greedy",
         "top_k",
         "top_p",
+        "neighbors",
+        "weights",
         "repetition_penalty",
         "min_tokens_to_generate",
     ]
@@ -168,7 +173,9 @@ class MegatronGenerate(Resource):
             if self.inference_strategy is not None:
                 extra['strategy'] = self.inference_strategy
                 # RETRO specific arguments
-                if isinstance(self.inference_strategy, RetroModelTextGenerationStrategy):
+                if isinstance(
+                    self.inference_strategy, (RetroModelTextGenerationStrategy, RetroQAModelTextGenerationStrategy)
+                ):
                     if neighbors is not None:
                         self.inference_strategy.update_neighbors(neighbors)
                     if weights is not None:
@@ -195,7 +202,9 @@ class MegatronGenerate(Resource):
             del output['full_logprob']
 
         if self.inference_strategy is not None:
-            if isinstance(self.inference_strategy, RetroModelTextGenerationStrategy):
+            if isinstance(
+                self.inference_strategy, (RetroModelTextGenerationStrategy, RetroQAModelTextGenerationStrategy)
+            ):
                 retrieved_doc = self.inference_strategy.retrieved_text
                 output['retrieved'] = retrieved_doc
         return jsonify(output)

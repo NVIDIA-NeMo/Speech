@@ -73,7 +73,7 @@ def infer_dataset_impl(path):
         return None
 
 
-def make_builder(out_file, impl, vocab_size=None, chunk_size=64, pad_id=0, retrieval_db=False):
+def make_builder(out_file, impl, vocab_size=None, chunk_size=64, pad_id=0, retrieval_db=False, stride=64):
     if impl == 'mmap':
         return MMapIndexedDatasetBuilder(out_file, dtype=__best_fitting_dtype(vocab_size))
     elif impl == 'retmmap':
@@ -83,6 +83,7 @@ def make_builder(out_file, impl, vocab_size=None, chunk_size=64, pad_id=0, retri
             pad_id=pad_id,
             retrieval_db=retrieval_db,
             dtype=__best_fitting_dtype(vocab_size),
+            stride=stride,
         )
     else:
         return IndexedDatasetBuilder(out_file)

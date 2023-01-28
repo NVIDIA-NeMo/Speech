@@ -552,7 +552,6 @@ class ParallelChunkedCrossAttention(MegatronModule):
             # only handles single token increment
             assert n == 1
             self.current_len += n
-            token_pos = (self.current_len - 1) % chunk_size
             chunk_id = self.current_len // chunk_size
             if chunk_id <= 0:
                 # if sequence length less than chunk size, do an early return
@@ -594,19 +593,21 @@ class ParallelChunkedCrossAttention(MegatronModule):
         # take care of rotary positional embedding
         # make sure queries positions are properly shifted to the future
 
-        q_pos_emb, k_pos_emb = rotary_pos_emb
-        # currently implementation is broken
-        # q need to extend to causal_padding, and just do
-        # q_pos_emb = F.pad(q_pos_emb, (0, 0, -causal_padding, 0), value = 0.)
-        if inference_max_sequence_len is not None and not set_inference_key_value_memory:
-            q_pos_emb = F.pad(
-                q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding - token_pos, -causal_padding + token_pos), value=0.0
-            )
-        else:
-            q_pos_emb = F.pad(q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding, 0), value=0.0)
+        if rotary_pos_emb is not None:
+            q_pos_emb, k_pos_emb = rotary_pos_emb
+            # currently implementation is broken
+            # q need to extend to causal_padding, and just do
+            # q_pos_emb = F.pad(q_pos_emb, (0, 0, -causal_padding, 0), value = 0.)
+            if inference_max_sequence_len is not None and not set_inference_key_value_memory:
+                token_pos = (self.current_len - 1) % chunk_size
+                q_pos_emb = F.pad(
+                    q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding - token_pos, -causal_padding + token_pos), value=0.0
+                )
+            else:
+                q_pos_emb = F.pad(q_pos_emb, (0, 0, 0, 0, 0, 0, -causal_padding, 0), value=0.0)
 
-        k_pos_emb = repeat(k_pos_emb, 'n b h d -> (r n) b h d', r=num_retrieved)
-        rotary_pos_emb = (q_pos_emb, k_pos_emb)
+            k_pos_emb = repeat(k_pos_emb, 'n b h d -> (r n) b h d', r=num_retrieved)
+            rotary_pos_emb = (q_pos_emb, k_pos_emb)
 
         # make sure number context chunks is enough
         assert x.shape[0] // chunk_size == num_chunks

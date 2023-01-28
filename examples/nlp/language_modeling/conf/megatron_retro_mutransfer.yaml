@@ -43,6 +43,7 @@ exp_manager:
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
 base_model:
+  version: 1 # indicate the retro model version
   # model parallelism 
   micro_batch_size: 4
   tensor_model_parallel_size: 1
@@ -87,6 +88,7 @@ base_model:
   seed: 1234
 
 delta_model:
+  version: 1 # indicate the retro model version
   # model parallelism 
   micro_batch_size: 4
   tensor_model_parallel_size: 1
@@ -130,6 +132,7 @@ delta_model:
   seed: 1234
 
 model:
+  version: 1 # indicate the retro model version
   shape_file: null  # the path to the shape file
   # model parallelism 
   micro_batch_size: 4

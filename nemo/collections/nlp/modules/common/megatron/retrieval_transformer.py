@@ -79,6 +79,8 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         gradient_accumulation_fusion=False,
         normalize_attention_scores=True,
         megatron_legacy=False,
+        turn_off_rop=False,
+        version=1,  # model version
     ):
         super(MegatronRetrievalTransformerEncoderModule, self).__init__()
 
@@ -91,6 +93,8 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         self.hidden_dropout = hidden_dropout
         self.output_layer_init_method = output_layer_init_method
         self.parent_model_type = parent_model_type
+        self.turn_off_rop = turn_off_rop
+        self.version = version
 
         if kv_channels is None:
 
@@ -143,7 +147,8 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
         # partial rotary embeddings, which is better than full rotary
         # Wang and Komatsuzaki et al https://github.com/kingoflolz/mesh-transformer-jax/
-        self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
+        if not turn_off_rop:
+            self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
         self.chunk_size = chunk_size
         self._model_key = 'model'
 
@@ -244,10 +249,7 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         # embed_as_context = repeat(encoder_output[:, :seq_index], 'b (k n) d -> (b k r) n d', n=self.chunk_size, r=r)
         # context_attn_mask = repeat(context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=self.chunk_size, r=r)
 
-        cross_attn_q_pos_emb = self.rotary_pos_emb(rn, offset=0)
-
         if inference_max_sequence_len is not None and not set_inference_key_value_memory:
-            cross_attn_k_pos_emb = self.rotary_pos_emb(n % self.chunk_size, offset=pos_beg)
             embed_as_context = repeat(encoder_output[:, :seq_index], 'b (k n) d -> n (b k r) d', n=pos_beg + 1, r=r)
             context_attn_mask = repeat(context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=pos_beg + 1, r=r)
         else:
@@ -257,9 +259,16 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
             context_attn_mask = repeat(
                 context_attn_mask[:, :seq_index], 'b (k n) -> (b k r) n', n=self.chunk_size, r=r
             )
-            cross_attn_k_pos_emb = self.rotary_pos_emb(self.chunk_size, offset=0)
 
-        attn_pos_emb = (cross_attn_q_pos_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
+        if not self.turn_off_rop:
+            if inference_max_sequence_len is not None and not set_inference_key_value_memory:
+                cross_attn_k_pos_emb = self.rotary_pos_emb(n % self.chunk_size, offset=pos_beg)
+            else:
+                cross_attn_k_pos_emb = self.rotary_pos_emb(self.chunk_size, offset=0)
+            cross_attn_q_pos_emb = self.rotary_pos_emb(rn, offset=0)
+            attn_pos_emb = (cross_attn_q_pos_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
+        else:
+            attn_pos_emb = None
 
         # # convert to Megatron mask
         enc_attn_mask_3d = build_attention_mask_3d(
@@ -353,6 +362,8 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         gradient_accumulation_fusion=False,
         normalize_attention_scores=True,
         megatron_legacy=False,
+        turn_off_rop=False,
+        version=1,  # model version
     ):
         super(MegatronRetrievalTransformerDecoderModule, self).__init__()
 
@@ -364,6 +375,8 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         self.hidden_dropout = hidden_dropout
         self.output_layer_init_method = output_layer_init_method
         self.parent_model_type = parent_model_type
+        self.turn_off_rop = turn_off_rop
+        self.version = version
 
         if kv_channels is None:
 
@@ -416,7 +429,8 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         rot_dim = hidden_size // num_attention_heads if kv_channels is None else kv_channels
         # partial rotary embeddings, which is better than full rotary
         # Wang and Komatsuzaki et al https://github.com/kingoflolz/mesh-transformer-jax/
-        self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
+        if not turn_off_rop:
+            self.rotary_pos_emb = RotaryEmbedding(min(rot_dim, MIN_DIM_HEAD))
         self.chunk_size = chunk_size
         self._model_key = 'model'
 
@@ -472,21 +486,18 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         else:
             _, n, _ = dec_input.shape
 
-        if set_inference_key_value_memory == True:
+        if set_inference_key_value_memory:
             # seq_index = (n // chunk_size) * chunk_size
             self.current_len = n
             num_seq_chunks = self.current_len // self.chunk_size
-            self_attn_emb = self.rotary_pos_emb(self.current_len)
         elif inference_max_sequence_len is not None:
             # only handles single token increment
             assert n == 1
             self.current_len += n
-            self_attn_emb = self.rotary_pos_emb(self.current_len)
             num_seq_chunks = self.current_len // self.chunk_size
         else:
             # this is normal forward without inference
             num_seq_chunks = n // self.chunk_size
-            self_attn_emb = self.rotary_pos_emb(n)
 
         if retrieved_emb is not None:
             b, k, r, rn, dim = retrieved_emb.shape
@@ -494,16 +505,29 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
                 k == num_seq_chunks
             ), f'sequence requires {num_seq_chunks} retrieved chunks, but only {k} passed in'  # need to add extra chunk size, since it will be shifted
 
-        if retrieved_emb is not None:
-            # -63, -62, ... 63  will be cut into -> [0, ... 63] in the chunk cross attention layer
-            cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1, offset=-self.chunk_size + 1)
-            cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=0)
-            # TODO, the first 64 tokens in retrieved is from the last chunk, align the continuation part with the query tokens
-            # use the following in the future. [-63, -62, ..., 63, 64]
-            # cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=-self.chunk_size + 1)
-            attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
+        if not self.turn_off_rop:
+            if set_inference_key_value_memory:
+                self_attn_emb = self.rotary_pos_emb(self.current_len)
+            elif inference_max_sequence_len is not None:
+                self_attn_emb = self.rotary_pos_emb(self.current_len)
+            else:
+                self_attn_emb = self.rotary_pos_emb(n)
+            if retrieved_emb is not None:
+                # -63, -62, ... 63  will be cut into -> [0, ... 63] in the chunk cross attention layer
+                cross_attn_q_pos_emb = self.rotary_pos_emb(self.chunk_size * 2 - 1, offset=-self.chunk_size + 1)
+                if self.version == 1:
+                    cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=0)
+                elif self.version > 1:
+                    # the first 64 tokens in retrieved is from the last chunk, align the continuation part with the query tokens
+                    # use the following in the future. [-63, -62, ..., 63, 64]
+                    cross_attn_k_pos_emb = self.rotary_pos_emb(rn, offset=-self.chunk_size + 1)
+                else:
+                    raise ValueError(f'incorrect version number {self.version}')
+                attn_pos_emb = (self_attn_emb, cross_attn_q_pos_emb, cross_attn_k_pos_emb)
+            else:
+                attn_pos_emb = (self_attn_emb, None, None)
         else:
-            attn_pos_emb = (self_attn_emb, None, None)
+            attn_pos_emb = None
 
         dec_attn_mask_3d = self._calculate_dec_att_mask(dec_attn_mask, eod_positions)
 

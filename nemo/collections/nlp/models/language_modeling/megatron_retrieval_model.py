@@ -38,6 +38,7 @@ from nemo.collections.nlp.modules.common.megatron.retrieval_token_level_encoder_
 from nemo.collections.nlp.modules.common.megatron.utils import (
     ApexGuardDefaults,
     average_losses_across_data_parallel_group,
+    build_position_ids,
     get_params_for_weight_decay_optimization,
 )
 from nemo.collections.nlp.modules.common.text_generation_strategy import model_inference_strategy_dispatcher
@@ -212,6 +213,8 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             ),  # whether use the absolute postion encoding
             tokenizer=self.tokenizer,
             activations_checkpoint_granularity=self.cfg.get('activations_checkpoint_granularity', None),
+            megatron_lm_compatible=self.cfg.get('megatron_lm_compatible', False),
+            version=self.cfg.get('version', 1),
         )
         return model
 
@@ -224,6 +227,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         token_type_ids=None,
         labels=None,
         input_emb=None,
+        position_ids=None,
     ):
         output_tensor = self.model(
             input_ids=input_ids,
@@ -233,6 +237,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             token_type_ids=token_type_ids,
             labels=labels,
             input_emb=input_emb,
+            position_ids=position_ids,
         )
         return output_tensor
 
@@ -243,8 +248,18 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         retrieved_ids = batch['retrieved_ids']
         retrieved_attn_mask = batch['retrieved_emb_mask']
         labels = batch['labels']
-
-        loss = self(input_tokens_id, input_attn_mask, retrieved_ids, retrieved_attn_mask, labels=labels)
+        if self.cfg.get('add_position_embedding', False):
+            input_position_ids = build_position_ids(input_tokens_id)
+        else:
+            input_position_ids = None
+        loss = self(
+            input_tokens_id,
+            input_attn_mask,
+            retrieved_ids,
+            retrieved_attn_mask,
+            labels=labels,
+            position_ids=input_position_ids,
+        )
         loss_mask = loss_mask.float()
         lm_loss = torch.sum(loss.view(-1) * loss_mask.reshape(-1)) / loss_mask.sum()
         reduced_loss = average_losses_across_data_parallel_group([lm_loss])
@@ -333,7 +348,18 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         retrieved_ids = batch['retrieved_ids']
         retrieved_attn_mask = batch['retrieved_emb_mask']
         labels = batch['labels']
-        loss = self(input_tokens_id, input_attn_mask, retrieved_ids, retrieved_attn_mask, labels=labels)
+        if self.cfg.get('add_position_embedding', False):
+            input_position_ids = build_position_ids(input_tokens_id)
+        else:
+            input_position_ids = None
+        loss = self(
+            input_tokens_id,
+            input_attn_mask,
+            retrieved_ids,
+            retrieved_attn_mask,
+            labels=labels,
+            position_ids=input_position_ids,
+        )
         loss_mask = loss_mask.float()
         lm_loss = torch.sum(loss.view(-1) * loss_mask.reshape(-1)) / loss_mask.sum()
         reduced_loss = average_losses_across_data_parallel_group([lm_loss])
@@ -529,6 +555,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
                 set_inference_key_value_memory,
                 inference_max_sequence_len,
                 neighbors,
+                position_ids,
             ) = batch
 
             if len(retrieved.shape) == 1:
@@ -541,6 +568,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             extra_arg['set_inference_key_value_memory'] = set_inference_key_value_memory[0].item()
             extra_arg['inference_max_sequence_len'] = inference_max_sequence_len[0].item()
             extra_arg['neighbors'] = neighbors[0].item()
+            extra_arg['position_ids'] = position_ids
 
             output_tensor = model(tokens, attention_mask, retrieved, retrieved_mask, **extra_arg)
 

@@ -76,6 +76,9 @@ def main(cfg) -> None:
 
     with open_dict(model_cfg):
         model_cfg.precision = trainer.precision
+        model_cfg.sequence_parallel = False
+        model_cfg.activations_checkpoint_granularity = None
+        model_cfg.activations_checkpoint_method = None
 
     model = MegatronRetrievalModel.restore_from(
         model_path, trainer=trainer, save_restore_connector=save_restore_connector, override_config_path=model_cfg,

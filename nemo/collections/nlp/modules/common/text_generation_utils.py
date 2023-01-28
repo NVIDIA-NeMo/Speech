@@ -535,6 +535,7 @@ def generate(
         output['full_logprob'] = full_logits
         output['token_ids'] = decode_tokens
         output['offsets'] = all_offsets
+        output = inference_strategy.post_generation_process(output)
         return output
 
 

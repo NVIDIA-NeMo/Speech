@@ -241,6 +241,36 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     param._disable_greedy_grad_copy = not self.megatron_amp_o2
                     param._disable_overlap_grad_sync = True
 
+            # Initialize parameter buckets for overlapped grad and param syncs
+            buckets = []
+            if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
+                # Initialize a bucket for each virtual pipeline stage
+                for module in self.model:
+                    if isinstance(module, Float16Module):
+                        module = module.module
+                    stage_bucket = []
+                    for layer in module.language_model.encoder.layers:
+                        stage_bucket.extend(
+                            p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
+                        )
+                    buckets.append(stage_bucket)
+            else:
+                # Initialize a bucket for each Transformer layer
+                modules = self.model if isinstance(self.model, list) else [self.model]
+                for module in modules:
+                    if isinstance(module, Float16Module):
+                        module = module.module
+                    for layer in module.language_model.encoder.layers:
+                        buckets.append(
+                            [p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)]
+                        )
+            buckets.reverse()
+            used_params = set()
+            for bucket in buckets:
+                used_params.update(bucket)
+            buckets.append([p for p in self.parameters() if p not in used_params])
+            self.distributed_adam_buckets = buckets
+
         return super().configure_optimizers()
 
     def forward(self, tokens, text_position_ids, attention_mask, labels):
@@ -336,8 +366,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.allreduce_sequence_parallel_gradients()
 
         if self.with_distributed_adam:
-            # gradients are reduced internally in distributed optimizer
-            pass
+            # synchronize asynchronous grad reductions
+            # note: not necessary, but reduces performance degradation
+            # from multiple simultaneous NCCL calls
+            self._optimizer._finish_bucket_grad_sync()
         elif self.megatron_amp_o2:
             # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1 or self.cfg.get('sequence_parallel', False):

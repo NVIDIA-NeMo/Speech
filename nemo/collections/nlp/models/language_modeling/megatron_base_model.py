@@ -398,12 +398,24 @@ class MegatronBaseModel(NLPModel):
         # Configure distributed optimizer
         if self.with_distributed_adam:
 
-            # Initialize params so that main grads are available
+            # Initialize param buckets if explicitly provided
+            if hasattr(self, 'distributed_adam_buckets'):
+                for bucket in self.distributed_adam_buckets:
+                    self._optimizer.init_params_bucket(bucket)
+                del self.distributed_adam_buckets
+
+            # Make sure all params are initialized so main grads are
+            # available
             # Note: Consolidate grads without overlap
-            self._optimizer.init_params(
-                p for p in self.parameters() if getattr(p, '_disable_overlap_grad_sync', False)
-            )
-            self._optimizer.init_params(self.parameters())
+            overlap_params = []
+            no_overlap_params = []
+            for p in self.parameters():
+                if getattr(p, '_disable_overlap_grad_sync', False):
+                    no_overlap_params.append(p)
+                else:
+                    overlap_params.append(p)
+            self._optimizer.init_params(reversed(overlap_params))
+            self._optimizer.init_params(reversed(no_overlap_params))
 
         if self._scheduler is None:
             return self._optimizer
@@ -428,7 +440,7 @@ class MegatronBaseModel(NLPModel):
         return init_consumed_samples
 
     def _validate_and_override_config(self):
-        """ Certain configurations might be incompatible or discouraged. 
+        """ Certain configurations might be incompatible or discouraged.
             We can check for them here and override if necessary.
         """
         app_state = AppState()

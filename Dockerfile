@@ -34,6 +34,13 @@ RUN apt-get update && \
 
 WORKDIR /tmp/
 
+# TODO: Remove once this Apex commit (1/19/23) is included in PyTorch
+# container
+RUN git clone https://github.com/NVIDIA/apex.git && \
+    cd apex && \
+    git checkout 75f401e088ef88e7c85a57ecf70fb232235f0334 && \
+    pip3 install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
+
 # uninstall stuff from base container
 RUN pip3 uninstall -y sacrebleu torchtext
 

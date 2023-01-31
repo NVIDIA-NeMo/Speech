@@ -33,10 +33,20 @@ If the input manifest contains target "word_id", evaluation will be also perform
 
 To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
 
+Inference form manifest:
+
 python heteronym_classification_inference.py \
     manifest="<Path to .json manifest>" \
     pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
-    output_file="<Path to .json manifest to save prediction>"
+    output_manifest="<Path to .json manifest to save prediction>" \
+    wordid_to_phonemes_file="<Path to a file with mapping from wordid predicted by the model to phonemes>"
+
+Interactive inference:
+
+python heteronym_classification_inference.py \
+    pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
+    wordid_to_phonemes_file="<Path to a file with mapping from wordid predicted by the model to phonemes>" # Optional
+        
 """
 
 
@@ -44,9 +54,17 @@ python heteronym_classification_inference.py \
 class TranscriptionConfig:
     # Required configs
     pretrained_model: str  # Path to a .nemo file or Name of a pretrained model
-    output_file: str  # Path to .json manifest to save prediction, will be saved in "pred_text" field
-    manifest: str  # Path to .json manifest
+
+    # path to .json manifest inference, if not provided, interactive mode will be enabled
+    manifest: Optional[str] = None  # Path to .json manifest
+    output_manifest: Optional[
+        str
+    ] = "predictions.json"  # Path to .json manifest to save prediction, will be saved in "pred_text" field
     grapheme_field: str = "text_graphemes"  # name of the field in .json manifest for input grapheme text
+
+    # mapping from wordid predicted by the model to phonemes, e.g.,
+    # "../../../scripts/tts_dataset_files/wordid_to_ipa-0.7b_nv22.10.tsv"
+    wordid_to_phonemes_file: Optional[str] = None
 
     # if "word_id" targets are present in the manifest, evaluation will be performed and errors will be saved in errors_file
     errors_file: Optional[str] = None  # path to a file to save prediction errors
@@ -96,54 +114,70 @@ def main(cfg):
 
     logging.info(f'Config Params: {model._cfg}')
 
-    if not os.path.exists(cfg.manifest):
-        raise ValueError(f"{cfg.manifest} is not found")
+    if cfg.manifest is not None:
+        if not os.path.exists(cfg.manifest):
+            raise ValueError(f"{cfg.manifest} not found.")
+        with torch.no_grad():
+            model.disambiguate_manifest(
+                manifest=cfg.manifest,
+                output_manifest=cfg.output_manifest,
+                grapheme_field=cfg.grapheme_field,
+                batch_size=cfg.batch_size,
+                num_workers=cfg.num_workers,
+            )
 
-    with torch.no_grad():
-        preds = model.disambiguate(
-            manifest=cfg.manifest,
-            grapheme_field=cfg.grapheme_field,
-            batch_size=cfg.batch_size,
-            num_workers=cfg.num_workers,
-        )
+        # save predictions to a file
+        if cfg.errors_file is None:
+            cfg.errors_file = cfg.output_manifest.replace(".json", "_errors.txt")
 
-    # save predictions to a file
-    if cfg.errors_file is None:
-        cfg.errors_file = cfg.output_file.replace(".json", "_errors.txt")
-
-    save_errors = True
-    correct = 0
-    with open(cfg.manifest, "r", encoding="utf-8") as f_in, open(
-        cfg.output_file, "w", encoding="utf-8"
-    ) as f_preds, open(cfg.errors_file, "w", encoding="utf-8") as f_errors:
-        for idx, line in enumerate(f_in):
-            line = json.loads(line)
-            current_pred = preds[idx]
-            line["pred_text"] = current_pred
-            f_preds.write(json.dumps(line, ensure_ascii=False) + '\n')
-
-            # run evaluation if target word_id is available in the input manifest
-            if "word_id" in line:
-                target = line["word_id"]
-                if target != current_pred:
-                    f_errors.write(f"INPUT: {line[cfg.grapheme_field]}\n")
-                    f_errors.write(f"PRED : {current_pred} -- GT: {target}\n")
-                    f_errors.write("===========================\n")
+        save_errors = True
+        correct = 0
+        total = 0
+        with open(cfg.output_manifest, "r", encoding="utf-8") as f_preds, open(
+            cfg.errors_file, "w", encoding="utf-8"
+        ) as f_errors:
+            for line in f_preds:
+                line = json.loads(line)
+                predictions = line["pred_wordid"]
+                # run evaluation if target word_id is available in the input manifest
+                if "word_id" in line:
+                    targets = line["word_id"]
+                    if isinstance(targets, str):
+                        targets = [targets]
+                    for idx, target_ in enumerate(targets):
+                        total += 1
+                        if idx >= len(predictions) or target_ != predictions[idx]:
+                            f_errors.write(f"INPUT: {line[cfg.grapheme_field]}\n")
+                            f_errors.write(f"PRED : {predictions[idx]} -- GT: {target_}\n")
+                            f_errors.write("===========================\n")
+                        else:
+                            correct += 1
                 else:
-                    correct += 1
-            else:
-                save_errors = False
-    if save_errors:
-        logging.info(
-            f"Accuracy: {round(correct / len(preds) * 100, 2)}% ({len(preds) - correct} errors out of {len(preds)})"
-        )
-        logging.info(f"Errors saved at {cfg.errors_file}")
+                    save_errors = False
+        if save_errors:
+            logging.info(f"Accuracy: {round(correct / total * 100, 2)}% ({total - correct} errors out of {total})")
+            logging.info(f"Errors saved at {cfg.errors_file}")
+        else:
+            logging.info("No 'word_id' values found, skipping evaluation.")
+            if os.path.exists(cfg.errors_file):
+                os.remove(cfg.errors_file)
     else:
-        logging.info("No 'word_id' values found, skipping evaluation.")
-        if os.path.exists(cfg.errors_file):
-            os.remove(cfg.errors_file)
-
-    logging.info(f"Predictions saved at {cfg.output_file}")
+        print('Entering interactive mode.')
+        done = False
+        while not done:
+            print('Type "STOP" to exit.')
+            test_input = input('Input a test input:')
+            if test_input == "STOP":
+                done = True
+            if not done:
+                with torch.no_grad():
+                    _, sentences = model.disambiguate(
+                        sentences=[test_input],
+                        batch_size=1,
+                        num_workers=cfg.num_workers,
+                        wordid_to_phonemes_file=cfg.wordid_to_phonemes_file,
+                    )
+                    print(sentences[0])
 
 
 if __name__ == '__main__':

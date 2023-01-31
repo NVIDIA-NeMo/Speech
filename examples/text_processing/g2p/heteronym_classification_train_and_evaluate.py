@@ -29,14 +29,35 @@ This script runs training and evaluation of HeteronymClassificationModel
 
 To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
 
-To run training and testing:
+To run training:
 python heteronym_classification_train_and_evaluate.py \
-    train_manifest=<Path to manifest file>" \
-    validation_manifest=<Path to manifest file>" \
-    model.encoder.pretrained="<Path to .nemo file or pretrained model name from list_available_models()>" \
-    model.wordids=<Path to wordids.tsv file, similar to https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv> \ 
+    train_manifest=<Path to train manifest file>" \
+    validation_manifest=<Path to validation manifest file>" \
+    model.wordids="<Path to wordids.tsv file>" \
+    do_training=True
+    
+To run training and testing (once the training is complete):
+python heteronym_classification_train_and_evaluate.py \
+    train_manifest=<Path to train manifest file>" \
+    validation_manifest=<Path to validation manifest file>" \
+    model.test_ds.dataset.manifest=<Path to test manifest file>" \
+    model.wordids="<Path to wordids.tsv file>" \
     do_training=True \
     do_testing=True
+    
+To run testing:
+python heteronym_classification_train_and_evaluate.py \
+    do_training=False \
+    do_testing=True \
+    model.test_ds.dataset.manifest=<Path to test manifest file>"  \
+    pretrained_model=<Path to pretrained .nemo model or from list_available_models()>
+
+    
+See https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv for wordids file
+format example
+
+See https://github.com/NVIDIA/NeMo/blob/main/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
+on how to convert WikiHomograph data for HeteronymClassificationModel training/evaluation
 """
 
 
@@ -52,6 +73,7 @@ def main(cfg):
         epoch_time_logger = LogEpochTimeCallback()
         trainer.callbacks.extend([lr_logger, epoch_time_logger])
         trainer.fit(model)
+        logging.info("Training is complete")
 
     if cfg.do_testing:
         logging.info(
@@ -84,6 +106,8 @@ def main(cfg):
         if hasattr(cfg.model, "test_ds") and cfg.model.test_ds.dataset.manifest is not None:
             model.setup_test_data(cfg.model.test_ds)
             trainer.test(model)
+        else:
+            logging.info("test_ds not found, skipping evaluation")
 
 
 if __name__ == '__main__':

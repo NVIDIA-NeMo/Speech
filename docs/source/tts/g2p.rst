@@ -75,7 +75,6 @@ To train G2P-Conformer model and evaluate it after at the end of the training, r
         model.tokenizer_grapheme.do_lower=False \
         model.tokenizer_grapheme.add_punctuation=True \
         trainer.devices=1 \
-
         do_training=True \
         do_testing=True
 
@@ -165,18 +164,38 @@ To convert the WikipediaHomographData to `.json` format suitable for the Heteron
             --data_folder=<Path to WikipediaHomographData>/WikipediaHomographData-master/data/train/
             --output=train.json
 
-To train and evaluate the model, run:
+To train the model, run:
 
 .. code-block::
 
     python heteronym_classification_train_and_evaluate.py \
-        train_manifest=<Path to manifest file>" \
-        validation_manifest=<Path to manifest file>" \
-        model.encoder.pretrained="<Path to .nemo file or pretrained model name from list_available_models()>" \
+        train_manifest=<Path to train manifest file>" \
+        validation_manifest=<Path to validation manifest file>" \
         model.wordids=<Path to wordids.tsv file, similar to https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv> \
+        do_training=True \
+        do_testing=False
+
+To train the model and evaluate it when the training is complete, run:
+
+.. code-block::
+
+    python heteronym_classification_train_and_evaluate.py \
+        train_manifest=<Path to train manifest file>" \
+        validation_manifest=<Path to validation manifest file>" \
+        model.test_ds.dataset.manifest=<Path to test manifest file>" \
+        model.wordids="<Path to wordids.tsv file>" \
         do_training=True \
         do_testing=True
 
+To evaluate pretrained model, run:
+
+.. code-block::
+
+    python heteronym_classification_train_and_evaluate.py \
+        do_training=False \
+        do_testing=True \
+        model.test_ds.dataset.manifest=<Path to test manifest file>"  \
+        pretrained_model=<Path to pretrained .nemo model or from list_available_models()>
 
 To run inference with a pretrained HeteronymClassificationModel, run:
 

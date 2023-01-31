@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,11 @@
 # limitations under the License.
 
 import pytest
-from nemo_text_processing.g2p.data.data_utils import any_locale_word_tokenize, english_word_tokenize
+from nemo_text_processing.g2p.data.data_utils import (
+    any_locale_word_tokenize,
+    english_word_tokenize,
+    get_homograph_spans,
+)
 
 
 class TestDataUtils:
@@ -117,3 +121,31 @@ class TestDataUtils:
 
         output = any_locale_word_tokenize(input_text)
         assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_get_homograph_spans(self):
+        supported_homographs = ["live", "read", "protest", "diffuse", "desert"]
+        sentences = [
+            "I live in California. I READ a book. Only people who have already gained something are willing to protest. He reads a book!",
+            "Yesterday, I read a book.",
+            "He read a book last night and pre-diffuse and LivE-post and pre-desert-post.",
+            "the soldier deserted the desert in desert.",
+        ]
+
+        expected_start_end = [
+            [(2, 6), (24, 28), (98, 105)],
+            [(13, 17)],
+            [(3, 7), (34, 41), (46, 50), (64, 70)],
+            [(25, 31), (35, 41)],
+        ]
+        expected_homographs = [
+            ["live", "read", "protest"],
+            ['read'],
+            ['read', 'diffuse', 'live', 'desert'],
+            ['desert', 'desert'],
+        ]
+
+        out_start_end, out_homographs = get_homograph_spans(sentences, supported_homographs)
+        assert out_start_end == expected_start_end, "start-end spans do not match"
+        assert out_homographs == expected_homographs, "homograph spans do not match"

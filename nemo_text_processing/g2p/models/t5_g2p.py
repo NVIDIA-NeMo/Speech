@@ -147,6 +147,7 @@ class T5G2PModel(G2PModel):
             for batch in infer_datalayer:
                 input_ids, _ = batch
                 generated_str, _, _ = self._generate_predictions(input_ids=input_ids.to(device))
+
                 all_preds.extend(generated_str)
                 del batch
         finally:

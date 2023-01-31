@@ -1122,9 +1122,9 @@ pipeline {
                 sh 'cd examples/text_processing/g2p && \
                     TIME=`date +"%Y-%m-%d-%T"` && OUTPUT_DIR=output_${TIME} && \
                     python heteronym_classification_train_and_evaluate.py \
-                        train_manifest=/home/TestData/g2p/heteronym_classification.json \
-                        validation_manifest=/home/TestData/g2p/heteronym_classification.json \
-                        test_manifest=/home/TestData/g2p/heteronym_classification.json \
+                        train_manifest=/home/TestData/g2p/manifest.json \
+                        validation_manifest=/home/TestData/g2p/manifest.json \
+                        test_manifest=/home/TestData/g2p/manifest.json \
                         model.wordids=/home/TestData/g2p/wordids.tsv \
                         trainer.max_epochs=1 \
                         model.max_seq_length=64 \
@@ -1134,9 +1134,9 @@ pipeline {
                         +exp_manager.use_datetime_version=False\
                         +exp_manager.version=test && \
                     python heteronym_classification_inference.py \
-                        manifest=/home/TestData/g2p/heteronym_classification.json \
+                        manifest=/home/TestData/g2p/manifest.json \
                         pretrained_model=${OUTPUT_DIR}/HeteronymClassification/test/checkpoints/HeteronymClassification.nemo \
-                        output_file=preds.json'
+                        output_manifest=preds.json'
               }
             }
           }

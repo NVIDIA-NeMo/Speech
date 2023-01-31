@@ -46,40 +46,40 @@ def read_wikihomograph_file(file: str) -> Tuple[List[str], List[List[int]], List
     Returns:
         sentences: Text.
         start_end_indices: Start and end indices of the homograph in the sentence.
-        homographs: Target homographs for each sentence
-        word_ids: Word_ids corresponding to each homograph, i.e. label.
+        heteronyms: Target heteronyms for each sentence
+        word_ids: Word_ids corresponding to each heteronym, i.e. label.
     """
     excluded_sentences = 0
     sentences = []
     start_end_indices = []
-    homographs = []
+    heteronyms = []
     word_ids = []
     with open(file, "r", encoding="utf-8") as f:
         tsv_file = csv.reader(f, delimiter="\t")
         for i, line in enumerate(tsv_file):
             if i == 0:
                 continue
-            homograph, wordid, sentence, start, end = line
+            heteronym, wordid, sentence, start, end = line
             start, end = int(start), int(end)
             sentence, start, end = correct_wikihomograph_data(sentence, start, end)
 
-            homograph_span = sentence[start:end]
-            if homograph_span.lower() != homograph:
-                if sentence.lower().count(homograph) == 1:
-                    start = sentence.lower().index(homograph)
-                    end = start + len(homograph)
-                    homograph_span = sentence[start:end].lower()
-                    assert homograph == homograph_span.lower()
+            heteronym_span = sentence[start:end]
+            if heteronym_span.lower() != heteronym:
+                if sentence.lower().count(heteronym) == 1:
+                    start = sentence.lower().index(heteronym)
+                    end = start + len(heteronym)
+                    heteronym_span = sentence[start:end].lower()
+                    assert heteronym == heteronym_span.lower()
                 else:
                     excluded_sentences += 1
-                    raise ValueError(f"homograph {homograph} != homograph_span {homograph_span} in {sentence}")
+                    raise ValueError(f"heteronym {heteronym} != heteronym_span {heteronym_span} in {sentence}")
 
-            homographs.append(homograph)
+            heteronyms.append(heteronym)
             start_end_indices.append([start, end])
             sentences.append(sentence)
             word_ids.append(wordid)
 
-    return sentences, start_end_indices, homographs, word_ids
+    return sentences, start_end_indices, heteronyms, word_ids
 
 
 def correct_wikihomograph_data(sentence: str, start: int = None, end: int = None):
@@ -141,14 +141,14 @@ def convert_wikihomograph_data_to_manifest(data_folder: str, output_manifest: st
     """
     with open(output_manifest, "w") as f_out:
         for file in tqdm(glob(f"{data_folder}/*.tsv")):
-            sentences, start_end_indices, homographs, word_ids = read_wikihomograph_file(file)
+            sentences, start_end_indices, heteronyms, word_ids = read_wikihomograph_file(file)
             for i, sent in enumerate(sentences):
                 start, end = start_end_indices[i]
-                homograph_span = sent[start:end]
+                heteronym_span = sent[start:end]
                 entry = {
                     "text_graphemes": sent,
                     "start_end": [start, end],
-                    "homograph_span": homograph_span,
+                    "heteronym_span": heteronym_span,
                     "word_id": word_ids[i],
                 }
                 f_out.write(json.dumps(entry, ensure_ascii=False) + "\n")

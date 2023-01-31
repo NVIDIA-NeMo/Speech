@@ -10,8 +10,10 @@ pretrained_model: null # path to .nemo file or model name from list_available_mo
 
 model:
   wordids: ??? # path to wordids in WikiHomograph dataset format
-  target_ipa_label_to_id: null # will be filled during training
   max_seq_length: 256 # the maximum length BERT supports is 512
+  label_ids: null # will be filled during training
+  class_labels:
+    class_labels_file: null # will be generated during training and saved in .nemo file
 
   language_model:
     pretrained_model_name: bert-base-uncased # currently supports BERT or Distill BERT

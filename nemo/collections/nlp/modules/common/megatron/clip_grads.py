@@ -190,6 +190,8 @@ def clip_grad_norm_distributed_optimizer(optimizer, max_norm, norm_type=2):
     # Compute grad norm
     # Note: Compute norm of local grads and sum over all procs
     grad_norm_sq = optimizer._local_grad_norm(parameters=params_for_norm, norm_type=norm_type)
+    if optimizer.redundant_size > 1:
+        grad_norm_sq /= optimizer.redundant_size
     torch.distributed.all_reduce(
         grad_norm_sq, op=torch.distributed.ReduceOp.SUM,
     )

@@ -25,13 +25,12 @@ from pytorch_lightning import Trainer
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.data import audio_to_text_dataset
-from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
+from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss_name
 from nemo.collections.asr.metrics.rnnt_wer import RNNTWER, RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.models.asr_model import ASRModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
-from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -445,86 +444,27 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
-        if 'augmentor' in config:
-            augmentor = process_augmentations(config['augmentor'])
-        else:
-            augmentor = None
-
-        is_concat = config.get('is_concat', False)
-        if is_concat:
-            if 'concat_sampling' in config and config['concat_sampling'] is None:
-                logging.warning(
-                    f"Concat dataset requires `contact_sampling` but it was not provided. Config: {config}"
-                )
-                return None
-
-            if not 'concat_probabilities' in config:
-                logging.warning(
-                    f"Concat dataset requires `contact_probabilities` list but it was not provided. Config: {config}"
-                )
-                return None
-            else:
-                if not isclose(sum(config['concat_probabilities']), 1, abs_tol=1e-6):
-                    logging.warning(f"`contact_probabilities` need to sum to 1. Config: {config}")
-                    return None
-
         # Automatically inject args from model config to dataloader config
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
         audio_to_text_dataset.inject_dataloader_value_from_model_config(self.cfg, config, key='labels')
+        dataset = audio_to_text_dataset.get_audio_to_text_char_dataset_from_config(
+            config=config,
+            local_rank=self.local_rank,
+            global_rank=self.global_rank,
+            world_size=self.world_size,
+            preprocessor_cfg=self._cfg.get("preprocessor", None),
+        )
 
-        shuffle = config['shuffle']
-        device = 'gpu' if torch.cuda.is_available() else 'cpu'
-        if config.get('use_dali', False):
-            device_id = self.local_rank if device == 'gpu' else None
-            dataset = audio_to_text_dataset.get_dali_char_dataset(
-                config=config,
-                shuffle=shuffle,
-                device_id=device_id,
-                global_rank=self.global_rank,
-                world_size=self.world_size,
-                preprocessor_cfg=self._cfg.preprocessor,
-            )
+        if dataset is None:
+            return None
+
+        if isinstance(dataset, AudioToCharDALIDataset):
+            # DALI Dataset implements dataloader interface
             return dataset
 
-        # Instantiate tarred dataset loader or normal dataset loader
+        shuffle = config['shuffle']
         if config.get('is_tarred', False):
-            if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
-                'manifest_filepath' in config and config['manifest_filepath'] is None
-            ):
-                logging.warning(
-                    "Could not load dataset as `manifest_filepath` was None or "
-                    f"`tarred_audio_filepaths` is None. Provided config : {config}"
-                )
-                return None
-
-            shuffle_n = config.get('shuffle_n', 4 * config['batch_size']) if shuffle else 0
-            if is_concat:
-                dataset = audio_to_text_dataset.get_concat_tarred_dataset(
-                    config=config,
-                    shuffle_n=shuffle_n,
-                    global_rank=self.global_rank,
-                    world_size=self.world_size,
-                    augmentor=augmentor,
-                )
-            else:
-                dataset = audio_to_text_dataset.get_tarred_dataset(
-                    config=config,
-                    shuffle_n=shuffle_n,
-                    global_rank=self.global_rank,
-                    world_size=self.world_size,
-                    augmentor=augmentor,
-                )
             shuffle = False
-        else:
-            if 'manifest_filepath' in config and config['manifest_filepath'] is None:
-                logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
-                return None
-            if is_concat:
-                dataset = audio_to_text_dataset.get_concat_char_dataset(
-                    config=config, global_rank=self.global_rank, world_size=self.world_size, augmentor=augmentor
-                )
-            else:
-                dataset = audio_to_text_dataset.get_char_dataset(config=config, augmentor=augmentor)
 
         if hasattr(dataset, 'collate_fn'):
             collate_fn = dataset.collate_fn

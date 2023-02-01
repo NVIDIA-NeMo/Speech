@@ -30,7 +30,6 @@ from nemo.collections.common.parts.utils import flatten
 from nemo.core.classes import Dataset
 from nemo.core.neural_types import AudioSignal, EncodedRepresentation, LengthsType, NeuralType
 from nemo.utils import logging
-from nemo.utils.decorators import experimental
 
 __all__ = [
     'AudioToTargetDataset',
@@ -677,7 +676,6 @@ class ASRAudioProcessor:
         return embedding
 
 
-@experimental
 class BaseAudioDataset(Dataset):
     """Base class of audio datasets, providing common functionality
     for other audio datasets.
@@ -772,7 +770,6 @@ AudioToTargetExample = namedtuple(
 )
 
 
-@experimental
 class AudioToTargetDataset(BaseAudioDataset):
     """A dataset for audio-to-audio tasks where the goal is to use
     an input signal to recover the corresponding target signal.
@@ -885,7 +882,6 @@ AudioToTargetWithReferenceExample = namedtuple(
 )
 
 
-@experimental
 class AudioToTargetWithReferenceDataset(BaseAudioDataset):
     """A dataset for audio-to-audio tasks where the goal is to use
     an input signal to recover the corresponding target signal and an
@@ -1030,7 +1026,6 @@ AudioToTargetWithEmbeddingExample = namedtuple(
 )
 
 
-@experimental
 class AudioToTargetWithEmbeddingDataset(BaseAudioDataset):
     """A dataset for audio-to-audio tasks where the goal is to use
     an input signal to recover the corresponding target signal and an

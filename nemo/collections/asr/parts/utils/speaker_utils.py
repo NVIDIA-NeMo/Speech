@@ -410,8 +410,6 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         AUDIO_RTTM_MAP (dict): AUDIO_RTTM_MAP for mapping unique id with audio file path and rttm path
         out_rttm_dir (str): Path to write predicted rttms
         clustering_params (dict): clustering parameters provided through config that contains max_num_speakers (int),
-        oracle_num_speakers (bool), max_rp_threshold(float), sparse_search_volume(int) and enhance_count_threshold (int)
-        use_torch_script (bool): Boolean that determines whether to use torch.jit.script for speaker clustering
 
     Returns:
         all_reference (list[uniq_name,Annotation]): reference annotations for score calculation
@@ -428,7 +426,7 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         logging.warning("cuda=False, using CPU for eigen decomposition. This might slow down the clustering process.")
         cuda = False
 
-    speaker_clustering = SpeakerClustering(maj_vote_spk_count=clustering_params.maj_vote_spk_count, cuda=cuda)
+    speaker_clustering = SpeakerClustering(cuda=cuda)
 
     # If True, export torch script module and save it to the base folder.
     if clustering_params.get('export_script_module', False):
@@ -445,6 +443,8 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         else:
             num_speakers = -1
 
+        base_scale_idx = uniq_embs_and_timestamps['multiscale_segment_counts'].shape[0] - 1
+
         cluster_labels = speaker_clustering.forward_infer(
             embeddings_in_scales=uniq_embs_and_timestamps['embeddings'],
             timestamps_in_scales=uniq_embs_and_timestamps['timestamps'],
@@ -456,7 +456,12 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
             sparse_search_volume=int(clustering_params.sparse_search_volume),
         )
 
-        base_scale_idx = uniq_embs_and_timestamps['multiscale_segment_counts'].shape[0] - 1
+        del uniq_embs_and_timestamps
+        if cuda:
+            torch.cuda.empty_cache()
+        else:
+            gc.collect()
+
         timestamps = speaker_clustering.timestamps_in_scales[base_scale_idx]
         cluster_labels = cluster_labels.cpu().numpy()
         if len(cluster_labels) != timestamps.shape[0]:

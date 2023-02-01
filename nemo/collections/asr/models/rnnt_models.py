@@ -234,7 +234,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
         Returns:
-            A list of transcriptions in the same order as paths2audio_files. Will also return
+            Returns a tuple of 2 items -
+            * A list of greedy transcript texts / Hypothesis
+            * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
         if paths2audio_files is None or len(paths2audio_files) == 0:
             return {}

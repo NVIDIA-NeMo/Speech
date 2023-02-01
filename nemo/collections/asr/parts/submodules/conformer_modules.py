@@ -17,6 +17,7 @@ import torch
 from torch import nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.submodules.batchnorm import FusedBatchNorm1d
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
@@ -322,6 +323,8 @@ class ConformerConvolution(nn.Module):
             self.batch_norm = nn.InstanceNorm1d(dw_conv_input_dim)
         elif norm_type == 'layer_norm':
             self.batch_norm = nn.LayerNorm(dw_conv_input_dim)
+        elif norm_type == 'fused_batch_norm':
+            self.batch_norm = FusedBatchNorm1d(dw_conv_input_dim)
         elif norm_type.startswith('group_norm'):
             num_groups = int(norm_type.replace("group_norm", ""))
             self.batch_norm = nn.GroupNorm(num_groups=num_groups, num_channels=d_model)

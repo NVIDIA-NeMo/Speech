@@ -108,9 +108,12 @@ def cleanup_local_folder():
         rmtree('./nemo_experiments', ignore_errors=True)
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_data_dir():
-    """ Fixture returns test_data_dir. """
+    """
+    Fixture returns test_data_dir.
+    Use the highest fixture scope `session` to allow other fixtures with any other scope to use it.
+    """
     # Test dir.
     test_data_dir_ = join(dirname(__file__), __TEST_DATA_SUBDIR)
     return test_data_dir_

@@ -66,6 +66,15 @@ model:
   loss:
     _target_: nemo.collections.asr.losses.SDRLoss
     scale_invariant: true # Use scale-invariant SDR
+
+  metrics:
+    val:
+      sdr: # output SDR
+        _target_: torchmetrics.audio.SignalDistortionRatio
+    test:
+      sdr_ch0: # SDR on output channel 0
+        _target_: torchmetrics.audio.SignalDistortionRatio
+        channel: 0
     
   optim:
     name: adamw

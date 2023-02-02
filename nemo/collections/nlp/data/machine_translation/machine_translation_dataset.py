@@ -82,6 +82,7 @@ class TranslationDataset(Dataset):
         use_cache: bool = False,
         reverse_lang_direction: bool = False,
         prepend_id: int = None,
+        add_bos_eos_to_encoder: bool = True,
     ):
         self.dataset_src = dataset_src
         self.dataset_tgt = dataset_tgt
@@ -96,6 +97,7 @@ class TranslationDataset(Dataset):
         self.max_seq_length_ratio = max_seq_length_ratio
         self.reverse_lang_direction = reverse_lang_direction
         self.prepend_id = prepend_id
+        self.add_bos_eos_to_encoder = add_bos_eos_to_encoder
 
         # deprecation warnings for cache_ids, use_cache, and cache_data_per_node
         if self.cache_ids is True or self.use_cache is True or self.cache_data_per_node is True:
@@ -110,6 +112,7 @@ class TranslationDataset(Dataset):
             cache_ids=self.cache_ids,
             cache_data_per_node=self.cache_data_per_node,
             use_cache=self.use_cache,
+            add_bos_eos=self.add_bos_eos_to_encoder,
             remove_trailing_newline=True,
         )
         tgt_ids = dataset_to_ids(

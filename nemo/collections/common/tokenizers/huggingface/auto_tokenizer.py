@@ -82,6 +82,7 @@ class AutoTokenizer(TokenizerSpec):
                 f'Unable to instantiate HuggingFace AUTOTOKENIZER for {pretrained_model_name}. Exception: {e}'
             )
 
+        self.original_vocab_size = len(self.tokenizer)
         special_tokens_dict = {}
 
         # # setting special tokens, by default the default model's special tokens will be preserved

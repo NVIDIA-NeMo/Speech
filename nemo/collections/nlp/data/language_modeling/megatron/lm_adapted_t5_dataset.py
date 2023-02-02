@@ -67,6 +67,7 @@ class T5LMAdaptedDataset(GPTDataset):
         tokenizer,
         pivot_mean=0.25,
         pivot_distribution=LengthDistribution.uniform,
+        add_eos=False,
     ):
         # get random split index
         if pivot_distribution == LengthDistribution.truncated_normal and (pivot_mean < 0.0 or pivot_mean > 1.0):
@@ -74,8 +75,9 @@ class T5LMAdaptedDataset(GPTDataset):
                 f"Invalid pivot_mean: {pivot_mean}. Must be in [0.0, 1.0]. It is a fraction of the encoder sequence length."
             )
 
-        # If the sample is larger than max encoder sequence length, use max encoder sequence length, otherwwise use sample length.
-        max_split_idx = min(len(sample), max_seq_length_encoder)
+        # 1) If the sample is larger than max encoder sequence length, use max encoder sequence length
+        # 2) Otherwwise use sample length - 1 so that there is at least one token on the decoder.
+        max_split_idx = min(len(sample) - 1, max_seq_length_encoder)
 
         if pivot_distribution == LengthDistribution.uniform:
             split_idx = np_rng.randint(0, max_split_idx)
@@ -91,11 +93,18 @@ class T5LMAdaptedDataset(GPTDataset):
         ).astype(np.int64)
 
         # The decoder sequence is never truncated and is always of max decoder length.
-        tokens_dec = sample[split_idx : split_idx + max_seq_length_decoder + 1]
+        offset = 1 if add_eos else 0
+        tokens_dec = sample[split_idx : split_idx + max_seq_length_decoder - offset]
 
         # NOTE: Add bos only and not eos because the model will always generate till max seq length.
+        example = np.concatenate([[tokenizer.bos_id], tokens_dec])
+        if add_eos:
+            example = np.concatenate([example, [tokenizer.eos_id]])
+
+        # Example can be + 1 over sequence length at this point since we'll be shifting by 1 to create the inputs and outputs to the decoder.
+        assert len(example) <= max_seq_length_decoder + 1
         tokens_dec = np.concatenate(
-            [[tokenizer.bos_id], tokens_dec, [tokenizer.pad_id] * (max_seq_length_decoder - len(tokens_dec) + 1)]
+            [example, [tokenizer.pad_id] * (max_seq_length_decoder - len(example) + 1)]
         ).astype(np.int64)
 
         # Shift sequences for teacher forcing

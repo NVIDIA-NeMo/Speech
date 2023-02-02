@@ -15,6 +15,7 @@
 """UL2 Style dataset from https://arxiv.org/abs/2205.05131"""
 import numpy as np
 
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import create_extreme_masked_lm_predictions
 from nemo.collections.nlp.data.language_modeling.megatron.length_distribution_type import LengthDistribution
 from nemo.collections.nlp.data.language_modeling.megatron.lm_adapted_t5_dataset import T5LMAdaptedDataset
@@ -93,6 +94,129 @@ class UL2Dataset(T5Dataset):
         self.extreme_ngram_span_length_distribution = extreme_ngram_span_length_distribution
         self.prefix_lm_pivot_mean = prefix_lm_pivot_mean
 
+    @classmethod
+    def get_r_masking_training_sample(
+        cls,
+        sample,
+        tokenizer,
+        np_rng,
+        target_seq_length: int,
+        max_seq_length: int,
+        max_seq_length_dec: int,
+        masked_lm_prob: float,
+        vocab_id_list: list,
+        vocab_id_to_token_dict: dict,
+        max_ngram_size: int,
+        mean_ngram_size: int,
+        whole_word_masking: bool,
+        favor_long_ngrams: bool,
+        permutation: bool,
+        geometric_dist: bool,
+        tokenizer_type: str,
+        sentinel_tokens: list,
+        skip_masking_id: int,
+    ):
+        # Call T5's build training sample for regular short span masking.
+        sample = T5Dataset.build_training_sample(
+            sample=sample,
+            target_seq_length=target_seq_length,
+            np_rng=np_rng,
+            max_seq_length=max_seq_length,
+            max_seq_length_dec=max_seq_length_dec,
+            masked_lm_prob=masked_lm_prob,
+            vocab_id_list=vocab_id_list,
+            vocab_id_to_token_dict=vocab_id_to_token_dict,
+            cls_id=tokenizer.cls_id,
+            sep_id=tokenizer.sep_id,
+            mask_id=tokenizer.mask_id,
+            max_ngram_size=max_ngram_size,
+            mean_ngram_size=mean_ngram_size,
+            whole_word_masking=whole_word_masking,
+            favor_long_ngrams=favor_long_ngrams,
+            permutation=permutation,
+            geometric_dist=geometric_dist,
+            tokenizer_type=tokenizer_type,
+            sentinel_tokens=sentinel_tokens,
+            bos_id=tokenizer.bos_id,
+            eos_id=tokenizer.eos_id,
+            pad_id=tokenizer.pad_id,
+            skip_masking_id=skip_masking_id,
+        )
+        sample = UL2Dataset._prepend_mask_type_token(tokenizer, sample, '<extra_id_r>')
+        return sample
+
+    @classmethod
+    def get_s_masking_training_sample(
+        cls,
+        sample,
+        np_rng,
+        max_seq_length_encoder: int,
+        max_seq_length_decoder: int,
+        tokenizer: TokenizerSpec,
+        prefix_lm_pivot_mean: float,
+        pivot_distribution: LengthDistribution,
+        add_eos: bool = False,
+    ):
+        sample = [token for sentence in sample for token in sentence]
+        sample = T5LMAdaptedDataset.get_prefix_lm_sample(
+            sample=sample,
+            max_seq_length_encoder=max_seq_length_encoder,
+            max_seq_length_decoder=max_seq_length_decoder,  # We don't use max_seq_length_decoder here since we typically want to use long decoder sequences for better LM performance and we can do +1 because we don't need to add the UL2 token here.
+            np_rng=np_rng,
+            tokenizer=tokenizer,
+            pivot_mean=prefix_lm_pivot_mean,
+            pivot_distribution=pivot_distribution,
+            add_eos=add_eos,
+        )
+        sample = UL2Dataset._prepend_mask_type_token(tokenizer, sample, '<extra_id_s>')
+        return sample
+
+    @classmethod
+    def get_x_masking_training_sample(
+        cls,
+        sample,
+        tokenizer,
+        np_rng,
+        target_seq_length: int,
+        max_seq_length: int,
+        max_seq_length_dec: int,
+        masked_lm_prob: float,
+        extreme_masked_lm_prob: float,
+        max_ngram_size: int,
+        min_ngram_size: int,
+        mean_ngram_size: int,
+        extreme_max_ngram_size: int,
+        extreme_min_ngram_size: int,
+        extreme_mean_ngram_size: int,
+        extreme_ngram_span_length_distribution: LengthDistribution,
+        sentinel_tokens: list,
+        skip_masking_id: int,
+    ):
+        sample = UL2Dataset.build_extreme_masking_training_sample(
+            sample=sample,
+            target_seq_length=target_seq_length,
+            np_rng=np_rng,
+            max_seq_length=max_seq_length,
+            max_seq_length_dec=max_seq_length_dec,
+            masked_lm_prob=masked_lm_prob,
+            extreme_masked_lm_prob=extreme_masked_lm_prob,
+            mask_id=tokenizer.mask_id,
+            max_ngram_size=max_ngram_size,
+            min_ngram_size=min_ngram_size,
+            extreme_max_ngram_size=extreme_max_ngram_size,
+            extreme_mean_ngram_size=extreme_mean_ngram_size,
+            extreme_min_ngram_size=extreme_min_ngram_size,
+            extreme_ngram_span_length_distribution=extreme_ngram_span_length_distribution,
+            mean_ngram_size=mean_ngram_size,
+            sentinel_tokens=sentinel_tokens,
+            bos_id=tokenizer.bos_id,
+            eos_id=tokenizer.eos_id,
+            pad_id=tokenizer.pad_id,
+            skip_masking_id=skip_masking_id,
+        )
+        sample = UL2Dataset._prepend_mask_type_token(tokenizer, sample, '<extra_id_x>')
+        return sample
+
     def __getitem__(self, idx):
         sample, seq_length = self._get_sample(idx)
         # Note that this rng state should be numpy and not python since
@@ -101,39 +225,91 @@ class UL2Dataset(T5Dataset):
         masking_type = np_rng.randint(0, 3)  # 0: short span masking, 1: extreme masking, 2: prefix-LM
         if masking_type == 0:
             # Call T5's build training sample for regular short span masking.
-            sample = super().build_training_sample(sample=sample, target_seq_length=seq_length, np_rng=np_rng)
-            sample = self._prepend_mask_type_token(sample, '<extra_id_r>')
-        elif masking_type == 1:
-            sample = self.build_extreme_masking_training_sample(
-                sample=sample, target_seq_length=seq_length, np_rng=np_rng
-            )
-            sample = self._prepend_mask_type_token(sample, '<extra_id_x>')
-        elif masking_type == 2:
-            sample = [token for sentence in sample for token in sentence]
-            sample = T5LMAdaptedDataset.get_prefix_lm_sample(
+            return UL2Dataset.get_r_masking_training_sample(
                 sample=sample,
-                max_seq_length_encoder=self.max_seq_length,
-                max_seq_length_decoder=self.max_seq_length,  # We don't use max_seq_length_decoder here since we typically want to use long decoder sequences for better LM performance.
-                np_rng=np_rng,
                 tokenizer=self.tokenizer,
-                pivot_mean=self.prefix_lm_pivot_mean,
+                np_rng=np_rng,
+                target_seq_length=seq_length,
+                max_seq_length=self.max_seq_length,
+                max_seq_length_dec=self.max_seq_length_dec,
+                masked_lm_prob=self.masked_lm_prob,
+                vocab_id_list=self.vocab_id_list,
+                vocab_id_to_token_dict=self.vocab_id_to_token_dict,
+                max_ngram_size=self.max_ngram_size,
+                mean_ngram_size=self.mean_ngram_size,
+                whole_word_masking=self.whole_word_masking,
+                favor_long_ngrams=self.favor_long_ngrams,
+                permutation=self.permutation,
+                geometric_dist=self.geometric_dist,
+                tokenizer_type=self.tokenizer_type,
+                sentinel_tokens=self.sentinel_tokens,
+                skip_masking_id=None,
+            )
+        elif masking_type == 1:
+            return UL2Dataset.get_x_masking_training_sample(
+                sample=sample,
+                tokenizer=self.tokenizer,
+                np_rng=np_rng,
+                target_seq_length=seq_length,
+                max_seq_length=self.max_seq_length,
+                max_seq_length_dec=self.max_seq_length_dec,
+                masked_lm_prob=self.masked_lm_prob,
+                extreme_masked_lm_prob=self.extreme_masked_lm_prob,
+                max_ngram_size=self.max_ngram_size,
+                min_ngram_size=self.min_ngram_size,
+                mean_ngram_size=self.mean_ngram_size,
+                extreme_max_ngram_size=self.extreme_max_ngram_size,
+                extreme_min_ngram_size=self.extreme_min_ngram_size,
+                extreme_mean_ngram_size=self.extreme_mean_ngram_size,
+                extreme_ngram_span_length_distribution=self.extreme_ngram_span_length_distribution,
+                sentinel_tokens=self.sentinel_tokens,
+                skip_masking_id=None,
+            )
+        elif masking_type == 2:
+            return UL2Dataset.get_s_masking_training_sample(
+                sample=sample,
+                np_rng=np_rng,
+                max_seq_length_encoder=self.max_seq_length,
+                max_seq_length_decoder=self.max_seq_length_dec,
+                tokenizer=self.tokenizer,
+                prefix_lm_pivot_mean=self.prefix_lm_pivot_mean,
                 pivot_distribution=self.extreme_ngram_span_length_distribution,
             )
-            sample = self._prepend_mask_type_token(sample, '<extra_id_s>')
 
-        return sample
-
-    def _prepend_mask_type_token(self, sample, token):
-        token_id = self.tokenizer.text_to_ids(token)
-        assert len(token_id) == 1
+    @classmethod
+    def _prepend_mask_type_token(cls, tokenizer, sample, token):
+        token_id = tokenizer.text_to_ids(token)
+        assert len(token_id) == 1, token
         token_id = token_id[0]
         text_enc = np.concatenate([[token_id], sample['text_enc']])
         sample['text_enc'] = text_enc
-        sample['enc_mask'] = np.concatenate([[1], sample['enc_mask']])
+        if 'enc_mask' in sample:
+            sample['enc_mask'] = np.concatenate([[1], sample['enc_mask']])
         return sample
 
+    @classmethod
     def build_extreme_masking_training_sample(
-        self, sample, target_seq_length, np_rng,
+        cls,
+        sample,
+        target_seq_length,
+        np_rng,
+        max_seq_length,
+        max_seq_length_dec,
+        masked_lm_prob,
+        extreme_masked_lm_prob,
+        mask_id,
+        max_ngram_size,
+        min_ngram_size,
+        mean_ngram_size,
+        extreme_max_ngram_size,
+        extreme_mean_ngram_size,
+        extreme_min_ngram_size,
+        extreme_ngram_span_length_distribution,
+        sentinel_tokens,
+        bos_id,
+        eos_id,
+        pad_id,
+        skip_masking_id=None,
     ):
         """Build training sample.
         Arguments:
@@ -161,8 +337,9 @@ class UL2Dataset(T5Dataset):
             permutation: Permutes the ngrams.
             whole_word_masking: Always masks entire words instead of individual sub-word tokens.
             favor_long_ngrams: Favor longer ngrams over shorter ones.
+            skip_masking_id: id of the token to that will never be masked.
         """
-        assert target_seq_length <= self.max_seq_length
+        assert target_seq_length <= max_seq_length
 
         # flatten sentences into one list
         tokens = [token for sentence in sample for token in sentence]
@@ -179,26 +356,26 @@ class UL2Dataset(T5Dataset):
         if task_type == 0:
             # Large spans, small masking prob
             max_ngram_size, mean_ngram_size, min_ngram_size, masked_lm_prob = (
-                self.extreme_max_ngram_size,
-                self.extreme_mean_ngram_size,
-                self.extreme_min_ngram_size,
-                self.masked_lm_prob,
+                extreme_max_ngram_size,
+                extreme_mean_ngram_size,
+                extreme_min_ngram_size,
+                masked_lm_prob,
             )
         elif task_type == 1:
             # Small spans, large masking prob
             max_ngram_size, mean_ngram_size, min_ngram_size, masked_lm_prob = (
-                self.max_ngram_size,
-                self.mean_ngram_size,
-                self.min_ngram_size,
-                self.extreme_masked_lm_prob,
+                max_ngram_size,
+                mean_ngram_size,
+                min_ngram_size,
+                extreme_masked_lm_prob,
             )
         else:
             # Large spans, large masking prob
             max_ngram_size, mean_ngram_size, min_ngram_size, masked_lm_prob = (
-                self.extreme_max_ngram_size,
-                self.extreme_mean_ngram_size,
-                self.extreme_mean_ngram_size,
-                self.extreme_masked_lm_prob,
+                extreme_max_ngram_size,
+                extreme_mean_ngram_size,
+                extreme_mean_ngram_size,
+                extreme_masked_lm_prob,
             )
 
         # Masking.
@@ -207,29 +384,34 @@ class UL2Dataset(T5Dataset):
         lm_pred = create_extreme_masked_lm_predictions(
             tokens=tokens,
             masked_lm_prob=masked_lm_prob,
-            mask_id=self.mask_id,
+            mask_id=mask_id,
             max_predictions_per_seq=max_predictions_per_seq,
             np_rng=np_rng,
             max_ngram_size=max_ngram_size,
             min_ngram_size=min_ngram_size,
             mean_ngram_size=mean_ngram_size,
-            span_length_distribution=self.extreme_ngram_span_length_distribution,
+            span_length_distribution=extreme_ngram_span_length_distribution,
+            skip_masking_id=skip_masking_id,
         )
 
-        if self.masked_lm_prob == 0:
+        if masked_lm_prob == 0:
             (output_tokens, masked_positions, masked_labels) = lm_pred
             masked_spans = None
         else:
             (output_tokens, masked_positions, masked_labels, masked_spans) = lm_pred
 
         # Padding.
-        tokens_enc, tokens_dec_in, labels, enc_mask, dec_mask, loss_mask = self.pad_and_convert_to_numpy(
-            tokens=tokens,
+        tokens_enc, tokens_dec_in, labels, enc_mask, dec_mask, loss_mask = T5Dataset.pad_and_convert_to_numpy(
             output_tokens=output_tokens,
             masked_positions=masked_positions,
             masked_labels=masked_labels,
             masked_spans=masked_spans,
-            np_rng=np_rng,
+            sentinel_tokens=sentinel_tokens,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            pad_id=pad_id,
+            max_seq_length=max_seq_length,
+            max_seq_length_dec=max_seq_length_dec,
         )
 
         train_sample = {

@@ -128,6 +128,8 @@ def build_training_sample(
     masked_lm_prob,
     np_rng,
     binary_head,
+    whole_word_masking=True,
+    skip_masking_id=None,
 ):
     """Biuld training sample.
 
@@ -146,8 +148,9 @@ def build_training_sample(
         np_rng: Random number genenrator. Note that this rng state should be
               numpy and not python since python randint is inclusive for
               the opper bound whereas the numpy one is exclusive.
+        whole_word_masking: Whether to mask only whole words instead of independent subwords.
+        skip_mask_id: ID of a token that should not be masked. #TODO: make this a list of tokens.
     """
-
     if binary_head:
         # We assume that we have at least two sentences in the sample
         assert len(sample) > 1
@@ -182,6 +185,8 @@ def build_training_sample(
         mask_id,
         max_predictions_per_seq,
         np_rng,
+        whole_word_masking=whole_word_masking,
+        skip_masking_id=skip_masking_id,
     )
 
     # Padding.

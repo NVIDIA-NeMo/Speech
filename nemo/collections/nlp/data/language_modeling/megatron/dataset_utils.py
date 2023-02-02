@@ -195,10 +195,10 @@ def create_masked_lm_predictions(
     geometric_dist=False,
     masking_style="bert",
     tokenizer_type="wordpiece",
+    skip_masking_id=None,
 ):
     """Creates the predictions for the masked LM objective.
     Note: Tokens here are vocab ids and not text tokens."""
-
     if not geometric_dist and mean_ngram_size is not None:
         raise ValueError(f"Mean ngram size is only supported for geometric distribution.")
 
@@ -207,8 +207,10 @@ def create_masked_lm_predictions(
     # the starting piece of current token, where 1 means true, so that
     # on-the-fly whole word masking is possible.
     token_boundary = [0] * len(tokens)
-
+    skip_mask_idx = None  # Store the index of token that cannot be masked.
     for (i, token) in enumerate(tokens):
+        if token == skip_masking_id:
+            skip_mask_idx = i
         if token == cls_id or token == sep_id:
             token_boundary[i] = 1
             continue
@@ -234,6 +236,8 @@ def create_masked_lm_predictions(
         return (output_tokens, masked_lm_positions, masked_lm_labels, token_boundary)
 
     num_to_predict = min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob))))
+    if masking_style != "bert":
+        num_to_predict = max(1, num_to_predict)
     if num_to_predict < 1:
         logging.warning(
             F'Number of tokens is : {len(tokens)} and mask_probability is {masked_lm_prob}. None of the tokens will be masked'
@@ -250,9 +254,13 @@ def create_masked_lm_predictions(
 
     ngram_indexes = []
     for idx in range(len(cand_indexes)):
-        ngram_index = []
+        ngram_index = {}
         for n in ngrams:
-            ngram_index.append(cand_indexes[idx : idx + n])
+            # Skip this ngram if it contains the index of token that should not be masked.
+            # TODO: (sandeepsub) Generalize this to be a list of tokens that cannot be masked.
+            if skip_mask_idx is not None and skip_mask_idx >= idx and skip_mask_idx <= idx + n:
+                continue
+            ngram_index[n] = cand_indexes[idx : idx + n]
         ngram_indexes.append(ngram_index)
 
     np_rng.shuffle(ngram_indexes)
@@ -266,16 +274,17 @@ def create_masked_lm_predictions(
             continue
         # Note(mingdachen):
         # Skip current piece if they are covered in lm masking or previous ngrams.
-        for index_set in cand_index_set[0]:
+        for index_set in cand_index_set[1]:
             for index in index_set:
                 if index in covered_indexes:
                     continue
 
         if not geometric_dist:
-            n = np_rng.choice(
-                ngrams[: len(cand_index_set)],
-                p=pvals[: len(cand_index_set)] / pvals[: len(cand_index_set)].sum(keepdims=True),
-            )
+            # Not all ngrams are available because of skip_masking_id that prevents a certain ID from being masked.
+            available_ngrams = list(cand_index_set.keys())
+            # n - 1 because pvals is 0-indexed and available ngrams are 1-indexed.
+            pvals_current = np.array([pvals[n - 1] for n in available_ngrams])
+            n = np_rng.choice(available_ngrams, p=pvals_current / pvals_current.sum(keepdims=True),)
         else:
             # Sampling "n" from the geometric distribution and clipping it to
             # the max_ngrams. Using p=0.2 default from the SpanBERT paper
@@ -284,8 +293,11 @@ def create_masked_lm_predictions(
             # The expectation of a geometric distribution is E[X] = 1 / p
             p = 1 / mean_ngram_size if mean_ngram_size is not None else 0.2
             n = min(np_rng.geometric(p), max_ngram_size)
-
-        index_set = sum(cand_index_set[n - 1], [])
+            # n may not be in the candidate index set because of skip_masking_id.
+            # we try to find the nearest one in the candidate index set.
+            if n not in cand_index_set:
+                n = _truncate_to_nearest(cand_index_set, n)
+        index_set = sum(cand_index_set[n], [])
         n -= 1
         # Note(mingdachen):
         # Repeatedly looking for a candidate that does not exceed the
@@ -293,7 +305,8 @@ def create_masked_lm_predictions(
         while len(masked_lms) + len(index_set) > num_to_predict:
             if n == 0:
                 break
-            index_set = sum(cand_index_set[n - 1], [])
+            if n - 1 in cand_index_set:
+                index_set = sum(cand_index_set[n - 1], [])
             n -= 1
         # If adding a whole-word mask would exceed the maximum number of
         # predictions, then just skip this candidate.
@@ -337,6 +350,8 @@ def create_masked_lm_predictions(
 
     select_indexes = set()
     if permutation:
+        if skip_masking_id is not None:
+            raise ValueError(f"permutation=True is not supported when skip_masking_id is not None.")
         for cand_index_set in ngram_indexes:
             if len(select_indexes) >= num_to_predict:
                 break
@@ -395,6 +410,16 @@ def create_masked_lm_predictions(
     return (output_tokens, masked_lm_positions, masked_lm_labels, token_boundary, masked_spans)
 
 
+def _truncate_to_nearest(cand_index_set, n):
+    min_dist = 9999
+    for key in cand_index_set:
+        if abs(key - n) < min_dist:
+            n = key
+            min_dist = abs(key - n)
+
+    return n
+
+
 def create_extreme_masked_lm_predictions(
     tokens,
     masked_lm_prob,
@@ -405,6 +430,7 @@ def create_extreme_masked_lm_predictions(
     min_ngram_size=2,
     mean_ngram_size=5,
     span_length_distribution=LengthDistribution.uniform,
+    skip_masking_id=None,
 ):
     """Creates the predictions for the extreme span-masking UL2 objective.
     Note: Tokens here are vocab ids and not text tokens."""
@@ -413,7 +439,7 @@ def create_extreme_masked_lm_predictions(
     masked_lm_positions = []
     masked_lm_labels = []
 
-    num_to_predict = min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob))))
+    num_to_predict = int(min(max_predictions_per_seq, max(1, int(round(len(tokens) * masked_lm_prob)))))
     # If the number of tokens to predict is less than the min ngram size, clam it to max predictions.
     min_ngram_size = int(min(num_to_predict, min_ngram_size))
 
@@ -422,11 +448,24 @@ def create_extreme_masked_lm_predictions(
         pvals = np.array([1.0 / (max_ngram_size - min_ngram_size + 1)] * (max_ngram_size - min_ngram_size + 1))
 
     ngram_indexes = []
+    if skip_masking_id is not None:
+        skip_mask_idx = None
+        for idx in range(len(tokens)):
+            if tokens[idx] == skip_masking_id:
+                skip_mask_idx = idx
+                break
+    else:
+        skip_mask_idx = None
+
     cand_indexes = [[i] for i in range(len(tokens))]
     for idx in range(len(cand_indexes)):
-        ngram_index = []
+        ngram_index = {}
         for n in ngrams:
-            ngram_index.append(cand_indexes[idx : idx + n])
+            # Skip this ngram if it contains the index of token that should not be masked.
+            # TODO: (sandeepsub) Generalize this to be a list of tokens that cannot be masked.
+            if skip_mask_idx is not None and skip_mask_idx >= idx and skip_mask_idx <= idx + n:
+                continue
+            ngram_index[n] = cand_indexes[idx : idx + n]
         ngram_indexes.append(ngram_index)
 
     np_rng.shuffle(ngram_indexes)
@@ -440,16 +479,15 @@ def create_extreme_masked_lm_predictions(
             continue
         # Note(mingdachen):
         # Skip current piece if they are covered in lm masking or previous ngrams.
-        for index_set in cand_index_set[0]:
+        for index_set in cand_index_set[min_ngram_size]:
             for index in index_set:
                 if index in covered_indexes:
                     continue
 
         if span_length_distribution == LengthDistribution.uniform:
-            n = np_rng.choice(
-                ngrams[: len(cand_index_set)],
-                p=pvals[: len(cand_index_set)] / pvals[: len(cand_index_set)].sum(keepdims=True),
-            )
+            available_ngrams = list(cand_index_set.keys())
+            pvals_current = np.array([pvals[n] for n in available_ngrams])
+            n = np_rng.choice(available_ngrams, p=pvals_current / pvals_current.sum(keepdims=True),)
         elif span_length_distribution == LengthDistribution.geometric:
             # Sampling "n" from the geometric distribution and clipping it to
             # the max_ngrams. Using p=0.2 default from the SpanBERT paper
@@ -457,14 +495,21 @@ def create_extreme_masked_lm_predictions(
 
             # The expectation of a geometric distribution is E[X] = 1 / p
             p = 1 / mean_ngram_size if mean_ngram_size is not None else 0.2
-            n = np_rng.geometric(p)
+            n = min(np_rng.geometric(p), max_ngram_size)
+            # n may not be in the candidate index set because of skip_masking_id.
+            # we try to find the nearest one in the candidate index set.
+            if n not in cand_index_set:
+                n = _truncate_to_nearest(cand_index_set, n)
             n = int(np.clip(n, min_ngram_size, max_ngram_size))
         elif span_length_distribution == LengthDistribution.truncated_normal:
             # Sampling "n" from a truncated normal distribution.
             mu = mean_ngram_size if mean_ngram_size is not None else (max_ngram_size - min_ngram_size) // 2
             n = int(np.clip(np_rng.normal(loc=mu, scale=np.sqrt(mu)), min_ngram_size, max_ngram_size))
+            if n not in cand_index_set:
+                n = _truncate_to_nearest(cand_index_set, n)
+                n = int(np.clip(n, min_ngram_size, max_ngram_size))
 
-        index_set = sum(cand_index_set[n - min_ngram_size], [])
+        index_set = sum(cand_index_set[n], [])
         n -= 1
         # Note(mingdachen):
         # Repeatedly looking for a candidate that does not exceed the
@@ -472,7 +517,8 @@ def create_extreme_masked_lm_predictions(
         while len(masked_lms) + len(index_set) > num_to_predict:
             if n < min_ngram_size:
                 break
-            index_set = sum(cand_index_set[n - min_ngram_size], [])
+            if n in cand_index_set:
+                index_set = sum(cand_index_set[n], [])
             n -= 1
 
         # If adding a whole-word mask would exceed the maximum number of
@@ -1226,7 +1272,6 @@ def get_samples_mapping(
             raise ImportError(
                 f'Could not compile megatron dataset C++ helper functions and therefore cannot import helpers python file.'
             )
-
         samples_mapping = helpers.build_mapping(
             indexed_dataset.doc_idx,
             indexed_dataset.sizes,
@@ -1245,7 +1290,6 @@ def get_samples_mapping(
         logging.info(
             ' > elasped time to build and save samples mapping ' '(seconds): {:4f}'.format(time.time() - start_time)
         )
-
     torch.distributed.barrier()
     counts = torch.cuda.LongTensor([1])
     torch.distributed.all_reduce(counts, group=parallel_state.get_data_parallel_group())
@@ -1254,7 +1298,6 @@ def get_samples_mapping(
         torch.distributed.get_world_size()
         // torch.distributed.get_world_size(group=parallel_state.get_tensor_model_parallel_group())
     )
-
     # Load indexed dataset.
     logging.info(' > loading indexed mapping from {}'.format(indexmap_filename))
     start_time = time.time()

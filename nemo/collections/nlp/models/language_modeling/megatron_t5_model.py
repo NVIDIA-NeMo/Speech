@@ -160,26 +160,32 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         # T5-related construction
         if tokenizer_cfg.library == 'huggingface' or tokenizer_cfg.library == 'megatron':
             additional_tokens = {
-                'additional_special_tokens': [f'<extra_id_{i}>' for i in range(tokenizer_cfg.num_sentinel_tokens)]
+                'additional_special_tokens': [
+                    f'<extra_id_{i}>' for i in range(tokenizer_cfg.get('num_sentinel_tokens', 0))
+                ]
             }
             if dataset_type == "ul2":
-                for mask_type in ['r', 's', 'x']:
+                mask_types = ['r', 's', 'x']
+                for mask_type in mask_types:
                     additional_tokens['additional_special_tokens'].extend([f'<extra_id_{mask_type}>'])
-            tokenizer.add_special_tokens(additional_tokens)
+            if additional_tokens['additional_special_tokens']:
+                tokenizer.add_special_tokens(additional_tokens)
 
         if tokenizer_cfg.library == 'sentencepiece':
             # NOTE: This is an ugly way to support both NeMo-Megatron trained checkpoints and huggingface checkpoints.
             # Huggingface and Google checkpoints will add sentinel tokens first (right after the base vocabulary), but in NeMo-Megatron, we add <cls>, <sep>, <mask>, <pad>, <bos> etc. beofore sentinel tokens <extra_id_xx>.
             if add_sentinel_tokens_first:
-                cls._add_sentinel_tokens(
-                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
-                )
+                if tokenizer_cfg.get('num_sentinel_tokens', 0) > 0:
+                    cls._add_sentinel_tokens(
+                        tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                    )
                 cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=True)
             else:
                 cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=False)
-                cls._add_sentinel_tokens(
-                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
-                )
+                if tokenizer_cfg.get('num_sentinel_tokens', 0) > 0:
+                    cls._add_sentinel_tokens(
+                        tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                    )
 
             if dataset_type == "ul2":
                 for mask_type in ['r', 's', 'x']:

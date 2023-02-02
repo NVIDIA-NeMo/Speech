@@ -118,19 +118,7 @@ class T5Dataset(Dataset):
             )
 
         self.tokenizer = tokenizer
-        self.tokenizer_type = 'wordpiece'  # TODO: better checks for tokenizer types. How do we do this for HF tokenizers that are not BERT?
-        if isinstance(self.tokenizer, YouTokenToMeTokenizer):
-            raise ValueError(f"YTTM does not support special tokens and cannot be used with T5 datasets.")
-
-        if isinstance(self.tokenizer, SentencePieceTokenizer):
-            if not self.tokenizer.legacy:
-                raise ValueError("Sentencepiece Tokenizer must have legacy = False to add special tokens.")
-            self.tokenizer_type = 'sentencepiece'
-            if whole_word_masking:
-                raise ValueError(
-                    "Whole word masking is not supported with sentencepiece tokenizers and only with wordpiece tokenizers. Please set it to False."
-                )
-
+        self.tokenizer_type = T5Dataset._determine_tokenizer_type(tokenizer, whole_word_masking=whole_word_masking)
         self.cls_id = tokenizer.cls_id
         self.sep_id = tokenizer.sep_id
         self.mask_id = tokenizer.mask_id
@@ -195,11 +183,75 @@ class T5Dataset(Dataset):
         # Note that this rng state should be numpy and not python since
         # python randint is inclusive whereas the numpy one is exclusive.
         np_rng = np.random.RandomState(seed=(self.seed + idx))
-        training_sample = self.build_training_sample(sample=sample, target_seq_length=seq_length, np_rng=np_rng,)
+        training_sample = T5Dataset.build_training_sample(
+            sample=sample,
+            target_seq_length=seq_length,
+            np_rng=np_rng,
+            max_seq_length=self.max_seq_length,
+            max_seq_length_dec=self.max_seq_length_dec,
+            masked_lm_prob=self.masked_lm_prob,
+            vocab_id_list=self.vocab_id_list,
+            vocab_id_to_token_dict=self.vocab_id_to_token_dict,
+            cls_id=self.cls_id,
+            sep_id=self.sep_id,
+            mask_id=self.mask_id,
+            max_ngram_size=self.max_ngram_size,
+            mean_ngram_size=self.mean_ngram_size,
+            whole_word_masking=self.whole_word_masking,
+            favor_long_ngrams=self.favor_long_ngrams,
+            permutation=self.permutation,
+            geometric_dist=self.geometric_dist,
+            tokenizer_type=self.tokenizer_type,
+            sentinel_tokens=self.sentinel_tokens,
+            bos_id=self.bos_id,
+            eos_id=self.eos_id,
+            pad_id=self.pad_id,
+        )
         return training_sample
 
+    @classmethod
+    def _determine_tokenizer_type(cls, tokenizer, whole_word_masking=False):
+        tokenizer_type = 'wordpiece'  # TODO: better checks for tokenizer types. How do we do this for HF tokenizers that are not BERT?
+        if isinstance(tokenizer, YouTokenToMeTokenizer):
+            raise ValueError(f"YTTM does not support special tokens and cannot be used with T5 datasets.")
+
+        if isinstance(tokenizer, SentencePieceTokenizer):
+            if not tokenizer.legacy:
+                raise ValueError("Sentencepiece Tokenizer must have legacy = False to add special tokens.")
+            tokenizer_type = 'sentencepiece'
+            if whole_word_masking:
+                raise ValueError(
+                    "Whole word masking is not supported with sentencepiece tokenizers and only with wordpiece tokenizers. Please set it to False."
+                )
+
+        return tokenizer_type
+
+    @classmethod
     def build_training_sample(
-        self, sample, target_seq_length, np_rng,
+        cls,
+        sample,
+        target_seq_length,
+        np_rng,
+        max_seq_length,
+        max_seq_length_dec,
+        masked_lm_prob,
+        vocab_id_list,
+        vocab_id_to_token_dict,
+        cls_id,
+        sep_id,
+        mask_id,
+        max_ngram_size,
+        whole_word_masking,
+        favor_long_ngrams,
+        permutation,
+        mean_ngram_size,
+        geometric_dist,
+        tokenizer_type,
+        sentinel_tokens,
+        bos_id,
+        eos_id,
+        pad_id,
+        skip_masking_id=None,
     ):
         """Build training sample.
         Arguments:
@@ -227,8 +279,9 @@ class T5Dataset(Dataset):
             permutation: Permutes the ngrams.
             whole_word_masking: Always masks entire words instead of individual sub-word tokens.
             favor_long_ngrams: Favor longer ngrams over shorter ones.
+            skip_masking_id: An id that will not be masked. TODO: Add supported for a list of IDs.
         """
-        # assert target_seq_length <= self.max_seq_length
+        assert target_seq_length <= max_seq_length
 
         # flatten sentences into one list
         tokens = [token for sentence in sample for token in sentence]
@@ -238,41 +291,46 @@ class T5Dataset(Dataset):
         tokens = tokens[:max_num_tokens]
 
         # Masking.
-        max_predictions_per_seq = self.masked_lm_prob * max_num_tokens
+        max_predictions_per_seq = masked_lm_prob * max_num_tokens
         lm_pred = create_masked_lm_predictions(
             tokens=tokens,
-            vocab_id_list=self.vocab_id_list,
-            vocab_id_to_token_dict=self.vocab_id_to_token_dict,
-            masked_lm_prob=self.masked_lm_prob,
-            cls_id=self.cls_id,
-            sep_id=self.sep_id,
-            mask_id=self.mask_id,
+            vocab_id_list=vocab_id_list,
+            vocab_id_to_token_dict=vocab_id_to_token_dict,
+            masked_lm_prob=masked_lm_prob,
+            cls_id=cls_id,
+            sep_id=sep_id,
+            mask_id=mask_id,
             max_predictions_per_seq=max_predictions_per_seq,
             np_rng=np_rng,
-            max_ngram_size=self.max_ngram_size,
-            whole_word_masking=self.whole_word_masking,
-            favor_long_ngrams=self.favor_long_ngrams,
-            mean_ngram_size=self.mean_ngram_size,
-            permutation=self.permutation,
-            geometric_dist=self.geometric_dist,
+            max_ngram_size=max_ngram_size,
+            whole_word_masking=whole_word_masking,
+            favor_long_ngrams=favor_long_ngrams,
+            mean_ngram_size=mean_ngram_size,
+            permutation=permutation,
+            geometric_dist=geometric_dist,
             masking_style="t5",
-            tokenizer_type=self.tokenizer_type,
+            tokenizer_type=tokenizer_type,
+            skip_masking_id=skip_masking_id,
         )
 
-        if self.masked_lm_prob == 0:
+        if masked_lm_prob == 0:
             (output_tokens, masked_positions, masked_labels, _) = lm_pred
             masked_spans = None
         else:
             (output_tokens, masked_positions, masked_labels, _, masked_spans) = lm_pred
 
         # Padding.
-        tokens_enc, tokens_dec_in, labels, enc_mask, dec_mask, loss_mask = self.pad_and_convert_to_numpy(
-            tokens=tokens,
+        tokens_enc, tokens_dec_in, labels, enc_mask, dec_mask, loss_mask = T5Dataset.pad_and_convert_to_numpy(
             output_tokens=output_tokens,
             masked_positions=masked_positions,
             masked_labels=masked_labels,
             masked_spans=masked_spans,
-            np_rng=np_rng,
+            sentinel_tokens=sentinel_tokens,
+            bos_id=bos_id,
+            eos_id=eos_id,
+            pad_id=pad_id,
+            max_seq_length=max_seq_length,
+            max_seq_length_dec=max_seq_length_dec,
         )
 
         train_sample = {
@@ -285,13 +343,24 @@ class T5Dataset(Dataset):
         }
         return train_sample
 
+    @classmethod
     def pad_and_convert_to_numpy(
-        self, tokens, output_tokens, masked_positions, masked_labels, masked_spans=None, np_rng=None,
+        cls,
+        output_tokens,
+        masked_positions,
+        masked_labels,
+        sentinel_tokens,
+        bos_id,
+        eos_id,
+        pad_id,
+        max_seq_length,
+        max_seq_length_dec,
+        masked_spans=None,
     ):
         """Pad sequences and convert them to numpy."""
-        sentinel_tokens = collections.deque(self.sentinel_tokens)
+        sentinel_tokens = collections.deque(sentinel_tokens)
         t5_input = []
-        (t5_decoder_in, t5_decoder_out) = ([self.bos_id], [])
+        (t5_decoder_in, t5_decoder_out) = ([bos_id], [])
         (start_index, end_index) = (0, None)
         if masked_spans is not None:
             for span in masked_spans:
@@ -311,7 +380,7 @@ class T5Dataset(Dataset):
                 start_index = span.index[-1] + 1
 
         # Add <eos> token to the t5_decoder_out
-        t5_decoder_out.append(self.eos_id)
+        t5_decoder_out.append(eos_id)
 
         # Add the remaining tokens to the t5 input
         t5_input.extend(output_tokens[start_index:])
@@ -323,27 +392,27 @@ class T5Dataset(Dataset):
 
         # Encoder-side padding mask.
         num_tokens = len(t5_input)
-        padding_length = self.max_seq_length - num_tokens
-        assert padding_length >= 0
+        padding_length = max_seq_length - num_tokens
+        assert padding_length >= 0, padding_length
         assert len(masked_positions) == len(masked_labels)
 
         # Tokens..
-        filler = [self.pad_id] * padding_length
+        filler = [pad_id] * padding_length
         tokens_enc = np.array(t5_input + filler, dtype=np.int64)
 
         # Decoder-side padding mask.
         num_tokens_dec = len(t5_decoder_in)
-        padding_length_dec = self.max_seq_length_dec - num_tokens_dec
-        assert padding_length_dec >= 0
-        filler_dec = [self.pad_id] * padding_length_dec
+        padding_length_dec = max_seq_length_dec - num_tokens_dec
+        assert padding_length_dec >= 0, (padding_length_dec, max_seq_length_dec, num_tokens_dec)
+        filler_dec = [pad_id] * padding_length_dec
         tokens_dec_in = np.array(t5_decoder_in + filler_dec, dtype=np.int64)
 
         # Create attention masks
-        enc_mask = (tokens_enc != self.pad_id).astype(np.int64)
-        dec_mask = (tokens_dec_in != self.pad_id).astype(np.int64)
+        enc_mask = (tokens_enc != pad_id).astype(np.int64)
+        dec_mask = (tokens_dec_in != pad_id).astype(np.int64)
 
         # Labels mask.
-        labels = t5_decoder_out + ([-1] * padding_length_dec)
+        labels = t5_decoder_out + ([pad_id] * padding_length_dec)
         labels = np.array(labels, dtype=np.int64)
 
         # Loss mask

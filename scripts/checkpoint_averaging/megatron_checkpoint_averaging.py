@@ -35,6 +35,7 @@ import os
 import sys
 
 import torch
+from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
@@ -104,6 +105,11 @@ def main():
             classpath = args.class_path
         else:
             classpath = model_cfg.target  # original class path
+
+        OmegaConf.set_struct(model_cfg, True)
+        with open_dict(model_cfg):
+            if model_cfg.get('megatron_amp_O2', False):
+                model_cfg.megatron_amp_O2 = False
         imported_class = model_utils.import_class_by_path(classpath)
         logging.info(f"Loading model {model_fname}")
         nemo_model = imported_class.restore_from(
@@ -111,6 +117,7 @@ def main():
             map_location=device,
             save_restore_connector=NLPSaveRestoreConnector(),
             trainer=trainer,
+            override_config_path=model_cfg,
         )
 
         # search for all checkpoints (ignore -last.ckpt)

@@ -233,7 +233,7 @@ def pytest_configure(config):
         numba_utils.set_numba_compat_strictness(strict=config.option.relax_numba_compat)
 
     # Set cache directory for TN/ITN tests
-    from .nemo_text_processing.utils import set_cache_dir, set_audio_based_tests
+    from .nemo_text_processing.utils import set_audio_based_tests, set_cache_dir
 
     set_cache_dir(config.option.tn_cache_dir)
     set_audio_based_tests(config.option.run_audio_based)

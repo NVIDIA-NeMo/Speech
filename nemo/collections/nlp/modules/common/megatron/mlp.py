@@ -29,9 +29,9 @@ from nemo.collections.nlp.modules.common.megatron.utils import openai_gelu as op
 from nemo.core import adapter_mixins
 
 try:
+    from apex.normalization import MixedFusedRMSNorm
     from apex.transformer import parallel_state, tensor_parallel
     from apex.transformer.parallel_state import get_tensor_model_parallel_world_size
-    from apex.normalization import MixedFusedRMSNorm
 
     HAVE_APEX = True
 

@@ -611,11 +611,11 @@ def get_dataset(
         raise ValueError("Invalid dataset_type: ", dataset_type)
 
     # from nemo.collections.nlp.data.language_modeling.megatron.ict_dataset import ICTDataset
+    from nemo.collections.nlp.data.language_modeling.megatron.bart_dataset import BARTDataset
     from nemo.collections.nlp.data.language_modeling.megatron.bert_dataset import BertDataset
+    from nemo.collections.nlp.data.language_modeling.megatron.length_distribution_type import LengthDistribution
     from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import T5Dataset
     from nemo.collections.nlp.data.language_modeling.megatron.ul2_dataset import UL2Dataset
-    from nemo.collections.nlp.data.language_modeling.megatron.bart_dataset import BARTDataset
-    from nemo.collections.nlp.data.language_modeling.megatron.length_distribution_type import LengthDistribution
 
     if dataset_type == DSET_TYPE_ICT:
         raise NotImplementedError("ICT dataset is not implemented yet.")
@@ -1119,11 +1119,11 @@ def _build_train_valid_test_datasets(
 
     def build_dataset(index, name):
         # from nemo.collections.nlp.data.language_modeling.megatron.ict_dataset import ICTDataset
+        from nemo.collections.nlp.data.language_modeling.megatron.bart_dataset import BARTDataset
         from nemo.collections.nlp.data.language_modeling.megatron.bert_dataset import BertDataset
+        from nemo.collections.nlp.data.language_modeling.megatron.length_distribution_type import LengthDistribution
         from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import T5Dataset
         from nemo.collections.nlp.data.language_modeling.megatron.ul2_dataset import UL2Dataset
-        from nemo.collections.nlp.data.language_modeling.megatron.bart_dataset import BARTDataset
-        from nemo.collections.nlp.data.language_modeling.megatron.length_distribution_type import LengthDistribution
 
         dataset = None
         if splits[index + 1] > splits[index]:

@@ -146,7 +146,6 @@ class MemoryEfficientBlendableDataset(torch.utils.data.Dataset):
     def test_index_blending(cls):
         """Visualize indices of blended dataset"""
 
-        import torch
         import matplotlib.pyplot as plt
 
         plt.ion()

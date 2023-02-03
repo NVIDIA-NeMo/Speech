@@ -15,8 +15,9 @@
 import pytest
 from parameterized import parameterized
 
-from ..utils import CACHE_DIR, get_test_cases_multiple
 from nemo.utils import logging
+
+from ..utils import CACHE_DIR, get_test_cases_multiple
 
 try:
     from nemo_text_processing.text_normalization.normalize_with_audio import NormalizerWithAudio

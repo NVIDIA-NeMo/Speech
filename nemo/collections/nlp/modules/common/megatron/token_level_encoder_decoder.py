@@ -37,7 +37,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 from nemo.collections.nlp.modules.common.megatron.vocab_parallel_cross_entropy import vocab_parallel_cross_entropy
 
 try:
-    from apex.transformer import tensor_parallel, parallel_state
+    from apex.transformer import parallel_state, tensor_parallel
     from apex.transformer.enums import AttnMaskType, ModelType
 
     HAVE_APEX = True

@@ -28,8 +28,8 @@ from nemo.collections.nlp.modules.common.megatron.utils import init_method_const
 from nemo.core.classes.mixins import adapter_mixin_strategies
 
 try:
-    from apex.transformer.tensor_parallel import RowParallelLinear, ColumnParallelLinear
     from apex.normalization.fused_layer_norm import MixedFusedLayerNorm
+    from apex.transformer.tensor_parallel import ColumnParallelLinear, RowParallelLinear
 
     HAVE_APEX = True
 

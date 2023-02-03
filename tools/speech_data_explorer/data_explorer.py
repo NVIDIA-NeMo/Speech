@@ -972,9 +972,10 @@ if comparison_mode:
         prevent_initial_call=False,
     )
     def draw_vocab(Ox, Oy, color, size, data, dot_spacing='no', rad=0.01):
-        import pandas as pd
-        import random
         import math
+        import random
+
+        import pandas as pd
 
         df = pd.DataFrame.from_records(data)
 

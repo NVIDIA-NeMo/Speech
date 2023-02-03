@@ -43,8 +43,7 @@ AVAILABLE_OPTIMIZERS = {
 }
 
 try:
-    from apex.optimizers import FusedLAMB
-    from apex.optimizers import FusedAdam
+    from apex.optimizers import FusedAdam, FusedLAMB
 
     HAVE_APEX = True
 

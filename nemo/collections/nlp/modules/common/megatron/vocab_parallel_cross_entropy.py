@@ -14,9 +14,11 @@
 import torch
 
 try:
-    from apex.transformer.parallel_state import get_tensor_model_parallel_group
-    from apex.transformer.parallel_state import get_tensor_model_parallel_rank
-    from apex.transformer.parallel_state import get_tensor_model_parallel_world_size
+    from apex.transformer.parallel_state import (
+        get_tensor_model_parallel_group,
+        get_tensor_model_parallel_rank,
+        get_tensor_model_parallel_world_size,
+    )
     from apex.transformer.tensor_parallel.utils import VocabUtility
 
     HAVE_APEX = True

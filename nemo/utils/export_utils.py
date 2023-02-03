@@ -207,10 +207,10 @@ def run_ort_and_compare(sess, ort_input, output_example, check_tolerance=0.01):
 apex_available = True
 
 try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm, MixedFusedLayerNorm
     from apex.contrib.layer_norm.layer_norm import FastLayerNorm
-    from apex.transformer.tensor_parallel.layers import RowParallelLinear, ColumnParallelLinear
+    from apex.normalization.fused_layer_norm import FusedLayerNorm, MixedFusedLayerNorm
     from apex.transformer.functional.fused_softmax import FusedScaleMaskSoftmax
+    from apex.transformer.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 
     def replace_FusedLayerNorm(n: nn.Module) -> Optional[nn.LayerNorm]:
         """

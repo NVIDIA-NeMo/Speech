@@ -744,7 +744,7 @@ class ChineseG2p(BaseG2p):
             self.word_segmenter = lambda x: [x]
 
         try:
-            from pypinyin import lazy_pinyin, Style
+            from pypinyin import Style, lazy_pinyin
             from pypinyin_dict.pinyin_data import cc_cedict
         except ImportError as e:
             logging.error(e)

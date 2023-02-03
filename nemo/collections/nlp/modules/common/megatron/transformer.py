@@ -42,9 +42,9 @@ from nemo.core import adapter_mixins
 from nemo.utils import logging
 
 try:
+    from apex.normalization import MixedFusedRMSNorm
     from apex.transformer import parallel_state, tensor_parallel
     from apex.transformer.enums import AttnMaskType, AttnType, ModelType
-    from apex.normalization import MixedFusedRMSNorm
 
     HAVE_APEX = True
 
@@ -56,8 +56,8 @@ except (ImportError, ModuleNotFoundError):
     ModelType = AttnMaskType = AttnType = LayerType = ApexGuardDefaults()
 
 try:
-    from transformer_engine.pytorch import TransformerLayer, fp8_autocast
     from transformer_engine.common import recipe
+    from transformer_engine.pytorch import TransformerLayer, fp8_autocast
     from transformer_engine.pytorch.distributed import checkpoint as te_checkpoint
 
     HAVE_TE = True

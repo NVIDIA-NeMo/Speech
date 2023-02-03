@@ -60,8 +60,8 @@ from nemo.collections.nlp.parts.nlp_overrides import GradScaler
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer.enums import ModelType
     from apex.transformer import parallel_state
+    from apex.transformer.enums import ModelType
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):

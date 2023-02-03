@@ -34,7 +34,6 @@ try:
     from apex.transformer import parallel_state, tensor_parallel
     from apex.transformer.enums import AttnMaskType
     from apex.transformer.tensor_parallel.layers import set_tensor_model_parallel_attributes
-    from apex.transformer import tensor_parallel
 
     HAVE_APEX = True
 except (ImportError, ModuleNotFoundError):

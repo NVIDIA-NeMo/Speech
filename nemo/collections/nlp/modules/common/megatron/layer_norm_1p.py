@@ -16,7 +16,8 @@
 from torch import nn
 
 try:
-    from apex.contrib.layer_norm.layer_norm import _fast_layer_norm, FastLayerNorm as OrigFastLayerNorm
+    from apex.contrib.layer_norm.layer_norm import FastLayerNorm as OrigFastLayerNorm
+    from apex.contrib.layer_norm.layer_norm import _fast_layer_norm
     from apex.transformer.layers.layer_norm import FastLayerNorm
 
     HAVE_APEX = True

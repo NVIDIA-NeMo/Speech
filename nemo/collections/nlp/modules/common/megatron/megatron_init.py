@@ -22,16 +22,16 @@ from nemo.utils import AppState, logging
 try:
     from apex.transformer import tensor_parallel
     from apex.transformer.log_util import set_logging_level
+    from apex.transformer.microbatches import ConstantNumMicroBatches
     from apex.transformer.parallel_state import (
         get_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_rank,
-        set_virtual_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_split_rank,
         set_pipeline_model_parallel_world_size,
         set_tensor_model_parallel_rank,
         set_tensor_model_parallel_world_size,
+        set_virtual_pipeline_model_parallel_rank,
     )
-    from apex.transformer.microbatches import ConstantNumMicroBatches
     from apex.transformer.pipeline_parallel.utils import setup_microbatch_calculator
 
     HAVE_APEX = True

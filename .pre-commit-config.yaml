@@ -32,11 +32,10 @@ repos:
       - id: requirements-txt-fixer
 
   - repo: https://github.com/PyCQA/isort
-    rev: 4.3.21
+    rev: 5.12.0
     hooks:
       - id: isort
         name: Format imports
-        args: [ --multi-line=3, --trailing-comma, --force-grid-wrap=0, --use-parentheses, --line-width=119, -rc, -ws ]
         exclude: docs/
 
   - repo: https://github.com/psf/black

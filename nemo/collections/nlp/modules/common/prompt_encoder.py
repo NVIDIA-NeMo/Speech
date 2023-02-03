@@ -25,7 +25,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import ChannelType, NeuralType
 
 try:
-    from apex.transformer import tensor_parallel, parallel_state
+    from apex.transformer import parallel_state, tensor_parallel
 
     HAVE_APEX = True
 

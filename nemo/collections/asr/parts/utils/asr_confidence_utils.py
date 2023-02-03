@@ -147,8 +147,8 @@ def get_confidence_aggregation_bank():
     if hasattr(math, "prod"):
         confidence_aggregation_bank["prod"] = math.prod
     else:
-        from functools import reduce
         import operator
+        from functools import reduce
 
         confidence_aggregation_bank["prod"] = lambda x: reduce(operator.mul, x, 1)
     return confidence_aggregation_bank

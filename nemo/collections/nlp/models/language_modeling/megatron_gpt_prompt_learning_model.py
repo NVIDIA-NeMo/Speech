@@ -294,10 +294,6 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
             )
         else:
             raise ValueError('not supported')
-        # cast the model weights to bf16 only for 'bf16' precision
-        # For fp16, cannot cast the model weights as AMP will complain
-        if self.trainer.precision == 'bf16':
-            self.prompt_encoder = self.prompt_encoder.to(dtype=self.autocast_dtype)
 
     def add_ptuned_prompts_to_prompt_table(self):
         """

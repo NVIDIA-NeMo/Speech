@@ -58,6 +58,7 @@ elif os.path.exists('README.rst'):
 
 else:
     long_description = 'See ' + __homepage__
+    long_description_content_type = "text/plain"
 
 
 ###############################################################################

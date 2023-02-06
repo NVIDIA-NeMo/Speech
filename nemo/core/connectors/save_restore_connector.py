@@ -461,9 +461,10 @@ class SaveRestoreConnector:
             # Get path where the command is executed - the artifacts will be "retrieved" there
             # (original .nemo behavior)
             cwd = os.getcwd()
-            try:
-                # Step into the nemo archive to try and find the file
-                with tempfile.TemporaryDirectory() as archive_dir:
+            # Step into the nemo archive to try and find the file
+            # TemporaryDirectory context must always be outer to try-catch chdir otherwise it crashes on Windows
+            with tempfile.TemporaryDirectory() as archive_dir:
+                try:
                     # unpack all restorations paths (nemo checkpoints)
                     # in nemo checkpoints all resources contain hash in name, so there should be no collisions
                     for path in restoration_paths:
@@ -484,9 +485,9 @@ class SaveRestoreConnector:
                         new_artiitem.path = "nemo:" + artifact_uniq_name
                         new_artiitem.path_type = model_utils.ArtifactPathType.TAR_PATH
                         model.artifacts[conf_path] = new_artiitem
-            finally:
-                # change back working directory
-                os.chdir(cwd)
+                finally:
+                    # change back working directory
+                    os.chdir(cwd)
 
     @staticmethod
     def _update_subconfigs(model: "nemo_classes.ModelPT", path2yaml_file):

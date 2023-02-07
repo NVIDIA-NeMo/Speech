@@ -37,8 +37,8 @@ def load_labels(abs_path):
 
     Returns dictionary of mappings
     """
-    label_tsv = open(abs_path, encoding="utf-8")
-    labels = list(csv.reader(label_tsv, delimiter="\t"))
+    with open(abs_path, encoding="utf-8") as label_tsv:
+        labels = list(csv.reader(label_tsv, delimiter="\t"))
     return labels
 
 

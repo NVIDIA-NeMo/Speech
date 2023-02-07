@@ -612,11 +612,14 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         )
         list_of_models.append(model)
 
-        # zh, single speaker, 22050Hz, SFSpeech Bilingual Chinese/English dataset
+        # zh, single female speaker, 22050Hz, SFSpeech Bilingual Chinese/English dataset, improved model using richer
+        # dict and jieba word segmenter for polyphone disambiguation.
         model = PretrainedModelInfo(
             pretrained_model_name="tts_zh_fastpitch_sfspeech",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_zh_fastpitch_hifigan_sfspeech/versions/1.14.0/files/tts_zh_fastpitch_sfspeech.nemo",
-            description="This model is trained on a single female speaker in SFSpeech Bilingual Chinese/English dataset sampled at 22050Hz and can be used to generate female Mandarin Chinese voices.",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_zh_fastpitch_hifigan_sfspeech/versions/1.15.0/files/tts_zh_fastpitch_sfspeech.nemo",
+            description="This model is trained on a single female speaker in SFSpeech Bilingual Chinese/English dataset"
+            " sampled at 22050Hz and can be used to generate female Mandarin Chinese voices. It is improved"
+            " using richer dict and jieba word segmenter for polyphone disambiguation.",
             class_=cls,
         )
         list_of_models.append(model)

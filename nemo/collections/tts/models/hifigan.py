@@ -415,16 +415,18 @@ class HifiGanModel(Vocoder, Exportable):
         )
         list_of_models.append(model)
 
-        # zh, single female speaker, 22050 Hz, SFSpeech Chinese/English Bilingual Dataset.
+        # zh, single female speaker, 22050Hz, SFSpeech Bilingual Chinese/English dataset, improved model using richer
+        # dict and jieba word segmenter for polyphone disambiguation.
         model = PretrainedModelInfo(
             pretrained_model_name="tts_zh_hifigan_sfspeech",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_zh_fastpitch_hifigan_sfspeech/versions/1.14.0/files/tts_zh_hifigan_sfspeech.nemo",
-            description="This model is finetuned from the HiFiGAN pretrained checkpoint `tts_en_hifitts_hifigan_ft_fastpitch` "
-            "by the mel-spectrograms generated from the FastPitch checkpoint `tts_zh_fastpitch_sfspeech`. This model "
-            "has been tested on generating female Mandarin Chinese voices.",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_zh_fastpitch_hifigan_sfspeech/versions/1.15.0/files/tts_zh_hifigan_sfspeech.nemo",
+            description="This model is finetuned from the HiFiGAN pretrained checkpoint `tts_en_lj_hifigan_ft_mixerttsx`"
+            " by the mel-spectrograms generated from the FastPitch checkpoint `tts_zh_fastpitch_sfspeech`."
+            " This model has been tested on generating female Mandarin Chinese voices.",
             class_=cls,
         )
         list_of_models.append(model)
+
         return list_of_models
 
     def load_state_dict(self, state_dict, strict=True):

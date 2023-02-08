@@ -192,7 +192,7 @@ model:
 
   # The section which would contain the decoder and decoding configs of the auxiliary CTC decoder
   aux_ctc:
-    ctc_loss_weight: 0.5 # the weight used to combine the CTC loss with the RNNT loss
+    ctc_loss_weight: 0.3 # the weight used to combine the CTC loss with the RNNT loss
     use_cer: false
     ctc_reduction: 'mean_batch'
     decoder:

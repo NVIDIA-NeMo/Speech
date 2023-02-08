@@ -1070,9 +1070,10 @@ def generate_vad_frame_pred(
     all_len = 0
 
     data = []
-    for line in open(manifest_vad_input, 'r', encoding='utf-8'):
-        file = json.loads(line)['audio_filepath'].split("/")[-1]
-        data.append(file.split(".wav")[0])
+    with open(manifest_vad_input, 'r', encoding='utf-8') as f:
+        for line in f:
+            file = json.loads(line)['audio_filepath'].split("/")[-1]
+            data.append(file.split(".wav")[0])
     logging.info(f"Inference on {len(data)} audio files/json lines!")
 
     status = get_vad_stream_status(data)
@@ -1135,9 +1136,10 @@ def stitch_segmented_asr_output(
         os.mkdir(speech_segments_tensor_dir)
 
     segmented_output = []
-    for line in open(segmented_output_manifest, 'r', encoding='utf-8'):
-        file = json.loads(line)
-        segmented_output.append(file)
+    with open(segmented_output_manifest, 'r', encoding='utf-8') as f:
+        for line in f:
+            file = json.loads(line)
+            segmented_output.append(file)
 
     with open(stitched_output_manifest, 'w', encoding='utf-8') as fout:
         speech_segments = torch.Tensor()
@@ -1207,22 +1209,24 @@ def construct_manifest_eval(
     Because some pure noise samples might not appear in stitched_output_manifest.
     """
     stitched_output = dict()
-    for line in open(stitched_output_manifest, 'r', encoding='utf-8'):
-        file = json.loads(line)
-        stitched_output[file["audio_filepath"]] = file
+    with open(stitched_output_manifest, 'r', encoding='utf-8') as f:
+        for line in f:
+            file = json.loads(line)
+            stitched_output[file["audio_filepath"]] = file
 
     out = []
-    for line in open(input_manifest, 'r', encoding='utf-8'):
-        file = json.loads(line)
-        sample = file["audio_filepath"]
-        if sample in stitched_output:
-            file["pred_text"] = stitched_output[sample]["pred_text"]
-            file["speech_segments_filepath"] = stitched_output[sample]["speech_segments_filepath"]
-        else:
-            file["pred_text"] = ""
-            file["speech_segments_filepath"] = ""
+    with open(input_manifest, 'r', encoding='utf-8') as f:
+        for line in f:
+            file = json.loads(line)
+            sample = file["audio_filepath"]
+            if sample in stitched_output:
+                file["pred_text"] = stitched_output[sample]["pred_text"]
+                file["speech_segments_filepath"] = stitched_output[sample]["speech_segments_filepath"]
+            else:
+                file["pred_text"] = ""
+                file["speech_segments_filepath"] = ""
 
-        out.append(file)
+            out.append(file)
 
     with open(aligned_vad_asr_output_manifest, 'w', encoding='utf-8') as fout:
         for i in out:

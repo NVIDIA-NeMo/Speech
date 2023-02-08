@@ -224,7 +224,8 @@ class RegExTokenizer(TokenizerSpec):
                 fp.write(f"{token[0]}\n")
 
         logging.info(f"Saving regex to file = {regex_file}")
-        open(regex_file, 'w').write(self.regex)
+        with open(regex_file, 'w') as f:
+            f.write(self.regex)
 
     def load_tokenizer(self, regex_file=None, vocab_file=None):
         """
@@ -297,13 +298,14 @@ class RegExTokenizer(TokenizerSpec):
             raise ValueError(f"Data file: {data_text_file} is missing")
 
         vocab = self.vocab
-        for d in open(data_text_file, encoding="utf-8").readlines():
-            d = d.rstrip()
-            tokens = self.text_to_tokens(d)
-            logging.debug(f"Text: {d}, Tokens: {d}")
-            for token in tokens:
-                if token not in vocab:
-                    vocab[token] = len(vocab)
+        with open(data_text_file, encoding="utf-8") as f:
+            for d in f.readlines():
+                d = d.rstrip()
+                tokens = self.text_to_tokens(d)
+                logging.debug(f"Text: {d}, Tokens: {d}")
+                for token in tokens:
+                    if token not in vocab:
+                        vocab[token] = len(vocab)
 
         sorted_vocab = sorted(vocab.items(), key=lambda k_v: k_v[1])
         logging.debug(f"Vocab: {sorted_vocab}")

@@ -175,7 +175,8 @@ def read_file(pathlist: str) -> List[str]:
     Returns:
         sorted(pathlist) (list): List of lines
     """
-    pathlist = open(pathlist, 'r').readlines()
+    with open(pathlist, 'r') as f:
+        pathlist = f.readlines()
     return sorted(pathlist)
 
 
@@ -331,7 +332,8 @@ def create_manifest(
             uem = uem.strip()
 
         if text is not None:
-            text = open(text.strip()).readlines()[0].strip()
+            with open(text.strip()) as f:
+                text = f.readlines()[0].strip()
         else:
             text = "-"
 

@@ -40,7 +40,8 @@ def get_acc(trial_file='', emb='', save_kaldi_emb=False):
 
     trial_score = open('trial_score.txt', 'w')
     dirname = os.path.dirname(trial_file)
-    emb = pkl.load(open(emb, 'rb'))
+    with open(emb, 'rb') as f:
+        emb = pkl.load(f)
     trial_embs = []
     keys = []
     all_scores = []

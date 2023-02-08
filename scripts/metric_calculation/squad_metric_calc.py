@@ -105,22 +105,26 @@ def main():
         type=str,
         help="The text at the end of the prompt, write before the predicted answer. This will be used to find the model's predictions in pred files when the pred file containers both the prompt and prediction.",
         default=None,
-    )  # If the pred file only has preditions, just pass none
+    )  # If the pred file only has predictions, just pass none
 
     args = parser.parse_args()
 
     ground_truth_file = args.ground_truth
     pred_file = args.preds
 
-    preds = open(pred_file, encoding="utf-8").readlines()
-    ground_truth = open(ground_truth_file).readlines()
+    with open(pred_file, encoding="utf-8") as fp:
+        preds = fp.readlines()
+
+    with open(ground_truth_file) as fgt:
+        ground_truth = fgt.readlines()
+
     f1 = exact_match = total = 0
 
     for i in range(len(preds)):
         truth = json.loads(ground_truth[i])
         pred_answer = preds[i]
 
-        # Need to separate out preditions from prompt, spliting on the provided "split string"
+        # Need to separate out predictions from prompt, splitting on the provided "split string"
         if args.split_string is not None:
             pred_answer = pred_answer.split(args.split_string)[-1].strip()
 

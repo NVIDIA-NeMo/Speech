@@ -133,8 +133,6 @@ class Tacotron2Model(SpectrogramGenerator):
                 abbreviation_version="fastpitch",
                 make_table=False,
             )
-        elif ds_class_name == "AudioToCharWithPriorAndPitchDataset":
-            self.parser = self.vocab.encode
         else:
             raise ValueError("Wanted to setup parser, but model does not have necessary paramaters")
 

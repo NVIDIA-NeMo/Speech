@@ -95,19 +95,8 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
                 assert self.vocab is not None
                 input_fft_kwargs["n_embed"] = len(self.vocab.tokens)
                 input_fft_kwargs["padding_idx"] = self.vocab.pad
-            # TODO @xueyang: remove AudioToCharWithPriorAndPitchDataset because it has been deprecated already.
-            elif self.ds_class_name == "AudioToCharWithPriorAndPitchDataset":
-                logging.warning(
-                    "AudioToCharWithPriorAndPitchDataset class has been deprecated. No support for"
-                    " training or finetuning. Only inference is supported."
-                )
-                tokenizer_conf = self._get_default_text_tokenizer_conf()
-                self._setup_tokenizer(tokenizer_conf)
-                assert self.vocab is not None
-                input_fft_kwargs["n_embed"] = len(self.vocab.tokens)
-                input_fft_kwargs["padding_idx"] = self.vocab.pad
             else:
-                raise ValueError(f"Unknown dataset class: {self.ds_class_name}")
+                raise ValueError(f"Unknown dataset class: {self.ds_class_name}.")
 
         self._parser = None
         self._tb_logger = None
@@ -237,11 +226,6 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
             ds_class_name = self._cfg.train_ds.dataset._target_.split(".")[-1]
 
             if ds_class_name == "TTSDataset":
-                self._parser = self.vocab.encode
-            elif ds_class_name == "AudioToCharWithPriorAndPitchDataset":
-                if self.vocab is None:
-                    tokenizer_conf = self._get_default_text_tokenizer_conf()
-                    self._setup_tokenizer(tokenizer_conf)
                 self._parser = self.vocab.encode
             else:
                 raise ValueError(f"Unknown dataset class: {ds_class_name}")

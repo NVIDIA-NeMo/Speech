@@ -26,22 +26,40 @@ LATEST_RELEASE=$(git -c 'versionsort.suffix=-' \
 # expected TORCHAUDIO_BUILD_VERSION=*.**.*
 TORCHAUDIO_BUILD_VERSION=${LATEST_RELEASE:8:1}${PYTORCH_VERSION:1:5}
 
+TORCH_MAJOR_VERSION=$(python3 -c "major_version = \"${PYTORCH_VERSION}\".split('.')[0]; print(major_version)")
+TORCH_MINOR_VERSION=$(python3 -c "minor_version = \"${PYTORCH_VERSION}\".split('.')[1]; print(minor_version)")
+TORCHAUDIO_MINOR_VERSION=$(python3 -c "minor_version = \"${LATEST_RELEASE}\".rsplit('.')[-1]; print(minor_version)")
+
+if [[ $TORCH_MAJOR_VERSION -ne 1 ]]; then
+    echo "WARNING: Pytorch major version different from 1 not supported"
+fi
+
 echo "Latest torchaudio release: ${LATEST_RELEASE:8:4}"
 echo "Pytorch version: ${PYTORCH_VERSION:0:6}"
 echo "Torchaudio build version: ${TORCHAUDIO_BUILD_VERSION}"
+
+if [[ "$TORCH_MINOR_VERSION" -lt "$TORCHAUDIO_MINOR_VERSION" ]]; then
+    # for old containers, we need to install matching torchaudio version
+    INSTALL_BRANCH="release/0.${TORCH_MINOR_VERSION}"
+else
+    # for new containers use latest release
+    INSTALL_BRANCH=${LATEST_RELEASE}
+fi
+
+echo "Installing torchaudio from branch: ${INSTALL_BRANCH}"
 
 # we need parameterized to run torchaudio tests
 # suppose that we do not have parameterized installed yet
 pip install parameterized
 
 # Build torchaudio and run MFCC test
-git clone --depth 1 --branch ${LATEST_RELEASE} https://github.com/pytorch/audio.git && \
+git clone --depth 1 --branch ${INSTALL_BRANCH} https://github.com/pytorch/audio.git && \
 cd audio && \
 git submodule update --init --recursive && \
 BUILD_SOX=1 BUILD_VERSION=${TORCHAUDIO_BUILD_VERSION} python setup.py install && \
 cd .. && \
 pytest -rs audio/test/torchaudio_unittest/transforms/torchscript_consistency_cpu_test.py -k 'test_MFCC' || \
-(echo "ERROR: Failed to install torchaudio!"; exit 1);
+{ echo "ERROR: Failed to install torchaudio!"; exit 1; };
 # RNNT loss is built with CUDA, so checking it will suffice
 # This test will be skipped if CUDA is not available (e.g. when building from docker)
 pytest -rs audio/test/torchaudio_unittest/functional/torchscript_consistency_cuda_test.py -k 'test_rnnt_loss' || \

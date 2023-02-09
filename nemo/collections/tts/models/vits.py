@@ -372,7 +372,14 @@ class VitsModel(TextToWaveform):
     @classmethod
     def list_available_models(cls) -> 'List[PretrainedModelInfo]':
         list_of_models = []
-        # TODO: List available models??
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_en_lj_vits",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_lj_vits/versions/1.13.0/files/vits_ljspeech_fp16_full.nemo",
+            description="This model is trained on LJSpeech audio sampled at 22050Hz. This model has been tested on generating female English "
+            "voices with an American accent.",
+            class_=cls,
+        )
+        list_of_models.append(model)
         return list_of_models
 
     @typecheck(

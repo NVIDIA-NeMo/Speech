@@ -287,7 +287,7 @@ class FastPitchModule(NeuralModule):
 
         # Predict energy
         if self.energy_predictor is not None:
-            energy_pred = self.energy_predictor(enc_out, enc_mask).squeeze(-1)
+            energy_pred = self.energy_predictor(prosody_input, enc_mask).squeeze(-1)
 
             if energy is not None:
                 # Average energy over characters
@@ -357,6 +357,8 @@ class FastPitchModule(NeuralModule):
         )
         pitch_predicted = self.pitch_predictor(prosody_input, enc_mask) + pitch
         pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
+        enc_out = enc_out + pitch_emb.transpose(1, 2)
+
         if self.energy_predictor is not None:
             if energy is not None:
                 assert energy.shape[-1] == text.shape[-1], f"energy.shape[-1]: {energy.shape[-1]} != len(text)"
@@ -365,7 +367,6 @@ class FastPitchModule(NeuralModule):
                 energy_pred = self.energy_predictor(prosody_input, enc_mask).squeeze(-1)
                 energy_emb = self.energy_emb(energy_pred.unsqueeze(1))
             enc_out = enc_out + energy_emb.transpose(1, 2)
-        enc_out = enc_out + pitch_emb.transpose(1, 2)
 
         # Expand to decoder time dimension
         len_regulated, dec_lens = regulate_len(durs_predicted, enc_out, pace)

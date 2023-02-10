@@ -550,7 +550,7 @@ class EncDecClassificationModel(_EncDecBaseModel):
         self._accuracy.reset()
 
         for top_k, score in zip(self._accuracy.top_k, topk_scores):
-            self.log('training_batch_accuracy_top@{}'.format(top_k), score)
+            self.log('training_batch_accuracy_top_{}'.format(top_k), score)
 
         return {
             'loss': loss_value,

@@ -367,7 +367,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         top_k = self._accuracy.compute()
         self._accuracy.reset()
         for i, top_i in enumerate(top_k):
-            self.log(f'training_batch_accuracy_top@{i}', top_i)
+            self.log(f'training_batch_accuracy_top_{i}', top_i)
 
         return {'loss': loss}
 

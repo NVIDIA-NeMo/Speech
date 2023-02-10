@@ -35,6 +35,7 @@ __all__ = [
     "GRAPHEME_CASE_UPPER",
     "GRAPHEME_CASE_LOWER",
     "GRAPHEME_CASE_MIXED",
+    "get_heteronym_spans",
 ]
 
 # Derived from LJSpeech

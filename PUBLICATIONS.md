@@ -7,6 +7,21 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 # Automatic Speech Recognition (ASR)
 
 <details>
+  <summary>2023</summary>
+
+  * [Fast Entropy-Based Methods of Word-Level Confidence Estimation for End-to-End Automatic Speech Recognition](https://ieeexplore.ieee.org/abstract/document/10022960)
+  * [Damage Control During Domain Adaptation for Transducer Based Automatic Speech Recognition](https://ieeexplore.ieee.org/abstract/document/10023219)
+
+</details>
+
+<details>
+  <summary>2022</summary>
+
+  * [Multi-blank Transducers for Speech Recognition](https://arxiv.org/abs/2211.03541)
+
+</details>
+
+<details>
   <summary>2021</summary>
   
   * [Citrinet: Closing the Gap between Non-Autoregressive and Autoregressive End-to-End Models for Automatic Speech Recognition](https://arxiv.org/abs/2104.01721)
@@ -44,9 +59,9 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 ## Speaker Recognition (SpkR)
 
 <details>
-  <summary>2021</summary>
+  <summary>2022</summary>
   
-  * [TitaNet: Neural Model for speaker representation with 1D Depth-wise separable convolutions and global context]( https://arxiv.org/pdf/2110.04410.pdf) 
+  * [TitaNet: Neural Model for Speaker Representation with 1D Depth-Wise Separable Convolutions and Global Context](https://ieeexplore.ieee.org/abstract/document/9746806)
 
 </details>
 
@@ -61,6 +76,15 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 --------
 
 ## Speech Classification
+
+<details>
+  <summary>2022</summary>
+  
+  * [AmberNet: A Compact End-to-End Model for Spoken Language Identification](https://arxiv.org/abs/2210.15781)
+  * [Accidental Learners: Spoken Language Identification in Multilingual Self-Supervised Models](https://arxiv.org/abs/2211.05103)
+
+
+</details>
 
 <details>
   <summary>2021</summary>
@@ -80,9 +104,29 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 
 --------
 
+## Speech Translation
+
+<details>
+  <summary>2022</summary>
+  
+  * [NVIDIA NeMo Offline Speech Translation Systems for IWSLT 2022](https://aclanthology.org/2022.iwslt-1.18/)
+
+</details>
+
+
+--------
+
 # Natural Language Processing (NLP)
 
 ## Language Modeling
+
+<details>
+  <summary>2022</summary>
+
+  * [Evaluating Parameter Efficient Learning for Generation](https://arxiv.org/abs/2210.13673)
+  * [Text Mining Drug/Chemical-Protein Interactions using an Ensemble of BERT and T5 Based Models](https://arxiv.org/abs/2111.15617)
+
+</details>
 
 <details>
   <summary>2021</summary>
@@ -92,6 +136,13 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 </details>
 
 ## Neural Machine Translation
+
+<details>
+    <summary>2022</summary>
+
+  * [Finding the Right Recipe for Low Resource Domain Adaptation in Neural Machine Translation](https://arxiv.org/abs/2206.01137)
+
+</details>
 
 <details>
   <summary>2021</summary>
@@ -123,6 +174,13 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
 # Text To Speech (TTS)
 
 <details>
+  <summary>2022</summary>
+    
+  * [Adapter-Based Extension of Multi-Speaker Text-to-Speech Model for New Speakers](https://arxiv.org/abs/2211.00585)
+
+</details>
+
+<details>
   <summary>2021</summary>
   
   * [TalkNet: Fully-Convolutional Non-Autoregressive Speech Synthesis Model](https://www.isca-speech.org/archive/interspeech_2021/beliaev21_interspeech.html)
@@ -140,6 +198,7 @@ Here, we list a collection of research articles that utilize the NeMo Toolkit. I
   <summary>2022</summary>
   
   * [Shallow Fusion of Weighted Finite-State Transducer and Language Model for Text Normalization](https://arxiv.org/abs/2203.15917)
+  * [Thutmose Tagger: Single-pass neural model for Inverse Text Normalization](https://arxiv.org/abs/2208.00064)
 
 </details>
 

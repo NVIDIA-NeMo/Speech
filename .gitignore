@@ -94,6 +94,10 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Override Jupyter in Github Language states for more accurate estimate of repo code.
+# Reference: https://github.com/github/linguist/blob/master/docs/overrides.md#generated-code
+*.ipynb linguist-generated
+
 # IPython
 profile_default/
 ipython_config.py

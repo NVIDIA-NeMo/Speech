@@ -47,6 +47,10 @@
 ;;;
 ;;;  NOTES  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;
+;;;   Updated two words and removed two words
+;;;   - changed WHATEVER ˌwʌˈtɛvɚ to WHATEVER ˌwʌtˈɛvɚ and deleted WHATEVER(1).
+;;;   - updated WHATEVER'S to ˌwʌtˈɛvɚz and delete WHATEVER'S(1).
+;;;
 ;;;  [20080401] (air)  New dict file format introduced
 ;;;   - comments (like this section) are allowed
 ;;;   - file name is major version; vers/rev information is now in the header
@@ -130341,10 +130345,8 @@ WHAT'S(1)  ˈhwʌts
 WHAT'VE  ˈwʌtəv
 WHAT-WHAT  ˈwʌtˈwʌt
 WHATE  ˈweɪt
-WHATEVER  ˌwʌˈtɛvɚ
-WHATEVER(1)  ˌhwʌˈtɛvɚ
-WHATEVER'S  ˌwʌˈtɛvɚz
-WHATEVER'S(1)  ˌhwʌˈtɛvɚz
+WHATEVER  ˌwʌtˈɛvɚ
+WHATEVER'S  ˌwʌtˈɛvɚz
 WHATLEY  ˈwʌtli
 WHATLEY(1)  ˈhwʌtli
 WHATNOT  ˈwʌtˌnɑt

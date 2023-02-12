@@ -1,4 +1,5 @@
 data_simulator:
+            # desired_overlap_amount = self._sample_from_overlap_model(running_len_samples - self.sess_silence_len)
   manifest_filepath: ??? # Manifest file with paths to single speaker audio files
 
   sr: 16000 # Sampling rate of the input audio files from the manifest
@@ -11,15 +12,22 @@ data_simulator:
 
   session_params:
     sentence_length_params: # k,p values for a negative_binomial distribution which is sampled to get the sentence length (in number of words)
-    - 0.4
-    - 0.05
+    - 0.4 # k (Number of successes until the experiment is stopped) value must be a positive integer.
+    - 0.05 # p (Success probability) must be in the range (0, 1]. The average sentence length will be k*(1-p)/p
     dominance_var: 0.11 # Variance in speaker dominance (where each speaker's dominance is sampled from a normal distribution centered on 1/`num_speakers`, and then the dominance values are together normalized to 1)
     min_dominance: 0.05 # Minimum percentage of speaking time per speaker (note that this can cause the dominance of the other speakers to be slightly reduced)
     turn_prob: 0.875 # Probability of switching speakers after each utterance
     min_turn_prob: 0.5 # Minimum turn probability when enforce mode is True to prevent from making excessive session length
-    mean_overlap: 0.19 # Mean proportion of overlap in the overall speaking time (overlap lengths are sampled from half normal distribution)
-    mean_silence: 0.15 # Mean proportion of silence to speaking time in the audio session (overlap lengths are sampled from half normal distribution)
-    overlap_prob: 0.5 # Proportion of overlap occurrences versus silence between utterances (used to balance the length of silence gaps and overlapping segments, so a value close to `mean_overlap`/(`mean_silence`+`mean_overlap`) is suggested)
+    mean_silence: 0.15 # Mean proportion of silence to speaking time in the audio session. Should be in range [0, 1).
+    mean_silence_var: 0.01 # var for mean silence in all audio sessions. This value should be 0 <= mean_silence_var < mean_silence * (1 - mean_silence)
+    per_silence_var: 900 # var for per silence in each session, set large values to de-correlate silence lengths with the latest speech segment lengths
+    per_silence_min: 0.0 # minimum per silence duration in seconds
+    per_silence_max: -1 # maximum per silence duration in seconds, set -1 for no maximum
+    mean_overlap: 0.1 # Mean proportion of overlap in the overall non-silence duration. Should be in range [0, 1) and recommend [0, 0.15] range.
+    mean_overlap_var: 0.01 # var for mean overlap in all audio sessions. This value should be 0 <= mean_overlap_var < mean_overlap * (1 - mean_overlap)
+    per_overlap_var: 900 # var for per overlap in each session, set large values to de-correlate silence lengths with the latest speech segment lengths
+    per_overlap_min: 0.0 # minimum per overlap duration in seconds
+    per_overlap_max: -1 # maximum per overlap duration in seconds, set -1 for no maximum
     start_window: true # Window the start of sentences to smooth the audio signal (and remove silence at the start of the clip)
     window_type: hamming # Type of windowing used when segmenting utterances ("hamming", "hann", "cosine")
     window_size: 0.05 # Length of window at the start or the end of segmented utterance (seconds)

@@ -103,20 +103,12 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         # Save the best nemo model
         self.save_to(save_path=self.cfg.nemo_path)
 
-    def validation_step(self, batch, batch_idx, inference=False):
-        enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
-
-        mode = self.training
-        self.eval()
-        gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
-        self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
-        loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=True)
-
+    def compute_accuracy(self, enc_input, enc_mask, encoder_input, labels):
         predicted_token_ids, log_probs = self.frozen_model.decode(
             tokens_enc=enc_input,
             enc_mask=enc_mask,
             num_tokens_to_generate=self.decoder_seq_length,
-            encoder_input=None,
+            encoder_input=encoder_input,
         )
 
         processed_inputs, processed_preds, processed_labels = [], [], []
@@ -145,13 +137,29 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             processed_labels.append(label)
             processed_inputs.append(enc_input)
 
-        self.train(mode=mode)
         return {
-            'loss': loss_mean,
             'predicted_token_ids': processed_preds,
             'labels': processed_labels,
             'enc_inputs': processed_inputs,
         }
+
+    def validation_step(self, batch, batch_idx, inference=False):
+        enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
+
+        mode = self.training
+        self.eval()
+        gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
+        self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
+        loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=True)
+
+        if self.cfg.get('report_validation_accuracy', False):
+            metrics = self.compute_accuracy(enc_input, enc_mask, labels)
+            metrics['loss'] = loss_mean
+        else:
+            metrics = {'loss': loss_mean}
+
+        self.train(mode=mode)
+        return metrics
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
 
@@ -283,40 +291,41 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             logging.info(f'Validation loss: {averaged_loss}')
             self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True)
 
-        gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
+        if self.cfg.get('report_validation_accuracy', False):
+            gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
+            all_preds = list(itertools.chain(*[item['predicted_token_ids'] for item in outputs]))
+            all_labels = list(itertools.chain(*[item['labels'] for item in outputs]))
+            all_inputs = list(itertools.chain(*[item['enc_inputs'] for item in outputs]))
 
-        all_preds = list(itertools.chain(*[item['predicted_token_ids'] for item in outputs]))
-        all_labels = list(itertools.chain(*[item['labels'] for item in outputs]))
-        all_inputs = list(itertools.chain(*[item['enc_inputs'] for item in outputs]))
+            assert len(all_preds) == len(all_labels)
+            assert len(all_preds) == len(all_inputs)
 
-        assert len(all_preds) == len(all_labels)
-        assert len(all_preds) == len(all_inputs)
+            # Gather inputs, preds, labels from all workers
+            torch.distributed.all_gather_object(
+                gather_results,
+                [(input, pred, label) for (input, pred, label) in zip(all_inputs, all_preds, all_labels)],
+                group=parallel_state.get_data_parallel_group(),
+            )
 
-        # Gather inputs, preds, labels from all workers
-        torch.distributed.all_gather_object(
-            gather_results,
-            [(input, pred, label) for (input, pred, label) in zip(all_inputs, all_preds, all_labels)],
-            group=parallel_state.get_data_parallel_group(),
-        )
+            # Deduplicate sentences that may have been distributed across multiple data parallel ranks.
+            if parallel_state.get_data_parallel_rank() == 0:
 
-        # Deduplicate sentences that may have been distributed across multiple data parallel ranks.
-        if parallel_state.get_data_parallel_rank() == 0:
+                gather_results_dedup = list(set(itertools.chain(*gather_results)))
 
-            gather_results_dedup = list(set(itertools.chain(*gather_results)))
+                correct = 0
+                for (input, pred, label) in gather_results_dedup:
+                    if pred == label:
+                        correct += 1
 
-            correct = 0
-            for (input, pred, label) in gather_results_dedup:
-                if pred == label:
-                    correct += 1
+                val_acc = correct / len(gather_results_dedup)
+                val_acc = torch.tensor(val_acc).cuda()
 
-            val_acc = correct / len(gather_results_dedup)
-            val_acc = torch.tensor(val_acc).cuda()
+                logging.info(f'Validation accuracy: {val_acc}')
+            else:
+                val_acc = torch.tensor(0.0).cuda()
 
-            logging.info(f'Validation accuracy: {val_acc}')
-        else:
-            val_acc = torch.tensor(0.0).cuda()
+            self.log('val_acc', val_acc, prog_bar=True, rank_zero_only=True)
 
-        self.log('val_acc', val_acc, prog_bar=True, rank_zero_only=True)
         gbs = self.cfg.global_batch_size
         mbs = self.cfg.micro_batch_size
         self._reconfigure_batch_sizes(gbs, mbs)

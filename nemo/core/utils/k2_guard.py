@@ -12,10 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple
+"""
+Guard for importing optional NeMo dependency k2.
+Contains checks for k2 availability and version.
+Use `from nemo.core.utils.k2_guard import k2` to import k2 instead of direct import.
+If there is an error, the module will raise an exception with a helpful message.
+"""
 
-__K2_MINIMUM_MAJOR_VERSION__ = 1
-__K2_MINIMUM_MINOR_VERSION__ = 11
+import textwrap
+
+from packaging.version import Version
+from pytorch_lightning.utilities.imports import package_available
+
+__K2_MINIMUM_MAJOR_VERSION = 1
+__K2_MINIMUM_MINOR_VERSION = 11
+
+__K2_MINIMUM_VERSION = Version(f"{__K2_MINIMUM_MAJOR_VERSION}.{__K2_MINIMUM_MINOR_VERSION}")
 
 K2_INSTALLATION_MESSAGE = (
     "Could not import `k2`.\n"
@@ -26,39 +38,20 @@ K2_INSTALLATION_MESSAGE = (
     "It is advised to always install k2 using setup.sh only, "
     "as different versions of k2 may not interact with the NeMo code as expected."
 )
-K2_IMPORT_SUCCESS = "Successfully imported k2."
 
+if not package_available("k2"):
+    raise ModuleNotFoundError(K2_INSTALLATION_MESSAGE)
 
-def k2_is_available() -> Tuple[bool, str]:
-    try:
-        import k2
+import k2  # noqa: E402
 
-        return True, K2_IMPORT_SUCCESS
-    except (ImportError, ModuleNotFoundError):
-        pass
-    return False, K2_INSTALLATION_MESSAGE
+__k2_version = Version(k2.__dev_version__)
 
-
-def k2_satisfies_minimum_version() -> Tuple[bool, str]:
-    import k2
-
-    k2_major_version, k2_minor_version = k2.__dev_version__.split(".")[:2]
-    ver_satisfies = (
-        int(k2_major_version) >= __K2_MINIMUM_MAJOR_VERSION__ and int(k2_minor_version) >= __K2_MINIMUM_MINOR_VERSION__
+if __k2_version < __K2_MINIMUM_VERSION:
+    raise ImportError(
+        textwrap.dedent(
+            f"""
+            Minimum required k2 version: {__K2_MINIMUM_VERSION};
+            Installed k2 version: {__k2_version}
+            """
+        )
     )
-    return (
-        ver_satisfies,
-        (
-            f"Minimum required k2 version: {__K2_MINIMUM_MAJOR_VERSION__}.{__K2_MINIMUM_MINOR_VERSION__};\n"
-            f"Installed k2 version: {k2_major_version}.{k2_minor_version}"
-        ),
-    )
-
-
-def k2_import_guard():
-    avail, msg = k2_is_available()
-    if not avail:
-        raise ModuleNotFoundError(msg)
-    ver_ge, msg = k2_satisfies_minimum_version()
-    if not ver_ge:
-        raise ImportError(msg)

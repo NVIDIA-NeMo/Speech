@@ -28,14 +28,8 @@ from nemo.collections.asr.parts.k2.utils import (
     prep_padded_densefsavec,
     shift_labels_inpl,
 )
+from nemo.core.utils.k2_guard import k2  # import k2 from guard module
 from nemo.utils import logging
-
-# use k2 import guard
-# fmt: off
-from nemo.core.utils.k2_utils import k2_import_guard # isort:skip
-k2_import_guard()
-import k2 # isort:skip
-# fmt: on
 
 
 class BaseDecoder(object):
@@ -57,8 +51,6 @@ class BaseDecoder(object):
         topo_with_self_loops: bool = True,
         device: torch.device = torch.device("cpu"),
     ):
-        # use k2 import guard
-        k2_import_guard()
 
         if cfg is not None:
             intersect_pruned = cfg.get("intersect_pruned", intersect_pruned)

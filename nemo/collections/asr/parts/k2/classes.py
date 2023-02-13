@@ -65,11 +65,6 @@ class ASRK2Mixin(ABC):
         This method is expected to run after the __init__ which sets self._cfg
         self._cfg is expected to have the attribute graph_module_cfg
         """
-        # use k2 import guard
-        from nemo.core.utils.k2_utils import k2_import_guard
-
-        k2_import_guard()
-
         if not hasattr(self, "_cfg"):
             raise ValueError("self._cfg must be set before calling _init_k2().")
         if not hasattr(self._cfg, "graph_module_cfg") or self._cfg.graph_module_cfg is None:

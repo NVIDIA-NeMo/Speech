@@ -40,12 +40,7 @@ from nemo.collections.asr.parts.k2.utils import (
     prep_padded_densefsavec,
 )
 
-# use k2 import guard
-# fmt: off
-from nemo.core.utils.k2_utils import k2_import_guard # isort:skip
-k2_import_guard()
-import k2 # isort:skip
-# fmt: on
+from nemo.core.utils.k2_guard import k2  # import k2 from guard module
 
 
 class MLLoss(torch.nn.Module):
@@ -71,9 +66,6 @@ class MLLoss(torch.nn.Module):
         graph_type: str = "topo",
         token_lm: Optional[Union['k2.Fsa', str]] = None,
     ):
-        # use k2 import guard
-        k2_import_guard()
-
         super().__init__()
         if cfg is not None:
             topo_type = cfg.get("topo_type", topo_type)

@@ -102,11 +102,6 @@ class LatticeLoss(Loss):
 
         # we assume that self._blank + 1 == num_classes
         if backend == "k2":
-            # use k2 import guard
-            from nemo.core.utils.k2_utils import k2_import_guard
-
-            k2_import_guard()
-
             if criterion_type == "ml":
                 from nemo.collections.asr.parts.k2.ml_loss import MLLoss as K2Loss
             elif criterion_type == "map":

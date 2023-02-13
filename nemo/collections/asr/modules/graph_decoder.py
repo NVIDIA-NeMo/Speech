@@ -112,11 +112,6 @@ class ViterbiDecoderWithGraph(NeuralModule):
 
         # we assume that self._blank + 1 == num_classes
         if backend == "k2":
-            # use k2 import guard
-            from nemo.core.utils.k2_utils import k2_import_guard
-
-            k2_import_guard()
-
             if self.dec_type == "topo":
                 from nemo.collections.asr.parts.k2.graph_decoders import BaseDecoder as Decoder
             elif self.dec_type == "token_lm":

@@ -1,0 +1,18 @@
+tokenizer:
+  library: 'megatron'
+  type: 'GPT2BPETokenizer'
+  model: null
+  vocab_file: null
+  merge_file: null 
+  delimiter: null # only used for tabular tokenizer
+service:
+  child_services:
+    - type: 'FaissRetrievalService'
+      service_ip: '0.0.0.0'
+      service_port: 17179 
+      weight: 0.5  # initial weight for child service
+    - type: 'DynamicFaissRetrievalService'
+      service_ip: '0.0.0.0'
+      service_port: 17180
+      weight: 0.5 # initial weight for child service
+  port: 17181  # server port number

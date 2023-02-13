@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@
 
 import os
 
-from examples.nlp.language_modeling.megatron_gpt_eval import RequestDataSet
+import torch
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from torch.utils.data import DataLoader
 
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
-from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
+from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
+from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
 
@@ -32,7 +32,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 """
-This is the script to run RETRO Model text generation.
+This is the script to launch RETRO Model text generation server.
 
 Usage:
     Assume the model has TP=1, PP=1
@@ -54,7 +54,7 @@ Usage:
 """
 
 
-@hydra_runner(config_path="conf", config_name="megatron_retro_inference")
+@hydra_runner(config_path="conf", config_name="retro_text_generation_server")
 def main(cfg) -> None:
     trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
 
@@ -79,22 +79,6 @@ def main(cfg) -> None:
         model_path, trainer=trainer, save_restore_connector=save_restore_connector, override_config_path=model_cfg,
     )
 
-    length_params: LengthParam = {
-        "max_length": cfg.inference.tokens_to_generate,
-        "min_length": cfg.inference.min_tokens_to_generate,
-    }
-
-    sampling_params: SamplingParam = {
-        "use_greedy": cfg.inference.greedy,
-        "temperature": cfg.inference.temperature,
-        "top_k": cfg.inference.top_k,
-        "top_p": cfg.inference.top_p,
-        "repetition_penalty": cfg.inference.repetition_penalty,
-        "add_BOS": cfg.inference.add_BOS,
-        "all_probs": cfg.inference.all_probs,
-        "compute_logprob": cfg.inference.compute_logprob,
-    }
-
     # check whether the DDP is initialized
     if parallel_state.is_unitialized():
 
@@ -105,27 +89,19 @@ def main(cfg) -> None:
             model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
         model.trainer.strategy.setup_environment()
 
-    config = OmegaConf.to_container(cfg.inference)
     retrieval_service = OmegaConf.to_container(cfg.retrieval_service)
-    model.set_inference_config(config, retrieval_service)
+    model.set_inference_config(None, retrieval_service)
 
-    if not cfg.use_predict_method:
-        # First method of running text generation, call model.generate method
-        response = model.generate(
-            inputs=OmegaConf.to_container(cfg.prompts),
-            length_params=length_params,
-            sampling_params=sampling_params,
-            strategy=model.inference_strategy,
-        )
-    else:
-        # Second method of running text generation, call trainer.predict
-        ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
-        request_dl = DataLoader(dataset=ds, batch_size=cfg.inference_batch_size)
-        response = trainer.predict(model, request_dl)
+    # running text generation, use inference server
+    if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
+        server = MegatronServer(model.cuda(), inference_strategy=model.inference_strategy)
+        server.run("0.0.0.0", port=cfg.port)
 
-    print("***************************")
-    print(response)
-    print("***************************")
+    while True:
+        choice = torch.cuda.LongTensor(1)
+        torch.distributed.broadcast(choice, 0)
+        if choice[0].item() == 0:
+            generate(model.cuda(), strategy=model.inference_strategy)
 
 
 if __name__ == '__main__':

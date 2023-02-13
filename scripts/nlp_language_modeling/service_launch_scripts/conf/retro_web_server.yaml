@@ -1,0 +1,10 @@
+
+text_service_ip: '0.0.0.0'
+text_service_port: 5555
+combo_service_ip: '0.0.0.0'
+combo_service_port: 17181
+
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+port: 7777

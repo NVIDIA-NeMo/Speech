@@ -39,39 +39,6 @@ retrieval_service:
   frequent_query: False  # for the current token generation, frequently update the retrieval context. If false, update it every 64 tokens 
   pad_tokens: True # pad the tokens at the beginning to make it minimum of 64 tokens for retrieving at least once
   store_retrieved: False # whether store the retrieved documents, so it can be checked
-  weights: [0.5, 0.5] # weight for different retrieval services
-  sentence_bert:   # define a few sentence bert models for different retrieval services to use
-    default:
-      devices: '0,1,2'
-      sentence_bert: 'all-mpnet-base-v2' 
-      sentence_bert_batch: 4
-    qa_ctx:
-      devices: '0,1,2'
-      sentence_bert: 'facebook-dpr-ctx_encoder-multiset-base' 
-      sentence_bert_batch: 4
-    qa_question:
-      devices: '0,1,2'
-      sentence_bert: 'facebook-dpr-question_encoder-multiset-base' 
-      sentence_bert_batch: 4
-  services: 
-    - type: FaissRetrievalService
-      faiss_devices: '0,1,2'
-      faiss_index: null  # the faiss index file that is used to find KNN
-      nprobe: 100
-      retrieval_index: null
-      query_bert: 'default'   # the bert model to encode the query str
-    - type: DynamicFaissRetrievalService
-      faiss_devices: '0,1,2'
-      faiss_index: null  # the faiss index to load from file, if null, start from scratch
-      store_file: null  # the retrieval service storage to load from file, if null, start from scratch
-      chunk_size: 64
-      stride: 32
-      ctx_bert: 'qa_ctx'     # the bert model to encode the ctx that is used to construct the dynamic retrieval index
-      query_bert: 'qa_question' # the bert model to encode the query str
-      output_filename: 'dynamic_db'  # the filename of serialized dynamic retrieval service, used for both Faiss index and data storage
-server: False  # whether launch the API server
-port: 5555 # the port number for the inference server
-web_server: False # whether launch the web inference server
-share: False  # whether create a public URL
-username: test # user name for web client
-password: test2  # password for web client
+  combo_service:
+    service_ip: '0.0.0.0'
+    service_port: 17181 

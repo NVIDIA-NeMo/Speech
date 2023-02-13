@@ -42,7 +42,6 @@ API_ALLOWED_KEYS = set(
         "top_k",
         "top_p",
         "neighbors",
-        "weights",
         "repetition_penalty",
         "min_tokens_to_generate",
     ]
@@ -157,14 +156,6 @@ class MegatronGenerate(Resource):
             if neighbors < 0:
                 return "num of neighbors must be an integer no less than 0"
 
-        weights = None
-        if "weights" in request.get_json():
-            weights = request.get_json()["weights"]
-            if not (type(weights) == int or type(weights) == float):
-                return "weights must be a positive number less than or equal to 1.0"
-            if not (0.0 <= weights <= 1.0):
-                return "weights must be a positive number less than or equal to 1.0"
-
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
             extra = {}
@@ -178,8 +169,6 @@ class MegatronGenerate(Resource):
                 ):
                     if neighbors is not None:
                         self.inference_strategy.update_neighbors(neighbors)
-                    if weights is not None:
-                        self.inference_strategy.update_weights([weights, 1 - weights])
 
             output = generate(
                 self.model,

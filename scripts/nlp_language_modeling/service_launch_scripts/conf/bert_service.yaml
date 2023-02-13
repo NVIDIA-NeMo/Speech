@@ -1,0 +1,13 @@
+name: default  # the name of the service
+tokenizer:
+  library: 'megatron'
+  type: 'GPT2BPETokenizer'
+  model: null
+  vocab_file: null
+  merge_file: null 
+  delimiter: null # only used for tabular tokenizer
+sentence_bert:   # define a few sentence bert models for different retrieval services to use
+  devices: '0,1,2'
+  sentence_bert: 'all-mpnet-base-v2' 
+  sentence_bert_batch: 4
+  port: 17190  # service port number

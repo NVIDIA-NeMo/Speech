@@ -1,0 +1,24 @@
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 16 # 16, 32, or bf16
+
+# tensor_model_parallel_size: 1
+# pipeline_model_parallel_size: 1
+# pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
+retro_model_file: null  # RETRO nemo file path
+
+
+########### Faiss service parameters ########
+retrieval_service:
+  strategy: RetroModelTextGenerationStrategy  # choose customized inference strategy 
+  neighbors: 4
+  frequent_query: False  # for the current token generation, frequently update the retrieval context. If false, update it every 64 tokens 
+  pad_tokens: True # pad the tokens at the beginning to make it minimum of 64 tokens for retrieving at least once
+  store_retrieved: False # whether store the retrieved documents, so it can be checked
+  combo_service:
+    service_ip: '0.0.0.0'
+    service_port: 17181 
+port: 5555 # the port number for the inference server

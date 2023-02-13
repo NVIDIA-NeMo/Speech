@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,6 @@ import base64
 import pickle
 import threading
 import time
-from collections import OrderedDict
 from typing import List, Union
 
 import torch
@@ -26,14 +25,7 @@ from sentence_transformers import SentenceTransformer
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
-PORT_NUM_START = 17190
-# a global dict, map bert name to port number
-BERT_MODEL_MAP = OrderedDict()
-
-
-def get_available_port_num():
-    output = PORT_NUM_START
-    return output + len(BERT_MODEL_MAP)
+BERT_RETRIEVER_PORT_NUM = 17190
 
 
 class SentenceBertResource(Resource):
@@ -108,8 +100,9 @@ class SentenceBertServer(object):
             resource_class_args=[self.bert_model, self.tokenizer, self.pool, self.sentence_bert_batch,],
         )
 
-    def run(self, url):
-        port = BERT_MODEL_MAP[self.name]
+    def run(self, url, port=None):
+        if port is None:
+            port = BERT_RETRIEVER_PORT_NUM
         threading.Thread(target=lambda: self.app.run(host=url, threaded=True, port=port)).start()
 
 
@@ -119,6 +112,7 @@ def start_sentence_bert_server(
     tokenizer: TokenizerSpec,
     sentence_bert: str = 'all-mpnet-base-v2',
     sentence_bert_batch: int = 4,
+    port: int = None,
 ):
     """
     Start the sentence bert server method.
@@ -126,20 +120,7 @@ def start_sentence_bert_server(
     Doesn't support multiple nodes yet.
     """
     # register the bert model port number
-    port_num = get_available_port_num()
-    BERT_MODEL_MAP[name] = port_num
-
-    if torch.distributed.is_initialized():
-        # doesn't handle multiple nodes yet.
-        # need to set ip address properly for it to work in multiple nodes environment
-        if torch.distributed.get_rank() == 0:
-            server = SentenceBertServer(name, devices, tokenizer, sentence_bert, sentence_bert_batch,)
-            server.run("0.0.0.0")
-            # sleep to make sure the sentence bert server is full started.
-            time.sleep(2)
-        torch.distributed.barrier()
-    else:
-        server = SentenceBertServer(name, devices, tokenizer, sentence_bert, sentence_bert_batch,)
-        server.run("0.0.0.0")
-        # sleep to make sure the sentence bert server is full started.
-        time.sleep(2)
+    server = SentenceBertServer(name, devices, tokenizer, sentence_bert, sentence_bert_batch,)
+    server.run("0.0.0.0", port=port)
+    # sleep to make sure the sentence bert server is full started.
+    time.sleep(2)

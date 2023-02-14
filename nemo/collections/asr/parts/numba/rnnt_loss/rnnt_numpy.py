@@ -50,9 +50,9 @@ def check_dim(var, dim, name):
 
 def certify_inputs(log_probs, labels, lengths, label_lengths):
     # check_type(log_probs, torch.float32, "log_probs")
-    check_type(labels, torch.int32, "labels")
-    check_type(label_lengths, torch.int32, "label_lengths")
-    check_type(lengths, torch.int32, "lengths")
+    check_type(labels, torch.int64, "labels")
+    check_type(label_lengths, torch.int64, "label_lengths")
+    check_type(lengths, torch.int64, "lengths")
     check_contiguous(log_probs, "log_probs")
     check_contiguous(labels, "labels")
     check_contiguous(label_lengths, "label_lengths")
@@ -357,8 +357,8 @@ if __name__ == '__main__':
     torch.manual_seed(0)
 
     acts = torch.randn(1, 2, 5, 3)
-    labels = torch.tensor([[0, 2, 1, 2]], dtype=torch.int32)
-    act_lens = torch.tensor([2], dtype=torch.int32)
-    label_lens = torch.tensor([len(labels[0])], dtype=torch.int32)
+    labels = torch.tensor([[0, 2, 1, 2]], dtype=torch.int64)
+    act_lens = torch.tensor([2], dtype=torch.int64)
+    label_lens = torch.tensor([len(labels[0])], dtype=torch.int64)
 
     loss_val = loss(acts, labels, act_lens, label_lens)

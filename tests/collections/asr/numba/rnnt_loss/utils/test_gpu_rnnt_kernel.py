@@ -67,14 +67,14 @@ class TestRNNTCUDAKernels:
             stream = cuda.default_stream()
 
         x_c = torch.tensor(x, device=device, dtype=torch.float32)
-        labels_c = torch.tensor(labels, device=device, dtype=torch.int32)
+        labels_c = torch.tensor(labels, device=device, dtype=torch.int64)
 
         # Allocate workspace memory
         denom = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         alphas = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         llForward = torch.zeros(B, device=device, dtype=x_c.dtype)
-        input_lengths = torch.tensor([T], dtype=torch.int32, device=device)
-        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int32, device=device)
+        input_lengths = torch.tensor([T], dtype=torch.int64, device=device)
+        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int64, device=device)
 
         # certify input data
         certify_inputs(x_c, labels_c, input_lengths, label_lengths)
@@ -135,14 +135,14 @@ class TestRNNTCUDAKernels:
             stream = cuda.default_stream()
 
         x_c = torch.tensor(x, device=device, dtype=torch.float32)
-        labels_c = torch.tensor(labels, device=device, dtype=torch.int32)
+        labels_c = torch.tensor(labels, device=device, dtype=torch.int64)
 
         # Allocate workspace memory
         denom = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         betas = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         llBackward = torch.zeros(B, device=device, dtype=x_c.dtype)
-        input_lengths = torch.tensor([T], dtype=torch.int32, device=device)
-        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int32, device=device)
+        input_lengths = torch.tensor([T], dtype=torch.int64, device=device)
+        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int64, device=device)
 
         # certify input data
         certify_inputs(x_c, labels_c, input_lengths, label_lengths)
@@ -189,9 +189,9 @@ class TestRNNTCUDAKernels:
 
         # Numpy kernel
         x = random.randn(*original_shape)
-        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int32))  # [1, 10]
-        audio_len = torch.from_numpy(np.array([T], dtype=np.int32))
-        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int32))
+        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int64))  # [1, 10]
+        audio_len = torch.from_numpy(np.array([T], dtype=np.int64))
+        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int64))
         blank_idx = 0
 
         x_np = torch.from_numpy(x)
@@ -220,7 +220,7 @@ class TestRNNTCUDAKernels:
             stream = cuda.default_stream()
 
         x_c = torch.tensor(x, device=device, dtype=torch.float32)
-        labels_c = torch.tensor(labels, device=device, dtype=torch.int32)
+        labels_c = labels.clone().to(device=device, dtype=torch.int64)
 
         # Allocate workspace memory
         denom = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
@@ -228,8 +228,8 @@ class TestRNNTCUDAKernels:
         betas = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         llForward = torch.zeros(B, device=device, dtype=x_c.dtype)
         llBackward = torch.zeros(B, device=device, dtype=x_c.dtype)
-        input_lengths = torch.tensor([T], dtype=torch.int32, device=device)
-        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int32, device=device)
+        input_lengths = torch.tensor([T], dtype=torch.int64, device=device)
+        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int64, device=device)
 
         # certify input data
         certify_inputs(x_c, labels_c, input_lengths, label_lengths)
@@ -299,9 +299,9 @@ class TestRNNTCUDAKernels:
 
         # Numpy kernel
         x = random.randn(*original_shape)
-        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int32))  # [1, 10]
-        audio_len = torch.from_numpy(np.array([T], dtype=np.int32))
-        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int32))
+        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int64))  # [1, 10]
+        audio_len = torch.from_numpy(np.array([T], dtype=np.int64))
+        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int64))
         blank_idx = 0
 
         x_np = torch.from_numpy(x)
@@ -330,7 +330,7 @@ class TestRNNTCUDAKernels:
             stream = cuda.default_stream()
 
         x_c = torch.tensor(x, device=device, dtype=torch.float32)
-        labels_c = torch.tensor(labels, device=device, dtype=torch.int32)
+        labels_c = labels.clone().to(device=device, dtype=torch.int64)
 
         # Allocate workspace memory
         denom = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
@@ -338,8 +338,8 @@ class TestRNNTCUDAKernels:
         betas = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         llForward = torch.zeros(B, device=device, dtype=x_c.dtype)
         llBackward = torch.zeros(B, device=device, dtype=x_c.dtype)
-        input_lengths = torch.tensor([T], dtype=torch.int32, device=device)
-        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int32, device=device)
+        input_lengths = torch.tensor([T], dtype=torch.int64, device=device)
+        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int64, device=device)
 
         # certify input data
         certify_inputs(x_c, labels_c, input_lengths, label_lengths)
@@ -409,9 +409,9 @@ class TestRNNTCUDAKernels:
 
         # Numpy kernel
         x = random.randn(*original_shape)
-        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int32))  # [1, 10]
-        audio_len = torch.from_numpy(np.array([T], dtype=np.int32))
-        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int32))
+        labels = torch.from_numpy(np.array([[1, 1, 1, 2, 2, 2, 1, 2, 2, 1]], dtype=np.int64))  # [1, 10]
+        audio_len = torch.from_numpy(np.array([T], dtype=np.int64))
+        label_len = torch.from_numpy(np.array([U - 1], dtype=np.int64))
         blank_idx = 0
 
         x_np = torch.from_numpy(x)
@@ -440,7 +440,7 @@ class TestRNNTCUDAKernels:
             stream = cuda.default_stream()
 
         x_c = torch.tensor(x, device=device, dtype=torch.float32)
-        labels_c = torch.tensor(labels, device=device, dtype=torch.int32)
+        labels_c = labels.clone().to(device=device, dtype=torch.int64)
 
         # Allocate workspace memory
         denom = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
@@ -448,8 +448,8 @@ class TestRNNTCUDAKernels:
         betas = torch.zeros(B * T * U, device=device, dtype=x_c.dtype)
         llForward = torch.zeros(B, device=device, dtype=x_c.dtype)
         llBackward = torch.zeros(B, device=device, dtype=x_c.dtype)
-        input_lengths = torch.tensor([T], dtype=torch.int32, device=device)
-        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int32, device=device)
+        input_lengths = torch.tensor([T], dtype=torch.int64, device=device)
+        label_lengths = torch.tensor([len(labels[0])], dtype=torch.int64, device=device)
 
         # certify input data
         certify_inputs(x_c, labels_c, input_lengths, label_lengths)

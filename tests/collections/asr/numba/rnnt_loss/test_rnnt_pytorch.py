@@ -42,9 +42,9 @@ def wrap_and_call(fn, acts, labels, device):
 
     lengths = [acts.shape[1]] * acts.shape[0]
     label_lengths = [len(l) for l in labels]
-    labels = torch.IntTensor(labels)
-    lengths = torch.IntTensor(lengths)
-    label_lengths = torch.IntTensor(label_lengths)
+    labels = torch.LongTensor(labels)
+    lengths = torch.LongTensor(lengths)
+    label_lengths = torch.LongTensor(label_lengths)
     if 'cuda' in device:
         labels = labels.cuda()
         lengths = lengths.cuda()
@@ -422,13 +422,13 @@ class TestRNNTLossPytorch:
         # run 1
         acts1 = torch.matmul(mid1, base_layer)  # [1, 4, 3, 5]
         pt_cost1, _ = wrap_and_call(fn_pt, acts1, labels1, device)
-        pt_grads1 = base_layer.grad.clone().cpu().numpy()
+        pt_grads1 = base_layer.grad.detach().cpu().numpy()
 
         zero_grad()
 
         acts1 = torch.matmul(mid1, base_layer)  # [1, 4, 3, 5]
         np_cost1, _ = wrap_and_call(fn_np, acts1, labels1, device)
-        np_grads1 = base_layer.grad.clone().cpu().numpy()
+        np_grads1 = base_layer.grad.detach().cpu().numpy()
 
         zero_grad()
 

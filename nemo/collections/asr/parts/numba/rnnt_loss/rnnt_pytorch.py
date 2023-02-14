@@ -371,9 +371,9 @@ def check_dim(var, dim, name):
 
 def certify_inputs(log_probs, labels, lengths, label_lengths):
     # check_type(log_probs, torch.float32, "log_probs")
-    check_type(labels, torch.int32, "labels")
-    check_type(label_lengths, torch.int32, "label_lengths")
-    check_type(lengths, torch.int32, "lengths")
+    check_type(labels, torch.int64, "labels")
+    check_type(label_lengths, torch.int64, "label_lengths")
+    check_type(lengths, torch.int64, "lengths")
     check_contiguous(log_probs, "log_probs")
     check_contiguous(labels, "labels")
     check_contiguous(label_lengths, "label_lengths")

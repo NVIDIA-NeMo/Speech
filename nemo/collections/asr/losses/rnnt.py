@@ -322,10 +322,10 @@ class RNNTLoss(Loss):
 
     @typecheck()
     def forward(self, log_probs, targets, input_lengths, target_lengths):
-        # Cast to int 32
-        targets = targets.int()
-        input_lengths = input_lengths.int()
-        target_lengths = target_lengths.int()
+        # Cast to int 64
+        targets = targets.long()
+        input_lengths = input_lengths.long()
+        target_lengths = target_lengths.long()
 
         max_logit_len = input_lengths.max()
         max_targets_len = target_lengths.max()

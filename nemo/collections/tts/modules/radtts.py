@@ -624,7 +624,7 @@ class RadTTSModule(NeuralModule, Exportable):
             dur = self.dur_pred_layer.infer(txt_enc, spk_vec_text, lens=in_lens)
             dur = pad_dur(dur, txt_enc)
             dur = dur[:, 0]
-            dur = dur.clamp(1, token_duration_max)
+            dur = dur.clamp(0, token_duration_max)
 
         if pace is None:
             pace = txt_enc.new_ones((batch_size, txt_len_pad_removed))

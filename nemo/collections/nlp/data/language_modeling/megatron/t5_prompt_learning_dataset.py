@@ -183,13 +183,12 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
             # just remove that field from the template, leaving the space blank
             if field == answer_field or field not in doc.keys():
                 input_example = input_example.replace('{' + field + '}', "")
-                input_example = input_example.strip()
 
             else:
                 field_text = doc[field]
                 input_example = input_example.replace('{' + field + '}', field_text)
 
-        return input_example
+        return input_example.strip(" ")
 
     def collate_fn(self, batch):
         """ Prepares enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids for global batch """

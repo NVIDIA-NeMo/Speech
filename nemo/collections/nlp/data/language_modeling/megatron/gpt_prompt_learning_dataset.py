@@ -255,9 +255,8 @@ class GPTPromptLearningDataset(Dataset):
             # just remove that field from the template, leaving the space blank
             else:
                 input_example = input_example.replace('{' + field + '}', "")
-                input_example = input_example.strip()
 
-        return input_example
+        return input_example.strip(" ")
 
     def _insert_virtual_token_placeholders(self, input_example, virtual_token_splits):
         """ Insert the correct number of pseudo tokens at the <|VIRTUAL_PROMPT_n|> markers """

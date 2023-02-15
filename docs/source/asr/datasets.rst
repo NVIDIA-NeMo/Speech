@@ -373,3 +373,112 @@ All instances of data from `bucket4` will still be trained with a batch size of 
 If `bucketing_batch_size` is not specified, all datasets will be passed with the same fixed batch size as specified by the `batch_size` parameter.
 
 It is recommended to set bucketing strategies to `fully_randomized` during multi-GPU training to prevent possible dataset bias during training.
+
+
+Datasets on AIStore
+-------------------
+
+`AIStore <https://aiatscale.org>`_ is an open-source lightweight object storage system focused on large-scale deep learning.
+AIStore is aimed to scale linearly with each added storage node, can be deployed on any Linux machine and can provide a unified namespace across multiple remote backends, such as Amazon S3, Google Cloud, and Microsoft Azure.
+More details are provided in the `documentation <https://aiatscale.org/docs>`_ and the `repository <https://github.com/NVIDIA/aistore>`_ of the AIStore project.
+
+NeMo currently supports datasets from an AIStore bucket provider under ``ais://`` namespace.
+
+AIStore Setup
+~~~~~~~~~~~~~
+
+NeMo is currently relying on the AIStore (AIS) command-line interface (CLI) to handle the supported datasets.
+The CLI is available in current NeMo Docker containers.
+If necessary, the CLI can be configured using the instructions provided in `AIStore CLI <https://aiatscale.org/docs/cli>`_ documentation.
+
+To start using the AIS CLI to access data on an AIS cluster, an endpoint needs to be configured.
+The endpoint is configured by setting ``AIS_ENDPOINT`` environment variable before using the CLI
+
+.. code::
+
+    export AIS_ENDPOINT=http://hostname:port
+    ais --help
+
+In the above, ``hostname:port`` denotes the address of an AIS gateway.
+For example, the address could be ``localhost:51080`` if testing using a local `minimal production-ready standalone Docker container <https://github.com/NVIDIA/aistore/blob/master/deploy/prod/docker/single/README.md>`_.
+
+Dataset Setup
+~~~~~~~~~~~~~
+
+Currently, both tarred and non-tarred datasets are supported.
+For any dataset, the corresponding manifest file is cached locally and processed as a regular manifest file.
+For non-tarred datasets, the audio data is also cached locally.
+For tarred datasets, shards from the AIS cluster are used by piping ``ais get`` to WebDataset.
+
+Tarred Dataset from AIS
+^^^^^^^^^^^^^^^^^^^^^^^
+
+A tarred dataset can be easily used as described in the :ref:`Tarred Datasets` section by providing paths to manifests on an AIS cluster.
+For example, a tarred dataset from an AIS cluster can be configured as
+
+.. code::
+
+  manifest_filepath='ais://bucket/tarred_audio_manifest.json'
+  tarred_audio_filepaths='ais://bucket/shard_{1..64}.tar'
+
+:ref:`Bucketing Datasets` are configured in a similar way by providing paths on an AIS cluster.
+
+Non-tarred Dataset from AIS
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A non-tarred dataset can be easly used by providing a manifest file path on an AIS cluster
+
+.. code::
+
+  manifest_filepath='ais://bucket/dataset_manifest.json'
+
+Note that it is assumed that the manifest file path contains audio file paths relative to the manifest locations.
+For example the manifest file may have lines in the following format
+
+.. code-block:: json
+
+  {"audio_filepath": "path/to/audio.wav", "text": "transcription of the uterance", "duration": 23.147}
+
+The corresponding audio file would be downloaded from ``ais://bucket/path/to/audio.wav``.
+
+Cache configuration
+^^^^^^^^^^^^^^^^^^^
+
+Manifests and audio files from non-tarred datasets will be cached locally.
+Location of the cache can be configured by setting two environment variables
+
+- ``NEMO_DATA_STORE_CACHE_DIR``: path to a location which can be used to cache the data
+- ``NEMO_DATA_STORE_CACHE_SHARED``: flag to denote whether the cache location is shared between the compute nodes
+
+In a multi-node environment, the cache location may or may be not shared between the nodes.
+This can be configured by setting ``NEMO_DATA_STORE_CACHE_SHARED`` to ``1`` when the location is shared between the nodes or to ``0`` when each node has a separate cache.
+
+When a globally shared cache is available, the data should be cached only once from the global rank zero node.
+When a node-specific cache is used, the data should be cached only once by each local rank zero node.
+To control this behavior using `torch.distributed.barrier`, instantiation of the corresponding dataloader needs to be deferred ``ModelPT::setup``, to ensure a distributed environment has been initialized.
+This can be achieved by setting ``defer_setup`` as
+
+.. code:: shell
+
+  ++model.train_ds.defer_setup=true
+  ++model.validation_ds.defer_setup=true
+  ++model.test_ds.defer_setup=true
+
+
+Complete Example
+^^^^^^^^^^^^^^^^
+
+An example using an AIS cluster at ``hostname:port`` with a tarred dataset for training, a non-tarred dataset for validation and node-specific caching is given below
+
+.. code:: shell
+
+  export AIS_ENDPOINT=http://hostname:port \
+  && export NEMO_DATA_STORE_CACHE_DIR=/tmp \
+  && export NEMO_DATA_STORE_CACHE_SHARED=0 \
+  python speech_to_text_bpe.py \
+  ...
+  model.train_ds.manifest_filepath=ais://train_bucket/tarred_audio_manifest.json \
+  model.train_ds.tarred_audio_filepaths=ais://train_bucket/audio__OP_0..511_CL_.tar \
+  ++model.train_ds.defer_setup=true \
+  mode.validation_ds.manifest_filepath=ais://validation_bucket/validation_manifest.json \
+  ++model.validation_ds.defer_setup=true

@@ -98,6 +98,8 @@ class TestExportable:
             with torch.cuda.amp.autocast(enabled=True, cache_enabled=False, dtype=torch.float16):
                 input_example1 = model.input_module.input_example(max_batch=13, max_dim=777)
                 input_example2 = model.input_module.input_example(max_batch=19, max_dim=999)
+                input_example1[0]["pace"] = torch.clamp(input_example1[0]["pace"] - 0.3, min=0.1)
+                input_example2[0]["pace"] = torch.clamp(input_example2[0]["pace"] - 0.3, min=0.1)
                 model.export(
                     output=filename,
                     input_example=input_example1,

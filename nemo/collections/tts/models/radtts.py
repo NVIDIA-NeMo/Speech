@@ -87,7 +87,7 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         self.cfg = cfg
         self.log_train_images = False
         self.export_config = {
-            "emb_range": (32, 64),
+            "emb_range": (0, self.model.embedding.num_embeddings),
             "enable_volume": True,
             "enable_ragged_batches": False,
             "num_speakers": self.model_config.n_speakers,

@@ -150,7 +150,7 @@ if __name__ == "__main__":
     print("Splitting audio files into segments...")
 
     if os.path.isdir(args.alignment):
-        alignment_files = glob(f"{args.alignment}/*.txt")
+        alignment_files = glob(f"{args.alignment}/*_segments.txt")
     else:
         alignment_files = [args.alignment]
 

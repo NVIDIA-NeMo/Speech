@@ -290,7 +290,6 @@ def write_output(
             if isinstance(segment, list):
                 for j, x in enumerate(segment):
                     start, end, score = x
-                    score = -0.2
                     outfile.write(
                         f"{start} {end} {score} | {text[i][j]} | {text_no_preprocessing[i][j]} | {text_normalized[i][j]}\n"
                     )
@@ -311,7 +310,7 @@ def write_labels_for_audacity(
     segments: Segments include start, end and alignment score
     text_no_preprocessing: Reference txt without any pre-processing
     """
-    # AUdacity uses tab to separate each field (start end text)
+    # Audacity uses tab to separate each field (start end text)
     TAB_CHAR = "	"
 
     # Uses char-wise alignments to get utterance-wise alignments and writes them into the given file

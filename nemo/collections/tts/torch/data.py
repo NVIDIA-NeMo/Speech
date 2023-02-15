@@ -203,7 +203,9 @@ class TTSDataset(Dataset):
         if self.text_normalizer is None:
             self.text_normalizer_call = None
         elif not PYNINI_AVAILABLE:
-            raise ImportError("pynini is not installed, please install via nemo_text_processing/install_pynini.sh")
+            raise ImportError(
+                "`nemo_text_processing` is not installed, see https://github.com/NVIDIA/NeMo-text-processing for details"
+            )
         else:
             self.text_normalizer_call = (
                 self.text_normalizer.normalize

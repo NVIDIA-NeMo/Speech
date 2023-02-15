@@ -57,7 +57,7 @@ model:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo_text_processing.g2p.modules.IPAG2P
+      _target_: nemo.collections.tts.g2p.modules.IPAG2P
       locale: es-ES
       phoneme_dict: ${phoneme_dict_path}
       phoneme_probability: 0.5

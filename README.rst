@@ -243,11 +243,7 @@ Transformer Engine enables FP8 training on NVIDIA Hopper GPUs.
 
 NeMo Text Processing
 ~~~~~~~~~~~~~~~~~~~~
-NeMo Text Processing, specifically (Inverse) Text Normalization, requires `Pynini <https://pypi.org/project/pynini/>`_ to be installed.
-
-.. code-block:: bash
-
-    bash NeMo/nemo_text_processing/install_pynini.sh
+NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separate repository `https://github.com/NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_.
 
 Docker containers:
 ~~~~~~~~~~~~~~~~~~

@@ -19,17 +19,16 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from typing import List, Optional
 
-from nemo_text_processing.g2p.data.data_utils import (
-    any_locale_text_preprocessing,
-    chinese_text_preprocessing,
-    english_text_preprocessing,
-    spanish_text_preprocessing,
-)
-
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
     get_grapheme_character_set,
     get_ipa_punctuation_list,
     validate_locale,
+)
+from nemo.collections.tts.g2p.data.data_utils import (
+    any_locale_text_preprocessing,
+    chinese_text_preprocessing,
+    english_text_preprocessing,
+    spanish_text_preprocessing,
 )
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
@@ -605,7 +604,7 @@ class IPATokenizer(BaseTokenizer):
                 of graphemes, or a mixture of both. For example, `['ˈ', 's', 'i', ' ', '#O', '#O', '#V']`, which is the
                 G2P's output of the text "see OOV", where '#' is prepended to each grapheme in order to distinguish
                 graphemes from phonemes if there are overlaps in between. The prefix '#' can be customized in
-                `nemo_text_processing.g2p.modules.IPAG2P.grapheme_prefix`.
+                `nemo.collections.tts.g2p.modules.IPAG2P.grapheme_prefix`.
             raw_text (str): the original text after calling `self.text_preprocessing_func`. It is optional. It is only
                 used to deliver a warning message that some graphemes from the original text are skipped.
 
@@ -732,7 +731,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
 
     def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
         """
-        Encodes text that has already been run through G2P.
+        Encodes text that has already been run through G2Pr.
         Called for encoding to tokens after text preprocessing and G2P.
 
         Args:

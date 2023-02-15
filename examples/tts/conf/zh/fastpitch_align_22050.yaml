@@ -28,7 +28,6 @@ lowfreq: 0
 highfreq: null
 window: hann
 
-whitelist_path: "nemo_text_processing/text_normalization/zh/data/whitelist/default.tsv"
 phoneme_dict_path: "scripts/tts_dataset_files/zh/pinyin_dict_nv_22.10.txt"
 
 model:
@@ -59,7 +58,6 @@ model:
     _target_: nemo_text_processing.text_normalization.normalize.Normalizer
     lang: zh
     input_case: cased
-    whitelist: ${whitelist_path}
 
   text_normalizer_call_kwargs:
     verbose: false
@@ -72,7 +70,7 @@ model:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo_text_processing.g2p.modules.ChineseG2p
+      _target_: nemo.collections.tts.g2p.modules.ChineseG2p
       phoneme_dict: ${phoneme_dict_path}
       word_segmenter: jieba # Only jieba is supported now.
 

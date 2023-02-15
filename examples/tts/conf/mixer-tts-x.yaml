@@ -30,8 +30,6 @@ window: hann
 
 lm_model: albert
 
-whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
-
 model:
   bin_loss_start_ratio: 0.2
   bin_loss_warmup_epochs: 100
@@ -63,7 +61,6 @@ model:
     _target_: nemo_text_processing.text_normalization.normalize.Normalizer
     lang: en
     input_case: cased
-    whitelist: ${whitelist_path}
 
   text_normalizer_call_kwargs:
     verbose: false

@@ -8,8 +8,6 @@ export_dir: ???
 sup_data_path: ???
 sup_data_types: ["log_mel", "align_prior_matrix", "pitch", "voiced_mask", "p_voiced", "energy"]
 
-whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/tts.tsv"
-
 # these frame-wise values depend on pitch_fmin and pitch_fmax, you can get values
 # by running `scripts/dataset_processing/tts/extract_sup_data.py`
 pitch_mean: ???  # e.g. 212.35873413085938 for LJSpeech
@@ -47,7 +45,6 @@ model:
       _target_: nemo_text_processing.text_normalization.normalize.Normalizer
       lang: en
       input_case: cased
-      whitelist: ${whitelist_path}
 
   text_normalizer_call_kwargs:
       verbose: false
@@ -103,7 +100,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
+          _target_: "nemo.collections.tts.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5
@@ -147,7 +144,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
+          _target_: "nemo.collections.tts.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5

@@ -96,7 +96,6 @@ Text normalization (TN) converts text from written form into its verbalized form
       _target_: nemo_text_processing.text_normalization.normalize.Normalizer
       lang: en
       input_case: cased
-      whitelist: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
     text_normalizer_call_kwargs:
       verbose: false
@@ -118,7 +117,7 @@ Tokenization converts input text string to a list of integer tokens. It may pad 
       apostrophe: true
       pad_with_space: true
       g2p:
-        _target_: nemo_text_processing.g2p.modules.EnglishG2p
+        _target_: nemo.collections.tts.g2p.modules.EnglishG2p
         phoneme_dict: ${phoneme_dict_path}
         heteronyms: ${heteronyms_path}
       phoneme_probability: 0.5

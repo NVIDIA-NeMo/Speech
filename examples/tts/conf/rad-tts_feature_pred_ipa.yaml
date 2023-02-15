@@ -29,7 +29,6 @@ window: "hann"
 
 phoneme_dict_path: "scripts/tts_dataset_files/ipa_cmudict-0.7b_nv22.10.txt"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
-whitelist_path: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 mapping_file_path: ""
 
 model:
@@ -47,7 +46,6 @@ model:
       _target_: nemo_text_processing.text_normalization.normalize.Normalizer
       lang: en
       input_case: cased
-      whitelist: ${whitelist_path}
 
   text_normalizer_call_kwargs:
       verbose: false
@@ -60,7 +58,7 @@ model:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo_text_processing.g2p.modules.IPAG2P
+      _target_: nemo.collections.tts.g2p.modules.IPAG2P
       phoneme_dict: ${phoneme_dict_path}
       heteronyms: ${heteronyms_path}
       phoneme_probability: 0.5
@@ -104,7 +102,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
+          _target_: "nemo.collections.tts.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5
@@ -148,7 +146,7 @@ model:
         add_blank_at: null
         pad_with_space: True
         g2p:
-          _target_: "nemo_text_processing.g2p.modules.EnglishG2p"
+          _target_: "nemo.collections.tts.g2p.modules.EnglishG2p"
           phoneme_dict: ${phoneme_dict_path}
           heteronyms: ${heteronyms_path}
           phoneme_probability: 0.5

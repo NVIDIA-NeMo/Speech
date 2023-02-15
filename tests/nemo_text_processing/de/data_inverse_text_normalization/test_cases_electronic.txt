@@ -1,9 +1,0 @@
-c d f at a b c punkt e d u~cdf@abc.edu
-a b c at g mail punkt a b c~abc@gmail.abc
-a b c at a b c punkt com~abc@abc.com
-a s d f eins zwei drei at a b c punkt com~asdf123@abc.com
-a eins b zwei at a b c punkt com~a1b2@abc.com
-a b drei bindestrich s d d bindestrich drei at g mail punkt com~ab3-sdd-3@gmail.com
-h t t p s doppelpunkt slash slash w w w punkt a b c punkt com~https://www.abc.com
-w w w punkt a b c punkt com~www.abc.com
-h t t p s doppelpunkt slash slash w w w punkt a b c punkt com slash a b fragezeichen gleichheitszeichen drei bindestrich slash a b s slash eins~https://www.abc.com/ab?=3-/abs/1

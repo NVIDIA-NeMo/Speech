@@ -1,4 +1,0 @@
-1-2=5~one minus two equals five
-1- 2 = 5~one minus two equals five
-y=x +1~y equals x plus one
-x +1 = y~x plus one equals y

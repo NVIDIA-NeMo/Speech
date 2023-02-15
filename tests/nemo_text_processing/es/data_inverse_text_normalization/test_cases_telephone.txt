@@ -1,6 +1,0 @@
-uno dos tres uno dos tres cinco seis siete ocho~123-123-5678
-uno veintitrés uno veintitrés cincuenta y seis setenta y ocho~123-123-5678
-uno dos tres cuatro cinco seis siete ocho nueve~123-456-789
-uno veintitrés cuatro cincuenta y seis siete ochenta y nueve~123-456-789
-uno dos tres cuatro cinco seis siete ocho~1234-5678
-doce treinta y cuatro cincuenta y seis setenta y ocho~1234-5678

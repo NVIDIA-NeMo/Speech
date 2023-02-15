@@ -1,8 +1,0 @@
-docteur~Dʳ
-docteures~Dʳᵉˢ
-monsieur~M.
-messieurs~MM.
-madame~Mᵐᵉ
-mesdames~Mᵐᵉˢ
-mademoiselle~Mˡˡᵉ
-mademoiselles~Mˡˡᵉˢ

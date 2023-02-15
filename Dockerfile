@@ -54,10 +54,6 @@ WORKDIR /tmp/nemo
 COPY requirements .
 RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
 
-# install pynini
-COPY nemo_text_processing/install_pynini.sh /tmp/nemo/
-RUN /bin/bash /tmp/nemo/install_pynini.sh
-
 # install k2, skip if installation fails
 COPY scripts /tmp/nemo/scripts/
 RUN /bin/bash /tmp/nemo/scripts/speech_recognition/k2/setup.sh || exit 0
@@ -81,8 +77,7 @@ RUN --mount=from=nemo-src,target=/tmp/nemo cd /tmp/nemo && pip install ".[all]"
 
 # Check install
 RUN python -c "import nemo.collections.nlp as nemo_nlp" && \
-    python -c "import nemo.collections.tts as nemo_tts" && \
-    python -c "import nemo_text_processing.text_normalization as text_normalization"
+    python -c "import nemo.collections.tts as nemo_tts"
 
 # TODO: Update to newer numba 0.56.0RC1 for 22.03 container if possible
 # install pinned numba version

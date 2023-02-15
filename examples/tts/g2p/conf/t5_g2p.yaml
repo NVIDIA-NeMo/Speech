@@ -1,0 +1,92 @@
+name: T5G2P
+
+# Dataset info
+train_manifest: ???
+validation_manifest: ???
+test_manifest: null
+do_training: True
+do_testing: False
+pretrained_model: null # path to .nemo file or model name from list_available_models()
+
+model:
+  model_name: "google/byt5-small" # One of: google/byt5-small/base/large/xl or t5-small/base/large/3b/11b
+  max_source_len: 256
+  max_target_len: 512
+  do_lower: false
+
+  train_ds:
+    manifest_filepath: ${train_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.t5_g2p.T5G2PDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: true
+      batch_size: 20
+      num_workers: 4
+
+  validation_ds:
+    manifest_filepath: ${validation_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.t5_g2p.T5G2PDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 20
+      num_workers: 4
+
+  test_ds:
+    manifest_filepath: ${test_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.t5_g2p.T5G2PDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 20
+      num_workers: 4
+
+  optim:
+    name: adamw
+    lr: 2e-4
+    weight_decay: 0.01
+    # scheduler setup
+    sched:
+      name: WarmupAnnealing
+
+      # pytorch lightning args
+      monitor: val_token_precision
+      reduce_on_plateau: false
+
+      # scheduler config override
+      warmup_steps: null
+      warmup_ratio: 0.1
+      last_epoch: -1
+
+trainer:
+  devices: 1 # number of gpus
+  max_epochs: 5
+  num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
+  accumulate_grad_batches: 1
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: False  # Provided by exp_manager
+  log_every_n_steps: 200
+  check_val_every_n_epoch: 1
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    save_top_k: 1
+    monitor: "val_per"
+    mode: "min"
+    save_best_model: true
+

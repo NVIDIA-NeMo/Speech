@@ -111,7 +111,9 @@ class DuplexDecoderModel(NLPModel):
             self.cg_normalizer = NormalizerWithAudio(input_case=input_case, lang=self.lang)
         else:
             self.cg_normalizer = None
-            logging.warning("`pynini` not installed, please install via nemo_text_processing/pynini_install.sh")
+            logging.warning(
+                "`nemo_text_processing` is not installed, see https://github.com/NVIDIA/NeMo-text-processing for details"
+            )
 
     @typecheck()
     def forward(self, input_ids, decoder_input_ids, attention_mask, labels):

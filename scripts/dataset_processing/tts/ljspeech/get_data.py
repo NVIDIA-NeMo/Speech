@@ -27,7 +27,7 @@ from tqdm import tqdm
 def get_args():
     parser = argparse.ArgumentParser(description='Download LJSpeech and create manifests with predefined split')
     parser.add_argument("--data-root", required=True, type=Path)
-    parser.add_argument('--whitelist-path', type=str, default=None)
+    parser.add_argument('--whitelist-path', type=str, default="lj_speech.tsv")
 
     args = parser.parse_args()
     return args
@@ -56,7 +56,7 @@ def __extract_file(filepath, data_dir):
 def __process_data(data_root, whitelist_path):
     if whitelist_path is None:
         wget.download(
-            "https://raw.githubusercontent.com/NVIDIA/NeMo/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
+            "https://raw.githubusercontent.com/NVIDIA/NeMo/main/scripts/tts_dataset_files/en/whitelist_lj_speech.tsv",
             out=str(data_root),
         )
         whitelist_path = data_root / "lj_speech.tsv"

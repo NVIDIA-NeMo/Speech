@@ -1,2 +1,3 @@
 ctc_segmentation==1.7.1
+nemo_text_processing==0.1.6rc0
 num2words

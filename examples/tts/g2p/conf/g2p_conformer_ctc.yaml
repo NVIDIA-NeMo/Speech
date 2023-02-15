@@ -1,0 +1,145 @@
+name: G2P-Conformer-CTC
+
+# Dataset info
+train_manifest: ???
+validation_manifest: ???
+test_manifest: null
+do_training: True
+do_testing: False
+pretrained_model: null # path to .nemo file or model name from list_available_models()
+
+model:
+  model_name: conformer_bpe
+  max_source_len: 512
+
+  tokenizer_grapheme:
+    dataset:
+      _target_: nemo.collections.common.tokenizers.char_tokenizer.CharTokenizer
+    unk_token: "҂" # in the data, T5 unk_token is still <unk>
+    vocab_file: null # will be filled during training
+    do_lower: true # whether to lower case graphemes
+    add_punctuation: true # whether to add punctuation symbols
+
+  embedding:
+    d_model: 300
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.embedding.d_model}
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
+    n_layers: 16
+    d_model: 176
+
+    # Sub-sampling params
+    subsampling: null # vggnet or striding, vggnet may give better results but needs more memory
+    subsampling_factor: 1 # must be power of 2
+    subsampling_conv_channels: -1 # set to -1 to make it equal to the d_model
+
+    # Feed forward module's params
+    ff_expansion_factor: 4
+
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 4 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [ -1, -1 ] # -1 means unlimited context
+    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    untie_biases: true # unties the biases of the TransformerXL layers
+    pos_emb_max_len: 5000
+
+    # Convolution module's params
+    conv_kernel_size: 31
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm
+
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+  decoder:
+    _target_: nemo.collections.asr.modules.ConvASRDecoder
+    feat_in: null # will be filled during training based on encoder model dim
+    num_classes: -1
+    vocabulary: null # will be filled during training
+
+  tokenizer:
+    dir: null  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
+    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+
+  train_ds:
+    manifest_filepath: ${train_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: true
+      batch_size: 32
+      num_workers: 4
+
+  validation_ds:
+    manifest_filepath: ${validation_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 32
+      num_workers: 4
+
+  test_ds:
+    manifest_filepath: ${test_manifest}
+    dataset:
+      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
+      grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 32
+      num_workers: 0
+
+  optim:
+    name: adamw
+    lr: 2.0
+    # optimizer arguments
+    betas: [ 0.9, 0.98 ]
+    # less necessity for weight_decay as we already have large augmentations with SpecAug
+    # you may need weight_decay for large models, stable AMP training, small datasets, or when lower augmentations are used
+    # weight decay of 0.0 with lr of 2.0 also works fine
+    weight_decay: 1e-3
+
+    # scheduler setup
+    sched:
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      # scheduler config override
+      warmup_steps: 10000
+      warmup_ratio: null
+      min_lr: 1e-6
+
+trainer:
+  devices: 1 # number of gpus
+  max_epochs: 5
+  num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
+  accumulate_grad_batches: 1
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: False  # Provided by exp_manager
+  log_every_n_steps: 200
+  check_val_every_n_epoch: 1
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    save_top_k: 1
+    monitor: "val_per"
+    mode: "min"
+    save_best_model: true

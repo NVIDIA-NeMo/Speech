@@ -756,7 +756,7 @@ def sample_tts_input(
     sz = (max_batch * max_dim,) if export_config["enable_ragged_batches"] else (max_batch, max_dim)
     inp = torch.randint(*export_config["emb_range"], sz, device=device, dtype=torch.int64)
     pitch = torch.randn(sz, device=device, dtype=torch.float32) * 0.5
-    pace = torch.clamp(torch.randn(sz, device=device, dtype=torch.float32) * 0.1 + 1, min=0.01)
+    pace = torch.clamp(torch.randn(sz, device=device, dtype=torch.float32) * 0.1 + 1.0, min=0.2)
     inputs = {'text': inp, 'pitch': pitch, 'pace': pace}
     if export_config["enable_ragged_batches"]:
         batch_lengths = torch.zeros((max_batch + 1), device=device, dtype=torch.int32)

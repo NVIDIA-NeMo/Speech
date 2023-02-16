@@ -17,9 +17,11 @@ from typing import Any
 
 import pytest
 import pytorch_lightning as ptl
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.utils import config_utils
+from nemo.utils.exp_manager import EarlyStoppingParams
 
 
 @pytest.fixture()
@@ -121,6 +123,15 @@ class TestConfigUtils:
         ]
 
         result = config_utils.assert_dataclass_signature_match(ptl.Trainer, TrainerConfig, ignore_args=PTL_DEPRECATED)
+        signatures_match, cls_subset, dataclass_subset = result
+
+        assert signatures_match
+        assert cls_subset is None
+        assert dataclass_subset is None
+
+    @pytest.mark.unit
+    def test_early_stopping_config(self,):
+        result = config_utils.assert_dataclass_signature_match(EarlyStopping, EarlyStoppingParams)
         signatures_match, cls_subset, dataclass_subset = result
 
         assert signatures_match

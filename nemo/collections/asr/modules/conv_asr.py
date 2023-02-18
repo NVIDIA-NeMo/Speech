@@ -38,7 +38,7 @@ from nemo.collections.asr.parts.submodules.tdnn_attention import (
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import (
     AcousticEncodedRepresentation,
@@ -53,7 +53,7 @@ from nemo.utils import logging
 __all__ = ['ConvASRDecoder', 'ConvASREncoder', 'ConvASRDecoderClassification']
 
 
-class ConvASREncoder(NeuralModule, Exportable):
+class ConvASREncoder(NeuralModule, Exportable, AccessMixin):
     """
     Convolutional encoder for ASR models. With this class you can implement JasperNet and QuartzNet models.
 
@@ -135,7 +135,7 @@ class ConvASREncoder(NeuralModule, Exportable):
         residual_panes = []
         encoder_layers = []
         self.dense_residual = False
-        for lcfg in jasper:
+        for layer_idx, lcfg in enumerate(jasper):
             dense_res = []
             if lcfg.get('residual_dense', False):
                 residual_panes.append(feat_in)
@@ -179,6 +179,7 @@ class ConvASREncoder(NeuralModule, Exportable):
                     stride_last=stride_last,
                     future_context=future_context,
                     quantize=quantize,
+                    layer_idx=layer_idx,
                 )
             )
             feat_in = lcfg['filters']

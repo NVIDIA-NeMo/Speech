@@ -27,14 +27,14 @@ from nemo.collections.asr.parts.submodules.subsampling import ConvSubsampling, S
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import AcousticEncodedRepresentation, LengthsType, NeuralType, SpectrogramType
 
 __all__ = ['SqueezeformerEncoder']
 
 
-class SqueezeformerEncoder(NeuralModule, Exportable):
+class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
     """
     The encoder for ASR model of Squeezeformer.
     Based on this paper:
@@ -272,6 +272,9 @@ class SqueezeformerEncoder(NeuralModule, Exportable):
         self.set_max_audio_length(self.pos_emb_max_len)
         self.use_pad_mask = True
 
+        # will be set in self.forward() if defined in AccessMixin config
+        self.interctc_capture_at_layers = None
+
     def set_max_audio_length(self, max_audio_length):
         """ Sets maximum input length.
             Pre-calculates internal seq_range mask.
@@ -359,6 +362,20 @@ class SqueezeformerEncoder(NeuralModule, Exportable):
                 audio_signal = recovery_audio_signal + audio_signal  # learn just the residual
 
             audio_signal = layer(x=audio_signal, att_mask=att_mask, pos_emb=pos_emb, pad_mask=pad_mask)
+
+            # saving tensors if required for interctc loss
+            if self.is_access_enabled():
+                if self.interctc_capture_at_layers is None:
+                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+                if lth in self.interctc_capture_at_layers:
+                    lth_audio_signal = audio_signal
+                    if self.out_proj is not None:
+                        lth_audio_signal = self.out_proj(audio_signal)
+                    # shape is the same as the shape of audio_signal output, i.e. [B, D, T]
+                    self.register_accessible_tensor(
+                        name=f'interctc/layer_output_{lth}', tensor=torch.transpose(lth_audio_signal, 1, 2)
+                    )
+                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=length)
 
         if self.out_proj is not None:
             audio_signal = self.out_proj(audio_signal)

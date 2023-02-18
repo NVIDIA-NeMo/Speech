@@ -113,6 +113,10 @@ Mixins
     :show-inheritance:
     :members:
 
+.. autoclass:: nemo.collections.asr.parts.mixins.interctc_mixin.InterCTCMixin
+    :show-inheritance:
+    :members:
+
 Datasets
 --------
 

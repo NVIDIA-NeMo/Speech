@@ -141,6 +141,11 @@ model:
     dropout_emb: 0.0 # The dropout used for embeddings
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 
+    # set to non-zero to enable stochastic depth
+    stochastic_depth_drop_prob: 0.0
+    stochastic_depth_mode: linear  # linear or uniform
+    stochastic_depth_start_layer: 0
+
   decoder:
     _target_: nemo.collections.asr.modules.RNNTDecoder
     normalization_mode: null # Currently only null is supported for export.

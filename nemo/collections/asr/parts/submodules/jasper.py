@@ -669,6 +669,7 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
             5, K=25, S=2, FC=1, GC= 1 * (2^3) = 8 * 0.01 ms  (note that symmetric pad here uses 14 FC frames!)
             6, K=29, S=1, FC=1, GC= 1 * (2^3) = 8 * 0.01 ms ...
         quantize: Bool flag whether to quantize the Convolutional blocks.
+        layer_idx (int, optional): can be specified to allow layer output capture for InterCTC loss. Defaults to -1.
     """
 
     __constants__ = ["conv_mask", "separable", "residual_mode", "res", "mconv"]
@@ -701,6 +702,7 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
         stride_last=False,
         future_context: int = -1,
         quantize=False,
+        layer_idx: int = -1,  # only used for capturing tensors for interctc loss
     ):
         super(JasperBlock, self).__init__()
 
@@ -725,6 +727,9 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
         self.residual_mode = residual_mode
         self.se = se
         self.quantize = quantize
+        self.layer_idx = layer_idx
+        # will be set in self.forward() if defined in AccessMixin config
+        self.interctc_should_capture = None
 
         inplanes_loop = inplanes
         conv = nn.ModuleList()
@@ -1041,8 +1046,20 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
 
                 out = out.transpose(1, 2)  # (B, C, T)
 
-        if self.is_access_enabled() and self.access_cfg.get('save_encoder_tensors', False):
-            self.register_accessible_tensor(name='encoder', tensor=out)
+        if self.is_access_enabled():
+            # for adapters
+            if self.access_cfg.get('save_encoder_tensors', False):
+                self.register_accessible_tensor(name='encoder', tensor=out)
+            # for interctc - even though in some cases it's the same, we
+            # want to register separate key to be able to modify it later
+            # during interctc processing, if required
+            if self.interctc_should_capture is None:
+                capture_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+                self.interctc_should_capture = self.layer_idx in capture_layers
+            if self.interctc_should_capture:
+                # shape is the same as the shape of audio_signal output, i.e. [B, D, T]
+                self.register_accessible_tensor(name=f'interctc/layer_output_{self.layer_idx}', tensor=out)
+                self.register_accessible_tensor(name=f'interctc/layer_length_{self.layer_idx}', tensor=lens)
 
         if self.res is not None and self.dense_residual:
             return xs + [out], lens

@@ -40,16 +40,17 @@ from nemo.collections.asr.parts.submodules.subsampling import (
     SubsamplingReductionModule,
 )
 from nemo.collections.asr.parts.utils import adapter_utils
+from nemo.collections.asr.parts.utils.regularization_utils import compute_stochastic_depth_drop_probs
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import AcousticEncodedRepresentation, ChannelType, LengthsType, NeuralType, SpectrogramType
 
 __all__ = ['ConformerEncoder']
 
 
-class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
+class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     """
     The encoder for ASR model of Conformer.
     Based on this paper:
@@ -105,6 +106,18 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
             Defaults to 0.1.
         dropout_att (float): the dropout rate used for the attention layer
             Defaults to 0.0.
+        stochastic_depth_drop_prob (float): if non-zero, will randomly drop
+            layers during training. The higher this value, the more often layers
+            are dropped. Defaults to 0.0.
+        stochastic_depth_mode (str): can be either "linear" or "uniform". If
+            set to "uniform", all layers have the same probability of drop. If
+            set to "linear", the drop probability grows linearly from 0 for the
+            first layer to the desired value for the final layer. Defaults to
+            "linear".
+        stochastic_depth_start_layer (int): starting layer for stochastic depth.
+            All layers before this will never be dropped. Note that drop
+            probability will be adjusted accordingly if mode is "linear" when
+            start layer is > 0. Defaults to 0.
     """
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -192,6 +205,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         dropout_pre_encoder=0.1,
         dropout_emb=0.1,
         dropout_att=0.0,
+        stochastic_depth_drop_prob: float = 0.0,
+        stochastic_depth_mode: str = "linear",
+        stochastic_depth_start_layer: int = 0,
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -362,6 +378,12 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
         self.setup_streaming_params()
         self.export_cache_support = False
 
+        self.layer_drop_probs = compute_stochastic_depth_drop_probs(
+            len(self.layers), stochastic_depth_drop_prob, stochastic_depth_mode, stochastic_depth_start_layer
+        )
+        # will be set in self.forward() if defined in AccessMixin config
+        self.interctc_capture_at_layers = None
+
     def update_max_seq_length(self, seq_length: int, device):
         # Find global max audio length across all nodes
         if torch.distributed.is_initialized():
@@ -467,7 +489,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
             if self.att_mask is not None:
                 att_mask = att_mask[:, cache_len:]
 
-        for lth, layer in enumerate(self.layers):
+        for lth, (drop_prob, layer) in enumerate(zip(self.layer_drop_probs, self.layers)):
+            original_signal = audio_signal
             audio_signal = layer(
                 x=audio_signal,
                 att_mask=att_mask,
@@ -478,6 +501,18 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
                 cache_last_channel_next=cache_last_channel_next,
                 cache_last_time_next=cache_last_time_next,
             )
+            # applying stochastic depth logic from https://arxiv.org/abs/2102.03216
+            if self.training and drop_prob > 0.0:
+                should_drop = torch.rand(1) < drop_prob
+                # adjusting to match expectation
+                if should_drop:
+                    # that's not efficient, but it's hard to implement distributed
+                    # version of dropping layers without deadlock or random seed meddling
+                    # so multiplying the signal by 0 to ensure all weights get gradients
+                    audio_signal = audio_signal * 0.0 + original_signal
+                else:
+                    # not doing this operation if drop prob is 0 as it's identity in that case
+                    audio_signal = (audio_signal - original_signal) / (1.0 - drop_prob) + original_signal
 
             if self.reduction_position == lth:
                 audio_signal, length = self.reduction_subsampling(x=audio_signal, lengths=length)
@@ -486,6 +521,20 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
                 # and cause an increase in the WER
                 _, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
                 pad_mask, att_mask = self._create_masks(max_audio_length, length, audio_signal.device)
+
+            # saving tensors if required for interctc loss
+            if self.is_access_enabled():
+                if self.interctc_capture_at_layers is None:
+                    self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
+                if lth in self.interctc_capture_at_layers:
+                    lth_audio_signal = audio_signal
+                    if self.out_proj is not None:
+                        lth_audio_signal = self.out_proj(audio_signal)
+                    # shape is the same as the shape of audio_signal output, i.e. [B, D, T]
+                    self.register_accessible_tensor(
+                        name=f'interctc/layer_output_{lth}', tensor=torch.transpose(lth_audio_signal, 1, 2)
+                    )
+                    self.register_accessible_tensor(name=f'interctc/layer_length_{lth}', tensor=length)
 
         if self.out_proj is not None:
             audio_signal = self.out_proj(audio_signal)
@@ -653,7 +702,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable):
 
         """
         Update the self_attention_model which changes the positional encoding and attention layers.
-    
+
         Args:
             self_attention_model (str): type of the attention layer and positional encoding
                 'rel_pos': relative positional embedding and Transformer-XL

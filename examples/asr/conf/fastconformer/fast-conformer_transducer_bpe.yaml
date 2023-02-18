@@ -128,6 +128,11 @@ model:
     dropout_emb: 0.0 # The dropout used for embeddings
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 
+    # set to non-zero to enable stochastic depth
+    stochastic_depth_drop_prob: 0.0
+    stochastic_depth_mode: linear  # linear or uniform
+    stochastic_depth_start_layer: 0
+
   decoder:
     _target_: nemo.collections.asr.modules.RNNTDecoder
     normalization_mode: null # Currently only null is supported for export.
@@ -142,8 +147,8 @@ model:
 
   # if a large vocabulary size is desired, you may wish to use SampleRNNTJoint module
   # _target_: nemo.collections.asr.modules.SampledRNNTJoint
-  # n_samples: 500 # Specifies the minimum number of tokens to sample from the vocabulary space, excluding 
-  # the RNNT blank token. If a given value is larger than the entire vocabulary size, then the full 
+  # n_samples: 500 # Specifies the minimum number of tokens to sample from the vocabulary space, excluding
+  # the RNNT blank token. If a given value is larger than the entire vocabulary size, then the full
   # vocabulary will be used
   joint:
     _target_: nemo.collections.asr.modules.RNNTJoint

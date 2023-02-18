@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+from typing import Dict
 
 import pytest
+import pytorch_lightning as pl
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
@@ -21,13 +23,12 @@ import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.data import audio_to_text
 from nemo.collections.asr.metrics.wer import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, configs
+from nemo.core.classes.mixins import AccessMixin
 from nemo.utils.config_utils import assert_dataclass_signature_match, update_model_config
 
 
-@pytest.fixture()
-def asr_model():
-    preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
-    encoder = {
+def jasper_encoder_config(num_layers=1) -> Dict:
+    return {
         '_target_': 'nemo.collections.asr.modules.ConvASREncoder',
         'feat_in': 64,
         'activation': 'relu',
@@ -45,8 +46,33 @@ def asr_model():
                 'se': True,
                 'se_context_size': -1,
             }
-        ],
+        ]
+        * num_layers,
     }
+
+
+def conformer_encoder_config() -> Dict:
+    return {
+        '_target_': 'nemo.collections.asr.modules.ConformerEncoder',
+        'feat_in': 64,
+        'n_layers': 8,
+        'd_model': 4,
+    }
+
+
+def squeezeformer_encoder_config() -> Dict:
+    return {
+        '_target_': 'nemo.collections.asr.modules.SqueezeformerEncoder',
+        'feat_in': 64,
+        'n_layers': 8,
+        'd_model': 4,
+    }
+
+
+@pytest.fixture()
+def asr_model():
+    preprocessor = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+    encoder = jasper_encoder_config()
 
     decoder = {
         '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
@@ -89,6 +115,144 @@ def asr_model():
 
     model_instance = EncDecCTCModel(cfg=modelConfig)
     return model_instance
+
+
+class TestInterCTCLoss:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "encoder_config",
+        [jasper_encoder_config(num_layers=8), conformer_encoder_config(), squeezeformer_encoder_config()],
+    )
+    @pytest.mark.parametrize(
+        "apply_at_layers,loss_weights",
+        [
+            ([2, 4], [0.1, 0.3]),
+            ([4], [0.3]),
+            ([], []),
+            # errors
+            ([2, 4], [0.1]),
+            ([2], [0.1, 0.3]),
+            ([], [0.3]),
+        ],
+    )
+    def test_forward(self, encoder_config, apply_at_layers, loss_weights):
+        preprocessor_config = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
+
+        decoder_config = {
+            '_target_': 'nemo.collections.asr.modules.ConvASRDecoder',
+            'feat_in': None,
+            'num_classes': 28,
+            'vocabulary': [
+                ' ',
+                'a',
+                'b',
+                'c',
+                'd',
+                'e',
+                'f',
+                'g',
+                'h',
+                'i',
+                'j',
+                'k',
+                'l',
+                'm',
+                'n',
+                'o',
+                'p',
+                'q',
+                'r',
+                's',
+                't',
+                'u',
+                'v',
+                'w',
+                'x',
+                'y',
+                'z',
+                "'",
+            ],
+        }
+
+        model_config = DictConfig(
+            {
+                'preprocessor': DictConfig(preprocessor_config),
+                'encoder': DictConfig(encoder_config),
+                'decoder': DictConfig(decoder_config),
+                'interctc': {'loss_weights': loss_weights, 'apply_at_layers': apply_at_layers},
+                'optim': {'name': 'adamw'},
+            }
+        )
+
+        class DummyDataset(torch.utils.data.Dataset):
+            """Simply returns a single set of values."""
+
+            def __init__(self, values):
+                self.values = values
+
+            def __len__(self):
+                return 1
+
+            def __getitem__(self, idx):
+                return self.values
+
+        input_signal = torch.randn(size=(1, 512))
+        input_length = torch.randint(low=161, high=500, size=[1])
+        target = torch.randint(size=(1, input_length[0]), low=0, high=28)
+        target_length = torch.tensor([input_length[0]])
+
+        if len(apply_at_layers) != len(loss_weights):
+            # has to throw an error here
+            with pytest.raises(
+                ValueError, match="Length of interctc.apply_at_layers has to match interctc.loss_weights"
+            ):
+                asr_model = EncDecCTCModel(cfg=model_config)
+                asr_model.train()
+                logprobs, _, _ = asr_model.forward(input_signal=input_signal, input_signal_length=input_length)
+        else:
+            asr_model = EncDecCTCModel(cfg=model_config)
+            asr_model.train()
+            AccessMixin.set_access_enabled(access_enabled=True)
+            logprobs, _, _ = asr_model.forward(input_signal=input_signal, input_signal_length=input_length)
+            captured_tensors = asr_model.get_captured_interctc_tensors()
+            AccessMixin.reset_registry(asr_model)
+            assert len(captured_tensors) == len(apply_at_layers)
+            for output in captured_tensors:
+                # checking that values are not the same, but shape is the same
+                assert not torch.allclose(output[0], logprobs)
+                assert output[0].shape == logprobs.shape
+
+            trainer = pl.Trainer(max_epochs=1)
+            trainer.fit(
+                asr_model,
+                train_dataloaders=torch.utils.data.DataLoader(
+                    DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                ),
+                val_dataloaders=torch.utils.data.DataLoader(
+                    DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                ),
+            )
+            required_metrics = ['final_ctc_loss'] if len(loss_weights) > 0 else []
+            required_metrics += [f'inter_ctc_loss_l{idx}' for idx in apply_at_layers]
+            prefix = "val_"
+            required_metrics += [f'{prefix}{metric}' for metric in required_metrics]
+            required_metrics += [f'{prefix}wer'] + [f'{prefix}inter_wer_l{idx}' for idx in apply_at_layers]
+            for metric in required_metrics:
+                assert metric in trainer.logged_metrics
+
+            trainer.test(
+                asr_model,
+                dataloaders=torch.utils.data.DataLoader(
+                    DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                ),
+            )
+            required_metrics = [f'inter_ctc_loss_l{idx}' for idx in apply_at_layers]
+            prefix = "test_"
+            # note that "=" is on purpose here, not "+=", since we only log test metrics
+            required_metrics = [f'{prefix}{metric}' for metric in required_metrics]
+            required_metrics += [f'{prefix}wer'] + [f'{prefix}inter_wer_l{idx}' for idx in apply_at_layers]
+            for metric in required_metrics:
+                assert metric in trainer.logged_metrics
 
 
 class TestEncDecCTCModel:

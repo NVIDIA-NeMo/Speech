@@ -137,11 +137,25 @@ model:
     dropout_emb: 0.0 # The dropout used for embeddings
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 
+    # set to non-zero to enable stochastic depth
+    stochastic_depth_drop_prob: 0.0
+    stochastic_depth_mode: linear  # linear or uniform
+    stochastic_depth_start_layer: 0
+
   decoder:
     _target_: nemo.collections.asr.modules.ConvASRDecoder
     feat_in: null
     num_classes: -1
     vocabulary: []
+
+  # config for InterCTC loss: https://arxiv.org/abs/2102.03216
+  # specify loss weights and which layers to use for InterCTC
+  # e.g., to reproduce the paper results, set loss_weights: [0.3]
+  # and apply_at_layers: [8] (assuming 18 layers). Note that final
+  # layer loss coefficient is automatically adjusted (to 0.7 in above example)
+  interctc:
+    loss_weights: []
+    apply_at_layers: []
 
   optim:
     name: adamw

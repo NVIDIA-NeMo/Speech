@@ -1,12 +1,12 @@
 NeMo ASR Configuration Files
 ============================
 
-This section describes the NeMo configuration file setup that is specific to models in the ASR collection. For general information 
-about how to set up and run experiments that is common to all NeMo models (e.g. Experiment Manager and PyTorch Lightning trainer 
+This section describes the NeMo configuration file setup that is specific to models in the ASR collection. For general information
+about how to set up and run experiments that is common to all NeMo models (e.g. Experiment Manager and PyTorch Lightning trainer
 parameters), see the :doc:`../core/core` section.
 
-The model section of the NeMo ASR configuration files generally requires information about the dataset(s) being used, the preprocessor 
-for audio files, parameters for any augmentation being performed, as well as the model architecture specification. The sections on 
+The model section of the NeMo ASR configuration files generally requires information about the dataset(s) being used, the preprocessor
+for audio files, parameters for any augmentation being performed, as well as the model architecture specification. The sections on
 this page cover each of these in more detail.
 
 Example configuration files for all of the NeMo ASR scripts can be found in the
@@ -17,8 +17,8 @@ Dataset Configuration
 ---------------------
 
 Training, validation, and test parameters are specified using the ``train_ds``, ``validation_ds``, and
-``test_ds`` sections in the configuration file, respectively. Depending on the task, there may be arguments specifying the sample rate 
-of the audio files, the vocabulary of the dataset (for character prediction), whether or not to shuffle the dataset, and so on. You may 
+``test_ds`` sections in the configuration file, respectively. Depending on the task, there may be arguments specifying the sample rate
+of the audio files, the vocabulary of the dataset (for character prediction), whether or not to shuffle the dataset, and so on. You may
 also decide to leave fields such as the ``manifest_filepath`` blank, to be specified via the command-line at runtime.
 
 Any initialization parameter that is accepted for the Dataset class used in the experiment can be set in the config file.
@@ -80,7 +80,7 @@ Preprocessor Configuration
 --------------------------
 
 If you are loading audio files for your experiment, you will likely want to use a preprocessor to convert from the
-raw audio signal to features (e.g. mel-spectrogram or MFCC). The ``preprocessor`` section of the config specifies the audio 
+raw audio signal to features (e.g. mel-spectrogram or MFCC). The ``preprocessor`` section of the config specifies the audio
 preprocessor to be used via the ``_target_`` field, as well as any initialization parameters for that preprocessor.
 
 An example of specifying a preprocessor is as follows:
@@ -97,7 +97,7 @@ An example of specifying a preprocessor is as follows:
       ...
       # Other parameters for the preprocessor
 
-Refer to the `Audio Preprocessors <./api.html#Audio Preprocessors>`__ API section for the preprocessor options, expected arguments, 
+Refer to the `Audio Preprocessors <./api.html#Audio Preprocessors>`__ API section for the preprocessor options, expected arguments,
 and defaults.
 
 Augmentation Configurations
@@ -179,7 +179,7 @@ The following example sets up a ``SentencePiece Tokenizer`` at a path specified 
       dir: "<path to the directory that contains the custom tokenizer files>"
       type: "bpe"  # can be "bpe" or "wpe"
 
-The Aggregate (``agg``) tokenizer feature makes it possible to combine tokenizers in order to train multilingual 
+The Aggregate (``agg``) tokenizer feature makes it possible to combine tokenizers in order to train multilingual
 models. The config file would look like this:
 
 .. code-block:: yaml
@@ -188,21 +188,21 @@ models. The config file would look like this:
     ...
     tokenizer:
       type: "agg"  # aggregate tokenizer
-      langs: 
+      langs:
         en:
           dir: "<path to the directory that contains the tokenizer files>"
           type: "bpe"  # can be "bpe" or "wpe"
         es:
           dir: "<path to the directory that contains the tokenizer files>"
-          type: "bpe"  # can be "bpe" or "wpe"  
+          type: "bpe"  # can be "bpe" or "wpe"
 
-In the above config file, each language is associated with its own pre-trained tokenizer, which gets assigned 
-a token id range in the order the tokenizers are listed. To train a multilingual model, one needs to populate the 
+In the above config file, each language is associated with its own pre-trained tokenizer, which gets assigned
+a token id range in the order the tokenizers are listed. To train a multilingual model, one needs to populate the
 ``lang`` field in the manifest file, allowing the routing of each sample to the correct tokenizer. At inference time,
 the routing is done based on the inferred token id range.
 
-For models which utilize sub-word tokenization, we share the decoder module (``ConvASRDecoder``) with character tokenization models. 
-All parameters are shared, but for models which utilize sub-word encoding, there are minor differences when setting up the config. For 
+For models which utilize sub-word tokenization, we share the decoder module (``ConvASRDecoder``) with character tokenization models.
+All parameters are shared, but for models which utilize sub-word encoding, there are minor differences when setting up the config. For
 such models, the tokenizer is utilized to fill in the missing information when the model is constructed automatically.
 
 For example, a decoder config corresponding to a sub-word tokenization model should look similar to the following:
@@ -221,7 +221,7 @@ For example, a decoder config corresponding to a sub-word tokenization model sho
 Model Architecture Configurations
 ---------------------------------
 
-Each configuration file should describe the model architecture being used for the experiment. Models in the NeMo ASR collection need 
+Each configuration file should describe the model architecture being used for the experiment. Models in the NeMo ASR collection need
 an ``encoder`` section and a ``decoder`` section, with the ``_target_`` field specifying the module to use for each.
 
 Here is the list of the parameters in the model section which are shared among most of the ASR models:
@@ -478,7 +478,7 @@ A Citrinet-512 config should look similar to the following:
         se: ${model.model_defaults.se}
         se_context_size: ${model.model_defaults.se_context_size}
 
-As mentioned above, Citrinet uses the ``ConvASRDecoder`` as the decoder layer similar to QuartzNet. Only the configuration must be 
+As mentioned above, Citrinet uses the ``ConvASRDecoder`` as the decoder layer similar to QuartzNet. Only the configuration must be
 changed slightly as Citrinet utilizes sub-word tokenization.
 
 .. note::
@@ -499,8 +499,8 @@ The ``SqueezeExcite`` block within a :class:`~nemo.collections.asr.modules.conv_
 Conformer-CTC
 ~~~~~~~~~~~~~
 
-The config files for Conformer-CTC model contain character-based encoding and sub-word encoding at 
-``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml`` 
+The config files for Conformer-CTC model contain character-based encoding and sub-word encoding at
+``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml``
 respectively. Some components of the configs of `Conformer-CTC <./models.html#Conformer-CTC>`__ include the following datasets:
 
 * ``train_ds``, ``validation_ds``, and ``test_ds``
@@ -510,10 +510,11 @@ respectively. Some components of the configs of `Conformer-CTC <./models.html#Co
 * ``trainer``
 * ``exp_manager``
 
-These datasets are similar to other ASR models like `QuartzNet <./models.html#QuartzNet>`__. There should be a tokenizer section where you can  
+These datasets are similar to other ASR models like `QuartzNet <./models.html#QuartzNet>`__. There should be a tokenizer section where you can
 specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
 
-The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the 
+
+The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
 Squeezeformer-CTC
@@ -544,6 +545,58 @@ The config files for LSTM-Transducer and LSTM-CTC models can be found at ``<NeMo
 Most of the of the configs of are similar to other ctc or transducer models. The main difference is the encoder part.
 The encoder section includes the details about the RNN-based encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.RNNEncoder <rnn-encoder-api>`.
+
+
+InterCTC Config
+---------------
+
+All CTC-based models also support `InterCTC loss <https://arxiv.org/abs/2102.03216>`_. To use it, you need to specify
+2 parameters as in example below
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.3]
+        apply_at_layers: [8]
+
+which can be used to reproduce the default setup from the paper (assuming the total number of layers is 18).
+You can also specify multiple CTC losses from different layers, e.g., to get 2 losses from layers 3 and 8 with
+weights 0.1 and 0.3, specify:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      interctc:
+        loss_weights: [0.1, 0.3]
+        apply_at_layers: [3, 8]
+
+Note that the final-layer CTC loss weight is automatically computed to normalize
+all weight to 1 (0.6 in the example above).
+
+
+Stochastic Depth Config
+-----------------------
+
+`Stochastic Depth <https://arxiv.org/abs/2102.03216>`_ is a useful technique for regularizing ASR model training.
+Currently it's only supported for :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`. To
+use it, specify the following parameters in the encoder config file to reproduce the default setup from the paper:
+
+.. code-block:: yaml
+
+   model:
+      # ...
+      encoder:
+        # ...
+        stochastic_depth_drop_prob: 0.3
+        stochastic_depth_mode: linear  # linear or uniform
+        stochastic_depth_start_layer: 0
+
+See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
+is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using
+conformer as encoder).
 
 
 Transducer Configurations

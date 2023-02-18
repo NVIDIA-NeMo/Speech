@@ -114,6 +114,7 @@ class GPTModel(MegatronModule):
         use_cpu_initialization=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
+        ffn_dropout=0.0,
         precision=16,
         fp32_residual_connection=False,
         activations_checkpoint_granularity=None,
@@ -122,9 +123,18 @@ class GPTModel(MegatronModule):
         activations_checkpoint_layers_per_pipeline=None,
         normalization='layernorm',
         layernorm_epsilon=1e-5,
+        bias=True,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
+        activation='gelu',
+        headscale=False,
+        transformer_block_type='pre_ln',
+        normalize_attention_scores=True,
+        position_embedding_type='learned_absolute',
+        rotary_percentage=1.0,
+        attention_type='multihead',
+        share_embeddings_and_output_weights=True,
         gradient_accumulation_fusion=False,
         persist_layer_norm=False,
         openai_gelu=False,
@@ -141,8 +151,7 @@ class GPTModel(MegatronModule):
         reduce_amax=True,
         use_emha=False,
     ):
-
-        super(GPTModel, self).__init__()
+        super(GPTModel, self).__init__(share_token_embeddings=share_embeddings_and_output_weights)
 
         self.parallel_output = parallel_output
         self.pre_process = pre_process
@@ -150,6 +159,7 @@ class GPTModel(MegatronModule):
         self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
         self.sequence_parallel = sequence_parallel
         self.gradient_accumulation_fusion = gradient_accumulation_fusion
+        self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
 
         if kv_channels is None:
             assert (
@@ -167,6 +177,7 @@ class GPTModel(MegatronModule):
             hidden_size=hidden_size,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
+            ffn_dropout=ffn_dropout,
             num_tokentypes=num_tokentypes,
             max_position_embeddings=max_position_embeddings,
             num_layers=num_layers,
@@ -190,10 +201,19 @@ class GPTModel(MegatronModule):
             activations_checkpoint_layers_per_pipeline=activations_checkpoint_layers_per_pipeline,
             normalization=normalization,
             layernorm_epsilon=layernorm_epsilon,
+            rotary_percentage=rotary_percentage,
+            share_embeddings_and_output_weights=share_embeddings_and_output_weights,
+            bias=bias,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
             masked_softmax_fusion=masked_softmax_fusion,
             gradient_accumulation_fusion=gradient_accumulation_fusion,
+            activation=activation,
+            headscale=headscale,
+            transformer_block_type=transformer_block_type,
+            normalize_attention_scores=normalize_attention_scores,
+            position_embedding_type=position_embedding_type,
+            attention_type=attention_type,
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
@@ -210,9 +230,10 @@ class GPTModel(MegatronModule):
             use_emha=use_emha,
         )
 
-        self.initialize_word_embeddings(
-            init_method=init_method_normal(init_method_std), vocab_size=vocab_size, hidden_size=hidden_size
-        )
+        if self.share_embeddings_and_output_weights:
+            self.initialize_word_embeddings(
+                init_method=init_method_normal(init_method_std), vocab_size=vocab_size, hidden_size=hidden_size
+            )
 
     def set_input_tensor(self, input_tensor):
         """See megatron.model.transformer.set_input_tensor()"""
@@ -253,7 +274,9 @@ class GPTModel(MegatronModule):
             return post_language_model_processing(
                 lm_output,
                 labels,
-                self.word_embeddings_weight(),
+                self.language_model.output_layer.weight
+                if not self.share_embeddings_and_output_weights
+                else self.word_embeddings_weight(),
                 get_key_value,
                 self.parallel_output,
                 forward_method_parallel_output,

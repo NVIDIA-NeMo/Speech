@@ -49,7 +49,6 @@ class MegatronModule(torch.nn.Module):
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super(MegatronModule, self).__init__()
-
         self.share_token_embeddings = share_token_embeddings
 
     def word_embeddings_weight(self):
@@ -161,7 +160,7 @@ class MegatronModule(torch.nn.Module):
     def sync_initial_word_embeddings(self):
 
         if torch.distributed.is_initialized():
-            if parallel_state.is_rank_in_embedding_group():
+            if parallel_state.is_rank_in_embedding_group() and self.share_token_embeddings:
                 torch.distributed.all_reduce(
                     self.word_embeddings_weight().data, group=parallel_state.get_embedding_group()
                 )

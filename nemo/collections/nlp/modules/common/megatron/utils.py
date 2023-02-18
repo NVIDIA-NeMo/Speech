@@ -148,6 +148,10 @@ def openai_gelu(x):
     return gelu_impl(x)
 
 
+def squared_relu(x):
+    return torch.pow(torch.nn.functional.relu(x), 2)
+
+
 # This is actually Python equivalent of torch.nn.functional.gelu(), also with type hints for ONNX exporter
 @torch.jit.script
 def erf_gelu(x):

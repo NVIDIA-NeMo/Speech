@@ -431,8 +431,13 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
                 input_embeds = self.embed_input_inference(input_ids, taskname_ids)
             else:
                 input_embeds = self.embed_input_train(input_ids, taskname_ids)
-            position_embeddings = self.frozen_model.model.language_model.embedding.position_embeddings(position_ids)
-            encoder_input = input_embeds + position_embeddings
+            if hasattr(self.frozen_model.model.language_model.embedding, "position_embeddings"):
+                position_embeddings = self.frozen_model.model.language_model.embedding.position_embeddings(
+                    position_ids
+                )
+                encoder_input = input_embeds + position_embeddings
+            else:
+                encoder_input = input_embeds
             encoder_input = encoder_input.transpose(0, 1).contiguous()
             if self.cfg.get("sequence_parallel", False):
                 encoder_input = tensor_parallel.mappings.scatter_to_sequence_parallel_region(encoder_input)

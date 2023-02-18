@@ -40,7 +40,6 @@ exp_manager:
     filename: 'megatron_gpt--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
-
 model:
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
@@ -61,15 +60,26 @@ model:
   use_scaled_init_method: True # use scaled residuals initialization
   hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
   attention_dropout: 0.1 # Dropout probability for attention
+  ffn_dropout: 0.0 # Dropout probability in the feed-forward layer.
   kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
   apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
-  normalization: layernorm # Type of normalization layers
+  normalization: 'layernorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
   layernorm_epsilon: 1e-5
   do_layer_norm_weight_decay: False # True means weight decay on all params
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
   pre_process: True # add embedding
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
+  bias: True # Whether to use bias terms in all weight matrices.
+  activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu']
+  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
+  transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
+  openai_gelu: False # Use OpenAI's GELU instead of the default GeLU
+  normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.
+  position_embedding_type: 'learned_absolute' # Position embedding type. Options ['learned_absolute', 'rope']
+  rotary_percentage: 1.0 # If using position_embedding_type=rope, then the per head dim is multiplied by this.
+  attention_type: 'multihead' # Attention type. Options ['multihead']
+  share_embeddings_and_output_weights: True # Share embedding and output layer weights.
 
   tokenizer:
     library: 'megatron'

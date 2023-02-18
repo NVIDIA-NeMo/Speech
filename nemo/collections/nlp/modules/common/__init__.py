@@ -23,12 +23,7 @@ from nemo.collections.nlp.modules.common.huggingface import (
     RobertaEncoder,
 )
 from nemo.collections.nlp.modules.common.lm_utils import get_lm_model, get_pretrained_lm_models_list
-from nemo.collections.nlp.modules.common.prompt_encoder import (
-    BIGLSTMPromptEncoder,
-    PromptEncoder,
-    PromptEncoderMLP,
-    PromptEncoderType,
-)
+from nemo.collections.nlp.modules.common.prompt_encoder import PromptEncoder, PromptEncoderType
 from nemo.collections.nlp.modules.common.prompt_table import (
     PromptTable,
     VirtualPromptPlaceholderToken,

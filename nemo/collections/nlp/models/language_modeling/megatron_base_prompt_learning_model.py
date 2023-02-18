@@ -25,7 +25,6 @@ from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentenceP
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.modules.common import (
     PromptEncoder,
-    PromptEncoderMLP,
     PromptEncoderType,
     PromptTable,
     VirtualPromptPlaceholderToken,
@@ -64,7 +63,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         self.cfg = cfg
 
         self.load_frozen_model(cfg, trainer)
-
+        self.prompt_encoder = None
         self.tokenizer = self.frozen_model.tokenizer
 
         if hasattr(self.frozen_model.cfg, "encoder") and hasattr(self.frozen_model.cfg, "decoder"):
@@ -213,25 +212,15 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         total_virtual_tokens = self.task_templates[new_task]["total_virtual_tokens"]
 
         encoder_type = PromptEncoderType(self.cfg.p_tuning.get("encoder_type", "mlp").lower())
-        self.prompt_encoder = None
-        if encoder_type == PromptEncoderType.TPMLP:
-            self.prompt_encoder = PromptEncoderMLP(
-                total_virtual_tokens=total_virtual_tokens,
-                hidden_size=self.cfg.p_tuning.get("encoder_hidden", 2048),
-                output_size=self.hidden_size,
-                init_std=self.cfg.p_tuning.get("init_std", 0.023),
-            )
-        elif encoder_type == PromptEncoderType.LSTM or encoder_type == PromptEncoderType.MLP:
-            self.prompt_encoder = PromptEncoder(
-                encoder_type=PromptEncoderType(encoder_type),
-                total_virtual_tokens=total_virtual_tokens,
-                token_dim=self.hidden_size,
-                hidden_size=self.cfg.p_tuning.get("encoder_hidden", self.hidden_size // 2),
-                lstm_dropout=self.cfg.p_tuning.get("dropout", 0.0),
-                num_layers=self.cfg.p_tuning.get("num_layers", 2),
-            )
-        else:
-            raise ValueError("Prompt encoder type not recognized. Please use one of MLP (recommended) or LSTM.")
+        self.prompt_encoder = PromptEncoder(
+            encoder_type=PromptEncoderType(encoder_type),
+            total_virtual_tokens=total_virtual_tokens,
+            token_dim=self.hidden_size,
+            hidden_size=self.cfg.p_tuning.get("encoder_hidden", 2048),
+            lstm_dropout=self.cfg.p_tuning.get("dropout", 0.0),
+            num_layers=self.cfg.p_tuning.get("num_layers", 2),
+            init_std=self.cfg.p_tuning.get("init_std", 0.023),
+        )
 
     def add_ptuned_prompts_to_prompt_table(self):
         """

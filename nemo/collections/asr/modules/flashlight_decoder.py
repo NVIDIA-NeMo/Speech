@@ -38,7 +38,7 @@ class _TokensWrapper:
 
     @property
     def unk_id(self):
-        if (self.tokenizer is not None) and hasattr(self.tokenizer, 'unk_id'):
+        if (self.tokenizer is not None) and hasattr(self.tokenizer, 'unk_id') and self.tokenizer.unk_id is not None:
             return self.tokenizer.unk_id
 
         if '<unk>' in self.vocabulary:
@@ -99,14 +99,12 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
     ):
 
         try:
-            from flashlight.lib.sequence.criterion import get_data_ptr_as_bytes
             from flashlight.lib.text.decoder import (
                 LM,
                 CriterionType,
                 KenLM,
                 LexiconDecoder,
                 LexiconDecoderOptions,
-                LMState,
                 SmearingMode,
                 Trie,
             )

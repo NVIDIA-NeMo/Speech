@@ -81,12 +81,12 @@ You may load the model and identify the language of an audio file by using `get_
   langid_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<MODEL_NAME>")
   lang = langid_model.get_label('<audio_path>')
   
-or you can run `batch_inference()` to perform inference on a manifest with seleted batch_size to get mapped_labels
+or you can run `batch_inference()` to perform inference on a manifest with seleted batch_size to get trained model labels and gt_labels with logits
 
 .. code-block:: python
 
   langid_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<MODEL_NAME>")
-  lang_embs, logits, gt_labels, mapped_labels = langid_model.batch_inference(manifest_filepath, batch_size=32)
+  lang_embs, logits, gt_labels, trained_labels = langid_model.batch_inference(manifest_filepath, batch_size=32)
 
   
 NGC Pretrained Checkpoints

@@ -381,31 +381,34 @@ def speech_classification_model():
 
 @pytest.fixture()
 def speaker_label_model():
-    preprocessor = {'cls': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'params': dict({})}
+    preprocessor = {
+        '_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor',
+    }
     encoder = {
-        'cls': 'nemo.collections.asr.modules.ConvASREncoder',
-        'params': {
-            'feat_in': 64,
-            'activation': 'relu',
-            'conv_mask': True,
-            'jasper': [
-                {
-                    'filters': 512,
-                    'repeat': 1,
-                    'kernel': [1],
-                    'stride': [1],
-                    'dilation': [1],
-                    'dropout': 0.0,
-                    'residual': False,
-                    'separable': False,
-                }
-            ],
-        },
+        '_target_': 'nemo.collections.asr.modules.ConvASREncoder',
+        'feat_in': 64,
+        'activation': 'relu',
+        'conv_mask': True,
+        'jasper': [
+            {
+                'filters': 512,
+                'repeat': 1,
+                'kernel': [1],
+                'stride': [1],
+                'dilation': [1],
+                'dropout': 0.0,
+                'residual': False,
+                'separable': False,
+            }
+        ],
     }
 
     decoder = {
-        'cls': 'nemo.collections.asr.modules.SpeakerDecoder',
-        'params': {'feat_in': 512, 'num_classes': 2, 'pool_mode': 'xvector', 'emb_sizes': [1024]},
+        '_target_': 'nemo.collections.asr.modules.SpeakerDecoder',
+        'feat_in': 512,
+        'num_classes': 2,
+        'pool_mode': 'attention',
+        'emb_sizes': [1024],
     }
 
     modelConfig = DictConfig(

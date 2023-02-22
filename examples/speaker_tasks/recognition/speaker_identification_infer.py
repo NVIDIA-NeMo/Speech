@@ -66,7 +66,7 @@ def main(cfg):
 
         # reference embedding
         reference_embs = []
-        keyslist = list(enroll_id2label.keys())
+        keyslist = list(enroll_id2label.values())
         for label_id in keyslist:
             indices = np.where(enroll_truelabels == label_id)
             embedding = (enroll_embs[indices].sum(axis=0).squeeze()) / len(indices)

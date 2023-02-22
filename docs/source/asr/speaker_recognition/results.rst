@@ -84,7 +84,7 @@ or you can run `batch_inference()` to perform inference on the manifest with sel
 .. code-block:: python
 
   speaker_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<pretrained_model_name or path/to/nemo/file>")
-  embs, logits, gt_labels, mapped_labels = speaker_model.batch_inference(manifest, batch_size=32)
+  embs, logits, gt_labels, trained_labels = speaker_model.batch_inference(manifest, batch_size=32)
 
 Speaker Verification Inference
 ------------------------------

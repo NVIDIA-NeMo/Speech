@@ -1,4 +1,4 @@
-name: &name "TitaNet-L"
+name: &name "TitaNet-S"
 sample_rate: &sample_rate 16000
 
 model:
@@ -15,11 +15,15 @@ model:
       noise:
         manifest_path: null
         prob: 0.5
-        min_snr_db: 0
+        min_snr_db: 5
         max_snr_db: 15
 
+      impulse:
+        manifest_path: null
+        prob: 0.5 
+
       speed:
-        prob: 0.3
+        prob: 0.5
         sr: *sample_rate
         resample_type: 'kaiser_fast'
         min_speed_rate: 0.95
@@ -33,7 +37,7 @@ model:
     shuffle: False
 
   model_defaults:
-    filters: 1024
+    filters: 256
     repeat: 3
     dropout: 0.1
     separable: true
@@ -130,14 +134,14 @@ model:
     emb_sizes: 192
 
   loss:
-    _target_: nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss # you could also use cross-entrophy loss
-    scale: 30    
-    margin: 0.2  
+    _target_: nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss
+    scale: 30
+    margin: 0.2
 
   optim:
     name: sgd
     lr: .006 #(original titanet-large was trained with 0.08 lr)
-    weight_decay: 0.0002
+    weight_decay: 0.001
     momentum: 0.9
 
     # scheduler setup
@@ -153,6 +157,7 @@ trainer:
   num_nodes: 1
   accelerator: gpu
   strategy: ddp
+  accumulate_grad_batches: 1
   deterministic: True
   enable_checkpointing: False
   logger: False

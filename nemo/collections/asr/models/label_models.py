@@ -66,21 +66,21 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
         model = PretrainedModelInfo(
             pretrained_model_name="speakerverification_speakernet",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/speakerverification_speakernet/versions/1.0.0rc1/files/speakerverification_speakernet.nemo",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/speakerverification_speakernet/versions/1.16.0/files/speakerverification_speakernet.nemo",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:speakerverification_speakernet",
         )
         result.append(model)
 
         model = PretrainedModelInfo(
             pretrained_model_name="ecapa_tdnn",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/ecapa_tdnn/versions/v1/files/ecapa_tdnn.nemo",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/ecapa_tdnn/versions/1.16.0/files/ecapa_tdnn.nemo",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:ecapa_tdnn",
         )
         result.append(model)
 
         model = PretrainedModelInfo(
             pretrained_model_name="titanet_large",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/titanet_large/versions/v0/files/titanet-l.nemo",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/titanet_large/versions/v1/files/titanet-l.nemo",
             description="For details about this model, please visit https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large",
         )
         result.append(model)
@@ -98,11 +98,9 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         self.world_size = 1
         self.cal_labels_occurrence_train = False
         self.labels_occurrence = None
+        self.labels = None
 
-        if 'num_classes' in cfg.decoder:
-            num_classes = cfg.decoder.num_classes
-        else:
-            num_classes = cfg.decoder.params.num_classes  # to pass test
+        num_classes = cfg.decoder.num_classes
 
         if 'loss' in cfg:
             if 'weight' in cfg.loss:
@@ -124,21 +122,6 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             weight = [sum(self.labels_occurrence) / (len(self.labels_occurrence) * i) for i in self.labels_occurrence]
 
         if 'loss' in cfg:
-            # To support older version checkpoints
-            if '_target_' not in cfg.loss:
-                logging.info(
-                    "Setting angular: true/false in decoder is deprecated and will be removed in 1.13 version, use specific loss with _target_"
-                )
-                OmegaConf.set_struct(cfg, True)
-                with open_dict(cfg):
-                    if 'angular' in cfg.decoder and cfg.decoder.angular:
-                        cfg.loss._target_ = "nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss"
-                    else:
-                        # in case if specified angular=False but loss contained 'scale' or 'margin'
-                        cfg.loss.pop('scale', None)
-                        cfg.loss.pop('margin', None)
-                        cfg.loss._target_ = "nemo.collections.common.losses.cross_entropy.CrossEntropyLoss"
-
             cfg_eval_loss = copy.deepcopy(cfg.loss)
 
             if 'angular' in cfg.loss._target_:
@@ -170,7 +153,6 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
         self._macro_accuracy = Accuracy(num_classes=num_classes, top_k=1, average='macro', task='multiclass')
 
-        self.labels = None
         if hasattr(self._cfg, 'spec_augment') and self._cfg.spec_augment is not None:
             self.spec_augmentation = EncDecSpeakerLabelModel.from_config_dict(self._cfg.spec_augment)
         else:
@@ -408,7 +390,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
         self.log(f'{tag}_loss', loss_mean, sync_dist=True)
         for top_k, score in zip(self._accuracy.top_k, topk_scores):
-            self.log(f'{tag}_acc_micro_top@{top_k}', score, sync_dist=True)
+            self.log(f'{tag}_acc_micro_top_{top_k}', score, sync_dist=True)
         self.log(f'{tag}_acc_macro', macro_accuracy_score, sync_dist=True)
 
         return {
@@ -471,10 +453,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             label: label corresponding to the trained model
         """
         _, logits = self.infer_file(path2audio_file=path2audio_file)
-        mapped_labels = list(self._cfg['train_ds']['labels'])
-        if mapped_labels is not None:
+        trained_labels = list(self._cfg['train_ds']['labels'])
+        if trained_labels is not None:
             label_id = logits.argmax(axis=1)
-            label = mapped_labels[int(label_id[0])]
+            label = trained_labels[int(label_id[0])]
         else:
             logging.info("labels are not saved to model, hence only outputting the label id index")
             label = logits.argmax(axis=1)
@@ -533,7 +515,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
 
         To map predicted labels, one can do
             `arg_values = logits.argmax(axis=1)`
-            `pred_labels = list(map(lambda t : pred_labels[t], arg_values))`
+            `pred_labels = list(map(lambda t : trained_labels[t], arg_values))`
 
         Args:
             manifest_filepath: Path to manifest file
@@ -546,21 +528,20 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             embs: embeddings of files provided in manifest file
             logits: logits of final layer of EncDecSpeakerLabel Model
             gt_labels: labels from manifest file (needed for speaker enrollment and testing)
-            mapped_labels: Classification labels sorted in the order that they are mapped by the trained model
+            trained_labels: Classification labels sorted in the order that they are mapped by the trained model
 
         """
         mode = self.training
         self.freeze()
         self.eval()
         self.to(device)
-        mapped_labels = self._cfg['train_ds']['labels']
-        if mapped_labels is not None:
-            mapped_labels = list(mapped_labels)
+        trained_labels = self._cfg['train_ds']['labels']
+        if trained_labels is not None:
+            trained_labels = list(trained_labels)
 
         featurizer = WaveformFeaturizer(sample_rate=sample_rate)
-        dataset = AudioToSpeechLabelDataset(
-            manifest_filepath=manifest_filepath, labels=mapped_labels, featurizer=featurizer
-        )
+
+        dataset = AudioToSpeechLabelDataset(manifest_filepath=manifest_filepath, labels=None, featurizer=featurizer)
 
         dataloader = torch.utils.data.DataLoader(
             dataset=dataset, batch_size=batch_size, collate_fn=dataset.fixed_seq_collate_fn,
@@ -580,10 +561,12 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             gt_labels.extend(labels.cpu().numpy())
             embs.extend(emb.cpu().numpy())
 
+        gt_labels = list(map(lambda t: dataset.id2label[t], gt_labels))
+
         self.train(mode=mode)
         if mode is True:
             self.unfreeze()
 
         logits, embs, gt_labels = np.asarray(logits), np.asarray(embs), np.asarray(gt_labels)
 
-        return embs, logits, gt_labels, mapped_labels
+        return embs, logits, gt_labels, trained_labels

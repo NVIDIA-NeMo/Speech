@@ -228,7 +228,7 @@ trainer:
   accelerator: gpu
   strategy: ddp
   precision: 16
-  max_epochs: 1000
+  max_epochs: 5000
   accumulate_grad_batches: 1
   gradient_clip_val: 1000.0
   enable_checkpointing: false # Provided by exp_manager

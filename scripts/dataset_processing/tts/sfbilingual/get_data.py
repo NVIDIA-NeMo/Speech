@@ -38,7 +38,7 @@ def get_args():
     parser.add_argument(
         "--manifests-path", type=Path, help="where the resulting manifests files will reside", default="./"
     )
-    parser.add_argument("--val-size", default=0.005, type=float, help="eval set split")
+    parser.add_argument("--val-size", default=0.01, type=float, help="eval set split")
     parser.add_argument("--test-size", default=0.01, type=float, help="test set split")
     parser.add_argument(
         "--seed-for-ds-split",
@@ -81,7 +81,7 @@ def __process_transcript(file_path: str):
                 'text': text,
                 'normalized_text': normalized_text,
             }
-            print(i, entry)
+
             i += 1
             entries.append(entry)
     return entries

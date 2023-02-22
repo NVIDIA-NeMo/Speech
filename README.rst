@@ -286,18 +286,6 @@ Publications
 
 We provide an ever growing list of publications that utilize the NeMo framework. Please refer to `PUBLICATIONS.md <https://github.com/NVIDIA/NeMo/tree/stable/PUBLICATIONS.md>`_. We welcome the addition of your own articles to this list !
 
-Citation
---------
-
-.. code-block:: bash
-
-  @article{kuchaiev2019nemo,
-    title={Nemo: a toolkit for building ai applications using neural modules},
-    author={Kuchaiev, Oleksii and Li, Jason and Nguyen, Huyen and Hrinchuk, Oleksii and Leary, Ryan and Ginsburg, Boris and Kriman, Samuel and Beliaev, Stanislav and Lavrukhin, Vitaly and Cook, Jack and others},
-    journal={arXiv preprint arXiv:1909.09577},
-    year={2019}
-  }
-
 License
 -------
 NeMo is under `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.

@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "NeMo: a toolkit for Conversational AI and Large Language Models"
+url: https://nvidia.github.io/NeMo/
+repository-code: https://github.com/NVIDIA/NeMo
+authors:
+  - family-names: Harper
+    given-names: Eric
+  - family-names: Majumdar
+    given-names: Somshubra
+  - family-names: Kuchaiev
+    given-names: Oleksii
+  - family-names: Jason
+    given-names: Li
+  - family-names: Zhang
+    given-names: Yang
+  - family-names: Bakhturina
+    given-names: Evelina
+  - family-names: Noroozi 
+    given-names: Vahid
+  - family-names: Subramanian
+    given-names: Sandeep
+  - family-names: Nithin
+    given-names: Koluguri
+  - family-names: Jocelyn
+    given-names: Huang
+  - family-names: Jia
+    given-names: Fei
+  - family-names: Balam
+    given-names: Jagadeesh
+  - family-names: Yang
+    given-names: Xuesong
+  - family-names: Livne
+    given-names: Micha
+  - family-names: Dong
+    given-names: Yi
+  - family-names: Naren
+    given-names: Sean
+  - family-names: Ginsburg
+    given-names: Boris
+

@@ -1136,7 +1136,7 @@ class PairedRealFakeSpectrogramsDataset(Dataset):
 
     def _collate_fn(self, batch):
         pred_specs, true_specs = zip(*batch)
-        lengths = [spec.shape[-1] for spec in true_specs]
+        lengths = [spec.shape[0] for spec in true_specs]
 
         pred_specs = torch.nn.utils.rnn.pad_sequence(pred_specs, batch_first=True)
         true_specs = torch.nn.utils.rnn.pad_sequence(true_specs, batch_first=True)

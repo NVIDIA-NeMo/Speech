@@ -37,7 +37,7 @@ from nemo.collections.asr.parts.preprocessing.features import clean_spectrogram_
 from nemo.collections.asr.parts.submodules.batchnorm import replace_bn_with_fused_bn_all
 from nemo.collections.common.data import ConcatDataset, ConcatMapDataset
 from nemo.collections.tts.models import FastPitchModel, SpectrogramEnhancerModel
-from nemo.core.classes import Dataset
+from nemo.core.classes import Dataset, typecheck
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
@@ -402,7 +402,11 @@ class ASRWithTTSModel(ASRModel):
         with torch.no_grad():
             spectrogram, spectrogram_len, *_ = self.tts_model(text=tts_texts, durs=None, pitch=None, speaker=speakers)
             if self.enhancer_model is not None:
-                spectrogram = self.enhancer_model.forward(input_spectrograms=spectrogram, lengths=spectrogram_len)
+                # apply enhancer
+                with typecheck.disable_checks():
+                    # spectrogram_len are of TokenDurationType, enhancer requires LengthsType
+                    # TODO: fix FastPitch model to return LengthsType
+                    spectrogram = self.enhancer_model.forward(input_spectrograms=spectrogram, lengths=spectrogram_len)
             spectrogram, *_ = normalize_batch(spectrogram, spectrogram_len, self.asr_model.cfg.preprocessor.normalize)
             return spectrogram, spectrogram_len
 

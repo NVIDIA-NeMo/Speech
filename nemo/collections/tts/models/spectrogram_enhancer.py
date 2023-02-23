@@ -116,7 +116,7 @@ class SpectrogramEnhancerModel(ModelPT, Exportable):
     @typecheck(
         input_types={
             "input_spectrograms": NeuralType(("B", "D", "T_spec"), MelSpectrogramType()),
-            "lengths": NeuralType(("B"), LengthsType()),
+            "lengths": NeuralType(("B",), LengthsType()),
             "mixing": NeuralType(None, BoolType(), optional=True),
             "normalize": NeuralType(None, BoolType(), optional=True),
         }

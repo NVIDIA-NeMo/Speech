@@ -71,7 +71,7 @@ model:
   post_process: True # add pooler
   persist_layer_norm: True # Use of persistent fused layer norm kernel.
   bias: True # Whether to use bias terms in all weight matrices.
-  activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu']
+  activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu', 'fast-geglu', 'fast-swiglu', 'fast-reglu']
   headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
   transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
   openai_gelu: False # Use OpenAI's GELU instead of the default GeLU

@@ -83,18 +83,32 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         self.dropout = dropout
         self.set_accepted_adapter_types([MLPInfusedAdapterConfig._target_])
 
-        if activation not in ['gelu', 'geglu', 'reglu', 'swiglu', 'squared-relu']:
+        supported_activations = [
+            'gelu',
+            'geglu',
+            'reglu',
+            'swiglu',
+            'squared-relu',
+            'fast-geglu',
+            'fast-swiglu',
+            'fast-reglu',
+        ]
+
+        if activation not in supported_activations:
             raise ValueError(
-                f"Activation {activation} not supported. Only gelu, geglu, reglu, swiglu, squared-relu are supported."
+                f"Activation {activation} not supported. Supported activations are {supported_activations}"
             )
 
+        self.fast_glu_activation = activation in ['fast-geglu', 'fast-swiglu', 'fast-reglu']
         no_async_tensor_model_parallel_allreduce = (
             parallel_state.get_tensor_model_parallel_world_size() == 1 or sequence_parallel
         )
         # Project to 4h.
         self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
             hidden_size,
-            ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
+            ffn_hidden_size * 2
+            if self.fast_glu_activation
+            else ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
             gather_output=False,
             init_method=init_method,
             skip_bias_add=True,
@@ -121,7 +135,14 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 gradient_accumulation_fusion=gradient_accumulation_fusion,
             )
 
-        self.glu_activation_family = activation in ['geglu', 'reglu', 'swiglu']
+        self.glu_activation_family = activation in [
+            'geglu',
+            'reglu',
+            'swiglu',
+            'fast-geglu',
+            'fast-reglu',
+            'fast-swiglu',
+        ]
         bias_activation_fusion_unavailable = activation in ['reglu', 'swiglu']
 
         if bias_activation_fusion_unavailable and bias_activation_fusion:
@@ -144,13 +165,13 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         # Give openai_gelu precedence over other activations if set, for HF compatibility. Normally this is off and shouldn't affect regular model training.
         if openai_gelu:
             self.activation_func = openai_gelu_func
-        elif activation in ["gelu", "geglu"]:
+        elif activation in ["gelu", "geglu", "fast-geglu"]:
             self.activation_func = F.gelu
         elif onnx_safe:
             self.activation_func = erf_gelu
-        elif activation == "reglu":
+        elif activation in ["reglu", "fast-reglu"]:
             self.activation_func = F.relu
-        elif activation == "swiglu":
+        elif activation in ["swiglu", "fast-swiglu"]:
             # SiLU or sigmoid linear unit is the same as swish with beta = 1 (which is what https://arxiv.org/pdf/2002.05202.pdf uses.)
             self.activation_func = F.silu
         elif activation == 'squared-relu':
@@ -191,20 +212,22 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         # [s, b, 4hp]
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
 
-        if self.glu_activation_family:
+        if self.fast_glu_activation:
+            intermediate_parallel, intermediate_parallel_2 = torch.chunk(intermediate_parallel, 2, dim=-1)
+            if bias_parallel is not None:
+                bias_parallel, bias_parallel_2 = torch.chunk(bias_parallel, 2, dim=-1)
+        elif self.glu_activation_family and not self.fast_glu_activation:
             intermediate_parallel_2, bias_parallel_2 = self.dense_h_to_4h_2(hidden_states)
 
         if self.bias_activation_fusion:
             if self.activation == 'gelu':
                 intermediate_parallel = fused_bias_gelu(intermediate_parallel, bias_parallel)
-            elif self.activation == 'geglu':
+            elif self.activation in ['geglu', 'fast-geglu']:
                 intermediate_parallel = fused_bias_geglu(
                     intermediate_parallel, bias_parallel, intermediate_parallel_2, bias_parallel_2
                 )
 
-        elif self.activation in ['reglu', 'swiglu'] or (
-            self.glu_activation_family and not self.bias_activation_fusion
-        ):
+        elif self.glu_activation_family and not self.bias_activation_fusion:
             if bias_parallel is not None:
                 intermediate_parallel = self.activation_func(intermediate_parallel + bias_parallel) * (
                     intermediate_parallel_2 + bias_parallel_2

@@ -21,7 +21,7 @@ bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropo
 bias: True # Whether to use bias terms in all weight matrices.
 normalization: 'layernorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
 arch: 'transformer' # Options: ['transformer', 'perceiver']
-activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu']
+activation: 'gelu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu', 'fast-geglu', 'fast-swiglu', 'fast-reglu']
 headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
 transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
 hidden_steps: 32 # Number of latent vectors to use for pereceiver encoders

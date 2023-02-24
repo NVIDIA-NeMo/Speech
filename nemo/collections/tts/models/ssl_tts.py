@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import itertools
-from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Union
+from typing import Iterable, Optional
 
 import editdistance
 import librosa
 import torch
-import torch.nn as nn
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
@@ -27,33 +25,13 @@ from pytorch_lightning.trainer.supporters import CombinedLoader
 
 import nemo.collections.tts.torch.data as TTSData
 from nemo.collections.asr.losses.angularloss import AngularSoftmaxLoss
+from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.optim.lr_scheduler import WarmupPolicy
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
-
-
-class GreedyCTCDecoder(torch.nn.Module):
-    def __init__(self, labels, blank=0):
-        super().__init__()
-        self.labels = labels
-        self.blank = blank
-
-    def forward(self, emission):
-        """Given a sequence emission over labels, get the best path
-        Args:
-          emission (Tensor): Logit tensors. Shape `[num_seq, num_label]`.
-
-        Returns:
-          List[str]: The resulting transcript
-        """
-        indices = torch.argmax(emission, dim=-1)  # [num_seq,]
-        indices = torch.unique_consecutive(indices, dim=-1)
-        indices = [i for i in indices if i != self.blank]
-        joined = "".join([self.labels[i] for i in indices])
-        return indices, joined
 
 
 @experimental
@@ -74,7 +52,7 @@ class SSLDisentangler(ModelPT):
         self._text_tokenizer = EnglishCharsTokenizer(add_blank_at="last")
         self._tb_logger = None
 
-        self.downstream_nets = nn.ModuleDict()
+        self.downstream_nets = torch.nn.ModuleDict()
         for task in self._cfg.downstream_heads.task_names:
 
             if task == 'speaker_verification':
@@ -82,8 +60,8 @@ class SSLDisentangler(ModelPT):
                 in_dim = self._cfg.encoder.d_model
                 out_dim = self._cfg.downstream_heads.speaker_embed_size
                 num_speakers = self._cfg.downstream_heads.num_speakers
-                self.downstream_nets[task] = nn.Linear(in_dim, out_dim)
-                self.sv_linear = nn.Linear(out_dim, num_speakers)
+                self.downstream_nets[task] = torch.nn.Linear(in_dim, out_dim)
+                self.sv_linear = torch.nn.Linear(out_dim, num_speakers)
                 self.sv_loss = AngularSoftmaxLoss(scale=30, margin=0.4)
 
             elif task == 'content':
@@ -91,9 +69,9 @@ class SSLDisentangler(ModelPT):
                 in_dim = self._cfg.encoder.d_model
                 out_dim = self._cfg.downstream_heads.content_embed_size
                 num_chars = len(self._text_tokenizer.tokens)  # list of english tokens
-                self.downstream_nets[task] = nn.Linear(in_dim, out_dim)
-                self.content_linear = nn.Linear(out_dim, num_chars)
-                self.ctc_loss = nn.CTCLoss(blank=self._text_tokenizer.blank, zero_infinity=True)
+                self.downstream_nets[task] = torch.nn.Linear(in_dim, out_dim)
+                self.content_linear = torch.nn.Linear(out_dim, num_chars)
+                self.ctc_loss = torch.nn.CTCLoss(blank=self._text_tokenizer.blank, zero_infinity=True)
                 self.pitch_augment = self._cfg.get('pitch_augment', False)
                 self.augment_ctc = self._cfg.get('augment_ctc', False)
                 self.aug_loss_type = self._cfg.get('aug_loss_type', 'mse')
@@ -101,7 +79,7 @@ class SSLDisentangler(ModelPT):
                 assert (
                     self.stop_gradient and self.augment_ctc
                 ) == False, "stop_gradient and augment_ctc cannot be true at the same time"
-                self.mse_loss = nn.MSELoss()
+                self.mse_loss = torch.nn.MSELoss()
 
                 self.ctc_decoder = GreedyCTCDecoder(self._text_tokenizer.tokens, self._text_tokenizer.blank)
 
@@ -380,7 +358,7 @@ class SSLDisentangler(ModelPT):
                         sim_loss = self.mse_loss(content_embedding, content_embedding_aug)
                     elif self.aug_loss_type == "cosine":
 
-                        cosine_similarity = nn.functional.cosine_similarity(
+                        cosine_similarity = torch.nn.functional.cosine_similarity(
                             content_embedding, content_embedding_aug, dim=-1
                         ).mean()
 
@@ -471,7 +449,7 @@ class SSLDisentangler(ModelPT):
                     if self.aug_loss_type == "mse":
                         sim_loss = self.mse_loss(content_embedding, content_embedding_aug)
                     elif self.aug_loss_type == "cosine":
-                        cosine_similarity = nn.functional.cosine_similarity(
+                        cosine_similarity = torch.nn.functional.cosine_similarity(
                             content_embedding, content_embedding_aug, dim=-1
                         ).mean()
                         sim_loss = 1.0 - cosine_similarity

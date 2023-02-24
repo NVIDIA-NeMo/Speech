@@ -180,7 +180,7 @@ class BasePromptLearningDataset(Dataset):
             taskname_ids = torch.tensor(taskname_ids)
 
         # Task ids are just used for a look up embeddings for prompt-table
-        elif self.virtual_prompt_source in [VirtualPromptSource.PROMPT_TABLE, VirtualPromptSource.NO_PROMPT]:
+        elif self.virtual_prompt_source == VirtualPromptSource.NO_PROMPT:
             taskname_ids = torch.tensor(taskname_ids)
 
         return taskname_ids

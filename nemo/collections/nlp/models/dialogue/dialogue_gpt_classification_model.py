@@ -291,7 +291,7 @@ class DialogueGPTClassificationModel(NLPModel):
 
     def get_virtual_prompt_ids_for_megatron_gpt(self, input_ids):
         if (
-            self.cfg.virtual_prompt_style == VirtualPromptStyle.PROMPT_TUNING
+            self.cfg.virtual_prompt_style == VirtualPromptStyle.P_TUNING
             or not self.prompt_learning
             or self.trainer.testing
         ):
@@ -712,10 +712,12 @@ class DialogueGPTClassificationModel(NLPModel):
     def setup(self, stage=None):
         super().setup(stage)
         if self.cfg.library == "megatron" and self.prompt_learning and stage == "fit":
-            if self.cfg.virtual_prompt_style == VirtualPromptStyle.PROMPT_TUNING:
-                self.language_model.init_new_prompts()
-            else:
+            if self.cfg.virtual_prompt_style == VirtualPromptStyle.P_TUNING:
                 self.language_model.init_prompt_encoder()
+            else:
+                raise ValueError(
+                    "Use model.virtual_prompt_style='p-tuning' with model.p_tuning.encoder_type='embedding' to enable prompt-tuning."
+                )
 
     def update_data_dirs(self, data_dir: str, dialogues_example_dir: str):
         """

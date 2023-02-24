@@ -198,12 +198,10 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
 
     # if transcripts should not be overwritten, and already exists, skip re-transcription step and return
     if not cfg.overwrite_output and os.path.exists(cfg.output_dir):
-        logging.warning(
+        raise RuntimeError(
             f"Previous output found at {cfg.output_dir}, and flag `overwrite_output`"
             f"is {cfg.overwrite_output}. Returning without processing."
         )
-
-        return cfg
 
     # Process audio
     with autocast():
@@ -225,12 +223,11 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
             with open(cfg.dataset_manifest, 'r') as fr:
                 for idx, line in enumerate(fr):
                     item = json.loads(line)
-                    item['audio_filepath_unprocessed'] = item[input_key]
-                    item['audio_filepath'] = paths2processed_files[idx]
+                    item['processed_audio_filepath'] = paths2processed_files[idx]
                     f.write(json.dumps(item) + "\n")
         else:
             for idx, processed_file in enumerate(paths2processed_files):
-                item = {'audio_filepath': processed_file}
+                item = {'processed_audio_filepath': processed_file}
                 f.write(json.dumps(item) + "\n")
 
     return cfg

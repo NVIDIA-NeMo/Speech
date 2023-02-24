@@ -129,7 +129,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
                     'input_channel_selector': input_channel_selector,
                     'batch_size': min(batch_size, len(paths2audio_files)),
                     'num_workers': num_workers,
-                    'channel_selector': input_channel_selector,
                 }
 
                 # Create output dir if necessary

@@ -134,9 +134,6 @@ class AudioMetricWrapper(Metric):
             target: tensor with target signals, shape (B, C, T)
             input_length: Optional, input tensor with length (in samples) of each signal in the batch, shape (B,).
                           If not provided, it is assumed that all samples are valid.
-
-        Returns:
-            Underlying metric averaged on the current batch.
         """
         preds, target = self._select_channel(preds=preds, target=target)
 

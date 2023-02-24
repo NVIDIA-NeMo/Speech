@@ -42,9 +42,13 @@ from hydra.utils import instantiate
 from joblib import Parallel, delayed
 from tqdm import tqdm
 
-from nemo.collections.tts.data.audio_trimming import AudioTrimmer
-from nemo.collections.tts.data.data_utils import normalize_volume, read_manifest, write_manifest
-from nemo.collections.tts.torch.helpers import get_base_dir
+from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
+    get_base_dir,
+    normalize_volume,
+    read_manifest,
+    write_manifest,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 

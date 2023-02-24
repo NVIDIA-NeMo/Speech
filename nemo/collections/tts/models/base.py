@@ -17,7 +17,7 @@ from typing import List
 
 import torch
 
-from nemo.collections.tts.helpers.helpers import OperationMode
+from nemo.collections.tts.parts.utils.helpers import OperationMode
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import AudioSignal

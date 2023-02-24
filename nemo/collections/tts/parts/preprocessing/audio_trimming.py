@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from nemo.collections.asr.models import EncDecClassificationModel
-from nemo.collections.tts.data.data_utils import normalize_volume
+from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume
 from nemo.utils import logging
 
 

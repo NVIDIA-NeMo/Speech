@@ -44,7 +44,7 @@
 
 import torch
 
-from nemo.collections.tts.helpers.helpers import binarize_attention_parallel, regulate_len
+from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel, regulate_len
 from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types.elements import (
     EncodedRepresentation,

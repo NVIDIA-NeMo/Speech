@@ -16,8 +16,9 @@ import os
 import unicodedata
 
 import pytest
-from nemo.collections.tts.g2p.data.data_utils import GRAPHEME_CASE_LOWER, GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER
+
 from nemo.collections.tts.g2p.modules import IPAG2P
+from nemo.collections.tts.parts.utils.g2p_utils import GRAPHEME_CASE_LOWER, GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER
 
 
 class TestIPAG2P:

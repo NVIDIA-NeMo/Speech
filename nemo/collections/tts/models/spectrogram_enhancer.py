@@ -49,13 +49,13 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from nemo.collections.tts.helpers.helpers import mask_sequence_tensor, to_device_recursive
 from nemo.collections.tts.losses.spectrogram_enhancer_losses import (
     ConsistencyLoss,
     GeneratorLoss,
     GradientPenaltyLoss,
     HingeLoss,
 )
+from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor, to_device_recursive
 from nemo.core import Exportable, ModelPT, typecheck
 from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 from nemo.core.neural_types.elements import BoolType

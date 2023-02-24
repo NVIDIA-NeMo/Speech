@@ -34,8 +34,7 @@ from typing import List, Tuple
 import torch
 from tqdm import tqdm
 
-from nemo.collections.tts.data.data_utils import get_sup_data_file_path, read_manifest
-from nemo.collections.tts.torch.helpers import get_base_dir
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, get_sup_data_file_path, read_manifest
 from nemo.collections.tts.torch.tts_data_types import Pitch
 from nemo.utils import logging
 

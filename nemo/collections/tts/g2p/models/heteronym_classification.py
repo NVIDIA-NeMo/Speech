@@ -27,7 +27,7 @@ from nemo.collections.nlp.metrics.classification_report import ClassificationRep
 from nemo.collections.nlp.modules.common import TokenClassifier
 from nemo.collections.nlp.parts.utils_funcs import tensor2list
 from nemo.collections.tts.data.g2p_dataset import HeteronymClassificationDataset
-from nemo.collections.tts.g2p.data.data_utils import get_heteronym_spans, get_wordid_to_phonemes, read_wordids
+from nemo.collections.tts.parts.utils.g2p_utils import get_heteronym_spans, get_wordid_to_phonemes, read_wordids
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 

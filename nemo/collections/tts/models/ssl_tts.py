@@ -23,8 +23,8 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.trainer.supporters import CombinedLoader
 
-import nemo.collections.tts.data.tts_dataset as TTSData
 from nemo.collections.asr.losses.angularloss import AngularSoftmaxLoss
+from nemo.collections.tts.data.tts_dataset import TTSDataset
 from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT
@@ -149,7 +149,7 @@ class SSLDisentangler(ModelPT):
 
         for task in self._cfg.downstream_heads.task_names:
             if task == 'speaker_verification':
-                sv_dataset = TTSData.TTSDataset(
+                sv_dataset = TTSDataset(
                     manifest_filepath=data_config['manifest_speaker_verification_fp'],
                     sample_rate=self._cfg.sample_rate,
                     text_tokenizer=_text_tokenizer,
@@ -168,7 +168,7 @@ class SSLDisentangler(ModelPT):
                 )
 
             elif task == 'content':
-                content_dataset = TTSData.TTSDataset(
+                content_dataset = TTSDataset(
                     manifest_filepath=data_config['manifest_content_fp'],
                     sample_rate=self._cfg.sample_rate,
                     text_tokenizer=_text_tokenizer,

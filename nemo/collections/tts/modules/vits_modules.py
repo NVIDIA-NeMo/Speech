@@ -41,15 +41,15 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, spectral_norm, weight_norm
 
-from nemo.collections.tts.helpers.helpers import (
+from nemo.collections.tts.modules.hifigan_modules import ResBlock1, ResBlock2, get_padding, init_weights
+from nemo.collections.tts.modules.monotonic_align import maximum_path
+from nemo.collections.tts.parts.utils.helpers import (
     convert_pad_shape,
     generate_path,
     get_mask_from_lengths,
     rand_slice_segments,
 )
-from nemo.collections.tts.helpers.splines import piecewise_rational_quadratic_transform
-from nemo.collections.tts.modules.hifigan_modules import ResBlock1, ResBlock2, get_padding, init_weights
-from nemo.collections.tts.modules.monotonic_align import maximum_path
+from nemo.collections.tts.parts.utils.splines import piecewise_rational_quadratic_transform
 
 LRELU_SLOPE = 0.1
 

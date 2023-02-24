@@ -16,10 +16,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from nemo.collections.tts.helpers.helpers import get_mask_from_lengths
 from nemo.collections.tts.modules.common import ConvLSTMLinear
 from nemo.collections.tts.modules.submodules import ConvNorm, MaskedInstanceNorm1d
 from nemo.collections.tts.modules.transformer import FFTransformer
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 
 
 def get_attribute_prediction_model(config):

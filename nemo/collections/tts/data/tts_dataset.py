@@ -34,7 +34,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     EnglishCharsTokenizer,
     EnglishPhonemesTokenizer,
 )
-from nemo.collections.tts.torch.helpers import (
+from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     BetaBinomialInterpolator,
     beta_binomial_prior_distribution,
     general_padding,

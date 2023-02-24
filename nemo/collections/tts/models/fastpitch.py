@@ -22,17 +22,17 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo.collections.common.parts.preprocessing import parsers
-from nemo.collections.tts.helpers.helpers import (
+from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
+from nemo.collections.tts.losses.fastpitchloss import DurationLoss, EnergyLoss, MelLoss, PitchLoss
+from nemo.collections.tts.models.base import SpectrogramGenerator
+from nemo.collections.tts.modules.fastpitch import FastPitchModule
+from nemo.collections.tts.parts.utils.helpers import (
     batch_from_ragged,
     plot_alignment_to_numpy,
     plot_spectrogram_to_numpy,
     process_batch,
     sample_tts_input,
 )
-from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
-from nemo.collections.tts.losses.fastpitchloss import DurationLoss, EnergyLoss, MelLoss, PitchLoss
-from nemo.collections.tts.models.base import SpectrogramGenerator
-from nemo.collections.tts.modules.fastpitch import FastPitchModule
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (

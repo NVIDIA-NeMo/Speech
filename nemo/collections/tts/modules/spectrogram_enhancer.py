@@ -46,7 +46,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from kornia.filters import filter2d
 
-from nemo.collections.tts.helpers.helpers import mask_sequence_tensor
+from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 class Blur(torch.nn.Module):

@@ -15,7 +15,7 @@
 import numpy as np
 import pytest
 
-from nemo.collections.tts.data.data_utils import normalize_volume
+from nemo.collections.tts.parts.utils.tts_dataset_utils import normalize_volume
 
 
 class TestDataUtils:

@@ -15,7 +15,7 @@
 import pytest
 import torch
 
-from nemo.collections.tts.helpers.helpers import regulate_len
+from nemo.collections.tts.parts.utils.helpers import regulate_len
 
 
 def sample_duration_input(max_length=64, group_size=2):

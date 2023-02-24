@@ -22,7 +22,7 @@ import soundfile as sf
 import torch
 
 from nemo.collections.tts.models import AlignerModel
-from nemo.collections.tts.torch.helpers import general_padding
+from nemo.collections.tts.parts.utils.tts_dataset_utils import general_padding
 
 
 """

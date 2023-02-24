@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import contextlib
-import random
 
 import torch
 from hydra.utils import instantiate
@@ -21,14 +20,14 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import BaseTokenizer
-from nemo.collections.tts.helpers.helpers import (
+from nemo.collections.tts.losses.radttsloss import AttentionBinarizationLoss, RADTTSLoss
+from nemo.collections.tts.models.base import SpectrogramGenerator
+from nemo.collections.tts.parts.utils.helpers import (
     batch_from_ragged,
     plot_alignment_to_numpy,
     regulate_len,
     sample_tts_input,
 )
-from nemo.collections.tts.losses.radttsloss import AttentionBinarizationLoss, RADTTSLoss
-from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types.elements import (

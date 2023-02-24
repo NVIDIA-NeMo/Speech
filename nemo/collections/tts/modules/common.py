@@ -22,15 +22,14 @@ from torch import Tensor, nn
 from torch.cuda import amp
 from torch.cuda.amp import autocast as autocast
 from torch.nn import functional as F
-from torch.nn.utils.rnn import PackedSequence
 
-from nemo.collections.tts.helpers.helpers import get_mask_from_lengths, sort_tensor, unsort_tensor
-from nemo.collections.tts.helpers.splines import (
+from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm, MaskedInstanceNorm1d
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths, sort_tensor, unsort_tensor
+from nemo.collections.tts.parts.utils.splines import (
     piecewise_linear_inverse_transform,
     piecewise_linear_transform,
     unbounded_piecewise_quadratic_transform,
 )
-from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm, MaskedInstanceNorm1d
 
 
 @torch.jit.script

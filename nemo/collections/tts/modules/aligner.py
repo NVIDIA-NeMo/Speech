@@ -15,8 +15,8 @@
 import torch
 from torch import nn
 
-from nemo.collections.tts.helpers.helpers import binarize_attention_parallel
 from nemo.collections.tts.modules.submodules import ConvNorm
+from nemo.collections.tts.parts.utils.helpers import binarize_attention_parallel
 
 
 class AlignmentEncoder(torch.nn.Module):

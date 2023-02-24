@@ -25,7 +25,7 @@ import torch
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
 from nemo.collections.tts.models import fastpitch_ssl, hifigan, ssl_tts
-from nemo.collections.tts.torch.helpers import get_base_dir
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
 
 
 def load_wav(wav_path, wav_featurizer, pad_multiple=1024):

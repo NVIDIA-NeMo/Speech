@@ -18,9 +18,9 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig, open_dict
 from pytorch_lightning.loggers import TensorBoardLogger
 
-from nemo.collections.tts.helpers.helpers import OperationMode, waveglow_log_to_tb_func
 from nemo.collections.tts.losses.waveglowloss import WaveGlowLoss
 from nemo.collections.tts.models.base import GlowVocoder
+from nemo.collections.tts.parts.utils.helpers import OperationMode, waveglow_log_to_tb_func
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (

@@ -25,11 +25,11 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
 
+from nemo.collections.tts.data.tts_dataset import DistributedBucketSampler
 from nemo.collections.tts.helpers.helpers import clip_grad_value_, plot_spectrogram_to_numpy, slice_segments
 from nemo.collections.tts.losses.vits_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss, KlLoss
 from nemo.collections.tts.models.base import TextToWaveform
 from nemo.collections.tts.modules.vits_modules import MultiPeriodDiscriminator
-from nemo.collections.tts.torch.data import DistributedBucketSampler
 from nemo.collections.tts.torch.tts_data_types import SpeakerID
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import AudioSignal, FloatType, Index, IntType, TokenIndex

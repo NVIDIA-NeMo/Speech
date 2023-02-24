@@ -21,7 +21,7 @@ model:
   sigma: 1.0
   train_ds:
     dataset:
-      _target_: "nemo.collections.tts.torch.data.VocoderDataset"
+      _target_: "nemo.collections.tts.data.tts_dataset.VocoderDataset"
       manifest_filepath: ${train_dataset}
       sample_rate: ${sample_rate}
       max_duration: null
@@ -36,7 +36,7 @@ model:
 
   validation_ds:
     dataset:
-      _target_: "nemo.collections.tts.torch.data.VocoderDataset"
+      _target_: "nemo.collections.tts.data.tts_dataset.VocoderDataset"
       manifest_filepath: ${validation_datasets}
       sample_rate: ${sample_rate}
       max_duration: null

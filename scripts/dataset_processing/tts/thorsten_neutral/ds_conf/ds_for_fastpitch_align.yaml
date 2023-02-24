@@ -5,7 +5,7 @@ sup_data_path: "sup_data"
 sup_data_types: [ "align_prior_matrix", "pitch" ]
 
 dataset:
-  _target_: nemo.collections.tts.torch.data.TTSDataset
+  _target_: nemo.collections.tts.data.tts_dataset.TTSDataset
   manifest_filepath: ${manifest_filepath}
   sample_rate: 22050
   sup_data_path: ${sup_data_path}

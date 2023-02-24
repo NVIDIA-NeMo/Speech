@@ -35,7 +35,7 @@ model:
 
   train_ds:
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.heteronym_classification_data.HeteronymClassificationDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.HeteronymClassificationDataset"
       manifest: ${train_manifest}
       grapheme_field: "text_graphemes" # name of the field in manifest for input grapheme text
     dataloader_params:
@@ -46,7 +46,7 @@ model:
 
   validation_ds:
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.heteronym_classification_data.HeteronymClassificationDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.HeteronymClassificationDataset"
       manifest: ${validation_manifest}
       grapheme_field: "text_graphemes" # name of the field in manifest for input grapheme text
     dataloader_params:
@@ -57,7 +57,7 @@ model:
 
   test_ds:
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.heteronym_classification_data.HeteronymClassificationDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.HeteronymClassificationDataset"
       manifest: ${test_manifest}
       grapheme_field: "text_graphemes" # name of the field in manifest for input grapheme text
     dataloader_params:

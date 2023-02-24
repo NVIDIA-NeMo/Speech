@@ -69,7 +69,7 @@ model:
   train_ds:
     manifest_filepath: ${train_manifest}
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.CTCG2PBPEDataset"
       phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
       grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
     dataloader_params:
@@ -81,7 +81,7 @@ model:
   validation_ds:
     manifest_filepath: ${validation_manifest}
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.CTCG2PBPEDataset"
       phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
       grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
     dataloader_params:
@@ -93,7 +93,7 @@ model:
   test_ds:
     manifest_filepath: ${test_manifest}
     dataset:
-      _target_: "nemo.collections.tts.g2p.data.ctc_g2p.CTCG2PBPEDataset"
+      _target_: "nemo.collections.tts.data.g2p_dataset.CTCG2PBPEDataset"
       phoneme_field: "text" # name of the field in manifest_filepath for ground truth phonemes
       grapheme_field: "text_graphemes" # name of the field in manifest_filepath for input grapheme text
     dataloader_params:

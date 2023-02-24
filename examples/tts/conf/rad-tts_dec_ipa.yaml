@@ -71,7 +71,7 @@ model:
       
   train_ds:
     dataset:
-      _target_: "nemo.collections.tts.torch.data.TTSDataset"
+      _target_: "nemo.collections.tts.data.tts_dataset.TTSDataset"
       manifest_filepath: ${train_dataset}
       sample_rate: ${sample_rate}
       sup_data_path: ${sup_data_path}
@@ -117,7 +117,7 @@ model:
 
   validation_ds:
     dataset:
-      _target_: "nemo.collections.tts.torch.data.TTSDataset"
+      _target_: "nemo.collections.tts.data.tts_dataset.TTSDataset"
       manifest_filepath: ${validation_datasets}
       sample_rate: ${sample_rate}
       sup_data_path: ${sup_data_path}

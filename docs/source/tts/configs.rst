@@ -16,14 +16,16 @@ Dataset Configuration
 
 Training, validation, and test parameters are specified using the ``model.train_ds``, ``model.validation_ds``, and ``model.test_ds`` sections in the configuration file, respectively. Depending on the task, there may be arguments specifying the sample rate of the audio files, supplementary data such as speech/text alignment priors and speaker IDs, etc., the threshold to trim leading and trailing silence from an audio signal, pitch normalization parameters, and so on. You may also decide to leave fields such as the ``manifest_filepath`` blank, to be specified via the command-line at runtime.
 
-Any initialization parameter that is accepted for the class `nemo.collections.tts.torch.data.TTSDataset <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/torch/data.py#L78>`_  can be set in the config file. Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
+Any initialization parameter that is accepted for the class `nemo.collections.tts.data.tts_dataset.TTSDataset
+<https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/tts_dataset.py#L80>`_  can be set in the config
+file. Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
 
 .. code-block:: yaml
 
   model:
     train_ds:
       dataset:
-        _target_: nemo.collections.tts.torch.data.TTSDataset
+        _target_: nemo.collections.tts.data.tts_dataset.TTSDataset
         manifest_filepath: ???
         sample_rate: 44100
         sup_data_path: ???

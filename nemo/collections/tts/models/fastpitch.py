@@ -528,7 +528,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         elif cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
-        if cfg.dataset._target_ == "nemo.collections.tts.torch.data.TTSDataset":
+        if cfg.dataset._target_ == "nemo.collections.tts.data.tts_dataset.TTSDataset":
             phon_mode = contextlib.nullcontext()
             if hasattr(self.vocab, "set_phone_prob"):
                 phon_mode = self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability)

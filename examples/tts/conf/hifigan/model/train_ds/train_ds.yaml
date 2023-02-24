@@ -1,5 +1,5 @@
 dataset:
-  _target_: "nemo.collections.tts.torch.data.VocoderDataset"
+  _target_: "nemo.collections.tts.data.tts_dataset.VocoderDataset"
   manifest_filepath: ${train_dataset}
   sample_rate: ${sample_rate}
   n_segments: ${train_n_segments}

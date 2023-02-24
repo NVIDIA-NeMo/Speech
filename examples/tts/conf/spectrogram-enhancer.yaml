@@ -34,7 +34,7 @@ model:
 
   train_ds:
     dataset:
-      _target_: "nemo.collections.tts.torch.data.PairedRealFakeSpectrogramsDataset"
+      _target_: "nemo.collections.tts.data.tts_dataset.PairedRealFakeSpectrogramsDataset"
       manifest_filepath: ???
     dataloader_params:
       drop_last: true

@@ -34,7 +34,7 @@ class GPTPromptLearningDataset(Dataset):
     Args:
         data (list[strings], list[dicts]): (1) paths to .jsonl or .json files, (2) dict objects corresponding to each input example
         tokenizer (tokenizer): Tokenizer from frozen language model
-        virtual_prompt_source (Enum): Either VirtualPromptSource.PROMPT_TABLE or VirtualPromptSource.PROMPT_ENCODER
+        virtual_prompt_source (Enum): Either VirtualPromptSource.NO_PROMPTS or VirtualPromptSource.PROMPT_ENCODER
         task_templates (dict): Dictionary containing all task template information needed to format prompts. Created in the GPTPromptLearningModel class.
         pseudo_tokens (list[strings]): A list of virtual prompt token placeholders e.g [<prompt_1>, <prompt_2>, ...] up to max num virtual tokens
         pad_token_id (int): ID of pad token from tokenizer
@@ -179,10 +179,6 @@ class GPTPromptLearningDataset(Dataset):
             if self.min_seq_length <= len(input_ids) <= self.max_seq_length:
                 if self.virtual_prompt_source == VirtualPromptSource.PROMPT_ENCODER:
                     taskname_id = self.tokenizer.text_to_ids(taskname)
-
-                elif self.virtual_prompt_source == VirtualPromptSource.PROMPT_TABLE:
-                    taskname_id = self.task_templates[taskname]["task_id_num"]
-
                 elif self.virtual_prompt_source == VirtualPromptSource.NO_PROMPT:
                     taskname_id = -1
                 else:
@@ -342,7 +338,7 @@ class GPTPromptLearningDataset(Dataset):
             taskname_ids = torch.tensor(taskname_ids)
 
         # Task ids are just used for a look up embeddings for prompt-table
-        elif self.virtual_prompt_source in [VirtualPromptSource.PROMPT_TABLE, VirtualPromptSource.NO_PROMPT]:
+        elif self.virtual_prompt_source == VirtualPromptSource.NO_PROMPT:
             taskname_ids = torch.tensor(taskname_ids)
 
         # Get max sequence length of batch

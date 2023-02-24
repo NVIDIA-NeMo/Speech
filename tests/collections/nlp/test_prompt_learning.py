@@ -98,49 +98,12 @@ class TestMegatronGPTPromptLearningDataset:
         tokenizer.add_special_tokens({'additional_special_tokens': pseudo_tokens})
 
         dataset = get_prompt_tuning_dataset(
-            dataset_path, tokenizer, VirtualPromptSource.PROMPT_TABLE, task_templates, pseudo_tokens,
-        )
-
-        dataset = get_prompt_tuning_dataset(
             dataset_path, tokenizer, VirtualPromptSource.PROMPT_ENCODER, task_templates, pseudo_tokens,
         )
 
         print(type(dataset))
 
         assert isinstance(dataset, Dataset)
-
-        os.remove(dataset_path)
-
-    @pytest.mark.run_only_on('GPU')
-    @pytest.mark.unit
-    def test_prompt_learning_dataset_collate_fn_prompt_table(self):
-        tokenizer = get_nmt_tokenizer(library='megatron', model_name='GPT2BPETokenizer')
-        task_templates = get_task_templates()
-        dataset_path = create_temp_dataset()
-
-        # Setup virtual token place holders
-        total_virtual_tokens = 10
-        pseudo_tokens = get_pseudo_tokens(total_virtual_tokens)
-        tokenizer.add_special_tokens({'additional_special_tokens': pseudo_tokens})
-
-        dataset = get_prompt_tuning_dataset(
-            dataset_path, tokenizer, VirtualPromptSource.PROMPT_TABLE, task_templates, pseudo_tokens,
-        )
-
-        batch = [dataset[i] for i in range(8)]
-        batch = dataset.collate_fn(batch)
-
-        assert len(batch) == 6
-
-        input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids = batch
-
-        assert len(input_ids) == len(loss_mask) == len(attention_mask) == len(position_ids)
-        assert len(input_ids) == len(taskname_ids)
-        assert len(labels) == len(input_ids)
-        assert len(labels[0]) == len(loss_mask[0])
-        assert len(input_ids[0]) == attention_mask[0].size()[-1]
-        assert len(taskname_ids.shape) == 1
-        assert taskname_ids[0] == 0
 
         os.remove(dataset_path)
 
@@ -175,6 +138,5 @@ class TestMegatronGPTPromptLearningDataset:
 if __name__ == "__main__":
     t = TestMegatronGPTPromptLearningDataset()
     t.test_init_prompt_learning_dataset()
-    t.test_prompt_learning_dataset_collate_fn_prompt_table()
     t.test_prompt_learning_dataset_collate_fn_prompt_encoder()
     print('-' * 50 + '\nALL PROMPT TUNING UNIT TESTS PASS!\n' + '-' * 50)

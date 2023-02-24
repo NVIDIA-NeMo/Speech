@@ -971,6 +971,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
         inputs: Union[List[str], torch.Tensor, List[dict]],
         length_params: LengthParam,
         sampling_params: SamplingParam = None,
+        batch_size: Optional[int] = 1,
     ):
 
         # check whether the DDP is initialized
@@ -1002,6 +1003,7 @@ class MegatronGPTPromptLearningModel(MegatronBaseModel, TextGeneration):
 
         dataset = self.build_virtual_prompt_dataset(
             data=data,
+            batch_size=batch_size,
             max_seq_length=max_input_length,
             min_seq_length=self.cfg.data.get('min_seq_length', 1),
             add_bos=sampling_params["add_BOS"],

@@ -87,7 +87,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         return output, None
 
     def setup(self, stage=None):
-        if stage == 'predict' or self.virtual_prompt_style == VirtualPromptStyle.INFERENCE:
+        if stage == 'predict':
             self.frozen_model.freeze()
             return
 

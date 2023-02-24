@@ -70,6 +70,7 @@ model:
   p_tuning: # P-tuning specific params
     dropout: 0.0
     num_layers: 2
+    encoder_type: mlp # lstm or tpmlp or embedding
   prompt_learning_nemo_path: prompt_learning.nemo
   data: {}
   virtual_prompt_style: 'p-tuning' # 'prompt-tuning'

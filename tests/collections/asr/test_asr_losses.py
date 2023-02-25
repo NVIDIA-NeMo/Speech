@@ -16,8 +16,17 @@ import numpy as np
 import pytest
 import torch
 
-from nemo.collections.asr.losses.audio_losses import SDRLoss, calculate_sdr_batch
-from nemo.collections.asr.parts.utils.audio_utils import calculate_sdr_numpy
+from nemo.collections.asr.losses.audio_losses import (
+    SDRLoss,
+    calculate_sdr_batch,
+    convolution_invariant_target,
+    scale_invariant_target,
+)
+from nemo.collections.asr.parts.utils.audio_utils import (
+    calculate_sdr_numpy,
+    convolution_invariant_target_numpy,
+    scale_invariant_target_numpy,
+)
 
 
 class TestAudioLosses:
@@ -334,6 +343,125 @@ class TestAudioLosses:
 
             # Calculate SDR loss
             uut_sdr_loss = sdr_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
+            ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('filter_length', [1, 32])
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_target_calculation(self, num_channels: int, filter_length: int):
+        """Test target calculation with scale and convolution invariance.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=filter_length, high=max_num_samples, size=batch_size)
+
+            # UUT
+            si_target = scale_invariant_target(
+                estimate=torch.tensor(estimate),
+                target=torch.tensor(target),
+                input_length=torch.tensor(input_length),
+                mask=None,
+            )
+            ci_target = convolution_invariant_target(
+                estimate=torch.tensor(estimate),
+                target=torch.tensor(target),
+                input_length=torch.tensor(input_length),
+                mask=None,
+                filter_length=filter_length,
+            )
+
+            if filter_length == 1:
+                assert torch.allclose(ci_target, si_target), f'SI and CI should match for filter_length=1'
+
+            # Compare against numpy
+            for b, b_len in enumerate(input_length):
+                for m in range(num_channels):
+                    # Scale invariant reference
+                    si_target_ref = scale_invariant_target_numpy(
+                        estimate=estimate[b, m, :b_len], target=target[b, m, :b_len]
+                    )
+
+                    assert np.allclose(
+                        si_target[b, m, :b_len].cpu().detach().numpy(), si_target_ref, atol=atol
+                    ), f'SI not matching for example {n}, channel {m}'
+
+                    # Convolution invariant reference
+                    ci_target_ref = convolution_invariant_target_numpy(
+                        estimate=estimate[b, m, :b_len], target=target[b, m, :b_len], filter_length=filter_length
+                    )
+
+                    assert np.allclose(
+                        ci_target[b, m, :b_len].cpu().detach().numpy(), ci_target_ref, atol=atol
+                    ), f'CI not matching for example {n}, channel {m}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('filter_length', [1, 32])
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    def test_sdr_convolution_invariant(self, num_channels: int, filter_length: int):
+        """Test SDR calculation with convolution invariant option.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        sdr_loss = SDRLoss(convolution_invariant=True, convolution_filter_length=filter_length)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=(batch_size, num_channels, max_num_samples))
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=filter_length, high=max_num_samples, size=batch_size)
+
+            # Calculate SDR loss
+            uut_sdr_loss = sdr_loss(
+                estimate=torch.tensor(estimate), target=torch.tensor(target), input_length=torch.tensor(input_length)
+            )
+
+            # Reference SDR
+            golden_sdr = 0
+            for b, b_len in enumerate(input_length):
+                sdr = [
+                    calculate_sdr_numpy(
+                        estimate=estimate[b, m, :b_len],
+                        target=target[b, m, :b_len],
+                        convolution_invariant=True,
+                        convolution_filter_length=filter_length,
+                    )
+                    for m in range(num_channels)
+                ]
+                sdr = np.mean(np.array(sdr))
+                golden_sdr += sdr
+            golden_sdr /= batch_size  # average over batch
 
             # Compare
             assert np.allclose(

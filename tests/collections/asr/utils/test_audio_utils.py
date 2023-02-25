@@ -19,6 +19,8 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+import scipy
+import torch
 
 from nemo.collections.asr.parts.utils.audio_utils import SOUND_VELOCITY as sound_velocity
 from nemo.collections.asr.parts.utils.audio_utils import (
@@ -33,6 +35,7 @@ from nemo.collections.asr.parts.utils.audio_utils import (
     rms,
     select_channels,
     theoretical_coherence,
+    toeplitz,
 )
 
 
@@ -400,3 +403,32 @@ class TestAudioUtilsElements:
                 golden_ref += np.convolve(x_m_delayed, f[:, m], mode='full')[: len(x)]
 
             assert np.allclose(uut, golden_ref, atol=atol), f'Example {n}: UUT not matching the reference.'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('filter_length', [10])
+    @pytest.mark.parametrize('num_samples', [10, 100])
+    def test_toeplitz(self, num_channels: int, filter_length: int, num_samples: int):
+        """Test construction of a Toeplitz matrix for a given signal.
+        """
+        atol = 1e-6
+        random_seed = 42
+        num_batches = 10
+        batch_size = 8
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_batches):
+            x = _rng.normal(size=(batch_size, num_channels, num_samples))
+
+            # Construct Toeplitz matrix
+            Tx = toeplitz(x=torch.tensor(x))
+
+            # Compare against the reference
+            for b in range(batch_size):
+                for m in range(num_channels):
+                    T_ref = scipy.linalg.toeplitz(x[b, m, ...])
+
+                    assert np.allclose(
+                        Tx[b, m, ...].cpu().numpy(), T_ref, atol=atol
+                    ), f'Example {n}: not matching the reference for (b={b}, m={m}), .'

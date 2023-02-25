@@ -408,6 +408,8 @@ def calculate_sdr_numpy(
     estimate: np.ndarray,
     target: np.ndarray,
     scale_invariant: bool = False,
+    convolution_invariant: bool = False,
+    convolution_filter_length: Optional[int] = None,
     remove_mean: bool = True,
     sdr_max: Optional[float] = None,
     eps: float = 1e-10,
@@ -428,15 +430,19 @@ def calculate_sdr_numpy(
     Returns:
         SDR in dB.
     """
+    if scale_invariant and convolution_invariant:
+        raise ValueError('Arguments scale_invariant and convolution_invariant cannot be used simultaneously.')
+
     if remove_mean:
         estimate = estimate - np.mean(estimate)
         target = target - np.mean(target)
 
-    if scale_invariant:
-        estimate_dot_target = np.mean(estimate * target)
-        target_pow = np.mean(np.abs(target) ** 2)
-        target_scale = estimate_dot_target / (target_pow + eps)
-        target = target_scale * target
+    if scale_invariant or (convolution_invariant and convolution_filter_length == 1):
+        target = scale_invariant_target_numpy(estimate=estimate, target=target, eps=eps)
+    elif convolution_invariant:
+        target = convolution_invariant_target_numpy(
+            estimate=estimate, target=target, filter_length=convolution_filter_length, eps=eps
+        )
 
     target_pow = np.mean(np.abs(target) ** 2)
     distortion_pow = np.mean(np.abs(estimate - target) ** 2)
@@ -511,3 +517,88 @@ def convmtx_mc_numpy(x: np.ndarray, filter_length: int, delay: int = 0, n_steps:
         mc_mtx.append(convmtx_numpy(x[:, m], filter_length=filter_length, delay=delay, n_steps=n_steps))
 
     return np.hstack(mc_mtx)
+
+
+def scale_invariant_target_numpy(estimate: np.ndarray, target: np.ndarray, eps: float = 1e-10) -> np.ndarray:
+    """Calculate convolution-invariant target for a given estimated signal.
+    
+    Calculate scaled target obtained by solving
+
+        min_scale || scale * target - estimate ||^2
+
+    Args:
+        estimate: one-dimensional estimated signal, shape (T,)
+        target: one-dimensional target signal, shape (T,)
+        eps: regularization constans
+
+    Returns:
+        Scaled target signal, shape (T,)
+    """
+    assert target.ndim == estimate.ndim == 1, f'Only one-dimensional inputs supported'
+
+    estimate_dot_target = np.mean(estimate * target)
+    target_pow = np.mean(np.abs(target) ** 2)
+    scale = estimate_dot_target / (target_pow + eps)
+    return scale * target
+
+
+def convolution_invariant_target_numpy(
+    estimate: np.ndarray, target: np.ndarray, filter_length, diag_reg: float = 1e-8, eps: float = 1e-10
+) -> np.ndarray:
+    """Calculate convolution-invariant target for a given estimated signal.
+    
+    Calculate target filtered with a linear f obtained by solving
+
+        min_filter || conv(filter, target) - estimate ||^2
+
+    Args:
+        estimate: one-dimensional estimated signal
+        target: one-dimensional target signal
+        filter_length: length of the (convolutive) filter
+        diag_reg: multiplicative factor for relative diagonal loading
+        eps: absolute diagonal loading
+    """
+    assert target.ndim == estimate.ndim == 1, f'Only one-dimensional inputs supported'
+
+    n_fft = 2 ** math.ceil(math.log2(len(target) + len(estimate) - 1))
+
+    T = np.fft.rfft(target, n=n_fft)
+    E = np.fft.rfft(estimate, n=n_fft)
+
+    # target autocorrelation
+    tt_corr = np.fft.irfft(np.abs(T) ** 2, n=n_fft)
+    # target-estimate crosscorrelation
+    te_corr = np.fft.irfft(T.conj() * E, n=n_fft)
+
+    # Use only filter_length
+    tt_corr = tt_corr[:filter_length]
+    te_corr = te_corr[:filter_length]
+
+    if diag_reg is not None:
+        tt_corr[0] += diag_reg * tt_corr[0] + eps
+
+    # Construct the Toeplitz system matrix
+    TT = scipy.linalg.toeplitz(tt_corr)
+
+    # Solve the linear system for the optimal filter
+    filt = np.linalg.solve(TT, te_corr)
+
+    # Calculate filtered target
+    T_filt = T * np.fft.rfft(filt, n=n_fft)
+    target_filt = np.fft.irfft(T_filt, n=n_fft)
+
+    return target_filt[: len(target)]
+
+
+def toeplitz(x: torch.Tensor) -> torch.Tensor:
+    """Create Toeplitz matrix for one-dimensional signals along the last dimension.
+
+    Args:
+        x: tensor with shape (..., T)
+
+    Returns:
+        Tensor with shape (..., T, T)
+    """
+    length = x.size(-1)
+    x = torch.cat([x[..., 1:].flip(dims=(-1,)), x], dim=-1)
+    return x.unfold(-1, length, 1).flip(dims=(-1,))

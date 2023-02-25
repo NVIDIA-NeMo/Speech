@@ -25,7 +25,7 @@ from torch import nn
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from nemo.collections.tts.data.g2p_dataset import CTCG2PBPEDataset
-from nemo.collections.tts.g2p.models.g2p_model import G2PModel
+from nemo.collections.tts.models.base import G2PModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
 

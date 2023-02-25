@@ -59,7 +59,7 @@ To train ByT5 G2P model and evaluate it after at the end of the training, run:
         do_training=True \
         do_testing=True
 
-Example of the config file: ``NeMo/examples/text_processing/g2p/conf/t5_g2p.yaml``.
+Example of the config file: ``NeMo/examples/tts/g2p/conf/g2p_t5.yaml``.
 
 
 To train G2P-Conformer model and evaluate it after at the end of the training, run:
@@ -168,7 +168,7 @@ To train the model, run:
 
 .. code-block::
 
-    python heteronym_classification_train_and_evaluate.py \
+    python g2p_heteronym_classification_train_and_evaluate.py \
         train_manifest=<Path to train manifest file>" \
         validation_manifest=<Path to validation manifest file>" \
         model.wordids=<Path to wordids.tsv file, similar to https://github.com/google-research-datasets/WikipediaHomographData/blob/master/data/wordids.tsv> \
@@ -179,7 +179,7 @@ To train the model and evaluate it when the training is complete, run:
 
 .. code-block::
 
-    python heteronym_classification_train_and_evaluate.py \
+    python g2p_heteronym_classification_train_and_evaluate.py \
         train_manifest=<Path to train manifest file>" \
         validation_manifest=<Path to validation manifest file>" \
         model.test_ds.dataset.manifest=<Path to test manifest file>" \
@@ -191,7 +191,7 @@ To evaluate pretrained model, run:
 
 .. code-block::
 
-    python heteronym_classification_train_and_evaluate.py \
+    python g2p_heteronym_classification_train_and_evaluate.py \
         do_training=False \
         do_testing=True \
         model.test_ds.dataset.manifest=<Path to test manifest file>"  \
@@ -201,7 +201,7 @@ To run inference with a pretrained HeteronymClassificationModel, run:
 
 .. code-block::
 
-    python heteronym_classification_inference.py \
+    python g2p_heteronym_classification_inference.py \
         manifest="<Path to .json manifest>" \
         pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
         output_file="<Path to .json manifest to save prediction>"

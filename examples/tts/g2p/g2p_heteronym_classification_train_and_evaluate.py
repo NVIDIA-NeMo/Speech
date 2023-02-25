@@ -18,7 +18,7 @@ import pytorch_lightning as pl
 import torch
 
 from nemo.collections.common.callbacks import LogEpochTimeCallback
-from nemo.collections.tts.g2p.models.heteronym_classification import HeteronymClassificationModel
+from nemo.collections.tts.models.g2p_heteronym_classification import HeteronymClassificationModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -29,14 +29,14 @@ This script runs training and evaluation of HeteronymClassificationModel
 To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph_data_to_manifest.py
 
 To run training:
-python heteronym_classification_train_and_evaluate.py \
+python g2p_heteronym_classification_train_and_evaluate.py \
     train_manifest=<Path to train manifest file>" \
     validation_manifest=<Path to validation manifest file>" \
     model.wordids="<Path to wordids.tsv file>" \
     do_training=True
     
 To run training and testing (once the training is complete):
-python heteronym_classification_train_and_evaluate.py \
+python g2p_heteronym_classification_train_and_evaluate.py \
     train_manifest=<Path to train manifest file>" \
     validation_manifest=<Path to validation manifest file>" \
     model.test_ds.dataset.manifest=<Path to test manifest file>" \
@@ -45,7 +45,7 @@ python heteronym_classification_train_and_evaluate.py \
     do_testing=True
     
 To run testing:
-python heteronym_classification_train_and_evaluate.py \
+python g2p_heteronym_classification_train_and_evaluate.py \
     do_training=False \
     do_testing=True \
     model.test_ds.dataset.manifest=<Path to test manifest file>"  \
@@ -60,7 +60,7 @@ on how to convert WikiHomograph data for HeteronymClassificationModel training/e
 """
 
 
-@hydra_runner(config_path="conf", config_name="heteronym_classification.yaml")
+@hydra_runner(config_path="conf", config_name="g2p_heteronym_classification.yaml")
 def main(cfg):
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))

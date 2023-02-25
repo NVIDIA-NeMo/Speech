@@ -15,8 +15,8 @@
 import json
 
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.tts.g2p.models import CTCG2PModel
-from nemo.collections.tts.g2p.models.t5_g2p import T5G2PModel
+from nemo.collections.tts.models.g2p_ctc import CTCG2PModel
+from nemo.collections.tts.models.g2p_t5 import T5G2PModel
 from nemo.utils import logging
 
 

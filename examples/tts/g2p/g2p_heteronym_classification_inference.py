@@ -22,7 +22,7 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.tts.g2p.models.heteronym_classification import HeteronymClassificationModel
+from nemo.collections.tts.models.g2p_heteronym_classification import HeteronymClassificationModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -34,7 +34,7 @@ To prepare dataset, see NeMo/scripts/dataset_processing/g2p/export_wikihomograph
 
 Inference form manifest:
 
-python heteronym_classification_inference.py \
+python g2p_heteronym_classification_inference.py \
     manifest="<Path to .json manifest>" \
     pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
     output_manifest="<Path to .json manifest to save prediction>" \
@@ -42,7 +42,7 @@ python heteronym_classification_inference.py \
 
 Interactive inference:
 
-python heteronym_classification_inference.py \
+python g2p_heteronym_classification_inference.py \
     pretrained_model="<Path to .nemo file or pretrained model name from list_available_models()>" \
     wordid_to_phonemes_file="<Path to a file with mapping from wordid predicted by the model to phonemes>" # Optional
         

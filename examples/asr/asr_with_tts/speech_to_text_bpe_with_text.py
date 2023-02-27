@@ -21,6 +21,7 @@ python speech_to_text_bpe_with_text.py \
     # (Optional: --config-path=<path to dir of configs> --config-name=<name of config without .yaml>) \
     ++asr_model_type=<rnnt_bpe or ctc_bpe> \
     ++tts_model_path=<path to compatible tts model> \
+    ++enhancer_model_path=<optional path to enhancer model> \
     model.tokenizer.dir=<path to tokenizer> \
     model.tokenizer.type="bpe" \
     model.train_ds.manifest_filepath=<path(s) to manifest with audio-text pairs or null> \
@@ -70,7 +71,11 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     asr_model = ASRWithTTSModel.from_asr_config(
-        asr_cfg=cfg.model, asr_model_type=cfg.asr_model_type, tts_model_path=cfg.tts_model_path, trainer=trainer
+        asr_cfg=cfg.model,
+        asr_model_type=cfg.asr_model_type,
+        tts_model_path=cfg.tts_model_path,
+        enhancer_model_path=cfg.get("enhancer_model_path", None),
+        trainer=trainer,
     )
 
     # Initialize the weights of the model from another model, if provided via config

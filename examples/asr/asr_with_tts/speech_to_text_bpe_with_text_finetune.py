@@ -19,6 +19,7 @@ python speech_to_text_bpe_with_text_finetune.py \
     # (Optional: --config-path=<path to dir of configs> --config-name=<name of config without .yaml>) \
     model.asr_model_path=<path to ASR model> \
     model.tts_model_path=<path to compatible TTS model> \
+    model.enhancer_model_path=<optional path to enhancer model> \
     model.asr_model_fuse_bn=<true recommended if ConformerEncoder with BatchNorm, false otherwise> \
     model.train_ds.manifest_filepath=<path to manifest with audio-text pairs or null> \
     model.train_ds.text_data.manifest_filepath=<path(s) to manifest with train text> \

@@ -10,6 +10,7 @@ num_workers: 1
 sample_rate: 16000
 batch_size: 64
 device: null # can specify a specific device, i.e: cuda:1 (default cuda if cuda available, else cpu)
+verbose: True # enable additional logging
 
 diarizer:
   manifest_filepath: ???

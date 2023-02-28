@@ -23,7 +23,7 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridR
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.collections.asr.models.k2_sequence_models import EncDecK2SeqModel, EncDecK2SeqModelBPE
 from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
-from nemo.collections.asr.models.msdd_models import EncDecDiarLabelModel
+from nemo.collections.asr.models.msdd_models import EncDecDiarLabelModel, NeuralDiarizer
 from nemo.collections.asr.models.rnnt_bpe_models import EncDecRNNTBPEModel
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.models.slu_models import SLUIntentSlotBPEModel

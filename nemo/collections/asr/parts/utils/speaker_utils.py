@@ -142,15 +142,15 @@ def parse_scale_configs(window_lengths_in_sec, shift_lengths_in_sec, multiscale_
     In addition, you can also specify session-by-session multiscale weight. In this case, each dictionary key
     points to different weights.
     """
-    checkFloatConfig = [type(var) == float for var in (window_lengths_in_sec, shift_lengths_in_sec)]
-    checkListConfig = [
-        type(var) == type(omegaconf.listconfig.ListConfig([]))
+    check_float_config = [isinstance(var, float) for var in (window_lengths_in_sec, shift_lengths_in_sec)]
+    check_list_config = [
+        isinstance(var, (omegaconf.listconfig.ListConfig, list, tuple))
         for var in (window_lengths_in_sec, shift_lengths_in_sec, multiscale_weights)
     ]
-    if all(checkListConfig) or all(checkFloatConfig):
+    if all(check_list_config) or all(check_float_config):
 
         # If bare floating numbers are provided, convert them to list format.
-        if all(checkFloatConfig):
+        if all(check_float_config):
             window_lengths, shift_lengths, multiscale_weights = (
                 [window_lengths_in_sec],
                 [shift_lengths_in_sec],
@@ -168,17 +168,17 @@ def parse_scale_configs(window_lengths_in_sec, shift_lengths_in_sec, multiscale_
             and len(multiscale_weights) > 0
         )
         scale_order_check = (
-            window_lengths == sorted(window_lengths)[::-1] and shift_lengths == sorted(shift_lengths)[::-1]
+            list(window_lengths) == sorted(window_lengths)[::-1] and list(shift_lengths) == sorted(shift_lengths)[::-1]
         )
 
         # Check whether window lengths are longer than shift lengths
         if len(window_lengths) > 1:
-            shift_length_check = all([w > s for w, s in zip(window_lengths, shift_lengths)]) == True
+            shift_length_check = all([w > s for w, s in zip(window_lengths, shift_lengths)])
         else:
             shift_length_check = window_lengths[0] > shift_lengths[0]
 
         multiscale_args_dict = {'use_single_scale_clustering': False}
-        if all([length_check, scale_order_check, shift_length_check]) == True:
+        if all([length_check, scale_order_check, shift_length_check]):
             if len(window_lengths) > 1:
                 multiscale_args_dict['scale_dict'] = {
                     k: (w, s) for k, (w, s) in enumerate(zip(window_lengths, shift_lengths))
@@ -190,7 +190,7 @@ def parse_scale_configs(window_lengths_in_sec, shift_lengths_in_sec, multiscale_
         else:
             raise ValueError('Multiscale parameters are not properly setup.')
 
-    elif any(checkListConfig):
+    elif any(check_list_config):
         raise ValueError(
             'You must provide a list config for all three parameters: window, shift and multiscale weights.'
         )
@@ -430,7 +430,9 @@ def generate_cluster_labels(segment_ranges: List[str], cluster_labels: List[int]
     return diar_hyp, lines
 
 
-def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, clustering_params):
+def perform_clustering(
+    embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, clustering_params, device, verbose: bool = True
+):
     """
     Performs spectral clustering on embeddings with time stamps generated from VAD output
 
@@ -442,6 +444,10 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         AUDIO_RTTM_MAP (dict): AUDIO_RTTM_MAP for mapping unique id with audio file path and rttm path
         out_rttm_dir (str): Path to write predicted rttms
         clustering_params (dict): clustering parameters provided through config that contains max_num_speakers (int),
+        oracle_num_speakers (bool), max_rp_threshold(float), sparse_search_volume(int) and enhance_count_threshold (int)
+        use_torch_script (bool): Boolean that determines whether to use torch.jit.script for speaker clustering
+        device (torch.device): Device we are running on ('cpu', 'cuda').
+        verbose (bool): Enable TQDM progress bar.
 
     Returns:
         all_reference (list[uniq_name,Annotation]): reference annotations for score calculation
@@ -454,7 +460,7 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
     lines_cluster_labels = []
 
     cuda = True
-    if not torch.cuda.is_available():
+    if device.type != 'cuda':
         logging.warning("cuda=False, using CPU for eigen decomposition. This might slow down the clustering process.")
         cuda = False
 
@@ -465,7 +471,7 @@ def perform_clustering(embs_and_timestamps, AUDIO_RTTM_MAP, out_rttm_dir, cluste
         speaker_clustering = torch.jit.script(speaker_clustering)
         torch.jit.save(speaker_clustering, 'speaker_clustering_script.pt')
 
-    for uniq_id, audio_rttm_values in tqdm(AUDIO_RTTM_MAP.items(), desc='clustering', leave=True):
+    for uniq_id, audio_rttm_values in tqdm(AUDIO_RTTM_MAP.items(), desc='clustering', leave=True, disable=not verbose):
         uniq_embs_and_timestamps = embs_and_timestamps[uniq_id]
 
         if clustering_params.oracle_num_speakers:
@@ -704,7 +710,7 @@ def merge_int_intervals(intervals_in: List[List[int]]) -> List[List[int]]:
         merged_list (list):
             List containing the combined ranges.
             Example:
-                >>> merged_list 
+                >>> merged_list
                 [(102, 120)]
     """
     num_intervals = len(intervals_in)

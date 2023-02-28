@@ -23,6 +23,7 @@ from nemo.collections.asr.models.configs.classification_models_config import (
     EncDecClassificationDatasetConfig,
     EncDecClassificationModelConfig,
 )
+from nemo.collections.asr.models.configs.diarizer_config import NeuralDiarizerInferenceConfig
 from nemo.collections.asr.models.configs.matchboxnet_config import (
     EncDecClassificationModelConfigBuilder,
     MatchboxNetModelConfig,

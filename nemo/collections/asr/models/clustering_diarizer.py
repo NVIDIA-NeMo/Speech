@@ -19,7 +19,7 @@ import shutil
 import tarfile
 import tempfile
 from copy import deepcopy
-from typing import List, Optional
+from typing import Any, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -72,7 +72,7 @@ def get_available_model_names(class_name):
     return list(map(lambda x: x.pretrained_model_name, available_models))
 
 
-class ClusteringDiarizer(Model, DiarizationMixin):
+class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
     """
     Inference model Class for offline speaker diarization. 
     This class handles required functionality for diarization : Speech Activity Detection, Segmentation, 
@@ -80,10 +80,12 @@ class ClusteringDiarizer(Model, DiarizationMixin):
     All the parameters are passed through config file 
     """
 
-    def __init__(self, cfg: DictConfig, speaker_model=None):
-        cfg = model_utils.convert_model_config_to_dict_config(cfg)
-        # Convert config to support Hydra 1.0+ instantiation
-        cfg = model_utils.maybe_update_config_version(cfg)
+    def __init__(self, cfg: Union[DictConfig, Any], speaker_model=None):
+        super().__init__()
+        if isinstance(cfg, DictConfig):
+            cfg = model_utils.convert_model_config_to_dict_config(cfg)
+            # Convert config to support Hydra 1.0+ instantiation
+            cfg = model_utils.maybe_update_config_version(cfg)
         self._cfg = cfg
 
         # Diarizer set up
@@ -100,14 +102,9 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         self.multiscale_embeddings_and_timestamps = {}
         self._init_speaker_model(speaker_model)
         self._speaker_params = self._cfg.diarizer.speaker_embeddings.parameters
-        self._speaker_dir = os.path.join(self._diarizer_params.out_dir, 'speaker_outputs')
-        shutil.rmtree(self._speaker_dir, ignore_errors=True)
-        os.makedirs(self._speaker_dir)
 
         # Clustering params
         self._cluster_params = self._diarizer_params.clustering.parameters
-        default_device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._device = torch.device(cfg.device if cfg.device else default_device)
 
     @classmethod
     def list_available_models(cls):
@@ -119,7 +116,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         """
         model_path = self._cfg.diarizer.vad.model_path
         if model_path.endswith('.nemo'):
-            self._vad_model = EncDecClassificationModel.restore_from(model_path)
+            self._vad_model = EncDecClassificationModel.restore_from(model_path, map_location=self._cfg.device)
             logging.info("VAD model loaded locally from {}".format(model_path))
         else:
             if model_path not in get_available_model_names(EncDecClassificationModel):
@@ -128,8 +125,9 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                 )
                 model_path = "vad_telephony_marblenet"
             logging.info("Loading pretrained {} model from NGC".format(model_path))
-            self._vad_model = EncDecClassificationModel.from_pretrained(model_name=model_path)
-
+            self._vad_model = EncDecClassificationModel.from_pretrained(
+                model_name=model_path, map_location=self._cfg.device
+            )
         self._vad_window_length_in_sec = self._vad_params.window_length_in_sec
         self._vad_shift_length_in_sec = self._vad_params.shift_length_in_sec
         self.has_vad_model = True
@@ -143,10 +141,12 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         else:
             model_path = self._cfg.diarizer.speaker_embeddings.model_path
             if model_path is not None and model_path.endswith('.nemo'):
-                self._speaker_model = EncDecSpeakerLabelModel.restore_from(model_path)
+                self._speaker_model = EncDecSpeakerLabelModel.restore_from(model_path, map_location=self._cfg.device)
                 logging.info("Speaker Model restored locally from {}".format(model_path))
             elif model_path.endswith('.ckpt'):
-                self._speaker_model = EncDecSpeakerLabelModel.load_from_checkpoint(model_path)
+                self._speaker_model = EncDecSpeakerLabelModel.load_from_checkpoint(
+                    model_path, map_location=self._cfg.device
+                )
                 logging.info("Speaker Model restored locally from {}".format(model_path))
             else:
                 if model_path not in get_available_model_names(EncDecSpeakerLabelModel):
@@ -155,7 +155,9 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                     )
                     model_path = "ecapa_tdnn"
                 logging.info("Loading pretrained {} model from NGC".format(model_path))
-                self._speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name=model_path)
+                self._speaker_model = EncDecSpeakerLabelModel.from_pretrained(
+                    model_name=model_path, map_location=self._cfg.device
+                )
 
         self.multiscale_args_dict = parse_scale_configs(
             self._diarizer_params.speaker_embeddings.parameters.window_length_in_sec,
@@ -201,7 +203,6 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         shutil.rmtree(self._vad_dir, ignore_errors=True)
         os.makedirs(self._vad_dir)
 
-        self._vad_model = self._vad_model.to(self._device)
         self._vad_model.eval()
 
         time_unit = int(self._vad_window_length_in_sec / self._vad_shift_length_in_sec)
@@ -214,8 +215,10 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             data.append(get_uniqname_from_filepath(file))
 
         status = get_vad_stream_status(data)
-        for i, test_batch in enumerate(tqdm(self._vad_model.test_dataloader(), desc='vad', leave=True)):
-            test_batch = [x.to(self._device) for x in test_batch]
+        for i, test_batch in enumerate(
+            tqdm(self._vad_model.test_dataloader(), desc='vad', leave=True, disable=not self.verbose)
+        ):
+            test_batch = [x.to(self._vad_model.device) for x in test_batch]
             with autocast():
                 log_probs = self._vad_model(input_signal=test_batch[0], input_signal_length=test_batch[1])
                 probs = torch.softmax(log_probs, dim=-1)
@@ -258,11 +261,13 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         logging.info("Converting frame level prediction to speech/no-speech segment in start and end times format.")
 
+        vad_params = self._vad_params if isinstance(self._vad_params, (DictConfig, dict)) else self._vad_params.dict()
         table_out_dir = generate_vad_segment_table(
             vad_pred_dir=self.vad_pred_dir,
-            postprocessing_params=self._vad_params,
+            postprocessing_params=vad_params,
             frame_length_in_sec=frame_length_in_sec,
             num_workers=self._cfg.num_workers,
+            out_dir=self._vad_dir,
         )
 
         AUDIO_VAD_RTTM_MAP = {}
@@ -308,6 +313,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                     'window_length_in_sec': self._vad_window_length_in_sec,
                     'split_duration': self._split_duration,
                     'num_workers': self._cfg.num_workers,
+                    'out_dir': self._diarizer_params.out_dir,
                 }
                 manifest_vad_input = prepare_manifest(config)
             else:
@@ -337,15 +343,17 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         logging.info("Extracting embeddings for Diarization")
         self._setup_spkr_test_data(manifest_file)
         self.embeddings = {}
-        self._speaker_model = self._speaker_model.to(self._device)
         self._speaker_model.eval()
         self.time_stamps = {}
 
         all_embs = torch.empty([0])
         for test_batch in tqdm(
-            self._speaker_model.test_dataloader(), desc=f'[{scale_idx+1}/{num_scales}] extract embeddings', leave=True
+            self._speaker_model.test_dataloader(),
+            desc=f'[{scale_idx+1}/{num_scales}] extract embeddings',
+            leave=True,
+            disable=not self.verbose,
         ):
-            test_batch = [x.to(self._device) for x in test_batch]
+            test_batch = [x.to(self._speaker_model.device) for x in test_batch]
             audio_signal, audio_signal_len, labels, slices = test_batch
             with autocast():
                 _, embs = self._speaker_model.forward(input_signal=audio_signal, input_signal_length=audio_signal_len)
@@ -396,6 +404,14 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         """
 
         self._out_dir = self._diarizer_params.out_dir
+
+        self._speaker_dir = os.path.join(self._diarizer_params.out_dir, 'speaker_outputs')
+
+        if os.path.exists(self._speaker_dir):
+            logging.warning("Deleting previous clustering diarizer outputs.")
+            shutil.rmtree(self._speaker_dir, ignore_errors=True)
+        os.makedirs(self._speaker_dir)
+
         if not os.path.exists(self._out_dir):
             os.mkdir(self._out_dir)
 
@@ -442,19 +458,20 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             AUDIO_RTTM_MAP=self.AUDIO_RTTM_MAP,
             out_rttm_dir=out_rttm_dir,
             clustering_params=self._cluster_params,
+            device=self._speaker_model.device,
+            verbose=self.verbose,
         )
+        logging.info("Outputs are saved in {} directory".format(os.path.abspath(self._diarizer_params.out_dir)))
 
         # Scoring
-        score = score_labels(
+        return score_labels(
             self.AUDIO_RTTM_MAP,
             all_reference,
             all_hypothesis,
             collar=self._diarizer_params.collar,
             ignore_overlap=self._diarizer_params.ignore_overlap,
+            verbose=self.verbose,
         )
-
-        logging.info("Outputs are saved in {} directory".format(os.path.abspath(self._diarizer_params.out_dir)))
-        return score
 
     @staticmethod
     def __make_nemo_file_from_folder(filename, source_dir):
@@ -536,3 +553,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                 os.chdir(cwd)
 
         return instance
+
+    @property
+    def verbose(self) -> bool:
+        return self._cfg.verbose

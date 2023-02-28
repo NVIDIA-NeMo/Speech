@@ -51,7 +51,7 @@ def uem_timeline_from_file(uem_file, uniq_name=''):
 
 
 def score_labels(
-    AUDIO_RTTM_MAP, all_reference, all_hypothesis, collar=0.25, ignore_overlap=True
+    AUDIO_RTTM_MAP, all_reference, all_hypothesis, collar=0.25, ignore_overlap=True, verbose: bool = True
 ) -> Optional[Tuple[DiarizationErrorRate, Dict]]:
     """
     Calculate DER, CER, FA and MISS rate from hypotheses and references. Hypothesis results are
@@ -63,6 +63,7 @@ def score_labels(
         AUDIO_RTTM_MAP (dict): Dictionary containing information provided from manifestpath
         all_reference (list[uniq_name,Annotation]): reference annotations for score calculation
         all_hypothesis (list[uniq_name,Annotation]): hypothesis annotations for score calculation
+        verbose (bool): Warns if RTTM file is not found.
 
     Returns:
         metric (pyannote.DiarizationErrorRate): Pyannote Diarization Error Rate metric object. This object contains detailed scores of each audiofile.
@@ -101,11 +102,11 @@ def score_labels(
         )
 
         return metric, mapping_dict, itemized_errors
-    else:
+    elif verbose:
         logging.warning(
             "Check if each ground truth RTTMs were present in the provided manifest file. Skipping calculation of Diariazation Error Rate"
         )
-        return None
+    return None
 
 
 def evaluate_der(audio_rttm_map_dict, all_reference, all_hypothesis, diar_eval_mode='all'):

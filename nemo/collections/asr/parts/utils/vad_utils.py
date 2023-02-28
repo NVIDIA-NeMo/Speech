@@ -58,7 +58,8 @@ def prepare_manifest(config: dict) -> str:
     if 'prepared_manifest_vad_input' in config and config['prepared_manifest_vad_input']:
         manifest_vad_input = config['prepared_manifest_vad_input']
     else:
-        manifest_vad_input = "manifest_vad_input.json"
+        default_path = "manifest_vad_input.json"
+        manifest_vad_input = os.path.join(config["out_dir"], default_path) if "out_dir" in config else default_path
 
     # input_list is a list of variable ['audio_filepath': i, "offset": xxx, "duration": xxx])
     if type(config['input']) == str:

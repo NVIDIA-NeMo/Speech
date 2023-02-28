@@ -30,7 +30,7 @@ class TestStochasticDepth:
 
         # linear mode
         for drop_prob in [0.3, 0.5, 0.9]:
-            for start_layer in [0, 2]:
+            for start_layer in [1, 3]:
                 model = ConformerEncoder(
                     feat_in=10,
                     n_layers=n_layers,
@@ -40,7 +40,7 @@ class TestStochasticDepth:
                     stochastic_depth_start_layer=start_layer,
                 )
                 L = n_layers - start_layer
-                assert model.layer_drop_probs == [0.0] * start_layer + [drop_prob * l / (L - 1) for l in range(L)]
+                assert model.layer_drop_probs == [0.0] * start_layer + [drop_prob * l / L for l in range(1, L + 1)]
 
         # uniform mode
         for drop_prob in [0.3, 0.5, 0.9]:
@@ -71,7 +71,7 @@ class TestStochasticDepth:
         with pytest.raises(ValueError, match="stochastic_depth_mode has to be one of"):
             ConformerEncoder(feat_in=10, n_layers=n_layers, d_model=4, feat_out=8, stochastic_depth_mode="weird")
 
-        for start_layer in [-1, 5]:
+        for start_layer in [-1, 0, 5]:
             with pytest.raises(ValueError, match="stochastic_depth_start_layer has to be in"):
                 ConformerEncoder(
                     feat_in=10, n_layers=n_layers, d_model=4, feat_out=8, stochastic_depth_start_layer=start_layer,

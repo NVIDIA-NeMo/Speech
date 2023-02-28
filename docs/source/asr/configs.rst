@@ -592,7 +592,7 @@ use it, specify the following parameters in the encoder config file to reproduce
         # ...
         stochastic_depth_drop_prob: 0.3
         stochastic_depth_mode: linear  # linear or uniform
-        stochastic_depth_start_layer: 0
+        stochastic_depth_start_layer: 1
 
 See :ref:`documentation of ConformerEncoder <conformer-encoder-api>` for more details. Note that stochastic depth
 is supported for both CTC and Transducer model variations (or any other kind of model/loss that's using

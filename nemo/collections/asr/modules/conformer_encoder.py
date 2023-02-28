@@ -117,7 +117,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         stochastic_depth_start_layer (int): starting layer for stochastic depth.
             All layers before this will never be dropped. Note that drop
             probability will be adjusted accordingly if mode is "linear" when
-            start layer is > 0. Defaults to 0.
+            start layer is > 1. Defaults to 1.
     """
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -207,7 +207,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         dropout_att=0.0,
         stochastic_depth_drop_prob: float = 0.0,
         stochastic_depth_mode: str = "linear",
-        stochastic_depth_start_layer: int = 0,
+        stochastic_depth_start_layer: int = 1,
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor

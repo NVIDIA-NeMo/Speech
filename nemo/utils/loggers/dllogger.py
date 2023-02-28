@@ -13,7 +13,9 @@
 # limitations under the License.
 
 from argparse import Namespace
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 from lightning_utilities.core.apply_func import apply_to_collection
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -36,6 +38,13 @@ try:
     PL_LOGGER_UTILITIES = True
 except (ImportError, ModuleNotFoundError):
     PL_LOGGER_UTILITIES = False
+
+
+@dataclass
+class DLLoggerParams:
+    verbose: Optional[bool] = False
+    stdout: Optional[bool] = False
+    json_file: Optional[str] = "./dllogger.json"
 
 
 class DLLogger(Logger):

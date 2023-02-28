@@ -43,11 +43,11 @@ from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
 from nemo.utils import logging, timers
 from nemo.utils.app_state import AppState
-from nemo.utils.dllogger import DLLogger
 from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
+from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerParams
 from nemo.utils.model_utils import inject_model_parallel_rank, uninject_model_parallel_rank
 
 
@@ -122,13 +122,6 @@ class MLFlowParams:
 
 
 @dataclass
-class DLLoggerParams:
-    verbose: Optional[bool] = False
-    stdout: Optional[bool] = False
-    json_file: Optional[str] = "./dllogger.json"
-
-
-@dataclass
 class StepTimingParams:
     reduction: Optional[str] = "mean"
     # if True torch.cuda.synchronize() is called on start/stop
@@ -166,6 +159,8 @@ class ExpManagerConfig:
     mlflow_logger_kwargs: Optional[MLFlowParams] = MLFlowParams()
     create_dllogger_logger: Optional[bool] = False
     dllogger_logger_kwargs: Optional[DLLoggerParams] = DLLoggerParams()
+    create_clearml_logger: Optional[bool] = False
+    clearml_logger_kwargs: Optional[ClearMLParams] = ClearMLParams()
     # Checkpointing parameters
     create_checkpoint_callback: Optional[bool] = True
     checkpoint_callback_params: Optional[CallbackParams] = CallbackParams()
@@ -239,7 +234,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     directory. exp_manager also allows for explicit folder creation via explicit_log_dir.
 
     The version can be a datetime string or an integer. Datestime version can be disabled if use_datetime_version is set
-     to False. It optionally creates TensorBoardLogger, WandBLogger, DLLogger, MLFlowLogger, ModelCheckpoint objects from pytorch lightning.
+    to False. It optionally creates TensorBoardLogger, WandBLogger, DLLogger, MLFlowLogger, ClearMLLogger,
+    ModelCheckpoint objects from pytorch lightning.
     It copies sys.argv, and git information if available to the logging directory. It creates a log file for each
     process to log their output into.
 
@@ -286,6 +282,9 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             - create_dllogger_logger (bool): Whether to create an DLLogger logger and attach it to the pytorch lightning
                 training. Defaults to False
             - dllogger_logger_kwargs (dict): optional parameters for the DLLogger logger
+            - create_clearml_logger (bool): Whether to create an ClearML logger and attach it to the pytorch lightning
+                training. Defaults to False
+            - clearml_logger_kwargs (dict): optional parameters for the ClearML logger
             - create_checkpoint_callback (bool): Whether to create a ModelCheckpoint callback and attach it to the
                 pytorch lightning trainer. The ModelCheckpoint saves the top 3 models with the best "val_loss", the most
                 recent checkpoint under ``*last.ckpt``, and the final checkpoint after training completes under ``*end.ckpt``.
@@ -410,12 +409,15 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         or cfg.create_wandb_logger
         or cfg.create_mlflow_logger
         or cfg.create_dllogger_logger
+        or cfg.create_clearml_logger
     ):
         configure_loggers(
             trainer,
             exp_dir,
+            log_dir,
             cfg.name,
             cfg.version,
+            cfg.checkpoint_callback_params,
             cfg.create_tensorboard_logger,
             cfg.summary_writer_kwargs,
             cfg.create_wandb_logger,
@@ -424,6 +426,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             cfg.mlflow_logger_kwargs,
             cfg.create_dllogger_logger,
             cfg.dllogger_logger_kwargs,
+            cfg.create_clearml_logger,
+            cfg.clearml_logger_kwargs,
         )
 
     # add loggers timing callbacks
@@ -762,8 +766,10 @@ def get_git_diff():
 def configure_loggers(
     trainer: 'pytorch_lightning.Trainer',
     exp_dir: [Path, str],
+    log_dir: [Path, str],
     name: str,
     version: str,
+    checkpoint_callback_params: dict,
     create_tensorboard_logger: bool,
     summary_writer_kwargs: dict,
     create_wandb_logger: bool,
@@ -772,9 +778,11 @@ def configure_loggers(
     mlflow_kwargs: dict,
     create_dllogger_logger: bool,
     dllogger_kwargs: dict,
+    create_clearml_logger: bool,
+    clearml_kwargs: dict,
 ):
     """
-    Creates TensorboardLogger and/or WandBLogger / MLFlowLogger / DLlogger and attach them to trainer.
+    Creates TensorboardLogger and/or WandBLogger / MLFlowLogger / DLlogger / ClearMLLogger and attach them to trainer.
     Raises ValueError if summary_writer_kwargs or wandb_kwargs are misconfigured.
     """
     # Potentially create tensorboard logger and/or WandBLogger / MLFlowLogger / DLLogger
@@ -817,6 +825,17 @@ def configure_loggers(
 
         logger_list.append(dllogger_logger)
         logging.info("DLLogger has been set up")
+
+    if create_clearml_logger:
+        clearml_logger = ClearMLLogger(
+            clearml_cfg=clearml_kwargs,
+            log_dir=log_dir,
+            prefix=name,
+            save_best_model=checkpoint_callback_params.save_best_model,
+        )
+
+        logger_list.append(clearml_logger)
+        logging.info("ClearMLLogger has been set up")
 
     trainer._logger_connector.configure_logger(logger_list)
 

@@ -14,6 +14,7 @@
 import glob
 import json
 import os
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -271,7 +272,7 @@ def normalize_timestamp_output(timestamps: dict):
 
 
 def write_transcription(
-    transcriptions: List[rnnt_utils.Hypothesis],
+    transcriptions: Union[List[rnnt_utils.Hypothesis], List[List[rnnt_utils.Hypothesis]]],
     cfg: DictConfig,
     model_name: str,
     filepaths: List[str] = None,
@@ -289,9 +290,26 @@ def write_transcription(
     else:
         pred_text_attr_name = 'pred_text'
 
+    if isinstance(transcriptions[0], rnnt_utils.Hypothesis):  # List[rnnt_utils.Hypothesis]
+        best_hyps = transcriptions
+        assert cfg.ctc_decoding.beam.return_best_hypothesis, "Works only with return_best_hypothesis=true"
+    elif isinstance(transcriptions[0], list) and isinstance(
+        transcriptions[0][0], rnnt_utils.Hypothesis
+    ):  # List[List[rnnt_utils.Hypothesis]] NBestHypothesis
+        best_hyps, beams = [], []
+        for hyps in transcriptions:
+            best_hyps.append(hyps[0])
+            if not cfg.ctc_decoding.beam.return_best_hypothesis:
+                beam = []
+                for hyp in hyps:
+                    beam.append((hyp.text, hyp.score))
+                beams.append(beam)
+    else:
+        raise TypeError
+
     with open(cfg.output_filename, 'w', encoding='utf-8', newline='\n') as f:
         if cfg.audio_dir is not None:
-            for idx, transcription in enumerate(transcriptions):  # type: rnnt_utils.Hypothesis
+            for idx, transcription in enumerate(best_hyps):  # type: rnnt_utils.Hypothesis
                 item = {'audio_filepath': filepaths[idx], pred_text_attr_name: transcription.text}
 
                 if compute_timestamps:
@@ -305,16 +323,17 @@ def write_transcription(
                 if compute_langs:
                     item['pred_lang'] = transcription.langs
                     item['pred_lang_chars'] = transcription.langs_chars
-
+                if not cfg.ctc_decoding.beam.return_best_hypothesis:
+                    item['beams'] = beams[idx]
                 f.write(json.dumps(item) + "\n")
         else:
             with open(cfg.dataset_manifest, 'r', encoding='utf_8') as fr:
                 for idx, line in enumerate(fr):
                     item = json.loads(line)
-                    item[pred_text_attr_name] = transcriptions[idx].text
+                    item[pred_text_attr_name] = best_hyps[idx].text
 
                     if compute_timestamps:
-                        timestamps = transcriptions[idx].timestep
+                        timestamps = best_hyps[idx].timestep
                         if timestamps is not None and isinstance(timestamps, dict):
                             timestamps.pop(
                                 'timestep', None
@@ -324,9 +343,11 @@ def write_transcription(
                                 item[f'timestamps_{key}'] = values
 
                     if compute_langs:
-                        item['pred_lang'] = transcriptions[idx].langs
-                        item['pred_lang_chars'] = transcriptions[idx].langs_chars
+                        item['pred_lang'] = best_hyps[idx].langs
+                        item['pred_lang_chars'] = best_hyps[idx].langs_chars
 
+                    if not cfg.ctc_decoding.beam.return_best_hypothesis:
+                        item['beams'] = beams[idx]
                     f.write(json.dumps(item) + "\n")
 
     return cfg.output_filename
@@ -421,3 +442,17 @@ def transcribe_partial_audio(
             asr_model.decoder.unfreeze()
         logging.set_verbosity(logging_level)
     return hypotheses
+
+
+class PunctuationCapitalization:
+    def __init__(self, punctuation_marks='.,?'):
+        self.regex_punctuation = re.compile(fr"([{''.join(punctuation_marks)}])")
+
+    def separate_punctuation(self, lines):
+        return [self.regex_punctuation.sub(r' \1 ', line) for line in lines]
+
+    def do_lowercase(self, lines):
+        return [line.lower() for line in lines]
+
+    def rm_punctuation(self, lines):
+        return [self.regex_punctuation.sub(' ', line).strip() for line in lines]

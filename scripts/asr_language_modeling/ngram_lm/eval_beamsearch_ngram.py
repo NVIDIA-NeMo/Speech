@@ -71,6 +71,7 @@ from tqdm.auto import tqdm
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.parts.submodules import ctc_beam_decoding
+from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapitalization
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -109,7 +110,10 @@ class EvalBeamSearchNGramConfig:
 
     decoding_strategy: str = "beam"  # Supports only beam for now
     decoding: ctc_beam_decoding.BeamCTCInferConfig = ctc_beam_decoding.BeamCTCInferConfig(beam_size=128)
-
+    
+    separate_punctuation: bool = True
+    do_lowercase: bool = False
+    rm_punctuation: bool = False
 
 # fmt: on
 
@@ -178,9 +182,15 @@ def beam_search_eval(
             _, beams_batch = model.decoding.ctc_decoder_predictions_tensor(
                 packed_batch, decoder_lengths=probs_lens, return_hypotheses=True,
             )
-
+        pc = PunctuationCapitalization(',.?')
         for beams_idx, beams in enumerate(beams_batch):
             target = target_transcripts[sample_idx + beams_idx]
+            if cfg.separate_punctuation:
+                target = pc.separate_punctuation([target])[0]
+            if cfg.do_lowercase:
+                target = pc.do_lowercase([target])[0]
+            if cfg.rm_punctuation:
+                target = pc.rm_punctuation([target])[0]
             target_split_w = target.split()
             target_split_c = list(target)
             words_count += len(target_split_w)
@@ -188,6 +198,10 @@ def beam_search_eval(
             wer_dist_min = cer_dist_min = 10000
             for candidate_idx, candidate in enumerate(beams):  # type: (int, ctc_beam_decoding.rnnt_utils.Hypothesis)
                 pred_text = candidate.text
+                if cfg.do_lowercase:
+                    pred_text = pc.do_lowercase([pred_text])[0]
+                if cfg.rm_punctuation:
+                    pred_text = pc.rm_punctuation([pred_text])[0]
                 pred_split_w = pred_text.split()
                 wer_dist = editdistance.eval(target_split_w, pred_split_w)
                 pred_split_c = list(pred_text)

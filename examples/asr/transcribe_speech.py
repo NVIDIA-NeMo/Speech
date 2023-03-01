@@ -36,7 +36,6 @@ from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateToke
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
-
 """
 Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate amounts of audio data.
 

@@ -21,15 +21,23 @@ ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:23.01-py3
 # image (by specifying build target as `nemo-deps`)
 FROM ${BASE_IMAGE} as nemo-deps
 
+# dependency flags; should be declared after FROM
+# torchaudio: not required by default
+ARG REQUIRE_TORCHAUDIO=false
+# k2: not required by default
+ARG REQUIRE_K2=false
+
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
+# libavdevice-dev rerquired for latest torchaudio
 RUN apt-get update && \
     apt-get upgrade -y && \
     apt-get install -y \
     libsndfile1 sox \
     libfreetype6 \
     swig \
-    ffmpeg && \
+    ffmpeg \
+    libavdevice-dev && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/
@@ -47,7 +55,14 @@ RUN pip3 uninstall -y sacrebleu torchtext
 # build torchaudio
 WORKDIR /tmp/torchaudio_build
 COPY scripts/installers /tmp/torchaudio_build/scripts/installers/
-RUN /bin/bash /tmp/torchaudio_build/scripts/installers/install_torchaudio_latest.sh
+RUN INSTALL_MSG=$(/bin/bash /tmp/torchaudio_build/scripts/installers/install_torchaudio_latest.sh); INSTALL_CODE=$?; \
+    echo ${INSTALL_MSG}; \
+    if [ ${INSTALL_CODE} -ne 0 ]; then \
+      echo "torchaudio installation failed";  \
+      if [ "${REQUIRE_TORCHAUDIO}" = true ]; then \
+        exit ${INSTALL_CODE};  \
+      else echo "Skipping failed torchaudio installation"; fi \
+    else echo "torchaudio installed successfully"; fi
 
 # install nemo dependencies
 WORKDIR /tmp/nemo
@@ -56,7 +71,14 @@ RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-chec
 
 # install k2, skip if installation fails
 COPY scripts /tmp/nemo/scripts/
-RUN /bin/bash /tmp/nemo/scripts/speech_recognition/k2/setup.sh || exit 0
+RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/speech_recognition/k2/setup.sh); INSTALL_CODE=$?; \
+    echo ${INSTALL_MSG}; \
+    if [ ${INSTALL_CODE} -ne 0 ]; then \
+      echo "k2 installation failed";  \
+      if [ "${REQUIRE_K2}" = true ]; then \
+        exit ${INSTALL_CODE};  \
+      else echo "Skipping failed k2 installation"; fi \
+    else echo "k2 installed successfully"; fi
 
 # copy nemo source into a scratch image
 FROM scratch as nemo-src

@@ -98,6 +98,10 @@ class AbstractBeamCTCInfer(Typing):
         self.decoding_type = None
         self.tokenizer = None
 
+        # Utility maps for vocabulary
+        self.vocab_index_map = None
+        self.index_vocab_map = None
+
         # Internal variable, used to prevent double reduction of consecutive tokens (ctc collapse)
         self.override_fold_consecutive_value = None
 
@@ -110,6 +114,8 @@ class AbstractBeamCTCInfer(Typing):
                 Note that this vocabulary must NOT contain the "BLANK" token.
         """
         self.vocab = vocab
+        self.vocab_index_map = {v: i for i, v in enumerate(vocab)}
+        self.index_vocab_map = {i: v for i, v in enumerate(vocab)}
 
     def set_decoding_type(self, decoding_type: str):
         """
@@ -352,7 +358,8 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
                 if self.decoding_type == 'subword':
                     pred_token_ids = [ord(c) - self.token_offset for c in candidate[1]]
                 else:
-                    pred_token_ids = candidate[1]
+                    # Char models
+                    pred_token_ids = [self.vocab_index_map[c] for c in candidate[1]]
 
                 # We preserve the token ids and the score for this hypothesis
                 hypothesis.y_sequence = pred_token_ids
@@ -444,7 +451,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
                         raise ValueError("Vocab must be provided for character decoding. Use set_vocab().")
 
                     chars = list(candidate[0])
-                    pred_token_ids = [self.vocab[c] for c in chars]
+                    pred_token_ids = [self.vocab_index_map[c] for c in chars]
 
                 hypothesis.y_sequence = pred_token_ids
                 hypothesis.text = candidate[0]  # text

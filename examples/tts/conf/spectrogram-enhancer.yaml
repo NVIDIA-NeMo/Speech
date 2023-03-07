@@ -7,6 +7,7 @@ model:
   network_capacity: 16
   mixed_prob: 0.9
   fmap_max: 192
+  start_from_zero: true  # might give better results at downstream tasks 
 
   generator:
     _target_: "nemo.collections.tts.modules.spectrogram_enhancer.Generator"  

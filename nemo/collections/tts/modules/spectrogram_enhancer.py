@@ -230,7 +230,7 @@ class DiscriminatorBlock(torch.nn.Module):
 
 class Generator(torch.nn.Module):
     def __init__(
-        self, n_bands, latent_dim, style_depth, network_capacity=16, channels=1, fmap_max=512,
+        self, n_bands, latent_dim, style_depth, network_capacity=16, channels=1, fmap_max=512, start_from_zero=True
     ):
         super().__init__()
         self.image_size = n_bands
@@ -274,6 +274,8 @@ class Generator(torch.nn.Module):
         self.initial_block = torch.nn.Parameter(
             torch.randn((1, init_channels, *initial_block_size)), requires_grad=False
         )
+        if start_from_zero:
+            self.initial_block.data.zero_()
 
     def add_scaled_condition(self, target: torch.Tensor, condition: torch.Tensor, condition_lengths: torch.Tensor):
         *_, target_height, _ = target.shape

@@ -424,7 +424,7 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         audio, sr = librosa.load(path2audio_file, sr=None)
         target_sr = self._cfg.train_ds.get('sample_rate', 16000)
         if sr != target_sr:
-            audio = librosa.core.resample(audio, sr, target_sr)
+            audio = librosa.core.resample(audio, orig_sr=sr, target_sr=target_sr)
         audio_length = audio.shape[0]
         device = self.device
         audio = np.array(audio)
@@ -453,8 +453,10 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
             label: label corresponding to the trained model
         """
         _, logits = self.infer_file(path2audio_file=path2audio_file)
-        trained_labels = list(self._cfg['train_ds']['labels'])
+
+        trained_labels = self._cfg['train_ds'].get('labels', None)
         if trained_labels is not None:
+            trained_labels = list(trained_labels)
             label_id = logits.argmax(axis=1)
             label = trained_labels[int(label_id[0])]
         else:

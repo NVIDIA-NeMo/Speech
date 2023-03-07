@@ -55,9 +55,9 @@ NeMo models can be optimized for inference and deployed for production use-cases
 Getting started with NeMo is simple.
 State of the Art pretrained NeMo models are freely available on `HuggingFace Hub <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_ and
 `NVIDIA NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_.
-These models can be used to transcribe audio, synthesize speech, or translate text in a just a few lines of code.
+These models can be used to transcribe audio, synthesize speech, or translate text in just a few lines of code.
 
-We have have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that 
+We have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that 
 can all be run on `Google Colab <https://colab.research.google.com>`_.
 
 For advanced users that want to train NeMo models from scratch or finetune existing NeMo models 
@@ -192,7 +192,7 @@ Use this installation mode if you want the latest released version.
 
 Pip from source
 ~~~~~~~~~~~~~~~
-Use this installation mode if you want the a version from particular GitHub branch (e.g main).
+Use this installation mode if you want the version from a particular GitHub branch (e.g main).
 
 .. code-block:: bash
 
@@ -281,7 +281,7 @@ If you chose to work with main branch, we recommend using NVIDIA's PyTorch conta
 Examples
 --------
 
-Many examples can be found under `"Examples" <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_ folder.
+Many examples can be found under the `"Examples" <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_ folder.
 
 
 Contributing

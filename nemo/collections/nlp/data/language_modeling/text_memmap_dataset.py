@@ -157,9 +157,22 @@ class TextMemMapDataset(Dataset):
 
         # fetch sample from memmap
 
-        sample = self._fetch_sample_from_memmap(mdata, i, j)
+        try:
+            sample = self._fetch_sample_from_memmap(mdata, i, j)
+        except Exception as e:
+            logging.error(f"Error while fetching sample from memmap: {e}")
+            logging.error(f"file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
+            raise e
+
         # parse raw text (e.g., tokenize)
-        data = self._build_data_from_text(sample)
+        try:
+            data = self._build_data_from_text(sample)
+        except Exception as e:
+            logging.error(
+                f"Error while building data from text, possible issue with sample expected format (see offending sample below): {e}"
+            )
+            logging.error(f"sample: {sample}, file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
+            raise e
 
         return data
 
@@ -195,7 +208,7 @@ class TextMemMapDataset(Dataset):
         # create data map
         mdata = np.memmap(fn, dtype=np.uint8, mode='r')
 
-        if os.path.exists(idx_fn + ".npy"):
+        if _index_file_exists(idx_fn):
             # load index file into memory map
             midx = np.load(idx_fn + ".npy", allow_pickle=True, mmap_mode='r')
             # test for header
@@ -219,7 +232,9 @@ class TextMemMapDataset(Dataset):
                     f"Version mismatch: Please delete existing '.{__idx_suffix__}' files. Expected version = {__idx_version__}, but file version = {idx_version}. File path = {idx_fn}"
                 )
         else:
-            raise ValueError(f'Memory Map for {fn} is not found')
+            raise ValueError(
+                f'Memory Map for {fn} is not found, missing one or more of files: {idx_fn}.{{.npy,.info}}'
+            )
 
         return (mdata, midx)
 
@@ -281,12 +296,20 @@ class JSONLMemMapDataset(TextMemMapDataset):
         return json.loads(text)
 
 
+def _index_file_exists(idx_fn):
+    """Helper function to test if index file exists"""
+    if os.path.exists(idx_fn + ".npy") and os.path.exists(idx_fn + ".info"):
+        return True
+    else:
+        return False
+
+
 def _build_memmap_index_files(newline_int, build_index_fn, fn):
     """Helper function to build an index file"""
     idx_fn = f"{fn}.{__idx_suffix__}"
 
     # create data map
-    if os.path.exists(idx_fn + ".npy"):
+    if _index_file_exists(idx_fn):
         return False
     else:
         logging.info(f"Building indexing for fn = {fn}")

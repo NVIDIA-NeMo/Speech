@@ -320,6 +320,9 @@ def test_get_prepared_filename():
         prepared_train_filename,
         prepared_val_filename,
     ]
+    csv_filename = "tmp/sample.csv"
+    prepared_filename = "tmp/sample_prepared.jsonl"
+    assert get_prepared_filename(csv_filename) == prepared_filename
 
 
 def test_split_into_train_validation():

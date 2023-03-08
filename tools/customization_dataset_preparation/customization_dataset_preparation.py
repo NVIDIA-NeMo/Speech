@@ -51,6 +51,7 @@ We suggest you prioritize changes suggested under ACTIONABLE MESSAGES but also h
 """
 import argparse
 import os
+import pathlib
 from collections import Counter
 
 import pandas as pd
@@ -294,23 +295,25 @@ def show_first_example_in_df(df):
 
 def get_prepared_filename(filename, split_train_validation=False):
     message = ""
+
+    file_extension = pathlib.Path(filename).suffix
     if not split_train_validation:
-        new_filename = filename.replace(".jsonl", "_prepared.jsonl")
+        new_filename = filename.replace(file_extension, "_prepared.jsonl")
         retry = 0
         while os.path.isfile(new_filename):
             message += f"File {new_filename} exists. Trying next available filename increment\n"
             retry += 1
-            new_filename = filename.replace(".jsonl", f"_prepared{retry}.jsonl")
+            new_filename = filename.replace(file_extension, f"_prepared{retry}.jsonl")
         return new_filename, message
     else:
-        train_filename = filename.replace(".jsonl", "_prepared_train.jsonl")
-        val_filename = filename.replace(".jsonl", "_prepared_val.jsonl")
+        train_filename = filename.replace(file_extension, "_prepared_train.jsonl")
+        val_filename = filename.replace(file_extension, "_prepared_val.jsonl")
         retry = 0
         while os.path.isfile(train_filename) or os.path.isfile(val_filename):
             message += f"File {train_filename} or {val_filename} exists. Trying next available filename increment\n"
             retry += 1
-            train_filename = filename.replace(".jsonl", f"_prepared_train{retry}.jsonl")
-            val_filename = filename.replace(".jsonl", f"_prepared_val{retry}.jsonl")
+            train_filename = filename.replace(file_extension, f"_prepared_train{retry}.jsonl")
+            val_filename = filename.replace(file_extension, f"_prepared_val{retry}.jsonl")
         return [train_filename, val_filename], message if message else None
 
 

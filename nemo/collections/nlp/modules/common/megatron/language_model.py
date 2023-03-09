@@ -620,14 +620,14 @@ class TransformerLanguageModel(MegatronModule):
                 self.pooler = Pooler(self.hidden_size, self.init_method, sequence_parallel=sequence_parallel)
                 self._pooler_key = 'pooler'
 
-        if not self.share_embeddings_and_output_weights:
-            self.output_layer = tensor_parallel.ColumnParallelLinear(
-                self.hidden_size,
-                self.vocab_size,
-                bias=False,  # Setting bias to False always to keep it consistent with embedding tying that also does not have a bias.
-                init_method=self.init_method,
-            )
-            self._output_layer_key = 'output_layer'
+            if not self.share_embeddings_and_output_weights:
+                self.output_layer = tensor_parallel.ColumnParallelLinear(
+                    self.hidden_size,
+                    self.vocab_size,
+                    bias=False,  # Setting bias to False always to keep it consistent with embedding tying that also does not have a bias.
+                    init_method=self.init_method,
+                )
+                self._output_layer_key = 'output_layer'
 
     def set_input_tensor(self, input_tensor):
         """ See megatron.model.transformer.set_input_tensor()"""
@@ -669,7 +669,7 @@ class TransformerLanguageModel(MegatronModule):
         # enc_attn_mask: [1, 1, s, s]
 
         if self.position_embedding_type == 'rope':
-            if not set_inference_key_value_memory and inference_max_sequence_len is not None:
+            if inference_max_sequence_len is not None:
                 rotary_pos_emb = self.rotary_pos_emb(inference_max_sequence_len)
             elif self.encoder.input_tensor is not None:
                 rotary_pos_emb = self.rotary_pos_emb(self.encoder.input_tensor.size(0))

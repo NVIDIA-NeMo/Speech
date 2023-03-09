@@ -427,6 +427,8 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
                     # In inference, we compute one token at a time.
                     # Select the correct positional embedding.
                     q_pos_emb = q_pos_emb[end - 1 : end]
+                else:
+                    q_pos_emb = q_pos_emb[:end, :, :, :]
                 k_pos_emb = k_pos_emb[:end, :, :, :]
                 rotary_pos_emb = (q_pos_emb, k_pos_emb)
 

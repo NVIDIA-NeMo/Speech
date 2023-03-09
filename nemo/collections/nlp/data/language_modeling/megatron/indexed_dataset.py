@@ -500,10 +500,10 @@ class MMapIndexedDataset(torch.utils.data.Dataset):
     def __getstate__(self):
         return self._path
 
-    # def __setstate__(self, state):
-    #     self._do_init(state)
+    def __setstate__(self, state):
+        self._do_init(state)
 
-    def _do_init(self, path, skip_warmup):
+    def _do_init(self, path, skip_warmup=True):
         self._path = path
         self._index = self.Index(index_file_path(self._path), skip_warmup)
 

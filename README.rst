@@ -234,9 +234,9 @@ Install it manually if not using the NVIDIA PyTorch container.
 
 .. code-block:: bash
 
-    git clone https://github.com/ericharper/apex.git
+    git clone https://github.com/NVIDIA/apex.git
     cd apex
-    git checkout nm_v1.15.0
+    git checkout a32d7a6dddcf4e39d241b0d139c222a97c91887d
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
 Transformer Engine

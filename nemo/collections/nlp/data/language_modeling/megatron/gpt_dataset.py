@@ -396,7 +396,7 @@ class GPTDataset(Dataset):
         # Negative index comes when we pad the last batch in MegatronPretrainingBatchSampler
         # We make the loss_mask zero to mask out loss from these samples
         if idx == -1:
-            logging.info('WARNING: Got -1 as item index. Masking loss from this sample')
+            logging.debug('Got -1 as item index. Masking loss from this sample')
             loss_mask = torch.zeros_like(loss_mask)
 
         return {

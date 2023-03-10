@@ -113,7 +113,7 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
                 for i in range(
                     self.data_parallel_rank, self.global_batch_size, self.micro_batch_times_data_parallel_size
                 ):
-                    indices = [batch[j] for j in range(i, max(len(batch), i + self.micro_batch_size))]
+                    indices = [batch[j] for j in range(i, min(len(batch), i + self.micro_batch_size))]
                     num_pad = self.micro_batch_size - len(indices)
                     indices = indices + [-1] * num_pad
                     yield indices

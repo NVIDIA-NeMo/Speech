@@ -182,6 +182,7 @@ class TestRNNTDecoding:
     #     not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
     # )
     # @pytest.mark.with_downloads
+    @pytest.mark.pleasefixme
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "beam_config",

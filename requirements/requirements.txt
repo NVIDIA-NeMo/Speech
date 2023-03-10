@@ -5,7 +5,7 @@ onnx>=1.7.0
 python-dateutil
 ruamel.yaml
 scikit-learn
-setuptools==59.5.0
+setuptools==65.5.1
 tensorboard
 text-unidecode
 torch

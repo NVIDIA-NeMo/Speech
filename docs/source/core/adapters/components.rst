@@ -21,10 +21,10 @@ Adapter modules represent the functional form of the adapter. We discuss an exam
 
 .. note::
 
-    All adapter modules must extend :class:`~nemo.collections.common.parts.adapter_modules.AbstractAdapterModule` and should ideally have an equivalent DataClass config for easy instantiation !
+    All adapter modules must extend :class:`~nemo.collections.common.parts.adapter_modules.AdapterModuleUtil` and should ideally have an equivalent DataClass config for easy instantiation !
 
 
-.. autoclass:: nemo.collections.common.parts.adapter_modules.AbstractAdapterModule
+.. autoclass:: nemo.collections.common.parts.adapter_modules.AdapterModuleUtil
     :show-inheritance:
     :members:
     :member-order: bysource

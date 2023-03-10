@@ -24,7 +24,7 @@ Adapter Networks
 ----------------
 
 
-.. autoclass:: nemo.collections.common.parts.adapter_modules.AbstractAdapterModule
+.. autoclass:: nemo.collections.common.parts.adapter_modules.AdapterModuleUtil
     :show-inheritance:
     :members:
     :member-order: bysource

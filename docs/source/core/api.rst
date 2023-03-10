@@ -102,3 +102,18 @@ Experiment manager
     :show-inheritance:
     :members:
     :member-order: bysource
+
+.. autoclass:: nemo.utils.exp_manager.ExpManagerConfig
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+
+
+Exportable
+----------
+
+.. autoclass:: nemo.core.classes.exportable.Exportable
+    :show-inheritance:
+    :members:
+    :member-order: bysource
+

@@ -47,7 +47,7 @@ from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
-from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerParams
+from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerParams, MLFlowParams
 from nemo.utils.model_utils import inject_model_parallel_rank, uninject_model_parallel_rank
 
 
@@ -107,21 +107,6 @@ class CallbackParams:
 
 
 @dataclass
-class MLFlowParams:
-    # name of experiment, if none, defaults to the globally set experiment name
-    experiment_name: Optional[str] = None
-    # no run_name because it's set by version
-    # local or remote tracking seerver. If tracking_uri is not set, it defaults to save_dir
-    tracking_uri: Optional[str] = None
-    tags: Optional[Dict[str, Any]] = None
-    save_dir: Optional[str] = "./mlruns"
-    prefix: str = ""
-    artifact_location: Optional[str] = None
-    # provide run_id if resuming a previously started run
-    run_id: Optional[str] = None
-
-
-@dataclass
 class StepTimingParams:
     reduction: Optional[str] = "mean"
     # if True torch.cuda.synchronize() is called on start/stop
@@ -141,6 +126,9 @@ class EMAParams:
 
 @dataclass
 class ExpManagerConfig:
+    """Experiment Manager config for validation of passed arguments.
+    """
+
     # Log dir creation parameters
     explicit_log_dir: Optional[str] = None
     exp_dir: Optional[str] = None

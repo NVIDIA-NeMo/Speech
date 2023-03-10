@@ -14,3 +14,4 @@
 
 from nemo.utils.loggers.clearml_logger import ClearMLLogger, ClearMLParams
 from nemo.utils.loggers.dllogger import DLLogger, DLLoggerParams
+from nemo.utils.loggers.mlflow_logger import MLFlowParams

@@ -11,7 +11,7 @@ To use the experiment manager simply call :class:`~nemo.utils.exp_manager.exp_ma
 
 .. code-block:: python
 
-    exp_manager(trainer, cfg.get("exp_manager", None))
+    exp_dir = exp_manager(trainer, cfg.get("exp_manager", None))
 
 And is configurable via YAML with Hydra.
 
@@ -48,6 +48,9 @@ We can configure the ``ModelCheckpoint`` via YAML or CLI.
         # choose how many total checkpoints to save
         checkpoint_callback_params.save_top_k=5
 
+Resume Training
+---------------
+
 We can auto-resume training as well by configuring the ``exp_manager``. Being able to auto-resume is important when doing long training
 runs that are premptible or may be shut down before the training procedure has completed. To auto-resume training, set the following
 via YAML or CLI:
@@ -65,6 +68,110 @@ via YAML or CLI:
         # by default experiments will be versioned by datetime
         # we can set our own version with
         exp_manager.version: my_experiment_version
+
+
+Experiment Loggers
+------------------
+
+Alongside Tensorboard, NeMo also supports Weights and Biases, MLFlow and DLLogger. To use these loggers, simply set the following
+via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
+
+
+Weights and Biases (WandB)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. _exp_manager_weights_biases-label:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_checkpoint_callback: True
+        create_wandb_logger: True
+        wandb_logger_kwargs:
+            name: ${name}
+            project: ${project}
+            entity: ${entity}
+            <Add any other arguments supported by WandB logger here>
+
+
+MLFlow
+~~~~~~
+
+.. _exp_manager_mlflow-label:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_checkpoint_callback: True
+        create_mlflow_logger: True
+        mlflow_logger_kwargs:
+            experiment_name: ${name}
+            tags:
+                <Any key:value pairs>
+            save_dir: './mlruns'
+            prefix: ''
+            artifact_location: None
+            # provide run_id if resuming a previously started run
+            run_id: Optional[str] = None
+
+DLLogger
+~~~~~~~~
+
+.. _exp_manager_dllogger-label:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_checkpoint_callback: True
+        create_dllogger_logger: True
+        dllogger_logger_kwargs:
+            verbose: False
+            stdout: False
+            json_file: "./dllogger.json"
+
+ClearML
+~~~~~~~
+
+.. _exp_manager_clearml-label:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_checkpoint_callback: True
+        create_clearml_logger: True
+        clearml_logger_kwargs:
+            project: None  # name of the project
+            task: None  # optional name of task
+            connect_pytorch: False
+            model_name: None  # optional name of model
+            tags: None  # Should be a list of str
+            log_model: False  # log model to clearml server
+            log_cfg: False  # log config to clearml server
+            log_metrics: False  # log metrics to clearml server
+
+Exponential Moving Average
+--------------------------
+
+.. _exp_manager_ema-label:
+
+NeMo supports using exponential moving average (EMA) for model parameters. This can be useful for improving model generalization
+and stability. To use EMA, simply set the following via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        # use exponential moving average for model parameters
+        ema:
+            enabled: True  # False by default
+            decay: 0.999  # decay rate
+            cpu_offload: False  # If EMA parameters should be offloaded to CPU to save GPU memory
+            every_n_steps: 1  # How often to update EMA weights
+            validate_original_weights: False  # Whether to use original weights for validation calculation or EMA weights
 
 
 .. _nemo_multirun-label:
@@ -232,3 +339,12 @@ A simple solution is to finalize the hydra config before you call ``exp_manager(
         trainer = pl.Trainer(**cfg.trainer)
         exp_log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
         ...
+
+
+ExpManagerConfig
+----------------
+
+.. autoclass:: nemo.utils.exp_manager.ExpManagerConfig
+    :show-inheritance:
+    :members:
+    :member-order: bysource

@@ -38,6 +38,13 @@ class Exportable(ABC):
     """
     This Interface should be implemented by particular classes derived from nemo.core.NeuralModule or nemo.core.ModelPT.
     It gives these entities ability to be exported for deployment to formats such as ONNX.
+
+    Usage:
+        # exporting pre-trained model to ONNX file for deployment.
+        model.eval()
+        model.to('cuda')  # or to('cpu') if you don't have GPU
+
+        model.export('mymodel.onnx', [options])  # all arguments apart from `output` are optional.
     """
 
     @property
@@ -61,6 +68,43 @@ class Exportable(ABC):
         export_modules_as_functions=False,
         keep_initializers_as_inputs=None,
     ):
+        """
+        Exports the model to the specified format. The format is inferred from the file extension of the output file.
+
+        Args:
+        output (str): Output file name. File extension be .onnx, .pt, or .ts, and is used to select export
+            path of the model.
+        input_example (list or dict): Example input to the model's forward function. This is used to
+            trace the model and export it to ONNX/TorchScript. If the model takes multiple inputs, then input_example
+            should be a list of input examples. If the model takes named inputs, then input_example
+            should be a dictionary of input examples.
+        verbose (bool): If True, will print out a detailed description of the model's export steps, along with
+            the internal trace logs of the export process.
+        do_constant_folding (bool): If True, will execute constant folding optimization on the model's graph
+            before exporting. This is ONNX specific.
+        onnx_opset_version (int): The ONNX opset version to export the model to. If None, will use a reasonable
+            default version.
+        check_trace (bool): If True, will verify that the model's output matches the output of the traced
+            model, upto some tolerance.
+        dynamic_axes (dict): A dictionary mapping input and output names to their dynamic axes. This is
+            used to specify the dynamic axes of the model's inputs and outputs. If the model takes multiple inputs,
+            then dynamic_axes should be a list of dictionaries. If the model takes named inputs, then dynamic_axes
+            should be a dictionary of dictionaries. If None, will use the dynamic axes of the input_example
+            derived from the NeuralType of the input and output of the model.
+        check_tolerance (float): The tolerance to use when checking the model's output against the traced
+            model's output. This is only used if check_trace is True. Note the high tolerance is used because
+            the traced model is not guaranteed to be 100% accurate.
+        export_modules_as_functions (bool): If True, will export the model's submodules as functions. This is
+            ONNX specific.
+        keep_initializers_as_inputs (bool): If True, will keep the model's initializers as inputs in the onnx graph.
+            This is ONNX specific.
+
+        Returns:
+            A tuple of two outputs.
+            Item 0 in the output is a list of outputs, the outputs of each subnet exported.
+            Item 1 in the output is a list of string descriptions. The description of each subnet exported can be
+            used for logging purposes.
+        """
         all_out = []
         all_descr = []
         for subnet_name in self.list_export_subnets():

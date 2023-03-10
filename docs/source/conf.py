@@ -42,18 +42,20 @@ autodoc_mock_imports = [
     'torch.utils.data',
     'torch.utils.data.sampler',
     'torchtext',
+    'torchvision',
     'ruamel.yaml',  # ruamel.yaml has ., which is troublesome for this regex
     'hydra',  # hydra-core in requirements, hydra during import
     'dateutil',  # part of core python
     'transformers.tokenization_bert',  # has ., troublesome for this regex
     'megatron',  # megatron-lm in requirements, megatron in import
-    'sklearn',
+    'sklearn',  # scikit_learn in requirements, sklearn in import
     'nemo_text_processing.inverse_text_normalization',  # Not installed automatically
     'nemo_text_processing.text_normalization',  # Not installed automatically
     'attr',  # attrdict in requirements, attr in import
     'torchmetrics',  # inherited from PTL
+    'lightning_utilities',  # inherited from PTL
     'apex',
-    'joblib',
+    'joblib',  # inherited from optional code
     'IPython',
     'ipadic',
     'psutil',

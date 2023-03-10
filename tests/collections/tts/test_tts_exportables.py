@@ -32,7 +32,7 @@ def fastpitch_model():
 
 @pytest.fixture()
 def hifigan_model():
-    model = HifiGanModel.from_pretrained(model_name="tts_hifigan")
+    model = HifiGanModel.from_pretrained(model_name="tts_en_hifigan")
     return model
 
 

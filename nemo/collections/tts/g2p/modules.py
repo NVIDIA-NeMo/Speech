@@ -427,7 +427,7 @@ class IPAG2P(BaseG2p):
             # represents the pronunciation variant of that word.
             phoneme_dict_obj = defaultdict(list)
             _alt_re = re.compile(r"\([0-9]+\)")
-            with open(phoneme_dict, "r") as fdict:
+            with open(phoneme_dict, "r", encoding="utf-8") as fdict:
                 for line in fdict:
                     # skip the empty lines
                     if len(line) == 0:

@@ -63,7 +63,7 @@ def main():
     parser.add_argument(
         "--tts_model_vocoder",
         type=str,
-        default="tts_waveglow_88m",
+        default="tts_en_waveglow_88m",
         choices=[x.pretrained_model_name for x in Vocoder.list_available_models()],
     )
     parser.add_argument("--wer_tolerance", type=float, default=1.0, help="used by test")

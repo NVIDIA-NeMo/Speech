@@ -345,7 +345,7 @@ class HifiGanModel(Vocoder, Exportable):
     def list_available_models(cls) -> 'Optional[Dict[str, str]]':
         list_of_models = []
         model = PretrainedModelInfo(
-            pretrained_model_name="tts_hifigan",
+            pretrained_model_name="tts_en_hifigan",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_hifigan/versions/1.0.0rc1/files/tts_hifigan.nemo",
             description="This model is trained on LJSpeech audio sampled at 22050Hz and mel spectrograms generated from"
             " Tacotron2, TalkNet, and FastPitch. This model has been tested on generating female English "

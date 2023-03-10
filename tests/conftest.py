@@ -23,6 +23,8 @@ from shutil import rmtree
 
 import pytest
 
+from tests.fixtures.tts import *
+
 # Those variables probably should go to main NeMo configuration file (config.yaml).
 __TEST_DATA_FILENAME = "test_data.tar.gz"
 __TEST_DATA_URL = "https://github.com/NVIDIA/NeMo/releases/download/v1.0.0rc1/"
@@ -55,6 +57,11 @@ def pytest_addoption(parser):
         help="numba compatibility checks will be relaxed to just availability of cuda, "
         "without cuda compatibility matrix check",
     )
+    parser.addoption(
+        "--nightly",
+        action="store_true",
+        help="pass this argument to activate tests which have been marked as nightly for nightly quality assurance.",
+    )
 
 
 @pytest.fixture
@@ -79,6 +86,15 @@ def downloads_weights(request, device):
         if not request.config.getoption("--with_downloads"):
             pytest.skip(
                 'To run this test, pass --with_downloads option. It will download (and cache) models from cloud.'
+            )
+
+
+@pytest.fixture(autouse=True)
+def run_nightly_test_for_qa(request, device):
+    if request.node.get_closest_marker('nightly'):
+        if not request.config.getoption("--nightly"):
+            pytest.skip(
+                'To run this test, pass --nightly option. It will run any tests marked with "nightly". Currently, These tests are mostly used for QA.'
             )
 
 
@@ -152,6 +168,9 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers", "with_downloads: runs the test using data present in tests/.data",
+    )
+    config.addinivalue_line(
+        "markers", "nightly: runs the nightly test for QA.",
     )
     # Test dir and archive filepath.
     test_dir = join(dirname(__file__), __TEST_DATA_SUBDIR)

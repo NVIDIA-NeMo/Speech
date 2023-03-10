@@ -97,7 +97,7 @@ NeMo TTS supports both cascaded and end-to-end models to synthesize audios. Most
     # Load mel spectrogram generator
     spec_generator = nemo_tts.models.FastPitchModel.from_pretrained("tts_en_fastpitch")
     # Load vocoder
-    vocoder = nemo_tts.models.HifiGanModel.from_pretrained(model_name="tts_hifigan")
+    vocoder = nemo_tts.models.HifiGanModel.from_pretrained(model_name="tts_en_hifigan")
     # Generate audio
     import soundfile as sf
     parsed = spec_generator.parse("You can type your sentence here to get nemo to produce speech.")

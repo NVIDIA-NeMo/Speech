@@ -32,6 +32,9 @@ from nemo.collections.nlp.data.machine_translation.machine_translation_dataset i
 )
 from nemo.collections.nlp.data.question_answering_squad.qa_dataset import SquadDataset
 from nemo.collections.nlp.data.text2sparql.text2sparql_dataset import Text2SparqlDataset
+from nemo.collections.nlp.data.text_normalization.decoder_dataset import TextNormalizationDecoderDataset
+from nemo.collections.nlp.data.text_normalization.tagger_dataset import TextNormalizationTaggerDataset
+from nemo.collections.nlp.data.text_normalization.test_dataset import TextNormalizationTestDataset
 from nemo.collections.nlp.data.token_classification.token_classification_dataset import (
     BertTokenClassificationDataset,
     BertTokenClassificationInferDataset,

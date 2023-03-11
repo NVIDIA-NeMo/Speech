@@ -16,7 +16,7 @@ WFST-based TN/ITN:
    wfst_text_normalization
    wfst_customization
    wfst_text_processing_deployment
-   resources
+   wfst_resources
 
 
 

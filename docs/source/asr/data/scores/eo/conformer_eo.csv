@@ -1,0 +1,3 @@
+Model Name,Language,MCV Dev-Set v11.0 (eo),MCV Test-Set v11.0 (eo)
+stt_eo_conformer_ctc_large,eo,2.9 %,4.8 %
+stt_eo_conformer_transducer_large,eo,2.4 %,4.0 %

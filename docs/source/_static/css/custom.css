@@ -20,12 +20,12 @@ body {
 h1 {
 	color: #76b900;
 	text-align: center;
-	background-color: #ffffff;
+	/* background-color: #ffffff; */
 }
 
 h2 {
 	color: #ffffff;
-	background-color: #ffffff;
+	/* background-color: #ffffff; */
 	/* #76b900 */
 	Padding: 5px;
 }

@@ -14,14 +14,7 @@
 
 import torch
 
-
-def make_non_pad_mask(input_lengths: torch.Tensor, seq_len: int):
-    batch_size = input_lengths.shape[0]
-    seq_range = torch.arange(0, seq_len, dtype=torch.int64)
-    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, seq_len)
-    seq_length_expand = seq_range_expand.new(input_lengths.cpu()).unsqueeze(-1)
-    mask = seq_range_expand < seq_length_expand
-    return mask
+from nemo.collections.asr.parts.k2.utils import make_non_pad_mask
 
 
 class GradExpNormalize(torch.autograd.Function):
@@ -34,10 +27,9 @@ class GradExpNormalize(torch.autograd.Function):
         ctx, log_probs: torch.Tensor, input_lengths: torch.Tensor, reduction: str = "mean",
     ):
         mask = make_non_pad_mask(input_lengths, log_probs.shape[1])
-        max_log_prob, _ = log_probs.max(-1)
-        probs = torch.exp(log_probs - max_log_prob.unsqueeze(-1))
+        probs = log_probs.exp()
         norm_probs = torch.zeros_like(log_probs)
-        norm_probs[mask] += (probs / probs.sum(-1).unsqueeze(-1))[mask]
+        norm_probs[mask] += probs[mask]
         if reduction == "mean":
             norm_probs /= norm_probs.shape[0]
         ctx.save_for_backward(norm_probs)
@@ -45,7 +37,7 @@ class GradExpNormalize(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor):
-        return grad_output + ctx.saved_tensors[0], None, None
+        return grad_output - grad_output.sum(-1).unsqueeze(-1) * ctx.saved_tensors[0], None, None
 
 
 class GradInsert(torch.autograd.Function):

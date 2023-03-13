@@ -22,6 +22,7 @@ from nemo.core.config.modelPT import NemoConfig
 @dataclass
 class GraphModuleConfig:
     criterion_type: str = "ml"
+    loss_type: str = "ctc"
     split_batch_size: int = 0
     dec_type: str = "topo"
     transcribe_training: bool = True

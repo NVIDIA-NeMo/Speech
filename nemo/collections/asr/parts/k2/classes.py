@@ -41,16 +41,16 @@ class GraphModuleConfig:
 
     topo_type: str = "default"
     topo_with_self_loops: bool = True
-    graph_type: str = "topo"
-    loss_type: str = "mmi"
     token_lm: Optional[Any] = None
     intersect_pruned: bool = False
     intersect_conf: GraphIntersectDenseConfig = GraphIntersectDenseConfig()
     boost_coeff: float = 0.0
+    predictor_window_size: int = 0
+    predictor_step_size: int = 1
 
 
 class ASRK2Mixin(ABC):
-    """ k2 Mixin class that simplifies the construction of various models with k2-based losses.
+    """k2 Mixin class that simplifies the construction of various models with k2-based losses.
     
     It does the following:
         -   Sets up the graph loss and decoder (methods _init_k2 and update_k2_modules).
@@ -97,20 +97,28 @@ class ASRK2Mixin(ABC):
         if hasattr(self, "transcribe_decoder"):
             del self.transcribe_decoder
 
+        if hasattr(self, "joint"):
+            # RNNT
+            num_classes = self.joint.num_classes_with_blank - 1
+        else:
+            # CTC, MMI, ...
+            num_classes = self.decoder.num_classes_with_blank - 1
+            remove_consecutive = input_cfg.backend_cfg.get("topo_with_self_loops", True) and input_cfg.backend_cfg.get(
+                "topo_type", "default"
+            ) not in ["forced_blank", "identity",]
+            self._wer.remove_consecutive = remove_consecutive
+
         from nemo.collections.asr.losses.lattice_losses import LatticeLoss
 
         self.loss = LatticeLoss(
-            num_classes=self.decoder.num_classes_with_blank - 1,
+            num_classes=num_classes,
             reduction=self._cfg.get("ctc_reduction", "mean_batch"),
             backend="k2",
             criterion_type=input_cfg.get("criterion_type", "ml"),
+            loss_type=input_cfg.get("loss_type", "ctc"),
             split_batch_size=input_cfg.get("split_batch_size", 0),
             graph_module_cfg=input_cfg.backend_cfg,
         )
-        remove_consecutive = input_cfg.backend_cfg.get("topo_with_self_loops", True) and input_cfg.backend_cfg.get(
-            "topo_type", "default"
-        ) not in ["forced_blank", "identity",]
-        self._wer.remove_consecutive = remove_consecutive
 
         criterion_type = self.loss.criterion_type
         self.use_graph_lm = criterion_type == "map"
@@ -126,7 +134,7 @@ class ASRK2Mixin(ABC):
             from nemo.collections.asr.modules.graph_decoder import ViterbiDecoderWithGraph
 
             self.transcribe_decoder = ViterbiDecoderWithGraph(
-                num_classes=self.decoder.num_classes_with_blank - 1,
+                num_classes=num_classes,
                 backend="k2",
                 dec_type="token_lm",
                 return_type="1best",

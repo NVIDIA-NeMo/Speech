@@ -65,6 +65,7 @@ You may control the aligner's config by setting the aligner_args:
     aligner_args.decode_batch_size=8 \
     aligner_args.ctc_cfg.prob_suppress_index=-1 \
     aligner_args.ctc_cfg.prob_suppress_value=0.5 \
+    aligner_args.rnnt_cfg.predictor_window_size=10 \
     aligner_args.decoder_module_cfg.intersect_pruned=true \
     aligner_args.decoder_module_cfg.intersect_conf.search_beam=40 \
     ...

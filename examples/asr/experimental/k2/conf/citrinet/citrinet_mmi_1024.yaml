@@ -1,4 +1,4 @@
-# This config contains the default values for training a Citrinet model with CTC loss and BPE-based vocabulary.
+# This config contains the default values for training a Citrinet model with CTC-MMI loss and BPE-based vocabulary.
 # Default learning parameters in this config are set for effective batch size of 1k on 32 GPUs.
 # To train it with smaller batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
 # If training for a short time, you can also reduce weight decay to 0.
@@ -447,11 +447,11 @@ model:
 
   graph_module_cfg:
     criterion_type: map
+    loss_type: mmi
     transcribe_training: false
     split_batch_size: 0
     backend_cfg:
       token_lm: ???
-      loss_type: mmi
       topo_type: default
       topo_with_self_loops: true
       intersect_pruned: false

@@ -25,7 +25,7 @@ class ViterbiDecoderWithGraph(NeuralModule):
     """Viterbi Decoder with WFSA (Weighted Finite State Automaton) graphs.
 
     Note:
-        Requires k2 v1.11 or later to be installed to use this module.
+        Requires k2 v1.14 or later to be installed to use this module.
 
     Decoder can be set up via the config, and optionally be passed keyword arguments as follows.
 
@@ -74,8 +74,8 @@ class ViterbiDecoderWithGraph(NeuralModule):
         """Returns definitions of module input ports.
         """
         return {
-            "log_probs": NeuralType(("B", "T", "D"), LogprobsType()),
-            "log_probs_length": NeuralType(tuple("B"), LengthsType()),
+            "log_probs": NeuralType(("B", "T", "D") if self._3d_input else ("B", "T", "T", "D"), LogprobsType()),
+            "input_lengths": NeuralType(tuple("B"), LengthsType()),
         }
 
     @property
@@ -113,20 +113,23 @@ class ViterbiDecoderWithGraph(NeuralModule):
         # we assume that self._blank + 1 == num_classes
         if backend == "k2":
             if self.dec_type == "topo":
-                from nemo.collections.asr.parts.k2.graph_decoders import BaseDecoder as Decoder
+                from nemo.collections.asr.parts.k2.graph_decoders import CtcDecoder as Decoder
+            elif self.dec_type == "topo_rnnt_ali":
+                from nemo.collections.asr.parts.k2.graph_decoders import RnntAligner as Decoder
             elif self.dec_type == "token_lm":
                 from nemo.collections.asr.parts.k2.graph_decoders import TokenLMDecoder as Decoder
-            elif self.dec_type == "looseali":
+            elif self.dec_type == "loose_ali":
                 raise NotImplementedError()
             elif self.dec_type == "tlg":
-                raise NotImplementedError(f"dec_type {dec_type} is not supported at the moment")
+                raise NotImplementedError(f"dec_type {self.dec_type} is not supported at the moment")
             else:
-                raise ValueError(f"Unsupported dec_type: {dec_type}")
+                raise ValueError(f"Unsupported dec_type: {self.dec_type}")
 
             self._decoder = Decoder(num_classes=self._blank + 1, blank=self._blank, cfg=graph_module_cfg)
         elif backend == "gtn":
             raise NotImplementedError("gtn-backed decoding is not implemented")
 
+        self._3d_input = self.dec_type != "topo_rnnt"
         super().__init__()
 
     def update_graph(self, graph):
@@ -151,17 +154,17 @@ class ViterbiDecoderWithGraph(NeuralModule):
                 a, b, c, d, return_lattices=False, return_ilabels=False, output_aligned=True
             )
         batch_size = log_probs.shape[0]
-        if self.split_batch_size > 0 and self.split_batch_size < batch_size:
+        if self.split_batch_size > 0 and self.split_batch_size <= batch_size:
             predictions = []
             probs = []
             for batch_idx in range(0, batch_size, self.split_batch_size):
                 begin = batch_idx
                 end = min(begin + self.split_batch_size, batch_size)
-                log_probs_part = log_probs[begin:end]
                 log_probs_length_part = log_probs_length[begin:end]
+                log_probs_part = log_probs[begin:end, : log_probs_length_part.max()]
                 if align:
-                    targets_part = targets[begin:end]
                     target_length_part = target_length[begin:end]
+                    targets_part = targets[begin:end, : target_length_part.max()]
                     predictions_part, probs_part = decode_func(
                         log_probs_part, log_probs_length_part, targets_part, target_length_part
                     )

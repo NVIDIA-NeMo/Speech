@@ -26,7 +26,7 @@ class LatticeLoss(Loss):
     """Family of loss functions based on various lattice scores.
 
     Note:
-        Requires k2 v1.11 or later to be installed to use this loss function.
+        Requires k2 v1.14 or later to be installed to use this loss function.
 
     Losses can be selected via the config, and optionally be passed keyword arguments as follows.
 
@@ -37,9 +37,9 @@ class LatticeLoss(Loss):
                 ...
                 graph_module_cfg:  # Config for graph modules, e.g. LatticeLoss
                     criterion_type: "map"
+                    loss_type: "mmi"
                     split_batch_size: 0
                     backend_cfg:
-                        loss_type: "mmi"
                         topo_type: "default"       # other options: "compact", "shared_blank", "minimal"
                         topo_with_self_loops: true
                         token_lm: <token_lm_path>  # must be provided for criterion_type: "map"
@@ -56,6 +56,8 @@ class LatticeLoss(Loss):
         criterion_type: Type of criterion to use. Choices: `ml` and `map`, 
             with `ml` standing for Maximum Likelihood and `map` for Maximum A Posteriori Probability.
 
+        loss_type: Type of the loss function to use. Choices: `ctc` and `rnnt` for `ml`, and `mmi` for `map`.
+
         split_batch_size: Local batch size. Used for memory consumption reduction at the cost of speed performance.
             Effective if complies 0 < split_batch_size < batch_size.
 
@@ -67,7 +69,7 @@ class LatticeLoss(Loss):
         """Input types definitions for LatticeLoss.
         """
         return {
-            "log_probs": NeuralType(("B", "T", "D"), LogprobsType()),
+            "log_probs": NeuralType(("B", "T", "D") if self._3d_input else ("B", "T", "T", "D"), LogprobsType()),
             "targets": NeuralType(("B", "T"), LabelsType()),
             "input_lengths": NeuralType(tuple("B"), LengthsType()),
             "target_lengths": NeuralType(tuple("B"), LengthsType()),
@@ -87,30 +89,40 @@ class LatticeLoss(Loss):
         reduction: str = "mean_batch",
         backend: str = "k2",
         criterion_type: str = "ml",
+        loss_type: str = "ctc",
         split_batch_size: int = 0,
         graph_module_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
         self._blank = num_classes
         self.split_batch_size = split_batch_size
+        inner_reduction = None
         if reduction == "mean_batch":
-            ctc_reduction = "none"
+            inner_reduction = "none"
             self._apply_batch_mean = True
         elif reduction in ["sum", "mean", "none"]:
-            ctc_reduction = reduction
+            inner_reduction = reduction
             self._apply_batch_mean = False
 
         # we assume that self._blank + 1 == num_classes
         if backend == "k2":
             if criterion_type == "ml":
-                from nemo.collections.asr.parts.k2.ml_loss import MLLoss as K2Loss
+                if loss_type == "ctc":
+                    from nemo.collections.asr.parts.k2.ml_loss import CtcLoss as K2Loss
+                elif loss_type == "rnnt":
+                    from nemo.collections.asr.parts.k2.ml_loss import RnntLoss as K2Loss
+                else:
+                    raise ValueError(f"Unsupported `loss_type`: {loss_type}.")
             elif criterion_type == "map":
-                from nemo.collections.asr.parts.k2.map_loss import MAPLoss as K2Loss
+                if loss_type == "ctc":
+                    from nemo.collections.asr.parts.k2.map_loss import CtcMmiLoss as K2Loss
+                else:
+                    raise ValueError(f"Unsupported `loss_type`: {loss_type}.")
             else:
-                raise ValueError(f"Invalid value of `criterion_type`: {criterion_type}.")
+                raise ValueError(f"Unsupported `criterion_type`: {criterion_type}.")
 
             self._loss = K2Loss(
-                num_classes=self._blank + 1, blank=self._blank, reduction=ctc_reduction, cfg=graph_module_cfg,
+                num_classes=self._blank + 1, blank=self._blank, reduction=inner_reduction, cfg=graph_module_cfg,
             )
         elif backend == "gtn":
             raise NotImplementedError(f"Backend {backend} is not supported.")
@@ -118,6 +130,8 @@ class LatticeLoss(Loss):
             raise ValueError(f"Invalid value of `backend`: {backend}.")
 
         self.criterion_type = criterion_type
+        self.loss_type = loss_type
+        self._3d_input = self.loss_type != "rnnt"
 
         if self.split_batch_size > 0:
             # don't need to guard grad_utils
@@ -143,20 +157,21 @@ class LatticeLoss(Loss):
         target_lengths = target_lengths.long()
         targets = targets.long()
         batch_size = log_probs.shape[0]
-        if self.split_batch_size > 0 and self.split_batch_size < batch_size:
+        if self.split_batch_size > 0 and self.split_batch_size <= batch_size:
             loss_list = []
             for batch_idx in range(0, batch_size, self.split_batch_size):
                 begin = batch_idx
                 end = min(begin + self.split_batch_size, batch_size)
-                log_probs_part = log_probs[begin:end]
-                targets_part = targets[begin:end]
                 input_lengths_part = input_lengths[begin:end]
+                log_probs_part = log_probs[begin:end, : input_lengths_part.max()]
                 target_lengths_part = target_lengths[begin:end]
+                targets_part = targets[begin:end, : target_lengths_part.max()]
                 loss_part, _ = (
-                    self._partial_loss(log_probs_part, targets_part, input_lengths_part, target_lengths_part,)
+                    self._partial_loss(log_probs_part, targets_part, input_lengths_part, target_lengths_part)
                     if log_probs_part.requires_grad
-                    else self._loss(log_probs_part, targets_part, input_lengths_part, target_lengths_part,)
+                    else self._loss(log_probs_part, targets_part, input_lengths_part, target_lengths_part)
                 )
+                del log_probs_part, targets_part, input_lengths_part, target_lengths_part
                 loss_list.append(loss_part)
             loss = torch.cat(loss_list, 0)
         else:

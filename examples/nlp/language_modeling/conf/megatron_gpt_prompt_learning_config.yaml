@@ -133,6 +133,8 @@ model:
     validation_cache_data_path: null  # the path to the validation cache data 
     test_cache_data_path: null  # the path to the test cache data 
     load_cache: False  # whether to load from the cache data
+    max_seq_length: 1024  # filter out training and validation examples longer than 1024 tokens. Set to None will default to model's encoder length.
+    min_seq_length: 1  # filter out training and validation examples less than 1 token long.
 
 
   optim:

@@ -20,12 +20,13 @@ If there is an error, the module will raise an exception with a helpful message.
 """
 
 import textwrap
+from typing import Tuple
 
 from packaging.version import Version
 from pytorch_lightning.utilities.imports import package_available
 
 __K2_MINIMUM_MAJOR_VERSION = 1
-__K2_MINIMUM_MINOR_VERSION = 11
+__K2_MINIMUM_MINOR_VERSION = 14
 
 __K2_MINIMUM_VERSION = Version(f"{__K2_MINIMUM_MAJOR_VERSION}.{__K2_MINIMUM_MINOR_VERSION}")
 
@@ -40,11 +41,14 @@ K2_INSTALLATION_MESSAGE = (
 )
 
 if not package_available("k2"):
-    raise ModuleNotFoundError(K2_INSTALLATION_MESSAGE)
+    raise ModuleNotFoundError("Module k2 is not available.\n" + K2_INSTALLATION_MESSAGE)
 
 import k2  # noqa: E402
 
-__k2_version = Version(k2.__dev_version__)
+try:
+    __k2_version = Version(k2.__dev_version__)
+except AttributeError:
+    raise ImportError("Module k2 is corrupted.\n" + K2_INSTALLATION_MESSAGE)
 
 if __k2_version < __K2_MINIMUM_VERSION:
     raise ImportError(

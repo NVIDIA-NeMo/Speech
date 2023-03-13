@@ -25,8 +25,8 @@ class AlignerCTCConfig:
 
 @dataclass
 class AlignerRNNTConfig:
-    # Arguments will appear with RNNT support
-    pass
+    predictor_window_size: int = 0
+    predictor_step_size: int = 1
 
 
 @dataclass

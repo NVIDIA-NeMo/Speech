@@ -26,31 +26,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from abc import abstractmethod
+from typing import Any, Optional, Tuple, Union
 
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.asr.parts.k2.autograd import sparse_abs
 from nemo.collections.asr.parts.k2.classes import GraphIntersectDenseConfig
+from nemo.collections.asr.parts.k2.loss_mixins import CtcK2Mixin
+from nemo.collections.asr.parts.k2.ml_loss import MLLoss
 from nemo.collections.asr.parts.k2.utils import (
     create_sparse_wrapped,
-    create_supervision,
     get_tot_objf_and_finite_mask,
+    invert_permutation,
     load_graph,
-    make_blank_first,
-    prep_padded_densefsavec,
-    shift_labels_inpl,
 )
 from nemo.core.utils.k2_guard import k2  # import k2 from guard module
 from nemo.utils import logging
 
 
-class MAPLoss(torch.nn.Module):
+class MAPLoss(MLLoss):
     """
     Maximum a Posteriori Probability criterion.
-    It is implemented as Lattice-Free Maximum Mutual Information (LF-MMI) 
-    and LF-boosted-MMI (LF-bMMI) losses.
+    It implements Lattice-Free Maximum Mutual Information (LF-MMI) and LF-boosted-MMI (LF-bMMI) losses.
     
     Based on https://github.com/k2-fsa/snowfall/blob/master/snowfall/objectives/mmi.py
     
@@ -58,6 +56,7 @@ class MAPLoss(torch.nn.Module):
     We keep explicit parameter setting to be able to create an instance without the need of a config.
     """
 
+    @abstractmethod
     def __init__(
         self,
         num_classes: int,
@@ -66,34 +65,30 @@ class MAPLoss(torch.nn.Module):
         cfg: Optional[DictConfig] = None,
         topo_type: str = "default",
         topo_with_self_loops: bool = True,
-        loss_type: str = "mmi",
         token_lm: Optional[Union['k2.Fsa', str]] = None,
         intersect_pruned: bool = False,
         intersect_conf: GraphIntersectDenseConfig = GraphIntersectDenseConfig(),
         boost_coeff: float = 0.0,
     ):
-        super().__init__()
+        super().__init__(
+            num_classes=num_classes,
+            blank=blank,
+            reduction=reduction,
+            cfg=cfg,
+            topo_type=topo_type,
+            topo_with_self_loops=topo_with_self_loops,
+        )
         if cfg is not None:
-            topo_type = cfg.get("topo_type", topo_type)
-            topo_with_self_loops = cfg.get("topo_with_self_loops", topo_with_self_loops)
-            loss_type = cfg.get("loss_type", loss_type)
             token_lm = cfg.get("token_lm", token_lm)
             intersect_pruned = cfg.get("intersect_pruned", intersect_pruned)
             intersect_conf = cfg.get("intersect_conf", intersect_conf)
             boost_coeff = cfg.get("boost_coeff", boost_coeff)
-        self.num_classes = num_classes
-        self.blank = blank
-        self.reduction = reduction
-        self.loss_type = loss_type
         self.boost_coeff = boost_coeff
-        self.intersect_calc_scores = (
-            self._intersect_calc_scores_mmi_pruned if intersect_pruned else self._intersect_calc_scores_mmi_exact
+        self._intersect_calc_scores_impl = (
+            self._intersect_calc_scores_impl_pruned if intersect_pruned else self._intersect_calc_scores_impl_exact_opt
         )
         self.intersect_conf = intersect_conf
-        self.topo_type = topo_type
-        self.topo_with_self_loops = topo_with_self_loops
-        self.pad_fsavec = topo_type == "compact"
-        self.graph_compiler = None
+        self.graph_compiler = None  # expected to be initialized in .update_graph(...)
         if token_lm is None:
             logging.warning(
                 f"""token_lm is empty. 
@@ -107,25 +102,19 @@ class MAPLoss(torch.nn.Module):
             else:
                 self.update_graph(self.lm_graph)
 
+    @abstractmethod
     def update_graph(self, graph: 'k2.Fsa'):
-        self.lm_graph = graph
-        lm_graph = self.lm_graph.clone()
-        if hasattr(lm_graph, "aux_labels"):
-            delattr(lm_graph, "aux_labels")
-        labels = lm_graph.labels
-        if labels.max() != self.num_classes - 1:
-            raise ValueError(f"lm_graph is not compatible with the num_classes: {labels.unique()}, {self.num_classes}")
-        if self.pad_fsavec:
-            shift_labels_inpl([lm_graph], 1)
-        if self.loss_type == "mmi":
-            from nemo.collections.asr.parts.k2.graph_compilers import MmiGraphCompiler as compiler
-        else:
-            raise ValueError(f"Invalid value of `loss_type`: {self.loss_type}.")
-        self.graph_compiler = compiler(self.num_classes, self.topo_type, self.topo_with_self_loops, aux_graph=lm_graph)
+        # expected to be set in child classes
+        raise NotImplementedError
 
-    def _intersect_calc_scores_mmi_exact(
-        self, dense_fsa_vec: k2.DenseFsaVec, num_graphs: 'k2.Fsa', den_graph: 'k2.Fsa', return_lats: bool = True,
-    ):
+    def _intersect_calc_scores_impl_exact_opt(
+        self, dense_fsa_vec: 'k2.DenseFsaVec', num_graphs: 'k2.Fsa', den_graph: 'k2.Fsa', return_lats: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional['k2.Fsa'], Optional['k2.Fsa']]:
+        """Inner intersection method.
+        Does joint (simultaneous) exact intersection of dense_fsa_vec against num_graphs and den_graph.
+        
+        Optiolally returns the numerator and the denominator lattices.
+        """
         device = dense_fsa_vec.device
         assert device == num_graphs.device and device == den_graph.device
 
@@ -165,7 +154,7 @@ class MAPLoss(torch.nn.Module):
             seqframe_idx_name="seqframe_idx" if return_lats else None,
         )
 
-        num_den_tot_scores = num_den_lats.get_tot_scores(log_semiring=True, use_double_scores=True)
+        num_den_tot_scores = num_den_lats.get_tot_scores(log_semiring=True, use_double_scores=False)
         num_tot_scores = num_den_tot_scores[::2]
         den_tot_scores = num_den_tot_scores[1::2]
 
@@ -180,9 +169,14 @@ class MAPLoss(torch.nn.Module):
         else:
             return num_tot_scores, den_tot_scores, None, None
 
-    def _intersect_calc_scores_mmi_pruned(
-        self, dense_fsa_vec: k2.DenseFsaVec, num_graphs: 'k2.Fsa', den_graph: 'k2.Fsa', return_lats: bool = True,
-    ):
+    def _intersect_calc_scores_impl_pruned(
+        self, dense_fsa_vec: 'k2.DenseFsaVec', num_graphs: 'k2.Fsa', den_graph: 'k2.Fsa', return_lats: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional['k2.Fsa'], Optional['k2.Fsa']]:
+        """Inner intersection method.
+        Does exact intersection of dense_fsa_vec against num_graphs and pruned intersection against den_graph.
+        
+        Optiolally returns the numerator and the denominator lattices.
+        """
         device = dense_fsa_vec.device
         assert device == num_graphs.device and device == den_graph.device
 
@@ -205,84 +199,122 @@ class MAPLoss(torch.nn.Module):
             seqframe_idx_name="seqframe_idx" if return_lats else None,
         )
 
-        # use_double_scores=True does matter
-        # since otherwise it sometimes makes rounding errors
-        num_tot_scores = num_lats.get_tot_scores(log_semiring=True, use_double_scores=True)
-        den_tot_scores = den_lats.get_tot_scores(log_semiring=True, use_double_scores=True)
+        num_tot_scores = num_lats.get_tot_scores(log_semiring=True, use_double_scores=False)
+        den_tot_scores = den_lats.get_tot_scores(log_semiring=True, use_double_scores=False)
 
         if return_lats:
             return num_tot_scores, den_tot_scores, num_lats, den_lats
         else:
             return num_tot_scores, den_tot_scores, None, None
 
-    def forward(
-        self,
-        log_probs: torch.Tensor,
-        targets: torch.Tensor,
-        input_lengths: torch.Tensor,
-        target_lengths: torch.Tensor,
-    ) -> torch.Tensor:
-        assert self.graph_compiler is not None
+    def _intersect_calc_scores(
+        self, emissions_graphs: 'k2.DenseFsaVec', supervision_graphs: Any, supervisions: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Intersects emissions_graphs with supervision_graphs and calculates lattice scores.
+        This version implicitly assumes supervision_graphs to be a pair of the numerator and the denominator FSAs.
+
+        It can also calculate accuracy between the numerator and the denominator lattices to use it as additional loss.
+
+        Can be overridden.
+        """
         boosted = self.boost_coeff != 0.0
-        if self.blank != 0:
-            # rearrange log_probs to put blank at the first place
-            # and shift targets to emulate blank = 0
-            log_probs, targets = make_blank_first(self.blank, log_probs, targets)
-        supervisions, order = create_supervision(input_lengths)
-        order = order.long()
-        targets = targets[order]
-        target_lengths = target_lengths[order]
-
-        if log_probs.device != self.graph_compiler.device:
-            self.graph_compiler.to(log_probs.device)
-
-        num_graphs, den_graph = self.graph_compiler.compile(
-            targets + 1 if self.pad_fsavec else targets, target_lengths
+        num_tot_scores, den_tot_scores, num_lats, den_lats = self._intersect_calc_scores_impl(
+            emissions_graphs, supervision_graphs[0], supervision_graphs[1], boosted
         )
 
-        dense_fsa_vec = (
-            prep_padded_densefsavec(log_probs, supervisions)
-            if self.pad_fsavec
-            else k2.DenseFsaVec(log_probs, supervisions)
-        )
-
-        num_tot_scores, den_tot_scores, num_lats, den_lats = self.intersect_calc_scores(
-            dense_fsa_vec, num_graphs, den_graph, boosted
-        )
-
-        tot_scores = num_tot_scores - den_tot_scores
+        inverted_batch_order = invert_permutation(supervisions[:, 0].to(dtype=torch.long))
+        self.__batch_order = None
+        tot_scores = (num_tot_scores - den_tot_scores)[inverted_batch_order]
         mmi_tot_scores, mmi_valid_mask = get_tot_objf_and_finite_mask(tot_scores, self.reduction)
 
         if boosted:
             assert num_lats is not None and den_lats is not None
 
             size = (
-                dense_fsa_vec.dim0(),
-                dense_fsa_vec.scores.shape[0],
-                dense_fsa_vec.scores.shape[1] - 1,
+                emissions_graphs.dim0(),
+                emissions_graphs.scores.shape[0],
+                emissions_graphs.scores.shape[1] - 1,
             )
-            row_ids = dense_fsa_vec.dense_fsa_vec.shape().row_ids(1)
+            row_ids = emissions_graphs.emissions_graphs.shape().row_ids(1)
             num_sparse = create_sparse_wrapped(
                 indices=[k2.index_select(row_ids, num_lats.seqframe_idx), num_lats.seqframe_idx, num_lats.phones,],
                 values=num_lats.get_arc_post(False, True).exp(),
                 size=size,
                 min_col_index=0,
             )
+            del num_lats
             den_sparse = create_sparse_wrapped(
                 indices=[k2.index_select(row_ids, den_lats.seqframe_idx), den_lats.seqframe_idx, den_lats.phones,],
                 values=den_lats.get_arc_post(False, True).exp(),
                 size=size,
                 min_col_index=0,
             )
+            del den_lats
 
-            # NOTE: Due to limited support of PyTorch's autograd for sparse tensors,
-            # we cannot use (num_sparse - den_sparse) here
-            # TODO (alaptev): propose sparse_abs to k2
-            acc_loss = torch.sparse.sum(sparse_abs((num_sparse + (-den_sparse)).coalesce()), (1, 2)).to_dense()
+            acc_loss = torch.sparse.sum((num_sparse - den_sparse).coalesce().abs(), (1, 2)).to_dense()
+            del num_sparse, den_sparse
+
             acc_tot_scores, acc_valid_mask = get_tot_objf_and_finite_mask(acc_loss, self.reduction)
             valid_mask = mmi_valid_mask & acc_valid_mask
-            total_loss = self.boost_coeff * acc_tot_scores[valid_mask] - mmi_tot_scores[valid_mask]
+            total_loss = (
+                (self.boost_coeff * acc_tot_scores[inverted_batch_order][valid_mask] - mmi_tot_scores[valid_mask])
+                if self.reduction == "none"
+                else self.boost_coeff * acc_tot_scores - mmi_tot_scores
+            )
         else:
             valid_mask = mmi_valid_mask
-            total_loss = -mmi_tot_scores[mmi_valid_mask]
+            total_loss = -mmi_tot_scores[valid_mask] if self.reduction == "none" else -mmi_tot_scores
         return total_loss, valid_mask
+
+
+class CtcMmiLoss(MAPLoss, CtcK2Mixin):
+    """MMI loss with custom CTC topologies.
+    Available topologies:
+        -   `default`, with or without self-loops
+        -   `compact`, with or without self-loops
+        -   `shared_blank`, with or without self-loops
+        -   `minimal`, without self-loops
+
+    cfg takes precedence over all optional parameters
+    We keep explicit parameter setting to be able to create an instance without the need of a config.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        blank: int,
+        reduction: str,
+        cfg: Optional[DictConfig] = None,
+        topo_type: str = "default",
+        topo_with_self_loops: bool = True,
+        token_lm: Optional[Union['k2.Fsa', str]] = None,
+        intersect_pruned: bool = False,
+        intersect_conf: GraphIntersectDenseConfig = GraphIntersectDenseConfig(),
+        boost_coeff: float = 0.0,
+    ):
+        super().__init__(
+            num_classes=num_classes,
+            blank=blank,
+            reduction=reduction,
+            cfg=cfg,
+            topo_type=topo_type,
+            topo_with_self_loops=topo_with_self_loops,
+            token_lm=token_lm,
+            intersect_pruned=intersect_pruned,
+            intersect_conf=intersect_conf,
+            boost_coeff=boost_coeff,
+        )
+
+    def update_graph(self, graph: 'k2.Fsa'):
+        self.lm_graph = graph
+        lm_graph = self.lm_graph.clone()
+        if hasattr(lm_graph, "aux_labels"):
+            delattr(lm_graph, "aux_labels")
+        labels = lm_graph.labels
+        if labels.max() != self.num_classes - 1:
+            raise ValueError(f"lm_graph is not compatible with the num_classes: {labels.unique()}, {self.num_classes}")
+        from nemo.collections.asr.parts.k2.graph_compilers import MmiGraphCompiler as compiler
+
+        self.graph_compiler = compiler(
+            self.num_classes, self.blank, self.topo_type, self.topo_with_self_loops, aux_graph=lm_graph
+        )

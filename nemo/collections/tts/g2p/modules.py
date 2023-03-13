@@ -434,8 +434,8 @@ class IPAG2P(BaseG2p):
                         continue
 
                     # Note that latin character pattern should be consistent with
-                    # nemo.collections.tts.g2p.data.data_utils.LATIN_CHARS_ALL. It is advised to extend its character
-                    # coverage if adding the support of new languages.
+                    # nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils.LATIN_CHARS_ALL. It is advised
+                    # to extend its character coverage if adding the support of new languages.
                     # TODO @xueyang: unify hardcoded range of characters with LATIN_CHARS_ALL to avoid duplicates.
                     line = normalize_unicode_text(line)
 

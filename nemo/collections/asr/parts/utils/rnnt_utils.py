@@ -80,6 +80,8 @@ class Hypothesis:
 
     lm_scores: (Unused) Score of the external Language Model.
 
+    ngram_lm_state: (Optional) State of the external n-gram Language Model.
+
     tokens: (Optional) A list of decoded tokens (can be characters or word-pieces.
 
     last_token (Optional): A token or batch of tokens which was predicted in the last step.
@@ -99,6 +101,7 @@ class Hypothesis:
     y: List[torch.tensor] = None
     lm_state: Optional[Union[Dict[str, Any], List[Any]]] = None
     lm_scores: Optional[torch.Tensor] = None
+    ngram_lm_state: Optional[Union[Dict[str, Any], List[Any]]] = None
     tokens: Optional[Union[List[int], torch.Tensor]] = None
     last_token: Optional[torch.Tensor] = None
 

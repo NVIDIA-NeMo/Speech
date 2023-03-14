@@ -28,6 +28,8 @@ from tqdm.auto import tqdm
 SUPPORTED_MODELS = {
     'EncDecCTCModelBPE': 'subword',
     'EncDecCTCModel': 'char',
+    'EncDecRNNTBPEModel': 'subword',
+    'EncDecRNNTModel': 'char',
 }
 
 

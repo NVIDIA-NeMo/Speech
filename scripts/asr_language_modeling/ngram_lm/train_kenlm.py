@@ -44,15 +44,15 @@ import kenlm_utils
 import torch
 
 import nemo.collections.asr as nemo_asr
+from nemo.collections.asr.parts.submodules.ctc_beam_decoding import DEFAULT_TOKEN_OFFSET
 from nemo.utils import logging
 
 """
 NeMo's beam search decoders only support char-level encodings. In order to make it work with BPE-level encodings, we
 use a trick to encode the sub-word tokens of the training data as unicode characters and train a char-level KenLM. 
-TOKEN_OFFSET is the offset in the unicode table to be used to encode the BPE sub-words. This encoding scheme reduces 
+DEFAULT_TOKEN_OFFSET is the offset in the unicode table to be used to encode the BPE sub-words. This encoding scheme reduces 
 the required memory significantly, and the LM and its binary blob format require less storage space.
 """
-TOKEN_OFFSET = 100
 
 CHUNK_SIZE = 8192
 CHUNK_BUFFER_SIZE = 512
@@ -116,7 +116,7 @@ def main():
             path=encoded_train_file,
             chunk_size=CHUNK_SIZE,
             buffer_size=CHUNK_BUFFER_SIZE,
-            token_offset=TOKEN_OFFSET,
+            token_offset=DEFAULT_TOKEN_OFFSET,
         )
         # --discount_fallback is needed for training KenLM for BPE-based models
         discount_arg = "--discount_fallback"

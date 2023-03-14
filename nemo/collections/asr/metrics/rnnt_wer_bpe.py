@@ -21,6 +21,7 @@ from torchmetrics import Metric
 
 from nemo.collections.asr.metrics.rnnt_wer import AbstractRNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import move_dimension_to_the_front
+from nemo.collections.asr.parts.submodules import rnnt_beam_decoding
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -201,6 +202,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         super(RNNTBPEDecoding, self).__init__(
             decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id + joint.num_extra_outputs
         )
+
+        if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
+            self.decoding.set_decoding_type('subword')
 
     def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
         """

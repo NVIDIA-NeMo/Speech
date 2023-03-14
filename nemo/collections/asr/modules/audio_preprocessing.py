@@ -162,6 +162,8 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
                 Defaults to 4000
             use_torchaudio: Whether to use the `torchaudio` implementation.
+            mel_norm: Normalization used for mel filterbank weights.
+                Defaults to 'slaney' (area normalization)
             stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
             stft_conv: Deprecated argument, kept for compatibility with older checkpoints.
         """
@@ -227,6 +229,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
         use_torchaudio: bool = False,
+        mel_norm="slaney",
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
@@ -272,6 +275,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
             rng=rng,
             nb_augmentation_prob=nb_augmentation_prob,
             nb_max_freq=nb_max_freq,
+            mel_norm=mel_norm,
             stft_exact_pad=stft_exact_pad,  # Deprecated arguments; kept for config compatibility
             stft_conv=stft_conv,  # Deprecated arguments; kept for config compatibility
         )
@@ -922,6 +926,7 @@ class AudioToMelSpectrogramPreprocessorConfig:
     nb_augmentation_prob: float = 0.0
     nb_max_freq: int = 4000
     use_torchaudio: bool = False
+    mel_norm: str = "slaney"
     stft_exact_pad: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
     stft_conv: bool = False  # Deprecated argument, kept for compatibility with older checkpoints.
 

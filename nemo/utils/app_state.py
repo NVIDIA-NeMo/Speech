@@ -54,6 +54,7 @@ class AppState(metaclass=Singleton):
         self._data_parallel_size = None
         self._data_parallel_group = None
         self._megatron_checkpoint_version = None
+        self._use_fp8 = False
 
         self._random_seed = None
 
@@ -345,6 +346,22 @@ class AppState(metaclass=Singleton):
                 group:  Data parallel group.
         """
         self._data_parallel_group = group
+
+    @property
+    def use_fp8(self):
+        """ Property returns the use of fp8 precision.
+            Returns:
+                Use of FP8.
+        """
+        return self._use_fp8
+
+    @use_fp8.setter
+    def use_fp8(self, use_fp8):
+        """ Property sets the use of fp8 precision.
+            Args:
+                use_fp8:  Use of FP8.
+        """
+        self._use_fp8 = use_fp8
 
     @property
     def random_seed(self):

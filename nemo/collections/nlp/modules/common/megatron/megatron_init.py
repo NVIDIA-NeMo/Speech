@@ -59,6 +59,7 @@ def initialize_model_parallel_for_nemo(
     pipeline_model_parallel_split_rank=None,
     micro_batch_size=None,
     global_batch_size=None,
+    use_fp8=False,
     seed=1234,
     apex_transformer_log_level=30,
 ):
@@ -74,6 +75,7 @@ def initialize_model_parallel_for_nemo(
     app_state.tensor_model_parallel_size = tensor_model_parallel_size
     app_state.pipeline_model_parallel_size = pipeline_model_parallel_size
     app_state.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
+    app_state.use_fp8 = use_fp8
     (
         app_state.tensor_model_parallel_rank,
         app_state.pipeline_model_parallel_rank,

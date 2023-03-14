@@ -60,6 +60,7 @@ def get_args(argv):
         "--cache_support", action="store_true", help="enables caching inputs for the models support it."
     )
     parser.add_argument("--device", default="cuda", help="Device to export for")
+    parser.add_argument("--check-tolerance", type=float, default=0.01, help="tolerance for verification")
     args = parser.parse_args(argv)
     return args
 
@@ -131,6 +132,7 @@ def nemo_export(argv):
     if args.cache_support and hasattr(model, "encoder") and hasattr(model.encoder, "export_cache_support"):
         model.encoder.export_cache_support = True
         logging.info("Caching support is enabled.")
+        model.encoder.setup_streaming_params()
 
     autocast = nullcontext
     if args.autocast:
@@ -153,6 +155,7 @@ def nemo_export(argv):
                 out,
                 input_example=input_example,
                 check_trace=check_trace,
+                check_tolerance=args.check_tolerance,
                 onnx_opset_version=args.onnx_opset,
                 verbose=args.verbose,
             )

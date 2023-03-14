@@ -434,6 +434,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
         processed_signal_length: torch.Tensor = None,
         cache_last_channel: torch.Tensor = None,
         cache_last_time: torch.Tensor = None,
+        cache_last_channel_len: torch.Tensor = None,
         keep_all_outputs: bool = True,
         previous_hypotheses: List[Hypothesis] = None,
         previous_pred_out: torch.Tensor = None,
@@ -447,6 +448,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             processed_signal: the input audio signals
             processed_signal_length: the length of the audios
             cache_last_channel: the cache tensor for last channel layers like MHA
+            cache_last_channel_len: engths for cache_last_channel
             cache_last_time: the cache tensor for last time layers like convolutions
             keep_all_outputs: if set to True, would not drop the extra outputs specified by encoder.streaming_cfg.valid_out_len
             previous_hypotheses: the hypotheses from the previous step for RNNT models
@@ -459,6 +461,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             all_hyp_or_transcribed_texts: the decoder hypotheses for Transducer models and the transcriptions for CTC models
             cache_last_channel_next: the updated tensor cache for last channel layers to be used for next streaming step
             cache_last_time_next: the updated tensor cache for last time layers to be used for next streaming step
+            cache_last_channel_next_len: the updated lengths for cache_last_channel
             best_hyp: the best hypotheses for the Transducer models
         """
         if not isinstance(self, asr_models.EncDecRNNTModel) and not isinstance(self, asr_models.EncDecCTCModel):
@@ -472,11 +475,18 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 "return_transcription can not be False for Transducer models as decoder returns the transcriptions too."
             )
 
-        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next) = self.encoder.cache_aware_stream_step(
+        (
+            encoded,
+            encoded_len,
+            cache_last_channel_next,
+            cache_last_time_next,
+            cache_last_channel_next_len,
+        ) = self.encoder.cache_aware_stream_step(
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
             cache_last_channel=cache_last_channel,
             cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
             keep_all_outputs=keep_all_outputs,
             drop_extra_pre_encoded=drop_extra_pre_encoded,
         )
@@ -531,6 +541,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             all_hyp_or_transcribed_texts,
             cache_last_channel_next,
             cache_last_time_next,
+            cache_last_channel_next_len,
             best_hyp,
         )
 

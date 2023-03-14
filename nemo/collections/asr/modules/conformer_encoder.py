@@ -127,14 +127,37 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             A tuple of input examples.
         """
         dev = next(self.parameters()).device
-        input_example = torch.randn(max_batch, self._feat_in, max_dim).to(dev)
-        input_example_length = torch.randint(1, max_dim, (max_batch,)).to(dev)
-
-        if hasattr(self, 'export_cache_support') and self.export_cache_support:
-            cache_last_channel = torch.randn(self.n_layers, max_batch, max_dim, self.d_model).to(dev)
-            cache_last_time = torch.randn(self.n_layers, max_batch, self.d_model, self.conv_context_size[0]).to(dev)
-            all_input_example = tuple([input_example, input_example_length, cache_last_channel, cache_last_time])
+        if self.export_cache_support:
+            window_size = max_dim
+            if self.streaming_cfg is not None:
+                if isinstance(self.streaming_cfg.chunk_size, list):
+                    chunk_size = self.streaming_cfg.chunk_size[1]
+                else:
+                    chunk_size = self.streaming_cfg.chunk_size
+                if isinstance(self.streaming_cfg.pre_encode_cache_size, list):
+                    pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size[1]
+                else:
+                    pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size
+                window_size = chunk_size + pre_encode_cache_size
+            input_example = torch.randn(max_batch, self._feat_in, window_size, device=dev)
+            input_example_length = torch.randint(
+                window_size // 4, window_size, (max_batch,), device=dev, dtype=torch.int64
+            )
+            cache_last_channel, cache_last_time, cache_last_channel_len = self.get_initial_cache_state(
+                batch_size=max_batch, device=dev, max_dim=max_dim
+            )
+            all_input_example = tuple(
+                [
+                    input_example,
+                    input_example_length,
+                    cache_last_channel.transpose(0, 1),
+                    cache_last_time.transpose(0, 1),
+                    cache_last_channel_len,
+                ]
+            )
         else:
+            input_example = torch.randn(max_batch, self._feat_in, max_dim, device=dev)
+            input_example_length = torch.randint(max_dim // 4, max_dim, (max_batch,), device=dev, dtype=torch.int64)
             all_input_example = tuple([input_example, input_example_length])
 
         return all_input_example
@@ -148,6 +171,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "length": NeuralType(tuple('B'), LengthsType()),
                 "cache_last_channel": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
+                "cache_last_channel_len": NeuralType(tuple('B'), LengthsType(), optional=True),
             }
         )
 
@@ -160,20 +184,21 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
                 "cache_last_channel_next": NeuralType(('D', 'B', 'T', 'D'), ChannelType(), optional=True),
                 "cache_last_time_next": NeuralType(('D', 'B', 'D', 'T'), ChannelType(), optional=True),
+                "cache_last_channel_next_len": NeuralType(tuple('B'), LengthsType(), optional=True),
             }
         )
 
     @property
     def disabled_deployment_input_names(self):
         if not self.export_cache_support:
-            return set(["cache_last_channel", "cache_last_time"])
+            return set(["cache_last_channel", "cache_last_time", "cache_last_channel_len"])
         else:
             return set()
 
     @property
     def disabled_deployment_output_names(self):
         if not self.export_cache_support:
-            return set(["cache_last_channel_next", "cache_last_time_next"])
+            return set(["cache_last_channel_next", "cache_last_time_next", "cache_last_channel_next_len"])
         else:
             return set()
 
@@ -392,7 +417,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             # Update across all ranks in the distributed system
             torch.distributed.all_reduce(global_max_len, op=torch.distributed.ReduceOp.MAX)
 
-            seq_length = global_max_len.int().item()
+            seq_length = global_max_len.to(torch.int64).item()
 
         if seq_length > self.max_audio_length:
             self.set_max_audio_length(seq_length)
@@ -414,7 +439,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 if self.att_context_size[1] >= 0:
                     att_mask = att_mask.tril(diagonal=self.att_context_size[1])
             else:
-                chunk_idx = torch.arange(0, max_audio_length, dtype=torch.int, device=att_mask.device)
+                chunk_idx = torch.arange(0, max_audio_length, dtype=torch.int64, device=att_mask.device)
                 chunk_idx = torch.div(chunk_idx, self.chunk_size, rounding_mode="trunc")
                 diff_chunks = chunk_idx.unsqueeze(1) - chunk_idx.unsqueeze(0)
                 chunked_limited_mask = torch.logical_and(
@@ -429,14 +454,71 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         else:
             self.att_mask = None
 
+    def forward_for_export(
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+    ):
+        if cache_last_channel is not None:
+            cache_last_channel = cache_last_channel.transpose(0, 1)
+            cache_last_time = cache_last_time.transpose(0, 1)
+
+        rets = self.forward_internal(
+            audio_signal,
+            length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+        )
+        rets = self.streaming_post_process(rets, keep_all_outputs=False)
+        if len(rets) == 2:
+            return rets
+        else:
+            return (
+                rets[0],
+                rets[1],
+                rets[2].transpose(0, 1),
+                rets[3].transpose(0, 1),
+                rets[4],
+            )
+
+    def streaming_post_process(self, rets, keep_all_outputs=True):
+        if len(rets) == 2:
+            return rets
+
+        (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = rets
+
+        if cache_last_channel_next is not None and self.streaming_cfg.last_channel_cache_size >= 0:
+            if self.streaming_cfg.last_channel_cache_size > 0:
+                cache_last_channel_next = cache_last_channel_next[
+                    :, :, -self.streaming_cfg.last_channel_cache_size :, :
+                ]
+
+        if self.streaming_cfg.valid_out_len > 0 and (not keep_all_outputs or self.att_context_style == "regular"):
+            encoded = encoded[:, :, : self.streaming_cfg.valid_out_len]
+            encoded_len = torch.clamp(encoded_len, max=self.streaming_cfg.valid_out_len)
+
+        return (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len)
+
     @typecheck()
-    def forward(self, audio_signal, length, cache_last_channel=None, cache_last_time=None):
+    def forward(
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+    ):
+        return self.forward_internal(
+            audio_signal,
+            length,
+            cache_last_channel=cache_last_channel,
+            cache_last_time=cache_last_time,
+            cache_last_channel_len=cache_last_channel_len,
+        )
+
+    def forward_internal(
+        self, audio_signal, length, cache_last_channel=None, cache_last_time=None, cache_last_channel_len=None
+    ):
         self.update_max_seq_length(seq_length=audio_signal.size(2), device=audio_signal.device)
-        max_audio_length: int = audio_signal.size(-1)
+        max_audio_length = audio_signal.size(-1)
 
         if length is None:
             length = audio_signal.new_full(
-                (audio_signal.size(0),), max_audio_length, dtype=torch.int32, device=audio_signal.device
+                (audio_signal.size(0),), max_audio_length, dtype=torch.int64, device=audio_signal.device
             )
 
         if cache_last_time is not None:
@@ -452,9 +534,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             # self.streaming_cfg is set by setup_streaming_cfg(), called in the init
             if self.streaming_cfg.drop_extra_pre_encoded > 0 and cache_last_channel is not None:
                 audio_signal = audio_signal[:, self.streaming_cfg.drop_extra_pre_encoded :, :]
-                # TODO: find a better solution
-                length = (length - self.streaming_cfg.drop_extra_pre_encoded).float()
-                length = torch.clip(length, min=0).int()
+                length = (length - self.streaming_cfg.drop_extra_pre_encoded).clamp(min=0)
 
         max_audio_length = audio_signal.size(1)
 
@@ -462,19 +542,17 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             raise ValueError("Caching with reduction feature is not supported yet!")
 
         if cache_last_channel is not None:
-            last_channel_num, bs, cache_len, channel_size = cache_last_channel.size()
+            cache_len = self.streaming_cfg.last_channel_cache_size
             cache_keep_size = max_audio_length - self.streaming_cfg.cache_drop_size
-            cache_last_channel_next = torch.zeros(
-                (last_channel_num, bs, cache_len + cache_keep_size, channel_size),
-                device=cache_last_channel.device,
-                dtype=cache_last_channel.dtype,
-            )
-            max_audio_length += cache_len
+            cache_last_channel_next = torch.zeros_like(cache_last_channel)
+            max_audio_length = max_audio_length + cache_len
             padding_length = length + cache_len
+            offset = torch.neg(cache_last_channel_len) + cache_len
         else:
             padding_length = length
             cache_last_channel_next = None
             cache_len = 0
+            offset = None
 
         if self.self_attention_model == 'abs_pos':
             audio_signal, pos_emb = self.pos_enc(x=audio_signal)
@@ -482,7 +560,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             audio_signal, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
 
         # Create the self-attention and padding masks
-        pad_mask, att_mask = self._create_masks(max_audio_length, padding_length, audio_signal.device)
+        pad_mask, att_mask = self._create_masks(max_audio_length, padding_length, offset, audio_signal.device)
 
         if cache_last_channel is not None:
             pad_mask = pad_mask[:, cache_len:]
@@ -520,7 +598,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 # Don't update the audio_signal here because then it will again scale the audio_signal
                 # and cause an increase in the WER
                 _, pos_emb = self.pos_enc(x=audio_signal, cache_len=cache_len)
-                pad_mask, att_mask = self._create_masks(max_audio_length, length, audio_signal.device)
+                pad_mask, att_mask = self._create_masks(max_audio_length, length, offset, audio_signal.device)
 
             # saving tensors if required for interctc loss
             if self.is_access_enabled():
@@ -544,17 +622,31 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             audio_signal, length = self.reduction_subsampling(x=audio_signal, lengths=length)
 
         audio_signal = torch.transpose(audio_signal, 1, 2)
+        length = length.to(dtype=torch.int64)
 
         if cache_last_channel is not None:
-            return audio_signal, length, cache_last_channel_next, cache_last_time_next
+            return (
+                audio_signal,
+                length,
+                cache_last_channel_next,
+                cache_last_time_next,
+                torch.clamp(cache_last_channel_len + cache_keep_size, max=cache_len),
+            )
         else:
             return audio_signal, length
 
-    def _create_masks(self, max_audio_length, padding_length, device):
+    def _create_masks(self, max_audio_length, padding_length, offset, device):
         # pad_mask is the masking to be used to ignore paddings
         pad_mask = torch.arange(0, max_audio_length, device=device).expand(
             padding_length.size(0), -1
         ) < padding_length.unsqueeze(-1)
+
+        if offset is not None:
+            pad_mask_off = torch.arange(0, max_audio_length, device=device).expand(
+                padding_length.size(0), -1
+            ) >= offset.unsqueeze(-1)
+
+            pad_mask = pad_mask_off.logical_and(pad_mask)
 
         if self.att_mask is not None:
             # pad_mask_for_att_mask is the mask which helps to ignore paddings
@@ -677,20 +769,45 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         self.streaming_cfg = streaming_cfg
 
-    def get_initial_cache_state(self, batch_size=1, dtype=torch.float32, device=None):
+    def get_initial_cache_state(self, batch_size=1, dtype=torch.float32, device=None, max_dim=0):
         if device is None:
             device = next(self.parameters()).device
+        if max_dim > 0:
+            create_tensor = torch.randn
+        else:
+            create_tensor = torch.zeros
         last_time_cache_size = self.conv_context_size[0]
-        cache_last_channel = torch.zeros(
-            (self.streaming_cfg.last_channel_num, batch_size, 0, self.d_model), device=device, dtype=dtype
+        cache_last_channel = create_tensor(
+            (
+                self.streaming_cfg.last_channel_num,
+                batch_size,
+                self.streaming_cfg.last_channel_cache_size,
+                self.d_model,
+            ),
+            device=device,
+            dtype=dtype,
         )
-        cache_last_time = torch.zeros(
+        cache_last_time = create_tensor(
             (self.streaming_cfg.last_time_num, batch_size, self.d_model, last_time_cache_size),
             device=device,
             dtype=dtype,
         )
-
-        return cache_last_channel, cache_last_time
+        if max_dim > 0:
+            cache_last_channel_len = torch.randint(
+                0,
+                min(max_dim, self.streaming_cfg.last_channel_cache_size),
+                (batch_size,),
+                device=device,
+                dtype=torch.int64,
+            )
+            for i in range(batch_size):
+                cache_last_channel[:, i, cache_last_channel_len[i] :, :] = 0
+                # what is the right rule to zero out cache_last_time?
+                if cache_last_channel_len[i] == 0:
+                    cache_last_time[:, i, :, :] = 0
+        else:
+            cache_last_channel_len = torch.zeros(batch_size, device=device, dtype=torch.int64)
+        return cache_last_channel, cache_last_time, cache_last_channel_len
 
     def change_attention_model(
         self,

@@ -70,15 +70,6 @@ class CausalConv2D(nn.Conv2d):
         return x
 
 
-@torch.jit.script
-def keep_in_cache_next(cache: torch.Tensor, cache_next: torch.Tensor, cache_keep_size: torch.Tensor, cache_id: int):
-    # Current ONNX does not support a Tensor with a dimension of zero
-    # Needed to use Torch script to skip this part when this case happens
-    if cache_keep_size < cache_next.size(-1):
-        cache_next[cache_id, :, :, :-cache_keep_size] = cache[cache_id, :, :, cache_keep_size:]
-    return cache_next
-
-
 class CausalConv1D(nn.Conv1d):
     """
     A causal version of nn.Conv1d where each step would have limited access to locations on its right or left
@@ -140,23 +131,16 @@ class CausalConv1D(nn.Conv1d):
 
     def update_cache(self, x, cache=None, cache_next=None):
         if cache is None:
-            x = F.pad(x, pad=(self._left_padding, self._right_padding))
+            new_x = F.pad(x, pad=(self._left_padding, self._right_padding))
         else:
-            input_x = x
-            needed_cache = cache[self._cache_id, :, :, -self._max_cache_len :]
-            x = F.pad(x, pad=(0, self._right_padding))
-            x = torch.cat((needed_cache, x), dim=-1)
-
-        if cache_next is not None:
-            input_x_kept = input_x[:, :, : input_x.size(-1) - self.cache_drop_size]
-
-            cache_keep_size = torch.tensor(input_x.size(-1) - self.cache_drop_size, dtype=torch.int64)
-            cache_keep_size = cache_keep_size.clip(min=1, max=cache_next.size(-1))
-            keep_in_cache_next(
-                cache=cache, cache_next=cache_next, cache_keep_size=cache_keep_size, cache_id=self._cache_id
-            )
-            cache_next[self._cache_id, :, :, -cache_keep_size:] = input_x_kept[:, :, -cache_keep_size:]
-        return x
+            new_x = F.pad(x, pad=(0, self._right_padding))
+            new_x = torch.cat([cache[self._cache_id], new_x], dim=-1)
+            # todo: we should know input_x.size(-1) at config time
+            cache_keep_size = x.size(-1) - self.cache_drop_size
+            cache_next[self._cache_id, :, :, :-cache_keep_size] = cache[self._cache_id, :, :, cache_keep_size:]
+            # print("self._max_cache_len:", self._max_cache_len, "cache: size", cache.size(), "x:", x.size(), " new_x:", new_x.size(), ", cache_keep_size:", cache_keep_size)
+            cache_next[self._cache_id, :, :, -cache_keep_size:] = x[:, :, :cache_keep_size]
+        return new_x
 
     def forward(self, x, cache=None, cache_next=None):
         x = self.update_cache(x, cache=cache, cache_next=cache_next)

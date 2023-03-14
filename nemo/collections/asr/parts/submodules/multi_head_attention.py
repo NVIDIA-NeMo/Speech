@@ -49,15 +49,6 @@ __all__ = [
 ]
 
 
-@torch.jit.script
-def keep_in_cache_next(cache: torch.Tensor, cache_next: torch.Tensor, keep_size: torch.Tensor, cache_id: int):
-    # Current ONNX does not support a Tensor with a dimension of zero
-    # Needed to use Torch script to skip this part when this case happens
-    if keep_size < cache_next.size(-2):
-        cache_next[cache_id, :, :-keep_size, :] = cache[cache_id, :, -(cache_next.size(2) - keep_size) :, :]
-    return cache_next
-
-
 class MultiHeadAttention(nn.Module):
     """Multi-Head Attention layer of Transformer.
     Args:
@@ -156,15 +147,11 @@ class MultiHeadAttention(nn.Module):
 
     def update_cache(self, key, value, query, cache, cache_next):
         if cache is not None:
-            q_length = query.size(1)
-            q_input = query
-            key = value = torch.cat((cache[self._cache_id], key), dim=1)
-
-        if cache_next is not None:
-            q_keep_size = torch.tensor(q_length - self.cache_drop_size, dtype=torch.int64).clip(min=1)
-            keep_in_cache_next(cache=cache, cache_next=cache_next, keep_size=q_keep_size, cache_id=self._cache_id)
-            cache_next[self._cache_id, :, -q_keep_size:, :] = q_input[:, :q_keep_size, :]
-
+            key = value = torch.cat([cache[self._cache_id], key], dim=1)
+            # query.shape[1] is constant, should save it at init()
+            q_keep_size = query.shape[1] - self.cache_drop_size
+            cache_next[self._cache_id, :, :-q_keep_size, :] = cache[self._cache_id, :, q_keep_size:, :]
+            cache_next[self._cache_id, :, -q_keep_size:, :] = query[:, :q_keep_size, :]
         return key, value, query
 
 

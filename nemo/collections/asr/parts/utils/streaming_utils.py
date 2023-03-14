@@ -1301,17 +1301,19 @@ class CacheAwareStreamingAudioBuffer:
     It can be used to simulate streaming audio or audios.
     """
 
-    def __init__(self, model, online_normalization=None):
+    def __init__(self, model, online_normalization=None, pad_and_drop_preencoded=False):
         '''
         Args:
             model: An ASR model.
             online_normalization (bool): whether to perform online normalization per chunk or normalize the whole audio before chunking
+            pad_and_drop_preencoded (bool): if true pad first audio chunk and always drop preencoded
         '''
         self.model = model
         self.buffer = None
         self.buffer_idx = 0
         self.streams_length = None
         self.step = 0
+        self.pad_and_drop_preencoded = pad_and_drop_preencoded
 
         self.online_normalization = online_normalization
         if not isinstance(model.encoder, StreamingEncoder):
@@ -1337,7 +1339,10 @@ class CacheAwareStreamingAudioBuffer:
                 return
 
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.chunk_size, list):
-                chunk_size = self.streaming_cfg.chunk_size[0]
+                if self.pad_and_drop_preencoded:
+                    chunk_size = self.streaming_cfg.chunk_size[1]
+                else:
+                    chunk_size = self.streaming_cfg.chunk_size[0]
             else:
                 chunk_size = (
                     self.streaming_cfg.chunk_size[1]
@@ -1346,7 +1351,10 @@ class CacheAwareStreamingAudioBuffer:
                 )
 
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.shift_size, list):
-                shift_size = self.streaming_cfg.shift_size[0]
+                if self.pad_and_drop_preencoded:
+                    shift_size = self.streaming_cfg.shift_size[1]
+                else:
+                    shift_size = self.streaming_cfg.shift_size[0]
             else:
                 shift_size = (
                     self.streaming_cfg.shift_size[1]
@@ -1371,11 +1379,18 @@ class CacheAwareStreamingAudioBuffer:
             # if there is not enough frames to be used as the pre-encoding cache, zeros would be added
             zeros_pads = None
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.pre_encode_cache_size, list):
-                cache_pre_encode = torch.zeros(
-                    (audio_chunk.size(0), self.input_features, self.streaming_cfg.pre_encode_cache_size[0]),
-                    device=audio_chunk.device,
-                    dtype=audio_chunk.dtype,
-                )
+                if self.pad_and_drop_preencoded:
+                    cache_pre_encode = torch.zeros(
+                        (audio_chunk.size(0), self.input_features, self.streaming_cfg.pre_encode_cache_size[1]),
+                        device=audio_chunk.device,
+                        dtype=audio_chunk.dtype,
+                    )
+                else:
+                    cache_pre_encode = torch.zeros(
+                        (audio_chunk.size(0), self.input_features, self.streaming_cfg.pre_encode_cache_size[0]),
+                        device=audio_chunk.device,
+                        dtype=audio_chunk.dtype,
+                    )
             else:
                 if isinstance(self.streaming_cfg.pre_encode_cache_size, list):
                     pre_encode_cache_size = self.streaming_cfg.pre_encode_cache_size[1]

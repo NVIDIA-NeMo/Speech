@@ -59,7 +59,8 @@ def extract_dynamic_axes(name: str, ntype: NeuralType):
 
 def get_dynamic_axes(types, names):
     dynamic_axes = defaultdict(list)
-    for name in names:
-        if name in types:
-            dynamic_axes.update(extract_dynamic_axes(name, types[name]))
+    if names is not None:
+        for name in names:
+            if name in types:
+                dynamic_axes.update(extract_dynamic_axes(name, types[name]))
     return dynamic_axes

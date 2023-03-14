@@ -361,6 +361,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 maes_expansion_beta=self.cfg.beam.get('maes_expansion_beta', 2.0),
                 softmax_temperature=self.cfg.beam.get('softmax_temperature', 1.0),
                 preserve_alignments=self.preserve_alignments,
+                ngram_lm_model=self.cfg.beam.get('ngram_lm_model', None),
+                ngram_lm_alpha=self.cfg.beam.get('ngram_lm_alpha', 0.0),
             )
 
         else:
@@ -1057,6 +1059,9 @@ class RNNTDecoding(AbstractRNNTDecoding):
         super(RNNTDecoding, self).__init__(
             decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id,
         )
+
+        if isinstance(self.decoding, beam_decode.BeamRNNTInfer):
+            self.decoding.set_decoding_type('char')
 
     def _aggregate_token_confidence(self, hypothesis: Hypothesis) -> List[float]:
         """

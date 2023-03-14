@@ -25,6 +25,8 @@ from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.utils import logging
 
+DEFAULT_TOKEN_OFFSET = 100
+
 
 def pack_hypotheses(
     hypotheses: List[rnnt_utils.NBestHypotheses], logitlen: torch.Tensor,
@@ -563,7 +565,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         # Please check train_kenlm.py in scripts/asr_language_modeling/ to find out why we need
         # TOKEN_OFFSET for BPE-based models
         if self.decoding_type == 'subword':
-            self.token_offset = 100
+            self.token_offset = DEFAULT_TOKEN_OFFSET
 
 
 @dataclass

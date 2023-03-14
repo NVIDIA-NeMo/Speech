@@ -28,7 +28,7 @@
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -39,6 +39,13 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypothe
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType, LengthsType, NeuralType
 from nemo.utils import logging
+
+try:
+    import kenlm
+
+    KENLM_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    KENLM_AVAILABLE = False
 
 
 def pack_hypotheses(hypotheses: List[Hypothesis]) -> List[Hypothesis]:
@@ -176,6 +183,13 @@ class BeamRNNTInfer(Typing):
 
             NOTE: `preserve_alignments` is an invalid argument for any `search_type`
             other than basic beam search.
+
+        ngram_lm_model: str
+            The path to the N-gram LM
+        ngram_lm_alpha: float
+            Alpha weight of N-gram LM
+        tokens_type: str
+            Tokenization type ['subword', 'char']
     """
 
     @property
@@ -213,6 +227,8 @@ class BeamRNNTInfer(Typing):
         language_model: Optional[Dict[str, Any]] = None,
         softmax_temperature: float = 1.0,
         preserve_alignments: bool = False,
+        ngram_lm_model: Optional[str] = None,
+        ngram_lm_alpha: float = 0.0,
     ):
         self.decoder = decoder_model
         self.joint = joint_model
@@ -295,6 +311,19 @@ class BeamRNNTInfer(Typing):
             self.softmax_temperature = softmax_temperature
         self.language_model = language_model
         self.preserve_alignments = preserve_alignments
+
+        self.token_offset = 0
+
+        if ngram_lm_model:
+            if KENLM_AVAILABLE:
+                self.ngram_lm = kenlm.Model(ngram_lm_model)
+                self.ngram_lm_alpha = ngram_lm_alpha
+            else:
+                raise ImportError(
+                    "KenLM package (https://github.com/kpu/kenlm) is not installed. " "Use ngram_lm_model=None."
+                )
+        else:
+            self.ngram_lm = None
 
     @typecheck()
     def __call__(
@@ -1039,6 +1068,11 @@ class BeamRNNTInfer(Typing):
         beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score_hypothesis(init_tokens, cache, beam_state)
         state = self.decoder.batch_select_state(beam_state, 0)
 
+        # Setup ngram LM:
+        if self.ngram_lm:
+            init_lm_state = kenlm.State()
+            self.ngram_lm.BeginSentenceWrite(init_lm_state)
+
         # TODO: Setup LM
         if self.language_model is not None:
             # beam_lm_states, beam_lm_scores = self.lm.buff_predict(
@@ -1066,6 +1100,8 @@ class BeamRNNTInfer(Typing):
                 length=0,
             )
         ]
+        if self.ngram_lm:
+            kept_hyps[0].ngram_lm_state = init_lm_state
 
         # Initialize alignment buffer
         if self.preserve_alignments:
@@ -1122,6 +1158,8 @@ class BeamRNNTInfer(Typing):
                             timestep=hyp.timestep[:],
                             length=t,
                         )
+                        if self.ngram_lm:
+                            new_hyp.ngram_lm_state = hyp.ngram_lm_state
 
                         # If the expansion was for blank
                         if k == self.blank:
@@ -1132,6 +1170,13 @@ class BeamRNNTInfer(Typing):
                             if (new_hyp.y_sequence + [int(k)]) not in duplication_check:
                                 new_hyp.y_sequence.append(int(k))
                                 new_hyp.timestep.append(t)
+
+                                # Setup ngram LM:
+                                if self.ngram_lm:
+                                    lm_score, new_hyp.ngram_lm_state = self.compute_ngram_score(
+                                        hyp.ngram_lm_state, int(k)
+                                    )
+                                    new_hyp.score += self.ngram_lm_alpha * lm_score
 
                                 # TODO: Setup LM
                                 if self.language_model is not None:
@@ -1319,20 +1364,52 @@ class BeamRNNTInfer(Typing):
                         self.joint.joint(enc_out, hyp_i.dec_out[-1]) / self.softmax_temperature, dim=-1,
                     )
                     logp = logp[0, 0, 0, :]
-
                     curr_score = hyp_i.score + float(logp[hyp_j.y_sequence[pref_id]])
+                    # Setup ngram LM:
+                    if self.ngram_lm:
+                        lm_score, next_state = self.compute_ngram_score(
+                            hyp_i.ngram_lm_state, int(hyp_j.y_sequence[pref_id])
+                        )
+                        curr_score += self.ngram_lm_alpha * lm_score
 
                     for k in range(pref_id, (curr_id - 1)):
                         logp = torch.log_softmax(
                             self.joint.joint(enc_out, hyp_j.dec_out[k]) / self.softmax_temperature, dim=-1,
                         )
                         logp = logp[0, 0, 0, :]
-
                         curr_score += float(logp[hyp_j.y_sequence[k + 1]])
+                        # Setup ngram LM:
+                        if self.ngram_lm:
+                            lm_score, next_state = self.compute_ngram_score(next_state, int(hyp_j.y_sequence[k + 1]))
+                            curr_score += self.ngram_lm_alpha * lm_score
 
                     hyp_j.score = np.logaddexp(hyp_j.score, curr_score)
 
         return hypotheses
+
+    def compute_ngram_score(self, current_lm_state: "kenlm.State", label: int) -> Tuple[float, "kenlm.State"]:
+        """
+        Score computation for kenlm ngram language model.
+        """
+
+        if self.token_offset:
+            label = chr(label + self.token_offset)
+        else:
+            label = str(label)
+        next_state = kenlm.State()
+        lm_score = self.ngram_lm.BaseScore(current_lm_state, label, next_state)
+        lm_score *= 1.0 / np.log10(np.e)
+
+        return lm_score, next_state
+
+    def set_decoding_type(self, decoding_type: str):
+
+        # Please check train_kenlm.py in scripts/asr_language_modeling/ to find out why we need
+        # TOKEN_OFFSET for BPE-based models
+        if decoding_type == 'subword':
+            from nemo.collections.asr.parts.submodules.ctc_beam_decoding import DEFAULT_TOKEN_OFFSET
+
+            self.token_offset = DEFAULT_TOKEN_OFFSET
 
 
 @dataclass
@@ -1352,3 +1429,5 @@ class BeamRNNTInferConfig:
     language_model: Optional[Dict[str, Any]] = None
     softmax_temperature: float = 1.0
     preserve_alignments: bool = False
+    ngram_lm_model: Optional[str] = None
+    ngram_lm_alpha: Optional[float] = 0.0

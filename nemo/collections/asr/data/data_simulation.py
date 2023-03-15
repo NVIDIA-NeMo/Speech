@@ -34,6 +34,7 @@ from scipy.spatial.transform import Rotation
 from scipy.stats import beta, gamma
 from tqdm import tqdm
 
+from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor, process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.audio_utils import db2mag, mag2db, pow2db, rms
 from nemo.collections.asr.parts.utils.manifest_utils import (
@@ -105,11 +106,15 @@ class MultiSpeakerSimulator(object):
     Change Log:
     v1.0: Dec 2022
         - First working verison, supports multispeaker simulation with overlaps, silence and RIR
-    v1.1: Feb 2023
+    v1.0.1: Feb 2023
         - Multi-GPU support for speed up 
         - Faster random sampling routine 
         - Fixed sentence duration bug 
         - Silence and overlap length sampling algorithms are updated to guarantee `mean_silence` approximation
+    v1.0.2: March 2023
+        - Added support for segment-level gain perturbation and session-level white-noise perturbation
+        - Modified speaker sampling mechanism to include as many speakers as possible in each data-generation run
+        - Added chunking mechanism to avoid freezing in multiprocessing processes
 
     Args:
         cfg: OmegaConf configuration loaded from yaml file.
@@ -178,6 +183,20 @@ class MultiSpeakerSimulator(object):
       background_manifest (str): Path to background noise manifest file
       snr (int): SNR for background noise (using average speaker power)
     
+    add_seg_aug (bool): False  # set True to enable augmentation on each speech segment
+    segment_augmentor:
+      gain:
+        prob: 0.5 # probability of applying gain augmentation
+        min_gain_dbfs: -10.0
+        max_gain_dbfs: 10.0
+
+    add_sess_aug: False # set True to enable audio augmentation on the whole session
+    session_augmentor:
+      white_noise:
+        prob (float): 1.0  # probability of adding white noise
+        min_level: -90
+        max_level: -46
+
     speaker_enforcement:
       enforce_num_speakers (bool): Enforce that all requested speakers are present in the output wav file
       enforce_time (list): Percentage of the way through the audio session that enforcement mode is triggered (sampled 
@@ -216,6 +235,7 @@ class MultiSpeakerSimulator(object):
         self._audio_read_buffer_dict = {}
         self._noise_read_buffer_dict = {}
 
+        # Initialize the audio processing varialbes to zero
         self.running_speech_len_samples = 0
         self.running_silence_len_samples = 0
         self.running_overlap_len_samples = 0
@@ -227,9 +247,82 @@ class MultiSpeakerSimulator(object):
         self.sess_overlap_mean = 0
         self.per_overlap_min_len = 0
         self.per_overlap_max_len = 0
+
         self.add_missing_overlap = self._params.data_simulator.session_params.get("add_missing_overlap", False)
 
-        self._check_args()  # error check arguments
+        self.segment_augmentor = (
+            process_augmentations(augmenter=self._params.data_simulator.segment_augmentor)
+            if self._params.data_simulator.get("segment_augmentor", None) and self._params.data_simulator.add_seg_aug
+            else None
+        )
+        self.session_augmentor = (
+            process_augmentations(augmenter=self._params.data_simulator.session_augmentor)
+            if self._params.data_simulator.get("session_augmentor", None) and self._params.data_simulator.add_sess_aug
+            else None
+        )
+
+        # Error check the input arguments for simulation
+        self._check_args()
+
+        # Initialize speaker permutations to maximize the number of speakers in the created dataset
+        self._permutated_speaker_inds = self._init_speaker_permutations(
+            num_sess=self._params.data_simulator.session_config.num_sessions,
+            num_speakers=self._params.data_simulator.session_config.num_speakers,
+            all_speaker_ids=self._speaker_samples.keys(),
+        )
+        # Intialize multiprocessing related variables
+        self.num_workers = self._params.get("num_workers", 1)
+        self.multiprocessing_chunksize = self._params.data_simulator.get('multiprocessing_chunksize', 10000)
+        self.chunk_count = self._init_chunk_count()
+
+    def _init_speaker_permutations(self, num_sess, num_speakers, all_speaker_ids):
+        """
+        Initialize the speaker permutations for the number of speakers in the session.
+        When generating the simulated sessions, we want to include as many speakers as possible.
+        This function generates a set of permutations that can be used to sweep all speakers in 
+        the source dataset to make sure we maximize the total number of speakers included in 
+        the simulated sessions.
+
+        Args:
+            num_sess (int): Number of sessions to generate
+            num_speakers (int): Number of speakers in each session
+            all_speaker_ids (list): List of all speaker IDs
+
+        Returns:
+            permuted_inds (np.array): 
+                Array of permuted speaker indices to use for each session
+                Dimensions: (num_sess, num_speakers)
+        """
+        all_speaker_id_counts = len(list(all_speaker_ids))
+
+        # Calculate how many permutations are needed
+        perm_set_count = int(np.ceil(num_speakers * num_sess / all_speaker_id_counts))
+
+        target_count = num_speakers * num_sess
+        for count in range(perm_set_count):
+            if target_count < all_speaker_id_counts:
+                seq_len = target_count
+            else:
+                seq_len = all_speaker_id_counts
+            if seq_len <= 0:
+                raise ValueError(f"seq_len is {seq_len} at count {count} and should be greater than 0")
+
+            if count == 0:
+                permuted_inds = np.random.permutation(len(all_speaker_ids))[:seq_len]
+            else:
+                permuted_inds = np.hstack((permuted_inds, np.random.permutation(len(all_speaker_ids))[:seq_len]))
+            target_count -= seq_len
+
+        # Make dimension (num_sess, num_speakers)
+        return permuted_inds.reshape(num_sess, num_speakers)
+
+    def _init_chunk_count(self):
+        """
+        Initialize the chunk count for multi-processing to prevent over-flow of job counts.
+        The multi-processing pipeline can freeze if there are more than approximately 10,000 jobs 
+        in the pipeline at the same time.        
+        """
+        return int(np.ceil(self._params.data_simulator.session_config.num_sessions / self.multiprocessing_chunksize))
 
     def _check_args(self):
         """
@@ -333,7 +426,7 @@ class MultiSpeakerSimulator(object):
         self._noise_read_buffer_dict = {}
         torch.cuda.empty_cache()
 
-    def _get_speaker_ids(self) -> List[str]:
+    def _get_speaker_ids(self, sess_idx) -> List[str]:
         """
         Randomly select speaker IDs from the loaded manifest file.
 
@@ -341,9 +434,7 @@ class MultiSpeakerSimulator(object):
             speaker_ids (list): List of speaker IDs
         """
         all_speaker_ids = list(self._speaker_samples.keys())
-        idx_list = np.random.permutation(len(all_speaker_ids))[
-            : self._params.data_simulator.session_config.num_speakers
-        ]
+        idx_list = self._permutated_speaker_inds[sess_idx, :]
         speaker_ids = [all_speaker_ids[i] for i in idx_list]
         return speaker_ids
 
@@ -392,15 +483,17 @@ class MultiSpeakerSimulator(object):
         noise_manifest = []
         if self._params.data_simulator.background_noise.add_bg is True:
             if self._params.data_simulator.background_noise.background_manifest is not None:
-                if os.path.exists(self._params.data_simulator.background_noise.background_manifest):
-                    noise_manifest = read_manifest(self._params.data_simulator.background_noise.background_manifest)
-                else:
-                    raise FileNotFoundError(
-                        f"Noise manifest file: {self._params.data_simulator.background_noise.background_manifest} file not found."
-                    )
+                background_manifest_list = self._params.data_simulator.background_noise.background_manifest
+                if isinstance(background_manifest_list, str):
+                    background_manifest_list = [background_manifest_list]
+                for background_manifest in background_manifest_list:
+                    if os.path.exists(background_manifest):
+                        noise_manifest += read_manifest(background_manifest)
+                    else:
+                        raise FileNotFoundError(f"Noise manifest file: {background_manifest} file not found.")
             else:
                 raise FileNotFoundError(
-                    f"Noise manifest file is null. Please provide a valid noise manifest file if add_bg=True."
+                    f"Noise manifest file is null. Please provide a valid noise manifest file/list if add_bg=True."
                 )
         return noise_manifest
 
@@ -727,6 +820,27 @@ class MultiSpeakerSimulator(object):
 
         return desired_overlap_amount
 
+    def _perturb_audio(self, audio: torch.Tensor, sr: int, augmentor: AudioAugmentor) -> torch.Tensor:
+        """
+        Perturb the audio (segment or session) using audio augmentor.
+
+        Args:
+            audio (torch.Tensor): Time-series signal of the segment
+            sr (int): Sample rate of the original audio file
+            augmentor (AudioAugmentor): Audio augmentor to use
+
+        Returns:
+            audio (torch.Tensor): Perturbed audio (time-series signal) of the segment
+        """
+        if augmentor is None:
+            return audio
+        if isinstance(audio, torch.Tensor):
+            audio = audio.cpu().numpy()
+        audio_segment = AudioSegment(audio, sample_rate=sr)
+        augmentor.perturb(audio_segment)
+        audio_segment = torch.from_numpy(audio_segment.samples).to(self._device)
+        return audio_segment
+
     def _add_file(
         self,
         audio_manifest: dict,
@@ -911,6 +1025,9 @@ class MultiSpeakerSimulator(object):
                     audio_file = torch.mean(audio_file, 1, False).to(self._device)
                 self._audio_read_buffer_dict[audio_manifest['audio_filepath']] = (audio_file, sr)
 
+            # audio perturbation, such as gain, impulse response, and white noise
+            audio_file = self._perturb_audio(audio_file, sr, self.segment_augmentor)
+
             sentence_word_count, sentence_samples = self._add_file(
                 audio_manifest, audio_file, sentence_word_count, sl, max_samples_in_sentence
             )
@@ -1057,7 +1174,12 @@ class MultiSpeakerSimulator(object):
             bg_array (tensor): Tensor containing background noise
         """
         bg_array = torch.zeros(len_array).to(self._device)
-        desired_snr = self._params.data_simulator.background_noise.snr
+        snr_min = self._params.data_simulator.background_noise.snr_min
+        snr_max = self._params.data_simulator.background_noise.snr_max
+        if (snr_min is not None) and (snr_max is not None) and (0 <= snr_min <= snr_max):
+            desired_snr = np.random.uniform(snr_min, snr_max)
+        else:
+            desired_snr = self._params.data_simulator.background_noise.snr
         ratio = 10 ** (desired_snr / 20)
         desired_avg_power_noise = (power_array / ratio).to(self._device)
         running_len_samples, file_id = 0, 0
@@ -1087,7 +1209,7 @@ class MultiSpeakerSimulator(object):
             bg_array[running_len_samples:end_audio_file] = scaled_audio_file
             running_len_samples = end_audio_file
 
-        return bg_array
+        return bg_array, desired_snr
 
     def _create_new_rttm_entry(self, start: int, end: int, speaker_id: int) -> List[str]:
         """
@@ -1482,39 +1604,50 @@ class MultiSpeakerSimulator(object):
         if self._params.data_simulator.background_noise.add_bg:
             if len(self._noise_samples) > 0:
                 avg_power_array = torch.mean(array[is_speech == 1] ** 2)
-                bg = self._get_background(len(array), avg_power_array)
+                bg, snr = self._get_background(len(array), avg_power_array)
                 array += bg
             else:
                 raise ValueError('No background noise samples found in self._noise_samples.')
+        else:
+            snr = "N/A"
+
+        # Add optional perturbations to the whole session, such as white noise, reverb, etc.
+        array = self._perturb_audio(array, self._params.data_simulator.sr, self.session_augmentor)
 
         # Step 7: Normalize and write to disk
         array = array / (1.0 * torch.max(torch.abs(array)))  # normalize wav file to avoid clipping
         if torch.is_tensor(array):
             array = array.cpu().numpy()
         sf.write(os.path.join(basepath, filename + '.wav'), array, self._params.data_simulator.sr)
+
         labels_to_rttmfile(rttm_list, filename, self._params.data_simulator.outputs.output_dir)
         write_manifest(os.path.join(basepath, filename + '.json'), json_list)
         write_ctm(os.path.join(basepath, filename + '.ctm'), ctm_list)
         write_text(os.path.join(basepath, filename + '.txt'), ctm_list)
 
+        meta_data = {
+            "duration": array.shape[0] / self._params.data_simulator.sr,
+            "session_silence_mean": self.sess_silence_mean,
+            "session_overlap_mean": self.sess_overlap_mean,
+            "session_snr": snr,
+        }
+        write_manifest(os.path.join(basepath, filename + '.meta'), [meta_data])
+
+        # Step 8: Clean up memory
         del array
         self.clean_up()
         return basepath, filename
 
-    def generate_sessions(self, random_seed: int = None):
+    def _get_cleaned_base_path(self, output_dir: str) -> str:
         """
-        Generate several multispeaker audio sessions and corresponding list files.
+        Delete output directory if it exists or throw warning.
 
         Args:
-            random_seed (int): random seed for reproducibility
-        """
-        logging.info(f"Generating Diarization Sessions")
-        if random_seed is None:
-            random_seed = self._params.data_simulator.random_seed
-        np.random.seed(random_seed)
-        output_dir = self._params.data_simulator.outputs.output_dir
+            output_dir (str): Path to output directory
 
-        # delete output directory if it exists or throw warning
+        Returns:
+            basepath (str): Path to base-path directory for writing output files
+        """
         if os.path.isdir(output_dir) and os.listdir(output_dir):
             if self._params.data_simulator.outputs.overwrite_output:
                 if os.path.exists(output_dir):
@@ -1531,14 +1664,32 @@ class MultiSpeakerSimulator(object):
             basepath = os.path.join(ROOT, output_dir)
         else:
             basepath = output_dir
+        return basepath
+
+    def generate_sessions(self, random_seed: int = None):
+        """
+        Generate several multispeaker audio sessions and corresponding list files.
+
+        Args:
+            random_seed (int): random seed for reproducibility
+        """
+        logging.info(f"Generating Diarization Sessions")
+        if random_seed is None:
+            random_seed = self._params.data_simulator.random_seed
+        np.random.seed(random_seed)
+        output_dir = self._params.data_simulator.outputs.output_dir
+
+        basepath = self._get_cleaned_base_path(output_dir)
+        OmegaConf.save(self._params, os.path.join(output_dir, "params.yaml"))
 
         wavlist = open(os.path.join(basepath, "synthetic_wav.list"), "w")
         rttmlist = open(os.path.join(basepath, "synthetic_rttm.list"), "w")
         jsonlist = open(os.path.join(basepath, "synthetic_json.list"), "w")
         ctmlist = open(os.path.join(basepath, "synthetic_ctm.list"), "w")
         textlist = open(os.path.join(basepath, "synthetic_txt.list"), "w")
-        num_workers = self._params.get("num_workers", 1)
-        tp = concurrent.futures.ProcessPoolExecutor(max_workers=self._params.get("num_workers", 1))
+        metalist = open(os.path.join(basepath, "synthetic_meta.list"), "w")
+
+        tp = concurrent.futures.ProcessPoolExecutor(max_workers=self.num_workers)
         futures = []
 
         num_sessions = self._params.data_simulator.session_config.num_sessions
@@ -1548,7 +1699,7 @@ class MultiSpeakerSimulator(object):
         # add radomly sampled arguments to a list(queue) for multiprocessing
         for sess_idx in range(num_sessions):
             filename = self._params.data_simulator.outputs.output_filename + f"_{sess_idx}"
-            speaker_ids = self._get_speaker_ids()
+            speaker_ids = self._get_speaker_ids(sess_idx)
             speaker_wav_align_map = self._get_speaker_samples(speaker_ids)
             noise_samples = self._sample_noise_manifest(source_noise_manifest)
             if torch.cuda.is_available():
@@ -1558,45 +1709,57 @@ class MultiSpeakerSimulator(object):
             queue.append((sess_idx, basepath, filename, speaker_ids, speaker_wav_align_map, noise_samples, device))
 
         # for multiprocessing speed, we avoid loading potentially huge manifest list and speaker sample files into each process.
-        if num_workers > 1:
+        if self.num_workers > 1:
             self._manifest = None
             self._speaker_samples = None
 
-        for sess_idx in range(num_sessions):
-            self._furthest_sample = [0 for n in range(self._params.data_simulator.session_config.num_speakers)]
-            self._audio_read_buffer_dict = {}
-            if num_workers > 1:
-                futures.append(tp.submit(self._generate_session, *queue[sess_idx]))
+        for chunk_idx in range(self.chunk_count):
+            futures = []
+            stt_idx, end_idx = (
+                chunk_idx * self.multiprocessing_chunksize,
+                min((chunk_idx + 1) * self.multiprocessing_chunksize, num_sessions),
+            )
+            for sess_idx in range(stt_idx, end_idx):
+                self._furthest_sample = [0 for n in range(self._params.data_simulator.session_config.num_speakers)]
+                self._audio_read_buffer_dict = {}
+                if self.num_workers > 1:
+                    futures.append(tp.submit(self._generate_session, *queue[sess_idx]))
+                else:
+                    futures.append(queue[sess_idx])
+
+            if self.num_workers > 1:
+                generator = concurrent.futures.as_completed(futures)
             else:
-                futures.append(queue[sess_idx])
+                generator = futures
 
-        if num_workers > 1:
-            generator = concurrent.futures.as_completed(futures)
-        else:
-            generator = futures
+            for future in tqdm(
+                generator,
+                desc=f"[{chunk_idx+1}/{self.chunk_count}] Waiting jobs from {stt_idx+1: 2} to {end_idx: 2}",
+                unit="jobs",
+                total=len(futures),
+            ):
+                if self.num_workers > 1:
+                    basepath, filename = future.result()
+                else:
+                    self._noise_samples = self._sample_noise_manifest(source_noise_manifest)
+                    basepath, filename = self._generate_session(*future)
 
-        for future in tqdm(generator, desc="Waiting for generators to finish", unit="jobs", total=len(futures)):
-            if num_workers > 1:
-                basepath, filename = future.result()
-            else:
-                self._noise_samples = self._sample_noise_manifest(source_noise_manifest)
-                basepath, filename = self._generate_session(*future)
+                wavlist.write(os.path.join(basepath, filename + '.wav\n'))
+                rttmlist.write(os.path.join(basepath, filename + '.rttm\n'))
+                jsonlist.write(os.path.join(basepath, filename + '.json\n'))
+                ctmlist.write(os.path.join(basepath, filename + '.ctm\n'))
+                textlist.write(os.path.join(basepath, filename + '.txt\n'))
+                metalist.write(os.path.join(basepath, filename + '.meta\n'))
 
-            wavlist.write(os.path.join(basepath, filename + '.wav\n'))
-            rttmlist.write(os.path.join(basepath, filename + '.rttm\n'))
-            jsonlist.write(os.path.join(basepath, filename + '.json\n'))
-            ctmlist.write(os.path.join(basepath, filename + '.ctm\n'))
-            textlist.write(os.path.join(basepath, filename + '.txt\n'))
-
-            # throw warning if number of speakers is less than requested
-            num_missing = 0
-            for k in range(len(self._furthest_sample)):
-                if self._furthest_sample[k] == 0:
-                    num_missing += 1
-            if num_missing != 0:
-                warnings.warn(
-                    f"{self._params.data_simulator.session_config.num_speakers-num_missing} speakers were included in the clip instead of the requested amount of {self._params.data_simulator.session_config.num_speakers}"
-                )
+                # throw warning if number of speakers is less than requested
+                num_missing = 0
+                for k in range(len(self._furthest_sample)):
+                    if self._furthest_sample[k] == 0:
+                        num_missing += 1
+                if num_missing != 0:
+                    warnings.warn(
+                        f"{self._params.data_simulator.session_config.num_speakers-num_missing} speakers were included in the clip instead of the requested amount of {self._params.data_simulator.session_config.num_speakers}"
+                    )
 
         tp.shutdown()
 
@@ -1605,6 +1768,7 @@ class MultiSpeakerSimulator(object):
         jsonlist.close()
         ctmlist.close()
         textlist.close()
+        metalist.close()
 
         logging.info(f"Data simulation has been completed, results saved at: {basepath}")
 
@@ -1976,10 +2140,23 @@ class RIRMultiSpeakerSimulator(MultiSpeakerSimulator):
         if self._params.data_simulator.background_noise.add_bg:
             avg_power_array = torch.mean(array[is_speech == 1] ** 2)
             length = array.shape[0]
-            bg = self._get_background(length, avg_power_array)
+            bg, snr = self._get_background(length, avg_power_array)
             augmented_bg, _ = self._convolve_rir(bg, -1, RIR)
             for channel in range(self._params.data_simulator.rir_generation.mic_config.num_channels):
                 array[:, channel] += augmented_bg[channel][:length]
+        else:
+            snr = "N/A"
+
+        # Add optional perturbations to the whole session, such as white noise, reverb, etc.
+        array = self._perturb_audio(array, self._params.data_simulator.sr, self.session_augmentor)
+
+        meta_data = {
+            "duration": array.shape[0] / self._params.data_simulator.sr,
+            "session_silence_mean": self.sess_silence_mean,
+            "session_overlap_mean": self.sess_overlap_mean,
+            "session_snr": snr,
+        }
+        write_manifest(os.path.join(basepath, filename + '.meta'), [meta_data])
 
         array = array / (1.0 * torch.max(torch.abs(array)))  # normalize wav file to avoid clipping
         sf.write(os.path.join(basepath, filename + '.wav'), array, self._params.data_simulator.sr)
@@ -2628,10 +2805,9 @@ class RIRCorpusGenerator(object):
                 examples.append(example)
 
             # Simulation
-            num_workers = self.cfg.num_workers
-            if num_workers is not None and num_workers > 1:
-                logging.info(f'Simulate using {num_workers} workers')
-                with multiprocessing.Pool(processes=num_workers) as pool:
+            if self.num_workers is not None and self.num_workers > 1:
+                logging.info(f'Simulate using {self.num_workers} workers')
+                with multiprocessing.Pool(processes=self.num_workers) as pool:
                     metadata = list(tqdm(pool.imap(simulate_room_kwargs, examples), total=len(examples)))
 
             else:
@@ -3504,10 +3680,9 @@ class RIRMixGenerator(object):
                 examples.append(example)
 
             # Simulation
-            num_workers = self.cfg.num_workers
-            if num_workers is not None and num_workers > 1:
-                logging.info(f'Simulate using {num_workers} workers')
-                with multiprocessing.Pool(processes=num_workers) as pool:
+            if self.num_workers is not None and self.num_workers > 1:
+                logging.info(f'Simulate using {self.num_workers} workers')
+                with multiprocessing.Pool(processes=self.num_workers) as pool:
                     metadata = list(
                         tqdm(
                             pool.imap(simulate_room_mix_kwargs, examples),

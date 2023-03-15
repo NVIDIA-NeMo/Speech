@@ -314,6 +314,10 @@ class FastPitchModule(NeuralModule):
         # Use predictions during inference
         elif spec is None:
             len_regulated, dec_lens = regulate_len(durs_predicted, enc_out, pace)
+        else:
+            raise ValueError(
+                f"Something unexpected happened when 'spec' is not None and 'self.learn_alignment' is False."
+            )
 
         # Output FFT
         if self.speaker_emb_condition_decoder:

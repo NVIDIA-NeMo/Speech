@@ -1,9 +1,9 @@
 data_simulator:
-            # desired_overlap_amount = self._sample_from_overlap_model(running_len_samples - self.sess_silence_len)
   manifest_filepath: ??? # Manifest file with paths to single speaker audio files
 
   sr: 16000 # Sampling rate of the input audio files from the manifest
   random_seed: 42
+  multiprocessing_chunksize: 10000 # Max number that multiprocessing can handle at once
 
   session_config:
     num_speakers: 4 # Number of unique speakers per multispeaker audio session
@@ -52,6 +52,24 @@ data_simulator:
     background_manifest: null # Path to background noise manifest file
     num_noise_files: 10 # Number of randomly chosen noise source files to be potentially included in one session
     snr: 60 # SNR for background noise (using average speaker power)
+    snr_min: null  # Min random SNR for background noise (using average speaker power)
+    snr_max: null  # Max random SNR for background noise (using average speaker power)
+
+  # Segment and session augmentations. Available augmentations are in nemo/collections/asr/parts/preprocessing/perturb.py
+  # See tutorial at https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Noise_Augmentation.ipynb
+  add_seg_aug: False  # Set True to enable augmentation on each speech segment
+  segment_augmentor:
+    gain:  # Randomly perturb the gain of each speech segment
+      prob: 0.5  # Probability of applying gain augmentation
+      min_gain_dbfs: -10.0  # Min dB level to add
+      max_gain_dbfs: 10.0  # Max dB level to add
+
+  add_sess_aug: False # Set True to enable audio augmentation on the whole session
+  session_augmentor:
+    white_noise:  # Add random white noise to the whole session
+      prob: 1.0  # Probability of adding white noise
+      min_level: -90  # Min level of noise loudness (dB)
+      max_level: -46  # Max level of noise loudness (dB)
 
   speaker_enforcement:
     enforce_num_speakers: true # Enforce that all requested speakers are present in the output wav file

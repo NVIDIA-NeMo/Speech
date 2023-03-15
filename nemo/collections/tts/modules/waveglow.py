@@ -118,17 +118,16 @@ class WaveGlowModule(NeuralModule, Exportable):
             raise ValueError(f"{self} has self.training set to False but self.OperationMode was set to training")
 
         audio_pred = torch.zeros((1, 1))
-        if audio is not None and self.mode != OperationMode.infer:
-            # audio_to_normal_dist is used to calculate loss so only run this in train or val model
-            z1, log_s_list, log_det_W_list = self.audio_to_normal_dist(spec=spec, audio=audio)
         if run_inverse:
             # norm_dist_to_audio is used to predict audio from spectrogram so only used in val or infer mode
             # Could also log train audio but currently not done
             audio_pred = self.norm_dist_to_audio(spec=spec, sigma=sigma, z=z)
 
-        # Return the necessary tensors
-        if self.mode == OperationMode.training or self.mode == OperationMode.validation:
+        if audio is not None and self.mode != OperationMode.infer:
+            # audio_to_normal_dist is used to calculate loss so only run this in train or val model
+            z1, log_s_list, log_det_W_list = self.audio_to_normal_dist(spec=spec, audio=audio)
             return z1, log_s_list, log_det_W_list, audio_pred
+
         return audio_pred
 
     @property

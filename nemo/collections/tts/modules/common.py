@@ -685,6 +685,11 @@ class AffineTransformationLayer(torch.nn.Module):
         elif self.affine_model == 'simple_conv':
             z_w_context = torch.cat((z_0, context), 1)
             affine_params = self.affine_param_predictor(z_w_context, seq_lens=seq_lens)
+        else:
+            raise ValueError(
+                f"Affine model is not supported: {self.affine_model}. Please choose either 'wavenet' or "
+                f"'simple_conv' instead."
+            )
 
         scale_unconstrained = affine_params[:, :n_half, :]
         b = affine_params[:, n_half:, :]

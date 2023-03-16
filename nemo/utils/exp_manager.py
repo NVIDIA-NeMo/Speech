@@ -96,7 +96,10 @@ class CallbackParams:
     save_top_k: Optional[int] = 3
     save_weights_only: Optional[bool] = False
     mode: Optional[str] = "min"
+    auto_insert_metric_name: bool = True
     every_n_epochs: Optional[int] = 1
+    every_n_train_steps: Optional[int] = None
+    train_time_interval: Optional[str] = None
     prefix: Optional[str] = None  # If None, exp_manager will attempt to handle the filepath
     postfix: str = ".nemo"
     save_best_model: bool = False

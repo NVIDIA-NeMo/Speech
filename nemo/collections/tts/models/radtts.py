@@ -130,7 +130,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         attn_prior = batch['align_prior_matrix']
         f0 = batch['pitch']
         voiced_mask = batch['voiced_mask']
-        p_voiced = batch['p_voiced']
         energy_avg = batch['energy']
 
         if (
@@ -154,7 +153,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             f0=f0,
             energy_avg=energy_avg,
             voiced_mask=voiced_mask,
-            p_voiced=p_voiced,
         )
         loss_outputs = self.criterion(outputs, in_lens, out_lens)
 
@@ -185,7 +183,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         attn_prior = batch['align_prior_matrix']
         f0 = batch['pitch']
         voiced_mask = batch['voiced_mask']
-        p_voiced = batch['p_voiced']
         energy_avg = batch['energy']
         mel = batch['log_mel']
         if (
@@ -208,7 +205,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             f0=f0,
             energy_avg=energy_avg,
             voiced_mask=voiced_mask,
-            p_voiced=p_voiced,
         )
         loss_outputs = self.criterion(outputs, in_lens, out_lens)
 
@@ -509,9 +505,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             speaker_id_text=speaker_id_text,
             speaker_id_attributes=speaker_id_attributes,
             sigma=0.7,
-            sigma_txt=0.7,
-            sigma_f0=1.0,
-            sigma_energy=1.0,
             f0_mean=0.0,
             f0_std=0.0,
             in_lens=lens,

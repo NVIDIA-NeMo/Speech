@@ -108,26 +108,26 @@ class FlowStep(nn.Module):
 
 class RadTTSModule(NeuralModule, Exportable):
     """
-    Takes model parameters (modelConfig) from config file to intialize radtts module.
-    Specifiy the type of training in the include_modules parameter. "decatnvpred" for decoder training. and "decatnunvbiasdpmvpredapm" for feature training
+    Takes model parameters (modelConfig) from config file to initialize radtts module.
+    Specify the type of training in the include_modules parameter. "decatnvpred" for decoder training. and "decatnunvbiasdpmvpredapm" for feature training
     n_speakers (int): Number of speakers
-    n_speaker_dim (int): number of speakers dimention
+    n_speaker_dim (int): number of speakers dimension
     n_text (int): Symbols embedding size
     n_text_dim (int):
     n_flows (int):
-    n_conv_layers_per_step (int): number of convultion layers per step
+    n_conv_layers_per_step (int): number of convolution layers per step
     dummy_speaker_embedding (bool):
     include_modules (string): A string that describes what to train. "decatnvpred" for decoder training. and "decatnunvbiasdpmvpredapm" for feature training.
     scaling_fn (string): scaling function
     decoder_use_partial_padding (Bool): Set this to True to add partial padding
     learn_alignments (Bool): set this to true to learn alignments
     attn_use_CTC (Bool): set True to use CTC
-    n_f0_dims (int): number of Pitch dimention
+    n_f0_dims (int): number of Pitch dimension
     n_early_size (int):
     n_early_every (int):
     n_group_size (int):
     decoder_use_unvoiced_bias (bool):
-    context_lstm_w_f0_and_energ (bool):
+    context_lstm_w_f0_and_energy (bool):
     use_first_order_features (bool):
     ap_pred_log_f0 (bool):
     dur_model_config: model configuration for duration
@@ -161,14 +161,13 @@ class RadTTSModule(NeuralModule, Exportable):
         attn_use_CTC=True,
         use_context_lstm=False,
         context_lstm_norm=None,
-        text_encoder_lstm_norm=None,
         n_f0_dims=0,
         n_energy_avg_dims=0,
         context_lstm_w_f0_and_energy=True,
         use_first_order_features=False,
         unvoiced_bias_activation='',
         ap_pred_log_f0=False,
-        **kwargs
+        **kwargs,
     ):
         super(RadTTSModule, self).__init__()
         assert n_early_size % 2 == 0
@@ -232,7 +231,7 @@ class RadTTSModule(NeuralModule, Exportable):
             n_mel_channels = n_mel_channels * n_group_size
 
             for i in range(self.n_flows):
-                if i > 0 and i % n_early_every == 0:  # early exitting
+                if i > 0 and i % n_early_every == 0:  # early exiting
                     n_mel_channels -= self.n_early_size
                     self.exit_steps.append(i)
 
@@ -387,7 +386,7 @@ class RadTTSModule(NeuralModule, Exportable):
 
     def binarize_attention(self, attn, in_lens, out_lens):
         """For training purposes only. Binarizes attention with MAS. These will
-        no longer recieve a gradient
+        no longer receive a gradient
         Args:
             attn: B x 1 x max_mel_len x max_text_len
         """
@@ -400,7 +399,7 @@ class RadTTSModule(NeuralModule, Exportable):
                 attn_out[ind, 0, : out_lens[ind], : in_lens[ind]] = torch.tensor(hard_attn, device=attn.get_device())
         return attn_out
 
-    def get_first_order_features(self, feats, out_lens, dilation=1):
+    def get_first_order_features(self, feats, dilation=1):
         """
         feats: b x max_length
         out_lens: b-dim
@@ -439,20 +438,16 @@ class RadTTSModule(NeuralModule, Exportable):
         f0=None,
         energy_avg=None,
         voiced_mask=None,
-        p_voiced=None,
     ):
         speaker_vecs = self.encode_speaker(speaker_ids)
         text_enc, text_embeddings = self.encode_text(text, in_lens)
 
         log_s_list, log_det_W_list, z_mel = [], [], []
-        attn = None
-        attn_soft = None
         attn_hard = None
-        attn_logprob = None
         if 'atn' in self.include_modules or 'dec' in self.include_modules:
             # make sure to do the alignments before folding
             attn_mask = ~get_mask_from_lengths(in_lens)[..., None]
-            # attn_mask shld be 1 for unsd t-steps in text_enc_w_spkvec tensor
+            # attn_mask should be 1 for unsd t-steps in text_enc_w_spkvec tensor
             attn_soft, attn_logprob = self.attention(
                 mel, text_embeddings, out_lens, attn_mask, key_lens=in_lens, attn_prior=attn_prior
             )
@@ -464,6 +459,10 @@ class RadTTSModule(NeuralModule, Exportable):
                 attn = attn_soft
 
             context = torch.bmm(text_enc, attn.squeeze(1).transpose(1, 2))
+        else:
+            raise ValueError(
+                f"Something unexpected happened. Both 'atn' and 'dec' are not included in 'self.include_modules'. Please double-check."
+            )
 
         f0_bias = 0
         # unvoiced bias forward pass
@@ -548,8 +547,8 @@ class RadTTSModule(NeuralModule, Exportable):
             energy_avg = energy_avg * 2 - 1  # scale to ~ [-1, 1]
 
             if self.use_first_order_features:
-                df0 = self.get_first_order_features(f0_target, out_lens)
-                denergy_avg = self.get_first_order_features(energy_avg, out_lens)
+                df0 = self.get_first_order_features(f0_target)
+                denergy_avg = self.get_first_order_features(energy_avg)
 
                 f0_voiced = torch.cat((f0_target[:, None], df0[:, None]), dim=1)
                 energy_avg = torch.cat((energy_avg[:, None], denergy_avg[:, None]), dim=1)
@@ -588,9 +587,6 @@ class RadTTSModule(NeuralModule, Exportable):
         speaker_id,
         text,
         sigma=0.7,
-        sigma_txt=0.7,
-        sigma_f0=1.0,
-        sigma_energy=1.0,
         speaker_id_text=None,
         speaker_id_attributes=None,
         pace=None,

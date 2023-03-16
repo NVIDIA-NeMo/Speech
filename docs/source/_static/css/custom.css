@@ -1,9 +1,6 @@
-/* Import the Roboto Thin Font */
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400&display=swap');
-
 body {
 	font-size: 100%;
-	font-family: 'Roboto', sans-serif;
+	font-family: 'NVIDIA Sans', sans-serif;
 }
 
 
@@ -295,4 +292,75 @@ article ul {
 		margin-left: 10%;
 		margin-right: 10%;
 	}
+}
+
+/* ---------------------------------------------- NVIDIA Sans --------------------------------------- */
+
+:root {
+	--md-text-font: "NVIDIA Sans";
+	/* --md-code-font: "NVIDIA Sans"; */
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/5/2/52891dda673228d54e5d57bf1e4a3880d4b22405.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/e/0/e090b7dda7a582522c7f9045c6ce949cce60134f.woff) format("woff");
+	font-weight: 300;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/a/1/a107baabcbf6b241099122336bce7429bcfd377a.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/3/a/3a6060a4e3bce70e5552ba0de8af4b22c6cf9144.woff) format("woff");
+	font-weight: 300;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/9/9/9920d2b172b01d92fc9c1c0e521dcf45b59c47c3.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/6/c/6c7d947928a7e4ef3e80ed409bef6c243f2148cb.woff) format("woff");
+	font-weight: 400;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/e/8/e8e63fe1244372cd942d957f44a5616a1eba0644.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/0/f/0f1fb2af0283ab09d36e7097bb07d895c3228f12.woff) format("woff");
+	font-weight: 400;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/7/9/79d3c513a9cd72c59f65354f39f89ca52dc17dd2.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/2/5/2581ac533f5d01f4985d8a7245b0766b4630ced8.woff) format("woff");
+	font-weight: 500;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/3/9/39d9ef1ee9770dd503f19bb2ace2fdb4eff3bb50.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/7/b/7bb5d5e2e71b2e13c8098b2e67c0a0ed9258e6c7.woff) format("woff");
+	font-weight: 500;
+	font-style: italic;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/0/5/05276a55a43eb3f74981ec1e93252727afcd9d16.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/9/c/9cfec7ed941b06564aa4d5ca14610e81542d070f.woff) format("woff");
+	font-weight: 700;
+	font-style: normal;
+}
+
+@font-face {
+	font-family: "NVIDIA Sans";
+	src: url(https://aws1.discourse-cdn.com/nvidia/original/3X/a/e/aebd14d09ba56f541e1b8735fb051e33710f9ae7.woff2) format("woff2"),
+		url(https://aws1.discourse-cdn.com/nvidia/original/3X/e/d/edbdabef43acc5c12e84a94baaa5542c9404cfeb.woff) format("woff");
+	font-weight: 700;
+	font-style: italic;
 }

@@ -347,6 +347,9 @@ class RNNTLoss(Loss):
 
         # Reduce transcript length to correct alignment if additional padding was applied.
         # Transcript: [B, L] -> [B, L']; If L' < L
+        if not targets.is_contiguous():
+            targets = targets.contiguous()
+
         if targets.shape[1] != max_targets_len:
             targets = targets.narrow(dim=1, start=0, length=max_targets_len).contiguous()
 

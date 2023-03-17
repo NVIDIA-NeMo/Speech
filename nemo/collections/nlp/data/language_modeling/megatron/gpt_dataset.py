@@ -311,6 +311,7 @@ class GPTDataset(Dataset):
         self.add_extra_token = 1
         if self.no_seqlen_plus_one_input_tokens:
             self.add_extra_token = 0
+        self.shuffle_documents = cfg.data.get('shuffle_documents', True)
 
         # save index mappings to a configurable dir
         self.index_mapping_dir = cfg.data.get('index_mapping_dir', None)
@@ -334,6 +335,7 @@ class GPTDataset(Dataset):
             index_mapping_dir=self.index_mapping_dir,
             drop_last=drop_last,
             add_extra_token=self.add_extra_token,
+            shuffle_documents=self.shuffle_documents,
         )
         deallocate_indexed_dataset_memory(self.indexed_dataset)
 
@@ -468,6 +470,7 @@ def _build_index_mappings(
     index_mapping_dir: str = None,
     drop_last: bool = True,
     add_extra_token: int = 1,
+    shuffle_documents: bool = True,
 ):
     """Build doc-idx, sample-idx, and shuffle-idx.
     doc-idx: is an array (ordered) of documents to be used in training.
@@ -545,7 +548,7 @@ def _build_index_mappings(
 
             # doc-idx.
             start_time = time.time()
-            doc_idx = _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch)
+            doc_idx = _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch, shuffle_documents)
             np.save(doc_idx_filename, doc_idx, allow_pickle=True)
             logging.info(
                 ' > elasped time to build and save doc-idx mapping '
@@ -636,7 +639,7 @@ def _num_epochs(tokens_per_epoch, seq_length, num_samples, add_extra_token=1):
             return num_epochs
 
 
-def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch):
+def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch, shuffle=True):
     """Build an array with length = number-of-epochs * number-of-dcuments.
     Each index is mapped to a corresponding document."""
     if not separate_last_epoch or num_epochs == 1:
@@ -644,11 +647,14 @@ def _build_doc_idx(documents, num_epochs, np_rng, separate_last_epoch):
         doc_idx[:] = documents
         doc_idx = doc_idx.reshape(-1)
         doc_idx = doc_idx.astype(np.int32)
-        np_rng.shuffle(doc_idx)
+        if shuffle:
+            np_rng.shuffle(doc_idx)
+        else:
+            logging.info('Document shuffling disabled')
         return doc_idx
 
-    doc_idx_first = _build_doc_idx(documents, num_epochs - 1, np_rng, False)
-    doc_idx_last = _build_doc_idx(documents, 1, np_rng, False)
+    doc_idx_first = _build_doc_idx(documents, num_epochs - 1, np_rng, False, shuffle)
+    doc_idx_last = _build_doc_idx(documents, 1, np_rng, False, shuffle)
     return np.concatenate((doc_idx_first, doc_idx_last))
 
 

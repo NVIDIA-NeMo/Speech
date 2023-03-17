@@ -191,6 +191,7 @@ model:
     validation_drop_last: True # Set to false if the last partial validation samples is to be consumed
     no_seqlen_plus_one_input_tokens: False # Set to True to disable fetching (sequence length + 1) input tokens, instead get (sequence length) input tokens and mask the last token
     pad_samples_to_global_batch_size: False # Set to True if you want to pad the last partial batch with -1's to equal global batch size
+    shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
 
   # Nsys profiling options
   nsys_profile:

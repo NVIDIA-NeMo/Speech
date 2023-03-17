@@ -814,6 +814,9 @@ class BeamRNNTInfer(Typing):
         Returns:
             nbest_hyps: N-best decoding results
         """
+        # delay this import here instead of at the beginning to avoid circular imports.
+        from nemo.collections.asr.modules.rnnt import RNNTDecoder, StatelessTransducerDecoder
+
         if partial_hypotheses is not None:
             raise NotImplementedError("`partial_hypotheses` support is not supported")
 
@@ -895,7 +898,17 @@ class BeamRNNTInfer(Typing):
                         sub_batch_ids.remove(id)
 
                     # extract the states of the sub batch only.
-                    beam_state_ = [beam_state[state_id][:, sub_batch_ids, :] for state_id in range(len(beam_state))]
+                    if isinstance(self.decoder, RNNTDecoder):
+                        # LSTM decoder, state is [layer x batch x hidden]
+                        beam_state_ = [
+                            beam_state[state_id][:, sub_batch_ids, :] for state_id in range(len(beam_state))
+                        ]
+                    elif isinstance(self.decoder, StatelessTransducerDecoder):
+                        # stateless decoder, state is [batch x hidden]
+                        beam_state_ = [beam_state[state_id][sub_batch_ids, :] for state_id in range(len(beam_state))]
+                    else:
+                        raise NotImplementedError("Unknown decoder type.")
+
                 else:
                     # If entire batch was used (none were removed), simply take all the states
                     beam_state_ = beam_state
@@ -909,7 +922,14 @@ class BeamRNNTInfer(Typing):
                     for state_id in range(len(beam_state)):
                         # Update the current batch states with the sub-batch states (in the correct indices)
                         # These indices are specified by sub_batch_ids, the ids of samples which were updated.
-                        beam_state[state_id][:, sub_batch_ids, :] = beam_state_[state_id][...]
+                        if isinstance(self.decoder, RNNTDecoder):
+                            # LSTM decoder, state is [layer x batch x hidden]
+                            beam_state[state_id][:, sub_batch_ids, :] = beam_state_[state_id][...]
+                        elif isinstance(self.decoder, StatelessTransducerDecoder):
+                            # stateless decoder, state is [batch x hidden]
+                            beam_state[state_id][sub_batch_ids, :] = beam_state_[state_id][...]
+                        else:
+                            raise NotImplementedError("Unknown decoder type.")
                 else:
                     # If entire batch was updated, simply update all the states
                     beam_state = beam_state_

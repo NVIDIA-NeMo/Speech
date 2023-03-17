@@ -302,7 +302,7 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
     def initialize_state(self, y: torch.Tensor) -> List[torch.Tensor]:
         batch = y.size(0)
-        state = [torch.ones([batch, self.context_size], dtype=y.dtype, device=y.device) * self.blank_idx]
+        state = [torch.ones([batch, self.context_size], dtype=torch.long, device=y.device) * self.blank_idx]
         return state
 
     def batch_initialize_states(self, batch_states: List[torch.Tensor], decoder_states: List[List[torch.Tensor]]):

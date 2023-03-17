@@ -497,10 +497,14 @@ class ASRWithTTSModel(ASRModel):
         if tts_dataset:
             collate_fn = tts_dataset.collate_fn
         else:
-            if hasattr(asr_dataset, "collate_fn"):
+            if hasattr(asr_dataset, 'collate_fn'):
                 collate_fn = asr_dataset.collate_fn
-            else:
+            elif hasattr(asr_dataset.datasets[0], 'collate_fn'):
+                # support datasets that are lists of entries
                 collate_fn = asr_dataset.datasets[0].collate_fn
+            else:
+                # support datasets that are lists of lists
+                collate_fn = asr_dataset.datasets[0].datasets[0].collate_fn
 
         shuffle = train_data_config.get("shuffle", True) and not dataset_iterable
         self._train_dl = torch.utils.data.DataLoader(

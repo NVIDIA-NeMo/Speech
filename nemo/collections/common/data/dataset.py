@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
@@ -33,7 +34,9 @@ class ConcatDataset(IterableDataset):
             Defaults to 'temperature'. Currently supports 'temperature', 'random' and 'round-robin'.
         sampling_temperature (int): Temperature value for sampling. Only used when sampling_technique = 'temperature'.
             Defaults to 5.
+        sampling_scale: Gives you the ability to upsample / downsample the dataset. Defaults to 1.
         sampling_probabilities (list): Probability values for sampling. Only used when sampling_technique = 'random'.
+        seed: Optional value to seed the numpy RNG.
         global_rank (int): Worker rank, used for partitioning map style datasets. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning map style datasets. Defaults to 1.
     """
@@ -44,7 +47,9 @@ class ConcatDataset(IterableDataset):
         shuffle: bool = True,
         sampling_technique: str = 'temperature',
         sampling_temperature: int = 5,
+        sampling_scale: int = 1,
         sampling_probabilities: List[float] = None,
+        seed: Optional[int] = None,
         global_rank: int = 0,
         world_size: int = 1,
     ):
@@ -57,12 +62,16 @@ class ConcatDataset(IterableDataset):
         self.global_rank = global_rank
         self.world_size = world_size
         self.sampling_kwargs = {}
+        self.sampling_scale = sampling_scale
+
         if sampling_technique == 'temperature':
             self.index_generator = ConcatDataset.temperature_generator
             self.sampling_kwargs['temperature'] = sampling_temperature
+            self.sampling_kwargs['seed'] = seed
         elif sampling_technique == 'random':
             self.index_generator = ConcatDataset.random_generator
             self.sampling_kwargs['p'] = sampling_probabilities
+            self.sampling_kwargs['seed'] = seed
         elif sampling_technique == 'round-robin':
             self.index_generator = ConcatDataset.round_robin_generator
         else:
@@ -83,6 +92,10 @@ class ConcatDataset(IterableDataset):
                 self.length += len(dataset) // world_size
             else:
                 self.length += len(dataset)
+
+        if self.sampling_scale != 1:
+            self.length = int(self.length * self.sampling_scale)
+            logging.info(f'applying {sampling_scale} sampling scale, concat ds len: {self.length}')
 
     def get_iterable(self, dataset):
         if isinstance(dataset, IterableDataset):
@@ -143,6 +156,8 @@ class ConcatDataset(IterableDataset):
         if not temp:
             raise ValueError("Temperature generator expects a 'temperature' keyword argument.")
 
+        seed = kwargs.get('seed', None)
+        np_rng = np.random.RandomState(seed)
         lengths = []
         num = len(datasets)
         for dataset in datasets:
@@ -153,7 +168,7 @@ class ConcatDataset(IterableDataset):
         p = p / np.sum(p)
 
         while True:
-            ind = np.random.choice(np.arange(num), p=p)
+            ind = np_rng.choice(np.arange(num), p=p)
             yield ind
 
     @staticmethod
@@ -169,12 +184,14 @@ class ConcatDataset(IterableDataset):
         if not p:
             raise ValueError("Random generator expects a 'p' keyowrd argument for sampling probabilities.")
 
+        seed = kwargs.get('seed', None)
+        np_rng = np.random.RandomState(seed)
         num = len(datasets)
         if len(p) != num:
             raise ValueError("Length of probabilities list must be equal to the number of datasets.")
 
         while True:
-            ind = np.random.choice(np.arange(num), p=p)
+            ind = np_rng.choice(np.arange(num), p=p)
             yield ind
 
 

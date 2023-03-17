@@ -94,6 +94,13 @@ def get_concat_char_dataset(
 
     manifest_filepaths = config['manifest_filepath']
     datasets = []
+
+    # needed to support validation Concat Datasets that arrive here as
+    # [[dataset1,dataset2]] otherwise ModelPT would interfere
+    if len(manifest_filepaths) == 1 and not isinstance(manifest_filepaths[0], str):
+        logging.info(f"removing an extra nesting level from {manifest_filepaths}")
+        manifest_filepaths = config['manifest_filepath'][0]
+
     for manifest_filepath in manifest_filepaths:
         conf = copy.deepcopy(config)
         conf['manifest_filepath'] = manifest_filepath
@@ -103,11 +110,14 @@ def get_concat_char_dataset(
 
     dataset = ConcatDataset(
         datasets,
-        sampling_technique=config['concat_sampling'],
-        sampling_probabilities=config['concat_probabilities'],
+        sampling_technique=config.get('concat_sampling_technique', 'temperature'),
+        sampling_temperature=config.get('concat_sampling_temperature', 5),
+        sampling_scale=config.get('concat_sampling_scale', 1),
+        sampling_probabilities=config.get('concat_sampling_probabilities', None),
+        shuffle=config.get('concat_shuffle', True),
+        seed=config.get('concat_sampling_seed', None),
         global_rank=global_rank,
         world_size=world_size,
-        shuffle=config['shuffle'],
     )
     return dataset
 
@@ -168,6 +178,13 @@ def get_concat_bpe_dataset(
     """
     manifest_filepaths = config['manifest_filepath']
     datasets = []
+
+    # needed to support validation Concat Datasets that arrive here as
+    # [[dataset1,dataset2]] otherwise ModelPT would interfere
+    if len(manifest_filepaths) == 1 and not isinstance(manifest_filepaths[0], str):
+        logging.info(f"removing an extra nesting level from {manifest_filepaths}")
+        manifest_filepaths = config['manifest_filepath'][0]
+
     for manifest_filepath in manifest_filepaths:
         conf = copy.deepcopy(config)
         conf['manifest_filepath'] = manifest_filepath
@@ -176,11 +193,14 @@ def get_concat_bpe_dataset(
 
     dataset = ConcatDataset(
         datasets,
-        sampling_technique=config['concat_sampling'],
-        sampling_probabilities=config['concat_probabilities'],
+        sampling_technique=config.get('concat_sampling_technique', 'temperature'),
+        sampling_temperature=config.get('concat_sampling_temperature', 5),
+        sampling_scale=config.get('concat_sampling_scale', 1),
+        sampling_probabilities=config.get('concat_sampling_probabilities', None),
+        shuffle=config.get('concat_shuffle', True),
+        seed=config.get('concat_sampling_seed', None),
         global_rank=global_rank,
         world_size=world_size,
-        shuffle=config['shuffle'],
     )
     return dataset
 
@@ -241,11 +261,15 @@ def get_concat_tarred_dataset(
         An instance of ConcatDataset containing one or more TarredAudioToBPEDatasets or TarredAudioToCharDatasets.
     """
 
+    tarred_audio_filepaths = config['tarred_audio_filepaths']
     manifest_filepaths = config['manifest_filepath']
     datasets = []
-    for manifest_filepath in manifest_filepaths:
+    for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
+        zip(tarred_audio_filepaths, manifest_filepaths)
+    ):
         conf = copy.deepcopy(config)
         conf['manifest_filepath'] = manifest_filepath
+        conf['tarred_audio_filepaths'] = tarred_audio_filepath
         dataset = get_tarred_dataset(
             config=conf,
             tokenizer=tokenizer,
@@ -258,11 +282,14 @@ def get_concat_tarred_dataset(
 
     dataset = ConcatDataset(
         datasets,
-        sampling_technique=config['concat_sampling'],
-        sampling_probabilities=config['concat_probabilities'],
+        sampling_technique=config.get('concat_sampling_technique', 'temperature'),
+        sampling_temperature=config.get('concat_sampling_temperature', 5),
+        sampling_scale=config.get('concat_sampling_scale', 1),
+        sampling_probabilities=config.get('concat_sampling_probabilities', None),
+        shuffle=config.get('concat_shuffle', True),
+        seed=config.get('concat_sampling_seed', None),
         global_rank=global_rank,
         world_size=world_size,
-        shuffle=config['shuffle'],
     )
     return dataset
 
@@ -486,18 +513,20 @@ def get_audio_to_text_char_dataset_from_config(
 
     is_concat = config.get('is_concat', False)
     if is_concat:
-        if 'concat_sampling' in config and config['concat_sampling'] is None:
-            logging.warning(f"Concat dataset requires `concat_sampling` but it was not provided. Config: {config}")
+        if 'concat_sampling_technique' in config and config['concat_sampling_technique'] is None:
+            logging.warning(
+                f"Concat dataset requires `concat_sampling_technique` but it was not provided. Config: {config}"
+            )
             return None
 
-        if not 'concat_probabilities' in config:
+        if not 'concat_sampling_probabilities' in config:
             logging.warning(
-                f"Concat dataset requires `concat_probabilities` list but it was not provided. Config: {config}"
+                f"Concat dataset requires `concat_sampling_probabilities` list but it was not provided. Config: {config}"
             )
             return None
         else:
-            if not isclose(sum(config['concat_probabilities']), 1, abs_tol=1e-6):
-                logging.warning(f"`concat_probabilities` need to sum to 1. Config: {config}")
+            if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
+                logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
                 return None
 
     shuffle = config['shuffle']
@@ -583,18 +612,20 @@ def get_audio_to_text_bpe_dataset_from_config(
 
     is_concat = config.get('is_concat', False)
     if is_concat:
-        if 'concat_sampling' in config and config['concat_sampling'] is None:
-            logging.warning(f"Concat dataset requires `concat_sampling` but it was not provided. Config: {config}")
+        if 'concat_sampling_technique' in config and config['concat_sampling_technique'] is None:
+            logging.warning(
+                f"Concat dataset requires `concat_sampling_technique` but it was not provided. Config: {config}"
+            )
             return None
 
-        if not 'concat_probabilities' in config:
+        if not 'concat_sampling_probabilities' in config:
             logging.warning(
-                f"Concat dataset requires `concat_probabilities` list but it was not provided. Config: {config}"
+                f"Concat dataset requires `concat_sampling_probabilities` list but it was not provided. Config: {config}"
             )
             return None
         else:
-            if not isclose(sum(config['concat_probabilities']), 1, abs_tol=1e-6):
-                logging.warning(f"`concat_probabilities` need to sum to 1. Config: {config}")
+            if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
+                logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
                 return None
 
     shuffle = config['shuffle']

@@ -32,7 +32,9 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 12) `Multilang_ASR`: We will learn how to work with existing checkpoints of multilingual ASR models and how to train new ones. It is possible to create a multilingual version of any ASR model that uses tokenizers. This notebook shows how to create a multilingual version of the small monolingual Conformer Transducer model.
 
-13) `ASR_Example_CommonVoice_Finetuning`: Learn how to fine-tune an ASR model using CommonVoice to a new alphabet, Esperanto.
+13) `ASR_Example_CommonVoice_Finetuning`: Learn how to fine-tune an ASR model using CommonVoice to a new alphabet, Esperanto. We walk through the data processing steps of MCV data using HuggingFace Datasets, preparation of the tokenizer, model and then setup fine-tuning.
+
+
 ----------------
 
 # Automatic Speech Recogntion with Adapters

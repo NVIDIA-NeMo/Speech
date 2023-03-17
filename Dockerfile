@@ -42,11 +42,11 @@ RUN apt-get update && \
 
 WORKDIR /tmp/
 
-# TODO: Remove once this Apex commit (1/19/23) is included in PyTorch
+# TODO: Remove once this Apex commit (2/24/23) is included in PyTorch
 # container
 RUN git clone https://github.com/NVIDIA/apex.git && \
   cd apex && \
-  git checkout a32d7a6dddcf4e39d241b0d139c222a97c91887d && \
+  git checkout 03c9d80ed54c0eaa5b581bf42ceca3162f085327 && \
   pip3 install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
 # uninstall stuff from base container

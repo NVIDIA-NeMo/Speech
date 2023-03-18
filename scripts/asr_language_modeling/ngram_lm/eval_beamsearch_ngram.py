@@ -108,7 +108,7 @@ class EvalBeamSearchNGramConfig:
     beam_alpha: List[float] = field(default_factory=lambda: [1.0])  # The alpha parameter or list of the alphas for the beam search decoding
     beam_beta: List[float] = field(default_factory=lambda: [0.0])  # The beta parameter or list of the betas for the beam search decoding
 
-    decoding_strategy: str = "beam"  # Supports only beam for now
+    decoding_strategy: str = "beam"
     decoding: ctc_beam_decoding.BeamCTCInferConfig = ctc_beam_decoding.BeamCTCInferConfig(beam_size=128)
     
     separate_punctuation: bool = True

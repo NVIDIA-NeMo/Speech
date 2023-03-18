@@ -57,7 +57,8 @@ You may train the N-gram model as the following:
                               --train_file <path to the training text or JSON manifest file \
                               --kenlm_bin_path <path to the bin folder of KenLM library> \
                               --kenlm_model_file <path to store the binary KenLM model> \
-                              --ngram_length <order of N-gram model>
+                              --ngram_length <order of N-gram model> \
+                              --preserve_arpa
 
 The train file specified by `--train_file` can be a text file or JSON manifest. If the file's extension is anything
 other than `.json`, it assumes that data format is plain text. For plain text format, each line should contain one
@@ -72,21 +73,23 @@ it is stored at the path specified by `--kenlm_model_file`.
 
 The following is the list of the arguments for the training script:
 
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| **Argument**     | **Type** | **Default** | **Description**                                                                                |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| nemo_model_file  | str      | Required    | The path of the `.nemo` file of the ASR model. It is needed to extract the tokenizer.          |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| train_file       | str      | Required    | Path to the training file, it can be a text file or JSON manifest.                             |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| kenlm_model_file | str      | Required    | The path to store the KenLM binary model file.                                                 |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| kenlm_bin_path   | str      | Required    | The path to the bin folder of KenLM. It is a folder named `bin` under where KenLM is installed.|
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| ngram_length**   | int      | Required    | Specifies order of N-gram LM.                                                                  |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
-| do_lower_case    | bool     | ``False``   | Whether to make the training text all lower case.                                              |
-+------------------+----------+-------------+------------------------------------------------------------------------------------------------+
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| **Argument**     | **Type** | **Default** | **Description**                                                                                 |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| nemo_model_file  | str      | Required    | The path of the `.nemo` file of the ASR model. It is needed to extract the tokenizer.           |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| train_file       | str      | Required    | Path to the training file, it can be a text file or JSON manifest.                              |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| kenlm_model_file | str      | Required    | The path to store the KenLM binary model file.                                                  |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| kenlm_bin_path   | str      | Required    | The path to the bin folder of KenLM. It is a folder named `bin` under where KenLM is installed. |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| ngram_length**   | int      | Required    | Specifies order of N-gram LM.                                                                   |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| do_lower_case    | bool     | ``False``   | Whether to make the training text all lower case.                                               |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
+| preserve_arpa    | bool     | ``False``   | Whether to preserve the intermediate ARPA file after construction of the BIN file.              |
++------------------+----------+-------------+-------------------------------------------------------------------------------------------------+
 
 ** Note: Recommend to use 6 as the order of the N-gram model for BPE-based models. Higher orders may need the re-compilation of KenLM to support it.
 
@@ -97,19 +100,22 @@ NeMo's beam search decoders are capable of using the KenLM's N-gram models to fi
 The script to evaluate an ASR model with beam search decoding and N-gram models can be found at
 `scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py>`__.
 
+This script has a large number of possible argument overrides, therefore it is advised to use ``python eval_beamsearch_ngram.py --help`` to see the full list of arguments.
+
 You may evaluate an ASR model as the following:
 
 .. code-block::
 
-    python eval_beamsearch_ngram.py --nemo_model_file <path to the .nemo file of the model> \
-                                         --input_manifest <path to the evaluation JSON manifest file \
-                                         --kenlm_model_file <path to the binary KenLM model> \
-                                         --acoustic_batch_size <batch size for calculating log probabilities> \
-                                         --beam_width <list of the beam widths> \
-                                         --beam_alpha <list of the beam alphas> \
-                                         --beam_beta <list of the beam betas> \
-                                         --preds_output_folder <optional folder to store the predictions> \
-                                         --decoding_mode beamsearch_ngram
+    python eval_beamsearch_ngram.py nemo_model_file=<path to the .nemo file of the model> \
+           input_manifest=<path to the evaluation JSON manifest file \
+           kenlm_model_file=<path to the binary KenLM model> \
+           beam_width=[<list of the beam widths, separated with commas>] \
+           beam_alpha=[<list of the beam alphas, separated with commas>] \
+           beam_beta=[<list of the beam betas, separated with commas>] \
+           preds_output_folder=<optional folder to store the predictions> \
+           probs_cache_file=null \
+           decoding_mode=beamsearch_ngram \
+           decoding_strategy="<Beam library such as beam, pyctcdecode or flashlight>"
 
 It can evaluate a model in the three following modes by setting the argument `--decoding_mode`:
 
@@ -131,7 +137,7 @@ Currently multi-GPU is not supported for calculating the log probabilities, but 
 It stores the log probabilities produced from the model's encoder into a pickle file so that next time the first step
 can get skipped.
 
-The following is the list of the arguments for the evaluation script:
+The following is the list of the important arguments for the evaluation script:
 
 +---------------------+----------+------------------+-------------------------------------------------------------------------+
 | **Argument**        | **Type** | **Default**      | **Description**                                                         |
@@ -170,12 +176,94 @@ The following is the list of the arguments for the evaluation script:
 |                     | Config   | InferConfig      | python eval_beamsearch_ngram.py --help                                  |
 +---------------------+----------+------------------+-------------------------------------------------------------------------+
 
-
 Width of the beam search (`--beam_width`) specifies the number of top candidates/predictions the beam search decoder
 would search for. Larger beams result in more accurate but slower predictions.
 
+.. note::
+
+    The ``eval_beamsearch_ngram.py`` script contains the entire subconfig used for CTC Beam Decoding.
+    Therefore it is possible to forward arguments for various beam search libraries such as ``flashlight``
+    and ``pyctcdecode`` via the ``decoding`` subconfig.
+
 There is also a tutorial to learn more about evaluating the ASR models with N-gram LM here:
 `Offline ASR Inference with Beam Search and External Language Model Rescoring <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Offline_ASR.ipynb>`_
+
+Beam Search Engines
+-------------------
+
+NeMo ASR CTC supports multiple beam search engines for decoding. The default engine is ``beam`` which is the OpenSeq2Seq
+decoding library.
+
+OpenSeq2Seq (``beam``)
+~~~~~~~~~~~~~~~~~~~~~~
+
+CPU-based beam search engine that is quite efficient and supports char and subword models. It requires a character/subword
+KenLM model to be provided.
+
+The config for this decoding library is described above.
+
+Flashlight (``flashlight``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Flashlight is a C++ library for ASR decoding provided at `https://github.com/flashlight/flashlight <https://github.com/flashlight/flashlight>`_. It is a CPU and CUDA-based beam search engine that is quite efficient and supports
+char and subword models. It an ARPA KenLM file.
+
+It supports several advanced features such as lexicon based / lexicon free decoding, beam pruning threshold, and more.
+
+.. code-block:: python
+
+    @dataclass
+    class FlashlightConfig:
+        lexicon_path: Optional[str] = None
+        beam_size_token: int = 16
+        beam_threshold: float = 20.0
+        unk_weight: float = -math.inf
+        sil_weight: float = 0.0
+        unit_lm: bool = False
+
+.. code-block::
+
+    # Lexicon-based decoding
+    python eval_beamsearch_ngram.py ... \
+           decoding_strategy="flashlight" \
+           decoding.beam.flashlight_cfg.lexicon_path='/path/to/lexicon.lexicon' \
+           decoding.beam.flashlight_cfg.beam_size_token = 32 \
+           decoding.beam.flashlight_cfg.beam_threshold = 25.0
+
+    # Lexicon-free decoding
+    python eval_beamsearch_ngram.py ... \
+           decoding_strategy="flashlight" \
+           decoding.beam.flashlight_cfg.beam_size_token = 32 \
+           decoding.beam.flashlight_cfg.beam_threshold = 25.0
+
+
+PyCTCDecode (``pyctcdecode``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PyCTCDecode is a Python library for ASR decoding provided at `https://github.com/kensho-technologies/pyctcdecode <https://github.com/kensho-technologies/pyctcdecode>`_. It is a CPU-based beam search engine that is somewhat efficient for a pure python library, and supports char and subword models. It requires a character/subword KenLM ARPA / BINARY model to be provided.
+
+It has advanced features such as word boosting which can be useful for transcript customization.
+
+.. code-block:: python
+
+   @dataclass
+    class PyCTCDecodeConfig:
+        beam_prune_logp: float = -10.0
+        token_min_logp: float = -5.0
+        prune_history: bool = False
+        hotwords: Optional[List[str]] = None
+        hotword_weight: float = 10.0
+
+.. code-block::
+
+    # PyCTCDecoding
+    python eval_beamsearch_ngram.py ... \
+           decoding_strategy="pyctcdecode" \
+           decoding.beam.pyctcdecode_cfg.beam_prune_logp = -10. \
+           decoding.beam.pyctcdecode_cfg.token_min_logp = -5. \
+           decoding.beam.pyctcdecode_cfg.hotwords=[<List of str words>] \
+           decoding.beam.pyctcdecode_cfg.hotword_weight=10.0
+
 
 Hyperparameter Grid Search
 --------------------------

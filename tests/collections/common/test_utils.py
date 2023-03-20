@@ -11,9 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+import string
+from contextlib import contextmanager
+from pathlib import Path
+from unittest import mock
 
+import numpy as np
 import pytest
 
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.collections.common.parts.utils import flatten
 
 
@@ -31,3 +38,202 @@ class TestListUtils:
 
         for n, test_case in enumerate(test_cases):
             assert flatten(test_case['input']) == test_case['golden'], f'Test case {n} failed!'
+
+
+class TestPreprocessingUtils:
+    @pytest.mark.unit
+    def test_get_full_path_local(self, tmpdir):
+        """Test with local paths
+        """
+        # Create a few files
+        num_files = 10
+
+        audio_files_relative_path = [f'file_{n}.test' for n in range(num_files)]
+        audio_files_absolute_path = [os.path.join(tmpdir, a_file_rel) for a_file_rel in audio_files_relative_path]
+
+        data_dir = tmpdir
+        manifest_file = os.path.join(data_dir, 'manifest.json')
+
+        # Context manager to create dummy files
+        @contextmanager
+        def create_files(paths):
+            # Create files
+            for a_file in paths:
+                Path(a_file).touch()
+            yield
+            # Remove files
+            for a_file in paths:
+                Path(a_file).unlink()
+
+        # 1) Test with absolute paths and while files don't exist.
+        # Note: it's still expected the path will be resolved correctly, since it will be
+        # expanded using manifest_file.parent or data_dir and relative path.
+        # - single file
+        for n in range(num_files):
+            assert (
+                get_full_path(audio_files_absolute_path[n], manifest_file=manifest_file)
+                == audio_files_absolute_path[n]
+            )
+            assert get_full_path(audio_files_absolute_path[n], data_dir=data_dir) == audio_files_absolute_path[n]
+
+        # - all files in a list
+        assert get_full_path(audio_files_absolute_path, manifest_file=manifest_file) == audio_files_absolute_path
+        assert get_full_path(audio_files_absolute_path, data_dir=data_dir) == audio_files_absolute_path
+
+        # 2) Test with absolute paths and existing files.
+        with create_files(audio_files_absolute_path):
+            # - single file
+            for n in range(num_files):
+                assert (
+                    get_full_path(audio_files_absolute_path[n], manifest_file=manifest_file)
+                    == audio_files_absolute_path[n]
+                )
+                assert get_full_path(audio_files_absolute_path[n], data_dir=data_dir) == audio_files_absolute_path[n]
+
+            # - all files in a list
+            assert get_full_path(audio_files_absolute_path, manifest_file=manifest_file) == audio_files_absolute_path
+            assert get_full_path(audio_files_absolute_path, data_dir=data_dir) == audio_files_absolute_path
+
+        # 3) Test with relative paths while files don't exist.
+        # This is a situation we may have with a tarred dataset.
+        # In this case, we expect to return the relative path.
+        # - single file
+        for n in range(num_files):
+            assert (
+                get_full_path(audio_files_relative_path[n], manifest_file=manifest_file)
+                == audio_files_relative_path[n]
+            )
+            assert get_full_path(audio_files_relative_path[n], data_dir=data_dir) == audio_files_relative_path[n]
+
+        # - all files in a list
+        assert get_full_path(audio_files_relative_path, manifest_file=manifest_file) == audio_files_relative_path
+        assert get_full_path(audio_files_relative_path, data_dir=data_dir) == audio_files_relative_path
+
+        # 4) Test with relative paths and existing files.
+        # In this case, we expect to return the absolute path.
+        with create_files(audio_files_absolute_path):
+            # - single file
+            for n in range(num_files):
+                assert (
+                    get_full_path(audio_files_relative_path[n], manifest_file=manifest_file)
+                    == audio_files_absolute_path[n]
+                )
+                assert get_full_path(audio_files_relative_path[n], data_dir=data_dir) == audio_files_absolute_path[n]
+
+            # - all files in a list
+            assert get_full_path(audio_files_relative_path, manifest_file=manifest_file) == audio_files_absolute_path
+            assert get_full_path(audio_files_relative_path, data_dir=data_dir) == audio_files_absolute_path
+
+    @pytest.mark.unit
+    def test_get_full_path_ais(self, tmpdir):
+        """Test with paths on AIStore.
+        """
+        # Create a few files
+        num_files = 10
+
+        audio_files_relative_path = [f'file_{n}.test' for n in range(num_files)]
+        audio_files_cache_path = [os.path.join(tmpdir, a_file_rel) for a_file_rel in audio_files_relative_path]
+
+        ais_data_dir = 'ais://test'
+        ais_manifest_file = os.path.join(ais_data_dir, 'manifest.json')
+
+        # Context manager to create dummy files
+        @contextmanager
+        def create_files(paths):
+            # Create files
+            for a_file in paths:
+                Path(a_file).touch()
+            yield
+            # Remove files
+            for a_file in paths:
+                Path(a_file).unlink()
+
+        # Simulate caching in local tmpdir
+        def datastore_path_to_cache_path_in_tmpdir(path):
+            rel_path = os.path.relpath(path, start=os.path.dirname(ais_manifest_file))
+
+            if rel_path in audio_files_relative_path:
+                idx = audio_files_relative_path.index(rel_path)
+                return audio_files_cache_path[idx]
+            else:
+                raise ValueError(f'Unexpected path {path}')
+
+        with mock.patch(
+            'nemo.collections.common.parts.preprocessing.manifest.datastore_path_to_local_path',
+            datastore_path_to_cache_path_in_tmpdir,
+        ):
+            # Test with relative paths and existing cached files.
+            # We expect to return the absolute path in the local cache.
+            with create_files(audio_files_cache_path):
+                # - single file
+                for n in range(num_files):
+                    assert (
+                        get_full_path(audio_files_relative_path[n], manifest_file=ais_manifest_file)
+                        == audio_files_cache_path[n]
+                    )
+                    assert (
+                        get_full_path(audio_files_relative_path[n], data_dir=ais_data_dir) == audio_files_cache_path[n]
+                    )
+
+                # - all files in a list
+                assert (
+                    get_full_path(audio_files_relative_path, manifest_file=ais_manifest_file) == audio_files_cache_path
+                )
+                assert get_full_path(audio_files_relative_path, data_dir=ais_data_dir) == audio_files_cache_path
+
+    @pytest.mark.unit
+    def test_get_full_path_audio_file_len_limit(self):
+        """Test with audio_file_len_limit.
+        Currently, get_full_path will always return the input path when the length
+        is over audio_file_len_limit, independend of whether the file exists.
+        """
+        # Create a few files
+        num_examples = 10
+        rand_chars = list(string.ascii_uppercase + string.ascii_lowercase + string.digits + os.sep)
+        rand_name = lambda n: ''.join(np.random.choice(rand_chars, size=n))
+
+        for audio_file_len_limit in [255, 300]:
+            for n in range(num_examples):
+                path_length = np.random.randint(low=audio_file_len_limit, high=350)
+                audio_file_path = str(Path(rand_name(path_length)))
+
+                assert (
+                    get_full_path(audio_file_path, audio_file_len_limit=audio_file_len_limit) == audio_file_path
+                ), f'Limit {audio_file_len_limit}: expected {audio_file_path} to be returned.'
+
+                audio_file_path_with_user = os.path.join('~', audio_file_path)
+                audio_file_path_with_user_expected = os.path.expanduser(audio_file_path_with_user)
+                assert (
+                    get_full_path(audio_file_path_with_user, audio_file_len_limit=audio_file_len_limit)
+                    == audio_file_path_with_user_expected
+                ), f'Limit {audio_file_len_limit}: expected {audio_file_path_with_user_expected} to be returned.'
+
+    @pytest.mark.unit
+    def test_get_full_path_invalid_type(self):
+        """Make sure exceptions are raised when audio_file is not a string or a list of strings.
+        """
+
+        with pytest.raises(ValueError, match="Unexpected audio_file type"):
+            get_full_path(1)
+
+        with pytest.raises(ValueError, match="Unexpected audio_file type"):
+            get_full_path(('a', 'b', 'c'))
+
+        with pytest.raises(ValueError, match="Unexpected audio_file type"):
+            get_full_path({'a': 1, 'b': 2, 'c': 3})
+
+        with pytest.raises(ValueError, match="Unexpected audio_file type"):
+            get_full_path([1, 2, 3])
+
+    @pytest.mark.unit
+    def test_get_full_path_invalid_type(self):
+        """Make sure exceptions are raised when audio_file is not a string or a list of strings.
+        """
+
+        with pytest.raises(ValueError, match="Use either manifest_file or data_dir"):
+            # Using a relative path without manifest_file or data_dir is not allowed
+            get_full_path('relative/path')
+
+        with pytest.raises(ValueError, match="Parameters manifest_file and data_dir cannot be used simultaneously."):
+            # Using a relative path without both manifest_file or data_dir is not allowed
+            get_full_path('relative/path', manifest_file='/manifest_dir/file.json', data_dir='/data/dir')

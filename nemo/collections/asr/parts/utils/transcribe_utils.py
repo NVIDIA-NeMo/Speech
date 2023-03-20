@@ -15,7 +15,6 @@ import glob
 import json
 import os
 import re
-from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -27,6 +26,7 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchASR
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging, model_utils
 
 
@@ -217,7 +217,6 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
             logging.error(f"The input dataset_manifest {cfg.dataset_manifest} is empty. Exiting!")
             return None
 
-        manifest_dir = Path(cfg.dataset_manifest).parent
         with open(cfg.dataset_manifest, 'r', encoding='utf_8') as f:
             has_two_fields = []
             for line in f:
@@ -227,10 +226,8 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
                 else:
                     has_two_fields.append(False)
                 audio_key = cfg.get('audio_key', 'audio_filepath')
-                audio_file = Path(item[audio_key])
-                if not audio_file.is_file() and not audio_file.is_absolute():
-                    audio_file = manifest_dir / audio_file
-                filepaths.append(str(audio_file.absolute()))
+                audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
+                filepaths.append(audio_file)
         partial_audio = all(has_two_fields)
     logging.info(f"\nTranscribing {len(filepaths)} files...\n")
 

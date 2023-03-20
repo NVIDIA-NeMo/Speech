@@ -157,3 +157,39 @@ class TestTTSTokenizers:
         chars, tokens = self._parse_text(tokenizer, input_text)
 
         assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_fixed_vocab(self):
+        phoneme_dict = self.PHONEME_DICT_EN
+        phoneme_dict["WOUND"] = ["ˈwaʊnd", "ˈwund"]
+        g2p = IPAG2P(phoneme_dict=phoneme_dict)
+
+        assert "WOUND" in g2p.phoneme_dict
+
+        # fmt: off
+        symbol_vocab = {
+            'H', 'E', 'L', 'L', 'O',
+            'W', 'O', 'R', 'L', 'D',
+            'C', 'A', 'F', 'E',
+            'W', 'O', 'U', 'N', 'D',
+            'h', 'ə', 'ˈ', 'ɫ', 'o', 'ʊ',
+            'ˈ', 'w', 'ɝ', 'ɫ', 'd',
+            'k', 'ə', 'ˈ', 'f', 'e', 'ɪ',
+            'ˈ', 'w', 'a', 'ʊ', 'n', 'd',
+            'ˈ', 'w', 'u', 'n', 'd',
+        }
+        # fmt: on
+        fixed_vocab = symbol_vocab - {'ʊ', 'F'}
+        tokenizer = IPATokenizer(g2p=g2p, locale="en-US", fixed_vocab=fixed_vocab)
+
+        # Make sure phoneme_dict has been updated properly
+        assert "HELLO" not in tokenizer.g2p.phoneme_dict
+        assert "WORLD" in tokenizer.g2p.phoneme_dict
+        assert "CAFE" not in tokenizer.g2p.phoneme_dict
+        assert len(tokenizer.g2p.phoneme_dict["WOUND"]) == 1
+        assert tokenizer.g2p.phoneme_dict["WOUND"][0] == list("ˈwund")
+
+        chars, tokens = self._parse_text(tokenizer, "Hello, wound")
+        expected_output = "HELLO, ˈwund"
+        assert chars == expected_output

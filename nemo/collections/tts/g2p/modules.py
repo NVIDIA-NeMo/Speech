@@ -542,6 +542,57 @@ class IPAG2P(BaseG2p):
 
         return g2p_dict, symbols
 
+    def replace_symbols(self, symbols, keep_alternate=True):
+        """Replaces the vocabulary of symbols with the one given.
+        Also filters out any entries with illegal graphemes or phonemes according to the new vocab.
+
+        Args:
+            symbols (List, Set): User-provided set of valid symbols, both graphemes and phonemes
+            keep_alternate (bool): Whether to keep the other pronunciation(s) of a word if not all contain
+                illegal phonemes (and the word doesn't contain illegal graphemes).
+                Warning: this may change a word from being ambiguous to having only one valid pronunciation.
+                Defaults to True.
+        """
+        new_symbols = set(symbols)
+
+        # Keep track of what will need to be deleted or (if keep_alternate=True) replaced
+        deletion_words = []
+        replacement_dict = {}
+
+        for word, prons in self.phoneme_dict.items():
+            # Check for illegal grapheme in the word itself
+            word_graphemes = set(self._prepend_prefix_for_one_word(set_grapheme_case(word, self.grapheme_case)))
+            word_diff = word_graphemes - new_symbols
+            if word_diff:
+                deletion_words.append(word)
+                continue
+
+            # Check for illegal phonemes in the pronunciation(s)
+            legal_prons = []
+            for pron in prons:
+                pron_diff = set(pron) - new_symbols
+                if not pron_diff:
+                    legal_prons.append(pron)
+
+            # Check if at least one pronunciation was illegal
+            if len(legal_prons) != len(prons):
+                if not keep_alternate:  # Remove the word and entry fully
+                    deletion_words.append(word)
+                else:  # Need to check if all prons were illegal
+                    if not legal_prons:
+                        deletion_words.append(word)
+                    else:
+                        replacement_dict[word] = legal_prons
+
+        # Update pronunciation dictionary as needed
+        for del_word in deletion_words:
+            del self.phoneme_dict[del_word]
+
+        if keep_alternate:
+            self.phoneme_dict.update(replacement_dict)
+
+        self.symbols = new_symbols
+
     def is_unique_in_phoneme_dict(self, word: str) -> bool:
         return len(self.phoneme_dict[word]) == 1
 

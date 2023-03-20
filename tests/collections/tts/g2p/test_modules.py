@@ -124,6 +124,67 @@ class TestIPAG2P:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_replace_symbols(self):
+        g2p = self._create_g2p(use_chars=True, grapheme_prefix=self.GRAPHEME_PREFIX)
+
+        # fmt: off
+        # Get full vocab without 'i' (phoneme) and 'J' (grapheme)
+        fixed_symbols = {
+            f"{self.GRAPHEME_PREFIX}{char}"
+            for char in {
+                'H', 'E', 'L', 'L', 'O',
+                'W', 'O', 'R', 'L', 'D',
+                'L', 'E', 'A', 'D',
+                'N', 'V', 'I', 'D', 'I', 'A',
+                'O', 'N', 'E', 'S',
+                'A', 'I', 'R', 'P', 'O', 'R', 'T',
+            }
+        }.union(
+                {
+                    'h', 'ə', 'ˈ', 'ɫ', 'o', 'ʊ',
+                    'ˈ', 'w', 'ɝ', 'ɫ', 'd',
+                    'ˈ', 'l', 'ɛ', 'd',
+                    'ˈ', 'l', 'd',
+                    'ɛ', 'n', 'ˈ', 'v', 'ɪ', 'd', 'ə',
+                    'ˈ', 'd', 'ʒ', 'o', 'ʊ', 'n', 'z',
+                    'ˈ', 'ɛ', 'ɹ', 'ˌ', 'p', 'ɔ', 'ɹ', 't',
+                }
+        )
+        # fmt: on
+
+        assert len(g2p.phoneme_dict["LEAD"]) == 2
+        assert len(g2p.phoneme_dict["JONES"]) == 1
+        assert len(g2p.phoneme_dict["NVIDIA"]) == 1
+
+        # Test with keep_alternate set to True (default)
+        g2p.replace_symbols(symbols=fixed_symbols, keep_alternate=True)
+
+        # Check that the alternate pron of "LEAD" was kept
+        assert len(g2p.phoneme_dict["LEAD"]) == 1
+        assert g2p.phoneme_dict["LEAD"][0] == list("ˈlɛd")
+        # Check that filtering was done for unique entries, both grapheme and phoneme
+        assert "JONES" not in g2p.phoneme_dict
+        assert "NVIDIA" not in g2p.phoneme_dict
+        # Check that other words weren't affected
+        assert g2p.phoneme_dict["HELLO"][0] == list("həˈɫoʊ")
+        assert g2p.phoneme_dict["WORLD"][0] == list("ˈwɝɫd")
+        assert g2p.phoneme_dict["AIRPORT"][0] == list("ˈɛɹˌpɔɹt")
+
+        # Test with keep_alternate set to False
+        g2p = self._create_g2p(use_chars=True, grapheme_prefix=self.GRAPHEME_PREFIX)
+        g2p.replace_symbols(symbols=fixed_symbols, keep_alternate=False)
+
+        # Check that both "LEAD" entries were removed
+        assert "LEAD" not in g2p.phoneme_dict
+        # Other checks remain the same
+        assert "JONES" not in g2p.phoneme_dict
+        assert "NVIDIA" not in g2p.phoneme_dict
+        assert g2p.phoneme_dict["HELLO"][0] == list("həˈɫoʊ")
+        assert g2p.phoneme_dict["WORLD"][0] == list("ˈwɝɫd")
+        assert g2p.phoneme_dict["AIRPORT"][0] == list("ˈɛɹˌpɔɹt")
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_forward_call(self):
         input_text = "Hello world."
         expected_output = [char for char in "həˈɫoʊ ˈwɝɫd."]

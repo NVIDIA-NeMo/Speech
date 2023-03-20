@@ -15,6 +15,8 @@
 """Utilities for generating text."""
 
 from collections.abc import Iterable
+from functools import partial
+from typing import Callable, Tuple
 
 import numpy as np
 import torch
@@ -921,3 +923,96 @@ def sample_token_topk(logits, top_k=0, top_p=0.0, temperature=1.0, filter_value=
     log_probs = log_probs.gather(1, token_ids.unsqueeze(1)).squeeze(1)
 
     return log_probs, token_ids
+
+
+def sample_token_topk_beam_search(logits: torch.Tensor, beam_size: int = 1, dim: int = -1, log_softmax: bool = True):
+    """
+    Beam search selection of top K predictions per target (dim). Returns the beam_size tokens ids with the highest
+    probability and the corresponding log_prob per target
+
+    Args:
+        logits: [batch_size, vocab_size] or [batch_size, vocab_size] - unnormalized log probabilities of the next token,
+        beam_size: int > 1 - number of tokens to return with the highest probability per target
+        dim: int - dim of log_softmax and topk selection
+        log_softmax: bool - if to calculate log softmax  for log probabilities
+
+
+    Returns:
+        log_probs: [batch_size, beam_size] - log probabilities of the sampled tokens
+        token_ids: [batch_size, beam_size] - sampled token ids
+    """
+    if log_softmax:
+        log_probs = torch.nn.functional.log_softmax(logits, dim=dim)
+    else:
+        log_probs = logits
+    # get top candidates for each item in batch
+    log_probs, token_ids = torch.topk(log_probs, beam_size, dim=dim)
+
+    return log_probs, token_ids
+
+
+def compute_beam_search_len_penalty(lengths: torch.Tensor, alpha: int) -> torch.Tensor:
+    """
+    Length penalty used in the beam search
+    Args:
+        lengths: lengths of decoded sequences
+        alpha: params of the penalty
+    Returns:
+         tensor with the penalty value
+    """
+    return ((5 + lengths) / 6).pow(alpha)
+
+
+def get_sampling_token_fn(sampling_method: str, sampling_kwargs: dict) -> Tuple[Callable, dict]:
+    """
+    Specifies the sampling function that takes in a tensor of logits [batch_size, vocab_size] and returns a tuple
+    (tensor of log_probs [batch_size], tensor of sampled from logits [batch_size]).
+    If the beam search is enabled, the sampling function returns tensors [batch_size, beam_size]
+
+    Args:
+        sampling_method: the sampling method to use in the decode steps. Currently supported methods are
+                          "beam-search"/"greedy"/"topkp"
+        sampling_kwargs: dict with arguments to be passed to the sampling function.
+                         For sampling method 'beam-search', the following kwargs are supported:
+                         beam_size - int, number of the best sequences at each decode iteration to be left per target
+                         beam_alpha - int, the parameter of length penalty applied to predicted sequences
+                         keep_only_best_tokens - used in the beam search, boolean flag if to output only best sequence
+                                                 of predicted tokens (True) or beam_size predictions per target
+                         return_scores - used in the beam search, boolean flag if to return scores at the top of
+                                         predictions and logits
+
+    Returns:
+        sample_token_fn: the sampling function
+        default_sampling_kwargs: sampling_kwargs augmented with default sampling kwargs
+    """
+    all_default_sampling_kwargs = {
+        'greedy-search': {},
+        'topkp-sampling': {'top_k': 0, 'top_p': 0.0, 'temperature': 1.0},
+        'beam-search': {'beam_size': 1, 'beam_alpha': 0.0, 'keep_only_best_tokens': False, 'return_scores': False},
+    }
+
+    # update default sampling kwargs with user provided kwargs
+    default_sampling_kwargs = all_default_sampling_kwargs[sampling_method].copy()
+    default_sampling_kwargs.update(sampling_kwargs)
+    # sampling_kwargs = default_sampling_kwargs
+
+    if sampling_method == 'greedy-search':
+        sampling_token_fn = sample_token_greedy
+
+    elif sampling_method == "topkp-sampling":
+        top_k = default_sampling_kwargs['top_k']
+        top_p = default_sampling_kwargs['top_p']
+        temperature = default_sampling_kwargs['temperature']
+        sampling_token_fn = partial(sample_token_topk, top_k=top_k, top_p=top_p, temperature=temperature)
+
+    elif sampling_method == "beam-search":
+        beam_size = default_sampling_kwargs['beam_size']
+        sampling_token_fn = partial(sample_token_topk_beam_search, beam_size=beam_size)
+
+    else:
+        raise ValueError(
+            f'Invalid sampling method {sampling_method}. '
+            f'Supported sampling methods are {all_default_sampling_kwargs.keys()}'
+        )
+
+    return sampling_token_fn, default_sampling_kwargs

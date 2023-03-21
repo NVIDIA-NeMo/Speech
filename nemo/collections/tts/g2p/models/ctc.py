@@ -21,10 +21,9 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from torch import nn
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
-from nemo.collections.tts.data.g2p_dataset import CTCG2PBPEDataset
+from nemo.collections.tts.g2p.data.ctc import CTCG2PBPEDataset
 from nemo.collections.tts.models.base import G2PModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -53,18 +52,6 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
     """
     CTC-based grapheme-to-phoneme model.
     """
-
-    # @property
-    # def input_types(self) -> Optional[Dict[str, NeuralType]]:
-    #     return {
-    #         "input_ids": NeuralType(('B', 'T'), TokenIndex()),
-    #         "attention_mask": NeuralType(('B', 'T'), MaskType(), optional=True),
-    #         "labels": NeuralType(('B', 'T'), LabelsType()),
-    #     }
-    #
-    # @property
-    # def output_types(self) -> Optional[Dict[str, NeuralType]]:
-    #     return {"loss": NeuralType((), LossType())}
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         self.world_size = 1
@@ -161,7 +148,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin):
             if self.cfg.decoder.feat_in is None:
                 self._cfg.decoder.feat_in = self.encoder.config.d_model
         elif self.mode == "conformer_bpe":
-            self.embedding = nn.Embedding(
+            self.embedding = torch.nn.Embedding(
                 embedding_dim=self._cfg.embedding.d_model, num_embeddings=self.tokenizer.vocab_size, padding_idx=0
             )
             self.encoder = EncDecCTCModel.from_config_dict(self._cfg.encoder)

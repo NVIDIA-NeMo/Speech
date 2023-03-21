@@ -51,7 +51,7 @@ from nemo.utils import logging, model_utils
 
 @dataclass
 class G2PConfig:
-    _target_: str = "nemo_text_processing.g2p.modules.EnglishG2p"
+    _target_: str = "nemo.collections.tts.g2p.models.en_us_arpabet.EnglishG2p"
     phoneme_dict: str = "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
     heteronyms: str = "scripts/tts_dataset_files/heteronyms-052722"
     phoneme_probability: float = 0.5
@@ -528,7 +528,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable):
         elif cfg.dataloader_params.shuffle:
             logging.error(f"The {name} dataloader for {self} has shuffle set to True!!!")
 
-        if cfg.dataset._target_ == "nemo.collections.tts.data.tts_dataset.TTSDataset":
+        if cfg.dataset._target_ == "nemo.collections.tts.data.dataset.TTSDataset":
             phon_mode = contextlib.nullcontext()
             if hasattr(self.vocab, "set_phone_prob"):
                 phon_mode = self.vocab.set_phone_prob(prob=None if name == "val" else self.vocab.phoneme_probability)

@@ -20,7 +20,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     IPATokenizer,
     SpanishCharsTokenizer,
 )
-from nemo.collections.tts.g2p.modules import IPAG2P
+from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
 
 
 class TestTTSTokenizers:
@@ -107,7 +107,7 @@ class TestTTSTokenizers:
         input_text = "Hello world!"
         expected_output = " həˈɫoʊ ˈwɝɫd! "
 
-        g2p = IPAG2P(phoneme_dict=self.PHONEME_DICT_EN)
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_EN)
 
         tokenizer = IPATokenizer(g2p=g2p, locale=None, pad_with_space=True)
         chars, tokens = self._parse_text(tokenizer, input_text)
@@ -117,7 +117,7 @@ class TestTTSTokenizers:
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
     def test_ipa_tokenizer_unsupported_locale(self):
-        g2p = IPAG2P(phoneme_dict=self.PHONEME_DICT_EN)
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_EN)
         with pytest.raises(ValueError, match="Unsupported locale"):
             IPATokenizer(g2p=g2p, locale="asdf")
 
@@ -127,7 +127,7 @@ class TestTTSTokenizers:
         input_text = "Hallo welt"
         expected_output = "hˈaloː vˈɛlt"
 
-        g2p = IPAG2P(phoneme_dict=self.PHONEME_DICT_DE, locale="de-DE")
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_DE, locale="de-DE")
         tokenizer = IPATokenizer(g2p=g2p, locale="de-DE")
         chars, tokens = self._parse_text(tokenizer, input_text)
 
@@ -138,7 +138,7 @@ class TestTTSTokenizers:
     def test_ipa_tokenizer_en_us(self):
         input_text = "Hello café."
         expected_output = "həˈɫoʊ kəˈfeɪ."
-        g2p = IPAG2P(phoneme_dict=self.PHONEME_DICT_EN)
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_EN)
 
         tokenizer = IPATokenizer(g2p=g2p, locale="en-US")
         tokenizer.tokens.extend("CAFE")
@@ -152,7 +152,7 @@ class TestTTSTokenizers:
         input_text = "¡Buenos días!"
         expected_output = "¡bwˈenos dˈias!"
 
-        g2p = IPAG2P(phoneme_dict=self.PHONEME_DICT_ES, locale="es-ES")
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_ES, locale="es-ES")
         tokenizer = IPATokenizer(g2p=g2p, locale="es-ES")
         chars, tokens = self._parse_text(tokenizer, input_text)
 
@@ -163,7 +163,7 @@ class TestTTSTokenizers:
     def test_ipa_tokenizer_fixed_vocab(self):
         phoneme_dict = self.PHONEME_DICT_EN
         phoneme_dict["WOUND"] = ["ˈwaʊnd", "ˈwund"]
-        g2p = IPAG2P(phoneme_dict=phoneme_dict)
+        g2p = IpaG2p(phoneme_dict=phoneme_dict)
 
         assert "WOUND" in g2p.phoneme_dict
 

@@ -22,7 +22,7 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.tts.models.g2p_heteronym_classification import HeteronymClassificationModel
+from nemo.collections.tts.g2p.models.heteronym_classification import HeteronymClassificationModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 

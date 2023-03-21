@@ -86,14 +86,14 @@ To read more about them, see the `Base Classes <./intro.html#Base Classes>`__ se
 
 Dataset Processing Classes
 --------------------------
-.. autoclass:: nemo.collections.tts.data.tts_dataset.MixerTTSXDataset
+.. autoclass:: nemo.collections.tts.data.dataset.MixerTTSXDataset
     :show-inheritance:
     :members:
 
-.. autoclass:: nemo.collections.tts.data.tts_dataset.TTSDataset
+.. autoclass:: nemo.collections.tts.data.dataset.TTSDataset
     :show-inheritance:
     :members:
 
-.. autoclass:: nemo.collections.tts.data.tts_dataset.VocoderDataset
+.. autoclass:: nemo.collections.tts.data.dataset.VocoderDataset
     :show-inheritance:
     :members:

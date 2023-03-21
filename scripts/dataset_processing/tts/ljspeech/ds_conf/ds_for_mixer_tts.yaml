@@ -7,7 +7,7 @@ phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 
 dataset:
-  _target_: nemo.collections.tts.data.tts_dataset.TTSDataset
+  _target_: nemo.collections.tts.data.dataset.TTSDataset
   manifest_filepath: ${manifest_filepath}
   sample_rate: 22050
   sup_data_path: ${sup_data_path}
@@ -44,6 +44,6 @@ dataset:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo.collections.tts.g2p.modules.EnglishG2p
+      _target_: nemo.collections.tts.g2p.models.en_us_arpabet.EnglishG2p
       phoneme_dict: ${phoneme_dict_path}
       heteronyms: ${heteronyms_path}

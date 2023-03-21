@@ -24,7 +24,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.trainer.supporters import CombinedLoader
 
 from nemo.collections.asr.losses.angularloss import AngularSoftmaxLoss
-from nemo.collections.tts.data.tts_dataset import TTSDataset
+from nemo.collections.tts.data.dataset import TTSDataset
 from nemo.collections.tts.modules.ssl_tts import GreedyCTCDecoder
 from nemo.collections.tts.torch.tts_tokenizers import BaseTokenizer, EnglishCharsTokenizer
 from nemo.core.classes import ModelPT

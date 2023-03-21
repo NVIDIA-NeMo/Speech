@@ -66,7 +66,7 @@ model:
   
   train_ds:
     dataset:
-      _target_: nemo.collections.tts.data.tts_dataset.FastPitchSSLDataset
+      _target_: nemo.collections.tts.data.dataset.FastPitchSSLDataset
       manifest_filepath: ${train_dataset}
       sample_rate: ${model.sample_rate}
       ssl_content_emb_type: ${ssl_content_emb_type}
@@ -90,7 +90,7 @@ model:
 
   validation_ds:
     dataset:
-      _target_: nemo.collections.tts.data.tts_dataset.FastPitchSSLDataset
+      _target_: nemo.collections.tts.data.dataset.FastPitchSSLDataset
       manifest_filepath: ${validation_datasets}
       sample_rate: ${model.sample_rate}
       ssl_content_emb_type: ${ssl_content_emb_type}

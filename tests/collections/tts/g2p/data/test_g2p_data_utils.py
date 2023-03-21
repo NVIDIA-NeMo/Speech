@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import pytest
-from nemo.collections.tts.parts.utils.g2p_utils import get_heteronym_spans
+from nemo.collections.tts.g2p.utils import get_heteronym_spans
 
 
 class TestG2pDataUtils:

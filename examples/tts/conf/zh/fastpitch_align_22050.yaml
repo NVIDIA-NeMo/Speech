@@ -70,13 +70,13 @@ model:
     apostrophe: true
     pad_with_space: true
     g2p:
-      _target_: nemo.collections.tts.g2p.modules.ChineseG2p
+      _target_: nemo.collections.tts.g2p.models.zh_cn_pinyin.ChineseG2p
       phoneme_dict: ${phoneme_dict_path}
       word_segmenter: jieba # Only jieba is supported now.
 
   train_ds:
     dataset:
-      _target_: nemo.collections.tts.data.tts_dataset.TTSDataset
+      _target_: nemo.collections.tts.data.dataset.TTSDataset
       manifest_filepath: ${train_dataset}
       sample_rate: ${model.sample_rate}
       sup_data_path: ${sup_data_path}
@@ -110,7 +110,7 @@ model:
 
   validation_ds:
     dataset:
-      _target_: nemo.collections.tts.data.tts_dataset.TTSDataset
+      _target_: nemo.collections.tts.data.dataset.TTSDataset
       manifest_filepath: ${validation_datasets}
       sample_rate: ${model.sample_rate}
       sup_data_path: ${sup_data_path}

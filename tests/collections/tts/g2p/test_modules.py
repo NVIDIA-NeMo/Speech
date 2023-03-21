@@ -17,11 +17,11 @@ import unicodedata
 
 import pytest
 
-from nemo.collections.tts.g2p.modules import IPAG2P
-from nemo.collections.tts.parts.utils.g2p_utils import GRAPHEME_CASE_LOWER, GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER
+from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
+from nemo.collections.tts.g2p.utils import GRAPHEME_CASE_LOWER, GRAPHEME_CASE_MIXED, GRAPHEME_CASE_UPPER
 
 
-class TestIPAG2P:
+class TestIpaG2p:
 
     PHONEME_DICT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phoneme_dict")
     PHONEME_DICT_PATH_DE = os.path.join(PHONEME_DICT_DIR, "test_dict_de.txt")
@@ -39,7 +39,7 @@ class TestIPAG2P:
         grapheme_case=GRAPHEME_CASE_UPPER,
         grapheme_prefix="",
     ):
-        return IPAG2P(
+        return IpaG2p(
             phoneme_dict,
             locale=locale,
             apply_to_oov_word=apply_to_oov_word,

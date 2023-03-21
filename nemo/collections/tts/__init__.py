@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.tts import g2p, models
+from nemo.collections.tts import data, losses, models, modules
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.

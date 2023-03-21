@@ -517,7 +517,7 @@ class IPATokenizer(BaseTokenizer):
     ):
         """General-purpose IPA-based tokenizer.
         Args:
-            g2p: Grapheme to phoneme module, should be IPAG2P or some subclass thereof.
+            g2p: Grapheme to phoneme module, should be IpaG2p or some subclass thereof.
             locale: Locale used to determine default text processing logic and punctuation.
                 Supports ["en-US", "de-DE", "es-ES"]. Defaults to "en-US".
                 Specify None if implementing custom logic for a new locale.
@@ -542,7 +542,7 @@ class IPATokenizer(BaseTokenizer):
             logging.error(
                 f"Please make sure the G2P module passed into the IPATokenizer has a `symbols` attribute. "
                 f"This is required in order to build the tokenizer vocabulary.\n"
-                f"Expected e.g. IPAG2P, found {type(g2p)}"
+                f"Expected e.g. IpaG2p, found {type(g2p)}"
             )
             raise ValueError("G2P modules passed into the IPATokenizer must have `symbols` defined.")
 
@@ -626,7 +626,7 @@ class IPATokenizer(BaseTokenizer):
                 of graphemes, or a mixture of both. For example, `['ˈ', 's', 'i', ' ', '#O', '#O', '#V']`, which is the
                 G2P's output of the text "see OOV", where '#' is prepended to each grapheme in order to distinguish
                 graphemes from phonemes if there are overlaps in between. The prefix '#' can be customized in
-                `nemo.collections.tts.g2p.modules.IPAG2P.grapheme_prefix`.
+                `nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p.grapheme_prefix`.
             raw_text (str): the original text after calling `self.text_preprocessing_func`. It is optional. It is only
                 used to deliver a warning message that some graphemes from the original text are skipped.
 

@@ -24,7 +24,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
 
-from nemo.collections.tts.data.tts_dataset import DistributedBucketSampler
+from nemo.collections.tts.data.dataset import DistributedBucketSampler
 from nemo.collections.tts.losses.vits_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss, KlLoss
 from nemo.collections.tts.models.base import TextToWaveform
 from nemo.collections.tts.modules.vits_modules import MultiPeriodDiscriminator

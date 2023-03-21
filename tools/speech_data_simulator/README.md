@@ -86,11 +86,12 @@ python scripts/dataset_processing/get_librispeech_data.py \
 3. Create the manifest file with alignments
 
 ```bash
-python <NeMo base path>/scripts/speaker_tasks/create_librispeech_alignment_manifest.py \
+python <NeMo base path>/scripts/speaker_tasks/create_alignment_manifest.py \
   --input_manifest_filepath <Path to train_clean_100.json manifest file> \
   --base_alignment_path <Path to LibriSpeech_Alignments directory> \
-  --dataset train-clean-100 \
-  --output_path train-clean-100-align.json
+  --output_path train-clean-100-align.json \
+  --ctm_output_directory ./ctm_out \
+  --libri_dataset_split train-clean-100
 ```
 
 4. (Optional) Create the background noise manifest file

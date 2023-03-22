@@ -80,6 +80,8 @@ model:
   rotary_percentage: 1.0 # If using position_embedding_type=rope, then the per head dim is multiplied by this.
   attention_type: 'multihead' # Attention type. Options ['multihead']
   share_embeddings_and_output_weights: True # Share embedding and output layer weights.
+  overlap_p2p_comm: False # Overlap p2p communication with computes. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
+  batch_p2p_comm: True # Batch consecutive inter-peer send/recv operations. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
 
   tokenizer:
     library: 'megatron'

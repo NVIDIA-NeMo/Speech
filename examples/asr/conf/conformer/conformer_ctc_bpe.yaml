@@ -6,15 +6,17 @@
 # Here are the recommended configs for different variants of Conformer-CTC, other parameters are the same as in this config file.
 # One extra layer (compared to original paper) is added to the medium and large variants to compensate for replacing the LSTM decoder with a linear one.
 #
-#  +-------------+---------+---------+----------+------------+-----+
-#  | Model       | d_model | n_heads | n_layers | time_masks | lr  |
-#  +=============+=========+========+===========+============+=====+
-#  | Small  (13M)|   176   |    4   |    16     |     5      | 5.0 |
-#  +-------------+---------+--------+-----------+------------+-----+
-#  | Medium (30M)|   256   |    4   |    18     |     5      | 5.0 |
-#  +-------------+---------+--------+-----------+------------+-----+
-#  | Large (121M)|   512   |    8   |    18     |     10     | 2.0 |
-#  +---------------------------------------------------------------+
+#  +--------------+---------+---------+----------+------------------+------------+-----+
+#  | Model        | d_model | n_heads | n_layers | conv_kernel_size | time_masks | lr  |
+#  +==============+=========+========+===========+==================+============+=====+
+#  | Small   (13M)|   176   |    4   |    16     |        31        |     5      | 5.0 |
+#  +--------------+---------+--------+-----------+------------------+------------+-----+
+#  | Medium  (30M)|   256   |    4   |    18     |        31        |     5      | 5.0 |
+#  +--------------+---------+--------+-----------+------------------+------------+-----+
+#  | Large  (121M)|   512   |    8   |    18     |        31        |     10     | 2.0 |
+#  +------------------------+--------+-----------+------------------+------------+-----+
+#  | XLarge (635M)|  1024   |    8   |    24     |         5        |     10     | 6.4 |
+#  +--------------+---------+--------+-----------+------------------+------------+-----+
 #
 # If you do not want to train with AMP, you may use weight decay of 0.0 or reduce the number of time maskings to 2
 # with time_width=100. It may help when you want to train for fewer epochs and need faster convergence.

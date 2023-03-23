@@ -92,6 +92,10 @@ def main(cfg) -> None:
     if cfg.get("gpt_model_file"):
         with open_dict(prompt_learning_cfg):
             prompt_learning_cfg.language_model_path = cfg.gpt_model_file
+            prompt_learning_cfg.sequence_parallel = False
+            prompt_learning_cfg.activations_checkpoint_method = None
+            prompt_learning_cfg.activations_checkpoint_granularity = None
+            prompt_learning_cfg.activations_checkpoint_num_layers = None
 
     # Load prompt tuned model, virtual_prompt_model_file must be provided in config
     # Now load prompt learning model with frozen gpt model base
@@ -136,7 +140,7 @@ def main(cfg) -> None:
 
     _, dataloader = model.build_virtual_prompt_dataset(
         data=cfg.data_paths,
-        batch_size=64,
+        batch_size=cfg.inference.get('batch_size', 1),
         max_seq_length=max_input_length,
         min_seq_length=model.cfg.data.get('min_seq_length', 1),
         add_bos=sampling_params["add_BOS"],

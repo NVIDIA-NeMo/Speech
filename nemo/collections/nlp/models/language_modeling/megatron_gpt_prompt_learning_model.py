@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import os
 import re
 from functools import partial
 from typing import Any, List, Optional, Union
 
 import torch
+from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
 from pytorch_lightning.trainer.trainer import Trainer
@@ -25,6 +27,7 @@ from torch import Tensor
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_learning_dataset import GPTPromptLearningDataset
+from nemo.collections.nlp.metrics.prompt_learning_metrics import AccuracyScore, BLEUScore, ROUGEScores
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.models.language_modeling.megatron_base_prompt_learning_model import (
     MegatronBasePromptLearningModel,
@@ -194,6 +197,36 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         self.lowest_val_loss = None
         self.prompt_encoder = None
 
+        # default inference related params -> for evaluation metrics
+        if hasattr(self.cfg, 'inference') and self.cfg.get("report_validation_metric", False):
+            self.length_params: LengthParam = {
+                "max_length": self.cfg.inference.get('tokens_to_generate', 30),
+                "min_length": self.cfg.inference.get('min_tokens_to_generate', 0),
+            }
+
+            self.sampling_params: SamplingParam = {
+                "use_greedy": self.cfg.inference.get('greedy', False),
+                "temperature": self.cfg.inference.get('temperature', 1.0),
+                "top_k": self.cfg.inference.get('tok_k', 0),
+                "top_p": self.cfg.inference.get('top_p', 0.9),
+                "repetition_penalty": self.cfg.inference.get('repetition_penalty', 1.2),
+                "add_BOS": True,
+                "all_probs": False,
+                "compute_logprob": False,
+            }
+        elif self.cfg.get("report_validation_metric", False) and not hasattr(self.cfg, 'inference'):
+            raise ValueError("Must provide inference parameters for reporting validation metric!")
+
+        # define validation metric
+        if self.cfg.get('report_validation_metric', False):
+            validation_metric = self.cfg.get('validation_metric', 'accuracy')
+            if validation_metric == 'accuracy':
+                self.validation_metric = AccuracyScore()
+            elif validation_metric == 'bleu':
+                self.validation_metric = BLEUScore()
+            elif validation_metric == 'rouge':
+                self.validation_metric = ROUGEScores()
+
     def first_stage_of_pipeline(self):
         return self.frozen_model.model.pre_process
 
@@ -353,7 +386,44 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         if loss_mean.item == 0.0:
             loss_mean = []
 
-        return loss_mean
+        if self.cfg.get('report_validation_metric', False):
+            preds_text, labels_text = [], []
+            input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids = batch
+            input_lenghts = torch.argmax(loss_mask, 1, keepdim=True)
+
+            res = megatron_gpt_generate(
+                self.cuda(),
+                (
+                    torch.cat(
+                        (
+                            input_ids,
+                            torch.zeros(
+                                input_ids.shape[0], self.length_params['max_length'], dtype=input_ids.dtype
+                            ).to(self.device),
+                        ),
+                        axis=1,
+                    ),
+                    input_lenghts.squeeze(1),
+                ),
+                self.tokenizer,
+                self.length_params,
+                self.sampling_params,
+                task_ids=taskname_ids,
+            )
+
+            for pred, label in zip(res['token_ids'], labels):
+                # ids_to_text ignores special tokens by default
+                pred = self.tokenizer.ids_to_text(pred)
+                label = self.tokenizer.ids_to_text(label)
+                preds_text.append(pred)
+                labels_text.append(label)
+
+            return {
+                'loss': loss_mean,
+                'preds': preds_text,
+                'labels': labels_text,
+            }
+        return {'loss': loss_mean}
 
     def _reconfigure_batch_sizes(self, gbs: int, mbs: int):
         app_state = AppState()
@@ -380,7 +450,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
     def validation_epoch_end(self, outputs):
         if parallel_state.is_pipeline_last_stage():
             # only the last pipeline parallel stages return loss
-            averaged_loss = torch.stack(outputs).mean()
+            averaged_loss = torch.stack([i['loss'] for i in outputs]).mean()
         else:
             averaged_loss = torch.tensor(0.0).cuda()
 
@@ -389,6 +459,40 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 
         self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True)
         logging.info(f'val_loss: {averaged_loss}')
+
+        if self.cfg.get("report_validation_metric", False):
+            gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
+
+            all_preds = list(itertools.chain(*[item['preds'] for item in outputs]))
+            all_labels = list(itertools.chain(*[item['labels'] for item in outputs]))
+
+            assert len(all_preds) == len(all_labels)
+
+            # Gather inputs, preds, labels from all workers
+            torch.distributed.all_gather_object(
+                gather_results,
+                [(pred, label) for (pred, label) in zip(all_preds, all_labels)],
+                group=parallel_state.get_data_parallel_group(),
+            )
+
+            # Deduplicate sentences that may have been distributed across multiple data parallel ranks.
+            if parallel_state.get_data_parallel_rank() == 0:
+
+                gather_results_dedup = list(set(itertools.chain(*gather_results)))
+
+                val_metric_dict = self.validation_metric.get_score(
+                    [i[1] for i in gather_results_dedup], [i[0] for i in gather_results_dedup],
+                )
+
+                for metric, val in val_metric_dict.items():
+                    logging.info(f'Validation {metric}: {val}')
+                val_metric = list(val_metric_dict.items())[0][1]
+                metric_name = list(val_metric_dict.items())[0][0]
+            else:
+                val_metric = torch.tensor(0.0).cuda()
+                metric_name = ''
+
+            self.log(f'val_{metric_name}', val_metric, prog_bar=True, rank_zero_only=True)
 
         gbs = self.cfg.global_batch_size
         mbs = self.cfg.micro_batch_size

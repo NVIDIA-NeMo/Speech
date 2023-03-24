@@ -147,6 +147,19 @@ class NBestHypotheses:
     n_best_hypotheses: Optional[List[Hypothesis]]
 
 
+@dataclass
+class HATJointOutput:
+    """HATJoint outputs for beam search decoding
+
+    hat_logprobs: standard HATJoint outputs as for RNNTJoint
+
+    ilm_logprobs: internal language model probabilities (for ILM subtraction)
+    """
+
+    hat_logprobs: Optional[torch.Tensor] = None
+    ilm_logprobs: Optional[torch.Tensor] = None
+
+
 def is_prefix(x: List[int], pref: List[int]) -> bool:
     """
     Obtained from https://github.com/espnet/espnet.

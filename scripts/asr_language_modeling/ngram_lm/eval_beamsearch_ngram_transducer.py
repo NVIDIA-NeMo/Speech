@@ -155,6 +155,10 @@ def main():
     parser.add_argument(
         "--maes_expansion_gamma", default=2.3, type=float, help="Maximum prefix length in prefix search"
     )
+    parser.add_argument(
+        "--hat_subtract_ilm", action="store_true", help="Subtract internal LM from the final HAT logprobs"
+    )
+    parser.add_argument("--hat_ilm_weight", default=0.0, type=float, help="lamda2 weight for HAT ILM subsrtact")
 
     args = parser.parse_args()
 
@@ -203,6 +207,8 @@ def main():
         rnnt_cfg.beam.return_best_hypothesis = False
         rnnt_cfg.beam.maes_prefix_alpha = args.maes_prefix_alpha
         rnnt_cfg.beam.maes_expansion_gamma = args.maes_expansion_gamma
+        rnnt_cfg.beam.hat_subtract_ilm = args.hat_subtract_ilm
+        rnnt_cfg.beam.hat_ilm_weight = args.hat_ilm_weight
         asr_model.change_decoding_strategy(OmegaConf.structured(rnnt_cfg))
 
         @contextlib.contextmanager

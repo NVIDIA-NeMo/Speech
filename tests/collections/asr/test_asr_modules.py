@@ -307,3 +307,53 @@ class TestASRModulesBasicTests:
 
         # assert vocab size
         assert jointnet.num_classes_with_blank == vocab_size + 1
+
+    @pytest.mark.unit
+    def test_HATJoint(self):
+        vocab = list(range(10))
+        vocab = [str(x) for x in vocab]
+        vocab_size = len(vocab)
+
+        batchsize = 4
+        encoder_hidden = 64
+        pred_hidden = 32
+        joint_hidden = 16
+
+        joint_cfg = OmegaConf.create(
+            {
+                '_target_': 'nemo.collections.asr.modules.HATJoint',
+                'num_classes': vocab_size,
+                'vocabulary': vocab,
+                'jointnet': {
+                    'encoder_hidden': encoder_hidden,
+                    'pred_hidden': pred_hidden,
+                    'joint_hidden': joint_hidden,
+                    'activation': 'relu',
+                },
+            }
+        )
+
+        jointnet = modules.HATJoint.from_config_dict(joint_cfg)
+
+        enc = torch.zeros(batchsize, encoder_hidden, 48)  # [B, D1, T]
+        dec = torch.zeros(batchsize, pred_hidden, 24)  # [B, D2, U]
+
+        # forward call test
+        out = jointnet(encoder_outputs=enc, decoder_outputs=dec)
+        assert out.shape == torch.Size([batchsize, 48, 24, vocab_size + 1])  # [B, T, U, V + 1]
+
+        # joint() step test
+        enc2 = enc.transpose(1, 2)  # [B, T, D1]
+        dec2 = dec.transpose(1, 2)  # [B, U, D2]
+        out2 = jointnet.joint(enc2, dec2)  # [B, T, U, V + 1]
+        assert (out - out2).abs().sum() <= 1e-5
+
+        # joint() step test for internal LM subtraction
+        jointnet.return_hat_ilm = True
+        hat_output = jointnet.joint(enc2, dec2)  # HATJointOutput dataclass
+        out3, ilm = hat_output.hat_logprobs, hat_output.ilm_logprobs  # [B, T, U, V + 1] and [B, 1, U, V]
+        assert (out - out3).abs().sum() <= 1e-5
+        assert ilm.shape == torch.Size([batchsize, 1, 24, vocab_size])  # [B, 1, U, V] without blank simbol
+
+        # assert vocab size
+        assert jointnet.num_classes_with_blank == vocab_size + 1

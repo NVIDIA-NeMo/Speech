@@ -18,7 +18,7 @@ import torch
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.models import EncDecRNNTModel
-from nemo.collections.asr.modules import RNNTDecoder, RNNTJoint, SampledRNNTJoint, StatelessTransducerDecoder
+from nemo.collections.asr.modules import HATJoint, RNNTDecoder, RNNTJoint, SampledRNNTJoint, StatelessTransducerDecoder
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
 from nemo.collections.asr.parts.utils import rnnt_utils
@@ -306,60 +306,17 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
-
-    @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
-    )
-    @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "greedy_class", [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
-    )
-    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
-        token_list = [" ", "a", "b", "c"]
-        vocab_size = len(token_list)
-        big_blank_durations = [2, 4]
-
-        encoder_output_size = 4
-        decoder_output_size = 4
-        joint_output_shape = 4
-
-        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
-        jointnet_cfg = {
-            'encoder_hidden': encoder_output_size,
-            'pred_hidden': decoder_output_size,
-            'joint_hidden': joint_output_shape,
-            'activation': 'relu',
-        }
-
-        decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(
-            jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-        )
-
-        greedy = greedy_class(
-            decoder,
-            joint_net,
-            blank_index=len(token_list),
-            big_blank_durations=big_blank_durations,
-            max_symbols_per_step=5,
-        )
-
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
-
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+            with torch.no_grad():
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -386,24 +343,70 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(
-            jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
-        )
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(
+                jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
+            )
 
-        greedy = greedy_class(
-            decoder,
-            joint_net,
-            blank_index=len(token_list),
-            big_blank_durations=big_blank_durations,
-            max_symbols_per_step=5,
-        )
+            greedy = greedy_class(
+                decoder,
+                joint_net,
+                blank_index=len(token_list),
+                big_blank_durations=big_blank_durations,
+                max_symbols_per_step=5,
+            )
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+            with torch.no_grad():
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyMultiblankRNNTInfer, greedy_decode.GreedyBatchedMultiblankRNNTInfer],
+    )
+    def test_multiblank_rnnt_greedy_decoding(self, greedy_class):
+        token_list = [" ", "a", "b", "c"]
+        vocab_size = len(token_list)
+        big_blank_durations = [2, 4]
+
+        encoder_output_size = 4
+        decoder_output_size = 4
+        joint_output_shape = 4
+
+        prednet_cfg = {'pred_hidden': decoder_output_size, 'pred_rnn_layers': 1}
+        jointnet_cfg = {
+            'encoder_hidden': encoder_output_size,
+            'pred_hidden': decoder_output_size,
+            'joint_hidden': joint_output_shape,
+            'activation': 'relu',
+        }
+
+        decoder = RNNTDecoder(prednet_cfg, vocab_size)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(
+                jointnet_cfg, vocab_size, vocabulary=token_list, num_extra_outputs=len(big_blank_durations)
+            )
+
+            greedy = greedy_class(
+                decoder,
+                joint_net,
+                blank_index=len(token_list),
+                big_blank_durations=big_blank_durations,
+                max_symbols_per_step=5,
+            )
+
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
+
+            with torch.no_grad():
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -429,18 +432,19 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
-            partial_hyp = partial_hyp[0]
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
+            with torch.no_grad():
+                (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+                partial_hyp = partial_hyp[0]
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -466,16 +470,17 @@ class TestEncDecRNNTModel:
         }
 
         decoder = StatelessTransducerDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+            with torch.no_grad():
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -501,18 +506,19 @@ class TestEncDecRNNTModel:
         }
 
         decoder = StatelessTransducerDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
+            greedy = greedy_class(decoder, joint_net, blank_index=len(token_list) - 1, max_symbols_per_step=5)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
-            partial_hyp = partial_hyp[0]
-            _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
+            with torch.no_grad():
+                (partial_hyp) = greedy(encoder_output=enc_out, encoded_lengths=enc_len)
+                partial_hyp = partial_hyp[0]
+                _ = greedy(encoder_output=enc_out, encoded_lengths=enc_len, partial_hypotheses=partial_hyp)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -538,25 +544,27 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        greedy = greedy_class(
-            decoder, joint_net, blank_index=len(token_list) - 1, preserve_alignments=True, max_symbols_per_step=5
-        )
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            greedy = greedy_class(
+                decoder, joint_net, blank_index=len(token_list) - 1, preserve_alignments=True, max_symbols_per_step=5
+            )
 
-        with torch.no_grad():
-            hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
-            assert hyp.alignments is not None
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-            for t in range(len(hyp.alignments)):
-                for u in range(len(hyp.alignments[t])):
-                    logp, label = hyp.alignments[t][u]
-                    assert torch.is_tensor(logp)
-                    assert torch.is_tensor(label)
+            with torch.no_grad():
+                hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
+                assert hyp.alignments is not None
+
+                for t in range(len(hyp.alignments)):
+                    for u in range(len(hyp.alignments[t])):
+                        logp, label = hyp.alignments[t][u]
+                        assert torch.is_tensor(logp)
+                        assert torch.is_tensor(label)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -591,16 +599,18 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        beam = beam_decode.BeamRNNTInfer(decoder, joint_net, beam_size=beam_size, **beam_config,)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            beam = beam_decode.BeamRNNTInfer(decoder, joint_net, beam_size=beam_size, **beam_config,)
 
-        with torch.no_grad():
-            _ = beam(encoder_output=enc_out, encoded_lengths=enc_len)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
+
+            with torch.no_grad():
+                _ = beam(encoder_output=enc_out, encoded_lengths=enc_len)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
@@ -628,29 +638,30 @@ class TestEncDecRNNTModel:
         }
 
         decoder = RNNTDecoder(prednet_cfg, vocab_size)
-        joint_net = RNNTJoint(jointnet_cfg, vocab_size, vocabulary=token_list)
+        for joint_type in [RNNTJoint, HATJoint]:
+            joint_net = joint_type(jointnet_cfg, vocab_size, vocabulary=token_list)
 
-        beam = beam_decode.BeamRNNTInfer(
-            decoder, joint_net, beam_size=beam_size, **beam_config, preserve_alignments=True
-        )
+            beam = beam_decode.BeamRNNTInfer(
+                decoder, joint_net, beam_size=beam_size, **beam_config, preserve_alignments=True
+            )
 
-        # (B, D, T)
-        enc_out = torch.randn(1, encoder_output_size, 30)
-        enc_len = torch.tensor([30], dtype=torch.int32)
+            # (B, D, T)
+            enc_out = torch.randn(1, encoder_output_size, 30)
+            enc_len = torch.tensor([30], dtype=torch.int32)
 
-        with torch.no_grad():
-            hyp = beam(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
+            with torch.no_grad():
+                hyp = beam(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
 
-            if isinstance(hyp, rnnt_utils.NBestHypotheses):
-                hyp = hyp.n_best_hypotheses[0]  # select top hypothesis only
+                if isinstance(hyp, rnnt_utils.NBestHypotheses):
+                    hyp = hyp.n_best_hypotheses[0]  # select top hypothesis only
 
-            assert hyp.alignments is not None
+                assert hyp.alignments is not None
 
-            for t in range(len(hyp.alignments)):
-                for u in range(len(hyp.alignments[t])):
-                    logp, label = hyp.alignments[t][u]
-                    assert torch.is_tensor(logp)
-                    assert torch.is_tensor(label)
+                for t in range(len(hyp.alignments)):
+                    for u in range(len(hyp.alignments[t])):
+                        logp, label = hyp.alignments[t][u]
+                        assert torch.is_tensor(logp)
+                        assert torch.is_tensor(label)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',

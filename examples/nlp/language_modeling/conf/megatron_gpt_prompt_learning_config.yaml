@@ -111,6 +111,14 @@ model:
     answer_only_loss: True
     answer_field: "answer"
 
+  - taskname: "taskname"
+    prompt_template: "<|VIRTUAL_PROMPT_0|> {prompt} {completion}"
+    total_virtual_tokens: 100
+    virtual_token_splits: [100]
+    truncate_field: null
+    answer_only_loss: True
+    answer_field: "completion"
+
   prompt_tuning: # Prompt tunin specific params
     new_prompt_init_methods: ['text'] # List of 'text' or 'random', should correspond to tasks listed in new tasks
     new_prompt_init_text: ['some init text goes here'] # some init text if init method is text, or None if init method is random

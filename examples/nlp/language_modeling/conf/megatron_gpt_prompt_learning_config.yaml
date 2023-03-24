@@ -57,6 +57,8 @@ model:
   validation_global_batch_size: ${model.global_batch_size}
   validation_micro_batch_size: ${model.micro_batch_size}
   validation_drop_last: False
+  report_validation_metric: False
+  validation_metric: 'accuracy'
 
   restore_path: null # Path to an existing p-tuned/prompt tuned .nemo model you wish to add new tasks to or run inference with
   language_model_path: ??? # Path to the GPT language model .nemo file, always required
@@ -159,3 +161,13 @@ model:
       constant_steps: 0 # Constant steps should also be 0 when min_lr=0
       monitor: val_loss
       reduce_on_plateau: false
+
+  # required for reporting validation metrics
+  inference:
+    greedy: False
+    top_k: 0
+    top_p: 0.9
+    temperature: 1.0
+    tokens_to_generate: 30
+    repetition_penalty: 1.2
+    min_tokens_to_generate: 0

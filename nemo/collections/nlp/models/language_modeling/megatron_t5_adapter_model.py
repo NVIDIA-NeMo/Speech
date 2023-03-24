@@ -152,7 +152,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
         loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=True)
 
-        if self.cfg.get('report_validation_accuracy', False):
+        if self.cfg.get('report_validation_metric', False):
             metrics = self.compute_accuracy(enc_input, enc_mask, labels)
             metrics['loss'] = loss_mean
         else:

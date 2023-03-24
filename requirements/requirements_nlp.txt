@@ -16,5 +16,6 @@ numpy
 opencc
 pangu
 rapidfuzz
+rouge_score
 sacrebleu[ja]
 sentence_transformers

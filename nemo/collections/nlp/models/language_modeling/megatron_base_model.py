@@ -30,7 +30,7 @@ from nemo.collections.nlp.modules.common.megatron.clip_grads import (
 )
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler
+from nemo.collections.nlp.parts.nlp_overrides import NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, GradScaler
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
 from nemo.utils import AppState, logging
 from nemo.utils.get_rank import is_global_rank_zero
@@ -86,10 +86,21 @@ class MegatronBaseModel(NLPModel):
         # buffer used during train_step for logging average loss over gradient accumulation steps
         self._reduced_loss_buffer = []
 
+        # Overrides used when converting checkpoints
+        if os.environ.get(NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, "false").lower() == "true":
+            app_state = AppState()
+            init_world_size = app_state.tensor_model_parallel_size * app_state.pipeline_model_parallel_size
+            init_global_rank = app_state.global_rank
+            init_local_rank = app_state.local_rank
+        else:
+            init_world_size = trainer.world_size
+            init_global_rank = trainer.global_rank
+            init_local_rank = trainer.local_rank
+
         initialize_model_parallel_for_nemo(
-            world_size=trainer.world_size,
-            global_rank=trainer.global_rank,
-            local_rank=trainer.local_rank,
+            world_size=init_world_size,
+            global_rank=init_global_rank,
+            local_rank=init_local_rank,
             tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
             pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
             virtual_pipeline_model_parallel_size=cfg.get('virtual_pipeline_model_parallel_size', None),

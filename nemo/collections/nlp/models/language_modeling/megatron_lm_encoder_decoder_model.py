@@ -20,6 +20,7 @@ from typing import Any, Dict, Optional
 import torch
 from omegaconf import OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
+from pytorch_lightning.accelerators import CPUAccelerator
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (
@@ -40,6 +41,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
     compute_beam_search_len_penalty,
     get_sampling_token_fn,
 )
+from nemo.collections.nlp.parts import nlp_overrides
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
@@ -91,11 +93,19 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         # TODO: Not sure how to use lists of modules with PTL.
         # This means we can only use pipeline parallelism without the interleaved schedule.
-        self.enc_dec_model = build_model(
-            model_provider_func=self.model_provider_func,
-            wrap_with_ddp=False,
-            model_type=ModelType.encoder_and_decoder,
-        )[0]
+        if isinstance(self.trainer.accelerator, CPUAccelerator):
+            logging.warning("Using CPUAccelerator, model will be built on CPU.")
+            self.enc_dec_model = nlp_overrides.build_model_cpu(
+                model_provider_func=self.model_provider_func,
+                wrap_with_ddp=False,
+                model_type=ModelType.encoder_and_decoder,
+            )[0]
+        else:
+            self.enc_dec_model = build_model(
+                model_provider_func=self.model_provider_func,
+                wrap_with_ddp=False,
+                model_type=ModelType.encoder_and_decoder,
+            )[0]
 
         # We don't need to call it explicitly? Since it is a pytorch lightning hook function
         # self.setup_optimizer_param_groups()

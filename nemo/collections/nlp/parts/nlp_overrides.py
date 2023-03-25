@@ -43,13 +43,19 @@ from nemo.utils.model_utils import inject_model_parallel_rank
 
 try:
     from apex.transformer import parallel_state
+    from apex.transformer.enums import ModelType
+    from apex.transformer.pipeline_parallel.schedules.common import _calc_number_of_params
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
+    from apex.transformer.tensor_parallel.layers import set_defaults_if_not_set_tensor_model_parallel_attributes
 
     HAVE_APEX = True
 
 except (ImportError, ModuleNotFoundError):
 
     HAVE_APEX = False
+
+
+NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE = "NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE"
 
 
 class NLPDDPStrategy(DDPStrategy):
@@ -658,3 +664,130 @@ class GlobalBatchDataFetcher(DataFetcher):
             assert isinstance(dataloader, Sized)  # `_has_len` is True
             self.done = self.fetched >= len(dataloader)
         self.on_fetch_end(batch, start_output)
+
+
+def build_model_cpu(
+    model_provider_func: Callable[[Any, Dict[str, Any]], torch.nn.Module],
+    wrap_with_ddp: bool = True,
+    virtual_pipeline_model_parallel_size: Optional[int] = None,
+    model_type: 'ModelType' = None,  # Default of ModelType.encoder_or_decoder
+    *args: Any,
+    **kwargs: Any,
+) -> List[torch.nn.Module]:
+    """Build the model satisfying pipeline model parallel requirements on CPU.
+
+    NOTE: This function is a duplicate of the Apex `build_model` function with the only difference
+    being that it removes an explicit forced cast of the model onto the GPU. This is necessary
+    because in certain cases the model is simply too large to fit on the GPU, and the user
+    should be responsible for casting the model to the GPU if they wish to do so.
+
+    Specifically, this function is used when constructing a dummy model containing the union of parameters
+    from all TP and PP ranks, which is then sharded across a new TP PP configuration.
+
+    This function sets `pre_process` and `post_process` to `**kwargs` and pass `*args` and `**kwargs` to
+    `model_provider_func`.
+
+    Args:
+        model_provider_func: A function which takes `*args` and `**kwargs` and returns a `nn.Module`.
+        wrap_with_ddp: If :obj:`True`, wrap the instantiated model
+            with `torch.nn.parallel.distributed.DistributedDataParallel`, a.k.a. `DDP`.
+        virtual_pipeline_model_parallel_size: Specify when using interleaving scheduling pipeline model parallel.
+        model_type:
+        *args: arguments for model provider func
+        **kwargs: Keyword arguments for model provider func
+
+    Returns:
+        a list of `nn.Module`(s). If `virtual_pipeline_model_parallel_size` is not None,
+        the list has multiple models, otherwise one.
+    """
+    if not HAVE_APEX:
+        raise ValueError("Apex is required for pipeline parallelism.")
+
+    if model_type is None:
+        model_type = ModelType.encoder_or_decoder
+
+    if (
+        parallel_state.get_pipeline_model_parallel_world_size() > 1
+        and virtual_pipeline_model_parallel_size is not None
+    ):
+        model = []
+        for i in range(virtual_pipeline_model_parallel_size):
+            cur_args = args
+            cur_kwargs = kwargs
+            parallel_state.set_virtual_pipeline_model_parallel_rank(i)
+            # Set pre_process and post_process only after virtual rank is set.
+            pre_process = parallel_state.is_pipeline_first_stage()
+            post_process = parallel_state.is_pipeline_last_stage()
+            cur_kwargs.update(
+                {"pre_process": pre_process, "post_process": post_process,}
+            )
+            this_model = model_provider_func(*cur_args, **cur_kwargs)
+            model.append(this_model)
+    else:
+        cur_args = args
+        cur_kwargs = kwargs
+        model = None
+        if model_type == ModelType.encoder_or_decoder:
+            pre_process = parallel_state.is_pipeline_first_stage()
+            post_process = parallel_state.is_pipeline_last_stage()
+            cur_kwargs.update(
+                {"pre_process": pre_process, "post_process": post_process,}
+            )
+            model = model_provider_func(*cur_args, **cur_kwargs)
+        elif model_type == ModelType.encoder_and_decoder:
+            pre_process = parallel_state.is_pipeline_first_stage()
+            post_process = parallel_state.is_pipeline_last_stage()
+            # `add_encoder` & `add_decoder` logic.
+            add_encoder, add_decoder = True, True
+            if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+                split_rank = parallel_state.get_pipeline_model_parallel_split_rank()
+                if split_rank is None:
+                    raise RuntimeError("Split rank needs to be specified for model with both encoder and decoder.")
+                rank = parallel_state.get_pipeline_model_parallel_rank()
+                world_size = parallel_state.get_pipeline_model_parallel_world_size()
+                pre_process = rank == 0 or rank == split_rank
+                post_process = rank == (split_rank - 1) or rank == (world_size - 1)
+                add_encoder = parallel_state.is_pipeline_stage_before_split()
+                add_decoder = parallel_state.is_pipeline_stage_after_split()
+            cur_kwargs.update(
+                {
+                    "pre_process": pre_process,
+                    "post_process": post_process,
+                    "add_encoder": add_encoder,
+                    "add_decoder": add_decoder,
+                }
+            )
+            model = model_provider_func(*cur_args, **cur_kwargs)
+
+        if model is not None:
+            model.model_type = model_type
+
+    if not isinstance(model, list):
+        model = [model]
+
+    # Set tensor model parallel attributes if not set.
+    # Only parameters that are already tensor model parallel have these
+    # attributes set for them. We should make sure the default attributes
+    # are set for all params so the optimizer can use them.
+    for model_module in model:
+        for param in model_module.parameters():
+            set_defaults_if_not_set_tensor_model_parallel_attributes(param)
+
+    # Print number of parameters.
+    if parallel_state.model_parallel_is_initialized() and parallel_state.get_data_parallel_rank() == 0:
+        msg = " > number of parameters on (tensor, pipeline) model parallel rank ({}, {}): {}".format(
+            parallel_state.get_tensor_model_parallel_rank(),
+            parallel_state.get_pipeline_model_parallel_rank(),
+            _calc_number_of_params(model),
+        )
+        print(msg, flush=True)
+
+    if wrap_with_ddp:
+        i = torch.cuda.current_device()
+        model = [
+            torch.nn.parallel.distributed.DistributedDataParallel(
+                model_module, device_ids=[i], output_device=i, process_group=parallel_state.get_data_parallel_group(),
+            )
+            for model_module in model
+        ]
+    return model

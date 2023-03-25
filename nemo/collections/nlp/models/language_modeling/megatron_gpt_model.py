@@ -18,6 +18,7 @@ from typing import Any, List, Optional, Union
 import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
+from pytorch_lightning.accelerators import CPUAccelerator
 from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 
@@ -47,7 +48,7 @@ from nemo.collections.nlp.modules.common.transformer.text_generation import (
     SamplingParam,
     TextGeneration,
 )
-from nemo.collections.nlp.parts.nlp_overrides import GradScaler
+from nemo.collections.nlp.parts.nlp_overrides import GradScaler, build_model_cpu
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
@@ -98,11 +99,18 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
 
         # build_model returns a list of modules which are used for interleaved pipeline parallelism
-        self.model = build_model(
-            model_provider_func=self.model_provider_func,
-            wrap_with_ddp=False,
-            virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
-        )
+        if isinstance(self.trainer.accelerator, CPUAccelerator):
+            self.model = build_model_cpu(
+                model_provider_func=self.model_provider_func,
+                wrap_with_ddp=False,
+                virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
+            )
+        else:
+            self.model = build_model(
+                model_provider_func=self.model_provider_func,
+                wrap_with_ddp=False,
+                virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
+            )
 
         # if we're not using interleaved, then self.model is a module.
         if self.cfg.get('virtual_pipeline_model_parallel_size', None) is None:

@@ -91,6 +91,19 @@ def build_train_valid_test_datasets(
     skip_warmup,
     tokenizer,
 ):
+    if data_impl in ['mock']:
+        logging.info('Initializing mock GPT dataset for train, validate, and test')
+        if len(data_prefix) != 0:
+            # Mock data will be generated instead of loading files.
+            logging.warning(f"Requested data_impl={data_impl}, so ignoring data_prefix setting: {data_prefix}")
+        if tokenizer is None:
+            # Vocabulary size is inferred from tokenizer.
+            raise ValueError("Tokenizer is required for a mock GPT dataset")
+        train_ds = MockGPTDataset(cfg, tokenizer, "train", int(train_valid_test_num_samples[0]), seq_length, seed,)
+        valid_ds = MockGPTDataset(cfg, tokenizer, "valid", int(train_valid_test_num_samples[1]), seq_length, seed,)
+        test_ds = MockGPTDataset(cfg, tokenizer, "test", int(train_valid_test_num_samples[2]), seq_length, seed,)
+        return train_ds, valid_ds, test_ds
+
     if isinstance(data_prefix, DictConfig):
         assert (
             data_prefix.get('train') is not None
@@ -400,6 +413,50 @@ class GPTDataset(Dataset):
         if idx == -1:
             logging.debug('Got -1 as item index. Masking loss from this sample')
             loss_mask = torch.zeros_like(loss_mask)
+
+        return {
+            'tokens': tokens,
+            'labels': labels,
+            'attention_mask': attention_mask,
+            'loss_mask': loss_mask,
+            'position_ids': position_ids,
+        }
+
+
+class MockGPTDataset(Dataset):
+    def __init__(
+        self, cfg, tokenizer, name, num_samples, seq_length, seed,
+    ):
+        if not HAVE_APEX:
+            raise ImportError(
+                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+            )
+
+        super().__init__()
+        self.name = name
+        self.seq_length = seq_length
+        self.vocab_size = tokenizer.vocab_size
+        self.length = num_samples
+        self.seed = seed
+
+    def __len__(self):
+        return self.length
+
+    def _get_text(self, idx: int) -> np.ndarray:
+        np_gen = np.random.default_rng(seed=(self.seed + idx))
+        return np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64)
+
+    def __getitem__(self, idx):
+        # Generate data of the expected size and datatype (based on GPTDataset).
+        np_gen = np.random.default_rng(seed=(self.seed + idx))
+        tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
+        labels = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
+
+        with torch.no_grad():
+            attention_mask = torch.tril(torch.ones((self.seq_length, self.seq_length))).unsqueeze(0)
+            attention_mask = attention_mask < 0.5
+            loss_mask = torch.ones(self.seq_length, dtype=torch.float)
+            position_ids = torch.arange(self.seq_length, dtype=torch.int64)
 
         return {
             'tokens': tokens,

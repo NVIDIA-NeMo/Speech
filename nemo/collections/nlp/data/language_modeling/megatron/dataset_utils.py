@@ -883,6 +883,42 @@ def build_train_valid_test_datasets(
             "respect_document_boundaries=False is not compatible with text_memmap and csv_memmap (data_impl_kwargs != {})"
         )
 
+    if data_impl in ["mock"]:
+        logging.info(f'Initializing mock dataset, type {dataset_type}, for train, validate, and test')
+        if len(data_prefix) != 0:
+            # Files from this location will not be read; mock data will be generated instead.
+            logging.warning(f"Requested data_impl={data_impl}, so ignoring data_prefix setting: {data_prefix}")
+        if dataset_type == DSET_TYPE_T5:
+            from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import MockT5Dataset
+
+            if tokenizer is None:
+                # Tokenizer is used to infer vocabulary size for mock data.
+                raise ValueError("Tokenizer is required for a mock T5 dataset")
+            train_ds = MockT5Dataset(
+                cfg,
+                tokenizer,
+                "train",
+                int(train_valid_test_num_samples[0]),
+                max_seq_length,
+                max_seq_length_dec,
+                seed,
+            )
+            valid_ds = MockT5Dataset(
+                cfg,
+                tokenizer,
+                "valid",
+                int(train_valid_test_num_samples[1]),
+                max_seq_length,
+                max_seq_length_dec,
+                seed,
+            )
+            test_ds = MockT5Dataset(
+                cfg, tokenizer, "test", int(train_valid_test_num_samples[2]), max_seq_length, max_seq_length_dec, seed,
+            )
+            return train_ds, valid_ds, test_ds
+        else:
+            raise NotImplementedError(f"Mock dataset is not implemented for requested type: {dataset_type}")
+
     if isinstance(data_prefix, DictConfig):
         assert (
             data_prefix.get('train') is not None

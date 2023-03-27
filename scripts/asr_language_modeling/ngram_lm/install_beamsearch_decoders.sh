@@ -9,5 +9,7 @@ cd ..
 mv OpenSeq2Seq/decoders .
 rm -rf OpenSeq2Seq
 cd decoders
+# patch setup code to support the recent distutils
+sed -i 's/, distutils/, distutils\nimport distutils.ccompiler/g' setup.py
 ./setup.sh
 cd ..

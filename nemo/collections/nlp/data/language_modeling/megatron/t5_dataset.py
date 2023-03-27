@@ -420,3 +420,44 @@ class T5Dataset(Dataset):
         loss_mask = np.array(loss_mask, dtype=np.int64)
 
         return tokens_enc, tokens_dec_in, labels, enc_mask, dec_mask, loss_mask
+
+
+class MockT5Dataset(Dataset):
+    def __init__(
+        self, cfg, tokenizer, name, num_samples, max_seq_length, max_seq_length_dec, seed,
+    ):
+        super().__init__()
+        self.name = name
+        self.max_seq_length = max_seq_length
+        self.max_seq_length_dec = max_seq_length_dec
+        self.vocab_size = tokenizer.vocab_size
+        self.length = num_samples
+        self.seed = seed
+
+    def __len__(self):
+        return self.length
+
+    def _get_sample(self, idx):
+        np_gen = np.random.default_rng(seed=(self.seed + idx))
+        sample = np_gen.integers(self.vocab_size, size=[self.max_seq_length], dtype=np.int64)
+        return [sample], self.max_seq_length
+
+    def __getitem__(self, idx):
+        # Generate output values randomly with the expected size and datatype
+        np_gen = np.random.default_rng(seed=(self.seed + idx))
+        tokens_enc = np_gen.integers(self.vocab_size, size=[self.max_seq_length], dtype=np.int64)
+        tokens_dec_in = np_gen.integers(self.vocab_size, size=[self.max_seq_length_dec], dtype=np.int64)
+        labels = np_gen.integers(self.vocab_size, size=[self.max_seq_length_dec], dtype=np.int64)
+        enc_mask = np.ones(shape=[self.max_seq_length], dtype=np.int64)
+        dec_mask = np.ones(shape=[self.max_seq_length_dec], dtype=np.int64)
+        loss_mask = np.ones(shape=[self.max_seq_length_dec], dtype=np.int64)
+
+        training_sample = {
+            'text_enc': tokens_enc,
+            'text_dec': tokens_dec_in,
+            'labels': labels,
+            'loss_mask': loss_mask,
+            'enc_mask': enc_mask,
+            'dec_mask': dec_mask,
+        }
+        return training_sample

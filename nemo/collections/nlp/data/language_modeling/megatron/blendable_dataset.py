@@ -76,6 +76,10 @@ class BlendableDataset(torch.utils.data.Dataset):
         sample_idx = self.dataset_sample_index[idx]
         return self.datasets[dataset_idx][sample_idx]
 
+    def create_data_mmap(self):
+        for dataset in self.datasets:
+            dataset.create_data_mmap()
+
 
 class MemoryEfficientBlendableDataset(torch.utils.data.Dataset):
     """

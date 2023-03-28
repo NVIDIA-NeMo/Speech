@@ -43,7 +43,8 @@ except (ImportError, ModuleNotFoundError):
 
 def build_dataset(cfg, trainer, data_prefix, data_impl, num_samples, seq_length, seed, skip_warmup, tokenizer, name):
     def _build_dataset(current_data_prefix, current_num_samples):
-        indexed_dataset = get_indexed_dataset_(current_data_prefix, data_impl, skip_warmup)
+        delay_data_mmap = cfg.data.get('delay_data_mmap', False)
+        indexed_dataset = get_indexed_dataset_(current_data_prefix, data_impl, skip_warmup, delay_data_mmap)
         total_num_of_documents = indexed_dataset.sizes.shape[0]
         # Print stats about the splits.
         logging.info(' > dataset split:')
@@ -226,7 +227,8 @@ def _build_train_valid_test_datasets(
     """Build train, valid, and test datasets."""
 
     # Indexed dataset.
-    indexed_dataset = get_indexed_dataset_(data_prefix, data_impl, skip_warmup)
+    delay_data_mmap = cfg.data.get('delay_data_mmap', False)
+    indexed_dataset = get_indexed_dataset_(data_prefix, data_impl, skip_warmup, delay_data_mmap)
 
     total_num_of_documents = indexed_dataset.sizes.shape[0]
     splits = get_train_valid_test_split_(splits_string, total_num_of_documents)
@@ -274,12 +276,12 @@ def _build_train_valid_test_datasets(
     return (train_dataset, valid_dataset, test_dataset)
 
 
-def get_indexed_dataset_(data_prefix, data_impl, skip_warmup):
+def get_indexed_dataset_(data_prefix, data_impl, skip_warmup, delay_data_mmap=False):
     """Build indexed dataset."""
     logging.info(' > building dataset index ...')
 
     start_time = time.time()
-    indexed_dataset = make_indexed_dataset(data_prefix, data_impl, skip_warmup)
+    indexed_dataset = make_indexed_dataset(data_prefix, data_impl, skip_warmup, delay_data_mmap=delay_data_mmap)
     logging.info(' > finished creating indexed dataset in {:4f} ' 'seconds'.format(time.time() - start_time))
     logging.info('    number of documents: {}'.format(indexed_dataset.sizes.shape[0]))
 
@@ -351,6 +353,9 @@ class GPTDataset(Dataset):
             shuffle_documents=self.shuffle_documents,
         )
         deallocate_indexed_dataset_memory(self.indexed_dataset)
+
+    def create_data_mmap(self):
+        self.indexed_dataset.create_data_mmap()
 
     def __len__(self):
         # -1 is due to data structure used to retieve the index:

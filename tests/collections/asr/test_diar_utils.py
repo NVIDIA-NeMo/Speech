@@ -23,6 +23,7 @@ from nemo.collections.asr.parts.utils.offline_clustering import (
     SpeakerClustering,
     get_scale_interpolated_embs,
     getCosAffinityMatrix,
+    getKneighborsConnections,
     split_input_data,
 )
 from nemo.collections.asr.parts.utils.online_clustering import (
@@ -447,6 +448,24 @@ class TestDiarizationSegmentationUtils:
         cursor_for_old_segments, cursor_index = get_new_cursor_for_update(frame_start, segment_range_ts)
         assert cursor_for_old_segments == gt_cursor_for_old_segments
         assert cursor_index == gt_cursor_index
+
+
+class TestClusteringUtilFunctions:
+    @pytest.mark.parametrize("p_value", [1, 5, 9])
+    @pytest.mark.parametrize("N", [9, 20])
+    @pytest.mark.parametrize("mask_method", ['binary', 'sigmoid', 'drop'])
+    def test_get_k_neighbors_connections(self, p_value: int, N: int, mask_method: str, seed=0):
+        torch.manual_seed(seed)
+        random_mat = torch.rand(N, N)
+        affinity_mat = 0.5 * (random_mat + random_mat.T)
+        affinity_mat = affinity_mat / torch.max(affinity_mat)
+        binarized_affinity_mat = getKneighborsConnections(affinity_mat, p_value, mask_method)
+        if mask_method == 'binary':
+            assert all(binarized_affinity_mat.sum(dim=0) == float(p_value))
+        elif mask_method == 'sigmoid':
+            assert all(binarized_affinity_mat.sum(dim=0) <= float(p_value))
+        elif mask_method == 'drop':
+            assert all(binarized_affinity_mat.sum(dim=0) <= float(p_value))
 
 
 class TestSpeakerClustering:

@@ -306,16 +306,40 @@ def isGraphFullyConnected(affinity_mat: torch.Tensor, device: torch.device) -> t
     return getTheLargestComponent(affinity_mat, 0, device).sum() == affinity_mat.shape[0]
 
 
-def getKneighborsConnections(affinity_mat: torch.Tensor, p_value: int) -> torch.Tensor:
+def getKneighborsConnections(affinity_mat: torch.Tensor, p_value: int, mask_method: str = 'binary') -> torch.Tensor:
     """
     Binarize top-p values for each row from the given affinity matrix.
+
+    Args:
+        affinity_mat (Tensor):
+            A square matrix (tensor) containing normalized cosine similarity values
+        p_value (int):
+            The number of top values that are selected from each row.
+        mask_method (str):
+            The method that is used to manipulate the affinity matrix. The default method is 'binary'.
+
+    Returns:
+        binarized_affinity_mat (Tensor):
+            A binarized affinity matrix based on the given mask method.
     """
-    binarized_affinity_mat = torch.zeros_like(affinity_mat).int()
-    for i in range(affinity_mat.shape[0]):
-        line = affinity_mat[i, :]
-        sorted_idx = torch.argsort(line, descending=True)
-        indices = sorted_idx[:p_value]
-        binarized_affinity_mat[indices, i] = torch.ones(indices.shape[0]).to(affinity_mat.device).int()
+    dim = affinity_mat.shape
+    binarized_affinity_mat = torch.zeros_like(affinity_mat).half()
+    sorted_matrix = torch.argsort(affinity_mat, dim=1, descending=True)[:, :p_value]
+    binarized_affinity_mat[sorted_matrix.T, torch.arange(affinity_mat.shape[0])] = (
+        torch.ones(1).to(affinity_mat.device).half()
+    )
+    indices_row = sorted_matrix[:, :p_value].flatten()
+    indices_col = torch.arange(dim[1]).repeat(p_value, 1).T.flatten()
+    if mask_method == 'binary' or mask_method is None:
+        binarized_affinity_mat[indices_row, indices_col] = (
+            torch.ones(indices_row.shape[0]).to(affinity_mat.device).half()
+        )
+    elif mask_method == 'drop':
+        binarized_affinity_mat[indices_row, indices_col] = affinity_mat[indices_row, indices_col].half()
+    elif mask_method == 'sigmoid':
+        binarized_affinity_mat[indices_row, indices_col] = torch.sigmoid(affinity_mat[indices_row, indices_col]).half()
+    else:
+        raise ValueError(f'Unknown mask method: {mask_method}')
     return binarized_affinity_mat
 
 

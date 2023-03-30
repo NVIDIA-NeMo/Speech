@@ -15,6 +15,7 @@
 """Dataloaders."""
 
 import abc
+from itertools import chain
 from typing import Optional
 
 import torch
@@ -100,7 +101,13 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
     def __iter__(self):
         batch = []
         # Last batch will be dropped if drop_last is not set False
-        for idx in range(self.consumed_samples, self.total_samples):
+        indices = range(self.consumed_samples, self.total_samples)
+        if (not self.drop_last) and self.pad_samples_to_global_batch_size:
+            pad_samples_num = -len(indices) % self.global_batch_size
+            pad_indices = range(-1, -pad_samples_num - 1, -1)
+            indices = chain(indices, pad_indices)
+
+        for idx in indices:
             batch.append(idx)
             if len(batch) == self.micro_batch_times_data_parallel_size:
                 start_idx, end_idx = self.get_start_end_idx()
@@ -109,17 +116,11 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
 
         # Check the last partial batch and see drop_last is set
         if len(batch) > 0 and not self.drop_last:
-            if self.pad_samples_to_global_batch_size:
-                for i in range(
-                    self.data_parallel_rank, self.global_batch_size, self.micro_batch_times_data_parallel_size
-                ):
-                    indices = [batch[j] for j in range(i, min(len(batch), i + self.micro_batch_size))]
-                    num_pad = self.micro_batch_size - len(indices)
-                    indices = indices + [-1] * num_pad
-                    yield indices
-            else:
-                start_idx, end_idx = self.get_start_end_idx()
-                yield batch[start_idx:end_idx]
+            assert (
+                not self.pad_samples_to_global_batch_size
+            ), 'with pad_samples_to_global_batch_size all batches should be complete'
+            start_idx, end_idx = self.get_start_end_idx()
+            yield batch[start_idx:end_idx]
 
 
 class MegatronPretrainingRandomSampler(BaseMegatronSampler):

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+
 import numpy as np
 import pytest
 import torch
@@ -21,7 +22,10 @@ from omegaconf import DictConfig
 from nemo.collections.asr.parts.utils.data_simulation_utils import (
     DataAnnotator,
     SpeechSampler,
+    add_silence_to_alignments,
     binary_search_alignments,
+    get_cleaned_base_path,
+    get_split_points_in_alignments,
     normalize_audio,
     read_noise_manifest,
 )
@@ -36,7 +40,11 @@ def annotator():
 @pytest.fixture()
 def sampler():
     cfg = get_data_simulation_configs()
-    return SpeechSampler(cfg)
+    sampler = SpeechSampler(cfg)
+    # Must get session-wise randomized silence/overlap mean
+    sampler.get_session_overlap_mean()
+    sampler.get_session_silence_mean()
+    return sampler
 
 
 def get_data_simulation_configs():
@@ -90,10 +98,14 @@ def get_data_simulation_configs():
                 'snr': 60,
                 'snr_min': None,
             },
-            'add_seg_aug': False,
-            'segment_augmentor': {'gain': {'prob': 0.5, 'min_gain_dbfs': -10.0, 'max_gain_dbfs': 10.0}},
-            'add_sess_aug': False,
-            'session_augmentor': {'white_noise': {'prob': 1.0, 'min_level': -90, 'max_level': -46}},
+            'segment_augmentor': {
+                'add_seg_aug': False,
+                'augmentor': {'gain': {'prob': 0.5, 'min_gain_dbfs': -10.0, 'max_gain_dbfs': 10.0},},
+            },
+            'session_augmentor': {
+                'add_sess_aug': False,
+                'augmentor': {'white_noise': {'prob': 1.0, 'min_level': -90, 'max_level': -46},},
+            },
             'speaker_enforcement': {'enforce_num_speakers': True, 'enforce_time': [0.25, 0.75]},
             'segment_manifest': {'window': 0.5, 'shift': 0.25, 'step_count': 50, 'deci': 3},
         }
@@ -108,6 +120,9 @@ def generate_words_and_alignments(sample_index):
     elif sample_index == 1:
         words = ["", "stephanos", "dedalos", ""]
         alignments = [0.51, 1.31, 2.04, 2.215]
+    elif sample_index == 2:
+        words = ['', 'hello', 'world', '', 'welcome', 'to', 'nemo', '']
+        alignments = [0.5, 1.0, 1.5, 1.7, 1.8, 2.2, 2.7, 2.8]
     else:
         raise ValueError(f"sample_index {sample_index} not supported")
     speaker_id = 'speaker_0'
@@ -132,6 +147,57 @@ class TestDataSimulatorUtils:
         norm_array = normalize_audio(array_input)
         assert torch.max(torch.abs(norm_array)) == 1.0
         assert torch.min(torch.abs(norm_array)) < 1.0
+
+    @pytest.mark.parametrize("output_dir", [os.path.join(os.getcwd(), "test_dir")])
+    def test_get_cleaned_base_path(self, output_dir):
+        result_path = get_cleaned_base_path(output_dir, overwrite_output=True)
+        assert os.path.exists(result_path) and not os.path.isfile(result_path)
+        result_path = get_cleaned_base_path(output_dir, overwrite_output=False)
+        assert os.path.exists(result_path) and not os.path.isfile(result_path)
+        os.rmdir(result_path)
+        assert not os.path.exists(result_path)
+
+    @pytest.mark.parametrize(
+        "words, alignments, answers",
+        [
+            (['', 'hello', 'world'], [0.5, 1.0, 1.5], [[0, 16000.0]]),
+            (
+                ['', 'hello', 'world', '', 'welcome', 'to', 'nemo', ''],
+                [0.27, 1.0, 1.7, 2.7, 2.8, 3.2, 3.7, 3.9],
+                [[0, (1.7 + 0.5) * 16000], [(2.7 - 0.5) * 16000, (3.9 - 0.27) * 16000]],
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("sr", [16000])
+    @pytest.mark.parametrize("split_buffer", [0.5])
+    @pytest.mark.parametrize("new_start", [0.0])
+    def test_get_split_points_in_alignments(self, words, alignments, sr, new_start, split_buffer, answers):
+        sentence_audio_len = sr * (alignments[-1] - alignments[0])
+        splits = get_split_points_in_alignments(words, alignments, split_buffer, sr, sentence_audio_len, new_start)
+        assert len(splits) == len(answers)
+        for k, interval in enumerate(splits):
+            assert abs(answers[k][0] - interval[0]) < 1e-4
+            assert abs(answers[k][1] - interval[1]) < 1e-4
+
+    @pytest.mark.parametrize(
+        "alignments, words", [(['hello', 'world'], [1.0, 1.5]), (['', 'hello', 'world'], [0.0, 1.0, 1.5])]
+    )
+    def test_add_silence_to_alignments(self, alignments, words):
+        """
+        Test add_silence_to_alignments function.
+        """
+        audio_manifest = {
+            'audio_filepath': 'test.wav',
+            'alignments': alignments,
+            'words': words,
+        }
+        audio_manifest = add_silence_to_alignments(audio_manifest)
+        if words[0] == '':
+            assert audio_manifest['alignments'] == [0.0] + alignments
+            assert audio_manifest['words'] == [''] + words
+        else:
+            assert audio_manifest['alignments'] == alignments
+            assert audio_manifest['words'] == words
 
 
 class TestDataAnnotator:
@@ -259,21 +325,18 @@ class TestSpeechSampler:
     @pytest.mark.parametrize("non_silence_len_samples", [16000, 32000])
     @pytest.mark.parametrize("running_overlap_len_samples", [8000, 12000])
     def test_sample_from_overlap_model(self, sampler, non_silence_len_samples, running_overlap_len_samples):
+        sampler.get_session_overlap_mean()
         sampler.running_overlap_len_samples = running_overlap_len_samples
         overlap_amount = sampler.sample_from_overlap_model(non_silence_len_samples=non_silence_len_samples)
         assert type(overlap_amount) == int
         assert 0 <= overlap_amount
 
     @pytest.mark.parametrize("running_len_samples", [8000, 16000])
-    @pytest.mark.parametrize("session_len_samples", [16000, 32000])
     @pytest.mark.parametrize("running_overlap_len_samples", [8000, 12000])
-    def test_sample_from_silence_model(
-        self, sampler, running_len_samples, session_len_samples, running_overlap_len_samples
-    ):
+    def test_sample_from_silence_model(self, sampler, running_len_samples, running_overlap_len_samples):
+        sampler.get_session_silence_mean()
         self.running_overlap_len_samples = running_overlap_len_samples
-        silence_amount = sampler.sample_from_silence_model(
-            running_len_samples=running_len_samples, session_len_samples=session_len_samples
-        )
+        silence_amount = sampler.sample_from_silence_model(running_len_samples=running_len_samples)
         assert type(silence_amount) == int
         assert 0 <= silence_amount
 

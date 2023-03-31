@@ -11,7 +11,7 @@ data_simulator:
     session_length: 600 # Length of each simulated multispeaker audio session (seconds)
 
   session_params:
-    max_audio_read_sec: 20 # The maximum audio length in second when loading an audio file. The bigger the number, the slower the reading speed. Should be greater than 2.5 second.
+    max_audio_read_sec: 20.0 # The maximum audio length in second when loading an audio file. The bigger the number, the slower the reading speed. Should be greater than 2.5 second.
     sentence_length_params: # k,p values for a negative_binomial distribution which is sampled to get the sentence length (in number of words)
     - 0.4 # k (Number of successes until the experiment is stopped) value must be a positive integer.
     - 0.05 # p (Success probability) must be in the range (0, 1]. The average sentence length will be k*(1-p)/p
@@ -60,19 +60,21 @@ data_simulator:
   # See tutorial at https://github.com/NVIDIA/NeMo/blob/main/tutorials/asr/Online_Noise_Augmentation.ipynb
   # Note that ImpulsePerturbation, NoisePerturbation, RirAndNoisePerturbation and other perturbations that uses `collections.ASRAudioText`
   # cannot use multi-proccessing in simulation, due to non-pickable errors.
-  add_seg_aug: False  # Set True to enable augmentation on each speech segment
   segment_augmentor:
-    gain:  # Randomly perturb the gain of each speech segment
-      prob: 0.5  # Probability of applying gain augmentation
-      min_gain_dbfs: -10.0  # Min dB level to add
-      max_gain_dbfs: 10.0  # Max dB level to add
+    add_seg_aug: False # Set True to enable augmentation on each speech segment
+    augmentor:
+      gain:  # Randomly perturb the gain of each speech segment
+        prob: 0.5  # Probability of applying gain augmentation
+        min_gain_dbfs: -10.0  # Min dB level to add
+        max_gain_dbfs: 10.0  # Max dB level to add
 
-  add_sess_aug: False # Set True to enable audio augmentation on the whole session
   session_augmentor:
-    white_noise:  # Add random white noise to the whole session
-      prob: 1.0  # Probability of adding white noise
-      min_level: -90  # Min level of noise loudness (dB)
-      max_level: -46  # Max level of noise loudness (dB)
+    add_sess_aug: False # Set True to enable audio augmentation on the whole session
+    augmentor:
+      white_noise:  # Add random white noise to the whole session
+        prob: 1.0  # Probability of adding white noise
+        min_level: -90  # Min level of noise loudness (dB)
+        max_level: -46  # Max level of noise loudness (dB)
 
   speaker_enforcement:
     enforce_num_speakers: true # Enforce that all requested speakers are present in the output wav file

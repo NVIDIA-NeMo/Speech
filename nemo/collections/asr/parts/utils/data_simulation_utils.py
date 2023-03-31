@@ -503,29 +503,25 @@ def get_speaker_samples(speaker_ids: List[str], speaker_samples: dict) -> Dict[s
     return speaker_wav_align_map
 
 
-def add_silence_to_alignments(audio_manifest: dict, output_precision: int) -> dict:
+def add_silence_to_alignments(audio_manifest: dict):
     """
     Add silence to the beginning of the alignments and words.
 
     Args:
         audio_manifest (dict): Audio manifest dictionary.
             keys: 'audio_filepath', 'duration', 'alignments', 'words'
-        output_precision (int): Precision of the output alignments in integer.
 
     Returns:
         audio_manifest (dict): Audio manifest dictionary with silence added to the beginning.
     """
-    audio_manifest['words'].insert(0, "")
-    audio_manifest['alignments'].insert(0, 1 / (10 ** output_precision))
+    if type(audio_manifest['words'][0]) == str and len(audio_manifest['words'][0]) > 0:
+        audio_manifest['words'].insert(0, "")
+        audio_manifest['alignments'].insert(0, 0.0)
     return audio_manifest
 
 
 def load_speaker_sample(
-    speaker_wav_align_map: List[dict],
-    speaker_ids: List[str],
-    speaker_turn: int,
-    output_precision: int,
-    min_alignment_count: int,
+    speaker_wav_align_map: List[dict], speaker_ids: List[str], speaker_turn: int, min_alignment_count: int,
 ) -> str:
     """
     Load a sample for the selected speaker ID.
@@ -553,7 +549,7 @@ def load_speaker_sample(
 
     # Check whether the first word is silence and insert a silence token if the first token is not silence.
     if audio_manifest['words'][0] != "":
-        audio_manifest = add_silence_to_alignments(audio_manifest, output_precision)
+        audio_manifest = add_silence_to_alignments(audio_manifest)
 
     audio_manifest = copy.deepcopy(audio_manifest)
     return audio_manifest
@@ -650,6 +646,30 @@ class DataAnnotator(object):
         self._params = cfg
         self._files = {}
         self._init_file_write()
+        self._init_filelist_lists()
+
+    def _init_file_write(self):
+        """
+        Initialize file writing arguments
+        """
+        self._file_base_str = "synthetic"
+        self._file_types = ["wav", "rttm", "json", "ctm", "txt", "meta"]
+        self._annotation_types = ["rttm", "json", "ctm"]
+
+    def _init_filelist_lists(self):
+        """
+        Initialize lists to store the filelists for each file type
+        """
+        self.annote_lists = {}
+        for file_type in self._file_types:
+            self.annote_lists[f"{file_type}_list"] = []
+
+    def init_annotation_lists(self):
+        """
+        Initialize lists to store the annotations for each file type
+        """
+        for file_type in self._file_types:
+            self.annote_lists[file_type] = []
 
     def create_new_rttm_entry(
         self, words: List[str], alignments: List[float], start: int, end: int, speaker_id: int
@@ -758,72 +778,31 @@ class DataAnnotator(object):
                 arr.append((align1, text))
         return arr
 
-    def _init_file_write(self):
+    def add_to_filename_lists(self, basepath: str, filename: str):
         """
-        Initialize file writing.
-        """
-        self._file_base_str = "synthetic"
-        self._file_types = ["wav", "rttm", "json", "ctm", "txt", "meta"]
-
-    def _open_list_file(self, basepath: str, file_type: str) -> IO:
-        """
-        Open files for writing.
-
-        Args:
-            basepath (str): Basepath for output files.
-            file_type (str): Type of file to open.
-
-        Returns:
-            (IO): File object.
-        """
-        return open(os.path.join(basepath, f"{self._file_base_str}_{file_type}.list"), "w")
-
-    def _write_list_file(self, file_handle: IO, basepath: str, filename: str, file_type: str):
-        """
-        Write an entry to a list file.
-
-        Args:
-            file_handle (IO): File handle to write to.
-            basepath (str): Basepath for output files.
-            filename (str): Base filename for all output files.
-            file_type (str): Type of file to open.
-
-        Returns:
-            file (IO): File object.
-        """
-        file_handle.write(os.path.join(basepath, filename + f'.{file_type}\n'))
-
-    def open_files(self, basepath: str):
-        """
-        Open all files for writing.
-
-        Args:
-            basepath (str): Basepath for output files.
-        """
-        for file_type in self._file_types:
-            self._files[file_type] = self._open_list_file(basepath, file_type)
-
-    def write_files(self, basepath: str, filename: str = ""):
-        """
-        Write all files.
+        Add the current filename to the list of filenames for each file type.
 
         Args:
             basepath (str): Basepath for output files.
             filename (str): Base filename for all output files.
         """
+        full_base_filepath = os.path.join(basepath, filename)
         for file_type in self._file_types:
-            self._write_list_file(self._files[file_type], basepath, filename, file_type)
+            self.annote_lists[f"{file_type}_list"].append(f"{full_base_filepath}.{file_type}")
 
-    def close_files(self):
+    def write_filelist_files(self, basepath):
         """
-        Close all open list files.
+        Write all filelist files.
+
+        Args:
+            basepath (str): Basepath for output files.
         """
         for file_type in self._file_types:
-            self._files[file_type].close()
+            with open(f"{basepath}/{self._file_base_str}_{file_type}.list", "w") as list_file:
+                list_file.write("\n".join(self.annote_lists[f"{file_type}_list"]))
+            list_file.close()
 
-    def write_annotation_files(
-        self, basepath: str, filename: str, meta_data: dict, rttm_list: list, json_list: list, ctm_list: list,
-    ):
+    def write_annotation_files(self, basepath: str, filename: str, meta_data: dict):
         """
         Write all annotation files: RTTM, JSON, CTM, TXT, and META.
 
@@ -835,10 +814,10 @@ class DataAnnotator(object):
             json_list (list): List of JSON entries.
             ctm_list (list): List of CTM entries.
         """
-        labels_to_rttmfile(rttm_list, filename, self._params.data_simulator.outputs.output_dir)
-        write_manifest(os.path.join(basepath, filename + '.json'), json_list)
-        write_ctm(os.path.join(basepath, filename + '.ctm'), ctm_list)
-        write_text(os.path.join(basepath, filename + '.txt'), ctm_list)
+        labels_to_rttmfile(self.annote_lists['rttm'], filename, self._params.data_simulator.outputs.output_dir)
+        write_manifest(os.path.join(basepath, filename + '.json'), self.annote_lists['json'])
+        write_ctm(os.path.join(basepath, filename + '.ctm'), self.annote_lists['ctm'])
+        write_text(os.path.join(basepath, filename + '.txt'), self.annote_lists['ctm'])
         write_manifest(os.path.join(basepath, filename + '.meta'), [meta_data])
 
 
@@ -892,11 +871,11 @@ class SpeechSampler(object):
         self.running_silence_len_samples = 0
         self.running_overlap_len_samples = 0
 
-        self.sess_silence_mean = 0
+        self.sess_silence_mean = None
         self.per_silence_min_len = 0
         self.per_silence_max_len = 0
 
-        self.sess_overlap_mean = 0
+        self.sess_overlap_mean = None
         self.per_overlap_min_len = 0
         self.per_overlap_max_len = 0
 
@@ -930,6 +909,9 @@ class SpeechSampler(object):
         """
         Initialize parameters for silence insertion in the current session.
         """
+        self.running_speech_len_samples = 0
+        self.running_silence_len_samples = 0
+
         self.per_silence_min_len = int(
             max(0, self._params.data_simulator.session_params.per_silence_min) * self._params.data_simulator.sr
         )
@@ -946,6 +928,8 @@ class SpeechSampler(object):
         """
         Initialize parameters for overlap insertion in the current session.
         """
+        self.running_overlap_len_samples = 0
+
         self.per_overlap_min_len = int(
             max(0, self._params.data_simulator.session_params.per_overlap_min) * self._params.data_simulator.sr
         )
@@ -976,9 +960,13 @@ class SpeechSampler(object):
         else:
             self.current_silence_ratio, self.current_overlap_ratio = 0, 0
 
+        # self.silence_discrepancy = max(0, self.sess_silence_mean - self.current_silence_ratio)
+        # self.overlap_discrepancy = max(0, self.sess_overlap_mean - self.current_overlap_ratio)
+        # threshold = self.silence_discrepancy / (self.overlap_discrepancy + self.silence_discrepancy + 1e-10)
+        # add_overlap = np.random.rand() > threshold
         self.silence_discrepancy = self.current_silence_ratio - self.sess_silence_mean
         self.overlap_discrepancy = self.current_overlap_ratio - self.sess_overlap_mean
-        add_overlap = self.overlap_discrepancy <= self.silence_discrepancy
+        add_overlap = bool(self.overlap_discrepancy < self.silence_discrepancy)
         return add_overlap
 
     def get_session_silence_mean(self):
@@ -1004,10 +992,10 @@ class SpeechSampler(object):
                     f"`mean_silence_var` should be less than `mean_silence * (1 - mean_silence)`. "
                     f"Please check `mean_silence_var` and try again."
                 )
-            silence_mean = beta(a, b).rvs()
+            self.sess_silence_mean = beta(a, b).rvs()
         else:
-            silence_mean = mean
-        return silence_mean
+            self.sess_silence_mean = mean
+        return self.sess_silence_mean
 
     def get_session_overlap_mean(self):
         """
@@ -1032,22 +1020,23 @@ class SpeechSampler(object):
                     f"`mean_overlap_var` should be less than `mean_overlap * (1 - mean_overlap)`. "
                     f"Please check `mean_overlap_var` and try again."
                 )
-            overlap_mean = beta(a, b).rvs()
+            self.sess_overlap_mean = beta(a, b).rvs()
         else:
-            overlap_mean = mean
-        return overlap_mean
+            self.sess_overlap_mean = mean
+        return self.sess_overlap_mean
 
-    def sample_from_silence_model(self, running_len_samples: int, session_len_samples: int) -> int:
+    def sample_from_silence_model(self, running_len_samples: int) -> int:
         """
         Sample from the silence model to determine the amount of silence to add between sentences.
         Gamma distribution is employed for modeling the highly skewed distribution of silence length distribution.
         When we add silence between sentences, we want to ensure that the proportion of silence meets the `sess_silence_mean`.
-        Thus, we employ the following formula to determine the amount of silence to add:
+        Thus, [Session Silence Mean] = [Total Running Silence Time] / [Total Running Session Time] equation holds. We employ the following 
+        formula to determine the amount of silence to add, which is `silence_mean`:
 
-            running_ratio = running_len_samples / session_len_samples
-            silence_mean = (session_len_samples*(sess_silence_mean) - running_silence_len_samples) * running_ratio.
+            self.sess_silence_mean = (silence_mean + self.running_silence_len_samples) / (silence_mean + running_len_samples)
 
-        `running_ratio` is the proportion of the created session compared to the targeted total session length.
+        The above equation is setting `silence_mean` to yield the desired silence ratio `self.sess_silence_mean`. 
+        We use the above `silence_mean` value to sample silence-length for each silence occurrence.
 
         Args:
             running_len_samples (int): 
@@ -1058,10 +1047,9 @@ class SpeechSampler(object):
         Returns:
             silence_amount (int): Amount of silence to add between sentences (in terms of number of samples).
         """
-        running_ratio = running_len_samples / session_len_samples
-        silence_mean = (
-            session_len_samples * (self.sess_silence_mean) - self.running_silence_len_samples
-        ) * running_ratio
+        silence_mean = ((self.sess_silence_mean * running_len_samples) - self.running_silence_len_samples) / (
+            1 - self.sess_silence_mean
+        )
         silence_mean = max(self.per_silence_min_len, min(silence_mean, self.per_silence_max_len))
         if silence_mean > 0:
             self.per_silence_var = self._params.data_simulator.session_params.per_silence_var
@@ -1077,7 +1065,6 @@ class SpeechSampler(object):
             silence_amount = max(self.per_silence_min_len, min(silence_amount, self.per_silence_max_len))
         else:
             silence_amount = 0
-
         return silence_amount
 
     def sample_from_overlap_model(self, non_silence_len_samples: int):
@@ -1085,9 +1072,10 @@ class SpeechSampler(object):
         Sample from the overlap model to determine the amount of overlap between segments.
         Gamma distribution is employed for modeling  the highly skewed distribution of overlap length distribution.
         When we add an overlap occurrence, we want to meet the desired overlap ratio defined by `self.sess_overlap_mean`.
+        Thus, [Session Overlap Mean] = [Total Running Overlap Speech Time] / [Total Running Non-Silence Speech Time].
         Let `overlap_mean` be the desired overlap amount, then the mean and variance of the gamma distribution is given by:
 
-            self.sess_overlap_mean = (overlap_mean + self.running_overlap_len_samples) / (overlap_mean + non_silence_len_samples)
+            self.sess_overlap_mean = (overlap_mean + self.running_overlap_len_samples) / (non_silence_len_samples - overlap_mean)
 
         The above equation is setting `overlap_mean` to yield the desired overlap ratio `self.sess_overlap_mean`. 
         We use the above `overlap_mean` value to sample overlap-length for each overlap occurrence.
@@ -1101,7 +1089,7 @@ class SpeechSampler(object):
                 Amount of overlap between segments (in terms of number of samples).
         """
         overlap_mean = ((self.sess_overlap_mean * non_silence_len_samples) - self.running_overlap_len_samples) / (
-            1 - self.sess_overlap_mean
+            1 + self.sess_overlap_mean
         )
         overlap_mean = max(self.per_overlap_min_len, min(max(0, overlap_mean), self.per_overlap_max_len))
 
@@ -1116,7 +1104,6 @@ class SpeechSampler(object):
             )
         else:
             desired_overlap_amount = 0
-
         return desired_overlap_amount
 
     def sample_noise_manifest(self, noise_manifest: dict) -> list:

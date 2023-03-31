@@ -178,9 +178,8 @@ def clip_grad_norm_distributed_optimizer(optimizer, max_norm, norm_type=2):
     # Filter parameters based on:
     #   - parameter should not be shared
     #   - should not be a replica due to tensor model parallelism
-    params = itertools.chain.from_iterable(param_group['params'] for param_group in optimizer.param_groups)
     params_for_norm = []
-    for param in params:
+    for param in optimizer.parameters(with_fp32_optim_params=True):
         is_not_shared = param_is_not_shared(param)
         is_not_tp_duplicate = param_is_not_tensor_parallel_duplicate(param)
         if is_not_shared and is_not_tp_duplicate:

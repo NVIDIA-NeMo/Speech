@@ -158,14 +158,33 @@ def get_mask_from_lengths(lengths: Optional[torch.Tensor] = None, x: Optional[to
 def sort_tensor(
     context: torch.Tensor, lens: torch.Tensor, dim: Optional[int] = 0, descending: Optional[bool] = True
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sorts elements in context by the dim lengths specified in lens
+    Args:
+        context:  source tensor, sorted by lens
+        lens: lengths of elements of context along the dimension dim
+        dim: Optional[int] : dimension to sort by
+    Returns:
+        context: tensor sorted by lens along dimension dim
+        lens_sorted: lens tensor, sorted
+        ids_sorted: reorder ids to be used to restore original order
+    
+    """
     lens_sorted, ids_sorted = torch.sort(lens, descending=descending)
     context = torch.index_select(context, dim, ids_sorted)
     return context, lens_sorted, ids_sorted
 
 
 def unsort_tensor(ordered: torch.Tensor, indices: torch.Tensor, dim: Optional[int] = 0) -> torch.Tensor:
-    unsort_ids = indices.gather(0, indices.argsort(0, descending=True))
-    return torch.index_select(ordered, dim, unsort_ids)
+    """Reverses the result of sort_tensor function:
+       o, _, ids = sort_tensor(x,l) 
+       assert unsort_tensor(o,ids) == x
+    Args:
+        ordered: context tensor, sorted by lengths
+        indices: torch.tensor: 1D tensor with 're-order' indices returned by sort_tensor
+    Returns:
+        ordered tensor in original order (before calling sort_tensor)  
+    """
+    return torch.index_select(ordered, dim, indices.argsort(0))
 
 
 @jit(nopython=True)

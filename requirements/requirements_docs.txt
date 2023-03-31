@@ -1,6 +1,9 @@
 Jinja2<3.1
 latexcodec
 numpy
+# sphinx-book-theme is incompatible with pydata-sphinx-theme>0.13.2
+# https://github.com/executablebooks/sphinx-book-theme/issues/711
+pydata-sphinx-theme==0.13.1
 Sphinx>=4.0,<6,!=5.0.0
 sphinx-book-theme
 sphinx-copybutton

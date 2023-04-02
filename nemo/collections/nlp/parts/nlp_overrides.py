@@ -372,7 +372,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         loaded_params = super().load_config_and_state_dict(
             calling_cls, restore_path, override_config_path, map_location, strict, return_config, trainer,
         )
-        if not isinstance(loaded_params, tuple):
+        if not isinstance(loaded_params, tuple) or return_config is True:
             return loaded_params
         conf, instance, state_dict = loaded_params
         state_dict = self.modify_state_dict(conf, state_dict)

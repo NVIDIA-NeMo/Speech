@@ -709,6 +709,69 @@ class TestSaveRestore:
             assert type(restored_model._save_restore_connector) == MySaveRestoreConnector
 
     @pytest.mark.unit
+    def test_restore_from_save_restore_connector_return_config(self):
+        class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
+            def save_to(self, model, save_path: str):
+                save_path = save_path.replace(".nemo", "_XYZ.nemo")
+                super().save_to(model, save_path)
+
+        class MockModelV2(MockModel):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Update config
+            cfg = _mock_model_config()
+
+            # Create model
+            save_path = os.path.join(tmpdir, 'save_custom.nemo')
+            model_with_custom_connector = MockModel(cfg=cfg.model, trainer=None)
+            model_with_custom_connector._save_restore_connector = MySaveRestoreConnector()
+            model_with_custom_connector.save_to(save_path)
+
+            assert os.path.exists(os.path.join(tmpdir, 'save_custom_XYZ.nemo'))
+
+            restored_model_cfg = MockModelV2.restore_from(
+                save_path.replace(".nemo", "_XYZ.nemo"),
+                save_restore_connector=MySaveRestoreConnector(),
+                return_config=True,
+            )
+            assert isinstance(restored_model_cfg, DictConfig)
+            assert model_with_custom_connector.cfg == restored_model_cfg
+
+    @pytest.mark.unit
+    def test_restore_from_save_restore_connector_return_config_partial_tar_extraction(self):
+        class MySaveRestoreConnector(save_restore_connector.SaveRestoreConnector):
+            def save_to(self, model, save_path: str):
+                save_path = save_path.replace(".nemo", "_XYZ.nemo")
+                super().save_to(model, save_path)
+
+        class MockModelV2(MockModel):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Update config
+            cfg = _mock_model_config()
+
+            # Create model
+            save_path = os.path.join(tmpdir, 'save_custom.nemo')
+            model_with_custom_connector = MockModel(cfg=cfg.model, trainer=None)
+            model_with_custom_connector._save_restore_connector = MySaveRestoreConnector()
+            model_with_custom_connector.save_to(save_path)
+
+            true_save_path = os.path.join(tmpdir, 'save_custom_XYZ.nemo')
+            assert os.path.exists(true_save_path)
+
+            my_connector = MySaveRestoreConnector()
+
+            with tempfile.TemporaryDirectory() as config_tmpdir:
+                my_connector._unpack_nemo_file(true_save_path, out_folder=config_tmpdir, extract_config_only=True)
+                current_files = list(os.listdir(config_tmpdir))
+
+                assert len(current_files) == 1  # only config file should have been extracted, no pytorch params
+                config_filepath = current_files[0]
+                assert config_filepath.endswith(".yaml")
+
+    @pytest.mark.unit
     def test_mock_model_model_collision(self):
         # The usual pipeline is working just fine.
         cfg = _mock_model_config()

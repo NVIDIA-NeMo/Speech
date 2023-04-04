@@ -123,7 +123,9 @@ class DecEmb(torch.nn.Module, Exportable):
             .float()
         )
 
-        zeros = torch.zeros((decoder_mems.shape[0], 6, dec_out.shape[1], decoder_mems.shape[-1])).to(self.device)
+        zeros = torch.zeros(
+            (decoder_mems.shape[0], self.decoder.num_layers, dec_out.shape[1], decoder_mems.shape[-1])
+        ).to(self.device)
 
         return torch.cat((zeros, dec_out.unsqueeze(1)), dim=1)
 
@@ -142,7 +144,9 @@ class DecEmb(torch.nn.Module, Exportable):
         dec_attn_mask = torch.tensor([[1 for _ in range(dec_len)]]).to(self.device)
 
         # constant decoder_mems as placeholder for now
-        decoder_mems = torch.zeros([max_batch, 7, seq_len, max_dim], dtype=torch.float32).to(self.device)
+        decoder_mems = torch.zeros([max_batch, self.decoder.num_layers + 1, seq_len, max_dim], dtype=torch.float32).to(
+            self.device
+        )
 
         # input_ids, decoder_mask, encoder_mask, encoder_embeddings
 

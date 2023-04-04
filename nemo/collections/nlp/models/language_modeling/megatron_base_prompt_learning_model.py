@@ -312,7 +312,8 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
 
         if self.first_stage_of_pipeline():
             if self.virtual_prompt_style == VirtualPromptStyle.P_TUNING:
-                self.init_prompt_encoder()
+                if self.prompt_encoder is None:
+                    self.init_prompt_encoder()
             self.freeze_existing_word_embeddings()
 
         self.setup_training_data()

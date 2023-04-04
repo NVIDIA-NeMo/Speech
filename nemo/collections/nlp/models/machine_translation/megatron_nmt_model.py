@@ -896,11 +896,21 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
 
     @property
     def encoder(self):
-        return EncEmb(self.enc_dec_model.encoder_embedding, self.enc_dec_model.enc_dec_model.encoder, self.device)
+        return EncEmb(
+            self.enc_dec_model.encoder_embedding,
+            self.enc_dec_model.enc_dec_model.encoder,
+            self.enc_dec_model.encoder_relative_position_embedding,
+            self.device,
+        )
 
     @property
     def decoder(self):
-        return DecEmb(self.enc_dec_model.decoder_embedding, self.enc_dec_model.enc_dec_model.decoder, self.device)
+        return DecEmb(
+            self.enc_dec_model.decoder_embedding,
+            self.enc_dec_model.enc_dec_model.decoder,
+            self.enc_dec_model.decoder_relative_position_embedding,
+            self.device,
+        )
 
     @property
     def log_softmax(self):

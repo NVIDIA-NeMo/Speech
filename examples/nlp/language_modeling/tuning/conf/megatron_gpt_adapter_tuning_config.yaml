@@ -36,7 +36,15 @@ exp_manager:
     save_nemo_on_train_end: True # Should be false, correct prompt learning model file is saved at model.nemo_path set below, 
     filename: 'megatron_gpt_adapter_tuning--{val_loss:.3f}-{step}'
     model_parallel_size: ${model.tensor_model_parallel_size}
+    always_save_nemo: True
     save_best_model: True
+  create_early_stopping_callback: True
+  early_stopping_callback_params:
+    monitor: "val_loss"
+    mode: "min"
+    min_delta: 0.001
+    patience: 10
+    verbose: True
 
 model:
   seed: 1234
@@ -104,6 +112,14 @@ model:
     truncate_field: null
     answer_only_loss: True
     answer_field: "target"
+  
+  - taskname: "taskname"
+    prompt_template: "{prompt} {completion}"
+    total_virtual_tokens: 0
+    virtual_token_splits: []
+    truncate_field: "prompt"
+    answer_only_loss: True
+    answer_field: "completion"
 
   adapter_tuning:
     type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'

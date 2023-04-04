@@ -17,6 +17,7 @@ import os
 
 import soundfile as sf
 import torch
+from tqdm.auto import tqdm
 from utils.constants import BLANK_TOKEN, SPACE_TOKEN, V_NEGATIVE_NUM
 
 
@@ -140,8 +141,10 @@ def get_y_and_boundary_info_for_utt(text, model, separator):
     segments = [seg.strip() for seg in segments]
 
     if hasattr(model, 'tokenizer'):
-
-        BLANK_ID = len(model.decoder.vocabulary)  # TODO: check
+        if hasattr(model, 'blank_id'):
+            BLANK_ID = model.blank_id
+        else:
+            BLANK_ID = len(model.decoder.vocabulary)  # TODO: check
 
         y_token_ids_with_blanks = [BLANK_ID]
         token_info = [{"text": BLANK_TOKEN, "s_start": 0, "s_end": 0,}]
@@ -283,7 +286,14 @@ def get_y_and_boundary_info_for_utt(text, model, separator):
         raise RuntimeError("Cannot get tokens of this model.")
 
 
-def get_batch_tensors_and_boundary_info(manifest_lines_batch, model, separator, align_using_pred_text):
+def get_batch_tensors_and_boundary_info(
+    manifest_lines_batch,
+    model,
+    separator,
+    align_using_pred_text,
+    use_buffered_chunked_streaming=False,
+    buffered_chunk_params={},
+):
     """
     Returns:
         log_probs, y, T, U (y and U are s.t. every other token is a blank) - these are the tensors we will need
@@ -299,16 +309,28 @@ def get_batch_tensors_and_boundary_info(manifest_lines_batch, model, separator, 
     # and (optionally) the predicted ASR text from the hypotheses
     audio_filepaths_batch = [line["audio_filepath"] for line in manifest_lines_batch]
     B = len(audio_filepaths_batch)
-    with torch.no_grad():
-        hypotheses = model.transcribe(audio_filepaths_batch, return_hypotheses=True, batch_size=B)
-
     log_probs_list_batch = []
     T_list_batch = []
     pred_text_batch = []
-    for hypothesis in hypotheses:
-        log_probs_list_batch.append(hypothesis.y_sequence)
-        T_list_batch.append(hypothesis.y_sequence.shape[0])
-        pred_text_batch.append(hypothesis.text)
+
+    if not use_buffered_chunked_streaming:
+        with torch.no_grad():
+            hypotheses = model.transcribe(audio_filepaths_batch, return_hypotheses=True, batch_size=B)
+        for hypothesis in hypotheses:
+            log_probs_list_batch.append(hypothesis.y_sequence)
+            T_list_batch.append(hypothesis.y_sequence.shape[0])
+            pred_text_batch.append(hypothesis.text)
+    else:
+        delay = buffered_chunk_params["delay"]
+        model_stride_in_secs = buffered_chunk_params["model_stride_in_secs"]
+        tokens_per_chunk = buffered_chunk_params["tokens_per_chunk"]
+        for l in tqdm(audio_filepaths_batch, desc="Sample:"):
+            model.reset()
+            model.read_audio_file(l, delay, model_stride_in_secs)
+            hyp, logits = model.transcribe(tokens_per_chunk, delay, keep_logits=True)
+            log_probs_list_batch.append(logits)
+            T_list_batch.append(logits.shape[0])
+            pred_text_batch.append(hyp)
 
     # we loop over every line in the manifest that is in our current batch,
     # and record the y (list of tokens, including blanks), U (list of lengths of y) and

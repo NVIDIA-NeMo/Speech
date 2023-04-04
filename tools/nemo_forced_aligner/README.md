@@ -46,6 +46,12 @@ Call the `align.py` script, specifying the parameters as follows:
 
 * **[OPTIONAL]** `minimum_timestamp_duration`: a float indicating a minimum duration (in seconds) for timestamps in the CTM. If any line in the CTM has a duration lower than the `minimum_timestamp_duration`, it will be enlarged from the middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio file. Note that this may cause timestamps to overlap. (Default: 0, i.e. no modifications to predicted duration).
 
+* **[OPTIONAL]** `use_buffered_chunked_streaming`: a flag to indicate whether to do buffered chunk streaming. Notice only CTC models (e.g., stt_en_citrinet_1024_gamma_0_25)with `per_feature` preprocessor are supported. The below two params are needed if this option set to `True`.
+
+* **[OPTIONAL]** `chunk_len_in_secs`: the chunk size for buffered chunked streaming inference. Default is 1.6 seconds.
+
+* **[OPTIONAL]** `total_buffer_in_secs`: the buffer size for buffered chunked streaming inference. Default is 4.0 seconds.
+
 # Input manifest file format
 By default, NFA needs to be provided with a 'manifest' file where each line specifies the absolute "audio_filepath" and "text" of each utterance that you wish to produce alignments for, like the format below:
 ```json

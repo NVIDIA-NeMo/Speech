@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+import math
 import os
 from dataclasses import dataclass, is_dataclass
 from typing import Optional
@@ -29,10 +31,10 @@ from utils.make_output_files import make_ctm, make_new_manifest
 from utils.viterbi_decoding import viterbi_decoding
 
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchASR
 from nemo.collections.asr.parts.utils.transcribe_utils import setup_model
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-
 
 """
 Align the utterances in manifest_filepath. 
@@ -82,6 +84,16 @@ Arguments:
         line in the CTM has a duration lower than the `minimum_timestamp_duration`, it will be enlarged from the 
         middle outwards until it meets the minimum_timestamp_duration, or reaches the beginning or end of the audio 
         file. Note that this may cause timestamps to overlap.
+
+    use_buffered_infer: False, if set True, using streaming to do get the logits for alignment
+                        This flag is useful when aligning large audio file.
+                        However, currently the chunk streaming inference does not support batch inference,
+                        which means even you set batch_size > 1, it will only infer one by one instead of doing
+                        the whole batch inference together.
+    chunk_len_in_secs: float chunk length in seconds
+    total_buffer_in_secs: float  Length of buffer (chunk + left and right padding) in seconds
+    chunk_batch_size: int batch size for buffered chunk inference,
+                      which will cut one audio into segments and do inference on chunk_batch_size segments at a time
 """
 
 
@@ -103,6 +115,12 @@ class AlignmentConfig:
     remove_blank_tokens_from_ctm: bool = False
     minimum_timestamp_duration: float = 0
     audio_filepath_parts_in_utt_id: int = 1
+
+    # Buffered chunked streaming configs
+    use_buffered_chunked_streaming: bool = False
+    chunk_len_in_secs: float = 1.6
+    total_buffer_in_secs: float = 4.0
+    chunk_batch_size: int = 32
 
 
 @hydra_runner(config_name="AlignmentConfig", schema=AlignmentConfig)
@@ -194,6 +212,41 @@ def main(cfg: AlignmentConfig):
             "This may cause the alignments for some tokens/words/additional segments to be overlapping."
         )
 
+    buffered_chunk_params = {}
+    if cfg.use_buffered_chunked_streaming:
+        model_cfg = copy.deepcopy(model._cfg)
+
+        OmegaConf.set_struct(model_cfg.preprocessor, False)
+        # some changes for streaming scenario
+        model_cfg.preprocessor.dither = 0.0
+        model_cfg.preprocessor.pad_to = 0
+
+        if model_cfg.preprocessor.normalize != "per_feature":
+            logging.error(
+                "Only EncDecCTCModelBPE models trained with per_feature normalization are supported currently"
+            )
+        # Disable config overwriting
+        OmegaConf.set_struct(model_cfg.preprocessor, True)
+
+        feature_stride = model_cfg.preprocessor['window_stride']
+        model_stride_in_secs = feature_stride * cfg.model_downsample_factor
+        total_buffer = cfg.total_buffer_in_secs
+        chunk_len = float(cfg.chunk_len_in_secs)
+        tokens_per_chunk = math.ceil(chunk_len / model_stride_in_secs)
+        mid_delay = math.ceil((chunk_len + (total_buffer - chunk_len) / 2) / model_stride_in_secs)
+        logging.info(f"tokens_per_chunk is {tokens_per_chunk}, mid_delay is {mid_delay}")
+
+        model = FrameBatchASR(
+            asr_model=model,
+            frame_len=chunk_len,
+            total_buffer=cfg.total_buffer_in_secs,
+            batch_size=cfg.chunk_batch_size,
+        )
+        buffered_chunk_params = {
+            "delay": mid_delay,
+            "model_stride_in_secs": model_stride_in_secs,
+            "tokens_per_chunk": tokens_per_chunk,
+        }
     # get start and end line IDs of batches
     starts, ends = get_batch_starts_ends(cfg.manifest_filepath, cfg.batch_size)
 
@@ -217,7 +270,12 @@ def main(cfg: AlignmentConfig):
             segment_info_batch,
             pred_text_batch,
         ) = get_batch_tensors_and_boundary_info(
-            manifest_lines_batch, model, cfg.additional_ctm_grouping_separator, cfg.align_using_pred_text,
+            manifest_lines_batch,
+            model,
+            cfg.additional_ctm_grouping_separator,
+            cfg.align_using_pred_text,
+            cfg.use_buffered_chunked_streaming,
+            buffered_chunk_params,
         )
 
         if cfg.align_using_pred_text:

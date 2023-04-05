@@ -149,6 +149,37 @@ If you chose to work with the ``main`` branch, we recommend using `NVIDIA's PyTo
     -p 8888:8888 -p 6006:6006 --ulimit memlock=-1 --ulimit \
     stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:21.05-py3
 
+.. _mac-installation:
+
+Mac computers with Apple silicon
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To install NeMo on Mac with Apple M-Series GPU:
+
+- install `Homebrew <https://brew.sh>`_ package manager
+
+- create a new Conda environment
+
+- install PyTorch 2.0 or higher
+
+- run the following code:
+
+.. code-block:: shell
+
+    # install mecab using Homebrew, required for sacrebleu for NLP collection
+    brew install mecab
+
+    # install pynini using Conda, required for text normalization
+    conda install -c conda-forge pynini
+
+    # install Cython manually
+    pip install cython
+
+    # clone the repo and install in development mode
+    git clone https://github.com/NVIDIA/NeMo
+    cd NeMo
+    ./reinstall.sh
+
+
 
 `FAQ <https://github.com/NVIDIA/NeMo/discussions>`_
 ---------------------------------------------------

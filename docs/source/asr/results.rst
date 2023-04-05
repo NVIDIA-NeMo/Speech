@@ -103,6 +103,21 @@ Alternatively, you can change the attention model after loading a checkpoint:
         att_context_size=[64, 64]
     )
 
+
+Inference on Apple M-Series GPU
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+To perform inference on Apple Mac M-Series GPU (``mps`` PyTorch device), use PyTorch 2.0 or higher (see :ref:`mac-installation` section). Environment variable ``PYTORCH_ENABLE_MPS_FALLBACK=1`` should be set, since not all operations in PyTorch are currently implemented on ``mps`` device.
+
+If ``allow_mps=true`` flag is passed to ``speech_to_text_eval.py``, the ``mps`` device will be selected automatically.
+
+.. code-block:: python
+
+    PYTORCH_ENABLE_MPS_FALLBACK=1 python speech_to_text_eval.py \
+      (...other parameters...)  \
+      allow_mps=true
+
+
 Fine-tuning on Different Datasets
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

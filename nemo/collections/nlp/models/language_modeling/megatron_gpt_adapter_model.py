@@ -17,6 +17,8 @@
 # Adapted by: @adithyare
 
 
+import os
+
 import torch
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
@@ -34,6 +36,7 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     ParallelLinearAdapterConfig,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, model_utils
@@ -42,6 +45,15 @@ from nemo.utils import logging, model_utils
 class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(cfg.get('language_model_path')):
+            save_restore_connector.model_extracted_dir = cfg.get('language_model_path')
+        self.frozen_model_cfg = MegatronGPTModel.restore_from(
+            cfg.get('language_model_path'),
+            trainer=trainer,
+            return_config=True,
+            save_restore_connector=save_restore_connector,
+        )
         self.adapter_name_keys = []
 
     def forward(
@@ -246,9 +258,6 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
         ], "Adapter type should be 'linear_adapter' or 'parallel_adapter'"
 
         self.adapter_name_keys = [AdapterName.PRE_ATTN_ADAPTER, AdapterName.POST_ATTN_ADAPTER]
-        frozen_model_cfg = MegatronGPTModel.restore_from(
-            cfg.get('language_model_path'), trainer=trainer, return_config=True
-        )
         for _, layer in self.frozen_model.named_modules():
             if hasattr(layer, 'activations_checkpoint_method'):
                 layer.activations_checkpoint_method = (
@@ -259,7 +268,7 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
 
         if cfg.adapter_tuning.type == "parallel_adapter":
             adapter_cfg = ParallelLinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
+                in_features=self.frozen_model_cfg.hidden_size,
                 dim=cfg.adapter_tuning.adapter_dim,
                 norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
                 norm_type=cfg.adapter_tuning.get('norm_type', 'mixedfusedlayernorm'),
@@ -269,7 +278,7 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
             )
         else:
             adapter_cfg = LinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
+                in_features=self.frozen_model_cfg.hidden_size,
                 dim=cfg.adapter_tuning.adapter_dim,
                 norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
                 dropout=cfg.adapter_tuning.adapter_dropout,
@@ -306,9 +315,6 @@ class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
         self.adapter_name_keys = [AdapterName.KEY_INFUSED, AdapterName.VALUE_INFUSED, AdapterName.MLP_INFUSED]
-        frozen_model_cfg = MegatronGPTModel.restore_from(
-            cfg.get('language_model_path'), trainer=trainer, return_config=True
-        )
         for _, layer in self.frozen_model.named_modules():
             if hasattr(layer, 'activations_checkpoint_method'):
                 layer.activations_checkpoint_method = (
@@ -323,11 +329,13 @@ class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
                 for adapter_key in self.adapter_name_keys:
                     if adapter_key == AdapterName.MLP_INFUSED:
                         cfg = MLPInfusedAdapterConfig(
-                            in_features=frozen_model_cfg.ffn_hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                            in_features=self.frozen_model_cfg.ffn_hidden_size
+                            // self.frozen_model_cfg.tensor_model_parallel_size
                         )
                     elif adapter_key in [AdapterName.KEY_INFUSED, AdapterName.VALUE_INFUSED]:
                         cfg = InfusedAdapterConfig(
-                            in_features=frozen_model_cfg.hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                            in_features=self.frozen_model_cfg.hidden_size
+                            // self.frozen_model_cfg.tensor_model_parallel_size
                         )
                     else:
                         raise ValueError(f"Adapter Key {adapter_key} is unknown.")

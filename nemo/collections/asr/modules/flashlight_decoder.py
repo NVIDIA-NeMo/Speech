@@ -69,6 +69,12 @@ class _TokensWrapper:
         else:
             return self.reverse_map[token]
 
+    def text_to_tokens(self, text: str):
+        if self.tokenizer is not None:
+            return self.tokenizer.text_to_tokens(text)
+        else:
+            return list(text)
+
 
 class FlashLightKenLMBeamSearchDecoder(NeuralModule):
     '''
@@ -93,6 +99,7 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
         vocabulary: List[str],
         tokenizer: Optional[TokenizerSpec] = None,
         lexicon_path: Optional[str] = None,
+        boost_path: Optional[str] = None,
         beam_size: int = 32,
         beam_size_token: int = 32,
         beam_threshold: float = 25.0,
@@ -132,6 +139,19 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
             self.word_dict = create_word_dict(self.lexicon)
             self.unk_word = self.word_dict.get_index("<unk>")
 
+            # loads in the boosted words if given via a file
+            if boost_path is not None:
+                with open(boost_path, 'r', encoding='utf_8') as fr:
+                    boost_words = [line.strip().split('\t') for line in fr]
+                    boost_words = {w[0]: w[1] for w in boost_words}
+            else:
+                boost_words = {}
+
+            # add OOV boosted words to word_dict so it gets picked up in LM obj creation
+            for word in boost_words.keys():
+                if word not in self.lexicon:
+                    self.word_dict.add_entry(word)
+
             # loads in the kenlm binary and combines in with the dictionary object from the lexicon
             # this gives a mapping between each entry in the kenlm binary and its mapping to whatever
             # numeraire is used by the AM, which is explicitly mapped via the lexicon
@@ -148,7 +168,19 @@ class FlashLightKenLMBeamSearchDecoder(NeuralModule):
                     if self.tokenizer_wrapper.unk_id in spelling_idxs:
                         print(f'tokenizer has unknown id for word[ {word} ] {spelling} {spelling_idxs}', flush=True)
                         continue
-                    self.trie.insert(spelling_idxs, word_idx, score)
+                    self.trie.insert(
+                        spelling_idxs, word_idx, score if word not in boost_words else float(boost_words[word])
+                    )
+            # handle OOV boosted words
+            for word, boost in boost_words.items():
+                if word not in self.lexicon:
+                    word_idx = self.word_dict.get_index(word)
+                    spelling = self.tokenizer_wrapper.text_to_tokens(word)
+                    spelling_idxs = [self.tokenizer_wrapper.token_to_id(token) for token in spelling]
+                    if self.tokenizer_wrapper.unk_id in spelling_idxs:
+                        print(f'tokenizer has unknown id for word[ {word} ] {spelling} {spelling_idxs}', flush=True)
+                        continue
+                    self.trie.insert(spelling_idxs, word_idx, float(boost))
             self.trie.smear(SmearingMode.MAX)
 
             self.decoder_opts = LexiconDecoderOptions(

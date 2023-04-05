@@ -215,11 +215,11 @@ It supports several advanced features such as lexicon based / lexicon free decod
     @dataclass
     class FlashlightConfig:
         lexicon_path: Optional[str] = None
+        boost_path: Optional[str] = None
         beam_size_token: int = 16
         beam_threshold: float = 20.0
         unk_weight: float = -math.inf
         sil_weight: float = 0.0
-        unit_lm: bool = False
 
 .. code-block::
 
@@ -235,7 +235,6 @@ It supports several advanced features such as lexicon based / lexicon free decod
            decoding_strategy="flashlight" \
            decoding.beam.flashlight_cfg.beam_size_token = 32 \
            decoding.beam.flashlight_cfg.beam_threshold = 25.0
-
 
 PyCTCDecode (``pyctcdecode``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -393,3 +392,45 @@ parameter, the plot of WER% for different values of the parameter is also shown.
 
 It is recommended to first use the linear search for both parameters on a validation set by not providing any values for `--alpha` and `--beta`.
 Then check the WER curves and decide on the best values for each parameter. Finally, evaluate the best values on the test set.
+
+
+Word Boosting
+=============
+
+The Flashlight decoder supports word boosting during CTC decoding using a KenLM binary and corresponding lexicon. Word boosting only
+works in lexicon decoding mode, it does not work in lexicon-free mode. Word boosting allows one to bias the decoder for certain words,
+such that you can manually increase or decrease the probability of emitting certain words. This can be very helpful if you have certain
+uncommon or industry-specific words which you want to ensure transcribe correctly.
+
+For more information on word boosting, see `here <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/tutorials/asr-python-advanced-wordboosting.html>`__
+and `here <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/asr/asr-customizing.html#word-boosting>`__
+
+In order to use word boosting in Nemo, you need to create a simple tab-separated text file which contains each word to be boosted, followed by
+tab, and then the boosted score for that word.
+
+For example:
+
+.. code-block::
+
+    nvidia	40
+    geforce	50
+    riva	80
+    turing	30
+    badword	-100
+
+Positive scores boost words higher in the LM decoding step so they show up more frequently, whereas negative scores
+squelch words so they show up less frequently. The recommended range for the boost score is +/- 20 to 100.
+
+The boost file handles both in-vocabulary words and OOV words just fine, so you can specify both IV and OOV words with corresponding scores.
+
+You can then pass this file to your flashlight config object during decoding:
+
+.. code-block::
+
+    # Lexicon-based decoding
+    python eval_beamsearch_ngram.py ... \
+           decoding_strategy="flashlight" \
+           decoding.beam.flashlight_cfg.lexicon_path='/path/to/lexicon.lexicon' \
+           decoding.beam.flashlight_cfg.boost_path='/path/to/my_boost_file.boost' \
+           decoding.beam.flashlight_cfg.beam_size_token = 32 \
+           decoding.beam.flashlight_cfg.beam_threshold = 25.0

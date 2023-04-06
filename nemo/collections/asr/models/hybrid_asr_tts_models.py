@@ -339,9 +339,9 @@ class ASRWithTTSModel(ASRModel):
         """Test epoch end hook for ASR model"""
         return self.asr_model.multi_test_epoch_end(outputs=outputs, dataloader_idx=dataloader_idx)
 
-    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4) -> List[str]:
+    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4, verbose: bool = True) -> List[str]:
         """Transcribe audio data using ASR model"""
-        return self.asr_model.transcribe(paths2audio_files=paths2audio_files, batch_size=batch_size)
+        return self.asr_model.transcribe(paths2audio_files=paths2audio_files, batch_size=batch_size, verbose=verbose)
 
     def setup_multiple_validation_data(self, val_data_config: Union[DictConfig, Dict]):
         """Setup multiple validation data for ASR model"""

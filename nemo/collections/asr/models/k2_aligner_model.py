@@ -13,11 +13,13 @@
 # limitations under the License.
 
 import copy
+import os
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
+from tqdm.auto import tqdm
 
 from nemo.collections.asr.data.audio_to_ctm_dataset import FrameCtmUnit
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
@@ -536,7 +538,9 @@ class AlignerWrapperModel(ASRModel):
         return self._predict_impl(encoded, encoded_len, transcript, transcript_len, sample_id)
 
     @torch.no_grad()
-    def transcribe(self, manifest: List[str], batch_size: int = 4, num_workers: int = None,) -> List['FrameCtmUnit']:
+    def transcribe(
+        self, manifest: List[str], batch_size: int = 4, num_workers: int = None, verbose: bool = True,
+    ) -> List['FrameCtmUnit']:
         """
         Does alignment. Use this method for debugging and prototyping.
 
@@ -547,6 +551,7 @@ class AlignerWrapperModel(ASRModel):
             batch_size: (int) batch size to use during inference. \
         Bigger will result in better throughput performance but would use more memory.
             num_workers: (int) number of workers for DataLoader
+            verbose: (bool) whether to display tqdm progress bar
 
         Returns:
             A list of four: (label, start_frame, length, probability), called FrameCtmUnit, \
@@ -582,7 +587,7 @@ class AlignerWrapperModel(ASRModel):
                 'num_workers': num_workers,
             }
             temporary_datalayer = self._model._setup_transcribe_dataloader(config)
-            for test_batch in tqdm(temporary_datalayer, desc="Aligning"):
+            for test_batch in tqdm(temporary_datalayer, desc="Aligning", disable=not verbose):
                 test_batch[0] = test_batch[0].to(device)
                 test_batch[1] = test_batch[1].to(device)
                 hypotheses += [unit for i, unit in self.predict_step(test_batch, 0)]

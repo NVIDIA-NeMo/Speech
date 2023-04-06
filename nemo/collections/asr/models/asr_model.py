@@ -30,11 +30,12 @@ __all__ = ['ASRModel']
 
 class ASRModel(ModelPT, ABC):
     @abstractmethod
-    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4) -> List[str]:
+    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4, verbose: bool = True) -> List[str]:
         """
         Takes paths to audio files and returns text transcription
         Args:
             paths2audio_files: paths to audio fragment to be transcribed
+            verbose: (bool) whether to display tqdm progress bar
 
         Returns:
             transcription texts

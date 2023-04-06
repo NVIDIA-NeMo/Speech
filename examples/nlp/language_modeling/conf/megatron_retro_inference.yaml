@@ -19,9 +19,9 @@ trainer:
   precision: 16 # 16, 32, or bf16
 
 inference_batch_size: 2
-tensor_model_parallel_size: 1
-pipeline_model_parallel_size: 1
-pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
+tensor_model_parallel_size: -1
+pipeline_model_parallel_size: -1
+pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
 retro_model_file: null  # RETRO nemo file path
 
 use_predict_method: False  # whether to use the predict method

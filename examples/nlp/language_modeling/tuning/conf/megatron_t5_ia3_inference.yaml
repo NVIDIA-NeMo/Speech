@@ -24,9 +24,9 @@ data:
   global_batch_size: 4
   micro_batch_size: 4
   
-tensor_model_parallel_size: 1
-pipeline_model_parallel_size: 1
-pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
+tensor_model_parallel_size: -1
+pipeline_model_parallel_size: -1
+pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
 language_model_path: ??? # GPT nemo file path # used when starting from a .nemo file
 adapter_model_file: ??? # .nemo file saved during training (using megatron_gpt_adapter_tuning.py)
 pred_file_path: null # save predictions to this file

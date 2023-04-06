@@ -45,8 +45,8 @@ Usage:
             inference.tokens_to_generate=128 \
             inference.greedy=True \
             retro_model_file=path_to_retro_nemo_file \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             retrieval_service.faiss_devices='0' \
             retrieval_service.faiss_index=path_to_faiss_index \
             retrieval_service.retrieval_index=path_to_retrieval_dataset \
@@ -74,6 +74,16 @@ def main(cfg) -> None:
         model_cfg.sequence_parallel = False
         model_cfg.activations_checkpoint_granularity = None
         model_cfg.activations_checkpoint_method = None
+
+    if (
+        cfg.tensor_model_parallel_size < 0
+        or cfg.pipeline_model_parallel_size < 0
+        or cfg.get('pipeline_model_parallel_split_rank', -1) < 0
+    ):
+        with open_dict(cfg):
+            cfg.tensor_model_parallel_size = model_cfg.get('tensor_model_parallel_size', 1)
+            cfg.pipeline_model_parallel_size = model_cfg.get('pipeline_model_parallel_size', 1)
+            cfg.pipeline_model_parallel_split_rank = model_cfg.get('pipeline_model_parallel_split_rank', 0)
 
     model = MegatronRetrievalModel.restore_from(
         model_path, trainer=trainer, save_restore_connector=save_restore_connector, override_config_path=model_cfg,

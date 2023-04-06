@@ -11,9 +11,9 @@ data:
   global_batch_size: 8
   micro_batch_size: 8
   
-tensor_model_parallel_size: 1
-pipeline_model_parallel_size: 1
-pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model
+tensor_model_parallel_size: -1
+pipeline_model_parallel_size: -1
+pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
 language_model_path: ???  # path to a pretrained T5 nemo file 
 virtual_prompt_model_file: ??? # path to a MegatronT5PromptLearningModel nemo file
 pred_file_path: ??? # Path were all model predicitons will be written to a text file

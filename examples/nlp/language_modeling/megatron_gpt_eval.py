@@ -51,8 +51,8 @@ Usage:
             inference.add_BOS=True \
             trainer.devices=1 \
             trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             prompts=[prompt1,prompt2]
 
     b. run greedy inference from a PTL checkpoint file:
@@ -64,8 +64,8 @@ Usage:
             inference.add_BOS=True \
             trainer.devices=1 \
             trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             prompts=[prompt1,prompt2]
 
     c. run top_p inference from a nemo file:
@@ -78,8 +78,8 @@ Usage:
             inference.add_BOS=True \
             trainer.devices=1 \
             trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             prompts=[prompt1,prompt2]
 
     d. If you don't need to generate tokens and need model to compute logprobs:
@@ -88,8 +88,8 @@ Usage:
             inference.compute_logprob=True \
             trainer.devices=1 \
             trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             prompts=[text to get logprob]
 
     e. Launch the inference server
@@ -97,8 +97,8 @@ Usage:
             gpt_model_file=PATH_TO_MODEL \
             trainer.devices=1 \
             trainer.num_nodes=1 \
-            tensor_model_parallel_size=1 \
-            pipeline_model_parallel_size=1 \
+            tensor_model_parallel_size=-1 \
+            pipeline_model_parallel_size=-1 \
             server=True
         
         To send a request to the server, here is one example code:
@@ -157,6 +157,21 @@ def main(cfg) -> None:
 
     # trainer required for restoring model parallel models
     trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
+
+    if (
+        cfg.tensor_model_parallel_size < 0
+        or cfg.pipeline_model_parallel_size < 0
+        or cfg.get('pipeline_model_parallel_split_rank', -1) < 0
+    ):
+        model_config = MegatronGPTModel.restore_from(
+            restore_path=cfg.gpt_model_file, trainer=trainer, return_config=True,
+        )
+
+        with open_dict(cfg):
+            cfg.tensor_model_parallel_size = model_config.get('tensor_model_parallel_size', 1)
+            cfg.pipeline_model_parallel_size = model_config.get('pipeline_model_parallel_size', 1)
+            cfg.pipeline_model_parallel_split_rank = model_config.get('pipeline_model_parallel_split_rank', 0)
+
     assert (
         cfg.trainer.devices * cfg.trainer.num_nodes
         == cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size

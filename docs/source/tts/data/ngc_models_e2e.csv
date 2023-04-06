@@ -1,2 +1,3 @@
 Locale,Model Name,Dataset,Sampling Rate,#Spk,Phoneme Unit,Model Class,Overview,Checkpoint
 en-US,tts_en_lj_vits,LJSpeech,22050Hz,1,IPA,nemo.collections.tts.models.vits.VitsModel,`tts_en_lj_vits <https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_lj_vits>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_lj_vits/versions/1.13.0/files/vits_ljspeech_fp16_full.nemo``
+en-US,tts_en_hifitts_vits,HiFiTTS,44100Hz,10,IPA,nemo.collections.tts.models.vits.VitsModel,`tts_en_hifitts_vits <https://ngc.nvidia.com/catalog/models/nvidia:nemo:tts_en_hifitts_vits>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_hifitts_vits/versions/r1.15.0/files/vits_en_hifitts.nemo``

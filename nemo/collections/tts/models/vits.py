@@ -394,6 +394,13 @@ class VitsModel(TextToWaveform):
             class_=cls,
         )
         list_of_models.append(model)
+        model = PretrainedModelInfo(
+            pretrained_model_name="tts_en_hifitts_vits",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/tts_en_hifitts_vits/versions/r1.15.0/files/vits_en_hifitts.nemo",
+            description="This model is trained on HiFITTS sampled at 44100Hz with and can be used to generate male and female English voices with an American accent.",
+            class_=cls,
+        )
+        list_of_models.append(model)
         return list_of_models
 
     @typecheck(

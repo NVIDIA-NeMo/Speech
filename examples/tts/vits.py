@@ -14,7 +14,6 @@
 
 import pytorch_lightning as pl
 
-from nemo.collections.common.callbacks import LogEpochTimeCallback
 from nemo.collections.tts.models.vits import VitsModel
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
@@ -26,7 +25,7 @@ def main(cfg):
     exp_manager(trainer, cfg.get("exp_manager", None))
     model = VitsModel(cfg=cfg.model, trainer=trainer)
 
-    trainer.callbacks.extend([pl.callbacks.LearningRateMonitor(), LogEpochTimeCallback()])
+    trainer.callbacks.extend([pl.callbacks.LearningRateMonitor()])
     trainer.fit(model)
 
 

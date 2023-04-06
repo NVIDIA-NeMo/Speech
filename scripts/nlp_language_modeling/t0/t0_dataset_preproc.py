@@ -58,17 +58,20 @@ def _feature_config(shape, dtype):
     return tf.io.FixedLenFeature(shape, dtype)
 
 
-def remove_newline_and_detokenize(x, detokenizer):
-    x = re.sub(r'\\n+', ' ', x)
-    x = re.sub(r'\n+', ' ', x)
-    x = re.sub(r'\\r+', ' ', x)
-    x = re.sub(r'\r+', ' ', x)
+def remove_newline_and_detokenize(x, detokenizer, remove_newlines):
+    if remove_newlines:
+        x = re.sub(r'\\n+', ' ', x)
+        x = re.sub(r'\n+', ' ', x)
+        x = re.sub(r'\\r+', ' ', x)
+        x = re.sub(r'\r+', ' ', x)
     x = x.strip()
-    x = detokenizer.detokenize([x])
+    # NOTE: Moving the detokenizer inside this condition since sacremoses detokenize seems to remove \n as well.
+    if remove_newlines:
+        x = detokenizer.detokenize([x])
     return x
 
 
-def write_dataset_to_file(dataset, filename, detokenizer):
+def write_dataset_to_file(dataset, filename, detokenizer, remove_newlines):
     with open(filename, 'w') as f:
         for item in dataset:
             # NOTE: Although we do `.tolist()` here this is not actually a list. This is just to convert from a numpy to python object so we can check if it is True/False.
@@ -77,20 +80,24 @@ def write_dataset_to_file(dataset, filename, detokenizer):
                 continue
 
             item_object = {}
-            i = remove_newline_and_detokenize(item['inputs_pretokenized'].numpy().decode('utf-8'), detokenizer)
+            i = remove_newline_and_detokenize(
+                item['inputs_pretokenized'].numpy().decode('utf-8'), detokenizer, remove_newlines
+            )
             item_object['input'] = i
-            t = remove_newline_and_detokenize(item['targets_pretokenized'].numpy().decode('utf-8'), detokenizer)
+            t = remove_newline_and_detokenize(
+                item['targets_pretokenized'].numpy().decode('utf-8'), detokenizer, remove_newlines
+            )
             item_object['output'] = t
             if 'answer_choices' in item:
                 choices = [
-                    remove_newline_and_detokenize(x.decode('utf-8'), detokenizer)
+                    remove_newline_and_detokenize(x.decode('utf-8'), detokenizer, remove_newlines)
                     for x in item['answer_choices'].numpy().tolist()
                 ]
                 item_object['choices'] = choices
             f.write(json.dumps(item_object) + '\n')
 
 
-def write_train_val_test_dataset_to_file(file_name, folder_name, output_folder, detokenizer, split):
+def write_train_val_test_dataset_to_file(file_name, folder_name, output_folder, detokenizer, split, remove_newlines):
     ds = tf.data.TFRecordDataset(tf.io.gfile.glob([file_name]))
     fdict = _TASK_SPLITS_AND_FEATURES_DICT[folder_name]['features_dict']
     feature_description = {feat: _feature_config(**desc) for feat, desc in fdict.items()}
@@ -102,10 +109,10 @@ def write_train_val_test_dataset_to_file(file_name, folder_name, output_folder, 
         lambda x: {k: tf.cast(v, fdict[k]["dtype"]) for k, v in x.items()},
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     )
-    write_dataset_to_file(ds, os.path.join(output_folder, split, folder_name + '.jsonl'), detokenizer)
+    write_dataset_to_file(ds, os.path.join(output_folder, split, folder_name + '.jsonl'), detokenizer, remove_newlines)
 
 
-def process_folder(data_folder, folder_name, output_folder, detokenizer):
+def process_folder(data_folder, folder_name, output_folder, detokenizer, remove_newlines):
     if not os.path.isdir(os.path.join(data_folder, folder_name)):
         return
     print(f'Processing {folder_name}')
@@ -115,14 +122,20 @@ def process_folder(data_folder, folder_name, output_folder, detokenizer):
     if not os.path.exists(train_fname):
         print(f'Could not find {train_fname}')
         return
-    write_train_val_test_dataset_to_file(train_fname, folder_name, output_folder, detokenizer, 'train')
+    write_train_val_test_dataset_to_file(
+        train_fname, folder_name, output_folder, detokenizer, 'train', remove_newlines
+    )
     if os.path.exists(valid_fname):
-        write_train_val_test_dataset_to_file(valid_fname, folder_name, output_folder, detokenizer, 'val')
+        write_train_val_test_dataset_to_file(
+            valid_fname, folder_name, output_folder, detokenizer, 'val', remove_newlines
+        )
     if os.path.exists(test_fname):
-        write_train_val_test_dataset_to_file(test_fname, folder_name, output_folder, detokenizer, 'test')
+        write_train_val_test_dataset_to_file(
+            test_fname, folder_name, output_folder, detokenizer, 'test', remove_newlines
+        )
 
 
-def process_all_folders(data_folder, output_folder):
+def process_all_folders(data_folder, output_folder, remove_newlines):
     detokenizer = MosesDetokenizer('en')
     assert os.path.isdir(data_folder)
     if not os.path.exists(output_folder):
@@ -137,7 +150,7 @@ def process_all_folders(data_folder, output_folder):
     print(f'Found {len(os.listdir(data_folder))} folders to process ...')
     pool_args = []
     for folder_name in os.listdir(data_folder):
-        pool_args.append((data_folder, folder_name, output_folder, detokenizer))
+        pool_args.append((data_folder, folder_name, output_folder, detokenizer, remove_newlines))
     pool = Pool()
     pool.starmap(process_folder, pool_args)
 
@@ -156,5 +169,8 @@ if __name__ == '__main__':
         required=True,
         help="Path to output folder where JSONL files will be written.",
     )
+    parser.add_argument(
+        "--remove_newlines", action="store_true", help="Whether to remove newlines from the input and output.",
+    )
     args = parser.parse_args()
-    process_all_folders(args.p3_dataset_path, args.jsonl_output_path)
+    process_all_folders(args.p3_dataset_path, args.jsonl_output_path, args.remove_newlines)

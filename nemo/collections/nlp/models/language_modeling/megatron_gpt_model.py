@@ -706,6 +706,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
 
+        return averaged_loss
+
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 

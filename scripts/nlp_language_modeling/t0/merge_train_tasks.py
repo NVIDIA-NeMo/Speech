@@ -96,6 +96,12 @@ def merge_train_folder(train_data_folder, merged_train_data_folder):
                         for line in f:
                             line = json.loads(line)
                             line['task_name_with_prompt'] = fname
+                            if line['input'].strip() == '':
+                                print(f'WARNING: Empty input for {fname}')
+                                continue
+                            if line['output'].strip() == '':
+                                print(f'WARNING: Empty output for {fname}')
+                                continue
                             fptrs[task].write(json.dumps(line) + '\n')
             if not found:
                 print(f'WARNING: Could not find task for {fname}')

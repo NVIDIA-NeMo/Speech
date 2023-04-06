@@ -8,4 +8,5 @@ Sphinx>=4.0,<6,!=5.0.0
 sphinx-book-theme
 sphinx-copybutton
 sphinxcontrib-bibtex
+sphinxext-opengraph
 wrapt

@@ -227,7 +227,7 @@ class GPTSFTDataset(Dataset):
         input_ids = processed_example['input_ids']
         answer_start_idx = processed_example['answer_start_idx']
         if self.answer_only_loss:
-            loss_mask = [float(idx > answer_start_idx) for idx in range(len(input_ids))]
+            loss_mask = [float(idx >= answer_start_idx) for idx in range(len(input_ids))]
         else:
             loss_mask = [1.0] * len(input_ids)
 

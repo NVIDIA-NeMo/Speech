@@ -280,7 +280,7 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
             dataloaders.append(model._validation_dl)
 
         model._validation_dl = dataloaders
-        if isinstance(ds_values[0], (dict, DictConfig)):
+        if len(ds_values) > 0 and isinstance(ds_values[0], (dict, DictConfig)):
             # using the name of each of the nested dataset
             model._validation_names = [ds.name for ds in ds_values]
         else:
@@ -359,7 +359,7 @@ def resolve_test_dataloaders(model: 'ModelPT'):
             dataloaders.append(model._test_dl)
 
         model._test_dl = dataloaders
-        if isinstance(ds_values[0], (dict, DictConfig)):
+        if len(ds_values) > 0 and isinstance(ds_values[0], (dict, DictConfig)):
             # using the name of each of the nested dataset
             model._test_names = [ds.name for ds in ds_values]
         else:

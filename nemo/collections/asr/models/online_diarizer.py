@@ -127,6 +127,7 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
             sparse_search_volume=clustering_params.sparse_search_volume,
             history_buffer_size=clustering_params.history_buffer_size,
             current_buffer_size=clustering_params.current_buffer_size,
+            cuda=self.cuda,
         )
         self.history_n = clustering_params.history_buffer_size
         self.current_n = clustering_params.current_buffer_size
@@ -349,7 +350,6 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
             # Convert global index global_stt_idx to buffer index buffer_stt_idx
             segment_indexes_mat = torch.tensor(self.segment_indexes[scale_idx])
             buffer_stt_idx = torch.where(segment_indexes_mat == global_stt_idx)[0][0]
-
             self.memory_segment_ranges[scale_idx][global_stt_idx:] = deepcopy(
                 self.segment_range_ts[scale_idx][buffer_stt_idx:]
             )
@@ -431,10 +431,11 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
 
         if end_idx > stt_idx:
             torch_embs = self._run_embedding_extractor(audio_signal[stt_idx:end_idx])
-            if embeddings is None:
+            if embeddings is None or embeddings.shape[0] == 0:
                 embeddings = torch_embs
             else:
                 embeddings = torch.vstack((embeddings[:stt_idx, :], torch_embs))
+
         elif end_idx < stt_idx:
             embeddings = embeddings[: len(segment_ranges)]
 
@@ -473,16 +474,10 @@ class OnlineClusteringDiarizer(ClusteringDiarizer):
             device=device,
         )
 
-        concat_emb, add_new = self.online_clus.get_reduced_mat(
-            emb_in=curr_emb, base_segment_indexes=self.segment_indexes[self.base_scale_index]
+        base_segment_indexes = torch.tensor(self.segment_indexes[self.base_scale_index]).to(curr_emb.device)
+        merged_clus_labels = self.online_clus.forward_infer(
+            curr_emb=curr_emb, base_segment_indexes=base_segment_indexes, frame_index=self.frame_index, cuda=cuda,
         )
-
-        # Perform online version of clustering with history-concatenated embedding vectors
-        Y_concat = self.online_clus.forward_infer(emb=concat_emb, frame_index=self.frame_index, cuda=cuda,)
-
-        # Match the permutation of the newly obtained speaker labels and the previous labels
-        merged_clus_labels = self.online_clus.match_labels(Y_concat, add_new)
-
         # Update history data
         for scale_idx, (window, shift) in self.multiscale_args_dict['scale_dict'].items():
             cluster_label_hyp = self.save_history_data(scale_idx, merged_clus_labels, self.online_clus.is_online)

@@ -444,6 +444,11 @@ class MockGPTDataset(Dataset):
         self.length = num_samples
         self.seed = seed
 
+        self.attention_mask = torch.tril(torch.ones((self.seq_length, self.seq_length))).unsqueeze(0)
+        self.attention_mask = self.attention_mask < 0.5
+        self.loss_mask = torch.ones(self.seq_length, dtype=torch.float)
+        self.position_ids = torch.arange(self.seq_length, dtype=torch.int64)
+
     def __len__(self):
         return self.length
 
@@ -457,18 +462,12 @@ class MockGPTDataset(Dataset):
         tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
         labels = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64))
 
-        with torch.no_grad():
-            attention_mask = torch.tril(torch.ones((self.seq_length, self.seq_length))).unsqueeze(0)
-            attention_mask = attention_mask < 0.5
-            loss_mask = torch.ones(self.seq_length, dtype=torch.float)
-            position_ids = torch.arange(self.seq_length, dtype=torch.int64)
-
         return {
             'tokens': tokens,
             'labels': labels,
-            'attention_mask': attention_mask,
-            'loss_mask': loss_mask,
-            'position_ids': position_ids,
+            'attention_mask': self.attention_mask,
+            'loss_mask': self.loss_mask,
+            'position_ids': self.position_ids,
         }
 
 

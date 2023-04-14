@@ -285,6 +285,31 @@ You may find the example config files of Conformer variant of such hybrid models
 with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hybrid_transducer_ctc/conformer_hybrid_transducer_ctc_bpe.yaml``.
 
 
+.. _Conformer-HAT_model:
+
+Conformer-HAT (Hybrid Autoregressive Transducer)
+------------------------------------------------
+Conformer HAT model (do not confuse it with Hybrid-Transducer-CTC) is a modification of Conformer-Transducer model based on `Google paper <https://arxiv.org/abs/2003.07705>`_.
+The main idea is to separate labels and blank score predictions, which allows to estimate the internal LM probabilities during decoding.
+When external LM is available for inference, the internal LM can be subtracted from HAT model prediction in beamsearch decoding to improve external LM efficiency.
+It can be helpful in the case of text-only adaptation for new domains.
+
+The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_ 
+class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJiont" class.
+
+    .. image:: images/hat.png
+        :align: center
+        :alt: HAT Model
+        :scale: 50%
+
+You may find the example config files of Conformer-HAT model with character-based encoding at
+``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_char.yaml`` and
+with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hat/conformer_hat_bpe.yaml``.
+
+By default, the decoding for HAT model works in the same way as for Conformer-Transducer.
+In the case of external ngram LM fusion you can use ``<NeMo_git_root>/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py``.
+To enable HAT internal LM subtraction set ``hat_subtract_ilm=True`` and find more appropriate couple of ``beam_alpha`` and ``hat_ilm_weight`` values in terms of the best recognition accuracy.
+
 References
 ----------
 

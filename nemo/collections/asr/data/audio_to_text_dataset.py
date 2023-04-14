@@ -518,16 +518,14 @@ def get_audio_to_text_char_dataset_from_config(
                 f"Concat dataset requires `concat_sampling_technique` but it was not provided. Config: {config}"
             )
             return None
-
-        if not 'concat_sampling_probabilities' in config:
-            logging.warning(
-                f"Concat dataset requires `concat_sampling_probabilities` list but it was not provided. Config: {config}"
-            )
-            return None
-        else:
-            if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
-                logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
+        if config['concat_sampling_technique'] == 'random':
+            if not 'concat_sampling_probabilities' in config:
+                logging.warning(f"Concat dataset requires `concat_sampling_probabilities` list. Config: {config}")
                 return None
+            else:
+                if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
+                    logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
+                    return None
 
     shuffle = config['shuffle']
     device = 'gpu' if torch.cuda.is_available() else 'cpu'
@@ -618,15 +616,14 @@ def get_audio_to_text_bpe_dataset_from_config(
             )
             return None
 
-        if not 'concat_sampling_probabilities' in config:
-            logging.warning(
-                f"Concat dataset requires `concat_sampling_probabilities` list but it was not provided. Config: {config}"
-            )
-            return None
-        else:
-            if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
-                logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
+        if config['concat_sampling_technique'] == 'random':
+            if not 'concat_sampling_probabilities' in config:
+                logging.warning(f"Concat dataset requires `concat_sampling_probabilities` list. Config: {config}")
                 return None
+            else:
+                if not isclose(sum(config['concat_sampling_probabilities']), 1, abs_tol=1e-6):
+                    logging.warning(f"`concat_sampling_probabilities` need to sum to 1. Config: {config}")
+                    return None
 
     shuffle = config['shuffle']
     device = 'gpu' if torch.cuda.is_available() else 'cpu'

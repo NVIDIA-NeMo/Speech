@@ -17,11 +17,13 @@ from itertools import permutations
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 from pyannote.core import Segment, Timeline
 from pyannote.metrics.diarization import DiarizationErrorRate
-from scipy.optimize import linear_sum_assignment
 
 from nemo.collections.asr.metrics.wer import word_error_rate
+from nemo.collections.asr.parts.utils.optimization_utils import linear_sum_assignment
+
 from nemo.utils import logging
 
 __all__ = [
@@ -30,6 +32,83 @@ __all__ = [
     'calculate_session_cpWER_bruteforce',
     'concat_perm_word_error_rate',
 ]
+
+
+def get_partial_ref_labels(pred_labels: List[str], ref_labels: List[str]) -> List[str]:
+    """
+    For evaluation of online diarization performance, generate partial reference labels 
+    from the last prediction time.
+
+    Args:
+        pred_labels (list[str]): list of partial prediction labels
+        ref_labels (list[str]): list of full reference labels 
+
+    Returns:
+        ref_labels_out (list[str]): list of partial reference labels
+    """
+    # If there is no reference, return empty list
+    if len(ref_labels) == 0:
+        return []
+
+    # If there is no prediction, set the last prediction time to 0
+    if len(pred_labels) == 0:
+        last_pred_time = 0
+    else:
+        # The lastest prediction time in the prediction labels
+        last_pred_time = max([float(labels.split()[1]) for labels in pred_labels])
+    ref_labels_out = []
+    for label in ref_labels:
+        start, end, speaker = label.split()
+        start, end = float(start), float(end)
+        # If the current [start, end] interval extends beyond the end of hypothesis time stamps
+        if start < last_pred_time:
+            end_time = min(end, last_pred_time)
+            label = f"{start} {end_time} {speaker}"
+            ref_labels_out.append(label)
+        # Other cases where the current [start, end] interval is before the last prediction time
+        elif end < last_pred_time:
+            ref_labels_out.append(label)
+    return ref_labels_out
+
+
+def get_online_DER_stats(
+    DER: float,
+    CER: float,
+    FA: float,
+    MISS: float,
+    diar_eval_count: int,
+    der_stat_dict: Dict[str, float],
+    deci: int = 3,
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    For evaluation of online diarization performance, add cumulative, average, and maximum DER/CER.
+
+    Args:
+        DER (float): Diarization Error Rate from the start to the current point 
+        CER (float): Confusion Error Rate from the start to the current point 
+        FA (float): False Alarm from the start to the current point
+        MISS (float): Miss rate from the start to the current point
+        diar_eval_count (int): Number of evaluation sessions
+        der_stat_dict (dict): Dictionary containing cumulative, average, and maximum DER/CER
+        deci (int): Number of decimal places to round
+
+    Returns:
+        der_dict (dict): Dictionary containing DER, CER, FA, and MISS
+        der_stat_dict (dict): Dictionary containing cumulative, average, and maximum DER/CER
+    """
+    der_dict = {
+        "DER": round(100 * DER, deci),
+        "CER": round(100 * CER, deci),
+        "FA": round(100 * FA, deci),
+        "MISS": round(100 * MISS, deci),
+    }
+    der_stat_dict['cum_DER'] += DER
+    der_stat_dict['cum_CER'] += CER
+    der_stat_dict['avg_DER'] = round(100 * der_stat_dict['cum_DER'] / diar_eval_count, deci)
+    der_stat_dict['avg_CER'] = round(100 * der_stat_dict['cum_CER'] / diar_eval_count, deci)
+    der_stat_dict['max_DER'] = round(max(der_dict['DER'], der_stat_dict['max_DER']), deci)
+    der_stat_dict['max_CER'] = round(max(der_dict['CER'], der_stat_dict['max_CER']), deci)
+    return der_dict, der_stat_dict
 
 
 def uem_timeline_from_file(uem_file, uniq_name=''):
@@ -292,7 +371,7 @@ def calculate_session_cpWER(
 
         # Make a cost matrix and calculate a linear sum assignment on the cost matrix.
         # Row is hypothesis index and column is reference index
-        cost_wer = np.array(lsa_wer_list).reshape([len(spk_hypothesis), len(spk_reference)])
+        cost_wer = torch.tensor(lsa_wer_list).reshape([len(spk_hypothesis), len(spk_reference)])
         row_hyp_ind, col_ref_ind = linear_sum_assignment(cost_wer)
 
         # In case where hypothesis has more speakers, add words from residual speakers

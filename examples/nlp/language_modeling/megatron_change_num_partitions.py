@@ -31,6 +31,7 @@ from nemo.utils.app_state import AppState
 """
 Usage:
 
+### Tensor Parallelism and Pipeline Parallelism conversion ###
 
 # Megatron GPT
 python megatron_change_num_partitions.py \
@@ -53,8 +54,16 @@ python megatron_change_num_partitions.py \
     --target_pipeline_model_parallel_size=1 \
     --target_pipeline_model_parallel_split_rank=0 \
     --precision=bf16
+    
+### Only Tensor Parallelism conversion ###
 
-# NOTE: When converting large models, always ensure that you pre-extract the nemo model and then only perform conversion
+To the above commands, add the following argument: `--tp_conversion_only` 
+
+# Note: This requires that the pipeline_model_parallel_size and tgt_pipeline_model_parallel_size is set to 1.
+
+### Large Models conversion ###
+
+When converting large models, ** always ** ensure that you pre-extract the nemo model and then only perform conversion
 
 $ mkdir "unpacked_nemo_file"
 $ tar -xvf "<path to nemo file>" -C "<absolute path to pwd>/unpacked_nemo_file/"
@@ -62,6 +71,8 @@ $ tar -xvf "<path to nemo file>" -C "<absolute path to pwd>/unpacked_nemo_file/"
 python megatron_change_num_partitions.py \
     ...
     --model_extracted_dir="<Absolute path to pwd>/unpacked_nemo_file/"
+
+### Model Classes ###
 
 # NOTE: Conversion of other model types. 
 # Default model type is MegatronGPTModel, if you want another model you need to pass classpath of the model
@@ -87,6 +98,10 @@ Passing --tensor_model_parallel_size=-1 or --pipeline_model_parallel_size=-1 wil
 model config.
 
 """
+
+#################
+### Utilities ###
+#################
 
 
 def compute_tp_splits(
@@ -148,6 +163,317 @@ def compute_tp_splits(
     return split
 
 
+def compute_tp_merge(idx, name, param, partitions_pp):
+    """
+    Function to compute the partition merge required for tensor-parallelism.
+
+    Args:
+        idx:  The index used to select the parameter in the current pipeline partition.
+        name:
+        param: The parameter to be merged under TP 1 PP 1.
+        partitions_pp: List of all TP partitions of the flattened parameter of the current model for a given PP rank
+            (TP X PP Y). Indexed as partitions_pp[tp_rank][idx].
+
+    Returns:
+        The concatenated parameter for TP 1 PP 1.
+    """
+    # Logic from original TP rank change
+    if param.shape == partitions_pp[0][idx].shape:
+        concated = partitions_pp[0][idx].data
+    elif param.shape[0] == partitions_pp[0][idx].shape[0]:
+        concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=-1)
+    else:
+        concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=0)
+    if concated.shape != param.shape:
+        logging.info(
+            f"Warning: Shape mismatch for parameter {name} required shape: {param.shape}, merged shape: {concated.shape}. Narrowing to match required size."
+        )
+        if concated.shape[1:] == param.shape[1:]:
+            concated = torch.narrow(concated, 0, 0, param.shape[0])
+        elif concated.shape[:-1] == param.shape[:-1]:
+            concated = torch.narrow(concated, -1, 0, param.shape[-1])
+        else:
+            raise RuntimeError(
+                f"Can not handle parameter {name}, required shape: {param.shape}, merged shape: {concated.shape}."
+            )
+    return concated
+
+
+def write_tp_pp_split(model, splits, app_state, tp_size, pp_rank, write_path):
+    """
+    Function to write the given TP PP split to NeMo File.
+
+    Save each of the TP ranks in reverse order
+    This is done so that the last PP rank will save the last TP rank only after all other PP TP ranks are saved
+    The final rank will then save a new NeMo file with all other ranks inside.
+
+    Args:
+        model: The model corresponding to the current TP PP split. Contains partial parameters.
+        splits: Nested List of tensors containing the TP splits of the current model given current PP rank.
+            Indexed as splits[idx][tp_rank].
+        app_state: AppState object.
+        tp_size:  The global tensor-parallel size of the final model.
+        pp_rank: The local pipeline parallel rank of the final model.
+        write_path: The path to save the NeMo file.
+    """
+    for tp_rank in range(tp_size - 1, -1, -1):
+        app_state.pipeline_model_parallel_rank = pp_rank
+        app_state.tensor_model_parallel_rank = tp_rank
+
+        idx = 0
+        for name, param in model.named_parameters():
+            split_val = splits[idx][tp_rank].clone()
+
+            if param.shape != split_val.shape:
+                logging.info(
+                    f"Warning: Shape mismatch for parameter {name} required shape: {param.shape}, split shape: {split_val.shape}. Padding to match required size."
+                )
+
+                if split_val.shape[1:] == param.shape[1:]:
+                    pad = [0, 0] * len(split_val.shape)
+                    pad[-1] = param.shape[0] - split_val.shape[0]
+                    split_val = torch.nn.functional.pad(split_val, pad, 'constant')
+                elif split_val.shape[:-1] == param.shape[:-1]:
+                    pad = [0, param.shape[-1] - split_val.shape[-1]]
+                    split_val = torch.nn.functional.pad(split_val, pad, 'constant')
+                else:
+                    raise RuntimeError(
+                        f"Can not handle parameter {name}, required shape: {param.shape}, split shape: {split_val.shape}."
+                    )
+
+            param.data = split_val
+            idx += 1
+
+        if write_path is not None:
+            logging.info(f"Writing pp rank {pp_rank} tp rank {tp_rank} to file {write_path}")
+            model.save_to(write_path)
+
+
+def debug_log_split_param_diff(idx, param, param_name, partitions):
+    # Log some useful comparison of tensors that are being mapped.
+    # Note that the global param index for layers and modules may be different but the shapes
+    # and semantics of the layer should match.
+    logging.debug(f"Index: {idx} Model Params : {param_name} - {param.shape}")
+    logging.debug(f"Index: {idx} Global params: {partitions[1][idx]} - {partitions[0][idx].shape}")
+
+
+################
+### Handlers ###
+################
+
+
+class GPTHandler:
+    def __init__(self, megatron_legacy: bool):
+        self.duplicate_gpt_word_embedding_offset = 0
+        self.untied_gpt_embedding = False
+        self.megatron_legacy = megatron_legacy
+
+    def compute_split_index(self, model, idx, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        if pp_rank == (pp_size - 1) and hasattr(model, 'model') and hasattr(model.model, 'word_embeddings'):
+            # duplicate embedding copy (tied weights)
+            self.duplicate_gpt_word_embedding_offset = 1
+
+        if model.cfg.get('share_embeddings_and_output_weights', True) is False:
+            self.untied_gpt_embedding = True
+
+        if self.duplicate_gpt_word_embedding_offset > 0:
+            logging.info(f"GPT duplicate_gpt_word_embedding_offset: {self.duplicate_gpt_word_embedding_offset}")
+
+        return idx + self.duplicate_gpt_word_embedding_offset
+
+    def compute_splits(self, model, partitions, idx, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        splits = []
+
+        # This is the PP X TP Y model with partial parameters present in correct order.
+        # We need to extract the parameters from the global map in reverse order to fill in the
+        # parameters of this model in forward order.
+        for param_name, param in model.named_parameters():
+
+            # Since we are moving forward, we may reach the end of the global map
+            # but GPT has an additional word embedding as its last parameter
+            # Therefore we check for this, and reset the index to the parameter of the PP 0 TP 0 rank
+            # which holds the parameters of the embedding.
+            if idx == (len(partitions[0])) and self.duplicate_gpt_word_embedding_offset > 0:
+                logging.info("Found duplicate embedding copy for GPT model, resetting index")
+                idx = 0  # reset idx parameter to 0 if we have duplicate embedding copy
+
+            debug_log_split_param_diff(idx, param, param_name, partitions)
+
+            # Tensor Parallel Splitting
+            split = compute_tp_splits(
+                param_name, param, partitions, idx, tp_size, pp_size, pp_rank, pp_split_rank, self.megatron_legacy
+            )
+
+            splits.append(split)
+            idx += 1
+
+        return idx, splits
+
+    def compute_split_offset(self, offset_diff, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        # GPT offset correction
+        if not self.untied_gpt_embedding and pp_size > 1 and pp_rank == (pp_size - 1) and pp_split_rank == 0:
+            offset_diff += 1
+
+        return offset_diff
+
+
+class T5Handler:
+    def __init__(self, megatron_legacy: bool):
+        self.shared_enc_dec_embeddings = False
+        self.shared_enc_dec_embeddings_intermediate = False
+        self.enc_dec_share_token_embeddings_count = 0
+        self.intermediate_shared_embedding_location = -1
+        self.megatron_legacy = megatron_legacy
+
+    def compute_split_index(self, model, idx, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        final_idx = idx
+
+        # Special case for T5 models - where the embeddings are shared between encoder and decoder
+        # and the rank of decoder split is arbitrary.
+        # Megatron T5 check for pipeline_model_parallel_split_rank in order to inject encoder embeddings
+        self.shared_enc_dec_embeddings = (
+            pp_split_rank > 0 and pp_split_rank == pp_rank and model.cfg.get('share_token_embeddings', True)
+        )
+        # If embedding sharing is active, both vocab and position embeddings are shared
+        if self.shared_enc_dec_embeddings:
+            self.enc_dec_share_token_embeddings_count = 2
+        else:
+            self.enc_dec_share_token_embeddings_count = 0
+
+        # Start to calculate new idx
+        final_idx = final_idx + self.enc_dec_share_token_embeddings_count
+
+        # Special case for T5 models - where the embeddings are shared between encoder and decoder
+        # For all decoder ranks which are not the pp_split_rank, we need to inject the vocab embeddings only at
+        # an intermediate location of the model (usually second last location).
+        # Megatron T5 check for pipeline_model_parallel_split_rank in order to inject encoder embeddings
+        # when the pipeline_model_parallel_split_rank is not the last PP rank
+        self.shared_enc_dec_embeddings_intermediate = (
+            pp_split_rank > 0
+            and pp_split_rank < pp_size
+            and hasattr(model, 'enc_dec_model')
+            and hasattr(model.enc_dec_model, 'word_embeddings')
+        )
+
+        if self.shared_enc_dec_embeddings_intermediate:
+            # Loop until we get the location of this tensor
+            self.intermediate_shared_embedding_location = -1
+            for param_name, param in model.named_parameters():  # special case for T5
+                if param_name == 'enc_dec_model.word_embeddings.weight':
+                    self.intermediate_shared_embedding_location += 1
+                    break
+                self.intermediate_shared_embedding_location += 1
+        else:
+            self.intermediate_shared_embedding_location = -1
+
+        # Re-evaluate the intermediate shared embedding flag
+        self.shared_enc_dec_embeddings_intermediate = self.shared_enc_dec_embeddings_intermediate and (
+            self.intermediate_shared_embedding_location >= 0
+        )
+        # If module is present, add a module offset to the index
+        if self.shared_enc_dec_embeddings_intermediate:
+            final_idx += 1
+
+        if self.enc_dec_share_token_embeddings_count:
+            logging.info(f"EncDec share_token_embeddings_count: {self.enc_dec_share_token_embeddings_count}")
+        if self.shared_enc_dec_embeddings_intermediate:
+            logging.info(
+                f"EncDec share_enc_dec_embeddings_intermediate: {self.intermediate_shared_embedding_location}"
+            )
+
+        return final_idx
+
+    def compute_splits(self, model, partitions, idx, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        splits = []
+
+        # Backup index when EncDec models reset the index to fill in the first embedding matrices (when pp split rank == pp rank)
+        computed_index = idx
+
+        # This is the PP X TP Y model with partial parameters present in correct order.
+        # We need to extract the parameters from the global map in reverse order to fill in the
+        # parameters of this model in forward order.
+        for param_name, param in model.named_parameters():
+
+            # Since we are moving forward, we may reach the end of the global map
+            # but T5 has an additional word embedding as its first two parameter when pp split rank == pp rank
+            # Therefore we check for this, and update the index to the parameter of the PP 0 TP 0 rank
+            # which holds the parameters of the embedding.
+            if self.enc_dec_share_token_embeddings_count:
+                logging.info("EncDec models decoder shares embedding with encoder, resetting index")
+                idx = (
+                    2 - self.enc_dec_share_token_embeddings_count
+                )  # 0th index is vocab embedding, 1 is pos embedding, 2 is embedding count
+
+            # Since we are moving forward, we may reach the end of the global map
+            # but T5 has an additional word embedding as randomly located in the decoder when
+            # when pp rank > pp_split_rank.
+            # Therefore we check for this, and skip the parameter of the current TP X PP Y module
+            # and fill this parameter later.
+            if self.shared_enc_dec_embeddings_intermediate and param_name == 'enc_dec_model.word_embeddings.weight':
+                logging.info(
+                    "EncDec models decoder shares embedding with encoder in intermediate pos, skipping module for later update"
+                )
+                continue
+
+            debug_log_split_param_diff(idx, param, param_name, partitions)
+
+            # Tensor Parallel Splitting
+            split = compute_tp_splits(
+                param_name, param, partitions, idx, tp_size, pp_size, pp_rank, pp_split_rank, self.megatron_legacy
+            )
+
+            splits.append(split)
+            idx += 1
+
+            # When pp split rank is equal to current pp rank, we need to first inject the encoder embeddings
+            # and then reset the index to the originally computed index
+            if self.enc_dec_share_token_embeddings_count > 0:
+                if self.enc_dec_share_token_embeddings_count - 1 == 0:
+                    idx = computed_index
+
+                self.enc_dec_share_token_embeddings_count -= 1
+
+        # Inject the EncDec shared embeddings intermediate tensor
+        # at one random location in the decoder of this TP PP rank.
+        # Note that usually it is the second last tensor, but to avoid specific index we search for it
+        # again.
+        if self.shared_enc_dec_embeddings_intermediate:
+            for param_name, param in model.named_parameters():
+                if param_name == 'enc_dec_model.word_embeddings.weight':
+                    logging.info("Found intermediate shared embedding, injecting")
+                    split = compute_tp_splits(
+                        param_name,
+                        param,
+                        partitions,
+                        0,
+                        tp_size,
+                        pp_size,
+                        pp_rank,
+                        pp_split_rank,
+                        self.megatron_legacy,
+                    )
+                    splits.insert(self.intermediate_shared_embedding_location, split)
+                    break
+
+        return idx, splits
+
+    def compute_split_offset(self, offset_diff, tp_rank, pp_rank, pp_split_rank, tp_size, pp_size):
+        # T5 offset correction for shared embedding when pp split rank == pp rank
+        if self.shared_enc_dec_embeddings:
+            offset_diff += 2
+
+        # T5 offset correction for intermediate shared embedding when pp rank > pp split rank
+        if self.shared_enc_dec_embeddings_intermediate:
+            offset_diff += 1
+
+        return offset_diff
+
+
+##################
+### Converters ###
+##################
+
+
 def merge_partition(model, partitions: Dict[int, List[List[torch.Tensor]]], write_path: str = None):
     # Extract the pp_rank and number of modules per tp rank in each pp rank
     pp_ranks = list(partitions.keys())
@@ -207,26 +533,10 @@ def merge_partition(model, partitions: Dict[int, List[List[torch.Tensor]]], writ
             f"Partition Params: {[p[idx].shape for p in partitions_pp]}"
         )
 
-        # Logic from original TP rank change
-        if param.shape == partitions_pp[0][idx].shape:
-            concated = partitions_pp[0][idx].data
-        elif param.shape[0] == partitions_pp[0][idx].shape[0]:
-            concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=-1)
-        else:
-            concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=0)
+        # Original TP rank change logic
+        concated = compute_tp_merge(idx, name, param, partitions_pp)
 
-        if concated.shape != param.shape:
-            logging.info(
-                f"Warning: Shape mismatch for parameter {name} required shape: {param.shape}, merged shape: {concated.shape}. Narrowing to match required size."
-            )
-            if concated.shape[1:] == param.shape[1:]:
-                concated = torch.narrow(concated, 0, 0, param.shape[0])
-            elif concated.shape[:-1] == param.shape[:-1]:
-                concated = torch.narrow(concated, -1, 0, param.shape[-1])
-            else:
-                raise RuntimeError(
-                    f"Can not handle parameter {name}, required shape: {param.shape}, merged shape: {concated.shape}."
-                )
+        # Update the model parameter with the merged tensor
         param.data = concated
         idx += 1
         global_idx += 1
@@ -279,162 +589,30 @@ def split_partition(
 
     # Special case for GPT models - whose last PP TP rank has a duplicate embedding tensor
 
-    # Megatron GPT check for final PP rank duplicated embeddings
-    duplicate_gpt_word_embedding_offset = 0
-    untied_gpt_embedding = False
-
     if 'gpt' in model.cfg.target.lower():
         logging.info("Splitting GPT model")
-        if pp_rank == (pp_size - 1) and hasattr(model, 'model') and hasattr(model.model, 'word_embeddings'):
-            # duplicate embedding copy (tied weights)
-            duplicate_gpt_word_embedding_offset = 1
+        handler = GPTHandler(megatron_legacy=megatron_legacy)
 
-        if model.cfg.get('share_embeddings_and_output_weights', True) is False:
-            untied_gpt_embedding = True
+    elif 't5' in model.cfg.target.lower():
+        logging.info("Splitting T5 model")
+        handler = T5Handler(megatron_legacy=megatron_legacy)
 
-    idx += duplicate_gpt_word_embedding_offset  # add duplicate embedding offset to index
-
-    # Special case for T5 models - where the embeddings are shared between encoder and decoder
-    # and the rank of decoder split is arbitrary.
-    # Megatron T5 check for pipeline_model_parallel_split_rank in order to inject encoder embeddings
-    shared_enc_dec_embeddings = (
-        pp_split_rank > 0 and pp_split_rank == pp_rank and model.cfg.get('share_token_embeddings', True)
-    )
-    # If embedding sharing is active, both vocab and position embeddings are shared
-    if shared_enc_dec_embeddings:
-        enc_dec_share_token_embeddings_count = 2
     else:
-        enc_dec_share_token_embeddings_count = 0
-    idx += enc_dec_share_token_embeddings_count
+        raise ValueError(f"Unsupported model for Pipeline Parallelism change - {model.cfg.target}")
 
-    # Special case for T5 models - where the embeddings are shared between encoder and decoder
-    # For all decoder ranks which are not the pp_split_rank, we need to inject the vocab embeddings only at
-    # an intermediate location of the model (usually second last location).
-    # Megatron T5 check for pipeline_model_parallel_split_rank in order to inject encoder embeddings
-    # when the pipeline_model_parallel_split_rank is not the last PP rank
-    shared_enc_dec_embeddings_intermediate = (
-        pp_split_rank > 0
-        and pp_split_rank < pp_size
-        and hasattr(model, 'enc_dec_model')
-        and hasattr(model.enc_dec_model, 'word_embeddings')
-    )
-
-    if shared_enc_dec_embeddings_intermediate:
-        # Loop until we get the location of this tensor
-        intermediate_shared_embedding_location = -1
-        for param_name, param in model.named_parameters():  # special case for T5
-            if param_name == 'enc_dec_model.word_embeddings.weight':
-                intermediate_shared_embedding_location += 1
-                break
-            intermediate_shared_embedding_location += 1
-    else:
-        intermediate_shared_embedding_location = -1
-
-    # Re-evaluate the intermediate shared embedding flag
-    shared_enc_dec_embeddings_intermediate = shared_enc_dec_embeddings_intermediate and (
-        intermediate_shared_embedding_location >= 0
-    )
-    # If module is present, add a module offset to the index
-    if shared_enc_dec_embeddings_intermediate:
-        idx += 1
+    idx = handler.compute_split_index(model, idx, 0, pp_rank, pp_split_rank, tp_size, pp_size)
 
     # Print some debug info
     logging.info(f"Start Layer Idx: {idx} Number of layers in current rank: {num_params} Offset: {offset}")
-    if duplicate_gpt_word_embedding_offset > 0:
-        logging.info(f"GPT duplicate_gpt_word_embedding_offset: {duplicate_gpt_word_embedding_offset}")
-    if enc_dec_share_token_embeddings_count:
-        logging.info(f"EncDec share_token_embeddings_count: {enc_dec_share_token_embeddings_count}")
-    if shared_enc_dec_embeddings_intermediate:
-        logging.info(f"EncDec share_enc_dec_embeddings_intermediate: {intermediate_shared_embedding_location}")
     logging.info("\n")
 
-    splits = []
-
-    # Backup index when EncDec models reset the index to fill in the first embedding matrices (when pp split rank == pp rank)
-    computed_index = idx
-
-    # This is the PP X TP Y model with partial parameters present in correct order.
-    # We need to extract the parameters from the global map in reverse order to fill in the
-    # parameters of this model in forward order.
-    for param_name, param in model.named_parameters():
-
-        # Since we are moving forward, we may reach the end of the global map
-        # but GPT has an additional word embedding as its last parameter
-        # Therefore we check for this, and reset the index to the parameter of the PP 0 TP 0 rank
-        # which holds the parameters of the embedding.
-        if idx == (len(partitions[0])) and duplicate_gpt_word_embedding_offset > 0:
-            logging.info("Found duplicate embedding copy for GPT model, resetting index")
-            idx = 0  # reset idx parameter to 0 if we have duplicate embedding copy
-
-        # Since we are moving forward, we may reach the end of the global map
-        # but T5 has an additional word embedding as its first two parameter when pp split rank == pp rank
-        # Therefore we check for this, and update the index to the parameter of the PP 0 TP 0 rank
-        # which holds the parameters of the embedding.
-        if enc_dec_share_token_embeddings_count:
-            logging.info("EncDec models decoder shares embedding with encoder, resetting index")
-            idx = (
-                2 - enc_dec_share_token_embeddings_count
-            )  # 0th index is vocab embedding, 1 is pos embedding, 2 is embedding count
-
-        # Since we are moving forward, we may reach the end of the global map
-        # but T5 has an additional word embedding as randomly located in the decoder when
-        # when pp rank > pp_split_rank.
-        # Therefore we check for this, and skip the parameter of the current TP X PP Y module
-        # and fill this parameter later.
-        if shared_enc_dec_embeddings_intermediate and param_name == 'enc_dec_model.word_embeddings.weight':
-            logging.info(
-                "EncDec models decoder shares embedding with encoder in intermediate pos, skipping module for later update"
-            )
-            continue
-
-        # Log some useful comparison of tensors that are being mapped.
-        # Note that the global param index for layers and modules may be different but the shapes
-        # and semantics of the layer should match.
-        logging.debug(f"Index: {idx} Model Params : {param_name} - {param.shape}")
-        logging.debug(f"Index: {idx} Global params: {partitions[1][idx]} - {partitions[0][idx].shape}")
-
-        # Tensor Parallel Splitting
-        split = compute_tp_splits(
-            param_name, param, partitions, idx, tp_size, pp_size, pp_rank, pp_split_rank, megatron_legacy
-        )
-
-        splits.append(split)
-        idx += 1
-
-        # When pp split rank is equal to current pp rank, we need to first inject the encoder embeddings
-        # and then reset the index to the originally computed index
-        if enc_dec_share_token_embeddings_count > 0:
-            if enc_dec_share_token_embeddings_count - 1 == 0:
-                idx = computed_index
-
-            enc_dec_share_token_embeddings_count -= 1
-
-    # Inject the EncDec shared embeddings intermediate tensor
-    # at one random location in the decoder of this TP PP rank.
-    # Note that usually it is the second last tensor, but to avoid specific index we search for it
-    # again.
-    if shared_enc_dec_embeddings_intermediate:
-        for param_name, param in model.named_parameters():
-            if param_name == 'enc_dec_model.word_embeddings.weight':
-                logging.info("Found intermediate shared embedding, injecting")
-                split = compute_tp_splits(
-                    param_name, param, partitions, 0, tp_size, pp_size, pp_rank, pp_split_rank, megatron_legacy
-                )
-                splits.insert(intermediate_shared_embedding_location, split)
-                break
+    # Split the model's parameters according to TP PP ranks
+    idx, splits = handler.compute_splits(model, partitions, idx, 0, pp_rank, pp_split_rank, tp_size, pp_size)
 
     # Compute the new offset for the next PP rank in reverse order
     # Add 1 to offset to account for last PP rank's duplicated Embedding
     offset_diff = offset - num_params
-    # GPT offset correction
-    if not untied_gpt_embedding and pp_size > 1 and pp_rank == (pp_size - 1) and pp_split_rank == 0:
-        offset_diff += 1
-    # T5 offset correction for shared embedding when pp split rank == pp rank
-    if shared_enc_dec_embeddings:
-        offset_diff += 2
-    # T5 offset correction for intermediate shared embedding when pp rank > pp split rank
-    if shared_enc_dec_embeddings_intermediate:
-        offset_diff += 1
+    offset_diff = handler.compute_split_offset(offset_diff, 0, pp_rank, pp_split_rank, tp_size, pp_size)
 
     # Finalize the new offset
     new_offset = offset_diff
@@ -442,39 +620,50 @@ def split_partition(
     # Save each of the TP ranks in reverse order
     # This is done so that the last PP rank will save the last TP rank only after all other PP TP ranks are saved
     # The final rank will then save a new NeMo file with all other ranks inside.
-    for tp_rank in range(tp_size - 1, -1, -1):
-        app_state.pipeline_model_parallel_rank = pp_rank
-        app_state.tensor_model_parallel_rank = tp_rank
-
-        idx = 0
-        for name, param in model.named_parameters():
-            split_val = splits[idx][tp_rank].clone()
-
-            if param.shape != split_val.shape:
-                logging.info(
-                    f"Warning: Shape mismatch for parameter {name} required shape: {param.shape}, split shape: {split_val.shape}. Padding to match required size."
-                )
-
-                if split_val.shape[1:] == param.shape[1:]:
-                    pad = [0, 0] * len(split_val.shape)
-                    pad[-1] = param.shape[0] - split_val.shape[0]
-                    split_val = torch.nn.functional.pad(split_val, pad, 'constant')
-                elif split_val.shape[:-1] == param.shape[:-1]:
-                    pad = [0, param.shape[-1] - split_val.shape[-1]]
-                    split_val = torch.nn.functional.pad(split_val, pad, 'constant')
-                else:
-                    raise RuntimeError(
-                        f"Can not handle parameter {name}, required shape: {param.shape}, split shape: {split_val.shape}."
-                    )
-
-            param.data = split_val
-            idx += 1
-
-        if write_path is not None:
-            logging.info(f"Writing pp rank {pp_rank} tp rank {tp_rank} to file {write_path}")
-            model.save_to(write_path)
+    write_tp_pp_split(model, splits, app_state, tp_size, pp_rank, write_path)
 
     return new_offset
+
+
+def split_tp_partition_only(model, partitions, tp_size, write_path=None, megatron_legacy=False):
+    if len(partitions) != 2:
+        raise ValueError(
+            "Can only split partitions of model with TP=1. For partitions of models with TP>1, merge first."
+        )
+
+    if tp_size < 1:
+        raise ValueError("TP size must to be >= 1.")
+
+    app_state = AppState()
+    app_state.data_parallel_rank = 0
+    app_state.pipeline_model_parallel_size = 1
+    app_state.tensor_model_parallel_size = tp_size
+    app_state.model_parallel_size = app_state.pipeline_model_parallel_size * app_state.tensor_model_parallel_size
+
+    app_state.pipeline_model_parallel_rank = 0
+    app_state.tensor_model_parallel_rank = tp_size - 1
+
+    idx = 0
+    splits = []
+    for param_name, param in model.named_parameters():
+        split = compute_tp_splits(
+            param_name,
+            param,
+            partitions,
+            idx,
+            tp_size,
+            pp_size=1,
+            pp_rank=0,
+            pp_split_rank=0,
+            megatron_legacy=megatron_legacy,
+        )
+        splits.append(split)
+        idx += 1
+
+    # Save each of the TP ranks in reverse order
+    # This is done so that the last PP rank will save the last TP rank only after all other PP TP ranks are saved
+    # The final rank will then save a new NeMo file with all other ranks inside.
+    write_tp_pp_split(model, splits, app_state, tp_size, pp_rank=0, write_path=write_path)
 
 
 def main():
@@ -521,7 +710,8 @@ def main():
         default=None,
         help="Path to the tokenizer model path if your model uses a tokenizer model as an artifact. This is needed if your model uses a sentencepiece tokenizer.",
     )
-    parser.add_argument('--model_extracted_dir', type=str, default=None, help='Path to extracted model directory')
+    parser.add_argument('--tp_conversion_only', action='store_true', help='Only convert TP model to TP model')
+    parser.add_argument('--model_extracted_dir', type=str, default=None, help='Path to pre-extracted model directory')
 
     args = parser.parse_args()
 
@@ -571,6 +761,25 @@ def main():
 
         tp_size = model_config_internal.get('tensor_model_parallel_size', 1)
         pp_size = model_config_internal.get('pipeline_model_parallel_size', 1)
+
+    # Check if TP conversion only
+    tp_conversion_only = args.tp_conversion_only
+    if tp_conversion_only:
+        logging.info("Converting TP model to TP model only")
+
+        if pp_size > 1:
+            raise ValueError("Provided `--tp_conversion_only` but `--pipeline_model_parallel_size` > 1")
+
+        if tgt_pp_size > 1:
+            raise ValueError("Provided `--tp_conversion_only` but `--target_pipeline_model_parallel_size` > 1")
+
+        if pipeline_model_parallel_split_rank > 0:
+            raise ValueError("Provided `--tp_conversion_only` but `--target_pipeline_model_parallel_split_rank` > 0")
+
+        # Force PP size to 1
+        pp_size = 1
+        tgt_pp_size = 1
+        pipeline_model_parallel_split_rank = 0
 
     app_state = AppState()
     app_state.data_parallel_rank = 0
@@ -807,6 +1016,13 @@ def main():
             logging.info(f"Remaining layer offset for parameters: {global_offset}")
             logging.info("\n")
 
+            # Special case for TP conversion only mode
+            if tp_conversion_only:
+                logging.info(f"Skipping PP split due to flag `--tp_conversion_only`")
+
+                split_tp_partition_only(model, global_params, tgt_tp_size, args.target_file, args.megatron_legacy)
+                break
+
             global_offset = split_partition(
                 model,
                 global_params,
@@ -823,13 +1039,13 @@ def main():
             os.environ.pop(NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, None)
 
         # Check if invalid global offset - after all PP splits, global offset should be -1
-        if global_offset < -1:
+        if global_offset < -1 and not tp_conversion_only:
             raise ValueError(
                 f"Invalid global offset {global_offset} found for global rank {app_state.global_rank} "
                 f"and local rank {app_state.local_rank}. Should be -1 if all parameters have been assigned. "
                 f"Currently, seems some parameters were duplicated."
             )
-        elif global_offset > -1:
+        elif global_offset > -1 and not tp_conversion_only:
             logging.error("\n")
             logging.error("!" * 80)
             logging.error("Error: Some parameters were not correctly added to model partitions.")

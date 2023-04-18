@@ -7,7 +7,7 @@ name: FastPitch
 train_dataset: ???
 validation_datasets: ???
 sup_data_path: ???
-sup_data_types: [ "align_prior_matrix", "pitch", "speaker_id"]
+sup_data_types: [ "align_prior_matrix", "pitch", "speaker_id", "reference_audio"]
 
 # Default values from librosa.pyin
 pitch_fmin: 65.40639132514966
@@ -35,10 +35,8 @@ model:
   learn_alignment: true
   bin_loss_warmup_epochs: 100
   
-  n_speakers: 1
   max_token_duration: 75
   symbols_embedding_dim: 384
-  speaker_embedding_dim: 384
   pitch_embedding_kernel_size: 3
     
   pitch_fmin: ${pitch_fmin}
@@ -247,6 +245,28 @@ model:
     dropout: 0.1
     n_layers: 2
     condition_types: [ "add", "layernorm" ] # options: [ "add", "cat", "layernorm" ]
+
+  speaker_encoder:
+    _target_: nemo.collections.tts.modules.submodules.SpeakerEncoder
+    lookup_module:
+      _target_: nemo.collections.tts.modules.submodules.SpeakerLookupTable
+      n_speakers: ???
+      embedding_dim: ${model.symbols_embedding_dim}
+    gst_module:
+      _target_: nemo.collections.tts.modules.submodules.GlobalStyleToken
+      gst_size: ${model.symbols_embedding_dim}
+      n_style_token: 10
+      n_style_attn_head: 4
+      reference_encoder:
+        _target_: nemo.collections.tts.modules.submodules.ReferenceEncoder
+        n_mels: ${model.n_mel_channels}
+        cnn_filters: [32, 32, 64, 64, 128, 128] 
+        dropout: 0.2
+        gru_hidden: ${model.symbols_embedding_dim}
+        kernel_size: 3
+        stride: 2
+        padding: 1
+        bias: true
 
   optim:
     name: adamw

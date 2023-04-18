@@ -174,6 +174,11 @@ parser.add_argument(
         "and it must be filled out by the user."
     ),
 )
+parser.add_argument(
+    "--no_shard_manifests",
+    action='store_true',
+    help="Do not write sharded manifests along with the aggregated manifest.",
+)
 parser.add_argument('--workers', type=int, default=1, help='Number of worker processes')
 args = parser.parse_args()
 
@@ -186,6 +191,7 @@ class ASRTarredDatasetConfig:
     min_duration: Optional[float] = None
     shuffle_seed: Optional[int] = None
     sort_in_shards: bool = True
+    shard_manifests: bool = True
     keep_files_together: bool = False
 
 
@@ -322,6 +328,19 @@ class ASRTarredDatasetBuilder:
                 for i, (start_idx, end_idx) in enumerate(zip(start_indices, end_indices))
             )
 
+        if config.shard_manifests:
+            sharded_manifests_dir = target_dir + '/sharded_manifests'
+            if not os.path.exists(sharded_manifests_dir):
+                os.makedirs(sharded_manifests_dir)
+
+            for manifest in new_entries_list:
+                shard_id = manifest[0]['shard_id']
+                new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
+                with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
+                    for entry in manifest:
+                        json.dump(entry, m2)
+                        m2.write('\n')
+
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
         del new_entries_list
@@ -330,7 +349,7 @@ class ASRTarredDatasetBuilder:
 
         # Write manifest
         new_manifest_path = os.path.join(target_dir, 'tarred_audio_manifest.json')
-        with open(new_manifest_path, 'w') as m2:
+        with open(new_manifest_path, 'w', encoding='utf-8') as m2:
             for entry in new_entries:
                 json.dump(entry, m2)
                 m2.write('\n')
@@ -467,6 +486,19 @@ class ASRTarredDatasetBuilder:
                 for i, (start_idx, end_idx, shard_idx) in enumerate(zip(start_indices, end_indices, shard_indices))
             )
 
+        if config.shard_manifests:
+            sharded_manifests_dir = target_dir + '/sharded_manifests'
+            if not os.path.exists(sharded_manifests_dir):
+                os.makedirs(sharded_manifests_dir)
+
+            for manifest in new_entries_list:
+                shard_id = manifest[0]['shard_id']
+                new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
+                with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
+                    for entry in manifest:
+                        json.dump(entry, m2)
+                        m2.write('\n')
+
         # Flatten the list of list of entries to a list of entries
         new_entries = [sample for manifest in new_entries_list for sample in manifest]
         del new_entries_list
@@ -480,7 +512,7 @@ class ASRTarredDatasetBuilder:
         print("Total number of entries in manifest :", len(base_entries) + len(new_entries))
 
         new_manifest_path = os.path.join(target_dir, f'tarred_audio_manifest_version_{new_version}.json')
-        with open(new_manifest_path, 'w') as m2:
+        with open(new_manifest_path, 'w', encoding='utf-8') as m2:
             # First write all the entries of base manifest
             for entry in base_entries:
                 json.dump(entry, m2)
@@ -523,7 +555,7 @@ class ASRTarredDatasetBuilder:
         total_duration = 0.0
         filtered_entries = []
         filtered_duration = 0.0
-        with open(manifest_path, 'r') as m:
+        with open(manifest_path, 'r', encoding='utf-8') as m:
             for line in m:
                 entry = json.loads(line)
                 if (config.max_duration is None or entry['duration'] < config.max_duration) and (
@@ -626,6 +658,8 @@ def main():
 def create_tar_datasets(min_duration: float, max_duration: float, target_dir: str):
     builder = ASRTarredDatasetBuilder()
 
+    shard_manifests = False if args.no_shard_manifests else True
+
     if args.write_metadata:
         metadata = ASRTarredDatasetMetadata()
         dataset_cfg = ASRTarredDatasetConfig(
@@ -635,6 +669,7 @@ def create_tar_datasets(min_duration: float, max_duration: float, target_dir: st
             min_duration=min_duration,
             shuffle_seed=args.shuffle_seed,
             sort_in_shards=args.sort_in_shards,
+            shard_manifests=shard_manifests,
             keep_files_together=args.keep_files_together,
         )
         metadata.dataset_config = dataset_cfg
@@ -655,6 +690,7 @@ def create_tar_datasets(min_duration: float, max_duration: float, target_dir: st
             min_duration=min_duration,
             shuffle_seed=args.shuffle_seed,
             sort_in_shards=args.sort_in_shards,
+            shard_manifests=shard_manifests,
             keep_files_together=args.keep_files_together,
         )
         builder.configure(config)
@@ -682,6 +718,7 @@ def create_tar_datasets(min_duration: float, max_duration: float, target_dir: st
         metadata.dataset_config.shuffle = args.shuffle
         metadata.dataset_config.shuffle_seed = args.shuffle_seed
         metadata.dataset_config.sort_in_shards = args.sort_in_shards
+        metadata.dataset_config.shard_manifests = shard_manifests
 
         builder.configure(metadata.dataset_config)
 

@@ -19,7 +19,7 @@ import braceexpand
 import torch
 import webdataset as wd
 
-from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_audio_filepaths
+from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_sharded_filepaths
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
 from nemo.collections.common.parts.preprocessing import collections
 from nemo.core.classes import Dataset, IterableDataset
@@ -560,8 +560,8 @@ class _TarredAudioLabelDataset(IterableDataset):
         for idx in range(len(self.labels[:5])):
             logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
 
-        audio_tar_filepaths = expand_audio_filepaths(
-            audio_tar_filepaths=audio_tar_filepaths,
+        audio_tar_filepaths = expand_sharded_filepaths(
+            sharded_filepaths=audio_tar_filepaths,
             shard_strategy=shard_strategy,
             world_size=world_size,
             global_rank=global_rank,

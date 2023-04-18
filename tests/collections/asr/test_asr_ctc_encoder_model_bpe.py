@@ -291,6 +291,7 @@ class TestEncDecCTCModel:
             'pin_memory',
             'drop_last',
             'tarred_shard_strategy',
+            'shard_manifests',
             'shuffle_n',
             'parser',
             'normalize',

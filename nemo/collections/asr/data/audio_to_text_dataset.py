@@ -346,6 +346,9 @@ def get_tarred_dataset(
     ):
         if len(tarred_audio_filepath) == 1:
             tarred_audio_filepath = tarred_audio_filepath[0]
+        if len(manifest_filepath) == 1:
+            manifest_filepath = manifest_filepath[0]
+
         if tokenizer is None:
             dataset = audio_to_text.TarredAudioToCharDataset(
                 audio_tar_filepaths=tarred_audio_filepath,
@@ -363,6 +366,7 @@ def get_tarred_dataset(
                 trim=config.get('trim_silence', False),
                 parser=config.get('parser', 'en'),
                 shard_strategy=config.get('tarred_shard_strategy', 'scatter'),
+                shard_manifests=config.get('shard_manifests', False),
                 global_rank=global_rank,
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),
@@ -381,6 +385,7 @@ def get_tarred_dataset(
                 trim=config.get('trim_silence', False),
                 use_start_end_token=config.get('use_start_end_token', True),
                 shard_strategy=config.get('tarred_shard_strategy', 'scatter'),
+                shard_manifests=config.get('shard_manifests', False),
                 global_rank=global_rank,
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),

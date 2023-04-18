@@ -171,31 +171,32 @@ class ASRManifestProcessor:
         return t, tl
 
 
-def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size: int, global_rank: int):
+def expand_sharded_filepaths(sharded_filepaths, shard_strategy: str, world_size: int, global_rank: int):
     valid_shard_strategies = ['scatter', 'replicate']
     if shard_strategy not in valid_shard_strategies:
         raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
 
-    if isinstance(audio_tar_filepaths, str):
+    if isinstance(sharded_filepaths, str):
         # Replace '(' and '[' with '{'
         brace_keys_open = ['(', '[', '<', '_OP_']
         for bkey in brace_keys_open:
-            if bkey in audio_tar_filepaths:
-                audio_tar_filepaths = audio_tar_filepaths.replace(bkey, "{")
+            if bkey in sharded_filepaths:
+                sharded_filepaths = sharded_filepaths.replace(bkey, "{")
 
         # Replace ')' and ']' with '}'
         brace_keys_close = [')', ']', '>', '_CL_']
         for bkey in brace_keys_close:
-            if bkey in audio_tar_filepaths:
-                audio_tar_filepaths = audio_tar_filepaths.replace(bkey, "}")
+            if bkey in sharded_filepaths:
+                sharded_filepaths = sharded_filepaths.replace(bkey, "}")
 
-    if isinstance(audio_tar_filepaths, str):
+    if isinstance(sharded_filepaths, str):
         # Brace expand
-        audio_tar_filepaths = list(braceexpand.braceexpand(audio_tar_filepaths))
+        sharded_filepaths = list(braceexpand.braceexpand(sharded_filepaths))
 
     # Expand store paths into WebDataset URLs
-    audio_tar_filepaths = [
-        datastore_path_to_webdataset_url(p) if is_datastore_path(p) else p for p in audio_tar_filepaths
+    sharded_filepaths = [
+        datastore_path_to_webdataset_url(p) if is_datastore_path(p) and is_tarred_path(p) else p
+        for p in sharded_filepaths
     ]
 
     # Check for distributed and partition shards accordingly
@@ -203,15 +204,15 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
         if shard_strategy == 'scatter':
             logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
 
-            if len(audio_tar_filepaths) % world_size != 0:
+            if len(sharded_filepaths) % world_size != 0:
                 logging.warning(
-                    f"Number of shards in tarred dataset ({len(audio_tar_filepaths)}) is not divisible "
+                    f"Number of shards in tarred dataset ({len(sharded_filepaths)}) is not divisible "
                     f"by number of distributed workers ({world_size})."
                 )
 
-            begin_idx = (len(audio_tar_filepaths) // world_size) * global_rank
-            end_idx = begin_idx + len(audio_tar_filepaths) // world_size
-            audio_tar_filepaths = audio_tar_filepaths[begin_idx:end_idx]
+            begin_idx = (len(sharded_filepaths) // world_size) * global_rank
+            end_idx = begin_idx + len(sharded_filepaths) // world_size
+            sharded_filepaths = sharded_filepaths[begin_idx:end_idx]
             logging.info(
                 "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
             )
@@ -221,7 +222,7 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
         else:
             raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
 
-    return audio_tar_filepaths
+    return sharded_filepaths
 
 
 def cache_datastore_manifests(
@@ -343,6 +344,47 @@ def cache_datastore_manifests(
                 'to avoid race condition between different ranks. To ensure distributed environment is '
                 'initialized, please update data config to use `defer_setup = True`.'
             )
+
+
+"""Optionally expand / shard the list of manifests
+    This is made to use the same notation as the sharded audio files
+
+    Args:
+        manifest_filepaths: list of manifest files (the sharded notation)
+        shard_strategy: scatter or replicate (scatter by default)
+        shard_manifests: bool, if False, no sharding / manifest filepath expansion will be attempted
+        global_rank: int, the rank of this worker
+        world_size: int, total number of workers
+"""
+
+
+def shard_manifests_if_needed(
+    manifest_filepaths: Union[str, List[str]],
+    shard_strategy: str,
+    shard_manifests: bool,
+    global_rank: int,
+    world_size: int,
+):
+    if shard_manifests:
+        if not torch.distributed.is_available():
+            logging.warning("Not running in torch.distributed mode. Manifest sharding not available")
+            return manifest_filepaths
+
+        if not torch.distributed.is_initialized():
+            logging.warning(
+                'Manifest sharding was requested but torch.distributed is not initialized '
+                'Did you intend to set the defer_setup flag?'
+            )
+            return manifest_filepaths
+
+        manifest_filepaths = expand_sharded_filepaths(
+            sharded_filepaths=manifest_filepaths,
+            shard_strategy=shard_strategy,
+            world_size=world_size,
+            global_rank=global_rank,
+        )
+
+    return manifest_filepaths
 
 
 class _AudioTextDataset(Dataset):
@@ -748,6 +790,7 @@ class _TarredAudioToTextDataset(IterableDataset):
                     occasions (when the number of shards is not divisible with ``world_size``), will not sample
                     the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
                     or test datasets.
+        shard_manifests (bool): Whether or not to try / shard manifests. Defaults to False.
         global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
         return_sample_id (bool): whether to return the sample_id as a part of each sample
@@ -769,10 +812,22 @@ class _TarredAudioToTextDataset(IterableDataset):
         eos_id: Optional[int] = None,
         pad_id: int = 0,
         shard_strategy: str = "scatter",
+        shard_manifests: bool = False,
         global_rank: int = 0,
         world_size: int = 0,
         return_sample_id: bool = False,
     ):
+        self.shard_manifests = shard_manifests
+
+        # Shard manifests if necessary and possible and then expand the paths
+        manifest_filepath = shard_manifests_if_needed(
+            shard_manifests=shard_manifests,
+            shard_strategy=shard_strategy,
+            manifest_filepaths=manifest_filepath,
+            world_size=world_size,
+            global_rank=global_rank,
+        )
+
         # If necessary, cache manifests from object store
         cache_datastore_manifests(manifest_filepaths=manifest_filepath)
 
@@ -788,6 +843,8 @@ class _TarredAudioToTextDataset(IterableDataset):
             index_by_file_id=True,  # Must set this so the manifest lines can be indexed by file ID
         )
 
+        self.len = self._compute_len()
+
         self.featurizer = WaveformFeaturizer(sample_rate=sample_rate, int_values=int_values, augmentor=augmentor)
         self.trim = trim
         self.eos_id = eos_id
@@ -795,8 +852,8 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.pad_id = pad_id
         self.return_sample_id = return_sample_id
 
-        audio_tar_filepaths = expand_audio_filepaths(
-            audio_tar_filepaths=audio_tar_filepaths,
+        audio_tar_filepaths = expand_sharded_filepaths(
+            sharded_filepaths=audio_tar_filepaths,
             shard_strategy=shard_strategy,
             world_size=world_size,
             global_rank=global_rank,
@@ -928,8 +985,19 @@ class _TarredAudioToTextDataset(IterableDataset):
     def __iter__(self):
         return self._dataset.__iter__()
 
+    def _compute_len(self):
+        if self.shard_manifests and torch.distributed.is_available() and torch.distributed.is_initialized():
+            my_len = torch.tensor(len(self.manifest_processor.collection), dtype=torch.int32).cuda()
+            torch.distributed.all_reduce(my_len)
+            my_len = my_len.int()
+            logging.info(f'Sharded manifests: Total length: {my_len}')
+        else:
+            my_len = len(self.manifest_processor.collection)
+
+        return my_len
+
     def __len__(self):
-        return len(self.manifest_processor.collection)
+        return self.len
 
 
 class TarredAudioToCharDataset(_TarredAudioToTextDataset):
@@ -1042,6 +1110,7 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
         parser: Optional[str] = 'en',
         pad_id: int = 0,
         shard_strategy: str = "scatter",
+        shard_manifests: bool = False,
         global_rank: int = 0,
         world_size: int = 0,
         return_sample_id: bool = False,
@@ -1067,6 +1136,7 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             eos_id=eos_id,
             pad_id=pad_id,
             shard_strategy=shard_strategy,
+            shard_manifests=shard_manifests,
             global_rank=global_rank,
             world_size=world_size,
             return_sample_id=return_sample_id,
@@ -1167,6 +1237,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
         trim: bool = False,
         use_start_end_token: bool = True,
         shard_strategy: str = "scatter",
+        shard_manifests: bool = False,
         global_rank: int = 0,
         world_size: int = 0,
         return_sample_id: bool = False,
@@ -1219,6 +1290,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             eos_id=eos_id,
             pad_id=pad_id,
             shard_strategy=shard_strategy,
+            shard_manifests=shard_manifests,
             global_rank=global_rank,
             world_size=world_size,
             return_sample_id=return_sample_id,

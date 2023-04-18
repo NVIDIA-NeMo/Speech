@@ -67,6 +67,10 @@ class LMTokens(TTSDataType):
     name = "lm_tokens"
 
 
+class ReferenceAudio(TTSDataType, WithLens):
+    name = "reference_audio"
+
+
 MAIN_DATA_TYPES = [Audio, Text]
 VALID_SUPPLEMENTARY_DATA_TYPES = [
     LogMel,
@@ -78,5 +82,6 @@ VALID_SUPPLEMENTARY_DATA_TYPES = [
     LMTokens,
     Voiced_mask,
     P_voiced,
+    ReferenceAudio,
 ]
 DATA_STR2DATA_CLASS = {d.name: d for d in MAIN_DATA_TYPES + VALID_SUPPLEMENTARY_DATA_TYPES}

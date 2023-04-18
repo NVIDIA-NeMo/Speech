@@ -18,8 +18,12 @@ import torch
 from torch import Tensor
 from torch.autograd import Variable
 from torch.nn import functional as F
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from nemo.core.classes import adapter_mixins
+from nemo.core.classes import NeuralModule, adapter_mixins
+from nemo.core.neural_types.elements import EncodedRepresentation, Index, LengthsType, MelSpectrogramType
+from nemo.core.neural_types.neural_type import NeuralType
+from nemo.utils import logging
 
 
 SUPPORTED_CONDITION_TYPES = ["add", "concat", "layernorm"]
@@ -456,8 +460,10 @@ class ConditionalLayerNorm(torch.nn.LayerNorm):
         if self.condition:
             if conditioning is None:
                 raise ValueError(
-                    'You should add additional data types as conditions e.g. speaker id or reference audio'
+                    """You should add additional data types as conditions (e.g. speaker id or reference audio) 
+                                 and define speaker_encoder in your config."""
                 )
+
             inputs = inputs * self.cond_weight(conditioning)
             inputs = inputs + self.cond_bias(conditioning)
 
@@ -493,7 +499,8 @@ class ConditionalInput(torch.nn.Module):
         if len(self.condition_types) > 0:
             if conditioning is None:
                 raise ValueError(
-                    'You should add additional data types as conditions e.g. speaker id or reference audio'
+                    """You should add additional data types as conditions (e.g. speaker id or reference audio) 
+                                 and define speaker_encoder in your config."""
                 )
 
             if "add" in self.condition_types:
@@ -507,3 +514,241 @@ class ConditionalInput(torch.nn.Module):
                 inputs = self.concat_proj(inputs)
 
         return inputs
+
+
+class StyleAttention(NeuralModule):
+    def __init__(self, gst_size=128, n_style_token=10, n_style_attn_head=4):
+        super(StyleAttention, self).__init__()
+
+        token_size = gst_size // n_style_attn_head
+        self.tokens = torch.nn.Parameter(torch.FloatTensor(n_style_token, token_size))
+        self.mha = torch.nn.MultiheadAttention(
+            embed_dim=gst_size,
+            num_heads=n_style_attn_head,
+            dropout=0.0,
+            bias=True,
+            kdim=token_size,
+            vdim=token_size,
+            batch_first=True,
+        )
+        torch.nn.init.normal_(self.tokens)
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D'), EncodedRepresentation()),
+            "token_id": NeuralType(('B'), Index(), optional=True),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "style_emb": NeuralType(('B', 'D'), EncodedRepresentation()),
+        }
+
+    def forward(self, inputs):
+        batch_size = inputs.size(0)
+        query = inputs.unsqueeze(1)
+        tokens = F.tanh(self.tokens).unsqueeze(0).expand(batch_size, -1, -1)
+
+        style_emb, _ = self.mha(query=query, key=tokens, value=tokens)
+        style_emb = style_emb.squeeze(1)
+        return style_emb
+
+
+class Conv2DReLUNorm(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=2, padding=1, bias=True, dropout=0.0):
+        super(Conv2DReLUNorm, self).__init__()
+        self.conv = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, bias=bias
+        )
+        self.norm = torch.nn.LayerNorm(out_channels)
+        self.dropout = torch.nn.Dropout(dropout)
+
+    def forward(self, x, x_mask=None):
+        if x_mask is not None:
+            x = x * x_mask
+
+        # bhwc -> bchw
+        x = x.contiguous().permute(0, 3, 1, 2)
+        x = F.relu(self.conv(x))
+        # bchw -> bhwc
+        x = x.contiguous().permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = self.dropout(x)
+        return x
+
+
+class ReferenceEncoder(NeuralModule):
+    """
+    Encode mel-spectrograms to an utterance level feature
+    """
+
+    def __init__(self, n_mels, cnn_filters, dropout, gru_hidden, kernel_size, stride, padding, bias):
+        super(ReferenceEncoder, self).__init__()
+        self.filter_size = [1] + list(cnn_filters)
+        self.layers = torch.nn.ModuleList(
+            [
+                Conv2DReLUNorm(
+                    in_channels=int(self.filter_size[i]),
+                    out_channels=int(self.filter_size[i + 1]),
+                    kernel_size=kernel_size,
+                    stride=stride,
+                    padding=padding,
+                    bias=bias,
+                    dropout=dropout,
+                )
+                for i in range(len(cnn_filters))
+            ]
+        )
+        post_conv_height = self.calculate_post_conv_lengths(n_mels, n_convs=len(cnn_filters))
+        self.gru = torch.nn.GRU(
+            input_size=cnn_filters[-1] * post_conv_height, hidden_size=gru_hidden, batch_first=True,
+        )
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType()),
+            "inputs_lengths": NeuralType(('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "out": NeuralType(('B', 'D'), EncodedRepresentation()),
+        }
+
+    def forward(self, inputs, inputs_lengths):
+        # BMW -> BWMC (M: mels)
+        x = inputs.transpose(1, 2).unsqueeze(3)
+        x_lens = inputs_lengths
+        x_masks = self.lengths_to_masks(x_lens).unsqueeze(2).unsqueeze(3)
+
+        for layer in self.layers:
+            x = layer(x, x_masks)
+            x_lens = self.calculate_post_conv_lengths(x_lens)
+            x_masks = self.lengths_to_masks(x_lens).unsqueeze(2).unsqueeze(3)
+
+        # BWMC -> BWC
+        x = x.contiguous().view(x.shape[0], x.shape[1], -1)
+
+        self.gru.flatten_parameters()
+        packed_x = pack_padded_sequence(x, x_lens.cpu(), batch_first=True, enforce_sorted=False)
+        packed_x, _ = self.gru(packed_x)
+        x, x_lens = pad_packed_sequence(packed_x, batch_first=True)
+        x = x[torch.arange(len(x_lens)), (x_lens - 1), :]
+        return x
+
+    @staticmethod
+    def calculate_post_conv_lengths(lengths, n_convs=1, kernel_size=3, stride=2, pad=1):
+        """Batch lengths after n convolution with fixed kernel/stride/pad."""
+        for _ in range(n_convs):
+            lengths = (lengths - kernel_size + 2 * pad) // stride + 1
+        return lengths
+
+    @staticmethod
+    def lengths_to_masks(lengths):
+        """Batch of lengths to batch of masks"""
+        # B -> BxT
+        masks = torch.arange(lengths.max()).to(lengths.device).expand(
+            lengths.shape[0], lengths.max()
+        ) < lengths.unsqueeze(1)
+        return masks
+
+
+class GlobalStyleToken(NeuralModule):
+    """
+    Global Style Token based Speaker Embedding
+    """
+
+    def __init__(
+        self, reference_encoder, gst_size=128, n_style_token=10, n_style_attn_head=4,
+    ):
+        super(GlobalStyleToken, self).__init__()
+        self.reference_encoder = reference_encoder
+        self.style_attention = StyleAttention(
+            gst_size=gst_size, n_style_token=n_style_token, n_style_attn_head=n_style_attn_head
+        )
+
+    @property
+    def input_types(self):
+        return {
+            "inp": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType()),
+            "inp_lengths": NeuralType(('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "gst": NeuralType(('B', 'D'), EncodedRepresentation()),
+        }
+
+    def forward(self, inp, inp_lengths):
+        style_embedding = self.reference_encoder(inp, inp_lengths)
+        gst = self.style_attention(style_embedding)
+        return gst
+
+
+class SpeakerLookupTable(torch.nn.Module):
+    """
+    LookupTable based Speaker Embedding
+    """
+
+    def __init__(self, n_speakers, embedding_dim):
+        super(SpeakerLookupTable, self).__init__()
+        self.table = torch.nn.Embedding(n_speakers, embedding_dim)
+
+    def forward(self, speaker):
+        return self.table(speaker)
+
+
+class SpeakerEncoder(NeuralModule):
+    """
+    class SpeakerEncoder represents speakers representation. 
+    This module can combine GST (global style token) based speaker embeddings and lookup table speaker embeddings.
+    """
+
+    def __init__(self, lookup_module=None, gst_module=None):
+        """
+        lookup_module: Torch module to get lookup based speaker embedding
+        gst_module: Neural module to get GST based speaker embedding
+        """
+        super(SpeakerEncoder, self).__init__()
+        self.lookup_module = lookup_module
+        self.gst_module = gst_module
+
+    @property
+    def input_types(self):
+        return {
+            "speaker": NeuralType(('B'), Index(), optional=True),
+            "reference_spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType(), optional=True),
+            "reference_spec_lens": NeuralType(('B'), LengthsType(), optional=True),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "embs": NeuralType(('B', 'D'), EncodedRepresentation()),
+        }
+
+    def forward(self, speaker=None, reference_spec=None, reference_spec_lens=None):
+        embs = None
+
+        # Get Lookup table speaker embedding
+        if self.lookup_module is not None and speaker is not None:
+            embs = self.lookup_module(speaker)
+
+        # Get GST based speaker embedding
+        if self.gst_module is not None:
+            if reference_spec is None or reference_spec_lens is None:
+                raise ValueError(
+                    "You should add `reference_audio` in sup_data_types or remove `speaker_encoder`in config."
+                )
+            out = self.gst_module(reference_spec, reference_spec_lens)
+            embs = out if embs is None else embs + out
+
+        elif self.gst_module is None and reference_spec is not None and reference_spec_lens is not None:
+            logging.warning("You may add `gst_module` in speaker_encoder to use reference_audio.")
+
+        return embs

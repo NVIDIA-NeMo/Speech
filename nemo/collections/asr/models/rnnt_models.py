@@ -242,6 +242,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         """
         if paths2audio_files is None or len(paths2audio_files) == 0:
             return {}
+
         # We will store transcriptions here
         hypotheses = []
         all_hypotheses = []

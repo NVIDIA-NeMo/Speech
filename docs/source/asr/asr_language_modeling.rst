@@ -281,6 +281,29 @@ For instance, the following set of parameters would results in 2*1*2=4 beam sear
                         beam_beta=[1.0,0.5]
 
 
+Beam search ngram decoding for Transducer models (RNNT and HAT)
+===============================================================
+
+The similar script to evaluate an RNNT/HAT model with beam search decoding and N-gram models can be found at
+`scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py>`_
+
+.. code-block::
+
+    python eval_beamsearch_ngram_transducer.py nemo_model_file=<path to the .nemo file of the model> \
+            input_manifest=<path to the evaluation JSON manifest file \
+            kenlm_model_file=<path to the binary KenLM model> \
+            beam_width=[<list of the beam widths, separated with commas>] \
+            beam_alpha=[<list of the beam alphas, separated with commas>] \
+            preds_output_folder=<optional folder to store the predictions> \
+            probs_cache_file=null \
+            decoding_strategy=<greedy_batch or maes decoding>
+            maes_prefix_alpha=[<list of the maes prefix alphas, separated with commas>] \
+            maes_expansion_gamma=[<list of the maes expansion gammas, separated with commas>] \
+            hat_subtract_ilm=<in case of HAT model: subtract internal LM or not (True/False)> \
+            hat_ilm_weight=[<in case of HAT model: list of the HAT internal LM weights, separated with commas>] \
+           
+
+
 .. _neural_rescoring:
 
 ****************

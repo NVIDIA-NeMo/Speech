@@ -2561,6 +2561,8 @@ pipeline {
         model.train_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
         model.validation_ds.src_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
         model.validation_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
+        model.train_ds.num_workers=1 \
+        model.validation_ds.num_workers=1 \
         ~model.test_ds \
         model.train_ds.dataset_type=text_memmap \
         model.encoder_tokenizer.library=sentencepiece \
@@ -2602,6 +2604,8 @@ pipeline {
         model.train_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
         model.validation_ds.src_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
         model.validation_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
+        model.train_ds.num_workers=1 \
+        model.validation_ds.num_workers=1 \
         ~model.test_ds \
         model.train_ds.dataset_type=text_memmap \
         model.encoder_tokenizer.library=sentencepiece \

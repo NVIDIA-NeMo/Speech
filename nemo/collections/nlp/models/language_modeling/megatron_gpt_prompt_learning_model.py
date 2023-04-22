@@ -604,7 +604,9 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             drop_last=drop_last,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            persistent_workers=True,  # (@adithyare and @eharper) We need this to make spawn=True to work.
+            persistent_workers=True
+            if num_workers > 0
+            else False,  # (@adithyare and @eharper) We need this to make spawn=True to work.
         )
 
         return dataset, dataloader

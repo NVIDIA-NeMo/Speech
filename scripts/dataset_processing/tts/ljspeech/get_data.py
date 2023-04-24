@@ -60,7 +60,7 @@ def __extract_file(filepath, data_dir):
 def __process_data(data_root, whitelist_path):
     if whitelist_path is None:
         wget.download(
-            "https://github.com/NVIDIA/NeMo-text-processing/blob/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
+            "https://raw.githubusercontent.com/NVIDIA/NeMo-text-processing/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
             out=str(data_root),
         )
         whitelist_path = data_root / "lj_speech.tsv"

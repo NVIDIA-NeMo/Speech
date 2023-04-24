@@ -60,8 +60,9 @@ pipeline {
     // TODO: remove when pip package is available
     stage('Megatron Core installation') {
       steps {
-        sh 'git clone https://github.com/aklife97/Megatron-LM.git && \
+        sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
             cd Megatron-LM && \
+            git checkout 3db2063b1ff992a971ba18f7101eecc9c4e90f03 && \
             pip install -e .'
       }
     }

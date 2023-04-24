@@ -62,6 +62,7 @@ class TextGenerationStrategy:
             forward_only=True,
             tensor_shape=tensor_shape,
             dtype=self.model.autocast_dtype,
+            enable_autocast=True,
         )
 
         return output_tensor

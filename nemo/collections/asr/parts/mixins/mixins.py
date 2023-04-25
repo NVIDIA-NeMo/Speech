@@ -491,8 +491,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             drop_extra_pre_encoded=drop_extra_pre_encoded,
         )
 
-        if isinstance(self, asr_models.EncDecCTCModel):
-            log_probs = self.decoder(encoder_output=encoded)
+        if isinstance(self, asr_models.EncDecCTCModel) or (
+            isinstance(self, asr_models.EncDecHybridRNNTCTCModel) and self.cur_decoder == "ctc"
+        ):
+            if hasattr(self, "ctc_decoder"):
+                decoding = self.ctc_decoding
+                decoder = self.ctc_decoder
+            else:
+                decoding = self.decoding
+                decoder = self.decoder
+
+            log_probs = decoder(encoder_output=encoded)
             predictions_tensor = log_probs.argmax(dim=-1, keepdim=False)
 
             # Concatenate the previous predictions with the current one to have the full predictions.
@@ -517,7 +526,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
 
                 # TODO: make decoding more efficient by avoiding the decoding process from the beginning
                 if return_transcription:
-                    decoded_out = self.decoding.ctc_decoder_predictions_tensor(
+                    decoded_out = decoding.ctc_decoder_predictions_tensor(
                         decoder_outputs=greedy_predictions_concat.unsqueeze(0),
                         decoder_lengths=encoded_len[preds_idx : preds_idx + 1],
                         return_hypotheses=False,

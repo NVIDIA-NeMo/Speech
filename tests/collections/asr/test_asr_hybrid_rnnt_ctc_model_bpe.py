@@ -306,4 +306,4 @@ class TestEncDecHybridRNNTCTCBPEModel:
 
         assert hybrid_asr_model.ctc_decoding.preserve_alignments is True
         assert hybrid_asr_model.ctc_decoding.compute_timestamps is True
-        assert hybrid_asr_model.use_rnnt_decoder is False
+        assert hybrid_asr_model.cur_decoder == "ctc"

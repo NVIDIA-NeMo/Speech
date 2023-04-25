@@ -500,7 +500,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     def streaming_post_process(self, rets, keep_all_outputs=True):
         if len(rets) == 2:
-            return rets
+            return rets[0], rets[1], None, None, None
 
         (encoded, encoded_len, cache_last_channel_next, cache_last_time_next, cache_last_channel_next_len) = rets
 

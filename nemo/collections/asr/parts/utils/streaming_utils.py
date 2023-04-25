@@ -1367,9 +1367,10 @@ class CacheAwareStreamingAudioBuffer:
                 )
 
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.shift_size, list):
-                shift_size = self.streaming_cfg.shift_size[0]
                 if self.pad_and_drop_preencoded:
                     shift_size = self.streaming_cfg.shift_size[1]
+                else:
+                    shift_size = self.streaming_cfg.shift_size[0]
             else:
                 shift_size = (
                     self.streaming_cfg.shift_size[1]
@@ -1394,9 +1395,10 @@ class CacheAwareStreamingAudioBuffer:
             # if there is not enough frames to be used as the pre-encoding cache, zeros would be added
             zeros_pads = None
             if self.buffer_idx == 0 and isinstance(self.streaming_cfg.pre_encode_cache_size, list):
-                cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
                 if self.pad_and_drop_preencoded:
                     cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[1]
+                else:
+                    cache_pre_encode_num_frames = self.streaming_cfg.pre_encode_cache_size[0]
                 cache_pre_encode = torch.zeros(
                     (audio_chunk.size(0), self.input_features, cache_pre_encode_num_frames),
                     device=audio_chunk.device,

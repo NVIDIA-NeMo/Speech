@@ -86,7 +86,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         )
 
         # setting the RNNT decoder as the default one
-        self.use_rnnt_decoder = True
+        self.cur_decoder = "rnnt"
 
         # setting up interCTC loss (from InterCTCMixin)
         self.setup_interctc(decoder_name='ctc_decoder', loss_name='ctc_loss', wer_name='ctc_wer')
@@ -125,7 +125,11 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-        if self.use_rnnt_decoder:
+        if self.cur_decoder not in ["ctc", "rnnt"]:
+            raise ValueError(
+                f"{self.cur_decoder} is not supported for cur_decoder. Supported values are ['ctc', 'rnnt']"
+            )
+        if self.cur_decoder == "rnnt":
             return super().transcribe(
                 paths2audio_files=paths2audio_files,
                 batch_size=batch_size,
@@ -307,7 +311,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
                 logging.info(f"Changed the tokenizer of the CTC decoder to {self.ctc_decoder.vocabulary} vocabulary.")
 
-    def change_decoding_strategy(self, decoding_cfg: DictConfig, decoder_type: str = None):
+    def change_decoding_strategy(self, decoding_cfg: DictConfig = None, decoder_type: str = None):
         """
         Changes decoding strategy used during RNNT decoding process.
 
@@ -319,7 +323,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 used. If set to 'ctc', it raises error if 'ctc_decoder' is not an attribute of the model.
         """
         if decoder_type is None or decoder_type == 'rnnt':
-            self.use_rnnt_decoder = True
+            self.cur_decoder = "rnnt"
             return super().change_decoding_strategy(decoding_cfg=decoding_cfg)
 
         assert decoder_type == 'ctc' and hasattr(self, 'ctc_decoder')
@@ -346,7 +350,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         with open_dict(self.cfg.aux_ctc):
             self.cfg.aux_ctc.decoding = decoding_cfg
 
-        self.use_rnnt_decoder = False
+        self.cur_decoder = "ctc"
         logging.info(f"Changed decoding strategy to \n{OmegaConf.to_yaml(self.cfg.aux_ctc.decoding)}")
 
     # PTL-specific methods

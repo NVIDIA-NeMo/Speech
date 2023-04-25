@@ -235,8 +235,10 @@ Note that RNNT requires numba to be installed from conda.
 
 NeMo Megatron
 ~~~~~~~~~~~~~
-NeMo Megatron training requires NVIDIA Apex to be installed.
-Install it manually if not using the NVIDIA PyTorch container.
+NeMo Megatron training requires NVIDIA Apex and Megatron-core to be installed.
+Install them manually if not using the NVIDIA PyTorch container.
+
+To install Apex, run
 
 .. code-block:: bash
 
@@ -244,6 +246,15 @@ Install it manually if not using the NVIDIA PyTorch container.
     cd apex
     git checkout 57057e2fcf1c084c0fcc818f55c0ff6ea1b24ae2
     pip install -v --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
+
+To install Megatron-core, run
+
+.. code-block:: bash
+
+    git clone https://github.com/NVIDIA/Megatron-LM.git
+    cd Megatron-LM
+    git checkout 3db2063b1ff992a971ba18f7101eecc9c4e90f03
+    pip install -e .
 
 It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies.
 

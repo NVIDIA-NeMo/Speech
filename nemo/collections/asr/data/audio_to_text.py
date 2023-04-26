@@ -38,6 +38,7 @@ from nemo.utils.data_utils import (
     datastore_path_to_webdataset_url,
     is_datastore_cache_shared,
     is_datastore_path,
+    is_tarred_path,
 )
 from nemo.utils.get_rank import is_global_rank_zero
 

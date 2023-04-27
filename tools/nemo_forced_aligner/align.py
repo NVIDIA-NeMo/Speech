@@ -94,6 +94,8 @@ Arguments:
     total_buffer_in_secs: float  Length of buffer (chunk + left and right padding) in seconds
     chunk_batch_size: int batch size for buffered chunk inference,
                       which will cut one audio into segments and do inference on chunk_batch_size segments at a time
+
+    simulate_cache_aware_streaming: False, if set True, using cache aware streaming to do get the logits for alignment
 """
 
 
@@ -121,6 +123,9 @@ class AlignmentConfig:
     chunk_len_in_secs: float = 1.6
     total_buffer_in_secs: float = 4.0
     chunk_batch_size: int = 32
+
+    # Cache aware streaming configs
+    simulate_cache_aware_streaming: Optional[bool] = False
 
 
 @hydra_runner(config_name="AlignmentConfig", schema=AlignmentConfig)
@@ -274,6 +279,7 @@ def main(cfg: AlignmentConfig):
             model,
             cfg.additional_ctm_grouping_separator,
             cfg.align_using_pred_text,
+            cfg.simulate_cache_aware_streaming,
             cfg.use_buffered_chunked_streaming,
             buffered_chunk_params,
         )

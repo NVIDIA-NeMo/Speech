@@ -24,24 +24,41 @@ from scipy import ndimage
 from torch.special import gammaln
 
 
-def get_audio_paths(audio_path: Path, base_path: Path) -> Tuple[Path, Path]:
-    if os.path.isabs(audio_path):
-        abs_path = audio_path
-        rel_path = audio_path.relative_to(base_path)
+def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
+    """
+    Get the absolute and relative paths of input file path.
+
+    Args:
+        input_path: An absolute or relative path.
+        base_path: base directory the input is relative to.
+
+    Returns:
+        The absolute and relative paths of the file.
+    """
+    if os.path.isabs(input_path):
+        abs_path = input_path
+        rel_path = input_path.relative_to(base_path)
     else:
-        rel_path = audio_path
+        rel_path = input_path
         abs_path = base_path / rel_path
 
     return abs_path, rel_path
 
 
-def get_sup_data_file_path(entry: dict, base_audio_path: Path, sup_data_path: Path) -> Path:
-    audio_path = Path(entry["audio_filepath"])
-    rel_audio_path = audio_path.relative_to(base_audio_path).with_suffix("")
-    audio_id = str(rel_audio_path).replace(os.sep, "_")
-    file_name = f"{audio_id}.pt"
-    file_path = Path(os.path.join(sup_data_path, file_name))
-    return file_path
+def get_audio_filepaths(manifest_entry: dict, audio_dir: Path) -> Tuple[Path, Path]:
+    """
+    Get the absolute and relative paths of audio from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+
+    Returns:
+        The absolute and relative paths of the audio.
+    """
+    audio_filepath = Path(manifest_entry["audio_filepath"])
+    audio_filepath_abs, audio_filepath_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=audio_dir)
+    return audio_filepath_abs, audio_filepath_rel
 
 
 def normalize_volume(audio: np.array, volume_level: float) -> np.array:

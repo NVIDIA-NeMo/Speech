@@ -52,7 +52,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.tts.parts.preprocessing.audio_trimming import AudioTrimmer
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_audio_paths, normalize_volume
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_abs_rel_paths, normalize_volume
 from nemo.utils import logging
 
 
@@ -116,7 +116,7 @@ def _process_entry(
 ) -> Tuple[dict, float, float]:
     audio_filepath = Path(entry["audio_filepath"])
 
-    audio_path, audio_path_rel = get_audio_paths(audio_path=audio_filepath, base_path=input_audio_dir)
+    audio_path, audio_path_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=input_audio_dir)
     output_path = output_audio_dir / audio_path_rel
     output_path.parent.mkdir(exist_ok=True, parents=True)
 

@@ -1,0 +1,28 @@
+sample_rate: 44100
+win_length: 2048
+hop_length: 512
+
+mel_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.MelSpectrogramFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  mel_dim: 80
+  lowfreq: 0
+  highfreq: null
+
+pitch_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.PitchFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  pitch_fmin: 60
+  pitch_fmax: 640
+
+energy_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.EnergyFeaturizer
+  spec_featurizer: ${mel_feature}
+
+featurizers:
+  pitch: ${pitch_feature}
+  energy: ${energy_feature}

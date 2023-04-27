@@ -35,7 +35,7 @@ import torch
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir, get_sup_data_file_path
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_base_dir
 from nemo.collections.tts.torch.tts_data_types import Pitch
 from nemo.utils import logging
 
@@ -67,6 +67,28 @@ def _compute_stats(values: List[torch.Tensor]) -> Tuple[float, float]:
     return mean, std
 
 
+def _get_sup_data_filepath(manifest_entry: dict, audio_dir: Path, sup_data_dir: Path) -> Path:
+    """
+    Get the absolute path of a supplementary data type for the input manifest entry.
+
+    Example: audio_filepath "<audio_dir>/speaker1/audio1.wav" becomes "<sup_data_dir>/speaker1_audio1.pt"
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+        sup_data_dir: base directory where supplementary data is stored.
+
+    Returns:
+        Path to the supplementary data file.
+    """
+    audio_path = Path(manifest_entry["audio_filepath"])
+    rel_audio_path = audio_path.relative_to(audio_dir)
+    rel_sup_data_path = rel_audio_path.with_suffix(".pt")
+    sup_data_filename = str(rel_sup_data_path).replace(os.sep, "_")
+    sup_data_filepath = sup_data_dir / sup_data_filename
+    return sup_data_filepath
+
+
 def main():
     args = get_args()
     manifest_path = args.manifest_path
@@ -88,7 +110,7 @@ def main():
     global_pitch_values = []
     speaker_pitch_values = defaultdict(list)
     for entry in tqdm(entries):
-        pitch_path = get_sup_data_file_path(entry, base_dir, pitch_data_path)
+        pitch_path = _get_sup_data_filepath(manifest_entry=entry, audio_dir=base_dir, sup_data_dir=pitch_data_path)
         if not os.path.exists(pitch_path):
             logging.warning(f"Unable to find pitch file for {entry}")
             continue

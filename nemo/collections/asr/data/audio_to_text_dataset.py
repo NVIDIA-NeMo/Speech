@@ -512,7 +512,7 @@ def get_audio_to_text_char_dataset_from_config(
         constructed dataset or None if dataset config is invalid or nothing to load
     """
     if 'augmentor' in config:
-        augmentor = process_augmentations(config['augmentor'])
+        augmentor = process_augmentations(config['augmentor'], global_rank=global_rank, world_size=world_size)
     else:
         augmentor = None
 
@@ -609,7 +609,7 @@ def get_audio_to_text_bpe_dataset_from_config(
         constructed dataset or None if dataset config is invalid or nothing to load
     """
     if 'augmentor' in config:
-        augmentor = process_augmentations(config['augmentor'])
+        augmentor = process_augmentations(config['augmentor'], global_rank=global_rank, world_size=world_size)
     else:
         augmentor = None
 

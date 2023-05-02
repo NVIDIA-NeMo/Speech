@@ -256,7 +256,7 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
 
     ds_key = resolve_dataset_name_from_cfg(cfg.validation_ds)
 
-    if ds_key is None:
+    if ds_key is None or val_dl_idx < 0:
         logging.debug(
             "Could not resolve file path from provided config - {}. "
             "Disabling support for multi-dataloaders.".format(cfg.validation_ds)

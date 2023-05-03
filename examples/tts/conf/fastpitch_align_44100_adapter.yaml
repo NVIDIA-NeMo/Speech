@@ -208,7 +208,7 @@ model:
     dropatt: 0.1
     dropemb: 0.0
     d_embed: ${model.symbols_embedding_dim}
-    condition_types: [ "add", "layernorm" ] # options: [ "add", "cat", "layernorm" ]
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
 
   output_fft:
     _target_: nemo.collections.tts.modules.transformer.FFTransformerDecoder
@@ -221,12 +221,12 @@ model:
     dropout: 0.1
     dropatt: 0.1
     dropemb: 0.0
-    condition_types: [ "add", "layernorm" ] # options: [ "add", "cat", "layernorm" ]
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
 
   alignment_module:
     _target_: nemo.collections.tts.modules.aligner.AlignmentEncoder
     n_text_channels: ${model.symbols_embedding_dim}
-    condition_types: [ "add" ] # options: [ "add", "cat" ]
+    condition_types: [ "add" ] # options: [ "add", "concat" ]
     
   duration_predictor:
     _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
@@ -235,7 +235,7 @@ model:
     filter_size: 256
     dropout: 0.1
     n_layers: 2
-    condition_types: [ "add", "layernorm" ] # options: [ "add", "cat", "layernorm" ]
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
 
   pitch_predictor:
     _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
@@ -244,10 +244,11 @@ model:
     filter_size: 256
     dropout: 0.1
     n_layers: 2
-    condition_types: [ "add", "layernorm" ] # options: [ "add", "cat", "layernorm" ]
+    condition_types: [ "add", "layernorm" ] # options: [ "add", "concat", "layernorm" ]
 
   speaker_encoder:
     _target_: nemo.collections.tts.modules.submodules.SpeakerEncoder
+    precomputed_embedding_dim: null
     lookup_module:
       _target_: nemo.collections.tts.modules.submodules.SpeakerLookupTable
       n_speakers: ???

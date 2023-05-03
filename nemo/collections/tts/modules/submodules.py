@@ -709,18 +709,29 @@ class SpeakerEncoder(NeuralModule):
     This module can combine GST (global style token) based speaker embeddings and lookup table speaker embeddings.
     """
 
-    def __init__(self, lookup_module=None, gst_module=None):
+    def __init__(self, lookup_module=None, gst_module=None, precomputed_embedding_dim=None):
         """
         lookup_module: Torch module to get lookup based speaker embedding
         gst_module: Neural module to get GST based speaker embedding
+        precomputed_embedding_dim: Give precomputed speaker embedding dimension to use precompute speaker embedding
         """
         super(SpeakerEncoder, self).__init__()
+
+        # Multi-speaker embedding
         self.lookup_module = lookup_module
+
+        # Reference speaker embedding
         self.gst_module = gst_module
+
+        if precomputed_embedding_dim is not None:
+            self.precomputed_emb = torch.nn.Parameter(torch.empty(precomputed_embedding_dim))
+        else:
+            self.precomputed_emb = None
 
     @property
     def input_types(self):
         return {
+            "batch_size": NeuralType(optional=True),
             "speaker": NeuralType(('B'), Index(), optional=True),
             "reference_spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType(), optional=True),
             "reference_spec_lens": NeuralType(('B'), LengthsType(), optional=True),
@@ -732,8 +743,15 @@ class SpeakerEncoder(NeuralModule):
             "embs": NeuralType(('B', 'D'), EncodedRepresentation()),
         }
 
-    def forward(self, speaker=None, reference_spec=None, reference_spec_lens=None):
+    def overwrite_precomputed_emb(self, emb):
+        self.precomputed_emb = torch.nn.Parameter(emb)
+
+    def forward(self, batch_size=None, speaker=None, reference_spec=None, reference_spec_lens=None):
         embs = None
+
+        # Get Precomputed speaker embedding
+        if self.precomputed_emb is not None:
+            return self.precomputed_emb.unsqueeze(0).repeat(batch_size, 1)
 
         # Get Lookup table speaker embedding
         if self.lookup_module is not None and speaker is not None:

@@ -183,6 +183,9 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         if self.fastpitch.speaker_emb is not None:
             self.export_config["num_speakers"] = cfg.n_speakers
 
+        # Adapter modules setup (from FastPitchAdapterModelMixin)
+        self.setup_adapters()
+
     def _get_default_text_tokenizer_conf(self):
         text_tokenizer: TextTokenizerConfig = TextTokenizerConfig()
         return OmegaConf.create(OmegaConf.to_yaml(text_tokenizer))

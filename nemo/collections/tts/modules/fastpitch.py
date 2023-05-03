@@ -177,7 +177,6 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
         self.learn_alignment = aligner is not None
         self.use_duration_predictor = True
         self.binarize = False
-
         # TODO: combine self.speaker_emb with self.speaker_encoder
         # cfg: remove `n_speakers`, create `speaker_encoder.lookup_module`
         # state_dict: move `speaker_emb.weight` to `speaker_encoder.lookup_module.table.weight`
@@ -244,10 +243,10 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
             "energy_tgt": NeuralType(('B', 'T_audio'), RegressionValuesType()),
         }
 
-    def get_speaker_embedding(self, speaker, reference_spec, reference_spec_lens):
+    def get_speaker_embedding(self, batch_size, speaker, reference_spec, reference_spec_lens):
         """spk_emb: Bx1xD"""
         if self.speaker_encoder is not None:
-            spk_emb = self.speaker_encoder(speaker, reference_spec, reference_spec_lens).unsqueeze(1)
+            spk_emb = self.speaker_encoder(batch_size, speaker, reference_spec, reference_spec_lens).unsqueeze(1)
         elif self.speaker_emb is not None:
             if speaker is None:
                 raise ValueError('Please give speaker id to get lookup speaker embedding.')
@@ -281,7 +280,10 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
 
         # Calculate speaker embedding
         spk_emb = self.get_speaker_embedding(
-            speaker=speaker, reference_spec=reference_spec, reference_spec_lens=reference_spec_lens,
+            batch_size=text.shape[0],
+            speaker=speaker,
+            reference_spec=reference_spec,
+            reference_spec_lens=reference_spec_lens,
         )
 
         # Input FFT
@@ -379,10 +381,12 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
         reference_spec=None,
         reference_spec_lens=None,
     ):
-
         # Calculate speaker embedding
         spk_emb = self.get_speaker_embedding(
-            speaker=speaker, reference_spec=reference_spec, reference_spec_lens=reference_spec_lens,
+            batch_size=text.shape[0],
+            speaker=speaker,
+            reference_spec=reference_spec,
+            reference_spec_lens=reference_spec_lens,
         )
 
         # Input FFT

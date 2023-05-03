@@ -19,7 +19,6 @@ import torch.nn as nn
 from torch.nn import LayerNorm
 
 from nemo.collections.asr.parts.submodules.causal_convs import CausalConv2D
-from nemo.utils import avoid_bfloat16_autocast_context
 
 
 class StackingSubsampling(torch.nn.Module):
@@ -265,13 +264,7 @@ class ConvSubsampling(torch.nn.Module):
         )
         x = x.unsqueeze(1)
 
-        if self._subsampling in ['striding', 'dw_striding']:
-            # added in order to prevent slowdown in torch.nn.Conv2d with bfloat16 / CUDNN v8 API
-            # to be removed once the above is fixed in cudnn
-            with avoid_bfloat16_autocast_context():
-                x = self.conv(x)
-        else:
-            x = self.conv(x)
+        x = self.conv(x)
 
         b, c, t, f = x.size()
         x = self.out(x.transpose(1, 2).reshape(b, t, -1))

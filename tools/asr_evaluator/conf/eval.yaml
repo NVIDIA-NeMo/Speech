@@ -13,7 +13,7 @@ engine:
         chunk_len_in_secs: 1.6 #null # Need to specify if use buffered inference (default for offline_by_chunked is 20)
         total_buffer_in_secs: 4 #null # Need to specify if use buffered inference (default for offline_by_chunked is 22)
         model_stride: 4 # Model downsampling factor, 8 for Citrinet models and 4 for Conformer models
-    
+        decoder_type: null # Used for hybrid CTC RNNT model only. Specify decoder_type *ctc* or *rnnt* for hybrid CTC RNNT model.
     test_ds:
         manifest_filepath: null
         sample_rate: 16000

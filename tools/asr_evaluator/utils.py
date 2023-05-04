@@ -154,7 +154,8 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
             f"output_filename={cfg.output_filename} "
             f"batch_size={cfg.test_ds.batch_size} "
             f"random_seed={cfg.random_seed} "
-            f"eval_config_yaml={f.name} ",
+            f"eval_config_yaml={f.name} "
+            f"decoder_type={cfg.inference.decoder_type} ",
             shell=True,
             check=True,
         )

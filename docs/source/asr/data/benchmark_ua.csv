@@ -1,0 +1,2 @@
+Model,Model Base Class,Model Card
+stt_ua_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_ua_fastconformer_hybrid_large_pc"

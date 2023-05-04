@@ -5,3 +5,4 @@ stt_es_citrinet_1024_gamma_0_25,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalo
 stt_es_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_ctc_large"
 stt_es_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_conformer_transducer_large"
 stt_es_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_contextnet_1024"
+stt_es_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_es_fastconformer_hybrid_large_pc"

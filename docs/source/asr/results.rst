@@ -268,3 +268,22 @@ Kinyarwanda
    :widths: 40, 10, 50
    :header-rows: 1
 
+-----------------------------
+
+Belarusian
+^^^^^^^^^^^
+.. csv-table::
+   :file: data/benchmark_by.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
+
+-----------------------------
+
+Ukrainian
+^^^^^^^^^^^
+.. csv-table::
+   :file: data/benchmark_ua.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1

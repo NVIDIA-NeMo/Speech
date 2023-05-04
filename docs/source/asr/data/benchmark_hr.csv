@@ -1,3 +1,4 @@
 Model,Model Base Class,Model Card
 stt_hr_conformer_ctc_large,EncDecCTCModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_conformer_ctc_large"
 stt_hr_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_conformer_transducer_large"
+stt_hr_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_hr_fastconformer_hybrid_large_pc"

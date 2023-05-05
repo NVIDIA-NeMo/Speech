@@ -460,7 +460,7 @@ class PunctuationCapitalization:
     def separate_punctuation(self, lines: List[str]) -> List[str]:
         if self.regex_punctuation is not None:
             return [
-                self.regex_extra_space.sub('', self.regex_punctuation.sub(r' \1 ', line)).strip() for line in lines
+                self.regex_extra_space.sub(' ', self.regex_punctuation.sub(r' \1 ', line)).strip() for line in lines
             ]
         else:
             return lines
@@ -470,7 +470,7 @@ class PunctuationCapitalization:
 
     def rm_punctuation(self, lines: List[str]) -> List[str]:
         if self.regex_punctuation is not None:
-            return [self.regex_extra_space.sub('', self.regex_punctuation.sub(' ', line)).strip() for line in lines]
+            return [self.regex_extra_space.sub(' ', self.regex_punctuation.sub(' ', line)).strip() for line in lines]
         else:
             return lines
 

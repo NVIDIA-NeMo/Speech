@@ -272,6 +272,7 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
         if cfg.adapter_tuning.type == "parallel_adapter":
             adapter_cfg = ParallelLinearAdapterConfig(
                 in_features=self.frozen_model_cfg.hidden_size,
+                out_features=self.frozen_model_cfg.hidden_size,
                 dim=cfg.adapter_tuning.adapter_dim,
                 norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
                 norm_type=cfg.adapter_tuning.get('norm_type', 'mixedfusedlayernorm'),

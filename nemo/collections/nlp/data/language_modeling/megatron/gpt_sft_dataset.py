@@ -41,9 +41,11 @@ class GPTSFTDataset(Dataset):
         separate_prompt_and_response_with_newline: bool = False,
         answer_only_loss: bool = True,
         truncation_field: str = "answer",
-        pad_to_max_length: bool = True,
+        pad_to_max_length: bool = False,  # (@adithyare) allows for much faster training especially in PEFT settings.
         index_mapping_dir: str = None,
         prompt_template: str = None,
+        virtual_tokens: int = 0,
+        tokens_to_generate: int = 0,
     ):
         """
         file_path: Path to a JSONL GPT supervised fine-tuning dataset. Data is formatted as multiple JSON lines with each line formatted as follows. {'input': 'John von Neumann\nVon Neumann made fundamental contributions .... Q: What did the math of artificial viscosity do?', 'output': 'smoothed the shock transition without sacrificing basic physics'}
@@ -84,6 +86,8 @@ class GPTSFTDataset(Dataset):
         self.pad_to_max_length = pad_to_max_length
         self.index_mapping_dir = index_mapping_dir
         self.prompt_template = prompt_template
+        self.virtual_tokens = virtual_tokens
+        self.tokens_to_generate = tokens_to_generate
         if self.prompt_template is not None:
             # When providing things like newlines in the prompt template via the CLI, they are escaped. This line unescapes them.
             self.prompt_template = self.prompt_template.encode('utf-8').decode('unicode_escape')
@@ -156,8 +160,14 @@ class GPTSFTDataset(Dataset):
         elif not self.separate_prompt_and_response_with_newline and self.prompt_template is None:
             text = context + ' ' + output
 
-        tokenized_text = self.tokenizer.text_to_ids(text)
-        context_ids = self.tokenizer.text_to_ids(context)
+        if self.virtual_tokens:
+            # (@adithyare) we are going to insert "pad/eos" tokens in the beginning of the text and context
+            # these pad/eos tokens are placeholders for virtual tokens
+            pre_pad = [self.tokenizer.eos_id] * self.virtual_tokens
+        else:
+            pre_pad = []
+        tokenized_text = pre_pad + self.tokenizer.text_to_ids(text)
+        context_ids = pre_pad + self.tokenizer.text_to_ids(context)
         answer_ids = tokenized_text[len(context_ids) :]
         total_ids = len(context_ids) + len(answer_ids)
         if self.add_bos:
@@ -212,7 +222,7 @@ class GPTSFTDataset(Dataset):
             return [item.tolist() for item in x]
         return x
 
-    def _round_to_nearest(self, n, m):
+    def _ceil_to_nearest(self, n, m):
         return (n + m - 1) // m * m
 
     def _collate_item(self, item, max_length, pad_id):
@@ -252,12 +262,12 @@ class GPTSFTDataset(Dataset):
         context_lengths = torch.LongTensor([item['context_length'] for item in batch])
         loss_mask = [self._build_loss_mask(item)[1:] for item in batch]
 
-        max_length = max([len(x) for x in input_ids])
+        max_length = max([len(x) for x in input_ids]) + self.tokens_to_generate
         # increase max length to nearest multiple of 4 or 8
         if self.pad_to_max_length:
             max_length = self.max_seq_length
         else:
-            max_length = min(self.max_seq_length, self._round_to_nearest(max_length, 8))
+            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 8))
         assert max_length <= self.max_seq_length
 
         attention_mask = [self._create_attention_mask(max_length) for _ in batch]

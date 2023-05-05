@@ -239,7 +239,8 @@ class MegatronBaseModel(NLPModel):
         params = []
         for param_group in self._optimizer_param_groups:
             for param in param_group['params']:
-                params.append(param)
+                if param.requires_grad:  # (@adithyare) adapter training with pp>1 can result in params with no grads
+                    params.append(param)
         return params
 
     def configure_gradient_clipping(self, *args, **kwargs):

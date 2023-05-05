@@ -397,6 +397,101 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         return instance
 
 
+class PEFTSaveRestoreConnector(NLPSaveRestoreConnector):
+    """
+    PEFT models require the ability to load/save a small subset of the full model (once PEFT params have been infused into the base model.)
+    The PEFTSaveRestoreConnector is used to allow loading and saving only the PEFT params while not saving the entire model.
+
+    Args:
+        peft_model_nemo_path: Used to provide the .nemo file corresponding to a PEFT model (which will only contain a small set of params)
+        peft_model_ckpt_path: Used to provide the path to .ckpt files of a PEFt model. This is required when no .nemo is available (yet) such as during resumed training.
+    If both are provided the peft_model_ckpt_path takes precedence. 
+    If neither are provided, PEFT params are initialized at random (not loaded from any external source).
+    """
+
+    def __init__(self, peft_model_nemo_path: Optional[str] = None, peft_model_ckpt_path: Optional[str] = None) -> None:
+        super().__init__()
+        self.peft_model_ckpt_name = "model_weights.ckpt"
+        if peft_model_ckpt_path:
+            # First we will try to load a adapter ckpt path
+            # this is given priority over loading from nemo path to make resumption of training possible
+            ckpt_name = os.path.basename(peft_model_ckpt_path)
+            if not ckpt_name.strip() == '':
+                # update the weights file name inside the ckpt path rank folders
+                self.peft_model_ckpt_name = ckpt_name
+            self.peft_model_ckpt_dir = os.path.dirname(peft_model_ckpt_path)
+            assert os.path.isdir(self.peft_model_ckpt_dir)
+            self.peft_model_nemo_path = None
+        elif peft_model_nemo_path:
+            # If resumption is not possible we will try to load a adapter nemo path
+            self.peft_model_nemo_path = peft_model_nemo_path
+            assert os.path.exists(self.peft_model_nemo_path)
+            self.peft_model_ckpt_dir = None
+        else:
+            # We are not resuming training from a nemo file or a ckpt
+            # We are training the adapter from randomly initialization
+            self.peft_model_nemo_path = None
+            self.peft_model_ckpt_dir = None
+
+    def _load_state_dict_from_disk(self, model_weights, map_location=None):
+        """
+        Infuse the state_dict of the base model with PEFT params from either a peft_model_nemo_path or peft_model_ckpt_path
+        """
+        # first load based model weights
+        base_model_state_dict = super()._load_state_dict_from_disk(model_weights, map_location)
+        # Next, We want to load PEFT model's weights
+        if self.peft_model_nemo_path:
+            # if the PEFT weights are provided in a .nemo file
+            # we need to untar the .nemo if its still tarred
+            with tempfile.TemporaryDirectory() as tmpdir:
+                self._unpack_nemo_file(self.peft_model_nemo_path, tmpdir)
+                model_weights_path = self._inject_model_parallel_rank_for_ckpt(tmpdir, self.peft_model_ckpt_name)
+                peft_state_dict = torch.load(model_weights_path, map_location)
+        elif self.peft_model_ckpt_dir:
+            # if the PEFT weights are provided in a ckpt path file
+            # we don't need to untar
+            model_weights_path = self._inject_model_parallel_rank_for_ckpt(
+                self.peft_model_ckpt_dir, self.peft_model_ckpt_name
+            )
+            peft_state_dict = torch.load(model_weights_path, map_location)['state_dict']
+        else:
+            peft_state_dict = {}
+        base_model_state_dict.update(peft_state_dict)  # add the PEFT state_dict into the base model's state_dict
+        return base_model_state_dict
+
+    def restore_from(
+        self,
+        calling_cls,
+        restore_path: str,
+        override_config_path: Optional[Union[OmegaConf, str]] = None,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+        return_config: bool = False,
+        trainer: Trainer = None,
+    ):
+        """
+        Extends the restore_from method of the `NLPSaveRestoreConnector` so that PEFT params are inserted into the state_dict which is required when training a PEFT model from scratch.
+        """
+        # Get path where the command is executed - the artifacts will be "retrieved" there
+        # (original .nemo behavior)
+        loaded_params = super().load_config_and_state_dict(
+            calling_cls, restore_path, override_config_path, map_location, strict, return_config, trainer,
+        )
+        if not isinstance(loaded_params, tuple) or return_config is True:
+            return loaded_params
+        conf, instance, state_dict = loaded_params
+        state_dict = self.modify_state_dict(conf, state_dict)
+
+        if (
+            self.peft_model_nemo_path is None and self.peft_model_ckpt_dir is None
+        ):  # we have this check only for training PEFT from scratch
+            peft_state_dict = instance.get_peft_state_dict()
+            state_dict.update(peft_state_dict)
+        self.load_instance_with_state_dict(instance, state_dict, strict)
+        logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
+        return instance
+
+
 class PipelineMixedPrecisionPlugin(NativeMixedPrecisionPlugin):
     """ Overrides PTL autocasting to not wrap training/val/test_step.
         We do this because we have the megatron-core fwd/bwd functions in training_step.

@@ -215,8 +215,8 @@ class Exportable(ABC):
                 elif format == ExportFormat.ONNX:
                     # dynamic axis is a mapping from input/output_name => list of "dynamic" indices
                     if dynamic_axes is None:
-                        dynamic_axes = get_dynamic_axes(self.input_module.input_types, input_names)
-                        dynamic_axes.update(get_dynamic_axes(self.output_module.output_types, output_names))
+                        dynamic_axes = get_dynamic_axes(self.input_module.input_types_for_export, input_names)
+                        dynamic_axes.update(get_dynamic_axes(self.output_module.output_types_for_export, output_names))
                     torch.onnx.export(
                         jitted_model,
                         input_example,
@@ -273,11 +273,19 @@ class Exportable(ABC):
 
     @property
     def input_names(self):
-        return get_io_names(self.input_module.input_types, self.disabled_deployment_input_names)
+        return get_io_names(self.input_module.input_types_for_export, self.disabled_deployment_input_names)
 
     @property
     def output_names(self):
-        return get_io_names(self.output_module.output_types, self.disabled_deployment_output_names)
+        return get_io_names(self.output_module.output_types_for_export, self.disabled_deployment_output_names)
+
+    @property
+    def input_types_for_export(self):
+        return self.input_types
+
+    @property
+    def output_types_for_export(self):
+        return self.output_types
 
     def get_export_subnet(self, subnet=None):
         """

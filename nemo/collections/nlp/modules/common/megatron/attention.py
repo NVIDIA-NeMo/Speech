@@ -18,7 +18,11 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
-from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import AdapterName, InfusedAdapterConfig
+from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+    AdapterName,
+    InfusedAdapterConfig,
+    LoraKQVAdapterConfig,
+)
 from nemo.collections.nlp.modules.common.megatron.fused_softmax import MatchedScaleMaskSoftmax
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.rotary_pos_embedding import apply_rotary_pos_emb
@@ -108,7 +112,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         self.megatron_legacy = megatron_legacy
 
-        self.set_accepted_adapter_types([InfusedAdapterConfig._target_])
+        self.set_accepted_adapter_types([InfusedAdapterConfig._target_, LoraKQVAdapterConfig._target_])
 
         if kv_channels is None:
             assert (
@@ -360,6 +364,11 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         if self.attention_type == AttnType.self_attn:
             # Attention heads [sq, b, h] --> [sq, b, (np * 3 * hn)]
             mixed_x_layer, _ = self.query_key_value(hidden_states)
+            if self.is_adapter_available():
+                lora_kqv_adapter = self.get_adapter_module(AdapterName.LORA_KQV_ADAPTER)
+                if lora_kqv_adapter:
+                    lora_mixed_x_layer = lora_kqv_adapter(hidden_states)
+                    mixed_x_layer = mixed_x_layer + lora_mixed_x_layer
 
             # [sq, b, (np * 3 * hn)] --> [sq, b, np, 3 * hn]
             new_tensor_shape = mixed_x_layer.size()[:-1] + (

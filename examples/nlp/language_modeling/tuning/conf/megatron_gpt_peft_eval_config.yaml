@@ -1,0 +1,130 @@
+name: megatron_gpt_peft_${model.peft.peft_scheme}_tuning
+
+trainer:
+  devices: 1
+  accelerator: gpu
+  num_nodes: 1
+  precision: 16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  replace_sampler_ddp: False
+  max_epochs: 9999
+  max_steps: 20000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10 # frequency with which training steps are logged 
+  val_check_interval: 200 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
+  gradient_clip_val: 1.0
+
+exp_manager:
+  explicit_log_dir: null
+  exp_dir: null
+  name: ${name}
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: validation_${model.data.validation_ds.metric.name}
+    save_top_k: 1
+    mode: max
+    save_nemo_on_train_end: True
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{consumed_samples}'
+    model_parallel_size: ${model.tensor_model_parallel_size}
+    always_save_nemo: True
+    save_best_model: False
+
+model:
+  seed: 1234
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  
+  global_batch_size: 1
+  micro_batch_size: 1
+  restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  save_nemo_on_validation_end: True # Saves an inference ready .nemo file every time a checkpoint is saved during training. 
+  sync_batch_comm: False
+  megatron_amp_O2: False
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Activation Checkpoint 
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  answer_only_loss: False # not used right now
+  gradient_as_bucket_view: False
+
+  hidden_dropout: 0.0
+  attention_dropout: 0.0
+  ffn_dropout: 0.0
+
+  peft:
+    peft_scheme: "adapter"  # can be either adapter,ia3, or ptuning
+    restore_from_path: null
+    
+    # Used for adapter peft training
+    adapter_tuning:
+      type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'
+      adapter_dim: 32
+      adapter_dropout: 0.0
+      norm_position: 'pre' # This can be set to 'pre' or 'post', 'pre' is normally what is used.
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
+    
+    # Used for p-tuning peft training
+    p_tuning:
+      virtual_tokens: 10  # The number of virtual tokens the prompt encoder should add at the start of the sequence
+      bottleneck_dim: 1024  # the size of the prompt encoder mlp bottleneck
+      embedding_dim: 1024  # the size of the prompt encoder embeddings
+      init_std: 0.023
+
+  data:
+    test_ds:
+      file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      names: ??? # Names of the corresponding datasets used to log metrics.
+      global_batch_size: ???
+      micro_batch_size: ???
+      shuffle: False
+      num_workers: 0
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      context_key: ${data.train_ds.context_key}
+      label_key: ${data.train_ds.label_key}
+      add_eos: ${data.train_ds.add_eos}
+      add_sep: ${data.train_ds.add_sep}
+      add_bos: ${data.train_ds.add_bos}
+      separate_prompt_and_response_with_newline: ${data.train_ds.separate_prompt_and_response_with_newline}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: ${data.train_ds.truncation_field} # Options: ['context', 'answer']
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: ${data.train_ds.prompt_template}
+      tokens_to_generate: ???
+
+      metric:
+        name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null
+    
+inference:
+  greedy: True # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  outfile_path: /home/adithyare/exp/foo.txt

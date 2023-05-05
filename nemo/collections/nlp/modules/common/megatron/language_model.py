@@ -15,6 +15,10 @@
 """Transformer based language model."""
 import torch
 
+from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+    AdapterName,
+    PromptEncoderAdapterConfig,
+)
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
 from nemo.collections.nlp.modules.common.megatron.rotary_pos_embedding import RotaryEmbedding
@@ -25,6 +29,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     init_method_normal,
     scaled_init_method_normal,
 )
+from nemo.core import adapter_mixins
 
 try:
     from apex.transformer.enums import AttnMaskType
@@ -410,7 +415,7 @@ class Embedding(MegatronModule):
                 )
 
 
-class TransformerLanguageModel(MegatronModule):
+class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin):
     """Transformer language model.
 
     Arguments:
@@ -639,6 +644,7 @@ class TransformerLanguageModel(MegatronModule):
                     init_method=self.init_method,
                 )
                 self._output_layer_key = 'output_layer'
+        self.set_accepted_adapter_types([PromptEncoderAdapterConfig._target_])
 
     def set_input_tensor(self, input_tensor):
         """ See megatron.model.transformer.set_input_tensor()"""
@@ -671,7 +677,21 @@ class TransformerLanguageModel(MegatronModule):
     ):
         # Embeddings.
         if self.pre_process and encoder_input is None:
+
             encoder_input = self.embedding(enc_input_ids, enc_position_ids, token_type_ids=token_type_ids)
+            if self.is_adapter_available():
+                _sq, _bs, _hs = encoder_input.size()
+                ptuning_adapter = self.get_adapter_module(AdapterName.PTUNING_ADAPTER)
+                v = ptuning_adapter.virtual_tokens
+                if ptuning_adapter and _sq >= v:  # The sequence should be longer the v to insert virtual embeddings.
+                    strategy = ptuning_adapter.adapter_strategy
+                    virtual_embeddings = self.forward_single_enabled_adapter_(
+                        _bs, ptuning_adapter, adapter_name=AdapterName.PTUNING_ADAPTER, adapter_strategy=strategy,
+                    )
+                    encoder_input = encoder_input[
+                        v:, :, :
+                    ]  # the first v tokens are pads so that they can be swapped out with virtual embeddings.
+                    encoder_input = torch.concat([virtual_embeddings, encoder_input], dim=0)
         else:
             pass
 
@@ -696,6 +716,7 @@ class TransformerLanguageModel(MegatronModule):
                     rotary_pos_emb = self.rotary_pos_emb(encoder_input.size(0))
         else:
             rotary_pos_emb = None
+
         # encoder.
         if enc_hidden_states is None:
             encoder_output = self.encoder(

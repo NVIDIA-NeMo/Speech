@@ -321,6 +321,8 @@ class GPTDataset(Dataset):
         self.reset_position_ids = cfg.data.get('reset_position_ids', False)
         self.reset_attention_mask = cfg.data.get('reset_attention_mask', False)
         self.eod_mask_loss = cfg.data.get('eod_mask_loss', False)
+        self.create_inputs = any([self.reset_position_ids, self.reset_attention_mask, self.eod_mask_loss])
+        self.cached_inputs = False
         self.eos_id = tokenizer.eos_id
         self.no_seqlen_plus_one_input_tokens = cfg.data.get('no_seqlen_plus_one_input_tokens', False)
         self.add_extra_token = 1
@@ -406,9 +408,19 @@ class GPTDataset(Dataset):
             tokens = text
             labels = torch.roll(text, shifts=-1, dims=0)
             labels[-1] = -1
-        attention_mask, loss_mask, position_ids = _create_ltor_masks_and_position_ids(
-            tokens, self.eos_id, self.reset_position_ids, self.reset_attention_mask, self.eod_mask_loss,
-        )
+        if self.create_inputs or not self.cached_inputs:
+            attention_mask, loss_mask, position_ids = _create_ltor_masks_and_position_ids(
+                tokens, self.eos_id, self.reset_position_ids, self.reset_attention_mask, self.eod_mask_loss,
+            )
+            if not self.create_inputs:
+                self.cached_attention_mask = attention_mask
+                self.cached_loss_mask = loss_mask
+                self.cached_position_ids = position_ids
+                self.cached_inputs = True
+        else:
+            attention_mask = self.cached_attention_mask
+            loss_mask = self.cached_loss_mask
+            position_ids = self.cached_position_ids
         loss_mask[labels == -1] = 0.0
         tokens[tokens == -1] = 0
         labels[labels == -1] = 0

@@ -195,7 +195,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             tensor_shape=tensor_shape,
             decoder_seq_length=dec_seq_length,
             dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
             sequence_parallel=self.cfg.get('sequence_parallel', False),
             enable_autocast=True,
         )

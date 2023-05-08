@@ -327,7 +327,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             tensor_shape=tensor_shape,
             decoder_seq_length=self.max_decoder_seq_length,
             dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
             enable_autocast=True,
         )
 

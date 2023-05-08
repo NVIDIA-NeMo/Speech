@@ -546,9 +546,6 @@ class GradScaler(torch.cuda.amp.GradScaler):
         self.hysteresis = hysteresis
         self._hysteresis_tracker = self.hysteresis
 
-    def __call__(self, outputs):
-        return self.scale(outputs)
-
     def _unscale_grads_(self, optimizer, *args):
         if getattr(optimizer, "_custom_amp_unscale_grads", False):
             return optimizer.unscale_grads(*args)

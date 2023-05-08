@@ -309,7 +309,7 @@ class MegatronBertModel(MegatronBaseModel):
             forward_only=False,
             tensor_shape=tensor_shape,
             dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler if self.cfg.precision == 16 else None,
+            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
             sequence_parallel=self.cfg.get('sequence_parallel', False),
             enable_autocast=True,
         )

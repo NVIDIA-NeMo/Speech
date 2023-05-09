@@ -216,3 +216,7 @@ model:
       warmup_steps: 500
       constant_steps: 50000
       min_lr: 2e-5
+
+  gc_interval: 0
+  # Interval of the host memory garbage collection. When it is zero, collectiion relies on the automatic garbage collector.
+  # If an interger value larger than zero is set, collection is done manually by the batch step interval of `gc_interval`.

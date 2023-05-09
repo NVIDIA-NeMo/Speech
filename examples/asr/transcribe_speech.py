@@ -47,7 +47,7 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
 
   compute_timestamps: Bool to request greedy time stamp information (if the model supports it)
   compute_langs: Bool to request language ID information (if the model supports it)
-  
+
   (Optionally: You can limit the type of timestamp computations using below overrides)
   ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word])
   rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word])
@@ -60,12 +60,12 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   batch_size: batch size during inference
 
   cuda: Optional int to enable or disable execution of model on certain CUDA device.
-  allow_mps: Bool to allow using MPS (Apple Silicon M-series GPU) device if available 
+  allow_mps: Bool to allow using MPS (Apple Silicon M-series GPU) device if available
   amp: Bool to decide if Automatic Mixed Precision should be used during inference
   audio_type: Str filetype of the audio. Supported = wav, flac, mp3
 
   overwrite_transcripts: Bool which when set allows repeated transcriptions to overwrite previous results.
-  
+
   ctc_decoding: Decoding sub-config for CTC. Refer to documentation for specific values.
   rnnt_decoding: Decoding sub-config for RNNT. Refer to documentation for specific values.
 
@@ -209,7 +209,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # collect additional transcription information
     return_hypotheses = True
 
-    # we will adjust this flag is the model does not support it
+    # we will adjust this flag if the model does not support it
     compute_timestamps = cfg.compute_timestamps
     compute_langs = cfg.compute_langs
 
@@ -254,7 +254,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         else:
             cfg.decoding = cfg.rnnt_decoding
 
-    # prepare audio filepaths and decide wether it's partical audio
+    # prepare audio filepaths and decide wether it's partial audio
     filepaths, partial_audio = prepare_audio_data(cfg)
 
     # setup AMP (optional)

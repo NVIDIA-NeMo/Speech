@@ -138,6 +138,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                 num_workers=num_workers,
                 channel_selector=channel_selector,
                 augmentor=augmentor,
+                verbose=verbose,
             )
 
         if paths2audio_files is None or len(paths2audio_files) == 0:

@@ -56,7 +56,7 @@ class TextGenerationStrategy:
 
         output_tensor = fwd_bwd_function(
             forward_step_func=self.model.get_forward_output_only_func(),
-            data_iterator=batch,
+            data_iterator=iter([batch,]),
             model=[self.forward_model],
             num_microbatches=get_num_microbatches(),
             forward_only=True,

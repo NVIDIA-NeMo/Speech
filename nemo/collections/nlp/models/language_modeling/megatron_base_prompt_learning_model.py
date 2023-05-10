@@ -146,6 +146,10 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         self.lowest_val_loss = None
         self.prompt_encoder = None
 
+        self.enable_autocast = (
+            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+        )
+
         # define validation metric
         if self.cfg.get('report_validation_metric', False):
             validation_metric = self.cfg.get('validation_metric', 'accuracy')

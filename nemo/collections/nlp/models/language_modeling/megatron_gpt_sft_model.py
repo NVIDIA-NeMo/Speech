@@ -302,7 +302,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             dtype=self.autocast_dtype,
             grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
             sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=True,
+            enable_autocast=self.enable_autocast,
         )
 
         # only the last stages of the pipeline return losses

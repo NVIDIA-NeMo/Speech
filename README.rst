@@ -254,7 +254,7 @@ To install Megatron-core, run
 
     git clone https://github.com/NVIDIA/Megatron-LM.git
     cd Megatron-LM
-    git checkout 3db2063b1ff992a971ba18f7101eecc9c4e90f03
+    git checkout 9f8bdeb4814ed61fbc9c7d5b39c7710e77b99754
     pip install -e .
 
 It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies.

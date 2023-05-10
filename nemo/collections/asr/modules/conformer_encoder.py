@@ -20,7 +20,7 @@ from typing import List, Optional, Set
 import torch
 import torch.distributed
 import torch.nn as nn
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, open_dict
 
 from nemo.collections.asr.models.configs import CacheAwareStreamingConfig
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
@@ -884,8 +884,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         if att_context_size:
             att_context_size = list(att_context_size)
-        else:
+        elif hasattr(self._cfg, "att_context_size"):
             att_context_size = self._cfg.att_context_size
+        else:
+            att_context_size = self.att_context_size
 
         if self_attention_model is None:
             self_attention_model = self._cfg.self_attention_model
@@ -971,8 +973,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 m.self_attention_model = self_attention_model
 
         if update_config:
-            self._cfg.self_attention_model = self_attention_model
-            self._cfg.att_context_size = att_context_size
+            with open_dict(self._cfg):
+                self._cfg.self_attention_model = self_attention_model
+                self._cfg.att_context_size = att_context_size
 
 
 class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixin):

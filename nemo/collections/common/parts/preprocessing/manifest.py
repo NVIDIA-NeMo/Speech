@@ -15,7 +15,6 @@
 import json
 import os
 from os.path import expanduser
-from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 from nemo.utils import logging
@@ -196,9 +195,11 @@ def get_full_path(
         ]
     elif isinstance(audio_file, str):
         # If input is a string, get the corresponding full path
-        audio_file = Path(audio_file)
-
-        if (len(str(audio_file)) < audio_file_len_limit) and not audio_file.is_absolute() and not audio_file.is_file():
+        if (
+            (len(audio_file) < audio_file_len_limit)
+            and not os.path.isabs(audio_file)
+            and not os.path.isfile(audio_file)
+        ):
             # If audio_file is not available and the path is not absolute, the full path is assumed
             # to be relative to the manifest file parent directory or data directory.
             if manifest_file is None and data_dir is None:
@@ -210,23 +211,17 @@ def get_full_path(
 
             # resolve the data directory
             if data_dir is None:
-                if is_datastore_path(manifest_file):
-                    # WORKAROUND: pathlib does not support URIs, so use os.path
-                    data_dir = os.path.dirname(manifest_file)
-                else:
-                    data_dir = Path(manifest_file).parent.as_posix()
+                data_dir = os.path.dirname(manifest_file)
 
             # assume audio_file path is relative to data_dir
-            audio_file_path = os.path.join(data_dir, audio_file.as_posix())
+            audio_file_path = os.path.join(data_dir, audio_file)
 
             if is_datastore_path(audio_file_path):
                 # If audio was originally on an object store, use locally-cached path
                 audio_file_path = datastore_path_to_local_path(audio_file_path)
 
-            audio_file_path = Path(audio_file_path)
-
-            if audio_file_path.is_file():
-                audio_file = str(audio_file_path.absolute())
+            if os.path.isfile(audio_file_path):
+                audio_file = os.path.abspath(audio_file_path)
             else:
                 audio_file = expanduser(audio_file)
         else:

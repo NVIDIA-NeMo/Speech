@@ -412,6 +412,9 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             update_config (bool): Whether to update the config or not with the new attention model.
                 Defaults to True.
         """
+        if self_attention_model is None and att_context_size is None:
+            return
+
         if not hasattr(self, 'encoder'):
             logging.info(
                 "Could not change the self_attention_model in encoder "
@@ -425,8 +428,9 @@ class ASRModuleMixin(ASRAdapterModelMixin):
 
         self.encoder.change_attention_model(self_attention_model, att_context_size, update_config, self.device)
         if update_config:
-            self.cfg.encoder.self_attention_model = self_attention_model
-            self.cfg.encoder.att_context_size = att_context_size
+            with open_dict(self.cfg):
+                self.cfg.encoder.self_attention_model = self_attention_model
+                self.cfg.encoder.att_context_size = att_context_size
 
     def conformer_stream_step(
         self,

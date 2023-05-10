@@ -114,7 +114,8 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         Used for generate method only for now.
         """
 
-        def fwd_output_only_func(batch, model):
+        def fwd_output_only_func(dataloader_iter, model):
+            batch = next(dataloader_iter)
             extra_arg = {}
             (
                 tokens,

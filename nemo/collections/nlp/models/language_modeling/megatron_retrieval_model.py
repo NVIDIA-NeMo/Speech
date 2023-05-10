@@ -509,7 +509,8 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         Used for generate method only.
         """
 
-        def fwd_output_only_func(batch, model):
+        def fwd_output_only_func(dataloader_iter, model):
+            batch = next(dataloader_iter)
             extra_arg = {}
             (
                 tokens,

@@ -11,6 +11,7 @@ ijson
 inflect
 jieba
 matplotlib>=3.3.2
+megatron_core==0.1.0
 nltk>=3.6.5
 numpy
 opencc

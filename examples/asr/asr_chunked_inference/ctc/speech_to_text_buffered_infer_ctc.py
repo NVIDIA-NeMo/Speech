@@ -48,6 +48,7 @@ import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.metrics.wer import CTCDecodingConfig
+from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchASR
 from nemo.collections.asr.parts.utils.transcribe_utils import (
@@ -78,10 +79,16 @@ class TranscriptionConfig:
     pred_name_postfix: Optional[str] = None  # If you need to use another model name, rather than standard one.
     random_seed: Optional[int] = None  # seed number going to be used in seed_everything()
 
+    # Set to True to output greedy timestamp information (only supported models)
+    compute_timestamps: bool = False
+
+    # Set to True to output language ID information
+    compute_langs: bool = False
+
     # Chunked configs
     chunk_len_in_secs: float = 1.6  # Chunk length in seconds
     total_buffer_in_secs: float = 4.0  # Length of buffer (chunk + left and right padding) in seconds
-    model_stride: int = 8  # Model downsampling factor, 8 for Citrinet models and 4 for Conformer models",
+    model_stride: int = 8  # Model downsampling factor, 8 for Citrinet and FasConformer models and 4 for Conformer models.
 
     # Decoding strategy for CTC models
     decoding: CTCDecodingConfig = CTCDecodingConfig()
@@ -107,6 +114,9 @@ class TranscriptionConfig:
 def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     torch.set_grad_enabled(False)
+
+    for key in cfg:
+        cfg[key] = None if cfg[key] == 'None' else cfg[key]
 
     if is_dataclass(cfg):
         cfg = OmegaConf.structured(cfg)
@@ -173,6 +183,23 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
             f"is {cfg.overwrite_transcripts}. Returning without re-transcribing text."
         )
         return cfg
+
+    # Setup decoding strategy
+    if hasattr(asr_model, 'change_decoding_strategy'):
+        if not isinstance(asr_model, EncDecCTCModel) and not isinstance(asr_model, EncDecHybridRNNTCTCModel):
+            raise ValueError("The script supports ctc model and hybrid model with ctc decodng!")
+
+        else:
+            if cfg.compute_langs:
+                raise ValueError("CTC models do not support `compute_langs` at the moment.")
+
+            if hasattr(
+                asr_model, 'cur_decoder'
+            ):  # hybrid model with ctc decoding or potential other models containing decoding switch feature
+                asr_model.change_decoding_strategy(cfg.decoding, decoder_type='ctc')
+
+            else:  # ctc model
+                asr_model.change_decoding_strategy(cfg.decoding)
 
     asr_model.eval()
     asr_model = asr_model.to(asr_model.device)

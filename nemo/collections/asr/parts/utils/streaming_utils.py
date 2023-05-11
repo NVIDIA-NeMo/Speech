@@ -769,9 +769,15 @@ class FrameBatchASR:
 
             feat_signal, feat_signal_len = batch
             feat_signal, feat_signal_len = feat_signal.to(device), feat_signal_len.to(device)
-            log_probs, encoded_len, predictions = self.asr_model(
-                processed_signal=feat_signal, processed_signal_length=feat_signal_len
-            )
+            forward_outs = self.asr_model(processed_signal=feat_signal, processed_signal_length=feat_signal_len)
+
+            if len(forward_outs) == 2:  # hybrid ctc rnnt model
+                encoded, encoded_len = forward_outs
+                log_probs = self.asr_model.ctc_decoder(encoder_output=encoded)
+                predictions = log_probs.argmax(dim=-1, keepdim=False)
+            else:
+                log_probs, encoded_len, predictions = forward_outs
+
             preds = torch.unbind(predictions)
             for pred in preds:
                 self.all_preds.append(pred.cpu().numpy())

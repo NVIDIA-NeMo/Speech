@@ -227,6 +227,17 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     compute_timestamps = cfg.compute_timestamps
     compute_langs = cfg.compute_langs
 
+    # Check whether model and decoder type match
+    if isinstance(asr_model, EncDecCTCModel):
+        if cfg.decoder_type and cfg.decoder_type != 'ctc':
+            raise ValueError('CTC model only support ctc decoding!')
+    elif isinstance(asr_model, EncDecHybridRNNTCTCModel):
+        if cfg.decoder_type and cfg.decoder_type not in ['ctc', 'rnnt']:
+            raise ValueError('Hybrid model only support ctc or rnnt decoding!')
+    else:  # rnnt model, there could be other models needs to be addressed.
+        if cfg.decoder_type and cfg.decoder_type != 'rnnt':
+            raise ValueError('RNNT model only support rnnt decoding!')
+
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
         if cfg.decoder_type is not None:
@@ -240,7 +251,10 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
                 decoding_cfg.preserve_alignments = cfg.compute_timestamps
             if 'compute_langs' in decoding_cfg:
                 decoding_cfg.compute_langs = cfg.compute_langs
-            asr_model.change_decoding_strategy(decoding_cfg, decoder_type=cfg.decoder_type)
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(decoding_cfg, decoder_type=cfg.decoder_type)
+            else:
+                asr_model.change_decoding_strategy(decoding_cfg)
 
         # Check if ctc or rnnt model
         elif hasattr(asr_model, 'joint'):  # RNNT model

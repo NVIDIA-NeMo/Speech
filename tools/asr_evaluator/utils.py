@@ -28,6 +28,9 @@ def run_asr_inference(cfg: DictConfig) -> DictConfig:
     if (cfg.model_path and cfg.pretrained_name) or (not cfg.model_path and not cfg.pretrained_name):
         raise ValueError("Please specify either cfg.model_path or cfg.pretrained_name!")
 
+    if cfg.inference.decoder_type not in [None, 'ctc', 'rnnt']:
+        raise ValueError("decoder_type could only be null, ctc or rnnt")
+
     if cfg.inference.mode == "offline":
         cfg = run_offline_inference(cfg)
 
@@ -67,6 +70,7 @@ def run_asr_inference(cfg: DictConfig) -> DictConfig:
 
 
 def run_chunked_inference(cfg: DictConfig) -> DictConfig:
+
     if "output_filename" not in cfg or not cfg.output_filename:
         if cfg.model_path:
             model_name = Path(cfg.model_path).stem
@@ -93,10 +97,43 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
         / "ctc"
         / "speech_to_text_buffered_infer_ctc.py"
     )
-
-    if (cfg.pretrained_name and 'transducer' in cfg.pretrained_name) or (
-        cfg.model_path and 'transducer' in cfg.model_path
+    use_rnnt_scrpit = False
+    # hybrid model
+    if (cfg.pretrained_name and 'hybrid' in cfg.pretrained_name.lower()) or (
+        cfg.model_path and 'hybrid' in cfg.model_path.lower()
     ):
+        if cfg.inference.decoder_type != 'ctc':
+            use_rnnt_scrpit = True
+    # rnnt model
+    elif (
+        (cfg.pretrained_name and 'rnnt' in cfg.pretrained_name.lower())
+        or (cfg.pretrained_name and 'transducer' in cfg.pretrained_name.lower())
+        or (cfg.model_path and 'rnnt' in cfg.model_path.lower())
+        or (cfg.model_path and 'transducer' in cfg.model_path.lower())
+    ):
+        if cfg.inference.decoder_type and cfg.inference.decoder_type != 'rnnt':
+            raise ValueError(
+                f"rnnt models only support rnnt deocoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or rnnt for rnnt models"
+            )
+        use_rnnt_scrpit = True
+
+    # ctc model
+    elif (cfg.pretrained_name and 'ctc' in cfg.pretrained_name.lower()) or (
+        cfg.pretrained_name and 'ctc' in cfg.pretrained_name.lower()
+    ):
+        if cfg.inference.decoder_type and cfg.inference.decoder_type != 'ctc':
+            raise ValueError(
+                f"ctc models only support ctc deocoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or ctc for ctc models"
+            )
+    else:
+        raise ValueError(
+            "Please make sure your pretrained_name or model_path contains \n\
+            'hybrid' for EncDecHybridRNNTCTCModel model, \n\
+            'transducer/rnnt' for EncDecRNNTModel model  or \n\
+            'ctc' for EncDecCTCModel."
+        )
+
+    if use_rnnt_scrpit:
         script_path = (
             Path(__file__).parents[2]
             / "examples"
@@ -106,20 +143,25 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
             / "speech_to_text_buffered_infer_rnnt.py"
         )
 
+    # If need to change other config such as decoding strategy, could either:
+    # 1) change TranscriptionConfig on top of the executed scripts such as speech_to_text_buffered_infer_rnnt.py, or
+    # 2) add command as "decoding.strategy=greedy_batch " to below script
+
+    base_cmd = f"python {script_path} \
+    calculate_wer=False \
+    model_path={cfg.model_path} \
+    pretrained_name={cfg.pretrained_name} \
+    dataset_manifest={cfg.test_ds.manifest_filepath} \
+    output_filename={cfg.output_filename} \
+    random_seed={cfg.random_seed} \
+    batch_size={cfg.test_ds.batch_size} \
+    num_workers={cfg.test_ds.num_workers} \
+    chunk_len_in_secs={cfg.inference.chunk_len_in_secs} \
+    total_buffer_in_secs={cfg.inference.total_buffer_in_secs} \
+    model_stride={cfg.inference.model_stride} "
+
     subprocess.run(
-        f"python {script_path} "
-        f"calculate_wer=False "
-        f"model_path={cfg.model_path} "
-        f"pretrained_name={cfg.pretrained_name} "
-        f"dataset_manifest={cfg.test_ds.manifest_filepath} "
-        f"output_filename={cfg.output_filename} "
-        f"random_seed={cfg.random_seed} "
-        f"batch_size={cfg.test_ds.batch_size} "
-        f"chunk_len_in_secs={cfg.inference.chunk_len_in_secs} "
-        f"total_buffer_in_secs={cfg.inference.total_buffer_in_secs} "
-        f"model_stride={cfg.inference.model_stride} ",
-        shell=True,
-        check=True,
+        base_cmd, shell=True, check=True,
     )
     return cfg
 
@@ -142,7 +184,7 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
         f.seek(0)  # reset file pointer
         script_path = Path(__file__).parents[2] / "examples" / "asr" / "transcribe_speech.py"
 
-        # If need to move other config such as decoding strategy, could either:
+        # If need to change other config such as decoding strategy, could either:
         # 1) change TranscriptionConfig on top of the executed scripts such as transcribe_speech.py in examples/asr, or
         # 2) add command as "rnnt_decoding.strategy=greedy_batch " to below script
         subprocess.run(
@@ -153,6 +195,7 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
             f"dataset_manifest={cfg.test_ds.manifest_filepath} "
             f"output_filename={cfg.output_filename} "
             f"batch_size={cfg.test_ds.batch_size} "
+            f"num_workers={cfg.test_ds.num_workers} "
             f"random_seed={cfg.random_seed} "
             f"eval_config_yaml={f.name} "
             f"decoder_type={cfg.inference.decoder_type} ",

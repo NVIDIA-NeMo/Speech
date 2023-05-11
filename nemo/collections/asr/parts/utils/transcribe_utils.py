@@ -58,7 +58,8 @@ def get_buffered_pred_feat_rnnt(
             print("Parsing manifest files...")
             for l in mfst_f:
                 row = json.loads(l.strip())
-                filepaths.append(row['audio_filepath'])
+                audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
+                filepaths.append(audio_file)
                 if 'text' in row:
                     refs.append(row['text'])
 
@@ -149,8 +150,9 @@ def get_buffered_pred_feat(
                 row = json.loads(l.strip())
                 if 'text' in row:
                     refs.append(row['text'])
+                audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
                 # do not support partial audio
-                asr.read_audio_file(row['audio_filepath'], delay, model_stride_in_secs)
+                asr.read_audio_file(audio_file, delay, model_stride_in_secs)
                 hyp = asr.transcribe(tokens_per_chunk, delay)
                 hyps.append(hyp)
 

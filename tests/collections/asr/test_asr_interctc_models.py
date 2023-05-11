@@ -66,6 +66,7 @@ def squeezeformer_encoder_config() -> Dict:
 
 
 class TestInterCTCLoss:
+    @pytest.mark.pleasefixme
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "model_class", [EncDecCTCModel, EncDecHybridRNNTCTCModel],

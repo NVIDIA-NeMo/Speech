@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import re
 from abc import abstractmethod
 from dataclasses import dataclass, is_dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
@@ -498,6 +499,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 hypothesis = (prediction, alignments, token_repetitions)
             else:
                 hypothesis = self.decode_tokens_to_str(prediction)
+
+                # TODO: remove
+                # collapse leading spaces before . , ? for PC models
+                hypothesis = re.sub(r'(\s+)([\.\,\?])', r'\2', hypothesis)
 
                 if self.compute_hypothesis_token_set:
                     hypotheses_list[ind].tokens = self.decode_ids_to_tokens(prediction)

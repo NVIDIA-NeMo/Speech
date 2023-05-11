@@ -119,7 +119,7 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
 
     # ctc model
     elif (cfg.pretrained_name and 'ctc' in cfg.pretrained_name.lower()) or (
-        cfg.pretrained_name and 'ctc' in cfg.pretrained_name.lower()
+        cfg.model_path and 'ctc' in cfg.model_path.lower()
     ):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'ctc':
             raise ValueError(

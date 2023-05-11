@@ -57,16 +57,6 @@ pipeline {
       }
     }
 
-    // TODO: remove when pip package is available
-    stage('Megatron Core installation') {
-      steps {
-        sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
-            cd Megatron-LM && \
-            git checkout 9f8bdeb4814ed61fbc9c7d5b39c7710e77b99754 && \
-            pip install -e .'
-      }
-    }
-
     stage('PyTorch Lightning version') {
       steps {
         sh 'python -c "import pytorch_lightning; print(pytorch_lightning.__version__)"'

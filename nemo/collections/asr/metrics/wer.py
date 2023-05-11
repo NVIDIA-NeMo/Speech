@@ -114,6 +114,8 @@ def word_error_rate_detail(
             if len(h_list) != 0:
                 errors = len(h_list)
                 ops_count['insertions'] += errors
+            else:
+                errors = 0
         else:
             if use_cer:
                 measures = jiwer.cer(r, h, return_dict=True)

@@ -131,10 +131,14 @@ class MelSpectrogramFeaturizer:
             n_fft=win_length,
             lowfreq=lowfreq,
             highfreq=highfreq,
+            mag_power=1.0,
             log=log,
             log_zero_guard_type=log_zero_guard_type,
             log_zero_guard_value=log_zero_guard_value,
             mel_norm=mel_norm,
+            normalize=None,
+            preemph=None,
+            dither=0.0,
         )
 
     def compute_mel_spec(self, manifest_entry: dict, audio_dir: Path) -> Tensor:

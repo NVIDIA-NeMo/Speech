@@ -67,6 +67,9 @@ def normalize_volume(audio: np.array, volume_level: float) -> np.array:
     if not (0.0 <= volume_level <= 1.0):
         raise ValueError(f"Volume must be in range [0.0, 1.0], received {volume_level}")
 
+    if audio.size == 0:
+        return audio
+
     max_sample = np.max(np.abs(audio))
     if max_sample == 0:
         return audio

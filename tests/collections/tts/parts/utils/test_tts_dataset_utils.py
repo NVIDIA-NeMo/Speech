@@ -14,9 +14,10 @@
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from nemo.collections.tts.parts.utils.tts_dataset_utils import get_abs_rel_paths, get_audio_filepaths
+from nemo.collections.tts.parts.utils.tts_dataset_utils import get_abs_rel_paths, get_audio_filepaths, normalize_volume
 
 
 class TestTTSDatasetUtils:
@@ -53,3 +54,68 @@ class TestTTSDatasetUtils:
 
         assert abs_path == Path("/home/audio/examples/example.wav")
         assert rel_path == audio_rel_path
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume(self):
+        input_audio = np.array([0.0, 0.1, 0.3, 0.5])
+        expected_output = np.array([0.0, 0.18, 0.54, 0.9])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=0.9)
+
+        np.testing.assert_array_almost_equal(output_audio, expected_output)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_negative_peak(self):
+        input_audio = np.array([0.0, 0.1, -0.3, -1.0, 0.5])
+        expected_output = np.array([0.0, 0.05, -0.15, -0.5, 0.25])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=0.5)
+
+        np.testing.assert_array_almost_equal(output_audio, expected_output)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_zero(self):
+        input_audio = np.array([0.0, 0.1, 0.3, 0.5])
+        expected_output = np.array([0.0, 0.0, 0.0, 0.0])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=0.0)
+
+        np.testing.assert_array_almost_equal(output_audio, expected_output)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_max(self):
+        input_audio = np.array([0.0, 0.1, 0.3, 0.5])
+        expected_output = np.array([0.0, 0.2, 0.6, 1.0])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=1.0)
+
+        np.testing.assert_array_almost_equal(output_audio, expected_output)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_zeros(self):
+        input_audio = np.array([0.0, 0.0, 0.0])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=0.5)
+
+        np.testing.assert_array_almost_equal(output_audio, input_audio)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_empty(self):
+        input_audio = np.array([])
+
+        output_audio = normalize_volume(audio=input_audio, volume_level=1.0)
+
+        np.testing.assert_array_almost_equal(output_audio, input_audio)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_normalize_volume_out_of_range(self):
+        input_audio = np.array([0.0, 0.1, 0.3, 0.5])
+        with pytest.raises(ValueError, match="Volume must be in range"):
+            normalize_volume(audio=input_audio, volume_level=2.0)

@@ -34,6 +34,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     MegatronHalfPrecisionPlugin,
     NLPDDPStrategy,
+    NLPSaveRestoreConnector,
     PEFTSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
 )
@@ -70,7 +71,6 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f"\n{OmegaConf.to_yaml(cfg)}")
     assert cfg.model.restore_from_path is not None
-    assert cfg.model.peft.restore_from_path is not None
     megatron_amp_o2 = cfg.model.get("megatron_amp_O2", False)
     with_distributed_adam = False
 
@@ -100,9 +100,14 @@ def main(cfg) -> None:
         plugins.append(TorchElasticEnvironment())
 
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
-    peft_model_cfg = MegatronGPTPEFTModel.restore_from(
-        restore_path=cfg.model.peft.restore_from_path, trainer=trainer, return_config=True,
-    )
+    if cfg.model.peft.restore_from_path:
+        peft_model_cfg = MegatronGPTPEFTModel.restore_from(
+            restore_path=cfg.model.peft.restore_from_path, trainer=trainer, return_config=True,
+        )
+    else:
+        peft_model_cfg = MegatronGPTPEFTModel.restore_from(
+            restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True,
+        )
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(peft_model_cfg):
@@ -116,9 +121,13 @@ def main(cfg) -> None:
         cfg.inference.add_BOS = peft_model_cfg.data.test_ds.add_bos
         cfg.inference.tokens_to_generate = peft_model_cfg.data.test_ds.tokens_to_generate
 
-    save_restore_connector = PEFTSaveRestoreConnector(
-        peft_model_nemo_path=cfg.model.peft.restore_from_path, peft_model_ckpt_path=None,
-    )
+    if cfg.model.peft.restore_from_path:
+        save_restore_connector = PEFTSaveRestoreConnector(
+            peft_model_nemo_path=cfg.model.peft.restore_from_path, peft_model_ckpt_path=None,
+        )
+    else:
+        save_restore_connector = NLPSaveRestoreConnector()
+
     if os.path.isdir(peft_model_cfg.restore_from_path):
         save_restore_connector.model_extracted_dir = cfg.model.restore_from_path
     # peft_cls = _get_peft_scheme(peft_model_cfg)

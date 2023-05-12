@@ -885,9 +885,9 @@ Hybrid ASR-TTS Model Configuration
 
 :ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` consists of three parts:
 
-* ASR model (``EncDecCTCModelBPE`` or ``EncDecRNNTBPEModel``)
+* ASR model (``EncDecCTCModelBPE``, ``EncDecRNNTBPEModel`` or ``EncDecHybridRNNTCTCBPEModel``)
 * TTS Mel Spectrogram Generator (currently, only :ref:`FastPitch <FastPitch_model>` model is supported)
-* Enhancer model (optional)
+* :ref:`Enhancer model <SpectrogramEnhancer_model>` (optional)
 
 Also, the config allows to specify :ref:`text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>`.
 
@@ -895,7 +895,7 @@ Main parts of the config:
 
 * ASR model
     * ``asr_model_path``: path to the ASR model checkpoint (`.nemo`) file, loaded only once, then the config of the ASR model is stored in the ``asr_model`` field
-    * ``asr_model_type``: needed only when training from scratch, ``rnnt_bpe`` corresponds to ``EncDecRNNTBPEModel``, ``ctc_bpe`` to ``EncDecCTCModelBPE``
+    * ``asr_model_type``: needed only when training from scratch. ``rnnt_bpe`` corresponds to ``EncDecRNNTBPEModel``, ``ctc_bpe`` to ``EncDecCTCModelBPE``, ``hybrid_rnnt_ctc_bpe`` to ``EncDecHybridRNNTCTCBPEModel``
     * ``asr_model_fuse_bn``: fusing BatchNorm in the pretrained ASR model, can improve quality in finetuning scenario
 * TTS model
     * ``tts_model_path``: path to the pretrained TTS model checkpoint (`.nemo`) file, loaded only once, then the config of the model is stored in the ``tts_model`` field
@@ -907,7 +907,7 @@ Main parts of the config:
         * ``speakers_filepath``: path (or paths) to the text file containing speaker ids for the multi-speaker TTS model (speakers are sampled randomly during training)
         * ``min_words`` and ``max_words``: parameters to filter text-only manifests by the number of words
         * ``tokenizer_workers``: number of workers for initial tokenization (when loading the data). ``num_CPUs / num_GPUs`` is a recommended value.
-    * ``asr_tts_sampling_technique``, ``asr_tts_sampling_temperature``, ``asr_tts_sampling_probabilities``: sampling parameters for text-only and audio-text data (if both specified). See parameters for ``nemo.collections.common.data.ConcatDataset``
+    * ``asr_tts_sampling_technique``, ``asr_tts_sampling_temperature``, ``asr_tts_sampling_probabilities``: sampling parameters for text-only and audio-text data (if both specified). Correspond to ``sampling_technique``, ``sampling_temperature``, and ``sampling_probabilities`` parameters of the :mod:`ConcatDataset <nemo.collections.common.data.dataset.ConcatDataset>`.
     * all other components are similar to conventional ASR models
 * ``validation_ds`` and ``test_ds`` correspond to the underlying ASR model
 
@@ -920,7 +920,7 @@ Main parts of the config:
     # asr model
     asr_model_path: ???
     asr_model: null
-    asr_model_type: null  # rnnt_bpe or ctc_bpe, needed only if instantiating from config, otherwise type is auto inferred
+    asr_model_type: null  # rnnt_bpe, ctc_bpe or hybrid_rnnt_ctc_bpe; needed only if instantiating from config, otherwise type is auto inferred
     asr_model_fuse_bn: false  # only ConformerEncoder supported now, use false for other models
 
     # tts model
@@ -972,6 +972,7 @@ Training from Scratch
 To train ASR model from scratch using text-only data use ``<NeMo_git_root>/examples/asr/asr_with_tts/speech_to_text_bpe_with_text.py`` script with conventional ASR model config, e.g. ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml`` or  ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_transducer_bpe.yaml``
 
 Please specify the ASR model type, paths to the TTS model, and (optional) enhancer, along with text-only data-related fields.
+Use ``++`` or ``+`` markers for these options, since the options are not present in the original ASR model config.
 
 .. code-block:: shell
 

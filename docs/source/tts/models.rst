@@ -112,7 +112,7 @@ Speech-to-text alignment is a critical component of neural TTS models. Autoregre
 
 
 End2End Models
---------
+--------------
 
 VITS
 ~~~~~~~~~~~~~~~
@@ -122,6 +122,17 @@ VITS is an end-to-end speech synthesis model, which generates raw waveform audio
         :align: center
         :alt: vits model
         :scale: 25%
+
+
+Enhancers
+---------
+
+.. _SpectrogramEnhancer_model:
+
+Spectrogram Enhancer
+~~~~~~~~~~~~~~~~~~~~
+GAN-based model to add details to blurry spectrograms from TTS models like Tacotron or FastPitch.
+
 
 References
 ----------

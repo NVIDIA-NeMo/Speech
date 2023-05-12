@@ -10,3 +10,4 @@ The common collection contains things that could be used across all collections.
    losses
    metrics
    tokenizers
+   data

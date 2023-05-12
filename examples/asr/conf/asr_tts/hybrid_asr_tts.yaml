@@ -8,7 +8,7 @@ model:
   # asr model
   asr_model_path: ???
   asr_model: null
-  asr_model_type: null  # rnnt_bpe or ctc_bpe, needed only if instantiating from config, otherwise type is auto inferred
+  asr_model_type: null  # rnnt_bpe, ctc_bpe or hybrid_rnnt_ctc_bpe; needed only if instantiating from config, otherwise type is auto inferred
   asr_model_fuse_bn: false  # only ConformerEncoder supported now, use false for other models
 
   # tts model

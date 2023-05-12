@@ -19,7 +19,7 @@ Provide ASR model config, add options related to TTS and text-only data.
 ```shell
 python speech_to_text_bpe_with_text.py \
     # (Optional: --config-path=<path to dir of configs> --config-name=<name of config without .yaml>) \
-    ++asr_model_type=<rnnt_bpe or ctc_bpe> \
+    ++asr_model_type=<rnnt_bpe, ctc_bpe or hybrid_rnnt_ctc_bpe> \
     ++tts_model_path=<path to compatible tts model> \
     ++enhancer_model_path=<optional path to enhancer model> \
     model.tokenizer.dir=<path to tokenizer> \

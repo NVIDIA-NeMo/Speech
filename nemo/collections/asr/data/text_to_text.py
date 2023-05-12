@@ -37,8 +37,7 @@ from nemo.utils import logging
 try:
     from nemo_text_processing.text_normalization.normalize import Normalizer
 except Exception as e:
-    logging.warning(e)
-    logging.warning("nemo_text_processing is not installed")
+    pass  # Normalizer imported only for annotation purposes, error can be ignored
 
 AnyPath = Union[Path, str]
 

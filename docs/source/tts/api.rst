@@ -25,6 +25,11 @@ Mel-Spectrogram Generators
     :members:
     :exclude-members: setup_training_data, setup_validation_data, training_step, validation_epoch_end, validation_step, setup_test_data, on_train_epoch_start
 
+.. autoclass:: nemo.collections.tts.models.SpectrogramEnhancerModel
+    :show-inheritance:
+    :members:
+    :exclude-members: setup_training_data, setup_validation_data, training_step, validation_epoch_end, validation_step, setup_test_data, on_train_epoch_start
+
 
 Speech-to-Text Aligner Models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

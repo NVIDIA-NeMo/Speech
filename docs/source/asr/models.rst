@@ -330,7 +330,7 @@ The model consists of three models:
 
 * ASR model (``EncDecCTCModelBPE`` or ``EncDecRNNTBPEModel``)
 * Frozen TTS Mel Spectrogram Generator (currently, only :ref:`FastPitch <FastPitch_model>` model is supported)
-* Optional frozen Enhancer model trained to mitigate mismatch between real and generated mel spectrogram
+* Optional frozen :ref:`Spectrogram Enhancer model <SpectrogramEnhancer_model>` model trained to mitigate mismatch between real and generated mel spectrogram
 
     .. image:: images/hybrid_asr_tts_model.png
         :align: center

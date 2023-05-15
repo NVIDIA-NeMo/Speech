@@ -156,7 +156,7 @@ def get_confidence_aggregation_bank():
 
 class ConfidenceMeasureMixin(ABC):
     """Confidence Measure Mixin class.
-    
+
     It initializes per-frame confidence measure.
     """
 
@@ -193,7 +193,7 @@ class ConfidenceMeasureMixin(ABC):
 
 class ConfidenceMixin(ABC):
     """Confidence Mixin class.
-    
+
     It initializes per-frame confidence measure.
     """
 

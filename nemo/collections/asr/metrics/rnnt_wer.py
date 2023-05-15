@@ -1268,3 +1268,6 @@ class RNNTDecodingConfig:
 
     # beam decoding config
     beam: beam_decode.BeamRNNTInferConfig = beam_decode.BeamRNNTInferConfig(beam_size=4)
+
+    # can be used to change temperature for decoding
+    temperature: float = 1.0

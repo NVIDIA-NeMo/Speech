@@ -75,8 +75,8 @@ def word_error_rate_detail(
 ) -> Tuple[float, int, float, float, float]:
     """
     Computes Average Word Error Rate with details (insertion rate, deletion rate, substitution rate)
-    between two texts represented as corresponding lists of string. 
-    
+    between two texts represented as corresponding lists of string.
+
     Hypotheses and references must have same length.
     Args:
       hypotheses (list): list of hypotheses
@@ -88,7 +88,7 @@ def word_error_rate_detail(
       ins_rate (float): average insertion error rate
       del_rate (float): average deletion error rate
       sub_rate (float): average substitution error rate
-      
+
     """
     scores = 0
     words = 0
@@ -1222,5 +1222,8 @@ class CTCDecodingConfig:
     # beam decoding config
     beam: ctc_beam_decoding.BeamCTCInferConfig = ctc_beam_decoding.BeamCTCInferConfig(beam_size=4)
 
-    #  confidence config
+    # confidence config
     confidence_cfg: ConfidenceConfig = ConfidenceConfig()
+
+    # can be used to change temperature for decoding
+    temperature: float = 1.0

@@ -220,7 +220,6 @@ class ModelPT(LightningModule, Model):
                 src (str): Path to artifact.
                 verify_src_exists (bool): If set to False, then the artifact is optional and register_artifact will return None even if
                                           src is not found. Defaults to True.
-                save_restore_connector (SaveRestoreConnector): Can be overridden to add custom save and restore logic.
 
             Returns:
                 str: If src is not None or empty it always returns absolute path which is guaranteed to exist during model instance life

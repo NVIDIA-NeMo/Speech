@@ -62,7 +62,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                 The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
 
             compute_langs: a bool flag, which allows to compute language id (LID) information per token,
-                word, and the entire sample (most likely language id). The LIDS will be available 
+                word, and the entire sample (most likely language id). The LIDS will be available
                 in the returned Hypothesis object as a dictionary
 
             rnnt_timestamp_type: A str value, which represents the types of timestamps that should be calculated.

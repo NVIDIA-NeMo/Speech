@@ -15,7 +15,7 @@
 import contextlib
 import os
 from dataclasses import dataclass, is_dataclass
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import pytorch_lightning as pl
 import torch
@@ -163,9 +163,14 @@ class TranscriptionConfig:
     langid: str = "en"  # specify this for convert_num_to_words step in groundtruth cleaning
     use_cer: bool = False
 
+    # can be set to True to return list of transcriptions instead of the config
+    # if True, will also skip writing anything to the output file
+    return_transcriptions: bool = False
+
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
-def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
+# just specifying List in the return type as otherwise it's too many things
+def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List]:
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
     for key in cfg:
@@ -299,7 +304,7 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     cfg = compute_output_filename(cfg, model_name)
 
     # if transcripts should not be overwritten, and already exists, skip re-transcription step and return
-    if not cfg.overwrite_transcripts and os.path.exists(cfg.output_filename):
+    if not cfg.return_transcriptions and not cfg.overwrite_transcripts and os.path.exists(cfg.output_filename):
         logging.info(
             f"Previous transcripts found at {cfg.output_filename}, and flag `overwrite_transcripts`"
             f"is {cfg.overwrite_transcripts}. Returning without re-transcribing text."
@@ -348,6 +353,9 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     # if transcriptions form a tuple (from RNNT), extract just "best" hypothesis
     if type(transcriptions) == tuple and len(transcriptions) == 2:
         transcriptions = transcriptions[0]
+
+    if cfg.return_transcriptions:
+        return transcriptions
 
     # write audio transcriptions
     output_filename, pred_text_attr_name = write_transcription(

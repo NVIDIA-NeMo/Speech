@@ -305,6 +305,8 @@ class EncDecCTCModelBPE(EncDecCTCModel, ASRBPEMixin):
             dist_sync_on_step=True,
         )
 
+        self.decoder.temperature = decoding_cfg.get('temperature', 1.0)
+
         # Update config
         with open_dict(self.cfg.decoding):
             self.cfg.decoding = decoding_cfg

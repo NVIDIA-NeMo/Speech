@@ -1,0 +1,23 @@
+# an example of it-es ctc model ensemble
+# see test_confidence_ensembles.py for expected data structure
+# and additional usage examples
+ensemble:
+  - model: stt_es_conformer_ctc_large
+    training_manifest: ${oc.env:TEST_DATA_PATH}/es/train_manifest.json
+  - model: stt_it_conformer_ctc_large
+    training_manifest: ${oc.env:TEST_DATA_PATH}/it/train_manifest.json
+
+output_path: confidence-ensemble.nemo
+
+# this is default
+temperature: 1.0
+
+# this is default
+confidence:
+    exclude_blank: True
+    aggregation: mean
+    method_cfg:
+        name: entropy
+        entropy_type: renui
+        temperature: 0.25  # this is not really temperature, but alpha, see https://arxiv.org/abs/2212.08703
+        entropy_norm: lin

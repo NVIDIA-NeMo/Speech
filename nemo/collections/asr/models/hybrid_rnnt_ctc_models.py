@@ -347,6 +347,8 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             dist_sync_on_step=True,
         )
 
+        self.ctc_decoder.temperature = decoding_cfg.get('temperature', 1.0)
+
         # Update config
         with open_dict(self.cfg.aux_ctc):
             self.cfg.aux_ctc.decoding = decoding_cfg

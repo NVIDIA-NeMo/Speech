@@ -26,6 +26,7 @@ from nemo.collections.asr.metrics.wer import CTCDecodingConfig
 from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
     prepare_audio_data,
@@ -33,7 +34,6 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     transcribe_partial_audio,
     write_transcription,
 )
-from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -169,8 +169,7 @@ class TranscriptionConfig:
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
-# just specifying List in the return type as otherwise it's too many things
-def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List]:
+def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis]]:
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
     for key in cfg:

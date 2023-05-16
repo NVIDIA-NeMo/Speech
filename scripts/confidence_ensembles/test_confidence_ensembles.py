@@ -37,9 +37,23 @@ import speech_to_text_eval
         (
             "ensemble.0.model=stt_es_fastconformer_hybrid_large_pc "
             "ensemble.1.model=stt_it_fastconformer_hybrid_large_pc "
-            "transcription.decoder_type=ctc"
+            "transcription.decoder_type=ctc "
         ),
         "ensemble.0.model=stt_es_conformer_ctc_large ensemble.1.model=stt_it_conformer_transducer_large",
+        (
+            "ensemble.0.model=stt_es_conformer_ctc_large "
+            "ensemble.1.model=stt_it_conformer_ctc_large "
+            f"ensemble.0.dev_manifest={Path(os.getenv('TEST_DATA_PATH', '')) / 'es' / 'dev_manifest.json'} "
+            f"ensemble.1.dev_manifest={Path(os.getenv('TEST_DATA_PATH', '')) / 'it' / 'dev_manifest.json'} "
+            "tune_confidence=True "
+        ),
+        (
+            "ensemble.0.model=stt_es_conformer_transducer_large "
+            "ensemble.1.model=stt_it_conformer_transducer_large "
+            f"ensemble.0.dev_manifest={Path(os.getenv('TEST_DATA_PATH', '')) / 'es' / 'dev_manifest.json'} "
+            f"ensemble.1.dev_manifest={Path(os.getenv('TEST_DATA_PATH', '')) / 'it' / 'dev_manifest.json'} "
+            "tune_confidence=True "
+        ),
     ],
     ids=(
         [
@@ -48,6 +62,8 @@ import speech_to_text_eval
             "Hybrid models (Transducer mode)",
             "Hybrid models (CTC mode)",
             "CTC + Transducer",
+            "CTC models + confidence tuning",
+            "Transducer models + confidence tuning",
         ]
     ),
 )

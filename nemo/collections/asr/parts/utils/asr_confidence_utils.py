@@ -312,7 +312,7 @@ class ConfidenceMixin(ABC):
             raise RuntimeError(
                 f"""Something went wrong with word-level confidence aggregation.\n
             Please check these values for debugging:\n
-            len(words): {len(hypothesis.words)},\n
+            len(words): {len(words)},\n
             len(word_confidence): {len(word_confidence)},\n
             recognized text: `{' '.join(words)}`"""
             )

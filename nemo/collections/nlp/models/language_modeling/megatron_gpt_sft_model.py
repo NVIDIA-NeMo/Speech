@@ -24,6 +24,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils imp
     get_datasets_weights_and_num_samples,
 )
 from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_chat_dataset import GPTSFTChatDataset
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTDataset
 from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_samplers import (
     MegatronPretrainingBatchSampler,
@@ -234,7 +235,11 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             num_train_samples_per_dataset = [[None]] * len(data_cfg.file_names)
 
         for file_path, num_samples in zip(data_cfg.file_names, num_train_samples_per_dataset):
-            dataset = GPTSFTDataset(
+            if self.cfg.data.chat:
+                dataset_cls = GPTSFTChatDataset
+            else:
+                dataset_cls = GPTSFTDataset
+            dataset = dataset_cls(
                 file_path=file_path,
                 tokenizer=self.tokenizer,
                 max_seq_length=data_cfg.max_seq_length,

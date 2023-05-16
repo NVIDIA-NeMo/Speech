@@ -35,3 +35,4 @@ share: False  # whether create a public URL
 username: test # user name for web client
 password: test2  # password for web client
 web_port: 9889 # the port number of the web server
+chat: False # use the chat interface

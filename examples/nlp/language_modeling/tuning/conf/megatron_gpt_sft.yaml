@@ -66,6 +66,7 @@ model:
   ffn_dropout: 0.0
 
   data:
+    chat: False # whether use chatbot data or not
     train_ds:
       # Example of how to specify paths to multiple datasets
       # file_names: 

@@ -5,6 +5,8 @@ INSTALL_OPTION=${1:-"dev"}
 
 PIP=pip
 
+${PIP} install -U ${PIP}
+
 echo 'Uninstalling stuff'
 ${PIP} uninstall -y nemo_toolkit
 ${PIP} uninstall -y sacrebleu
@@ -13,8 +15,6 @@ ${PIP} uninstall -y sacrebleu
 ${PIP} uninstall -y nemo_asr
 ${PIP} uninstall -y nemo_nlp
 ${PIP} uninstall -y nemo_tts
-
-${PIP} install -U setuptools
 
 if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
   echo 'Installing NeMo in NVIDIA PyTorch container:' "${NVIDIA_PYTORCH_VERSION}" 'so will not install numba'

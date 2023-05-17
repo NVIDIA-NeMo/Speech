@@ -1341,8 +1341,7 @@ class BucketingIterator:
             try:
                 sample = next(self.wrapped_iter)
             except StopIteration:
-                self.wrapped_iter = iter(self.wrapped_ds)
-                sample = next(self.wrapped_iter)
+                break
             batches.append(sample)
         if len(batches) == 0:
             raise StopIteration

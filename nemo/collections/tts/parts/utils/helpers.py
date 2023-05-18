@@ -484,6 +484,23 @@ def plot_spectrogram_to_numpy(spectrogram):
     return data
 
 
+def create_plot(data, x_axis, y_axis, output_filepath=None):
+    fig, ax = plt.subplots(figsize=(12, 3))
+    im = ax.imshow(data, aspect="auto", origin="lower", interpolation="none")
+    plt.colorbar(im, ax=ax)
+    plt.xlabel(x_axis)
+    plt.ylabel(y_axis)
+    plt.tight_layout()
+
+    if output_filepath:
+        plt.savefig(output_filepath, format="png")
+
+    fig.canvas.draw()
+    data = save_figure_to_numpy(fig)
+    plt.close()
+    return data
+
+
 def plot_gate_outputs_to_numpy(gate_targets, gate_outputs):
     fig, ax = plt.subplots(figsize=(12, 3))
     ax.scatter(

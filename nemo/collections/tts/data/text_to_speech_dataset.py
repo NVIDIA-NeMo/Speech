@@ -190,8 +190,8 @@ class TextToSpeechDataset(Dataset):
 
             sample = DatasetSample(
                 manifest_entry=entry,
-                audio_dir=dataset.audio_dir,
-                feature_dir=dataset.feature_dir,
+                audio_dir=Path(dataset.audio_dir),
+                feature_dir=Path(dataset.feature_dir),
                 text=text,
                 speaker=speaker,
                 speaker_index=speaker_index,
@@ -208,12 +208,12 @@ class TextToSpeechDataset(Dataset):
         data = self.data_samples[index]
 
         audio_filepath = Path(data.manifest_entry["audio_filepath"])
-        audio_path, _ = get_abs_rel_paths(input_path=audio_filepath, base_path=data.audio_dir)
+        audio_filepath_abs, audio_filepath_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=data.audio_dir)
 
-        audio, _ = librosa.load(audio_path, sr=self.sample_rate)
+        audio, _ = librosa.load(audio_filepath_abs, sr=self.sample_rate)
         tokens = self.text_tokenizer(data.text)
 
-        example = {"audio": audio, "tokens": tokens}
+        example = {"audio_filepath": audio_filepath_rel, "audio": audio, "tokens": tokens}
 
         if data.speaker is not None:
             example["speaker"] = data.speaker
@@ -243,7 +243,7 @@ class TextToSpeechDataset(Dataset):
         return example
 
     def collate_fn(self, batch: List[dict]):
-
+        audio_filepath_list = []
         audio_list = []
         audio_len_list = []
         token_list = []
@@ -252,6 +252,8 @@ class TextToSpeechDataset(Dataset):
         prior_list = []
 
         for example in batch:
+            audio_filepath_list.append(example["audio_filepath"])
+
             audio_tensor = torch.tensor(example["audio"], dtype=torch.float32)
             audio_list.append(audio_tensor)
             audio_len_list.append(audio_tensor.shape[0])
@@ -276,6 +278,7 @@ class TextToSpeechDataset(Dataset):
         batch_tokens = stack_tensors(token_list, max_lens=[token_max_len], pad_value=self.text_tokenizer.pad)
 
         batch_dict = {
+            "audio_filepaths": audio_filepath_list,
             "audio": batch_audio,
             "audio_lens": batch_audio_len,
             "text": batch_tokens,

@@ -14,9 +14,15 @@ feature_stats_path: null
 
 train_ds_meta: ???
 val_ds_meta: ???
+log_ds_meta: ???
 
 phoneme_dict_path: ???
 heteronyms_path: ???
+
+log_dir: ???
+vocoder_type: ???
+vocoder_name: null
+vocoder_checkpoint_path: null
 
 defaults:
   - feature: feature_22050
@@ -27,6 +33,7 @@ model:
 
   n_speakers: ${n_speakers}
   n_mel_channels: ${feature.mel_feature.mel_dim}
+  min_token_duration: 1
   max_token_duration: 75
   symbols_embedding_dim: 384
   pitch_embedding_kernel_size: 3
@@ -126,7 +133,42 @@ model:
 
     dataloader_params:
       batch_size: ${batch_size}
-      drop_last: false
+      num_workers: 2
+
+  log_config:
+    log_dir: ${log_dir}
+    log_epochs: [10, 50]
+    epoch_frequency: 100
+    log_tensorboard: false
+    log_wandb: false
+
+    generators:
+      - _target_: nemo.collections.tts.parts.utils.callbacks.FastPitchArtifactGenerator
+        log_spectrogram: true
+        log_alignment: true
+        audio_params:
+          _target_: nemo.collections.tts.parts.utils.callbacks.LogAudioParams
+          log_audio_gta: true
+          vocoder_type: ${vocoder_type}
+          vocoder_name: ${vocoder_name}
+          vocoder_checkpoint_path: ${vocoder_checkpoint_path}
+
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
+      text_tokenizer: ${model.text_tokenizer}
+      sample_rate: ${feature.sample_rate}
+      speaker_path: ${speaker_path}
+      align_prior_config: ${model.align_prior_config}
+      featurizers: ${feature.featurizers}
+
+      feature_processors:
+        pitch: ${model.pitch_processor}
+        energy: ${model.energy_processor}
+
+      dataset_meta: ${log_ds_meta}
+
+    dataloader_params:
+      batch_size: 8
       num_workers: 2
 
   input_fft:

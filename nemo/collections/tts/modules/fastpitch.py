@@ -80,6 +80,12 @@ def average_features(pitch, durs):
     return pitch_avg
 
 
+def log_to_duration(log_dur, min_dur, max_dur, mask):
+    dur = torch.clamp(torch.exp(log_dur) - 1.0, min_dur, max_dur)
+    dur *= mask.squeeze(2)
+    return dur
+
+
 class ConvReLUNorm(torch.nn.Module, adapter_mixins.AdapterModuleMixin):
     def __init__(self, in_channels, out_channels, kernel_size=1, dropout=0.0, condition_dim=384, condition_types=[]):
         super(ConvReLUNorm, self).__init__()
@@ -163,6 +169,7 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
         pitch_embedding_kernel_size: int,
         energy_embedding_kernel_size: int,
         n_mel_channels: int = 80,
+        min_token_duration: int = 0,
         max_token_duration: int = 75,
         use_log_energy: bool = True,
     ):
@@ -188,8 +195,8 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
         else:
             self.speaker_emb = None
 
+        self.min_token_duration = min_token_duration
         self.max_token_duration = max_token_duration
-        self.min_token_duration = 0
 
         self.pitch_emb = torch.nn.Conv1d(
             1,
@@ -294,7 +301,9 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
 
         # Predict duration
         log_durs_predicted = self.duration_predictor(enc_out, enc_mask, conditioning=spk_emb)
-        durs_predicted = torch.clamp(torch.exp(log_durs_predicted) - 1, 0, self.max_token_duration)
+        durs_predicted = log_to_duration(
+            log_dur=log_durs_predicted, min_dur=self.min_token_duration, max_dur=self.max_token_duration, mask=enc_mask
+        )
 
         attn_soft, attn_hard, attn_hard_dur, attn_logprob = None, None, None, None
         if self.learn_alignment and spec is not None:
@@ -398,8 +407,8 @@ class FastPitchModule(NeuralModule, adapter_mixins.AdapterModuleMixin):
 
         # Predict duration and pitch
         log_durs_predicted = self.duration_predictor(enc_out, enc_mask, conditioning=spk_emb)
-        durs_predicted = torch.clamp(
-            torch.exp(log_durs_predicted) - 1.0, self.min_token_duration, self.max_token_duration
+        durs_predicted = log_to_duration(
+            log_dur=log_durs_predicted, min_dur=self.min_token_duration, max_dur=self.max_token_duration, mask=enc_mask
         )
         pitch_predicted = self.pitch_predictor(enc_out, enc_mask, conditioning=spk_emb) + pitch
         pitch_emb = self.pitch_emb(pitch_predicted.unsqueeze(1))
@@ -444,6 +453,7 @@ class FastPitchSSLModule(NeuralModule):
         symbols_embedding_dim: int,
         pitch_embedding_kernel_size: int,
         n_mel_channels: int = 80,
+        min_token_duration: int = 0,
         max_token_duration: int = 75,
     ):
         super().__init__()
@@ -453,8 +463,8 @@ class FastPitchSSLModule(NeuralModule):
         self.duration_predictor = duration_predictor
         self.pitch_predictor = pitch_predictor
 
+        self.min_token_duration = min_token_duration
         self.max_token_duration = max_token_duration
-        self.min_token_duration = 0
 
         if self.pitch_predictor is not None:
             self.pitch_emb = torch.nn.Conv1d(
@@ -497,7 +507,12 @@ class FastPitchSSLModule(NeuralModule):
         log_durs_predicted, durs_predicted = None, None
         if self.duration_predictor is not None:
             log_durs_predicted = self.duration_predictor(enc_out, enc_mask)
-            durs_predicted = torch.clamp(torch.exp(log_durs_predicted) - 1, 0, self.max_token_duration)
+            durs_predicted = log_to_duration(
+                log_dur=log_durs_predicted,
+                min_dur=self.min_token_duration,
+                max_dur=self.max_token_duration,
+                mask=enc_mask,
+            )
 
         # Predict pitch
         pitch_predicted = None

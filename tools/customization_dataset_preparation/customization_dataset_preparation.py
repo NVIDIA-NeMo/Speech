@@ -92,13 +92,8 @@ def recommend_hyperparameters(df, model=None):
     """
     Makes recommendations on the batch_size to use for training, based on the dataset size
     
-    All hyperparameters except batch_size, max_batch_size and max_seq_length are hardcoded based on API defaults for now
     """
     potential_batch_sizes = [2, 4, 8, 12, 16, 32, 64, 128]
-    bs = 2
-    for potential_bs in potential_batch_sizes:
-        if 0.002 * len(df) > potential_bs:
-            bs = potential_bs
 
     max_bs = 128
     if len(df) < 128:
@@ -106,6 +101,8 @@ def recommend_hyperparameters(df, model=None):
         for potential_bs in potential_batch_sizes:
             if potential_bs < len(df) * 0.9:
                 max_bs = potential_bs
+
+    bs = min(max_bs, 32)
 
     df_char_length = df.apply(lambda x: len(x.prompt) + len(x.completion), axis=1)
     length_by_chars = sorted(list(df_char_length))

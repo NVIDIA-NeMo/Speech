@@ -94,6 +94,9 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             # need to be separate for moduledict
 
             for decoder_loss_name, decoder_loss_cfg in self._cfg.loss_list.items():
+                if not decoder_loss_cfg.get("is_active", True):  # active by default
+                    continue
+
                 new_decoder_loss = {
                     'decoder': SpeechEncDecSelfSupervisedModel.from_config_dict(decoder_loss_cfg.decoder),
                     'loss': SpeechEncDecSelfSupervisedModel.from_config_dict(decoder_loss_cfg.loss),

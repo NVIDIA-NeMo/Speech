@@ -138,9 +138,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
 
         self.aligner = None
         if self.learn_alignment:
+            aligner_loss_scale = cfg.aligner_loss_scale if "aligner_loss_scale" in cfg else 1.0
             self.aligner = instantiate(self._cfg.alignment_module)
-            self.forward_sum_loss_fn = ForwardSumLoss()
-            self.bin_loss_fn = BinLoss()
+            self.forward_sum_loss_fn = ForwardSumLoss(loss_scale=aligner_loss_scale)
+            self.bin_loss_fn = BinLoss(loss_scale=aligner_loss_scale)
 
         self.preprocessor = instantiate(self._cfg.preprocessor)
         input_fft = instantiate(self._cfg.input_fft, **input_fft_kwargs)

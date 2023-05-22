@@ -32,6 +32,9 @@ phoneme_dict_path: "scripts/tts_dataset_files/cmudict-0.7b_nv22.10"
 heteronyms_path: "scripts/tts_dataset_files/heteronyms-052722"
 
 model:
+  unfreeze_aligner: false
+  unfreeze_duration_predictor: false
+  unfreeze_pitch_predictor: false
   learn_alignment: true
   bin_loss_warmup_epochs: 100
   

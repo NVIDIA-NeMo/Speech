@@ -20,6 +20,13 @@ on:
   schedule:
     - cron: '19 1 * * 4'
 
+paths:
+  - nemo/
+  - tests/
+  - tools/
+  - scripts/
+  - examples/
+
 jobs:
   analyze:
     name: Analyze

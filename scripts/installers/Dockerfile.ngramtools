@@ -17,9 +17,9 @@
 
 # How to use? Build it from NeMo root folder:
 # 1. git clone https://github.com/NVIDIA/NeMo.git && cd NeMo
-# 2. DOCKER_BUILDKIT=1 docker build -t nemo:23.01.1 -f ./scripts/installers/Dockerfile.ngramtools .
+# 2. DOCKER_BUILDKIT=1 docker build -t nemo:23.03.1 -f ./scripts/installers/Dockerfile.ngramtools .
 
-from nvcr.io/nvidia/nemo:23.01
+from nvcr.io/nvidia/nemo:23.03
 
 WORKDIR /workspace/nemo
 

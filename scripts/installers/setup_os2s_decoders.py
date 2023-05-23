@@ -22,6 +22,7 @@ You can set the order of KenLM model by changing -DKENLM_MAX_ORDER=10 argument.
 from __future__ import absolute_import, division, print_function
 
 import argparse
+import distutils.ccompiler
 import glob
 import multiprocessing.pool
 import os

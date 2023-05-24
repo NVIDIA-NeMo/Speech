@@ -98,7 +98,9 @@ def get_args():
         help="Path to output JSON file with dataset feature statistics.",
     )
     parser.add_argument(
-        "--overwrite", default=False, type=bool, help="Whether to overwrite the output stats file if it exists.",
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite the output stats file if it exists.",
     )
 
     args = parser.parse_args()
@@ -132,7 +134,7 @@ def main():
 
     if not feature_dir.exists():
         raise ValueError(
-            f"Feature directory {audio_dir} does not exist. "
+            f"Feature directory {feature_dir} does not exist. "
             f"Please check that the path is correct and that you ran compute_features.py"
         )
 

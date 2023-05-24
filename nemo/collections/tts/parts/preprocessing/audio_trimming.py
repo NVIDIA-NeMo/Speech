@@ -101,6 +101,8 @@ class EnergyAudioTrimmer(AudioTrimmer):
         start_frame, end_frame = get_start_and_end_of_speech_frames(
             is_speech=speech_frames, speech_frame_threshold=self.speech_frame_threshold, audio_id=audio_id,
         )
+        if not start_frame and not end_frame:
+            return np.array([]), 0, 0
 
         start_sample = librosa.core.frames_to_samples(start_frame, hop_length=self.trim_hop_length)
         end_sample = librosa.core.frames_to_samples(end_frame, hop_length=self.trim_hop_length)
@@ -170,6 +172,9 @@ class VadAudioTrimmer(AudioTrimmer):
         self.volume_norm = volume_norm
 
     def _detect_speech(self, audio: np.array) -> np.array:
+        if audio.shape[0] < self.trim_win_length:
+            return np.array([])
+
         # [num_frames, win_length]
         audio_frames = librosa.util.frame(
             audio, frame_length=self.trim_win_length, hop_length=self.trim_hop_length
@@ -214,6 +219,8 @@ class VadAudioTrimmer(AudioTrimmer):
         start_frame, end_frame = get_start_and_end_of_speech_frames(
             is_speech=speech_frames, speech_frame_threshold=self.speech_frame_threshold, audio_id=audio_id,
         )
+        if not start_frame and not end_frame:
+            return np.array([]), 0, 0
 
         if start_frame == 0:
             start_sample = 0
@@ -276,13 +283,10 @@ def get_start_and_end_of_speech_frames(
             end_frame = i
             break
 
-    if start_frame is None:
-        logging.warning(f"Could not find start of speech for '{audio_id}'")
-        start_frame = 0
-
-    if end_frame is None:
-        logging.warning(f"Could not find end of speech for '{audio_id}'")
-        end_frame = num_frames
+    if start_frame is None or end_frame is None:
+        # Algorithm is symmetric, so if the start is not found then the end should also not be found.
+        logging.warning(f"Could not find start or end of speech for '{audio_id}'")
+        return 0, 0
 
     return start_frame, end_frame
 

@@ -54,7 +54,9 @@ def get_args():
         "--speaker_map_path", required=True, type=Path, help="Path for output speaker index JSON",
     )
     parser.add_argument(
-        "--overwrite", default=False, type=bool, help="Whether to overwrite the output speaker file if it exists.",
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite the output speaker file if it exists.",
     )
     args = parser.parse_args()
     return args

@@ -73,6 +73,16 @@ def get_args():
         "--output_audio_dir", required=True, type=Path, help="Path to output directory for audio files.",
     )
     parser.add_argument(
+        "--overwrite_audio",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to reprocess and overwrite existing audio files in output_audio_dir.",
+    )
+    parser.add_argument(
+        "--overwrite_manifest",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite the output manifest file if it exists.",
+    )
+    parser.add_argument(
         "--num_workers", default=1, type=int, help="Number of parallel threads to use. If -1 all CPUs are used."
     )
     parser.add_argument(
@@ -110,6 +120,7 @@ def _process_entry(
     entry: dict,
     input_audio_dir: Path,
     output_audio_dir: Path,
+    overwrite_audio: bool,
     audio_trimmer: AudioTrimmer,
     output_sample_rate: int,
     volume_level: float,
@@ -120,30 +131,34 @@ def _process_entry(
     output_path = output_audio_dir / audio_path_rel
     output_path.parent.mkdir(exist_ok=True, parents=True)
 
-    audio_path = str(audio_path)
-    output_path = str(output_path)
+    if output_path.exists() and not overwrite_audio:
+        original_duration = librosa.get_duration(path=audio_path)
+        output_duration = librosa.get_duration(path=output_path)
+    else:
+        audio, sample_rate = librosa.load(audio_path, sr=None)
+        original_duration = librosa.get_duration(y=audio, sr=sample_rate)
+        if audio_trimmer is not None:
+            audio, start_i, end_i = audio_trimmer.trim_audio(
+                audio=audio, sample_rate=int(sample_rate), audio_id=str(audio_path)
+            )
 
-    audio, sample_rate = librosa.load(audio_path, sr=None)
+        if output_sample_rate:
+            audio = librosa.resample(y=audio, orig_sr=sample_rate, target_sr=output_sample_rate)
+            sample_rate = output_sample_rate
 
-    if audio_trimmer is not None:
-        audio, start_i, end_i = audio_trimmer.trim_audio(audio=audio, sample_rate=sample_rate, audio_id=audio_path)
+        if volume_level:
+            audio = normalize_volume(audio, volume_level=volume_level)
 
-    if output_sample_rate:
-        audio = librosa.resample(y=audio, orig_sr=sample_rate, target_sr=output_sample_rate)
-        sample_rate = output_sample_rate
-
-    if volume_level:
-        audio = normalize_volume(audio, volume_level=volume_level)
-
-    sf.write(file=output_path, data=audio, samplerate=sample_rate)
-
-    original_duration = librosa.get_duration(filename=audio_path)
-    output_duration = librosa.get_duration(filename=output_path)
+        if audio.size > 0:
+            sf.write(file=output_path, data=audio, samplerate=sample_rate)
+            output_duration = librosa.get_duration(y=audio, sr=sample_rate)
+        else:
+            output_duration = 0.0
 
     entry["duration"] = round(output_duration, 2)
 
     if os.path.isabs(audio_filepath):
-        entry["audio_filepath"] = output_path
+        entry["audio_filepath"] = str(output_path)
 
     return entry, original_duration, output_duration
 
@@ -155,6 +170,8 @@ def main():
     output_manifest_path = args.output_manifest
     input_audio_dir = args.input_audio_dir
     output_audio_dir = args.output_audio_dir
+    overwrite_audio = args.overwrite_audio
+    overwrite_manifest = args.overwrite_manifest
     num_workers = args.num_workers
     max_entries = args.max_entries
     output_sample_rate = args.output_sample_rate
@@ -162,6 +179,12 @@ def main():
     min_duration = args.min_duration
     max_duration = args.max_duration
     filter_file = args.filter_file
+
+    if output_manifest_path.exists():
+        if overwrite_manifest:
+            print(f"Will overwrite existing manifest path: {output_manifest_path}")
+        else:
+            raise ValueError(f"Manifest path already exists: {output_manifest_path}")
 
     if args.trim_config_path:
         audio_trimmer_config = OmegaConf.load(args.trim_config_path)
@@ -181,6 +204,7 @@ def main():
             entry=entry,
             input_audio_dir=input_audio_dir,
             output_audio_dir=output_audio_dir,
+            overwrite_audio=overwrite_audio,
             audio_trimmer=audio_trimmer,
             output_sample_rate=output_sample_rate,
             volume_level=volume_level,
@@ -195,7 +219,11 @@ def main():
     for output_entry, original_duration, output_duration in job_outputs:
         original_durations += original_duration
 
-        if (min_duration and output_duration < min_duration) or (max_duration and output_duration > max_duration):
+        if (
+            output_duration == 0.0
+            or (min_duration and output_duration < min_duration)
+            or (max_duration and output_duration > max_duration)
+        ):
             if output_duration != original_duration:
                 output_entry["original_duration"] = original_duration
             filtered_entries.append(output_entry)

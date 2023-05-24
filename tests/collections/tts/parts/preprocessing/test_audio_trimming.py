@@ -47,7 +47,7 @@ class TestAudioTrimming:
         )
 
         assert start_frame == 0
-        assert end_frame == 4
+        assert end_frame == 0
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

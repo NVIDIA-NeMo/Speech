@@ -1,0 +1,9 @@
+name: "CodeQL config"
+
+paths:
+  - nemo/
+  - tests/
+  - tools/
+  - scripts/
+  - examples/
+  - .github/

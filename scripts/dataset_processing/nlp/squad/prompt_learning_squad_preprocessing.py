@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--save-name-base", type=str, default="squad")
     parser.add_argument("--include-topic-name", action='store_true')
     parser.add_argument("--random-seed", type=int, default=1234)
+    parser.add_argument("--sft-format", action='store_true')
     args = parser.parse_args()
 
     train_data_dict = json.load(open(f"{args.data_dir}/{args.train_file}"))
@@ -65,21 +66,21 @@ def main():
 
     save_name_base = f"{args.data_dir}/{args.save_name_base}"
 
-    process_data(train_data, val_data, save_name_base, args.include_topic_name)
+    process_data(train_data, val_data, save_name_base, args.include_topic_name, args.sft_format)
 
 
-def process_data(train_data, val_data, save_name_base, include_topic):
-    train_set = extract_questions(train_data, include_topic, split="train")
-    val_set = extract_questions(val_data, include_topic, split="val")
-    test_set = extract_questions(val_data, include_topic, split="test")
+def process_data(train_data, val_data, save_name_base, include_topic, sft_format):
+    train_set = extract_questions(train_data, include_topic, sft_format, split="train")
+    val_set = extract_questions(val_data, include_topic, sft_format, split="val")
+    test_set = extract_questions(val_data, include_topic, sft_format, split="test")
 
-    gen_file(train_set, save_name_base, 'train')
-    gen_file(val_set, save_name_base, 'val')
-    gen_file(test_set, save_name_base, 'test', make_ground_truth=True)
-    gen_file(test_set, save_name_base, 'test', make_ground_truth=False)
+    gen_file(train_set, save_name_base, 'train', sft_format)
+    gen_file(val_set, save_name_base, 'val', sft_format)
+    gen_file(test_set, save_name_base, 'test', sft_format, make_ground_truth=True)
+    gen_file(test_set, save_name_base, 'test', sft_format, make_ground_truth=False)
 
 
-def extract_questions(data, include_topic, split):
+def extract_questions(data, include_topic, sft_format, split):
     processed_data = []
 
     # Iterate over topics, want to keep them seprate in train/val/test splits
@@ -109,7 +110,13 @@ def extract_questions(data, include_topic, split):
                 except IndexError:
                     continue
 
-                example_json = {"taskname": "squad", "context": context, "question": question, "answer": answers}
+                if sft_format:
+                    example_json = {
+                        "input": f"User: Context:{context} Question:{question}\n\nAssistant:",
+                        "output": answers,
+                    }
+                else:
+                    example_json = {"taskname": "squad", "context": context, "question": question, "answer": answers}
 
                 if include_topic:
                     example_json["topic"] = topic
@@ -120,7 +127,7 @@ def extract_questions(data, include_topic, split):
     return processed_data
 
 
-def gen_file(data, save_name_base, split_type, make_ground_truth=False):
+def gen_file(data, save_name_base, split_type, sft_format, make_ground_truth=False):
     save_path = f"{save_name_base}_{split_type}.jsonl"
 
     if make_ground_truth:
@@ -133,7 +140,10 @@ def gen_file(data, save_name_base, split_type, make_ground_truth=False):
 
             # Dont want labels in the test set
             if split_type == "test" and not make_ground_truth:
-                del example_json["answer"]
+                if sft_format:
+                    example_json["output"] = ""
+                else:
+                    del example_json["answer"]
 
             save_file.write(json.dumps(example_json) + '\n')
 

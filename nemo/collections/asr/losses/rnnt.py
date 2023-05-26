@@ -27,9 +27,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import operator
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -37,6 +38,7 @@ from omegaconf import DictConfig, OmegaConf
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
+from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE
 from nemo.utils import logging, model_utils
 
@@ -54,6 +56,13 @@ try:
 except (ImportError, ModuleNotFoundError):
     NUMBA_RNNT_AVAILABLE = False
 
+try:
+    from nemo.collections.asr.parts.k2.graph_transducer import GraphRnntLoss
+    from nemo.collections.asr.parts.k2.w_transducer import GraphWTransducerLoss
+
+    K2_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    K2_AVAILABLE = False
 
 WARP_RNNT_INSTALLATION_MESSAGE = (
     "Could not import `warprnnt_pytorch`.\n"
@@ -71,6 +80,7 @@ class RNNTLossConfig:
     is_available: bool = False
     installation_msg: str = ""
     min_version: Optional[str] = None
+    force_float32: bool = True  # default True for now for all losses except graph-based
 
 
 # Resolved list of available RNNT losses
@@ -80,6 +90,7 @@ RNNT_LOSS_RESOLVER = {
         lib_name="warprnnt_pytorch",
         is_available=WARP_RNNT_AVAILABLE,
         installation_msg=WARP_RNNT_INSTALLATION_MESSAGE,
+        force_float32=True,
     ),
     "warprnnt_numba": RNNTLossConfig(
         loss_name="warprnnt_numba",
@@ -87,6 +98,7 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.53.0',
         is_available=NUMBA_RNNT_AVAILABLE,
         installation_msg=NUMBA_INSTALLATION_MESSAGE,
+        force_float32=True,
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -94,6 +106,7 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.0',
         is_available=True,
         installation_msg="Pure Pytorch implementation of RNN-T loss. Slow and for debugging purposes only.",
+        force_float32=True,
     ),
     "multiblank_rnnt": RNNTLossConfig(
         loss_name="multiblank_rnnt",
@@ -101,6 +114,7 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.53.0',
         is_available=NUMBA_RNNT_AVAILABLE,
         installation_msg=NUMBA_INSTALLATION_MESSAGE,
+        force_float32=True,
     ),
     "multiblank_rnnt_pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -108,6 +122,21 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.0',
         is_available=True,
         installation_msg="Pure Pytorch implementation of Multiblank RNN-T loss. Slow and for debugging purposes only.",
+        force_float32=True,
+    ),
+    "graph_w_transducer": RNNTLossConfig(
+        loss_name="graph_w_transducer",
+        lib_name="k2",
+        is_available=K2_AVAILABLE,
+        installation_msg=K2_INSTALLATION_MESSAGE,
+        force_float32=False,
+    ),
+    "graph_rnnt": RNNTLossConfig(
+        loss_name="graph_rnnt",
+        lib_name="k2",
+        is_available=K2_AVAILABLE,
+        installation_msg=K2_INSTALLATION_MESSAGE,
+        force_float32=False,
     ),
 }
 
@@ -121,6 +150,38 @@ def _warn_unused_additional_kwargs(loss_name, kwargs):
             f"however they were ignored as it is unused.\n"
             f"{kwargs}"
         )
+
+
+def _clean_kwargs(
+    loss_name: str, kwargs: Optional[Dict[str, Any]], init_method: Callable, ignore_params: Optional[Set[str]] = None
+) -> Dict[str, Any]:
+    """
+    Cleans kwargs for the given loss function. Warn if there are unused kwargs.
+
+    Args:
+        loss_name: name of the loss function
+        kwargs: kwargs to clean
+        init_method: LossClass.__init__ method
+        ignore_params: set of argument names for init_method to ignore
+
+    Returns:
+        only used kwargs for the given `init_method`
+    """
+    if not kwargs:
+        return {}
+    init_params = set(inspect.signature(init_method).parameters.keys()) - {"self"}
+    if ignore_params is not None:
+        init_params -= ignore_params
+    unused_kwargs = dict()
+    used_kwargs = dict()
+    for key, value in kwargs.items():
+        if key not in init_params:
+            unused_kwargs[key] = value
+        else:
+            used_kwargs[key] = value
+    if len(unused_kwargs) > 0:
+        _warn_unused_additional_kwargs(loss_name, unused_kwargs)
+    return used_kwargs
 
 
 def resolve_rnnt_default_loss_name() -> str:
@@ -213,7 +274,12 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
             blank=blank_idx, big_blank_durations=big_blank_durations, reduction='none', sigma=sigma
         )
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
-
+    elif loss_name == "graph_rnnt":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphRnntLoss.__init__, ignore_params={"blank"})
+        loss_func = GraphRnntLoss(blank=blank_idx, **loss_kwargs)
+    elif loss_name == "graph_w_transducer":
+        loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphWTransducerLoss.__init__, ignore_params={"blank"})
+        loss_func = GraphWTransducerLoss(blank=blank_idx, **loss_kwargs)
     else:
         raise ValueError(
             f"Invalid value of `loss_name`: {loss_name}. Allowed loss names are :" f"{loss_function_names}"
@@ -302,6 +368,7 @@ class RNNTLoss(Loss):
         self._blank = num_classes
         self.reduction = reduction
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
+        self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
 
     def reduce(self, losses, target_lengths):
 
@@ -332,7 +399,7 @@ class RNNTLoss(Loss):
 
         # Force cast joint to float32
         # TODO: Remove once Numba supports FP16
-        if log_probs.dtype != torch.float32:
+        if self._force_float32 and log_probs.dtype != torch.float32:
             logits_orig = log_probs
             log_probs = log_probs.float()
             del logits_orig  # save memory *before* computing the loss

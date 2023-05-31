@@ -758,15 +758,11 @@ class SpeakerEncoder(NeuralModule):
             embs = self.lookup_module(speaker)
 
         # Get GST based speaker embedding
-        if self.gst_module is not None:
-            if reference_spec is None or reference_spec_lens is None:
-                raise ValueError(
-                    "You should add `reference_audio` in sup_data_types or remove `speaker_encoder`in config."
-                )
-            out = self.gst_module(reference_spec, reference_spec_lens)
-            embs = out if embs is None else embs + out
-
-        elif self.gst_module is None and reference_spec is not None and reference_spec_lens is not None:
-            logging.warning("You may add `gst_module` in speaker_encoder to use reference_audio.")
+        if reference_spec is not None and reference_spec_lens is not None:
+            if self.gst_module is not None:
+                out = self.gst_module(reference_spec, reference_spec_lens)
+                embs = out if embs is None else embs + out
+            else:
+                logging.warning("You may add `gst_module` in speaker_encoder to use reference_audio.")
 
         return embs

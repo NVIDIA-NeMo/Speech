@@ -1247,16 +1247,20 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             _reset_activation_checkpointing_args.
         """
         # Restore config values.
-        self.cfg.activations_checkpoint_granularity = self.last_checkpointing_granularity
-        self.cfg.activations_checkpoint_method = self.last_checkpointing_method
-        self.cfg.activations_checkpoint_num_layers = self.last_checkpointing_num_layers
+        self.cfg.activations_checkpoint_granularity = self.last_activations_checkpoint_granularity
+        self.cfg.activations_checkpoint_method = self.last_activations_checkpoint_method
+        self.cfg.activations_checkpoint_num_layers = self.last_activations_checkpoint_num_layers
         self.cfg.activations_checkpoint_layers_per_pipeline = self.last_activations_checkpoint_layers_per_pipeline
 
         # Restore model parameters.
         for module in self.get_gpt_module_list():
-            module.language_model.encoder.activations_checkpoint_granularity = self.last_checkpointing_granularity
-            module.language_model.encoder.activations_checkpoint_method = self.last_checkpointing_method
-            module.language_model.encoder.activations_checkpoint_num_layers = self.last_checkpointing_num_layers
+            module.language_model.encoder.activations_checkpoint_granularity = (
+                self.last_activations_checkpoint_granularity
+            )
+            module.language_model.encoder.activations_checkpoint_method = self.last_activations_checkpoint_method
+            module.language_model.encoder.activations_checkpoint_num_layers = (
+                self.last_activations_checkpoint_num_layers
+            )
             module.language_model.encoder.activations_checkpoint_layers_per_pipeline = (
                 self.last_activations_checkpoint_layers_per_pipeline
             )

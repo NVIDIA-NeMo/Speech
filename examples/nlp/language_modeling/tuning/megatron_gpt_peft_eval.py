@@ -104,9 +104,17 @@ def main(cfg) -> None:
 
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
     if cfg.model.peft.restore_from_path:
-        peft_model_cfg = MegatronGPTPEFTModel.restore_from(
-            restore_path=cfg.model.peft.restore_from_path, trainer=trainer, return_config=True,
-        )
+        if cfg.model.peft.restore_from_path.endswith(".nemo"):
+            peft_model_cfg = MegatronGPTPEFTModel.restore_from(
+                restore_path=cfg.model.peft.restore_from_path, trainer=trainer, return_config=True,
+            )
+        elif cfg.model.peft.restore_from_hparams_path:  # not a .nemo model we expect a hparams.yaml file
+            peft_model_cfg = OmegaConf.to_container(OmegaConf.load(cfg.model.peft.restore_from_hparams_path).cfg)
+            peft_model_cfg = OmegaConf.create(peft_model_cfg)
+            # extract dict inside cfg key and convert it to DictConfig
+            # this allows interpolation to work the same way as config from the .restore_from method
+        else:
+            raise RuntimeError("This script requires a .nemo peft model or path to hparams.yaml (and a ckpt path).")
     else:
         peft_model_cfg = MegatronGPTSFTModel.restore_from(
             restore_path=cfg.model.restore_from_path, trainer=trainer, return_config=True,
@@ -127,9 +135,21 @@ def main(cfg) -> None:
         cfg.inference.tokens_to_generate = peft_model_cfg.data.test_ds.tokens_to_generate
 
     if cfg.model.peft.restore_from_path:
-        save_restore_connector = PEFTSaveRestoreConnector(
-            peft_model_nemo_path=cfg.model.peft.restore_from_path, peft_model_ckpt_path=None,
-        )
+        if cfg.model.peft.restore_from_path.endswith(".nemo"):
+            save_restore_connector = PEFTSaveRestoreConnector(
+                peft_model_nemo_path=cfg.model.peft.restore_from_path, peft_model_ckpt_path=None,
+            )
+        else:
+            # attempting to load a ckpt peft model.
+            if cfg.model.peft.restore_from_ckpt_name:
+                ckpt_name = cfg.model.peft.restore_from_ckpt_name
+            else:
+                ckpt_name = "model_weights.ckpt"
+            save_restore_connector = PEFTSaveRestoreConnector(
+                peft_model_nemo_path=None,
+                peft_model_ckpt_path=cfg.model.peft.restore_from_path,
+                peft_model_ckpt_name=ckpt_name,
+            )
     else:
         save_restore_connector = NLPSaveRestoreConnector()
 

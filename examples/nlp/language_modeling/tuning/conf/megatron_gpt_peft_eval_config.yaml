@@ -70,6 +70,8 @@ model:
   peft:
     peft_scheme: "adapter"  # can be either adapter,ia3, or ptuning
     restore_from_path: null
+    restore_from_ckpt_name: null
+    restore_from_hparams_path: null
     
     # Used for adapter peft training
     adapter_tuning:

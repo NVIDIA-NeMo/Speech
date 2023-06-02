@@ -975,5 +975,6 @@ AVAILABLE_SCHEDULERS = {
 }
 
 EPOCH_SCHEDULERS = {
+    'ExponentialLR': pt_scheduler.ExponentialLR,
     'ReduceLROnPlateau': pt_scheduler.ReduceLROnPlateau,
 }

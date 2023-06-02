@@ -49,7 +49,9 @@ def get_args():
         "--output_manifest", required=True, type=Path, help="Path to output training manifest with processed text.",
     )
     parser.add_argument(
-        "--overwrite", default=False, type=bool, help="Whether to overwrite the output manifest file if it exists.",
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        help="Whether to overwrite the output manifest file if it exists.",
     )
     parser.add_argument(
         "--lower_case", default=False, type=bool, help="Whether to convert the final text to lower case.",

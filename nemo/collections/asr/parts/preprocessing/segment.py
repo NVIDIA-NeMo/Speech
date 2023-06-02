@@ -423,6 +423,7 @@ class AudioSegment(object):
                     samples = f.read(dtype='float32')
         except RuntimeError as e:
             logging.error(f"Loading {audio_file} via SoundFile raised RuntimeError: `{e}`.")
+            raise e
 
         features = cls(
             samples, sample_rate, target_sr=target_sr, trim=trim, orig_sr=orig_sr, channel_selector=channel_selector

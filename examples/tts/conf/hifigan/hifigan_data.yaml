@@ -1,0 +1,133 @@
+# This config contains the default values for training a HiFi-GAN model.
+# If you want to train model on other dataset, you can change config values according to your dataset.
+# Most dataset-specific arguments are in the head of the config file, see below.
+
+name: "HifiGan"
+
+defaults:
+  - feature: ???
+  - sample: ???
+  - model/generator: ???
+
+max_epochs: ???
+batch_size: 16
+weighted_sampling_steps_per_epoch: null
+
+train_ds_meta: ???
+val_ds_meta: ???
+log_ds_meta: ???
+
+log_dir: ???
+
+model:
+
+  max_epochs: ${max_epochs}
+  steps_per_epoch: ${weighted_sampling_steps_per_epoch}
+  l1_loss_factor: 60
+
+  preprocessor:
+    _target_: nemo.collections.asr.parts.preprocessing.features.FilterbankFeatures
+    nfilt: ${feature.mel_feature.mel_dim}
+    lowfreq: ${feature.mel_feature.lowfreq}
+    highfreq: ${feature.mel_feature.highfreq}
+    n_fft: ${feature.win_length}
+    n_window_size: ${feature.win_length}
+    n_window_stride: ${feature.hop_length}
+    pad_to: 0
+    pad_value: 0
+    exact_pad: true
+    sample_rate: ${feature.sample_rate}
+    window: hann
+    normalize: null
+    preemph: null
+    dither: 0.0
+    frame_splicing: 1
+    log: true
+    log_zero_guard_type: add
+    log_zero_guard_value: 1.0
+    mag_power: 1.0
+    mel_norm: null
+    use_grads: false
+
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
+      sample_rate: ${feature.sample_rate}
+      n_samples: ${sample.train_n_samples}
+      min_duration: 0.4
+      max_duration: null
+      dataset_meta: ${train_ds_meta}
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 4
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      sample_rate: ${feature.sample_rate}
+      n_samples: ${sample.val_n_samples}
+      min_duration: 3.0
+      max_duration: null
+      dataset_meta: ${val_ds_meta}
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 2
+
+  log_config:
+    log_dir: ${log_dir}
+    log_epochs: [10, 50]
+    epoch_frequency: 100
+    log_tensorboard: false
+    log_wandb: false
+
+    generators:
+      - _target_: nemo.collections.tts.parts.utils.callbacks.VocoderArtifactGenerator
+
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      sample_rate: ${feature.sample_rate}
+      n_samples: null
+      min_duration: null
+      max_duration: null
+      dataset_meta: ${log_ds_meta}
+
+    dataloader_params:
+      batch_size: 4
+      num_workers: 2
+
+  optim:
+    _target_: torch.optim.AdamW
+    lr: 2e-4
+    betas: [0.8, 0.99]
+    weight_decay: 1e-6
+    sched:
+      name: ExponentialLR
+      gamma: 0.999
+
+trainer:
+  num_nodes: 1
+  devices: 1
+  accelerator: gpu
+  strategy: ddp
+  precision: 16
+  max_epochs: ${max_epochs}
+  accumulate_grad_batches: 1
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: false # Provided by exp_manager
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 10
+  benchmark: false
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  create_wandb_logger: false
+  checkpoint_callback_params:
+    monitor: val_loss
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false

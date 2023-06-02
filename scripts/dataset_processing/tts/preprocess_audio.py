@@ -24,7 +24,7 @@ too many copies of the same audio.
 Most of these can also be done by the TTS data loader at training time, but doing them ahead of time
 lets us implement more complex processing, validate the correctness of the output, and save on compute time.
 
-$ python <nemo_root_path>/scripts/dataset_processing/tts/audio_processing/preprocess_audio.py \
+$ python <nemo_root_path>/scripts/dataset_processing/tts/preprocess_audio.py \
     --input_manifest="<data_root_path>/manifest.json" \
     --output_manifest="<data_root_path>/manifest_processed.json" \
     --input_audio_dir="<data_root_path>/audio" \

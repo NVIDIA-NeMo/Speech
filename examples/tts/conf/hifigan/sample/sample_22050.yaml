@@ -1,0 +1,3 @@
+# Audio dataset sampling config for 22.05khz sampling rate
+train_n_samples: 8192
+val_n_samples: 66048

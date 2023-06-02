@@ -22,6 +22,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
+from einops import rearrange
 from pytorch_lightning import Callback, LightningModule, Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.loggers.logger import Logger
@@ -65,11 +66,13 @@ def _load_vocoder(model_name: Optional[str], checkpoint_path: Optional[str], typ
         raise ValueError(f"Unknown vocoder type '{type}'")
 
     if model_name is not None:
-        vocoder = model_type.from_pretrained(model_name).eval()
+        vocoder = model_type.from_pretrained(model_name)
+    elif checkpoint_path.endswith(".nemo"):
+        vocoder = model_type.restore_from(checkpoint_path)
     else:
-        vocoder = model_type.load_from_checkpoint(checkpoint_path).eval()
+        vocoder = model_type.load_from_checkpoint(checkpoint_path)
 
-    return vocoder
+    return vocoder.eval()
 
 
 @dataclass
@@ -229,6 +232,39 @@ class LoggingCallback(Callback):
             self._log_image(image=image, log_dir=log_dir, step=model.global_step)
 
 
+class VocoderArtifactGenerator(ArtifactGenerator):
+    """
+    Generator for logging Vocoder model outputs.
+    """
+
+    def generate_artifacts(
+        self, model: LightningModule, batch_dict: Dict
+    ) -> Tuple[List[AudioArtifact], List[ImageArtifact]]:
+
+        audio_artifacts = []
+
+        audio_filepaths = batch_dict.get("audio_filepaths")
+        audio_ids = [create_id(p) for p in audio_filepaths]
+
+        audio = batch_dict.get("audio")
+        audio_len = batch_dict.get("audio_lens")
+
+        spec, spec_len = model.audio_to_melspec_precessor(audio, audio_len)
+
+        with torch.no_grad():
+            audio_pred = model.forward(spec=spec)
+            audio_pred = rearrange(audio_pred, "B 1 T -> B T")
+
+        for i, audio_id in enumerate(audio_ids):
+            audio_pred_i = audio_pred[i][: audio_len[i]].cpu().numpy()
+            audio_artifact = AudioArtifact(
+                id=f"audio_{audio_id}", data=audio_pred_i, filename=f"{audio_id}.wav", sample_rate=model.sample_rate,
+            )
+            audio_artifacts.append(audio_artifact)
+
+        return audio_artifacts, []
+
+
 class FastPitchArtifactGenerator(ArtifactGenerator):
     """
     Generator for logging FastPitch model outputs.
@@ -339,10 +375,9 @@ class FastPitchArtifactGenerator(ArtifactGenerator):
             )
 
         if self.log_alignment:
-            # [B, T_spec, T_text]
-            attn = attn.squeeze(1)
+            attn = rearrange(attn, "B 1 T_spec T_text -> B T_text T_spec")
             for i, audio_id in enumerate(audio_ids):
-                attn_i = attn[i][: mels_pred_len[i], : text_lens[i]].cpu().numpy()
+                attn_i = attn[i][: text_lens[i], : mels_pred_len[i]].cpu().numpy()
                 alignment_artifact = ImageArtifact(
                     id=f"align_{audio_id}",
                     data=attn_i,

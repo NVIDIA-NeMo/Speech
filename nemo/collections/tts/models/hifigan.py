@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -23,12 +24,13 @@ from pytorch_lightning.loggers.wandb import WandbLogger
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss
 from nemo.collections.tts.models.base import Vocoder
 from nemo.collections.tts.modules.hifigan_modules import MultiPeriodDiscriminator, MultiScaleDiscriminator
+from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.core.optim.lr_scheduler import CosineAnnealing, compute_max_steps
+from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -47,6 +49,7 @@ class HifiGanModel(Vocoder, Exportable):
         # Convert to Hydra 1.0 compatible DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
+        self.ds_class = cfg.train_ds.dataset._target_
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -69,9 +72,22 @@ class HifiGanModel(Vocoder, Exportable):
         if self._train_dl:
             self.input_as_mel = self._train_dl.dataset.load_precomputed_mel
 
+        self.log_audio = cfg.get("log_audio", False)
+        self.log_config = cfg.get("log_config", None)
+        self.lr_schedule_interval = None
         self.automatic_optimization = False
 
-    def _get_max_steps(self):
+    @property
+    def max_steps(self):
+        if "max_steps" in self._cfg:
+            return self._cfg.get("max_steps")
+
+        if "max_epochs" not in self._cfg:
+            raise ValueError("Must specify 'max_steps' or 'max_epochs'.")
+
+        if "steps_per_epoch" in self._cfg:
+            return self._cfg.max_epochs * self._cfg.steps_per_epoch
+
         return compute_max_steps(
             max_epochs=self._cfg.max_epochs,
             accumulate_grad_batches=self.trainer.accumulate_grad_batches,
@@ -84,16 +100,13 @@ class HifiGanModel(Vocoder, Exportable):
 
     @staticmethod
     def get_warmup_steps(max_steps, warmup_steps, warmup_ratio):
-        if warmup_steps is not None and warmup_ratio is not None:
-            raise ValueError(f'Either use warmup_steps or warmup_ratio for scheduler')
-
         if warmup_steps is not None:
             return warmup_steps
 
         if warmup_ratio is not None:
             return warmup_ratio * max_steps
 
-        raise ValueError(f'Specify warmup_steps or warmup_ratio for scheduler')
+        return None
 
     def configure_optimizers(self):
         optim_config = self._cfg.optim.copy()
@@ -102,41 +115,46 @@ class HifiGanModel(Vocoder, Exportable):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
-        optim_g = instantiate(optim_config, params=self.generator.parameters(),)
-        optim_d = instantiate(optim_config, params=itertools.chain(self.msd.parameters(), self.mpd.parameters()),)
+        gen_params = self.generator.parameters()
+        disc_params = itertools.chain(self.msd.parameters(), self.mpd.parameters())
+        optim_g = instantiate(optim_config, params=gen_params)
+        optim_d = instantiate(optim_config, params=disc_params)
 
-        # Backward compatibility
-        if sched_config is None and 'sched' in self._cfg:
-            sched_config = self._cfg.sched
-
-        if sched_config is not None:
-            max_steps = self._cfg.get("max_steps", None)
-            if max_steps is None or max_steps < 0:
-                max_steps = self._get_max_steps()
-
-            warmup_steps = HifiGanModel.get_warmup_steps(
-                max_steps=max_steps,
-                warmup_steps=sched_config.get("warmup_steps", None),
-                warmup_ratio=sched_config.get("warmup_ratio", None),
-            )
-
-            scheduler_g = CosineAnnealing(
-                optimizer=optim_g, max_steps=max_steps, min_lr=sched_config.min_lr, warmup_steps=warmup_steps,
-            )  # Use warmup to delay start
-            sch1_dict = {
-                'scheduler': scheduler_g,
-                'interval': 'step',
-            }
-
-            scheduler_d = CosineAnnealing(optimizer=optim_d, max_steps=max_steps, min_lr=sched_config.min_lr,)
-            sch2_dict = {
-                'scheduler': scheduler_d,
-                'interval': 'step',
-            }
-
-            return [optim_g, optim_d], [sch1_dict, sch2_dict]
-        else:
+        if sched_config is None:
             return [optim_g, optim_d]
+
+        max_steps = self.max_steps
+        warmup_steps = self.get_warmup_steps(
+            max_steps=max_steps,
+            warmup_steps=sched_config.get("warmup_steps", None),
+            warmup_ratio=sched_config.get("warmup_ratio", None),
+        )
+
+        OmegaConf.set_struct(sched_config, False)
+        sched_config["max_steps"] = max_steps
+        if warmup_steps:
+            sched_config["warmup_steps"] = warmup_steps
+            sched_config.pop("warmup_ratio", None)
+        OmegaConf.set_struct(sched_config, True)
+
+        scheduler_g = prepare_lr_scheduler(
+            optimizer=optim_g, scheduler_config=sched_config, train_dataloader=self._train_dl
+        )
+
+        scheduler_d = prepare_lr_scheduler(
+            optimizer=optim_d, scheduler_config=sched_config, train_dataloader=self._train_dl
+        )
+
+        self.lr_schedule_interval = scheduler_g["interval"]
+
+        return [optim_g, optim_d], [scheduler_g, scheduler_d]
+
+    def update_lr(self, interval="step"):
+        schedulers = self.lr_schedulers()
+        if schedulers is not None and self.lr_schedule_interval == interval:
+            sch1, sch2 = schedulers
+            sch1.step()
+            sch2.step()
 
     @typecheck()
     def forward(self, *, spec):
@@ -153,12 +171,7 @@ class HifiGanModel(Vocoder, Exportable):
         return self(spec=spec).squeeze(1)
 
     def training_step(self, batch, batch_idx):
-        if self.input_as_mel:
-            # Pre-computed spectrograms will be used as input
-            audio, audio_len, audio_mel = batch
-        else:
-            audio, audio_len = batch
-            audio_mel, _ = self.audio_to_melspec_precessor(audio, audio_len)
+        audio, audio_len, audio_mel, _ = self._process_batch(batch)
 
         # Mel as input for L1 mel loss
         audio_trg_mel, _ = self.trg_melspec_fn(audio, audio_len)
@@ -196,12 +209,7 @@ class HifiGanModel(Vocoder, Exportable):
         self.manual_backward(loss_g)
         optim_g.step()
 
-        # Run schedulers
-        schedulers = self.lr_schedulers()
-        if schedulers is not None:
-            sch1, sch2 = schedulers
-            sch1.step()
-            sch2.step()
+        self.update_lr()
 
         metrics = {
             "g_loss_fm_mpd": loss_fm_mpd,
@@ -218,18 +226,13 @@ class HifiGanModel(Vocoder, Exportable):
         self.log_dict(metrics, on_step=True, sync_dist=True)
         self.log("g_l1_loss", loss_mel, prog_bar=True, logger=False, sync_dist=True)
 
-    def validation_step(self, batch, batch_idx):
-        if self.input_as_mel:
-            audio, audio_len, audio_mel = batch
-            audio_mel_len = [audio_mel.shape[1]] * audio_mel.shape[0]
-        else:
-            audio, audio_len = batch
-            audio_mel, audio_mel_len = self.audio_to_melspec_precessor(audio, audio_len)
-        audio_pred = self(spec=audio_mel)
+    def training_epoch_end(self, outputs) -> None:
+        self.update_lr("epoch")
 
-        # Perform bias denoising
-        pred_denoised = self._bias_denoise(audio_pred, audio_mel).squeeze(1)
-        pred_denoised_mel, _ = self.audio_to_melspec_precessor(pred_denoised, audio_len)
+    def validation_step(self, batch, batch_idx):
+        audio, audio_len, audio_mel, audio_mel_len = self._process_batch(batch)
+
+        audio_pred = self(spec=audio_mel)
 
         if self.input_as_mel:
             gt_mel, gt_mel_len = self.audio_to_melspec_precessor(audio, audio_len)
@@ -239,7 +242,11 @@ class HifiGanModel(Vocoder, Exportable):
         self.log_dict({"val_loss": loss_mel}, on_epoch=True, sync_dist=True)
 
         # Plot audio once per epoch
-        if batch_idx == 0 and isinstance(self.logger, WandbLogger) and HAVE_WANDB:
+        if self.log_audio and batch_idx == 0 and isinstance(self.logger, WandbLogger) and HAVE_WANDB:
+            # Perform bias denoising
+            pred_denoised = self._bias_denoise(audio_pred, audio_mel).squeeze(1)
+            pred_denoised_mel, _ = self.audio_to_melspec_precessor(pred_denoised, audio_len)
+
             clips = []
             specs = []
             for i in range(min(5, audio.shape[0])):
@@ -284,6 +291,21 @@ class HifiGanModel(Vocoder, Exportable):
 
             self.logger.experiment.log({"audio": clips, "specs": specs})
 
+    def _process_batch(self, batch):
+        if self.input_as_mel:
+            audio, audio_len, audio_mel = batch
+            audio_mel_len = [audio_mel.shape[1]] * audio_mel.shape[0]
+            return audio, audio_len, audio_mel, audio_mel_len
+
+        if self.ds_class == "nemo.collections.tts.data.vocoder_dataset.VocoderDataset":
+            audio = batch.get("audio")
+            audio_len = batch.get("audio_lens")
+        else:
+            audio, audio_len = batch
+
+        audio_mel, audio_mel_len = self.audio_to_melspec_precessor(audio, audio_len)
+        return audio, audio_len, audio_mel, audio_mel_len
+
     def _bias_denoise(self, audio, mel):
         def stft(x):
             comp = torch.stft(x.squeeze(1), n_fft=1024, hop_length=256, win_length=1024, return_complex=True)
@@ -311,6 +333,19 @@ class HifiGanModel(Vocoder, Exportable):
 
         return audio_denoised
 
+    def _setup_train_dataloader(self, cfg):
+        dataset = instantiate(cfg.dataset)
+        sampler = dataset.get_sampler(cfg.dataloader_params.batch_size)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
+        )
+        return data_loader
+
+    def _setup_test_dataloader(self, cfg):
+        dataset = instantiate(cfg.dataset)
+        data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
+        return data_loader
+
     def __setup_dataloader_from_config(self, cfg, shuffle_should_be: bool = True, name: str = "train"):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):
             raise ValueError(f"No dataset for {name}")
@@ -333,13 +368,43 @@ class HifiGanModel(Vocoder, Exportable):
         return torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
 
     def setup_training_data(self, cfg):
-        self._train_dl = self.__setup_dataloader_from_config(cfg)
+        if self.ds_class == "nemo.collections.tts.data.vocoder_dataset.VocoderDataset":
+            self._train_dl = self._setup_train_dataloader(cfg)
+        else:
+            self._train_dl = self.__setup_dataloader_from_config(cfg)
 
     def setup_validation_data(self, cfg):
-        self._validation_dl = self.__setup_dataloader_from_config(cfg, shuffle_should_be=False, name="validation")
+        if self.ds_class == "nemo.collections.tts.data.vocoder_dataset.VocoderDataset":
+            self._validation_dl = self._setup_test_dataloader(cfg)
+        else:
+            self._validation_dl = self.__setup_dataloader_from_config(cfg, shuffle_should_be=False, name="validation")
 
     def setup_test_data(self, cfg):
         pass
+
+    def configure_callbacks(self):
+        if not self.log_config:
+            return []
+
+        sample_ds_class = self.log_config.dataset._target_
+        if sample_ds_class != "nemo.collections.tts.data.vocoder_dataset.VocoderDataset":
+            raise ValueError(f"Sample logging only supported for VocoderDataset, got {sample_ds_class}")
+
+        data_loader = self._setup_test_dataloader(self.log_config)
+        generators = instantiate(self.log_config.generators)
+        log_dir = Path(self.log_config.log_dir) if self.log_config.log_dir else None
+        log_callback = LoggingCallback(
+            generators=generators,
+            data_loader=data_loader,
+            log_epochs=self.log_config.log_epochs,
+            epoch_frequency=self.log_config.epoch_frequency,
+            output_dir=log_dir,
+            loggers=self.trainer.loggers,
+            log_tensorboard=self.log_config.log_tensorboard,
+            log_wandb=self.log_config.log_wandb,
+        )
+
+        return [log_callback]
 
     @classmethod
     def list_available_models(cls) -> 'Optional[Dict[str, str]]':

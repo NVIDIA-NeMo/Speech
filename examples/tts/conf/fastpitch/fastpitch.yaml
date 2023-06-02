@@ -1,12 +1,15 @@
-# This config contains the default values for training a FastPitch model with aligner.
+# This config contains the default values for training an English FastPitch model.
 # If you want to train a model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
 name: FastPitch
 
+defaults:
+  - feature: ???
+
 max_epochs: ???
 batch_size: 32
-weighted_sample_steps: null
+weighted_sampling_steps_per_epoch: null
 
 n_speakers: ???
 speaker_path: null
@@ -23,9 +26,6 @@ log_dir: ???
 vocoder_type: ???
 vocoder_name: null
 vocoder_checkpoint_path: null
-
-defaults:
-  - feature: feature_22050
 
 model:
   learn_alignment: true
@@ -44,6 +44,7 @@ model:
   dur_loss_scale: 0.1
   pitch_loss_scale: 0.1
   energy_loss_scale: 0.1
+  aligner_loss_scale: 0.1
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
@@ -79,7 +80,6 @@ model:
       phoneme_dict: ${phoneme_dict_path}
       heteronyms: ${heteronyms_path}
       phoneme_probability: 0.8
-      # Relies on the heteronyms list for anything that needs to be disambiguated
       ignore_ambiguous_words: false
       use_chars: true
       use_stresses: true
@@ -94,30 +94,24 @@ model:
     field: energy
     stats_path: ${feature_stats_path}
 
-  align_prior_config:
-    _target_: nemo.collections.tts.data.text_to_speech_dataset.AlignPriorConfig
-    hop_length: ${feature.hop_length}
-    use_beta_binomial_interpolator: false
-
   train_ds:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
       dataset_meta: ${train_ds_meta}
-      weighted_sample_steps: ${weighted_sample_steps}
+      weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
       sample_rate: ${feature.sample_rate}
       speaker_path: ${speaker_path}
+      align_prior_hop_length: ${feature.hop_length}
       featurizers: ${feature.featurizers}
       feature_processors:
         pitch: ${model.pitch_processor}
         energy: ${model.energy_processor}
-      align_prior_config: ${model.align_prior_config}
       min_duration: 0.1
       max_duration: 10.0
 
     dataloader_params:
       batch_size: ${batch_size}
-      drop_last: true
-      num_workers: 8
+      num_workers: 4
 
   validation_ds:
     dataset:
@@ -125,11 +119,11 @@ model:
       dataset_meta: ${val_ds_meta}
       sample_rate: ${feature.sample_rate}
       speaker_path: ${speaker_path}
+      align_prior_hop_length: ${feature.hop_length}
       featurizers: ${feature.featurizers}
       feature_processors:
         pitch: ${model.pitch_processor}
         energy: ${model.energy_processor}
-      align_prior_config: ${model.align_prior_config}
 
     dataloader_params:
       batch_size: ${batch_size}
@@ -158,7 +152,7 @@ model:
       text_tokenizer: ${model.text_tokenizer}
       sample_rate: ${feature.sample_rate}
       speaker_path: ${speaker_path}
-      align_prior_config: ${model.align_prior_config}
+      align_prior_hop_length: ${feature.hop_length}
       featurizers: ${feature.featurizers}
 
       feature_processors:

@@ -84,7 +84,7 @@ Key Features
             * CTC
             * Transducer/RNNT
             * Hybrid Transducer/CTC
-            * NeMo Original `Multi-blank Transducers <https://arxiv.org/abs/2211.03541>`_
+            * NeMo Original `Multi-blank Transducers <https://arxiv.org/abs/2211.03541>`_ and `Token-and-Duration Transducers (TDT) <https://arxiv.org/abs/2304.06795>`_
         * Streaming/Buffered ASR (CTC/Transducer) - `Chunked Inference Examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_chunked_inference>`_
         * Cache-aware Streaming Conformer - `<https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer>`_
         * Beam Search decoding

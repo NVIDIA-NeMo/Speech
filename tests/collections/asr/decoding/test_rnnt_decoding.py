@@ -130,7 +130,7 @@ class TestRNNTDecoding:
 
     @pytest.mark.unit
     def test_constructor_subword(self, tmp_tokenizer):
-        cfg = RNNTBPEDecodingConfig()
+        cfg = RNNTDecodingConfig()
         vocab = tmp_tokenizer.vocab
         decoder = get_rnnt_decoder(vocab_size=len(vocab))
         joint = get_rnnt_joint(vocab_size=len(vocab))

@@ -550,7 +550,13 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             return compute_prob_response
         else:
             del inference_config['compute_logprob']
-            inference_config['inputs'] = (batch['contexts'].cuda(), batch['context_lengths'].cuda())
+
+            # for megatron_gpt_eval.py
+            if isinstance(batch, list):
+                inference_config['inputs'] = batch
+            else:
+                # peft_eval.py
+                inference_config['inputs'] = (batch['contexts'].cuda(), batch['context_lengths'].cuda())
             return generate(self, **inference_config)
 
     def write_predictions_to_file(self, outputs, output_file_path_prefix):

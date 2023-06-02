@@ -263,7 +263,7 @@ def main(cfg) -> None:
     print(response)
     print("***************************")
 
-    # Second method of running text generation, call trainer.predict
+    # Second method of running text generation, call trainer.predict [recommended]
     ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
     request_dl = DataLoader(dataset=ds, batch_size=2)
     config = OmegaConf.to_container(cfg.inference)

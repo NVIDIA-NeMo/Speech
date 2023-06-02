@@ -196,11 +196,16 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
     """
 
     def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
-        blank_id = tokenizer.tokenizer.vocab_size
+        blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
+
+        # multi-blank RNNTs
+        if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'multiblank':
+            blank_id = tokenizer.tokenizer.vocab_size + joint.num_extra_outputs
+
         self.tokenizer = tokenizer
 
         super(RNNTBPEDecoding, self).__init__(
-            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id + joint.num_extra_outputs
+            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):

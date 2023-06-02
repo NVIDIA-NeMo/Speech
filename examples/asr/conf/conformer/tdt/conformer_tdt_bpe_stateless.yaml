@@ -1,40 +1,31 @@
-# It contains the default values for training a Multiblank Conformer-Transducer ASR model with stateless decoders, large size (~120M) with Transducer loss and sub-word encoding.
+# This file contains the default values for training an TDT Conformer-Transducer ASR model, large size (~120M) with sub-word encoding.
+
+# You can find detailed info about TDT models at https://arxiv.org/abs/2304.06795. 
 
 # Architecture and training config:
 # Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
 # batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
 # Here are the recommended configs for different variants of Conformer-Transducer, other parameters are the same as in this config file.
-#
-#  +-------------+---------+---------+----------+--------------+--------------------------+
-#  | Model       | d_model | n_heads | n_layers | weight_decay | pred_hidden/joint_hidden |
-#  +=============+=========+========+===========+==============+==========================+
-#  | Small  (14M)|   176   |    4   |    16     |     0.0      |           320            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Medium (32M)|   256   |    4   |    16     |     1e-3     |           640            |
-#  +-------------+---------+--------+-----------+--------------+--------------------------+
-#  | Large (120M)|   512   |    8   |    17     |     1e-3     |           640            |
-#  +-----------------------------------------------------------+--------------------------+
-#
 
-# You may find more info about Conformer-Transducer here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer
-# Multiblank transducer is decribed in https://arxiv.org/pdf/2211.03541
-# Pre-trained models of Conformer-Transducer can be found here: https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/results.html
+# Note: the added duration outputs from the joiner make TDT models slightly larger than corresponding conventional RNN-T models,
+# although the difference is tiny -- the added number of params is roughly num-durations X (joint_hidden + pred_hidden), typically in the
+# order of thousands of params. This is negligible even with the "Small" config with around 14 million params.
+# Recommended duraction config is [0, 1, 2, ... , n] where optimal n is usually between 4 and 8 depending on the dataset.
 
-name: "Multiblank-Conformer-Transducer-BPE"
+#  +--------------+---------+---------+----------+------------------+--------------+--------------------------+-----------------+
+#  | Model        | d_model | n_heads | n_layers | conv_kernel_size | weight_decay | pred_hidden/joint_hidden | decoder_context |
+#  +==============+=========+========+===========+==================+==============+==========================+=================+
+#  | Large  (117M)|   512   |    8   |    17     |       31         |     1e-3     |           640            |        2        |
+#  +--------------+---------+--------+-----------+------------------+--------------+--------------------------+-----------------+
+
+# Default learning parameters in this config are set for global batch size of 2K while you may use lower values.
+# To increase the global batch size with limited number of GPUs, you may use higher accumulate_grad_batches.
+# However accumulate_grad_batches is better to be avoided as long as the global batch size is large enough and training is stable.
+
+
+name: "Conformer-TDT-BPE-Stateless"
 
 model:
-  loss:
-    loss_name: "multiblank_rnnt"
-
-    multiblank_rnnt_kwargs:
-      # FastEmit regularization: https://arxiv.org/abs/2010.11148
-      # You may enable FastEmit to reduce the latency of the model for streaming
-      fastemit_lambda: 0.0  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
-      clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
-      # Multiblank RNN-T: https://arxiv.org/pdf/2211.03541.pdf
-      big_blank_durations: [2, 4, 8]
-      sigma: 0.05
-
   sample_rate: 16000
   compute_eval_loss: false # eval samples can be very long and exhaust memory. Disable computation of transducer loss during validation/testing with this flag.
   log_prediction: true # enables logging sample predictions in the output during training
@@ -45,6 +36,11 @@ model:
     pred_hidden: 640
     joint_hidden: 640
 
+    # variables for TDT configs.
+    tdt_durations: [0, 1, 2, 3, 4]
+    num_tdt_durations: 5
+    
+
   train_ds:
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
@@ -52,6 +48,8 @@ model:
     shuffle: true
     num_workers: 8
     pin_memory: true
+    use_start_end_token: false
+    trim_silence: false
     max_duration: 16.7 # it is set for LibriSpeech, you may need to update it for your dataset
     min_duration: 0.1
     # tarred datasets
@@ -67,18 +65,18 @@ model:
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
+    use_start_end_token: false
 
   test_ds:
     manifest_filepath: null
     sample_rate: ${model.sample_rate}
     batch_size: 16
     shuffle: false
-    use_start_end_token: false
     num_workers: 8
     pin_memory: true
+    use_start_end_token: false
 
   # You may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
@@ -144,10 +142,9 @@ model:
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 
   decoder:
-    _target_: nemo.collections.asr.modules.RNNTDecoder
-    normalization_mode: null # Currently only null is supported for export.
-    random_state_sampling: false # Random state sampling: https://arxiv.org/pdf/1910.11455.pdf
-    blank_as_pad: true # This flag must be set in order to support exporting of RNNT models + efficient inference.
+    _target_: nemo.collections.asr.modules.StatelessTransducerDecoder
+    context_size: 2  # The Stateless decoder uses 2 words as context by default.
+    normalization_mode: layer  # This helps stabilize training for Stateless decoders.
 
     prednet:
       pred_hidden: ${model.model_defaults.pred_hidden}
@@ -169,22 +166,26 @@ model:
     # However, to preserve memory, this ratio can be 1:8 or even 1:16.
     # Extreme case of 1:B (i.e. fused_batch_size=1) should be avoided as training speed would be very slow.
     fuse_loss_wer: true
-    fused_batch_size: 4
+    fused_batch_size: 16
 
     jointnet:
       joint_hidden: ${model.model_defaults.joint_hidden}
       activation: "relu"
       dropout: 0.2
-    num_extra_outputs: 3
+
+    # this variable is non-zero for this TDT model, as well as multi-blank models. It represents the number of
+    # additional outputs from the joiner, besides all tokens in the BPE vocab plus the (standard) blank symbol.
+    num_extra_outputs: ${model.model_defaults.num_tdt_durations}
 
   decoding:
-    strategy: "greedy_batch" # can be greedy, greedy_batch, beam, tsd, alsd.
-    model_type: "multiblank"
+    # Using greedy decoding is highly recommended for TDT models. Using greedy-batch will give very bad results
+    # if omega is 0; even if omega is non-zero, greedy-batch results are still going to be inaccurate.
+    strategy: "greedy"
 
-    # this must not be None in order to use the multi-blank specific decoding method.
-    # you could set this to [1, 1, 1] so that big blanks are treated the same
-    # as standard blanks during decoding, which usually improves accuracy although runs slower.
-    big_blank_durations: [2, 4, 8]
+    model_type: "tdt"
+
+    # this must not be None in order to use the TDT specific decoding method.
+    durations: ${model.model_defaults.tdt_durations}
 
     # greedy strategy config
     greedy:
@@ -197,6 +198,26 @@ model:
       score_norm: true
       tsd_max_sym_exp: 50  # for Time Synchronous Decoding
       alsd_max_target_len: 2.0  # for Alignment-Length Synchronous Decoding
+
+  loss:
+    # This is the main different between a TDT model and a conventional RNNT model -- the loss function.
+    loss_name: "tdt"
+
+    tdt_kwargs:
+      # FastEmit regularization: https://arxiv.org/abs/2010.11148
+      # You may enable FastEmit to reduce the latency of the model for streaming
+      fastemit_lambda: 0.001  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
+
+      # refer to https://arxiv.org/abs/2304.06795 for the meaning of the following three configs.
+      durations: ${model.model_defaults.tdt_durations}
+      sigma: 0.05 # hyper-param for under-normalization.
+      omega: 0.1 # weight for regular RNN-T loss.
+
+  # Adds Gaussian noise to the gradients of the decoder to avoid overfitting
+  variational_noise:
+    start_step: 0
+    std: 0.0
 
   optim:
     name: adamw
@@ -224,7 +245,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 32 # 16, 32, or bf16
+  precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.
   log_every_n_steps: 10  # Interval of logging.
   enable_progress_bar: True
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
@@ -254,3 +275,4 @@ exp_manager:
   wandb_logger_kwargs:
     name: null
     project: null
+

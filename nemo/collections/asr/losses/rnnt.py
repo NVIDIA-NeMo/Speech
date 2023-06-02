@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch
+from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
@@ -50,7 +50,7 @@ except (ImportError, ModuleNotFoundError):
     WARP_RNNT_AVAILABLE = False
 
 try:
-    from nemo.collections.asr.parts.numba.rnnt_loss import MultiblankRNNTLossNumba, RNNTLossNumba
+    from nemo.collections.asr.parts.numba.rnnt_loss import MultiblankRNNTLossNumba, RNNTLossNumba, TDTLossNumba
 
     NUMBA_RNNT_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
@@ -137,6 +137,20 @@ RNNT_LOSS_RESOLVER = {
         is_available=K2_AVAILABLE,
         installation_msg=K2_INSTALLATION_MESSAGE,
         force_float32=False,
+    ),
+    "tdt": RNNTLossConfig(
+        loss_name="tdt",
+        lib_name="numba",
+        min_version='0.53.0',
+        is_available=NUMBA_RNNT_AVAILABLE,
+        installation_msg=NUMBA_INSTALLATION_MESSAGE,
+    ),
+    "tdt_pytorch": RNNTLossConfig(
+        loss_name="tdt_pytorch",
+        lib_name="torch",
+        min_version='0.0',
+        is_available=True,
+        installation_msg="Pure Pytorch implementation of TDT loss. Slow and for debugging purposes only.",
     ),
 }
 
@@ -274,6 +288,30 @@ def resolve_rnnt_loss(loss_name: str, blank_idx: int, loss_kwargs: dict = None) 
             blank=blank_idx, big_blank_durations=big_blank_durations, reduction='none', sigma=sigma
         )
         _warn_unused_additional_kwargs(loss_name, loss_kwargs)
+
+    elif loss_name == 'tdt':
+        fastemit_lambda = loss_kwargs.pop('fastemit_lambda', 0.0)
+        clamp = loss_kwargs.pop('clamp', -1.0)
+        durations = loss_kwargs.pop('durations', None)
+        sigma = loss_kwargs.pop('sigma', 0.0)
+        omega = loss_kwargs.pop('omega', 0.0)
+        loss_func = TDTLossNumba(
+            blank=blank_idx,
+            durations=durations,
+            reduction='none',
+            fastemit_lambda=fastemit_lambda,
+            clamp=clamp,
+            sigma=sigma,
+            omega=omega,
+        )
+        _warn_unused_additional_kwargs(loss_name, loss_kwargs)
+
+    elif loss_name == 'tdt_pytorch':
+        durations = loss_kwargs.pop('durations', None)
+        sigma = loss_kwargs.pop('sigma', 0.0)
+        loss_func = TDTLossPytorch(blank=blank_idx, durations=durations, reduction='none', sigma=sigma)
+        _warn_unused_additional_kwargs(loss_name, loss_kwargs)
+
     elif loss_name == "graph_rnnt":
         loss_kwargs = _clean_kwargs(loss_name, loss_kwargs, GraphRnntLoss.__init__, ignore_params={"blank"})
         loss_func = GraphRnntLoss(blank=blank_idx, **loss_kwargs)
@@ -345,7 +383,13 @@ class RNNTLoss(Loss):
 
         Args:
             num_classes: Number of target classes for the joint network to predict.
-                (Excluding the RNN-T blank token).
+                In all cases (conventional RNNT, multi-blank RNNT, and TDT model), this equals the token-id
+                for the standard "blank" symbol. In particular, say V is the number of non-blank tokens in
+                the vocabulary, then in the case of,
+                standard RNNT: num_classes = V
+                multiblank RNNT: num_classes = V + number-big-blanks (since we store big-blanks before 
+                                 standard blank, and the standard blank is the last symbol in the vocab)
+                TDT: num_classes = V. Note, V here does not include any of the "duration outputs".
 
             reduction: Type of reduction to perform on loss. Possible values are 
                 `mean_batch`, 'mean_volume`, `mean`, `sum` or None.

@@ -488,11 +488,11 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
     def fp32_grad_accumulation(self):
         return self._fp32_grad_accum
 
-    def get_parameters(self):
+    def get_parameters_with_grad(self):
         params = []
         for param_group in self.optimizer.param_groups:
             for param in param_group['params']:
-                if param.requires_grad:  # (@adithyare) added to enable pp>1 training for adapters
+                if param.grad is not None:  # (@adithyare) added to enable pp>1 training for adapters
                     params.append(param)
         return params
 

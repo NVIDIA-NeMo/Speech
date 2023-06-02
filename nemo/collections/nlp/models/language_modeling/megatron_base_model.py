@@ -240,14 +240,16 @@ class MegatronBaseModel(NLPModel):
         )
         return after
 
-    def _get_parameters(self):
+    def get_parameters_with_grad(self):
         """
-        private method to load all the trainable parameters from optimizer param groups
+        Get all parameters with grad from optimizer param groups
         """
         params = []
         for param_group in self._optimizer_param_groups:
             for param in param_group['params']:
-                if param.requires_grad:  # (@adithyare) adapter training with pp>1 can result in params with no grads
+                if (
+                    param.grad is not None
+                ):  # (@adithyare) adapter training with pp>1 can result in params with no grads
                     params.append(param)
         return params
 
@@ -272,9 +274,9 @@ class MegatronBaseModel(NLPModel):
         else:
             if self.megatron_amp_o2:
                 # grep fp32 master parameters for gradient clipping
-                parameters = self._optimizer.get_parameters()
+                parameters = self._optimizer.get_parameters_with_grad()
             else:
-                parameters = self._get_parameters()
+                parameters = self.get_parameters_with_grad()
             grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
 
         self.log('grad_norm', grad_norm, rank_zero_only=True, batch_size=1)

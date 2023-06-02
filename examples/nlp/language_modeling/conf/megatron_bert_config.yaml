@@ -133,7 +133,7 @@ model:
     seq_length: ${model.encoder_seq_length}
     skip_warmup: True
     num_workers: 0
-    dataloader_type: single # cyclic
+    dataloader_type: single  # cyclic, LDDL
     reset_position_ids: False # Reset position ids after end-of-document token
     reset_attention_mask: False # Reset attention mask after end-of-document token
     eod_mask_loss: False # Mask loss for the end of document tokens

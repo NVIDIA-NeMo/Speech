@@ -29,7 +29,7 @@ exp_manager:
     monitor: validation_${model.data.validation_ds.metric.name}
     save_top_k: 2
     mode: max
-    save_nemo_on_train_end: False # Should be false, correct prompt learning model file is saved at model.nemo_path set below, 
+    save_nemo_on_train_end: False 
     filename: 'megatron_gpt_sft--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{consumed_samples}'
     model_parallel_size: ${model.tensor_model_parallel_size}
     save_best_model: True

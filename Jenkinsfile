@@ -3407,7 +3407,30 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             trainer.num_nodes=1"
       }
     }
-
+    stage('L2: Megatron GPT SFT Eval (inference seq len > training seq len)') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps{
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+            model.restore_from_path=/home/TestData/nlp/megatron_gpt_sft/megatron_gpt_rope_sft.nemo \
+            model.peft.restore_from_path=null \
+            model.data.test_ds.file_names=['/home/TestData/nlp/megatron_gpt_sft/sample.jsonl'] \
+            model.data.test_ds.names=['test'] \
+            model.data.test_ds.global_batch_size=1 \
+            model.data.test_ds.micro_batch_size=1 \
+            model.data.test_ds.tokens_to_generate=30 \
+            model.data.test_ds.max_seq_length=6000 \
+            inference.greedy=True \
+            inference.repetition_penalty=1.0 \
+            inference.outfile_path='examples/nlp/language_modeling/out.jsonl' && \
+            rm -rf examples/nlp/language_modeling/out.jsonl"
+      }
+    }
     stage('L2: Megatron GPT Prompt Tuning TP1 PP1') {
       when {
         anyOf {

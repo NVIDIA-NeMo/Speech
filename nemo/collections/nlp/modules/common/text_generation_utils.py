@@ -421,9 +421,15 @@ def synced_generate(
         if parallel_state.is_pipeline_first_stage():
             src = parallel_state.get_pipeline_model_parallel_last_rank()
             group = parallel_state.get_embedding_group()
-            output_logits = torch.empty(
-                tokens.size(0), context_length - 1, dtype=torch.float32, device=torch.device("cuda")
-            )
+
+            precision = model._trainer.precision
+            if precision in [16, "16"]:
+                dtype = torch.float16
+            elif precision == "bf16":
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+            output_logits = torch.empty(tokens.size(0), context_length - 1, dtype=dtype, device=torch.device("cuda"))
             torch.distributed.broadcast(output_logits, src, group)
 
             if all_probs:
@@ -433,7 +439,7 @@ def synced_generate(
                     tokens.size(0),
                     context_length - 1,
                     model.padded_vocab_size,
-                    dtype=torch.float32,
+                    dtype=dtype,
                     device=torch.device("cuda"),
                 )
                 torch.distributed.broadcast(full_logits, src, group)
@@ -667,10 +673,10 @@ def sample_sequence_batch(
             output = inference_strategy.forward_step(batch, tensor_shape)
 
             if parallel_state.is_pipeline_last_stage():
-                output = output[0]['logits'].float()
+                output = output[0]['logits']
+
                 output = tensor_parallel.gather_from_tensor_model_parallel_region(output)
                 assert output is not None
-                output = output.float()
                 logits = output[:, -1].view(batch_size, -1).contiguous()
 
                 # make sure it will generate at least min_length

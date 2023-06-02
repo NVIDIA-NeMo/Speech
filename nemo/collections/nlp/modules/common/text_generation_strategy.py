@@ -181,8 +181,11 @@ class GPTModelTextGenerationStrategy(TextGenerationStrategy):
 
     def clip_max_len(self, maxlen: int) -> int:
         """ clip the max len based on the LM model max sequence length"""
-        if maxlen > self.model.cfg.encoder_seq_length + 1:
-            maxlen = self.model.cfg.encoder_seq_length + 1
+
+        # for positional embedding types that allow length extrapolation, don't clip the max length
+        if self.model.cfg.get("position_embedding_type", "learned_absolute") == "learned_absolute":
+            if maxlen > self.model.cfg.encoder_seq_length + 1:
+                maxlen = self.model.cfg.encoder_seq_length + 1
         return maxlen
 
     def init_batch(self, context_tokens: torch.Tensor, context_length: int):

@@ -1,7 +1,7 @@
 Comparison tool for ASR Models
 ==============================
 
-The Comparison Tool (CT) allows to compare predictions of different ASR models at word accuracy level. 
+The Comparison Tool (CT) allows to compare predictions of different ASR models at word accuracy and utterance level. 
 
 +--------------------------------------------------------------------------------------------------------------------------+
 | **Comparison tool features:**                                                                                            |
@@ -11,6 +11,10 @@ The Comparison Tool (CT) allows to compare predictions of different ASR models a
 | interactive visualization of model's accuracy                                                                            |
 +--------------------------------------------------------------------------------------------------------------------------+
 | visual comparison of predictions of different models                                                                     |
++--------------------------------------------------------------------------------------------------------------------------+
+| visual comparison of utterances by their WER/CER                                                                         |
++--------------------------------------------------------------------------------------------------------------------------+
+| listening selected utterance                                                                                             |
 +--------------------------------------------------------------------------------------------------------------------------+
 
 Getting Started
@@ -151,3 +155,28 @@ In this case, all points lying above the diagonal have higher accuracy with the 
 Points marked with circles should be explored first.
 
 Words in the first quarter were well recognized by both models, and conversely, words in the third quarter were poorly recognized by both models.
+
+To compare models at utterance level, pick it at top dropdown field.
+
+At the next field you could choose metric: WER or CER
+
+    .. image:: images/scr_10.png
+        :align: center
+        :width: 800px
+        :alt: Switch mode
+		
+When an utterance level is selected, it is possible to click on a point on the graph, and the corresponding utterance will be automatically selected. 
+
+If audio files are available, there will be an option to listen to the audio recording and view its waveform. 
+
+    .. image:: images/scr_11.png
+        :align: center
+        :width: 800px
+        :alt: Audio player
+		
+In this mode, filtering is still available as well.
+
+**Limitations**
+
+To ensure efficient processing and avoid issues with memory limitations and slow performance, it is recommended to keep the manifests within the limits of 320 hours or around 170,000 utterances. 
+Exceeding these limits may result in both memory constraints and slower processing.

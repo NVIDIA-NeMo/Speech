@@ -468,6 +468,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             no_sync_func=no_sync_func,
             grad_sync_func=grad_sync_func,
             param_sync_func=param_sync_func,
+            overlap_p2p_comm=self.cfg.get('overlap_p2p_comm', False),
+            batch_p2p_comm=self.cfg.get('batch_p2p_comm', True),
         )
 
         # only the last stages of the pipeline return losses

@@ -464,7 +464,6 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             inference_config = inference_config.copy()
             compute_logprob = inference_config['compute_logprob']
             if compute_logprob:
-                del inference_config['compute_logprob']
                 inference_config['inputs'] = batch
                 inference_config['tokens_to_generate'] = 1
                 inference_config['all_probs'] = True
@@ -474,7 +473,6 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
                 compute_prob_response = get_computeprob_response(self.tokenizer, response, batch)
                 return compute_prob_response
             else:
-                del inference_config['compute_logprob']
                 inference_config['inputs'] = batch
                 return generate(self, **inference_config, strategy=self.inference_strategy)
 

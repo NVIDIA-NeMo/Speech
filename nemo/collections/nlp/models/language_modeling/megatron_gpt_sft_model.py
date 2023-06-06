@@ -35,6 +35,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
     LengthParam,
     SamplingParam,
     generate,
+    get_computeprob_response,
     megatron_gpt_generate,
 )
 from nemo.utils import AppState, logging
@@ -539,7 +540,6 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         inference_config = inference_config.copy()
         compute_logprob = inference_config['compute_logprob']
         if compute_logprob:
-            del inference_config['compute_logprob']
             inference_config['inputs'] = batch
             inference_config['tokens_to_generate'] = 1
             inference_config['all_probs'] = True
@@ -549,8 +549,6 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             compute_prob_response = get_computeprob_response(self.tokenizer, response, batch)
             return compute_prob_response
         else:
-            del inference_config['compute_logprob']
-
             # for megatron_gpt_eval.py
             if isinstance(batch, list):
                 inference_config['inputs'] = batch

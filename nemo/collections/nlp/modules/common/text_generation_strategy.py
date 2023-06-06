@@ -53,7 +53,6 @@ class TextGenerationStrategy:
 
     def forward_step(self, batch, tensor_shape):
         fwd_bwd_function = get_forward_backward_func()
-
         output_tensor = fwd_bwd_function(
             forward_step_func=self.model.get_forward_output_only_func(),
             data_iterator=iter([batch,]),

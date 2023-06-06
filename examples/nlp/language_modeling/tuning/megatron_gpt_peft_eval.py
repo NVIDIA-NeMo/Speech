@@ -155,7 +155,7 @@ def main(cfg) -> None:
 
     if os.path.isdir(cfg.model.restore_from_path):
         save_restore_connector.model_extracted_dir = cfg.model.restore_from_path
-    model = NLPModel.restore_from(
+    model = MegatronGPTSFTModel.restore_from(
         restore_path=cfg.model.restore_from_path,
         trainer=trainer,
         override_config_path=peft_model_cfg,
@@ -180,15 +180,17 @@ def main(cfg) -> None:
                 for batch in response:
                     batch_sentences = [s for s in batch['sentences']]
                     batch_tokens = [s for s in batch['tokens']]
-                    batch_logprob = [s.tolist() for s in batch['logprob']]
-                    for s, t, l in zip(batch_sentences, batch_tokens, batch_logprob):
-                        if cfg.inference.get("verbose", False):
-                            d = {
-                                'sentence': s,
-                                'tokens_with_logprobs': ', '.join([f"{_t} {_l:.4f}" for _t, _l in zip(t, l)]),
-                            }
-                            f.write(json.dumps(d, sort_keys=True, indent=2) + '\n')
-                        else:
+                    if cfg.inference.compute_logprob:
+                        batch_logprob = [s.tolist() for s in batch['logprob']]
+                        for s, t, l in zip(batch_sentences, batch_tokens, batch_logprob):
+                            if cfg.inference.get("verbose", False):
+                                d = {
+                                    'sentence': s,
+                                    'tokens_with_logprobs': ', '.join([f"{_t} {_l:.4f}" for _t, _l in zip(t, l)]),
+                                }
+                                f.write(json.dumps(d, sort_keys=True, indent=2) + '\n')
+                    else:
+                        for s in batch_sentences:
                             d = {'sentence': s}
                             f.write(json.dumps(d) + '\n')
             print("predictions saved to {}".format(cfg.inference.outfile_path))

@@ -67,6 +67,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Defaults to striding.
         subsampling_factor (int): the subsampling factor which should be power of 2
             Defaults to 4.
+        subsampling_conv_chunking_factor(int): optionally, force chunk inputs (helpful for large inputs)
+            Should be power of 2, 1 (auto-chunking, default), or -1 (no chunking)
         subsampling_conv_channels (int): the size of the convolutions in the subsampling module
             Defaults to -1 which would set it to d_model.
         reduction (str, Optional): the method of reduction, choices=['pooling', 'striding']. If no value
@@ -245,6 +247,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         causal_downsampling=False,
         subsampling='striding',
         subsampling_factor=4,
+        subsampling_conv_chunking_factor=1,
         subsampling_conv_channels=-1,
         reduction=None,
         reduction_position=None,
@@ -279,6 +282,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self.scale = math.sqrt(self.d_model)
         self.att_context_style = att_context_style
         self.subsampling_factor = subsampling_factor
+        self.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
 
         self.self_attention_model = self_attention_model
         self.global_tokens = global_tokens
@@ -355,6 +359,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     feat_in=feat_in,
                     feat_out=d_model,
                     conv_channels=subsampling_conv_channels,
+                    subsampling_conv_chunking_factor=subsampling_conv_chunking_factor,
                     activation=nn.ReLU(True),
                     is_causal=causal_downsampling,
                 )
@@ -976,6 +981,25 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             with open_dict(self._cfg):
                 self._cfg.self_attention_model = self_attention_model
                 self._cfg.att_context_size = att_context_size
+
+    def change_subsampling_conv_chunking_factor(self, subsampling_conv_chunking_factor: int):
+        """
+        Update the conv_chunking_factor (int) 
+        Default is 1 (auto)
+        Set it to -1 (disabled) or to a specific value (power of 2) if you OOM in the conv subsampling layers
+
+
+        Args:
+            subsampling_conv_chunking_factor (int)
+        """
+
+        if not hasattr(self.pre_encode, "change_subsampling_conv_chunking_factor"):
+            logging.info("Model pre_encoder doesn't have a change_subsampling_conv_chunking_factor method ")
+            return
+
+        self.pre_encode.change_subsampling_conv_chunking_factor(
+            subsampling_conv_chunking_factor=subsampling_conv_chunking_factor
+        )
 
 
 class ConformerEncoderAdapter(ConformerEncoder, adapter_mixins.AdapterModuleMixin):

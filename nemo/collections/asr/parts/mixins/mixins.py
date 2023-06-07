@@ -432,6 +432,34 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 self.cfg.encoder.self_attention_model = self_attention_model
                 self.cfg.encoder.att_context_size = att_context_size
 
+    def change_subsampling_conv_chunking_factor(
+        self, subsampling_conv_chunking_factor: int, update_config: bool = True
+    ):
+        """
+        Update the conv_chunking_factor (int) if function is available in encoder.
+        Default is 1 (auto)
+        Set it to -1 (disabled) or to a specific value (power of 2) if you OOM in the conv subsampling layers
+
+        Args:
+            conv_chunking_factor (int)
+        """
+
+        if not hasattr(self, 'encoder'):
+            logging.info(
+                "Could not call the change_subsampling_conv_chunking_factor method in encoder "
+                "since the model provided does not contain an `encoder` module in its config."
+            )
+            return
+
+        if not hasattr(self.encoder, "change_subsampling_conv_chunking_factor"):
+            logging.info("Model encoder doesn't have a change_subsampling_conv_chunking_factor method ")
+            return
+
+        self.encoder.change_subsampling_conv_chunking_factor(subsampling_conv_chunking_factor)
+        if update_config:
+            with open_dict(self.cfg):
+                self.cfg.encoder.subsampling_conv_chunking_factor = subsampling_conv_chunking_factor
+
     def conformer_stream_step(
         self,
         processed_signal: torch.Tensor,

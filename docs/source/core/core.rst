@@ -38,7 +38,7 @@ To see all available pretrained models for a specific NeMo model, use the ``list
 
 .. code-block:: Python
 
-    nemo_asr.model.EncDecCTCModel.list_available_models()
+    nemo_asr.models.EncDecCTCModel.list_available_models()
 
 For detailed information on the available pretrained models, refer to the collections documentation: 
 

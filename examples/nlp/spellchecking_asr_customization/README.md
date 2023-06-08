@@ -1,6 +1,6 @@
 # SpellMapper - spellchecking model for ASR Customization
-
-This model is inspired by Microsoft's paper https://arxiv.org/pdf/2203.00888.pdf, but does not repeat its implementation.
+Paper: https://arxiv.org/abs/2306.02317
+This model was partly inspired by Microsoft's paper https://arxiv.org/pdf/2203.00888.pdf.
 The goal is to build a model that gets as input a single ASR hypothesis (text) and a vocabulary of custom words/phrases and predicts which fragments in the ASR hypothesis should be replaced by which custom words/phrases if any.
 Our model is non-autoregressive (NAR) based on transformer architecture (BERT with multiple separators).
 

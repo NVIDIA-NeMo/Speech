@@ -43,6 +43,7 @@ __all__ = ["SpellcheckingAsrCustomizationModel"]
 @experimental
 class SpellcheckingAsrCustomizationModel(NLPModel):
     """
+    https://arxiv.org/abs/2306.02317
     BERT-based model for Spellchecking ASR Customization.
     It takes as input ASR hypothesis and candidate customization entries.
     It labels the hypothesis with correct entry index or 0.

@@ -1,4 +1,5 @@
 Model Name,Model Base Class,Model Card
 titanet_large,EncDecSpeakerLabelModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_large"
+titanet_small,EncDecSpeakerLabelModel,"https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/titanet_small"
 speakerverification_speakernet,EncDecSpeakerLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:speakerverification_speakernet"
 ecapa_tdnn,EncDecSpeakerLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:ecapa_tdnn"

@@ -102,10 +102,17 @@ model:
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     # for att_context_style=regular, the right context is recommended to be a small number around 0 to 3 as multiple-layers may increase the effective right context too large
     # for att_context_style=chunked_limited, the left context need to be dividable by the right context plus one
-    # for chunked_limited you may calculate the look-ahead or right context by the following formula:
     # look-ahead(secs) = att_context_size[1]*subsampling_factor*window_stride, example: 13*8*0.01=1.04s
+
+    # For multi-lookahead models, you may specify a list of context sizes. During the training, different context sizes would be used randomly with the distribution specified by att_context_probs.
+    # The first item in the list would be the default during test/validation/inference.
+    # An example of settings for multi-lookahead:
+    #    att_context_size: [[70,13],[70,6],[70,1],[70,0]]
+    #    att_context_probs: [0.25, 0.25, 0.25, 0.25, 0.25]
     att_context_size: [70, 13] # -1 means unlimited context
     att_context_style: chunked_limited # regular or chunked_limited
+    att_context_probs: null
+
 
     xscaling: true # scales up the input embeddings by sqrt(d_model)
     pos_emb_max_len: 5000
@@ -191,9 +198,9 @@ model:
     loss_name: "default"
     warprnnt_numba_kwargs:
       # FastEmit regularization: https://arxiv.org/abs/2010.11148
-      # You may enable FastEmit to reduce the latency of the model for streaming
-      # It also helps to improve the accuracy of the model in streaming mode
-      fastemit_lambda: 1e-3  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
+      # You may enable FastEmit to increase the accuracy and reduce the latency of the model for streaming
+      # You may set it to lower values like 1e-3 for models with larger right context
+      fastemit_lambda: 5e-3  # Recommended values to be in range [1e-4, 1e-2], 0.001 is a good start.
       clamp: -1.0  # if > 0, applies gradient clamping in range [-clamp, clamp] for the joint tensor only.
 
   optim:

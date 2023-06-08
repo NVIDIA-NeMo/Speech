@@ -149,7 +149,6 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
         d_ff = d_model * ff_expansion_factor
         self.d_model = d_model
         self._feat_in = feat_in
-        self.scale = math.sqrt(self.d_model)
         if att_context_size:
             self.att_context_size = att_context_size
         else:

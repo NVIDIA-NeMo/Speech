@@ -888,17 +888,19 @@ class PositionalEncoding(torch.nn.Module):
         positions = torch.arange(0, length, dtype=torch.float32, device=device).unsqueeze(1)
         self.create_pe(positions=positions)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, cache_len=0):
         """Adds positional encoding.
         Args:
             x (torch.Tensor): Input. Its shape is (batch, time, feature_size)
+            cache_len (int): the size of the cache which is used to shift positions
         Returns:
             x+pos_emb (torch.Tensor): Its shape is (batch, time, feature_size)
             pos_emb (torch.Tensor): Its shape is (1, time, feature_size)
         """
+        input_len = x.size(1) + cache_len
         if self.xscale:
             x = x * self.xscale
-        pos_emb = self.pe[:, : x.size(1)]
+        pos_emb = self.pe[:, :input_len]
         if self.dropout_emb:
             pos_emb = self.dropout_emb(pos_emb)
         x = x + pos_emb

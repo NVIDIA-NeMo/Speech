@@ -85,12 +85,13 @@ class TestHuggingFace:
         tokenizer = get_tokenizer(tokenizer_name=model_name)
         assert isinstance(tokenizer, AutoTokenizer)
 
-    @pytest.mark.with_downloads()
-    @pytest.mark.unit
-    def test_get_pretrained_arabic_model(self):
-        model_name = 'asafaya/bert-base-arabic'
-        self.omega_conf.language_model.pretrained_model_name = model_name
-        model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
-        assert isinstance(model, nemo_nlp.modules.BertModule)
-        tokenizer = get_tokenizer(tokenizer_name=model_name)
-        assert isinstance(tokenizer, AutoTokenizer)
+    # model is not on HF anymore
+    # @pytest.mark.with_downloads()
+    # @pytest.mark.unit
+    # def test_get_pretrained_arabic_model(self):
+    #     model_name = 'asafaya/bert-base-arabic'
+    #     self.omega_conf.language_model.pretrained_model_name = model_name
+    #     model = nemo_nlp.modules.get_lm_model(cfg=self.omega_conf)
+    #     assert isinstance(model, nemo_nlp.modules.BertModule)
+    #     tokenizer = get_tokenizer(tokenizer_name=model_name)
+    #     assert isinstance(tokenizer, AutoTokenizer)

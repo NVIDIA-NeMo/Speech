@@ -33,6 +33,7 @@ class BaseMegatronSampler:
         data_parallel_size: int,
         drop_last: bool = True,
         global_batch_size: Optional[int] = None,
+        rampup_batch_size: Optional[list] = None,
         pad_samples_to_global_batch_size: Optional[bool] = False,
     ) -> None:
         # Sanity checks.
@@ -50,7 +51,7 @@ class BaseMegatronSampler:
                     data_parallel_rank, data_parallel_size
                 )
             )
-        if global_batch_size is not None:
+        if global_batch_size is not None and rampup_batch_size is None:
             if global_batch_size % (micro_batch_size * data_parallel_size) != 0:
                 raise RuntimeError(
                     f"`global_batch_size` ({global_batch_size}) is not divisible by "

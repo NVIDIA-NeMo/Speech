@@ -208,6 +208,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
 
+        self.rampup_batch_size = self.cfg.get('rampup_batch_size', None)
+        if self.rampup_batch_size:
+            self.prev_consumed_samples = 0
+            self.if_first_step = 0
+            self.prev_global_batch_size = None
+
         if not self.megatron_amp_o2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
 
@@ -507,6 +513,13 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             The input batch to each micro-batch is fetched using the dataloader function
             in the micro-batch fwd function.
         """
+        if self.rampup_batch_size:
+            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+            current_global_batch_size = num_microbatch_calculator.current_global_batch_size
+            logging.info(current_global_batch_size)
+            # do validation and save the checkpoint when gbs is changed
+            if self.prev_global_batch_size != current_global_batch_size and self.prev_global_batch_size:
+                self.trainer.should_stop = True
 
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
@@ -580,16 +593,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'consumed_samples', consumed_samples, prog_bar=True, rank_zero_only=True, batch_size=1,
         )
 
-        if self.cfg.get('rampup_batch_size', None):
-            micro_batch_size = self.cfg.get('micro_batch_size', 1)
-            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
-            current_global_batch_size = get_num_microbatches() * micro_batch_size * total_gpus_number
-            self.log('global_batch_size', current_global_batch_size, prog_bar=True, rank_zero_only=True, batch_size=1)
-
-            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        if self.rampup_batch_size:
+            self.prev_global_batch_size = current_global_batch_size
+            self.prev_consumed_samples = consumed_samples
             num_microbatch_calculator.update(
-                consumed_samples=consumed_samples, consistency_check=True,
+                consumed_samples=consumed_samples, consistency_check=False,
             )
+            current_global_batch_size = num_microbatch_calculator.current_global_batch_size
+            self.log('global_batch_size', current_global_batch_size, prog_bar=True, rank_zero_only=True, batch_size=1)
+            self.if_first_step = 1
 
         return loss_mean
 
@@ -936,6 +948,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
                     drop_last=drop_last,
                     global_batch_size=self.cfg.global_batch_size,
+                    rampup_batch_size=self.cfg.rampup_batch_size,
                     pad_samples_to_global_batch_size=pad_samples_to_global_batch_size,
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
@@ -986,28 +999,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.init_consumed_samples = init_consumed_samples
         self.init_global_step = self.trainer.global_step
 
-        rampup_batch_size = self.cfg.get('rampup_batch_size', None)
-        if rampup_batch_size:
-            start_batch_size = rampup_batch_size[0]
-            batch_size_increment = rampup_batch_size[1]
-            total_gpus_number = self.trainer.num_devices * self.trainer.num_nodes
-
-            assert start_batch_size % (total_gpus_number) == 0, (
-                'expected'
-                ' start batch size ({}) to be divisible by total number of GPUs'
-                ' ({})'.format(start_batch_size, total_gpus_number)
-            )
-
-            micro_batch_size = self.cfg.get('micro_batch_size', 1)
-            tensor_model_parallel_size = self.cfg.get('tensor_model_parallel_size', 1)
-            pipeline_model_parallel_size = self.cfg.get('pipeline_model_parallel_size', 1)
-            total_data_parallel_size = total_gpus_number // (tensor_model_parallel_size * pipeline_model_parallel_size)
-
-            assert batch_size_increment % (micro_batch_size * total_data_parallel_size) == 0, (
-                'expected'
-                ' batch size increment ({}) to be divisible by micro_batch_size ({}) times total data parallel size'
-                ' ({})'.format(batch_size_increment, micro_batch_size, total_data_parallel_size)
-            )
+        if self.rampup_batch_size:
+            num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
+            num_microbatch_calculator.update(self.init_consumed_samples, consistency_check=False)
+            self.prev_consumed_samples = self.init_consumed_samples
 
         if stage == 'predict':
             return

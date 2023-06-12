@@ -85,6 +85,8 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
         num_moe_experts=1,
         moe_frequency=1,
         moe_dropout=0.0,
+        position_embedding_type='learned_absolute',
+        use_flash_attention=False,
     ):
         super(MegatronTransformerDecoderModule, self).__init__()
 
@@ -149,6 +151,8 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
             num_moe_experts=num_moe_experts,
             moe_frequency=moe_frequency,
             moe_dropout=moe_dropout,
+            position_embedding_type=position_embedding_type,
+            use_flash_attention=use_flash_attention,
         )
         self._model_key = 'model'
 

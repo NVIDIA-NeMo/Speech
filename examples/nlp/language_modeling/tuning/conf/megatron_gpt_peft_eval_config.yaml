@@ -130,3 +130,4 @@ inference:
   min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
   compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
   outfile_path: output.txt
+  compute_attention_mask: True

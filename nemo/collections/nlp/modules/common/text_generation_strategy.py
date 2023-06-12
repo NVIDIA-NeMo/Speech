@@ -97,10 +97,11 @@ class TextGenerationStrategy:
         pass
 
     @abc.abstractclassmethod
-    def init_batch(self, context_tokens: torch.Tensor, context_length: int):
+    def init_batch(self, context_tokens: torch.Tensor, context_length: int, compute_attention_mask: bool):
         """initialize the batch data before the inference steps.
            It will save the intermediate results as object attributes
            context_length (int): the context token length
+           compute_attention_mask: bool: set to True to compute attention mask (not needed for FA)
         Args:
             context_tokens (torch.Tensor):  The padded context tokens including the space for tokens to be generated 
         """
@@ -187,7 +188,7 @@ class GPTModelTextGenerationStrategy(TextGenerationStrategy):
                 maxlen = self.model.cfg.encoder_seq_length + 1
         return maxlen
 
-    def init_batch(self, context_tokens: torch.Tensor, context_length: int):
+    def init_batch(self, context_tokens: torch.Tensor, context_length: int, compute_attention_mask: bool):
         """initialize the batch data before the inference steps."""
         # Move to GPU.
         tokenizer = self.model.tokenizer
@@ -199,10 +200,17 @@ class GPTModelTextGenerationStrategy(TextGenerationStrategy):
             self.model.cfg.get('reset_position_ids', False),
             self.model.cfg.get('reset_attention_mask', False),
             self.model.cfg.get('eod_mask_loss', False),
+            compute_attention_mask=compute_attention_mask,
         )
 
     def prepare_batch_at_step(
-        self, tokens: torch.Tensor, maxlen: int, micro_batch_size: int, step: int, context_length: int
+        self,
+        tokens: torch.Tensor,
+        maxlen: int,
+        micro_batch_size: int,
+        step: int,
+        context_length: int,
+        compute_attention_mask: bool = True,
     ) -> Tuple[List[torch.Tensor], List[int]]:
         """
         generate the batch used in inference for each of the steps
@@ -226,7 +234,10 @@ class GPTModelTextGenerationStrategy(TextGenerationStrategy):
             #     types2use = type_ids[:, context_length - 1].view(batch_size, -1)
 
         """Prepare batch for each of the inference steps"""
-        attention_mask_repeat = torch.concat([self.attention_mask for _ in range(micro_batch_size)])
+        attention_mask_repeat = None
+        if compute_attention_mask:
+            attention_mask_repeat = torch.concat([self.attention_mask for _ in range(micro_batch_size)])
+
         setkey_value_array = torch.tensor(
             [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
         )
@@ -243,7 +254,7 @@ class PromptLearningModelTextGenerationStrategy(TextGenerationStrategy):
         self.task_ids = task_ids
         self.forward_model = self.model
 
-    def init_batch(self, context_tokens: torch.Tensor, context_length: int):
+    def init_batch(self, context_tokens: torch.Tensor, context_length: int, compute_attention_mask: bool):
         """initialize the batch data before the inference steps."""
         # Move to GPU.
         tokenizer = self.model.tokenizer
@@ -255,6 +266,7 @@ class PromptLearningModelTextGenerationStrategy(TextGenerationStrategy):
             self.model.cfg.get('reset_position_ids', False),
             self.model.cfg.get('reset_attention_mask', False),
             self.model.cfg.get('eod_mask_loss', False),
+            compute_attention_mask=compute_attention_mask,
         )
 
     def clip_max_len(self, maxlen: int) -> int:
@@ -264,7 +276,13 @@ class PromptLearningModelTextGenerationStrategy(TextGenerationStrategy):
         return maxlen
 
     def prepare_batch_at_step(
-        self, tokens: torch.Tensor, maxlen: int, micro_batch_size: int, step: int, context_length: int
+        self,
+        tokens: torch.Tensor,
+        maxlen: int,
+        micro_batch_size: int,
+        step: int,
+        context_length: int,
+        compute_attention_mask: bool,
     ) -> Tuple[List[torch.Tensor], List[int]]:
         # types2use = None
         if step == 0:
@@ -285,7 +303,9 @@ class PromptLearningModelTextGenerationStrategy(TextGenerationStrategy):
             #     types2use = type_ids[:, context_length - 1].view(batch_size, -1)
 
         """Prepare batch for each of the inference steps"""
-        attention_mask_repeat = torch.concat([self.attention_mask for _ in range(micro_batch_size)])
+        attention_mask_repeat = None
+        if compute_attention_mask:
+            attention_mask_repeat = torch.concat([self.attention_mask for _ in range(micro_batch_size)])
         setkey_value_array = torch.tensor(
             [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
         )

@@ -37,3 +37,4 @@ normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sq
 num_moe_experts: 1 # When >1, FFNs are changed to MoE layers
 moe_frequency: 1 # every Nth ffn layer will be made MoE 
 moe_dropout: 0.0 # Dropout value for MoE layers
+use_flash_attention: false # Use flash attention in self-attention module

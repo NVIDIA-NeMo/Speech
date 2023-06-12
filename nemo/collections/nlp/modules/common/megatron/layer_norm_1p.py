@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from torch import nn
+import torch
+from nemo.collections.nlp.modules.common.megatron.utils import _cast_if_autocast_enabled
 
 try:
     from apex.contrib.layer_norm.layer_norm import FastLayerNorm as OrigFastLayerNorm
@@ -35,8 +36,8 @@ if HAVE_APEX:
             ), 'LayerNorm1P implemented only as an apex.contrib.layer_norm.FastLayerNorm extension'
 
         def reset_parameters(self):
-            nn.init.zeros_(self.weight)
-            nn.init.zeros_(self.bias)
+            torch.nn.init.zeros_(self.weight)
+            torch.nn.init.zeros_(self.bias)
 
         def forward(self, x):
             return _fast_layer_norm(x, self.weight + 1, self.bias, self.epsilon)
@@ -44,6 +45,27 @@ if HAVE_APEX:
 
 else:
 
-    class LayerNorm1P(nn.Module):
+    class LayerNorm1P(torch.nn.Module):
         def __init__(self, *args, **kwargs):
             raise NotImplementedError('LayerNorm1P available only with apex installed')
+
+
+class LPLayerNorm(torch.nn.LayerNorm):
+    def __init__(self, normalized_shape, eps=1e-05, elementwise_affine=True, device=None, dtype=None):
+        super().__init__(
+            normalized_shape=normalized_shape,
+            eps=eps,
+            elementwise_affine=elementwise_affine,
+            device=device,
+            dtype=dtype,
+        )
+
+    def forward(self, x):
+        module_device = x.device
+        downcast_x = _cast_if_autocast_enabled(x)
+        downcast_weight = _cast_if_autocast_enabled(self.weight) if self.weight is not None else self.weight
+        downcast_bias = _cast_if_autocast_enabled(self.bias) if self.bias is not None else self.bias
+        with torch.autocast(enabled=False, device_type=module_device.type):
+            return torch.nn.functional.layer_norm(
+                downcast_x, self.normalized_shape, downcast_weight, downcast_bias, self.eps
+            )

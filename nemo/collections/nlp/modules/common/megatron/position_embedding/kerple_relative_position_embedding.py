@@ -17,7 +17,7 @@ import math
 
 import torch
 
-from nemo.collections.nlp.modules.common.megatron.alibi_relative_position_embedding import (
+from nemo.collections.nlp.modules.common.megatron.position_embedding.alibi_relative_position_embedding import (
     build_relative_position,
     build_slopes,
 )
@@ -33,7 +33,7 @@ class KERPLERelativePositionEmbedding(torch.nn.Module):
     """
 
     def __init__(
-        self, bidirectional, num_attention_heads, layer_type, num_attention_heads_kerple=None, max_seq_len=512
+        self, bidirectional, num_attention_heads, layer_type, num_attention_heads_kerple=None, max_seq_len=512,
     ):
         """
         Args:
@@ -65,21 +65,26 @@ class KERPLERelativePositionEmbedding(torch.nn.Module):
 
         # initialize the slopes
         self.kerple_b = torch.nn.Parameter(build_slopes(num_attention_heads, num_attention_heads_kerple))
-        self.kerple_a = torch.zeros_like(self.kerple_b)
-        self.kerple_p = torch.ones_like(self.kerple_b)
+        self.kerple_a = torch.nn.Parameter(torch.ones_like(self.kerple_b))
+        self.kerple_p = torch.nn.Parameter(torch.ones_like(self.kerple_b))
 
         # cache the relative position bias. shape (num_attention_heads, max_seq_len, max_seq_len)
-        self.relative_position = build_relative_position(max_seq_len, max_seq_len, num_attention_heads)
+        # if we use causal attention (not bidrectional), we can use singleton relative position
+        self.relative_position = (
+            build_relative_position(max_seq_len, full=True).unsqueeze(0).expand(num_attention_heads, -1, -1)
+        )
 
     def forward(self, query_seq_length, key_seq_length):
         # used cached relative position if possible
         max_seq_len = max(query_seq_length, key_seq_length)
         if max_seq_len > self.max_seq_len:
-            relative_position = build_relative_position(max_seq_len, max_seq_len, self.num_attention_heads)
+            relative_position = (
+                build_relative_position(max_seq_len, full=True).unsqueeze(0).expand(self.num_attention_heads, -1, -1)
+            )
         else:
             relative_position = self.relative_position
         # shape (num_attention_heads, query_seq_length, key_seq_length)
-        relative_position = relative_position[:, :query_seq_length, :key_seq_length]
+        relative_position = relative_position[:, -query_seq_length:, -key_seq_length:]
         # if not bidirectional, mask out the future positions
         if not self.bidirectional:
             relative_position = torch.tril(relative_position)

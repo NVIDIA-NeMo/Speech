@@ -753,6 +753,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
                 "add_BOS": inference_config["add_BOS"],
                 "all_probs": inference_config["all_probs"],
                 "compute_logprob": inference_config["compute_logprob"],
+                "compute_attention_mask": inference_config.get("compute_attention_mask", True),
             }
 
             task_ids, processed_inputs = batch

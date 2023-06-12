@@ -43,9 +43,7 @@ class T5RelativePositionEmbedding(torch.nn.Module):
 
         # Relative position Embedding
         # Relative Position embedding (all attention layers).
-        self.relative_position_embedding = torch.nn.Embedding(
-            self.relative_position_num_buckets, num_attention_heads
-        ).to(torch.cuda.current_device())
+        self.relative_position_embedding = torch.nn.Embedding(self.relative_position_num_buckets, num_attention_heads)
         self._relative_position_embedding_key = 'relative_position_embedding'
         init_method(self.relative_position_embedding.weight)
 
@@ -104,8 +102,9 @@ class T5RelativePositionEmbedding(torch.nn.Module):
         """
 
         """Compute binned relative position bias"""
-        context_position = torch.arange(query_length, dtype=torch.long, device=torch.cuda.current_device())[:, None]
-        memory_position = torch.arange(key_length, dtype=torch.long, device=torch.cuda.current_device())[None, :]
+        device = self.relative_position_embedding.weight.device
+        context_position = torch.arange(query_length, dtype=torch.long, device=device)[:, None]
+        memory_position = torch.arange(key_length, dtype=torch.long, device=device)[None, :]
 
         relative_position = memory_position - context_position  # shape (query_length, key_length)
         relative_position_bucket_tensor = self._relative_position_bucket(

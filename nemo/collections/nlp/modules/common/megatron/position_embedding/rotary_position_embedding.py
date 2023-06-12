@@ -38,7 +38,8 @@ class RotaryEmbedding(nn.Module):
 
 def _rotate_half(x):
     """
-    change sign so the last dimension becomes [-odd, +even]
+    change sign so the last dimension
+    [A, B, C, D] -> [-C, -D, A, B]
     """
     x = rearrange(x, '... (j d) -> ... j d', j=2)
     x1, x2 = x.unbind(dim=-2)

@@ -82,6 +82,8 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
         num_moe_experts=1,
         moe_frequency=1,
         moe_dropout=0.0,
+        position_embedding_type='learned_absolute',
+        use_flash_attention=False,
     ):
         super(MegatronTransformerEncoderModule, self).__init__()
 
@@ -96,6 +98,7 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
         self.parent_model_type = parent_model_type
         self.normalization = normalization
         self.transformer_block_type = transformer_block_type
+        self.use_flash_attention = use_flash_attention
 
         if kv_channels is None:
 
@@ -147,6 +150,8 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
             num_moe_experts=num_moe_experts,
             moe_frequency=moe_frequency,
             moe_dropout=moe_dropout,
+            position_embedding_type=position_embedding_type,
+            use_flash_attention=use_flash_attention,
         )
         self._model_key = 'model'
 
@@ -163,9 +168,12 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
         enc_self_attention_relative_position_bias=None,
     ):
         # convert to Megatron mask
-        enc_attn_mask_3d = build_attention_mask_3d(
-            source_mask=enc_attn_mask, target_mask=enc_attn_mask, attn_mask_type=self.model_attn_mask_type,
-        )
+        if self.use_flash_attention:
+            enc_attn_mask_3d = enc_attn_mask < 0.5
+        else:
+            enc_attn_mask_3d = build_attention_mask_3d(
+                source_mask=enc_attn_mask, target_mask=enc_attn_mask, attn_mask_type=self.model_attn_mask_type,
+            )
 
         # transformer encoder
         enc_output = self.model(

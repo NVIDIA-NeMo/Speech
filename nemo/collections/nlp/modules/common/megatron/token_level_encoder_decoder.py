@@ -15,12 +15,6 @@
 import torch
 from omegaconf import DictConfig
 
-from nemo.collections.nlp.modules.common.megatron.alibi_relative_position_embedding import (
-    ALiBiRelativePositionEmbedding,
-)
-from nemo.collections.nlp.modules.common.megatron.kerple_relative_position_embedding import (
-    KERPLERelativePositionEmbedding,
-)
 from nemo.collections.nlp.modules.common.megatron.language_model import Embedding
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.megatron_decoders import get_decoder_model
@@ -29,7 +23,11 @@ from nemo.collections.nlp.modules.common.megatron.megatron_encoder_decoder impor
 )
 from nemo.collections.nlp.modules.common.megatron.megatron_encoders import get_encoder_model
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
-from nemo.collections.nlp.modules.common.megatron.t5_relative_position_embedding import T5RelativePositionEmbedding
+from nemo.collections.nlp.modules.common.megatron.position_embedding import (
+    ALiBiRelativePositionEmbedding,
+    KERPLERelativePositionEmbedding,
+    T5RelativePositionEmbedding,
+)
 from nemo.collections.nlp.modules.common.megatron.utils import (
     ApexGuardDefaults,
     build_position_ids,
@@ -197,6 +195,11 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
             else:
                 self.encoder_relative_position_embedding = None
 
+            if encoder_cfg.get('use_flash_attention', False) and encoder_cfg.get(
+                'position_embedding_type', 'learned_absolute'
+            ) in ['relative', 'kerple']:
+                raise ValueError('flash-attention not supported with relative or kerple at this point')
+
             encoder = get_encoder_model(
                 arch=encoder_cfg.arch,
                 hidden_size=encoder_cfg.hidden_size,
@@ -243,6 +246,8 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 num_moe_experts=encoder_cfg.get('num_moe_experts', 1),
                 moe_frequency=encoder_cfg.get('moe_frequency', 1),
                 moe_dropout=encoder_cfg.get('moe_dropout', 0.0),
+                position_embedding_type=encoder_cfg.get('position_embedding_type', 'learned_absolute'),
+                use_flash_attention=encoder_cfg.get('use_flash_attention', False),
             )
 
         if add_decoder:
@@ -307,6 +312,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                     ):
                         self.decoder_cross_attention_relative_position_embeddings_weight().data.fill_(0)
                         self.decoder_cross_attention_relative_position_embeddings_weight().shared = True
+
             elif self.decoder_cfg.get('position_embedding_type', 'learned_absolute') == 'alibi':
                 self.decoder_relative_position_embedding = ALiBiRelativePositionEmbedding(
                     bidirectional=False,
@@ -327,6 +333,11 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 self._decoder_relative_position_embedding_key = "decoder_kerple_position_embedding"
             else:
                 self.decoder_relative_position_embedding = None
+
+            if decoder_cfg.get('use_flash_attention', False) and decoder_cfg.get(
+                'position_embedding_type', 'learned_absolute'
+            ) in ['relative', 'kerple']:
+                raise ValueError('flash-attention not supported with relative or kerple at this point')
 
             decoder = get_decoder_model(
                 arch=decoder_cfg.arch,
@@ -373,6 +384,8 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 num_moe_experts=decoder_cfg.get('num_moe_experts', 1),
                 moe_frequency=decoder_cfg.get('moe_frequency', 1),
                 moe_dropout=decoder_cfg.get('moe_dropout', 0.0),
+                position_embedding_type=decoder_cfg.get('position_embedding_type', 'learned_absolute'),
+                use_flash_attention=decoder_cfg.get('use_flash_attention', False),
             )
 
         self.enc_dec_model = MegatronTransformerEncoderDecoderModule(

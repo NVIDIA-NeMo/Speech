@@ -15,7 +15,7 @@ vad:
   parameters: # Parameters not tuned on large datasets, please use default parameters with caution
     normalize_audio_db: null  # set to non null value to normalize RMS DB of audio before preprocessing
     window_length_in_sec: 0.0  # window length in sec for VAD context input, must be 0 for frame-VAD
-    shift_length_in_sec: 0.02 # frame-length in seconds for frame-VAD 
+    shift_length_in_sec: 0.02 # frame-length in seconds for frame-VAD, must be 0.02 for the pretrained NeMo VAD model 
     smoothing: False # Deprecated for Frame-VAD. false or type of smoothing method (eg: median, mean)
     overlap: 0.875 # Deprecated for Frame-VAD. overlap ratio for overlapped mean/median smoothing filter. If smoothing=False, ignore this value.
     postprocessing:

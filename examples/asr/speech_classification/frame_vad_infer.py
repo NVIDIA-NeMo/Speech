@@ -21,7 +21,11 @@ to the split points might have worse performance due to truncated context.
 ## Usage:
 python frame_vad_infer.py \
     --config-path="../conf/vad" --config-name="frame_vad_infer_postprocess" \
-    dataset=<Path of json file of evaluation data. Audio files should have unique names>
+    dataset=<Path of manifest file containing evaluation data. Audio files should have unique names>
+
+The manifest json file should have the following format (each line is a Python dictionary):
+{"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000}  
+{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000}  
 """
 
 import os

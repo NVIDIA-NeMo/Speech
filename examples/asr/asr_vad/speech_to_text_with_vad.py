@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,9 +29,9 @@ To run the code with ASR+VAD default settings:
 ```bash
 python speech_to_text_with_vad.py \
     manifest_filepath=/PATH/TO/MANIFEST.json \
-    vad_model=vad_multilingual_marblenet \
+    vad_model=vad_multilingual_frame_marblenet\
     asr_model=stt_en_conformer_ctc_large \
-    vad_config=../conf/vad/vad_inference_postprocess.yaml
+    vad_config=../conf/vad/frame_vad_inference_postprocess.yaml
 ```
 
 To use only ASR and disable VAD, set `vad_model=None` and `use_rttm=False`.
@@ -40,13 +40,15 @@ To use only VAD, set `asr_model=None` and specify both `vad_model` and `vad_conf
 
 To enable profiling, set `profiling=True`, but this will significantly slow down the program.
 
-To use or disable feature masking, set `use_rttm` to `True` or `False`.
+To use or disable feature masking/droping based on RTTM files, set `use_rttm` to `True` or `False`. 
+There are two ways to use RTTM files, either by masking the features (`rttm_mode=mask`) or by dropping the features (`rttm_mode=drop`).
+For audios that have long non-speech audios between speech segments, dropping frames is recommended.
 
 To normalize feature before masking, set `normalize=pre_norm`, 
 and set `normalize=post_norm` for masking before normalization.
 
 To use a specific value for feature masking, set `feat_mask_val` to the desired value. 
-Default is `feat_mask_val=None`, where -16.530 will be used for `post_norm` and 0 will be used for `pre_norm`.
+Default is `feat_mask_val=None`, where -16.635 will be used for `post_norm` and 0 will be used for `pre_norm`.
 
 See more options in the `InferenceConfig` class.
 """
@@ -72,10 +74,10 @@ from nemo.collections.asr.metrics.wer import CTCDecodingConfig, word_error_rate
 from nemo.collections.asr.models import ASRModel, EncDecClassificationModel
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.asr.parts.utils.vad_utils import (
-    extract_audio_features,
     generate_overlap_vad_seq,
     generate_vad_segment_table,
     get_vad_stream_status,
+    init_frame_vad_model,
     init_vad_model,
 )
 from nemo.core.config import hydra_runner
@@ -97,15 +99,16 @@ class InferenceConfig:
     vad_model: Optional[str] = None  # Path to a .nemo file or a pretrained NeMo model on NGC
     vad_config: Optional[str] = None  # Path to a yaml file containing VAD post-processing configs
     manifest_filepath: Optional[str] = None  # Path to dataset's JSON manifest
-    audio_dir: Optional[str] = None
+    audio_dir: Optional[str] = None  # Path to a directory containing audio files, use this if no manifest is provided
 
     use_rttm: bool = True  # whether to use RTTM
+    rttm_mode: str = "mask"  # how to use RTTM files, choices=[`mask`, `drop`]
     feat_mask_val: Optional[float] = None  # value used to mask features based on RTTM, set None to use defaults
     normalize: Optional[
         str
-    ] = "post_norm"  # whether and where to normalize feature, choices=[None, `pre_norm`, `post_norm`]
+    ] = "post_norm"  # whether and where to normalize audio feature, choices=[None, `pre_norm`, `post_norm`]
     normalize_type: str = "per_feature"  # how to determine mean and std used for normalization
-    use_pure_noise: bool = False  # whether input is pure noise or not.
+    normalize_audio_db: Optional[float] = None  # set to normalize RMS DB of audio before extracting audio features
 
     profiling: bool = False  # whether to enable pytorch profiling
 
@@ -113,13 +116,13 @@ class InferenceConfig:
     batch_size: int = 1  # batch size for ASR. Feature extraction and VAD only support single sample per batch.
     num_workers: int = 8
     sample_rate: int = 16000
-    frame_unit_time_secs: float = 0.01  # unit time per frame in seconds, equal to `window_stride` in ASR configs.
+    frame_unit_time_secs: float = 0.01  # unit time per frame in seconds, equal to `window_stride` in ASR configs, typically 10ms.
     audio_type: str = "wav"
 
     # Output settings, no need to change
     output_dir: Optional[str] = None  # will be automatically set by the program
     output_filename: Optional[str] = None  # will be automatically set by the program
-    pred_name_postfix: Optional[str] = None  # If you need to use another model name, rather than standard one.
+    pred_name_postfix: Optional[str] = None  # If you need to use another model name, other than the standard one.
 
     # Set to True to output language ID information
     compute_langs: bool = False
@@ -129,6 +132,9 @@ class InferenceConfig:
 
     # Decoding strategy for RNNT models
     rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(fused_batch_size=-1)
+
+    # VAD model type
+    vad_type: str = "frame"  # which type of VAD to use, choices=[`frame`, `segment`]
 
 
 @hydra_runner(config_name="InferenceConfig", schema=InferenceConfig)
@@ -243,7 +249,10 @@ def extract_audio_features(manifest_filepath: str, cfg: DictConfig, record_fn: C
 
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.set_grad_enabled(False)
-    vad_model = EncDecClassificationModel.from_pretrained("vad_multilingual_marblenet")
+    if cfg.vad_model:
+        vad_model = init_frame_vad_model(cfg.vad_model)
+    else:
+        vad_model = EncDecClassificationModel.from_pretrained("vad_multilingual_marblenet")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vad_model = vad_model.to(device)
     vad_model.eval()
@@ -256,6 +265,7 @@ def extract_audio_features(manifest_filepath: str, cfg: DictConfig, record_fn: C
             'labels': ['infer',],
             'num_workers': cfg.num_workers,
             'shuffle': False,
+            'normalize_audio_db': cfg.normalize_audio_db,
         }
     )
 
@@ -284,7 +294,13 @@ def extract_audio_features(manifest_filepath: str, cfg: DictConfig, record_fn: C
 
 def run_vad_inference(manifest_filepath: str, cfg: DictConfig, record_fn: Callable) -> str:
     logging.info("Start VAD inference pipeline...")
-    vad_model = init_vad_model(cfg.vad_model)
+    if cfg.vad_type == "segment":
+        vad_model = init_vad_model(cfg.vad_model)
+    elif cfg.vad_type == "frame":
+        vad_model = init_frame_vad_model(cfg.vad_model)
+    else:
+        raise ValueError(f"Unknown VAD type: {cfg.vad_type}, supported types: ['segment', 'frame']")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     vad_model = vad_model.to(device)
     vad_model.eval()
@@ -358,8 +374,6 @@ def run_vad_inference(manifest_filepath: str, cfg: DictConfig, record_fn: Callab
     logging.info(f"Generating segment tables with postprocessing params: {vad_cfg.vad.parameters.postprocessing}")
     segment_dir_name = "vad_rttm"
     for key, val in vad_cfg.vad.parameters.postprocessing.items():
-        if key == "use_rttm":
-            continue
         segment_dir_name = segment_dir_name + "-" + str(key) + str(val)
 
     segment_dir = Path(cfg.output_dir) / Path(segment_dir_name)
@@ -368,13 +382,13 @@ def run_vad_inference(manifest_filepath: str, cfg: DictConfig, record_fn: Callab
     else:
         segment_dir.mkdir(parents=True)
         t0 = time.time()
-        vad_cfg.vad.parameters.postprocessing.use_rttm = True
         segment_dir = generate_vad_segment_table(
             vad_pred_dir=pred_dir,
             postprocessing_params=vad_cfg.vad.parameters.postprocessing,
             frame_length_in_sec=frame_length_in_sec,
             num_workers=cfg.num_workers,
             out_dir=segment_dir,
+            use_rttm=True,
         )
         t1 = time.time()
         logging.info(f"Time elapsed: {t1 - t0: .2f} seconds")
@@ -432,9 +446,14 @@ def generate_vad_frame_pred(
 
                 with record_fn("vad_infer_other"):
                     probs = torch.softmax(log_probs, dim=-1)
+                    if len(probs.shape) == 3:
+                        # squeeze the batch dimension, since batch size is 1
+                        probs = probs.squeeze(0)  # [1,T,C] -> [T,C]
                     pred = probs[:, 1]
 
-                    if status[i] == 'start':
+                    if window_length_in_sec == 0:
+                        to_save = pred
+                    elif status[i] == 'start':
                         to_save = pred[:-trunc]
                     elif status[i] == 'next':
                         to_save = pred[trunc:-trunc_l]
@@ -443,11 +462,13 @@ def generate_vad_frame_pred(
                     else:
                         to_save = pred
 
+                    to_save = to_save.cpu().tolist()
                     all_len += len(to_save)
+
                     outpath = os.path.join(out_dir, data[i] + ".frame")
                     with open(outpath, "a", encoding='utf-8') as fout:
-                        for f in range(len(to_save)):
-                            fout.write('{0:0.4f}\n'.format(to_save[f]))
+                        for p in to_save:
+                            fout.write(f'{p:0.4f}\n')
 
                     del test_batch
                     if status[i] == 'end' or status[i] == 'single':
@@ -476,18 +497,30 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
 
     # Setup decoding strategy
     decode_function = None
-    if hasattr(asr_model, 'change_decoding_strategy'):
-        # Check if ctc or rnnt model
-        if hasattr(asr_model, 'joint'):  # RNNT model
+    decoder_type = cfg.get("decoder_type", None)
+    if not hasattr(asr_model, 'change_decoding_strategy'):
+        raise ValueError(f"ASR model {cfg.asr_model} does not support decoding strategy.")
+    if decoder_type is not None:  # Hybrid model
+        if decoder_type == 'rnnt':
             cfg.rnnt_decoding.fused_batch_size = -1
             cfg.rnnt_decoding.compute_langs = cfg.compute_langs
-            asr_model.change_decoding_strategy(cfg.rnnt_decoding)
+            asr_model.change_decoding_strategy(cfg.rnnt_decoding, decoder_type=decoder_type)
             decode_function = asr_model.decoding.rnnt_decoder_predictions_tensor
-        else:
-            asr_model.change_decoding_strategy(cfg.ctc_decoding)
+        elif decoder_type == 'ctc':
+            asr_model.change_decoding_strategy(cfg.ctc_decoding, decoder_type=decoder_type)
             decode_function = asr_model.decoding.ctc_decoder_predictions_tensor
+        else:
+            raise ValueError(
+                f"Unknown decoder type for hybrid model: {decoder_type}, supported types: ['rnnt', 'ctc']"
+            )
+    elif hasattr(asr_model, 'joint'):  # RNNT model
+        cfg.rnnt_decoding.fused_batch_size = -1
+        cfg.rnnt_decoding.compute_langs = cfg.compute_langs
+        asr_model.change_decoding_strategy(cfg.rnnt_decoding)
+        decode_function = asr_model.decoding.rnnt_decoder_predictions_tensor
     else:
-        raise ValueError(f"Only support CTC or RNNT models that have `change_decoding_strategy()` implemented.")
+        asr_model.change_decoding_strategy(cfg.ctc_decoding)
+        decode_function = asr_model.decoding.ctc_decoder_predictions_tensor
 
     # Compute output filename
     if cfg.output_filename is None:
@@ -499,7 +532,10 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
             if cfg.use_rttm:
                 vad_tag = Path(manifest_filepath).stem
                 vad_tag = vad_tag[len("temp_manifest_vad_rttm_") :]
-                tag += f"-mask{cfg.feat_mask_val}-{vad_tag}"
+                if cfg.rttm_mode == "mask":
+                    tag += f"-mask{cfg.feat_mask_val}-{vad_tag}"
+                else:
+                    tag += f"-dropframe-{vad_tag}"
             cfg.output_filename = cfg.manifest_filepath.replace('.json', f'-{Path(cfg.asr_model).stem}-{tag}.json')
         cfg.output_filename = Path(cfg.output_dir) / Path(cfg.output_filename).name
 
@@ -509,10 +545,12 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
         "normalize": cfg.normalize,
         "normalize_type": cfg.normalize_type,
         "use_rttm": cfg.use_rttm,
+        "rttm_mode": cfg.rttm_mode,
         "feat_mask_val": cfg.feat_mask_val,
         "frame_unit_time_secs": cfg.frame_unit_time_secs,
     }
-    logging.info(f"use_rttm = {cfg.use_rttm}")
+    logging.info(f"use_rttm = {cfg.use_rttm}, rttm_mode = {cfg.rttm_mode}, feat_mask_val = {cfg.feat_mask_val}")
+
     if hasattr(asr_model, "tokenizer"):
         dataset = feature_to_text_dataset.get_bpe_dataset(config=data_config, tokenizer=asr_model.tokenizer)
     else:
@@ -542,10 +580,13 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
                             processed_signal=test_batch[0].to(device),
                             processed_signal_length=test_batch[1].to(device),
                         )
+
                     with record_fn("asr_infer_other"):
                         logits, logits_len = outputs[0], outputs[1]
 
                         current_hypotheses, all_hyp = decode_function(logits, logits_len, return_hypotheses=False,)
+                        if isinstance(current_hypotheses, tuple) and len(current_hypotheses) == 2:
+                            current_hypotheses = current_hypotheses[0]  # handle RNNT output
 
                         hypotheses += current_hypotheses
                         if all_hyp is not None:
@@ -562,9 +603,16 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
     # Save output to manifest
     input_manifest_data = read_manifest(manifest_filepath)
     manifest_data = read_manifest(cfg.manifest_filepath)
+
+    if "text" not in manifest_data[0]:
+        has_groundtruth = False
+    else:
+        has_groundtruth = True
+
     groundtruth = []
     for i in range(len(manifest_data)):
-        groundtruth.append(manifest_data[i]["text"])
+        if has_groundtruth:
+            groundtruth.append(manifest_data[i]["text"])
         manifest_data[i]["pred_text"] = hypotheses[i]
         manifest_data[i]["feature_file"] = input_manifest_data[i]["feature_file"]
         if "rttm_file" in input_manifest_data[i]:
@@ -572,19 +620,19 @@ def run_asr_inference(manifest_filepath, cfg, record_fn) -> str:
 
     write_manifest(cfg.output_filename, manifest_data)
 
-    if cfg.use_pure_noise:
+    if not has_groundtruth:
         hypotheses = " ".join(hypotheses)
         words = hypotheses.split()
         chars = "".join(words)
         logging.info("-----------------------------------------")
-        logging.info(f"Number of hallucinated characters={len(chars)}")
-        logging.info(f"Number of hallucinated words={len(words)}")
-        logging.info(f"Concatenated predictions: {hypotheses}")
+        logging.info(f"Number of generated characters={len(chars)}")
+        logging.info(f"Number of generated words={len(words)}")
         logging.info("-----------------------------------------")
     else:
         wer_score = word_error_rate(hypotheses=hypotheses, references=groundtruth)
+        cer_score = word_error_rate(hypotheses=hypotheses, references=groundtruth, use_cer=True)
         logging.info("-----------------------------------------")
-        logging.info(f"WER={wer_score*100:.2f}")
+        logging.info(f"WER={wer_score:.4f}, CER={cer_score:.4f}")
         logging.info("-----------------------------------------")
 
     logging.info(f"ASR output saved at {cfg.output_filename}")

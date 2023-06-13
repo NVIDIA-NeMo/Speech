@@ -262,14 +262,20 @@ class FeatureToLabelDataset(Dataset):
     Dataset that loads tensors via a json file containing paths to feature files and their labels. 
     Each new line is a different sample. Example below:
     and their target labels. JSON files should be of the following format:
-        {"feature_filepath": "/path/to/audio_feature.pt", "label": "1"} \
+        {"feature_filepath": "/path/to/audio_feature.pt", "label": "1"}
         ...
         {"feature_filepath": "/path/to/audio_feature.pt", "label": "0"} 
     Args:
-        manifest_filepath (str): Dataset parameter. Path to JSON containing data.
-        labels (Optional[list]): Dataset parameter. List of unique labels collected from all samples.
+        manifest_filepath (str): Path to JSON containing data.
+        labels (Optional[list]): List of unique labels collected from all samples.
         augmentor (Optional): feature augmentation
-
+        window_length_in_sec (float): Window length in seconds.
+        shift_length_in_sec (float): Shift length in seconds.
+        is_regression_task (bool): if True, the labels are treated as for a regression task.
+        cal_labels_occurrence (bool): if True, the labels occurrence will be calculated.
+        zero_spec_db_val (float): Value to replace non-speech signals in log-melspectrogram.
+        min_duration (float): Minimum duration of the audio file in seconds.
+        max_duration (float): Maximum duration of the audio file in seconds.
     """
 
     ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
@@ -296,22 +302,53 @@ class FeatureToLabelDataset(Dataset):
         augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
         window_length_in_sec: float = 0.63,
         shift_length_in_sec: float = 0.01,
+        is_regression_task: bool = False,
+        cal_labels_occurrence: Optional[bool] = False,
+        zero_spec_db_val: float = -16.635,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
     ):
         super().__init__()
         self.window_length_in_sec = window_length_in_sec
         self.shift_length_in_sec = shift_length_in_sec
-        self.collection = collections.ASRFeatureLabel(manifests_files=manifest_filepath.split(','),)
+        self.zero_spec_db_val = zero_spec_db_val
+
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = manifest_filepath.split(',')
+
+        self.collection = collections.ASRFeatureLabel(
+            manifests_files=manifest_filepath,
+            is_regression_task=is_regression_task,
+            cal_labels_occurrence=cal_labels_occurrence,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
 
         self.feature_loader = ExternalFeatureLoader(augmentor=augmentor)
         self.labels = labels if labels else self.collection.uniq_labels
 
-        self.label2id, self.id2label = {}, {}
-        for label_id, label in enumerate(self.labels):
-            self.label2id[label] = label_id
-            self.id2label[label_id] = label
+        self.is_regression_task = is_regression_task
 
-        for idx in range(len(self.labels[:5])):
-            logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
+        if not is_regression_task:
+            self.labels = labels if labels else self.collection.uniq_labels
+            self.num_classes = len(self.labels) if self.labels is not None else 1
+            self.label2id, self.id2label = {}, {}
+            self.id2occurrence, self.labels_occurrence = {}, []
+
+            for label_id, label in enumerate(self.labels):
+                self.label2id[label] = label_id
+                self.id2label[label_id] = label
+                if cal_labels_occurrence:
+                    self.id2occurrence[label_id] = self.collection.labels_occurrence[label]
+
+            if cal_labels_occurrence:
+                self.labels_occurrence = [self.id2occurrence[k] for k in sorted(self.id2occurrence)]
+
+            for idx in range(len(self.labels[:5])):
+                logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
+        else:
+            self.labels = []
+            self.num_classes = 1
 
     def __len__(self):
         return len(self.collection)
@@ -328,9 +365,133 @@ class FeatureToLabelDataset(Dataset):
         return f, fl, t, tl
 
     def _collate_fn(self, batch):
-        return _audio_feature_collate_fn(batch, self.ZERO_LEVEL_SPEC_DB_VAL, 0)
+        return _audio_feature_collate_fn(batch, self.zero_spec_db_val, 0)
 
     def _vad_segment_collate_fn(self, batch):
         return _vad_feature_segment_collate_fn(
             batch, self.window_length_in_sec, self.shift_length_in_sec, self.FRAME_UNIT_TIME_SECS
         )
+
+
+class FeatureToMultiLabelDataset(Dataset):
+    """
+    Dataset that loads tensors via a json file containing paths to feature files and their labels. 
+    Each new line is a different sample. Example below:
+    and their target labels. JSON files should be of the following format:
+        {"feature_filepath": "/path/to/audio_feature.pt", "label": "1 1 0 0 1"}
+        ...
+        {"feature_filepath": "/path/to/audio_feature.pt", "label": "0 1 0 0"} 
+    Args:
+        manifest_filepath (str): Path to JSON containing data.
+        labels (Optional[list]): List of unique labels collected from all samples.
+        augmentor (Optional): feature augmentation
+        delimiter (str): delimiter to split the labels.
+        is_regression_task (bool): if True, the labels are treated as for a regression task.
+        cal_labels_occurrence (bool): if True, the labels occurrence will be calculated.
+        zero_spec_db_val (float): Value to replace non-speech signals in log-melspectrogram.
+        min_duration (float): Minimum duration of the audio file in seconds.
+        max_duration (float): Maximum duration of the audio file in seconds.
+    """
+
+    ZERO_LEVEL_SPEC_DB_VAL = -16.635  # Log-Melspectrogram value for zero signal
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports.
+        """
+        output_types = {
+            'audio_feat': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            'feat_length': NeuralType(tuple('B'), LengthsType()),
+            'labels': NeuralType(('B', 'T'), LabelsType()),
+            'labels_length': NeuralType(tuple('B'), LengthsType()),
+        }
+
+        return output_types
+
+    def __init__(
+        self,
+        *,
+        manifest_filepath: str,
+        labels: List[str] = None,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        delimiter: Optional[str] = None,
+        is_regression_task: bool = False,
+        cal_labels_occurrence: Optional[bool] = False,
+        zero_spec_db_val: float = -16.635,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+    ):
+        super().__init__()
+        self.delimiter = delimiter
+        self.zero_spec_db_val = zero_spec_db_val
+
+        if isinstance(manifest_filepath, str):
+            manifest_filepath = manifest_filepath.split(',')
+
+        self.collection = collections.ASRFeatureLabel(
+            manifests_files=manifest_filepath,
+            is_regression_task=is_regression_task,
+            cal_labels_occurrence=cal_labels_occurrence,
+            delimiter=delimiter,
+            min_duration=min_duration,
+            max_duration=max_duration,
+        )
+
+        self.is_regression_task = is_regression_task
+        self.feature_loader = ExternalFeatureLoader(augmentor=augmentor)
+        self.labels = labels if labels else self.collection.uniq_labels
+
+        self.label2id, self.id2label = {}, {}
+        if not is_regression_task:
+            self.labels = labels if labels else self._get_label_set()
+            self.num_classes = len(self.labels) if self.labels is not None else 1
+            self.label2id, self.id2label = {}, {}
+            for label_id, label in enumerate(self.labels):
+                self.label2id[label] = label_id
+                self.id2label[label_id] = label
+                if cal_labels_occurrence:
+                    self.id2occurrence[label_id] = self.collection.labels_occurrence[label]
+                    self.labels_occurrence.append(self.id2occurrence[label_id])
+
+            for idx in range(len(self.labels[:5])):
+                logging.debug(" label id {} and its mapped label {}".format(idx, self.id2label[idx]))
+        else:
+            self.labels = []
+            self.num_classes = 1
+
+    def _get_label_set(self):
+        labels = []
+        for sample in self.collection:
+            label_str = sample.label
+            if label_str:
+                label_str_list = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+                labels.extend(label_str_list)
+        return sorted(set(labels))
+
+    def _label_str_to_tensor(self, label_str: str):
+        labels = label_str.split(self.delimiter) if self.delimiter else label_str.split()
+
+        if self.is_regression_task:
+            labels = [float(s) for s in labels]
+            labels = torch.tensor(labels).float()
+        else:
+            labels = [self.label2id[s] for s in labels]
+            labels = torch.tensor(labels).long()
+        return labels
+
+    def __len__(self):
+        return len(self.collection)
+
+    def __getitem__(self, index):
+        sample = self.collection[index]
+
+        features = self.feature_loader.process(sample.feature_file)
+        f, fl = features, torch.tensor(features.shape[1]).long()
+
+        t = self._label_str_to_tensor(sample.label)
+        tl = torch.tensor(t.size(0)).long()
+
+        return f, fl, t, tl
+
+    def _collate_fn(self, batch):
+        return _audio_feature_collate_fn(batch, self.zero_spec_db_val, 0)

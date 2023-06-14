@@ -255,7 +255,7 @@ article ul {
 	}
 }
 
-@media (min-width: 1400px) {
+@media (min-width: none) {
 	body {
 		font-size: 18px;
 	}

@@ -61,18 +61,19 @@ __all__ = ["MegatronBaseModel"]
 
 class MegatronBaseModel(NLPModel):
     """
-    Megatron base class
-    It does the following things:
-    1. Initialize the model parallel for nemo given the model parallel parameters.
-    2. Turn on all the nvidia optimizations.
-    3. If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the correct size for tensor model parallelism.
-    4. If using distributed optimizer, configure to be compatible with
-       O2-level optimizations and/or model parallelism.
-    5. Perform gradient clipping: `grad_clip_pl_default` triggers the
-       PyTorch Lightning default implementation, `with_distributed_adam`
-       triggers the distributed optimizer's implementation,
-       `megatron_amp_o2` triggers gradient clipping on the main grads,
-       and otherwise gradient clipping is performed on the model grads.
+    Megatron base class. All NeMo Megatron models inherit from this class.
+
+    - Initialize the model parallel world for nemo.
+    - Turn on all of the nvidia optimizations.
+    - If `cfg.tokenizer` is available, it loads the tokenizer and pad the vocab to the 
+      correct size for tensor model parallelism.
+    - If using distributed optimizer, configure to be compatible
+      with O2 level optimizations and/or model parallelism.
+    - Perform gradient clipping: `grad_clip_pl_default` triggers
+      the PyTorch Lightning default implementation, `with_distributed_adam` triggers
+      the distributed optimizer's implementation, `megatron_amp_o2` triggers gradient clipping on the main grads,
+      and otherwise gradient clipping is performed on the model grads.
+
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer, no_lm_init=True):

@@ -23,7 +23,6 @@ from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
-from nemo.collections.nlp.modules.common.megatron_web_server import get_chatbot_demo, get_demo
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
@@ -297,6 +296,8 @@ def main(cfg) -> None:
 
     # Third method of running text generation, use inference server
     if cfg.server:
+        from nemo.collections.nlp.modules.common.megatron_web_server import get_chatbot_demo, get_demo
+
         if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
             if cfg.web_server:
                 if cfg.chat:

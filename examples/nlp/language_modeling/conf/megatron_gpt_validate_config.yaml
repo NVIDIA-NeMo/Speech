@@ -1,0 +1,22 @@
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 16 # 16, 32, or bf16
+  log_every_n_steps: 1
+  limit_val_batches: 10
+  limit_test_batches: 50
+  max_steps: 100 # needed to setup dataloaders
+  max_epochs: null
+  replace_sampler_ddp: False
+
+tensor_model_parallel_size: ??? # should be set the same as the pretrained model that is being restored from
+pipeline_model_parallel_size: ??? # should be set the same as the pretrained model that is being restored from 
+micro_batch_size: null # limited by GPU memory, defaults to pretrained model config
+global_batch_size: null # will use more micro batches to reach global batch size, defaults to pretrained model config
+virtual_pipeline_model_parallel_size: null
+gpt_model_file: null  # GPT nemo file path
+checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
+checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
+hparams_file: null # model configuration file, only used for PTL checkpoint loading

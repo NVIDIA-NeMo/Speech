@@ -12,7 +12,7 @@ inflect
 jieba
 markdown2
 matplotlib>=3.3.2
-megatron_core==0.1.0
+megatron_core==0.2.0
 nltk>=3.6.5
 opencc
 pangu

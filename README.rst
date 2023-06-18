@@ -263,7 +263,7 @@ packaging is also needed:
 
 .. code-block:: bash
 
-  pip install -y packaging
+  pip install packaging
 
 
 Transformer Engine

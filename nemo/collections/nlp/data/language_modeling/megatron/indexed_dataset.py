@@ -513,6 +513,8 @@ class MMapIndexedDataset(torch.utils.data.Dataset):
             self._create_data_mmap(skip_warmup)
         else:
             logging.info("    skip creating data numpy buffer of mmap...")
+            self._bin_buffer_mmap = None
+            self._bin_buffer = None
 
     def _create_data_mmap(self, skip_warmup):
         if not skip_warmup:
@@ -524,7 +526,8 @@ class MMapIndexedDataset(torch.utils.data.Dataset):
         self._bin_buffer = memoryview(self._bin_buffer_mmap)
 
     def __del__(self):
-        self._bin_buffer_mmap._mmap.close()
+        if self._bin_buffer_mmap is not None:
+            self._bin_buffer_mmap._mmap.close()
         del self._bin_buffer_mmap
         del self._index
 

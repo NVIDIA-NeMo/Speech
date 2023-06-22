@@ -1138,140 +1138,161 @@ if comparison_mode:
             ]
         )
 
-
-comparison_layout = [
-    html.Div(
-        [
-            dcc.Markdown("model 1:" + ' ' + model_name_1[10:]),
-            dcc.Markdown("model 2:" + ' ' + model_name_2[10:]),
-            dcc.Dropdown(
-                ['word level', 'utterance level'], 'word level', placeholder="choose comparison lvl", id='lvl_choose'
-            ),
-        ]
-    ),
-    html.Hr(),
-    html.Div(
-        [
-            html.Div(
-                [
-                    dcc.Dropdown(for_col_names.columns[::], 'accuracy_model_' + model_name_1, id='xaxis-column'),
-                    dcc.Dropdown(for_col_names.columns[::], 'accuracy_model_' + model_name_2, id='yaxis-column'),
-                    dcc.Dropdown(
-                        for_col_names.select_dtypes(include='number').columns[::],
-                        placeholder='Select what will encode color of points',
-                        id='color-column',
-                    ),
-                    dcc.Dropdown(
-                        for_col_names.select_dtypes(include='number').columns[::],
-                        placeholder='Select what will encode size of points',
-                        id='size-column',
-                    ),
-                    dcc.Dropdown(
-                        ['yes', 'no'],
-                        placeholder='if you want to enable dot spacing',
-                        id='dot_spacing',
-                        style={'width': '200%'},
-                    ),
-                    dcc.Input(id='radius', placeholder='Enter radius of spacing (std is 0.01)'),
-                    html.Hr(),
-                    dcc.Input(id='filter-query-input', placeholder='Enter filter query',),
-                ],
-                style={'width': '200%', 'display': 'inline-block', 'float': 'middle'},
-            ),
-            html.Hr(),
-            html.Div(id='filter-query-output'),
-            dash_table.DataTable(
-                id='datatable-advanced-filtering',
-                columns=wordstable_columns_tool,
-                data=vocabulary_1,
-                editable=False,
-                page_action='native',
-                page_size=5,
-                filter_action="native",
-            ),
-            html.Hr(),
-            html.Div(id='datatable-query-structure', style={'whitespace': 'pre'}),
-            html.Hr(),
-            dbc.Row(dbc.Col(dcc.Graph(id='voc_graph'),),),
-            html.Hr(),
-        ],
-        id='wrd_lvl',
-        style={'display': 'block'},
-    ),
-    html.Div(
-        [
-            html.Div(
-                [
-                    dcc.Dropdown(['WER', 'CER'], 'WER', placeholder="Choose metric", id="choose_metric"),
-                    dbc.Row(dbc.Col(html.H5('Data'), class_name='text-secondary'), class_name='mt-3'),
-                    html.Hr(),
-                    html.Hr(),
-                    dcc.Input(id='filter-query-input-2', placeholder='Enter filter query', style={'width': '100%'}),
-                    html.Div(id='filter-query-output-2'),
-                    dbc.Row(
-                        dbc.Col(
-                            [
-                                dash_table.DataTable(
-                                    id='datatable-advanced-filtering-2',
-                                    columns=[
-                                        {'name': k.replace('_', ' '), 'id': k, 'hideable': True}
-                                        for k in data_with_metrics[0]
-                                    ],
-                                    data=data_with_metrics,
-                                    editable=False,
-                                    page_action='native',
-                                    page_size=5,
-                                    row_selectable='single',
-                                    selected_rows=[0],
-                                    page_current=0,
-                                    filter_action="native",
-                                    style_cell={
-                                        'overflow': 'hidden',
-                                        'textOverflow': 'ellipsis',
-                                        'maxWidth': 0,
-                                        'textAlign': 'center',
-                                    },
-                                    style_header={
-                                        'color': 'text-primary',
-                                        'text_align': 'center',
-                                        'height': 'auto',
-                                        'whiteSpace': 'normal',
-                                    },
-                                    css=[
-                                        {
-                                            'selector': '.dash-spreadsheet-menu',
-                                            'rule': 'position:absolute; bottom: 8px',
+    comparison_layout = [
+        html.Div(
+            [
+                dcc.Markdown("model 1:" + ' ' + model_name_1[10:]),
+                dcc.Markdown("model 2:" + ' ' + model_name_2[10:]),
+                dcc.Dropdown(
+                    ['word level', 'utterance level'],
+                    'word level',
+                    placeholder="choose comparison lvl",
+                    id='lvl_choose',
+                ),
+            ]
+        ),
+        html.Hr(),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        dcc.Dropdown(for_col_names.columns[::], 'accuracy_model_' + model_name_1, id='xaxis-column'),
+                        dcc.Dropdown(for_col_names.columns[::], 'accuracy_model_' + model_name_2, id='yaxis-column'),
+                        dcc.Dropdown(
+                            for_col_names.select_dtypes(include='number').columns[::],
+                            placeholder='Select what will encode color of points',
+                            id='color-column',
+                        ),
+                        dcc.Dropdown(
+                            for_col_names.select_dtypes(include='number').columns[::],
+                            placeholder='Select what will encode size of points',
+                            id='size-column',
+                        ),
+                        dcc.Dropdown(
+                            ['yes', 'no'],
+                            placeholder='if you want to enable dot spacing',
+                            id='dot_spacing',
+                            style={'width': '200%'},
+                        ),
+                        dcc.Input(id='radius', placeholder='Enter radius of spacing (std is 0.01)'),
+                        html.Hr(),
+                        dcc.Input(id='filter-query-input', placeholder='Enter filter query',),
+                    ],
+                    style={'width': '200%', 'display': 'inline-block', 'float': 'middle'},
+                ),
+                html.Hr(),
+                html.Div(id='filter-query-output'),
+                dash_table.DataTable(
+                    id='datatable-advanced-filtering',
+                    columns=wordstable_columns_tool,
+                    data=vocabulary_1,
+                    editable=False,
+                    page_action='native',
+                    page_size=5,
+                    filter_action="native",
+                ),
+                html.Hr(),
+                html.Div(id='datatable-query-structure', style={'whitespace': 'pre'}),
+                html.Hr(),
+                dbc.Row(dbc.Col(dcc.Graph(id='voc_graph'),),),
+                html.Hr(),
+            ],
+            id='wrd_lvl',
+            style={'display': 'block'},
+        ),
+        html.Div(
+            [
+                html.Div(
+                    [
+                        dcc.Dropdown(['WER', 'CER'], 'WER', placeholder="Choose metric", id="choose_metric"),
+                        dbc.Row(dbc.Col(html.H5('Data'), class_name='text-secondary'), class_name='mt-3'),
+                        html.Hr(),
+                        html.Hr(),
+                        dcc.Input(
+                            id='filter-query-input-2', placeholder='Enter filter query', style={'width': '100%'}
+                        ),
+                        html.Div(id='filter-query-output-2'),
+                        dbc.Row(
+                            dbc.Col(
+                                [
+                                    dash_table.DataTable(
+                                        id='datatable-advanced-filtering-2',
+                                        columns=[
+                                            {'name': k.replace('_', ' '), 'id': k, 'hideable': True}
+                                            for k in data_with_metrics[0]
+                                        ],
+                                        data=data_with_metrics,
+                                        editable=False,
+                                        page_action='native',
+                                        page_size=5,
+                                        row_selectable='single',
+                                        selected_rows=[0],
+                                        page_current=0,
+                                        filter_action="native",
+                                        style_cell={
+                                            'overflow': 'hidden',
+                                            'textOverflow': 'ellipsis',
+                                            'maxWidth': 0,
+                                            'textAlign': 'center',
                                         },
-                                        {'selector': '.dash-filter--case', 'rule': 'display: none'},
-                                        {'selector': '.column-header--hide', 'rule': 'display: none'},
-                                    ],
+                                        style_header={
+                                            'color': 'text-primary',
+                                            'text_align': 'center',
+                                            'height': 'auto',
+                                            'whiteSpace': 'normal',
+                                        },
+                                        css=[
+                                            {
+                                                'selector': '.dash-spreadsheet-menu',
+                                                'rule': 'position:absolute; bottom: 8px',
+                                            },
+                                            {'selector': '.dash-filter--case', 'rule': 'display: none'},
+                                            {'selector': '.column-header--hide', 'rule': 'display: none'},
+                                        ],
+                                    ),
+                                    dbc.Row(dbc.Col(html.Audio(id='player-1', controls=True),), class_name='mt-3'),
+                                ]
+                            )
+                        ),
+                    ]
+                    + [
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    html.Div(children=k.replace('_', '-')),
+                                    width=2,
+                                    class_name='mt-1 bg-light font-monospace text-break small rounded border',
                                 ),
-                                dbc.Row(dbc.Col(html.Audio(id='player-1', controls=True),), class_name='mt-3'),
+                                dbc.Col(
+                                    html.Div(id='__' + k),
+                                    class_name='mt-1 bg-light font-monospace text-break small rounded border',
+                                ),
                             ]
                         )
-                    ),
-                ]
-                + [
-                    dbc.Row(
-                        [
-                            dbc.Col(
-                                html.Div(children=k.replace('_', '-')),
-                                width=2,
-                                class_name='mt-1 bg-light font-monospace text-break small rounded border',
-                            ),
-                            dbc.Col(
-                                html.Div(id='__' + k),
-                                class_name='mt-1 bg-light font-monospace text-break small rounded border',
-                            ),
-                        ]
-                    )
-                    for k in data_with_metrics[0]
-                ]
-            ),
-        ],
-        id='unt_lvl',
-    ),
-]
+                        for k in data_with_metrics[0]
+                    ]
+                ),
+            ],
+            id='unt_lvl',
+        ),
+    ] + [
+        html.Div(
+            [
+                html.Div(
+                    [
+                        dbc.Row(dbc.Col(dcc.Graph(id='utt_graph'),),),
+                        html.Hr(),
+                        dcc.Input(id='clicked_aidopath', style={'width': '100%'}),
+                        html.Hr(),
+                        dcc.Input(id='my-output-1', style={'display': 'none'}),  # we do need this
+                    ]
+                ),
+                html.Div([dbc.Row(dbc.Col(dcc.Graph(id='signal-graph-1')), class_name='mt-3'),]),
+            ],
+            id='down_thing',
+            style={'display': 'block'},
+        )
+    ]
 
 if args.show_statistics is not None:
     comparison_layout += [
@@ -1327,26 +1348,6 @@ if args.show_statistics is not None:
                 {'display': 'block'},
                 {'display': 'block'},
             )
-
-
-comparison_layout += [
-    html.Div(
-        [
-            html.Div(
-                [
-                    dbc.Row(dbc.Col(dcc.Graph(id='utt_graph'),),),
-                    html.Hr(),
-                    dcc.Input(id='clicked_aidopath', style={'width': '100%'}),
-                    html.Hr(),
-                    dcc.Input(id='my-output-1', style={'display': 'none'}),  # we do need this
-                ]
-            ),
-            html.Div([dbc.Row(dbc.Col(dcc.Graph(id='signal-graph-1')), class_name='mt-3'),]),
-        ],
-        id='down_thing',
-        style={'display': 'block'},
-    )
-]
 
 
 if args.show_statistics is None:

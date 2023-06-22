@@ -19,8 +19,28 @@ Fix a markdown render problem.
 """
 from __future__ import annotations
 
-from gradio.components import *
+import warnings
+
 from markdown2 import Markdown
+
+try:
+    from typing import Any, Callable, Dict, List, Literal, Tuple
+
+    from gradio.components import (
+        Changeable,
+        Component,
+        Enum,
+        EventListenerMethod,
+        IOComponent,
+        JSONSerializable,
+        Selectable,
+        document,
+        processing_utils,
+    )
+
+    GRADIO_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    GRADIO_AVAILABLE = False
 
 
 class _Keywords(Enum):

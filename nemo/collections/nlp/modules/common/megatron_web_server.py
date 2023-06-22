@@ -14,10 +14,14 @@
 
 import asyncio
 
-import gradio as gr
+try:
+    import gradio as gr
+
+    GRADIO_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    GRADIO_AVAILABLE = False
 
 from nemo.collections.nlp.modules.common.chat_css import CSS
-from nemo.collections.nlp.modules.common.chatbot_component import Chatbot
 from nemo.collections.nlp.modules.common.megatron.retrieval_services.util import (
     convert_retrieved_to_md,
     request_data,
@@ -30,8 +34,17 @@ TURN_TOKEN = '<extra_id_1>'
 
 DEFAULT_SYSTEM = "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"
 SYSTEM_TOKEN = '<extra_id_0>System\n'
-# HUMAN_TOKEN = 'Human:'
-# ASSITANT_TOKEN = 'Assistant:'
+
+
+def check_gradio_import():
+    if not GRADIO_AVAILABLE:
+        msg = (
+            f"could not find the gradio library.\n"
+            f"****************************************************************\n"
+            f"To install it, please follow the steps below:\n"
+            f"pip install gradio==3.34.0\n"
+        )
+        raise ImportError(msg)
 
 
 def create_gen_function(port=5555, chat=False):
@@ -89,6 +102,7 @@ def create_gen_function(port=5555, chat=False):
 
 
 def get_demo(share, username, password, server_port=5555, web_port=9889, loop=None):
+    check_gradio_import()
     asyncio.set_event_loop(loop)
     with gr.Blocks() as demo:
         with gr.Row():
@@ -132,6 +146,9 @@ def get_demo(share, username, password, server_port=5555, web_port=9889, loop=No
 
 
 def get_chatbot_demo(share, username, password, server_port=5555, web_port=9889, loop=None):
+    check_gradio_import()
+    from nemo.collections.nlp.modules.common.chatbot_component import Chatbot
+
     asyncio.set_event_loop(loop)
     with gr.Blocks(css=CSS) as demo:
         # store the mutliple turn conversation
@@ -294,6 +311,7 @@ class RetroDemoWebApp:
         return request_data(data, self.combo_service_ip, self.combo_service_port)
 
     def run_demo(self, share, username, password, port):
+        check_gradio_import()
         with gr.Blocks(css="table, th, td { border: 1px solid blue; table-layout: fixed; width: 100%; }") as demo:
             with gr.Row():
                 with gr.Column(scale=2, width=200):

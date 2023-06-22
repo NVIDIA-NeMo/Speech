@@ -290,6 +290,14 @@ Transformer Engine already supports Flash Attention for GPT models. If you want 
   pip install flash-attn
   pip install triton==2.0.0.dev20221202
 
+NLP inference UI
+~~~~~~~~~~~~~~~~~~~~
+To launch the inference web UI server, please install the gradio `gradio <https://gradio.app/>`_. 
+
+.. code-block:: bash
+
+  pip install gradio==3.34.0
+
 NeMo Text Processing
 ~~~~~~~~~~~~~~~~~~~~
 NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separate repository `https://github.com/NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_.

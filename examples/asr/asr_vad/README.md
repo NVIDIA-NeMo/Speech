@@ -8,10 +8,16 @@ There are two types of input
 -  A manifest passed to `manifest_filepath`, 
 -  A directory containing audios passed to `audio_dir` and also specify `audio_type` (default to `wav`).
 
-The input manifest must be a manifest json file, where each line is a Python dictionary. The fields ["audio_filepath", "offset", "duration",  "text"] are required. An example of a manifest file is:
+The input manifest must be a manifest json file, where each line is a Python dictionary. The fields ["audio_filepath", "offset", "duration"] are required. An example of a manifest file is:
 ```json
-{"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000,  "text": "a b c d e"}
-{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000,  "text": "f g h i j"}
+{"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000}
+{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000}
+```
+
+If you want to calculate WER, provide `text` in manifest as groundtruth. An example of a manifest file is:
+```json
+{"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000, "text": "hello world"}
+{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000, "text": "hello world"}
 ```
 
 ## Output

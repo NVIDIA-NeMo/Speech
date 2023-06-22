@@ -32,7 +32,7 @@ python speech_to_label.py \
 The input manifest must be a manifest json file, where each line is a Python dictionary. The fields ["audio_filepath", "offset", "duration",  "label"] are required. An example of a manifest file is:
 ```
 {"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000,  "label": "0 1 0 0 1"}
-{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000,  "text": "0 0 0 1 1 1 1 0 0"}
+{"audio_filepath": "/path/to/audio_file2", "offset": 0, "duration": 10000,  "label": "0 0 0 1 1 1 1 0 0"}
 ```
 For example, if you have a 1s audio file, you'll need to have 50 frame labels in the manifest entry like "0 0 0 0 1 1 0 1 .... 0 1".
 However, shorter label strings are also supported for smaller file sizes. For example, you can prepare the `label` in 40ms frame, and the model will properly repeat the label for each 20ms frame.

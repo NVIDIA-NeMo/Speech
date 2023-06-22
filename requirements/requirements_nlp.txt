@@ -5,7 +5,6 @@ fasttext
 flask_restful
 ftfy
 gdown
-gradio>=3.28.3
 h5py
 ijson
 inflect

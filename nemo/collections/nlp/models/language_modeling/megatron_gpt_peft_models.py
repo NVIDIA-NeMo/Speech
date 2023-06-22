@@ -225,6 +225,12 @@ class MegatronGPTPTuningModel(MegatronGPTPEFTModel):
         self.name_key_to_cfg = {AdapterName.PTUNING_ADAPTER: adapter_cfg}
         super().__init__(cfg, trainer)
         self.virtual_tokens = cfg.peft.p_tuning.virtual_tokens
+        self.trainable_keys = self.adapter_keys - set(
+            [
+                "model.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight"
+            ]
+        )
+        # we exclude the above parameter from training because it is present for backward compatibility for inference using FasterTransformer (@adithyare)
 
     def init_peft_modules(self,):
         """ 
@@ -268,7 +274,15 @@ class MegatronGPTPTuningModel(MegatronGPTPEFTModel):
 
     def setup_optimizer_param_groups(self):
         if self.first_stage_of_pipeline():
-            super().setup_optimizer_param_groups()
+            # super().setup_optimizer_param_groups()
+            self.freeze()  # Freeze the entire model
+            opt_params = []
+            for n, p in self.named_parameters():
+                if n in self.trainable_keys:
+                    p.requires_grad = True
+                    opt_params.append(p)
+
+            self._optimizer_param_groups = ({"params": opt_params},)
         else:
             self.freeze()  # Freeze the entire model
             self._optimizer_param_groups = ({"params": []},)

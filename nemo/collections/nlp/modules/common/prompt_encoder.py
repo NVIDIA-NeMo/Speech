@@ -70,7 +70,7 @@ class PromptEmbedding(NeuralModule, Exportable):
         self.prompt_embeddings.weight.requires_grad = False
 
         # Set fixed indicies for forward pass
-        self.register_buffer('indices', torch.LongTensor(list(range(self.total_virtual_tokens))))
+        self.register_buffer("indices", torch.LongTensor(list(range(self.total_virtual_tokens))), persistent=False)
 
     def clear_prompt_embedding_weights(self,):
         """
@@ -104,9 +104,10 @@ class InferenceTable(NeuralModule, Exportable):
         self.total_virtual_tokens = total_virtual_tokens
         self.prompt_table = torch.nn.ModuleDict()
         self.prompt_table[self.taskname] = PromptEmbedding(self.hidden_size, self.total_virtual_tokens)
-        self.prompt_table[self.taskname].prompt_embeddings.weight.requires_grad = False
         self.prompt_table[self.taskname].clear_prompt_embedding_weights()
         self.is_inference_ready = is_inference_ready
+        for p in self.prompt_table.parameters():
+            p.requires_grad = False
 
     def set_prompt_table(self, prompt_representation: torch.Tensor):
         """

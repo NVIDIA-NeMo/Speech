@@ -199,7 +199,7 @@ def compute_tp_splits(
     # alias the global index to idx
     idx = global_idx
 
-    swiglu_activation = 'swiglu' in str(model_cfg.get('activation', '')).lower()
+    fast_glu_activation = str(model_cfg.get('activation', '')).lower() in ['fast-geglu', 'fast-swiglu', 'fast-reglu']
 
     if param.shape == partitions[0][idx].shape:
         split = [partitions[0][idx].data] * tp_size
@@ -230,8 +230,8 @@ def compute_tp_splits(
             for i in range(tp_size):
                 tp_qkv = torch.cat([tp_qkv_splits[item] for item in range(i, tp_size * 2, tp_size)])
                 split.append(tp_qkv)
-        elif 'dense_h_to_4h.weight' in param_name and swiglu_activation:
-            # For Megatron GPT model with Swiglu activation
+        elif 'dense_h_to_4h.weight' in param_name and fast_glu_activation:
+            # For Megatron GPT model with Fast Glu activation
             # Handle gated linear units
             # concat all the first halves ('W's) and all the second halves ('V's)
             w_split, k_split = torch.chunk(partitions[0][idx].data, 2, dim=0)
@@ -261,7 +261,7 @@ def compute_tp_merge(idx, name, param, partitions_pp, model_cfg):
     Returns:
         The concatenated parameter for TP 1 PP 1.
     """
-    swiglu_activation = 'swiglu' in str(model_cfg.get('activation', '')).lower()
+    fast_glu_activation = str(model_cfg.get('activation', '')).lower() in ['fast-geglu', 'fast-swiglu', 'fast-reglu']
 
     # Logic from original TP rank change
     if param.shape == partitions_pp[0][idx].shape:
@@ -271,8 +271,8 @@ def compute_tp_merge(idx, name, param, partitions_pp, model_cfg):
     else:
         concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=0)
 
-    # Logic for Swiglu activation
-    if 'dense_h_to_4h.weight' in name and swiglu_activation:
+    # Logic for Fast Glu activation
+    if 'dense_h_to_4h.weight' in name and fast_glu_activation:
         # concat all the first halves ('W's) and all the second halves ('V's)
         wk_splits = []
         for tpr in range(len(partitions_pp)):

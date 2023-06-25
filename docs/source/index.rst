@@ -45,6 +45,7 @@ NVIDIA NeMo User Guide
    nlp/machine_translation/machine_translation
    nlp/text_normalization/intro
    nlp/api
+   nlp/megatron_onnx_export
    nlp/models
    
 

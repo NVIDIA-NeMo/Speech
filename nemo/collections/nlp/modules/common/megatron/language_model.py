@@ -70,7 +70,7 @@ def get_language_model(
     vocab_size,
     num_attention_heads,
     encoder_attn_mask_type,
-    apply_query_key_layer_scaling=True,
+    apply_query_key_layer_scaling=False,
     kv_channels=None,
     init_method=None,
     scaled_init_method=None,

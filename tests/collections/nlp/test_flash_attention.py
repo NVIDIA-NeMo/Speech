@@ -87,8 +87,10 @@ class TestFlashAttention:
     def cfg(self):
         cfg = {
             'bz': random.randint(1, 7),
-            'sl': random.randint(1, 7),
+            'sq': random.randint(2, 7),
+            'sk': random.randint(2, 7),
             'head': random.randint(1, 7),
+            'layer_number': random.randint(1, 7),
             'device': torch.cuda.current_device(),
         }
         # flash attention requires head dimensions are multiples of 8
@@ -99,9 +101,10 @@ class TestFlashAttention:
 
     @pytest.mark.skipif(not HAVE_FA, reason="flash-attention is not installed")
     @pytest.mark.unit
-    def test_flash_attention(self, cfg):
+    def test_flash_self_attention(self, cfg):
         device = cfg['device']
-        bz, sl, np, h = cfg['bz'], cfg['sl'], cfg['head'], cfg['hidden']
+        layer_number = cfg['layer_number']
+        bz, sl, np, h = cfg['bz'], cfg['sq'], cfg['head'], cfg['hidden']
         hn = h // np
 
         q = torch.rand(sl, bz, np, hn, device=device).half()
@@ -122,7 +125,7 @@ class TestFlashAttention:
 
         # Non-causal
         attention = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.padding,
@@ -130,7 +133,7 @@ class TestFlashAttention:
         )
 
         attention_fa = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.padding,
@@ -140,21 +143,22 @@ class TestFlashAttention:
 
         out = attention(q, k, v, attention_mask_padding_3d)
         out_fa = attention_fa(q, k, v, attention_mask_padding_3d)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa)
         out_fa = attention_fa(q, k, v, attention_mask_2d)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa)
 
         # Causal
         attention = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.causal,
             attention_dropout=0.0,
+            apply_query_key_layer_scaling=False,
         )
 
         attention_fa = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.causal,
@@ -164,9 +168,55 @@ class TestFlashAttention:
 
         out = attention(q, k, v, attention_mask_causal_3d)
         out_fa = attention_fa(q, k, v, attention_mask_causal_3d)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa)
         out_fa = attention_fa(q, k, v, attention_mask_2d)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa)
+
+    @pytest.mark.skipif(not HAVE_FA, reason="flash-attention is not installed")
+    @pytest.mark.unit
+    def test_flash_cross_attention(self, cfg):
+        device = cfg['device']
+        layer_number = cfg['layer_number']
+        bz, sq, sk, np, h = cfg['bz'], cfg['sq'], cfg['sk'], cfg['head'], cfg['hidden']
+        hn = h // np
+
+        q = torch.rand(sq, bz, np, hn, device=device).half()
+        k = torch.rand(sk, bz, np, hn, device=device).half()
+        v = torch.rand(sk, bz, np, hn, device=device).half()
+
+        attention_mask_2d_q = torch.arange(sq, device=device).unsqueeze(0) < torch.randint(
+            1, sq, (bz,), device=device
+        ).unsqueeze(1)
+
+        attention_mask_2d_k = torch.arange(sk, device=device).unsqueeze(0) < torch.randint(
+            1, sk, (bz,), device=device
+        ).unsqueeze(1)
+
+        attention_mask_padding_3d = build_attention_mask_3d(
+            source_mask=attention_mask_2d_q, target_mask=attention_mask_2d_k, attn_mask_type=AttnMaskType.padding
+        ).unsqueeze(1)
+
+        attention = CoreAttention(
+            layer_number=layer_number,
+            num_attention_heads=np,
+            hidden_size=h,
+            attn_mask_type=AttnMaskType.padding,
+            attention_dropout=0.0,
+            apply_query_key_layer_scaling=False,
+        )
+
+        attention_fa = CoreAttention(
+            layer_number=layer_number,
+            num_attention_heads=np,
+            hidden_size=h,
+            attn_mask_type=AttnMaskType.padding,
+            attention_dropout=0.0,
+            use_flash_attention=True,
+        )
+
+        out = attention(q, k, v, attention_mask_padding_3d)
+        out_fa = attention_fa(q, k, v, attention_mask_padding_3d)
+        torch.testing.assert_close(out, out_fa)
 
     @pytest.mark.skipif(not HAVE_FA, reason="flash-attention is not installed")
     @pytest.mark.skipif(not HAVE_TRITON, reason="triton is not installed")
@@ -175,9 +225,10 @@ class TestFlashAttention:
         reason="should only run on AMPERE GPU. Please see https://github.com/HazyResearch/flash-attention/issues/245",
     )
     @pytest.mark.unit
-    def test_flash_attention_triton(self, cfg):
+    def test_flash_self_attention_triton(self, cfg):
         device = cfg['device']
-        bz, sl, np, h = cfg['bz'], cfg['sl'], cfg['head'], cfg['hidden']
+        layer_number = cfg['layer_number']
+        bz, sl, np, h = cfg['bz'], cfg['sq'], cfg['head'], cfg['hidden']
         hn = h // np
 
         q = torch.rand(sl, bz, np, hn, device=device).half()
@@ -200,15 +251,16 @@ class TestFlashAttention:
 
         # Non-causal
         attention = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.padding,
             attention_dropout=0.0,
+            apply_query_key_layer_scaling=False,
         )
 
         attention_fa = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.padding,
@@ -218,21 +270,22 @@ class TestFlashAttention:
 
         out = attention(q, k, v, attention_mask_padding_3d, relative_position_bias=attention_bias)
         out_fa = attention_fa(q, k, v, attention_mask_padding_3d, relative_position_bias=attention_bias)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa, rtol=1e-3, atol=1e-3)
         out_fa = attention_fa(q, k, v, attention_mask_2d, relative_position_bias=attention_bias)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa, rtol=1e-3, atol=1e-3)
 
         # Causal
         attention = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.causal,
             attention_dropout=0.0,
+            apply_query_key_layer_scaling=False,
         )
 
         attention_fa = CoreAttention(
-            layer_number=1,
+            layer_number=layer_number,
             num_attention_heads=np,
             hidden_size=h,
             attn_mask_type=AttnMaskType.causal,
@@ -242,6 +295,59 @@ class TestFlashAttention:
 
         out = attention(q, k, v, attention_mask_causal_3d, relative_position_bias=attention_bias)
         out_fa = attention_fa(q, k, v, attention_mask_causal_3d, relative_position_bias=attention_bias)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa, rtol=1e-3, atol=1e-3)
         out_fa = attention_fa(q, k, v, attention_mask_2d, relative_position_bias=attention_bias)
-        assert torch.allclose(out, out_fa, rtol=1e-3, atol=1e-3)
+        torch.testing.assert_close(out, out_fa, rtol=1e-3, atol=1e-3)
+
+    @pytest.mark.skipif(not HAVE_FA, reason="flash-attention is not installed")
+    @pytest.mark.skipif(not HAVE_TRITON, reason="triton is not installed")
+    @pytest.mark.skipif(
+        not HAVE_AMPERE_GPU(),
+        reason="should only run on AMPERE GPU. Please see https://github.com/HazyResearch/flash-attention/issues/245",
+    )
+    @pytest.mark.unit
+    def test_flash_cross_attention_triton(self, cfg):
+        device = cfg['device']
+        layer_number = cfg['layer_number']
+        bz, sq, sk, np, h = cfg['bz'], cfg['sq'], cfg['sk'], cfg['head'], cfg['hidden']
+        hn = h // np
+
+        q = torch.rand(sq, bz, np, hn, device=device).half()
+        k = torch.rand(sk, bz, np, hn, device=device).half()
+        v = torch.rand(sk, bz, np, hn, device=device).half()
+
+        attention_mask_2d_q = torch.arange(sq, device=device).unsqueeze(0) < torch.randint(
+            1, sq, (bz,), device=device
+        ).unsqueeze(1)
+
+        attention_mask_2d_k = torch.arange(sk, device=device).unsqueeze(0) < torch.randint(
+            1, sk, (bz,), device=device
+        ).unsqueeze(1)
+
+        attention_mask_padding_3d = build_attention_mask_3d(
+            source_mask=attention_mask_2d_q, target_mask=attention_mask_2d_k, attn_mask_type=AttnMaskType.padding
+        ).unsqueeze(1)
+
+        attention_bias = torch.rand(bz, np, sq, sk, device=device)
+
+        attention = CoreAttention(
+            layer_number=layer_number,
+            num_attention_heads=np,
+            hidden_size=h,
+            attn_mask_type=AttnMaskType.padding,
+            attention_dropout=0.0,
+            apply_query_key_layer_scaling=False,
+        )
+
+        attention_fa = CoreAttention(
+            layer_number=layer_number,
+            num_attention_heads=np,
+            hidden_size=h,
+            attn_mask_type=AttnMaskType.padding,
+            attention_dropout=0.0,
+            use_flash_attention=True,
+        )
+
+        out = attention(q, k, v, attention_mask_padding_3d, relative_position_bias=attention_bias)
+        out_fa = attention_fa(q, k, v, attention_mask_padding_3d, relative_position_bias=attention_bias)
+        torch.testing.assert_close(out, out_fa, rtol=1e-3, atol=1e-3)

@@ -53,7 +53,7 @@ if HAVE_APEX:
             probs = torch.nn.Softmax(dim=-1)(mask_output)
             if mask is not None:
                 all_k_masked = mask.all(axis=-1)
-                zero_attention_mask = (1.0 - all_k_masked.float())[:, :, :, None]
+                zero_attention_mask = (1.0 - all_k_masked.type(probs.type()))[:, :, :, None]
                 probs = probs * zero_attention_mask
 
             if self.input_in_float16 and self.softmax_in_fp32:

@@ -109,7 +109,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         attention_type=AttnType.self_attn,
         attn_mask_type=AttnMaskType.padding,
         precision=16,
-        apply_query_key_layer_scaling=True,
+        apply_query_key_layer_scaling=False,
         kv_channels=None,
         use_cpu_initialization=False,
         megatron_amp_O2=False,
@@ -564,7 +564,7 @@ class ParallelChunkedCrossAttention(MegatronModule):
         num_attention_heads,
         hidden_size,
         precision=16,
-        apply_query_key_layer_scaling=True,
+        apply_query_key_layer_scaling=False,
         kv_channels=None,
         use_cpu_initialization=False,
         megatron_amp_O2=False,
@@ -728,7 +728,7 @@ class CoreAttention(MegatronModule):
         attention_type=AttnType.self_attn,
         attn_mask_type=AttnMaskType.padding,
         precision=16,
-        apply_query_key_layer_scaling=True,
+        apply_query_key_layer_scaling=False,
         kv_channels=None,
         masked_softmax_fusion=True,
         attention_dropout=0.1,
@@ -928,7 +928,6 @@ class CoreAttention(MegatronModule):
             attention_scores += attention_bias
 
         attention_probs = self.scale_mask_softmax(attention_scores, attention_mask)
-
         # This is actually dropping out entire tokens to attend to, which might
         # seem a bit unusual, but is taken from the original Transformer paper.
 
@@ -966,15 +965,6 @@ class CoreAttention(MegatronModule):
         else:
             return self.flash_attention_cuda(query_layer, key_layer, value_layer, attention_mask,)
 
-    def reset_is_causal(self, query_length, key_length, causal):
-        if query_length != key_length:
-            if query_length == 1:
-                return False
-            raise NotImplementedError(
-                "Flash attention does not support query and key with different number of tokens, unless number of query tokens is 1."
-            )
-        return causal
-
     def flash_attention_cuda(self, query_layer, key_layer, value_layer, attention_mask):
         batch_size, seqlen, nheads, _ = query_layer.shape
 
@@ -994,9 +984,7 @@ class CoreAttention(MegatronModule):
         q, indices_q, cu_seqlens_q, max_seqlen_q = unpad_input(query_layer, attention_mask_q)
         k, _, cu_seqlens_k, max_seqlen_k = unpad_input(key_layer, attention_mask_kv)
         v, _, _, _ = unpad_input(value_layer, attention_mask_kv)
-        causal = self.reset_is_causal(
-            query_layer.shape[1], key_layer.shape[1], self.attn_mask_type == AttnMaskType.causal
-        )
+        is_causal = self.attn_mask_type == AttnMaskType.causal and query_layer.shape[1] == key_layer.shape[1]
         context_layer = flash_attn_unpadded_func(
             q,
             k,
@@ -1006,7 +994,7 @@ class CoreAttention(MegatronModule):
             max_seqlen_q,
             max_seqlen_k,
             dropout_p=self.attention_dropout_p if self.training else 0.0,
-            causal=causal,
+            causal=is_causal,
         )
 
         # [b, sq, np, hn]
@@ -1031,13 +1019,13 @@ class CoreAttention(MegatronModule):
                 attention_mask_q = attention_mask.unsqueeze(1).unsqueeze(3)
                 attention_mask_kv = attention_mask.unsqueeze(1).unsqueeze(2)
 
-            attention_bias = attention_bias.masked_fill(~attention_mask_q, torch.finfo(query_layer.dtype).min)
-            attention_bias = attention_bias.masked_fill(~attention_mask_kv, torch.finfo(query_layer.dtype).min)
+            if attention_bias.shape[2] == attention_mask_q.shape[2]:
+                attention_bias = attention_bias.masked_fill(~attention_mask_q, torch.finfo(query_layer.dtype).min)
+            if attention_bias.shape[3] == attention_mask_kv.shape[3]:
+                attention_bias = attention_bias.masked_fill(~attention_mask_kv, torch.finfo(query_layer.dtype).min)
 
-        causal = self.reset_is_causal(
-            query_layer.shape[1], key_layer.shape[1], self.attn_mask_type == AttnMaskType.causal
-        )
-        context_layer = flash_attn_func(query_layer, key_layer, value_layer, attention_bias, causal)
+        is_causal = self.attn_mask_type == AttnMaskType.causal and query_layer.shape[1] == key_layer.shape[1]
+        context_layer = flash_attn_func(query_layer, key_layer, value_layer, attention_bias, is_causal,)
 
         # [b, sq, np, hn] -> [b, np, sq, hn]
         context_layer = context_layer.permute(0, 2, 1, 3)

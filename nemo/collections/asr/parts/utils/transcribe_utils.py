@@ -189,11 +189,6 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
         asr_model = imported_class.restore_from(
             restore_path=cfg.model_path, map_location=map_location,
         )  # type: ASRModel
-        if hasattr(cfg, "model_change"):
-            asr_model.change_attention_model(
-                self_attention_model=cfg.model_change.conformer.get("self_attention_model", None),
-                att_context_size=cfg.model_change.conformer.get("att_context_size", None),
-            )
         model_name = os.path.splitext(os.path.basename(cfg.model_path))[0]
     else:
         # restore model by name
@@ -201,6 +196,12 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
             model_name=cfg.pretrained_name, map_location=map_location,
         )  # type: ASRModel
         model_name = cfg.pretrained_name
+
+    if hasattr(cfg, "model_change"):
+        asr_model.change_attention_model(
+            self_attention_model=cfg.model_change.conformer.get("self_attention_model", None),
+            att_context_size=cfg.model_change.conformer.get("att_context_size", None),
+        )
 
     return asr_model, model_name
 

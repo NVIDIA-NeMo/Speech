@@ -1001,6 +1001,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.init_global_step = self.trainer.global_step
 
         if self.rampup_batch_size:
+            optimizer = self.cfg.optim.get('name', None)
+            assert (
+                optimizer == 'fused_adam'
+            ), f'{optimizer} optimizer is not supported yet with rampup batch size. Please, use fused_adam optimizer instead.'
+
             num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
             num_microbatch_calculator.update(self.init_consumed_samples, consistency_check=False)
             self.prev_consumed_samples = self.init_consumed_samples

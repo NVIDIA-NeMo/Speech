@@ -126,7 +126,7 @@ AN4 Dataset
 This is a small dataset recorded and distributed by Carnegie Mellon University. It consists of recordings of people spelling out
 addresses, names, etc. Information about this dataset can be found on the `official CMU site <http://www.speech.cs.cmu.edu/databases/an4/>`_.
 
-#. `Download and extract the dataset <http://www.speech.cs.cmu.edu/databases/an4/an4_sphere.tar.gz>`_ (which is labeled "NIST's Sphere audio (.sph) format (64M)".
+#. `Download and extract the dataset <https://dldata-public.s3.us-east-2.amazonaws.com/an4_sphere.tar.gz>`_ (which is labeled "NIST's Sphere audio (.sph) format (64M)".
 
 #. Convert the ``.sph`` files to ``.wav`` using sox, and build one training and one test manifest.
 

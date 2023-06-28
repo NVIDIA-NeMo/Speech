@@ -3778,7 +3778,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
       failFast true
       steps {
-        sh "rm -rf examples/nlp/language_modeling/gpt_peft_lora_results"
+        sh "rm -rf /home/TestData/nlp/lora_tuning_tp2"
         sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_tuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -3787,7 +3787,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=16 \
-        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_peft_lora_results \
+        exp_manager.exp_dir=/home/TestData/nlp/lora_tuning_tp2 \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/TP2/megatron_gpt_tp2.nemo \
@@ -3801,7 +3801,21 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]"
-        sh "rm -rf examples/nlp/language_modeling/gpt_peft_lora_results"
+        sh "python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+        model.restore_from_path=/home/TestData/nlp/megatron_gpt/TP2/megatron_gpt_tp2.nemo \
+        model.peft.restore_from_path=/home/TestData/nlp/lora_tuning_tp2/megatron_gpt_peft_tuning/checkpoints/megatron_gpt_peft_tuning.nemo \
+        model.peft.restore_from_ckpt_name=null \
+        model.peft.restore_from_hparams_path=null \
+        trainer.devices=2 \
+        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel_4.jsonl] \
+        model.data.test_ds.names=['quarel4'] \
+        model.data.test_ds.global_batch_size=1 \
+        model.data.test_ds.micro_batch_size=1 \
+        model.data.test_ds.tokens_to_generate=10 \
+        inference.greedy=True \
+        inference.repetition_penalty=1.0 \
+        inference.outfile_path='/home/TestData/nlp/lora_tuning_tp2/out.jsonl'"
+        sh "rm -rf /home/TestData/nlp/lora_tuning_tp2"
       }
     }
     stage('L2: Megatron GPT Eval') {

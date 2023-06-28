@@ -158,7 +158,7 @@ def nemo_export(argv):
                 check_trace=check_trace,
                 check_tolerance=args.check_tolerance,
                 onnx_opset_version=args.onnx_opset,
-                verbose=args.verbose,
+                verbose=bool(args.verbose),
             )
 
     except Exception as e:

@@ -204,7 +204,7 @@ class Exportable(ABC):
                         check_trace=check_trace,
                         check_tolerance=check_tolerance,
                     )
-                    jitted_model = torch.jit.optimize_for_inference(torch.jit.freeze(jitted_model))
+                    jitted_model = torch.jit.freeze(jitted_model)
                     if verbose:
                         logging.info(f"JIT code:\n{jitted_model.code}")
                     jitted_model.save(output)

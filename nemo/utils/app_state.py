@@ -55,6 +55,7 @@ class AppState(metaclass=Singleton):
         self._data_parallel_group = None
         self._megatron_checkpoint_version = None
         self._use_fp8 = False
+        self._init_mpi_proc_gruop = False
 
         self._random_seed = None
 
@@ -362,6 +363,22 @@ class AppState(metaclass=Singleton):
                 use_fp8:  Use of FP8.
         """
         self._use_fp8 = use_fp8
+
+    @property
+    def init_mpi_proc_group(self):
+        """ Property sets the initialization of mpi process group.
+            Returns:
+                Initialize mpi process group.
+        """
+        return self._init_mpi_proc_group
+
+    @init_mpi_proc_group.setter
+    def init_mpi_proc_group(self, init_mpi_proc_group):
+        """ Property sets the initialization of mpi process group.
+            Args:
+                init_mpi_proc_group:  Initialize mpi process group.
+        """
+        self._init_mpi_proc_group = init_mpi_proc_group
 
     @property
     def random_seed(self):

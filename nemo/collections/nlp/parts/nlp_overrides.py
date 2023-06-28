@@ -181,6 +181,10 @@ class NLPDDPStrategy(DDPStrategy):
                 app_state.data_parallel_size = parallel_state.get_data_parallel_world_size()
                 app_state.pipeline_model_parallel_group = parallel_state.get_pipeline_model_parallel_group()
 
+                # create MPI process group for UCX-based communication APIs
+                if app_state.init_mpi_proc_group:
+                    torch.distributed.new_group(backend='mpi')
+
     def save_checkpoint(
         self, checkpoint: Dict[str, Any], filepath: Union[str, Path], storage_options: Optional[Any] = None
     ) -> None:

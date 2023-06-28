@@ -85,6 +85,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     import transformer_engine
+    from transformer_engine.pytorch import module as te_module
 
     HAVE_TE = True
 
@@ -282,6 +283,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self._nsys_profile_end_step *= grad_accum_steps
 
         self.get_attention_mask_from_fusion = self.cfg.get('get_attention_mask_from_fusion', True)
+        self.initialize_ub = self.cfg.get('ub_tp_comm_overlap', False)
 
     def get_gpt_module_list(self):
         if isinstance(self.model, list):
@@ -357,6 +359,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             fp8_amax_compute_algo=self.cfg.get('fp8_amax_compute_algo', 'most_recent'),
             reduce_amax=self.cfg.get('reduce_amax', True),
             use_emha=self.cfg.get('use_emha', False),
+            ub_tp_comm_overlap=self.cfg.get('ub_tp_comm_overlap', False),
             use_flash_attention=self.cfg.get('use_flash_attention', False),
             megatron_legacy=self.cfg.get('megatron_legacy', False),
         )
@@ -515,6 +518,32 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             The input batch to each micro-batch is fetched using the dataloader function
             in the micro-batch fwd function.
         """
+        # Initialize userbuffer communicators. Initialization is done only once at the
+        # beginning of the first training step.
+        if self.initialize_ub:
+            input_shape = [
+                self.cfg.get('encoder_seq_length') * self.cfg.get('micro_batch_size'),
+                self.cfg.get('hidden_size'),
+            ]
+            ub_cfg_file_name = self.cfg.get('ub_tp_comm_overlap_cfg', None)
+            ub_cfgs = None
+            if ub_cfg_file_name is not None:
+                try:
+                    import yaml
+
+                    with open(ub_cfg_file_name, 'r') as ub_cfg_file:
+                        ub_cfgs = yaml.safe_load(ub_cfg_file)
+                except (ImportError, TypeError):
+                    print("Fail to read ub_tp_comm_overlap config file.")
+
+            te_module.initialize_ub(
+                shape=input_shape,
+                tp_size=self.cfg.get('tensor_model_parallel_size'),
+                use_fp8=self.cfg.get('fp8'),
+                ub_cfgs=ub_cfgs,
+            )
+            self.initialize_ub = False
+
         if self.rampup_batch_size:
             num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR
             current_global_batch_size = num_microbatch_calculator.current_global_batch_size

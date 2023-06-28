@@ -166,6 +166,13 @@ model:
   fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
   reduce_amax: True # Perform reduction to sync amax tensors across GPUs after every iteration
   use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
+  ub_tp_comm_overlap: False
+  # Use userbuffer backend to overlap tensor-parallel communications with computes.
+  # This feature is only available with Transformer Engine and squence parallelism enabled and, currently, supports only GPT models.
+  ub_tp_comm_overlap_cfg: null
+  # A yaml file with userbuffer communicator configurations. This file should provide `method`, `dtype`, `num_sm`, `num_splits`,
+  # `cga_size`, `num_splits`, `set_sm_margin`, and `aggregate` for the communicators to use custom settings.
+  # If the configuration file is not provided a default setting is used for all communicators.
 
   ## Flash Attention
   use_flash_attention: False # Use flash attention in self-attention module, this config does nothing when transformer_engine=True

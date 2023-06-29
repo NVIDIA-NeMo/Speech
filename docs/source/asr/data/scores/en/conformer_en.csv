@@ -12,3 +12,9 @@ stt_en_conformer_transducer_large,en,,,1.6,3.5,1.7,3.7,,,,,,,,,,,,
 stt_en_conformer_transducer_large_ls,en,,,2.1,5.0,2.3,5.1,,,,,,,,,,,,
 stt_en_conformer_transducer_xlarge,en,,,1.48 %,2.95 %,1.62 %,3.01 %,,6.46 %,4.59 %,5.32 %,5.70 %,6.47 %,21.32 %,,,,2.05 %,1.17 %
 stt_en_conformer_transducer_xxlarge,en,,,1.52 %,3.09 %,1.72 %,3.14 %,,,5.29 %,5.85 %,6.64 %,,,,,,2.42 %,1.49 %
+stt_en_fastconformer_hybrid_large_streaming_80ms (CTC),en,,,,,3.5 %,8.1 %,,,10.2 %,7.2 %,,,,,,,3.5 %,2.3 %
+stt_en_fastconformer_hybrid_large_streaming_480ms (CTC),en,,,,,3.6 %,7.5 %,,,9.8 %,7.0 %,,,,,,,3.5 %,2.1 %
+stt_en_fastconformer_hybrid_large_streaming_1040ms (CTC),en,,,,,2.7 %,6.4 %,,,9.0 %,7.0 %,,,,,,,3.2 %,1.9 %
+stt_en_fastconformer_hybrid_large_streaming_80ms (RNNT),en,,,,,2.7 %,6.5 %,,,9.1 %,6.9 %,,,,,,,3.2 %,1.9 %
+stt_en_fastconformer_hybrid_large_streaming_480ms (RNNT),en,,,,,2.7 %,6.1 %,,,8.5 %,6.7 %,,,,,,,3.1 %,1.8 %
+stt_en_fastconformer_hybrid_large_streaming_1040ms (RNNT),en,,,,,2.3 %,5.5 %,,,8.0 %,6.6 %,,,,,,,2.9 %,1.6 %

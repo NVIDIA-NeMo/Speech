@@ -86,9 +86,10 @@ def get_filtered_logprobs(hypothesis: Hypothesis, exclude_blank: bool) -> torch.
         filtered_logprobs = []
         for alignment in hypothesis.alignments:
             for align_elem in alignment:
-                if exclude_blank and align_elem[1].item() != align_elem[0].shape[-1] - 1:
+                if not exclude_blank:
                     filtered_logprobs.append(align_elem[0])
-                filtered_logprobs.append(align_elem[0])
+                elif align_elem[1].item() != align_elem[0].shape[-1] - 1:
+                    filtered_logprobs.append(align_elem[0])
         if not filtered_logprobs:  # for the edge-case of all blanks
             filtered_logprobs.append(align_elem[0])
         filtered_logprobs = torch.stack(filtered_logprobs)
@@ -101,6 +102,8 @@ def get_filtered_logprobs(hypothesis: Hypothesis, exclude_blank: bool) -> torch.
         if exclude_blank:  # filtering blanks
             labels = logprobs.argmax(dim=-1)
             filtered_logprobs = logprobs[labels != logprobs.shape[1] - 1]
+            if filtered_logprobs.shape[0] == 0:  # for the edge-case of all blanks
+                filtered_logprobs = logprobs[:1]
         else:
             filtered_logprobs = logprobs
     return filtered_logprobs
@@ -136,6 +139,7 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
     conf_func = get_confidence_measure_bank()[conf_type]
 
     conf_value = aggr_func(conf_func(filtered_logprobs, v=vocab_size, t=alpha)).cpu().item()
+
     return conf_value
 
 

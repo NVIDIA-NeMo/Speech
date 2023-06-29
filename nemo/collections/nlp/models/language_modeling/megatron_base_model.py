@@ -17,6 +17,7 @@ import os
 import re
 from typing import Any, Dict, Optional, Union
 
+import omegaconf
 import torch
 from omegaconf import open_dict
 from omegaconf.dictconfig import DictConfig
@@ -222,6 +223,10 @@ class MegatronBaseModel(NLPModel):
             delimiter=self.cfg.tokenizer.get('delimiter', None),
             legacy=legacy,
         )
+
+        if self._cfg.tokenizer.get('additional_special_tokens', None) is not None:
+            tokens_list = omegaconf.OmegaConf.to_object(self._cfg.tokenizer.additional_special_tokens)
+            self.tokenizer.add_special_tokens({'additional_special_tokens': tokens_list})
 
     def on_train_start(self) -> None:
         super().on_train_start()

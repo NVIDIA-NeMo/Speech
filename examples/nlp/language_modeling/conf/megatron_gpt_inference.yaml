@@ -36,3 +36,8 @@ username: test # user name for web client
 password: test2  # password for web client
 web_port: 9889 # the port number of the web server
 chat: False # use the chat interface
+chatbot_config:
+  value: False   # whether to inject the value attributes
+  user: User
+  assistant: Assistant
+  system: "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"

@@ -15,6 +15,7 @@
 import asyncio
 import os
 import threading
+from functools import partial
 
 import torch
 from omegaconf import OmegaConf, open_dict
@@ -301,7 +302,12 @@ def main(cfg) -> None:
         if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
             if cfg.web_server:
                 if cfg.chat:
-                    web_ui = get_chatbot_demo
+                    defaults = {
+                        'user': cfg.chatbot_config.user,
+                        'assistant': cfg.chatbot_config.assistant,
+                        'system': cfg.chatbot_config.system,
+                    }
+                    web_ui = partial(get_chatbot_demo, defaults=defaults, value=cfg.chatbot_config.value)
                 else:
                     web_ui = get_demo
                 loop = asyncio.new_event_loop()

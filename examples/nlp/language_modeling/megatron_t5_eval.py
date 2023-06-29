@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+import os
 from argparse import ArgumentParser
 
 import torch
@@ -61,8 +62,15 @@ def main():
         or args.pipeline_model_parallel_size < 0
         or args.pipeline_model_parallel_split_rank < 0
     ):
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(args.model_file):
+            save_restore_connector.model_extracted_dir = args.model_file
+
         model_config = MegatronT5Model.restore_from(
-            restore_path=args.model_file, trainer=Trainer(strategy=NLPDDPStrategy()), return_config=True,
+            restore_path=args.model_file,
+            trainer=Trainer(strategy=NLPDDPStrategy()),
+            return_config=True,
+            save_restore_connector=save_restore_connector,
         )
 
         args.tensor_model_parallel_size = model_config.get('tensor_model_parallel_size', 1)

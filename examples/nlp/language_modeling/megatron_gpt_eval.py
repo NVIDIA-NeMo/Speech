@@ -174,8 +174,14 @@ def main(cfg) -> None:
         or cfg.pipeline_model_parallel_size < 0
         or cfg.get('pipeline_model_parallel_split_rank', -1) < 0
     ):
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(cfg.gpt_model_file):
+            save_restore_connector.model_extracted_dir = cfg.gpt_model_file
         model_config = MegatronGPTModel.restore_from(
-            restore_path=cfg.gpt_model_file, trainer=trainer, return_config=True,
+            restore_path=cfg.gpt_model_file,
+            trainer=trainer,
+            return_config=True,
+            save_restore_connector=save_restore_connector,
         )
 
         with open_dict(cfg):

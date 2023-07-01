@@ -7,7 +7,6 @@ ftfy
 gdown
 h5py
 ijson
-inflect
 jieba
 markdown2
 matplotlib>=3.3.2

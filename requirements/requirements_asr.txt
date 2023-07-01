@@ -1,7 +1,6 @@
 braceexpand
 editdistance
 g2p_en
-inflect
 ipywidgets
 jiwer
 kaldi-python-io

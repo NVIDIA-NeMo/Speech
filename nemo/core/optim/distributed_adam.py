@@ -19,6 +19,7 @@ import torch
 from apex.contrib.optimizers.distributed_fused_adam import (
     DistributedFusedAdam,
     _coalescing_manager,
+    _coalescing_manager_append_work,
     _disable_pre_forward_hook,
 )
 from megatron.core import parallel_state
@@ -173,16 +174,15 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
         for model_param, main_param in self._fp32_optim_main_params.items():
             if model_param.grad is not None:
                 main_param.grad += model_param.grad.detach()
-        sync_requests = []
-        with _coalescing_manager(self.process_group, self.device, sync_requests):
+        with _coalescing_manager(self.process_group, self.device, async_ops=True) as cm:
             for main_param in self._fp32_optim_main_params.values():
-                sync_requests.append(
+                _coalescing_manager_append_work(
+                    cm,
                     torch.distributed.all_reduce(
                         main_param.grad, op=torch.distributed.ReduceOp.AVG, group=self.process_group, async_op=True,
-                    )
+                    ),
                 )
-        for req in sync_requests:
-            req.wait()
+        cm.wait()
         self._fp32_optim_grad_sync_needed = False
 
     def zero_grad(self, *args, **kwargs):

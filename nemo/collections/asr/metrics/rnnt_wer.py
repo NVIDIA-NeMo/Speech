@@ -1224,7 +1224,7 @@ class RNNTWER(Metric):
     def __init__(
         self, decoding: RNNTDecoding, batch_dim_index=0, use_cer=False, log_prediction=True, dist_sync_on_step=False
     ):
-        super(RNNTWER, self).__init__(dist_sync_on_step=dist_sync_on_step, compute_on_step=False)
+        super(RNNTWER, self).__init__(dist_sync_on_step=dist_sync_on_step)
         self.decoding = decoding
         self.batch_dim_index = batch_dim_index
         self.use_cer = use_cer

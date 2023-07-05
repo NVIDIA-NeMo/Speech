@@ -28,9 +28,6 @@ class GlobalAverageLossMetric(Metric):
     See :doc:`PyTorch Lightning Metrics<pytorch-lightning:metrics>` for the metric usage instruction.
 
     Args:
-        compute_on_step:
-            The method :meth:`forward` only calls ``update()`` and returns ``None`` if this is set to ``False``.
-            default: ``True``
         dist_sync_on_step:
             Synchronize metric state across processes at each method :meth:`forward` call before returning the
             value at the step
@@ -44,10 +41,8 @@ class GlobalAverageLossMetric(Metric):
 
     full_state_update = True
 
-    def __init__(self, compute_on_step=True, dist_sync_on_step=False, process_group=None, take_avg_loss=True):
-        super().__init__(
-            compute_on_step=compute_on_step, dist_sync_on_step=dist_sync_on_step, process_group=process_group
-        )
+    def __init__(self, dist_sync_on_step=False, process_group=None, take_avg_loss=True):
+        super().__init__(dist_sync_on_step=dist_sync_on_step, process_group=process_group)
         self.add_state("loss_sum", torch.tensor(0.0, dtype=torch.float64), dist_reduce_fx='sum')
         self.add_state("num_measurements", torch.tensor(0, dtype=torch.int64), dist_reduce_fx='sum')
         self.take_avg_loss = take_avg_loss

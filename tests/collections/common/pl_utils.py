@@ -90,7 +90,7 @@ def _class_test(
                 calculated across devices for each batch (and not just at the end)
     """
     # Instanciate lightning metric
-    metric = metric_class(compute_on_step=True, dist_sync_on_step=dist_sync_on_step, **metric_args)
+    metric = metric_class(dist_sync_on_step=dist_sync_on_step, **metric_args)
 
     # verify metrics work after being loaded from pickled state
     pickled_metric = pickle.dumps(metric)
@@ -303,7 +303,7 @@ def _perplexity_class_test(
                 calculated across devices for each batch (and not just at the end)
     """
     # Instanciate lightning metric
-    perplexity = Perplexity(compute_on_step=True, dist_sync_on_step=dist_sync_on_step, **metric_args)
+    perplexity = Perplexity(dist_sync_on_step=dist_sync_on_step, **metric_args)
     if (probs is None) == (logits is None):
         with pytest.raises(ValueError):
             perplexity(probs, logits)
@@ -464,9 +464,7 @@ def _loss_class_test(
                 calculated across devices for each batch (and not just at the end)
     """
     # Instantiate lightning metric
-    loss_metric = GlobalAverageLossMetric(
-        compute_on_step=True, dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss
-    )
+    loss_metric = GlobalAverageLossMetric(dist_sync_on_step=dist_sync_on_step, take_avg_loss=take_avg_loss)
 
     # verify loss works after being loaded from pickled state
     pickled_metric = pickle.dumps(loss_metric)

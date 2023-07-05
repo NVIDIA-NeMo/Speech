@@ -31,8 +31,6 @@ class SequencePerplexity(Metric):
     See :doc:`PyTorch Lightning Metrics<pytorch-lightning:metrics>` for the metric usage instructions.
 
     Args:
-        compute_on_step:
-            Forward only calls ``update()`` and returns ``None`` if this is set to ``False``. default: ``True``
         dist_sync_on_step:
             Synchronize metric state across processes at each ``forward()`` before returning the value at the step.
         process_group:
@@ -43,12 +41,9 @@ class SequencePerplexity(Metric):
                 to perform the allgather.
     """
 
-    def __init__(self, compute_on_step=True, dist_sync_on_step=False, process_group=None, dist_sync_fn=None):
+    def __init__(self, dist_sync_on_step=False, process_group=None, dist_sync_fn=None):
         super().__init__(
-            compute_on_step=compute_on_step,
-            dist_sync_on_step=dist_sync_on_step,
-            process_group=process_group,
-            dist_sync_fn=dist_sync_fn,
+            dist_sync_on_step=dist_sync_on_step, process_group=process_group, dist_sync_fn=dist_sync_fn,
         )
 
         # Total sum of exponentiated average negative log likelihoods

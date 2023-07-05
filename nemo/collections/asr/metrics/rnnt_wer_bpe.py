@@ -359,7 +359,7 @@ class RNNTBPEWER(Metric):
         log_prediction: bool = True,
         dist_sync_on_step=False,
     ):
-        super(RNNTBPEWER, self).__init__(dist_sync_on_step=dist_sync_on_step, compute_on_step=False)
+        super(RNNTBPEWER, self).__init__(dist_sync_on_step=dist_sync_on_step)
         self.decoding = decoding
         self.batch_dim_index = batch_dim_index
         self.use_cer = use_cer

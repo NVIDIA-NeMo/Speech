@@ -247,7 +247,7 @@ class WERBPE(Metric):
         fold_consecutive=True,
         dist_sync_on_step=False,
     ):
-        super().__init__(dist_sync_on_step=dist_sync_on_step, compute_on_step=False)
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
         self.decoding = decoding
         self.tokenizer = self.decoding.tokenizer
         self.blank_id = self.decoding.tokenizer.tokenizer.vocab_size

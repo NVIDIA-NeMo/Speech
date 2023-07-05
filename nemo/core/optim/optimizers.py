@@ -51,7 +51,6 @@ try:
     AVAILABLE_OPTIMIZERS['fused_adam'] = FusedAdam
 except ModuleNotFoundError:
     HAVE_APEX = False
-    logging.warning("Apex was not found. Using the lamb or fused_adam optimizer will error out.")
 
 HAVE_APEX_DISTRIBUTED_ADAM = False
 if HAVE_APEX:

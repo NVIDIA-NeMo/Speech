@@ -100,7 +100,7 @@ class Text2SparqlModel(ModelPT):
                 decoder=cfg.language_model.pretrained_decoder_model_name,
             )
 
-        self.validation_perplexity = Perplexity(compute_on_step=False)
+        self.validation_perplexity = Perplexity()
 
         self.setup_optimization(cfg.optim)
 

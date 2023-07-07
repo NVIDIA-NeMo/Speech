@@ -241,7 +241,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
 class GreedyRNNTInfer(_GreedyRNNTInfer):
     """A greedy transducer decoder.
 
-    Sequence level greedy decoding, performed auto-repressively.
+    Sequence level greedy decoding, performed auto-regressively.
 
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
@@ -326,7 +326,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-repressively.
+        Output token is generated auto-regressively.
 
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
@@ -479,7 +479,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
 class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
     """A batch level greedy transducer decoder.
 
-    Batch level greedy decoding, performed auto-repressively.
+    Batch level greedy decoding, performed auto-regressively.
 
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
@@ -571,7 +571,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-repressively.
+        Output token is generated auto-regressively.
 
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
@@ -1034,7 +1034,7 @@ class ExportedModelGreedyBatchedRNNTInfer:
 
     def __call__(self, audio_signal: torch.Tensor, length: torch.Tensor):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-repressively.
+        Output token is generated auto-regressively.
 
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
@@ -1455,7 +1455,7 @@ class TorchscriptGreedyBatchedRNNTInfer(ExportedModelGreedyBatchedRNNTInfer):
 class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
     """A greedy transducer decoder for multi-blank RNN-T.
 
-    Sequence level greedy decoding, performed auto-repressively.
+    Sequence level greedy decoding, performed auto-regressively.
 
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
@@ -1655,7 +1655,7 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
 
 class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
     """A batch level greedy transducer decoder.
-    Batch level greedy decoding, performed auto-repressively.
+    Batch level greedy decoding, performed auto-regressively.
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
         joint_model: rnnt_utils.AbstractRNNTJoint implementation.
@@ -2207,7 +2207,7 @@ class GreedyBatchedRNNTInferConfig:
 class GreedyTDTInfer(_GreedyRNNTInfer):
     """A greedy TDT decoder.
 
-    Sequence level greedy decoding, performed auto-repressively.
+    Sequence level greedy decoding, performed auto-regressively.
 
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
@@ -2289,7 +2289,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-repressively.
+        Output token is generated auto-regressively.
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence
@@ -2459,7 +2459,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
 class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
     """A batch level greedy TDT decoder.
-    Batch level greedy decoding, performed auto-repressively.
+    Batch level greedy decoding, performed auto-regressively.
     Args:
         decoder_model: rnnt_utils.AbstractRNNTDecoder implementation.
         joint_model: rnnt_utils.AbstractRNNTJoint implementation.
@@ -2547,7 +2547,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
-        Output token is generated auto-repressively.
+        Output token is generated auto-regressively.
         Args:
             encoder_output: A tensor of size (batch, features, timesteps).
             encoded_lengths: list of int representing the length of each sequence

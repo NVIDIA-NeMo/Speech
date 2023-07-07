@@ -90,6 +90,9 @@ def create_gen_function(port=5555, chat=False):
         response = text_generation(data, port=port)
         sentences = response['sentences']
         bot_message = sentences[0]
+        if bot_message.find('<extra_id_0') < 0:
+            # hack due to the problem that huggingface's tokenizer strips out the <extra_id_x> token
+            prompt = prompt.replace('<extra_id_0>', '').replace('<extra_id_1>', '').replace('<extra_id_2>', '')
         bot_message = bot_message[len(prompt) :]
         return bot_message
 

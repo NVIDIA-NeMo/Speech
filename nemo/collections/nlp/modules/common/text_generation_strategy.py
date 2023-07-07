@@ -153,15 +153,19 @@ class TextGenerationStrategy:
         else:
             tokenizer = self.model.tokenizer
             conditions = []
+            end_tokens = set()
+            end_tokens.add(eod_id)
+            for end_string in end_strings:
+                ids_1 = tokenizer.text_to_ids(f'<extra_id_1>{end_string}')
+                ids_2 = tokenizer.text_to_ids('<extra_id_1>')
+                if len(ids_1) <= len(ids_2):
+                    continue
+                token_id = ids_1[len(ids_2) :][0]
+                end_tokens.add(token_id)
             for p, token_item in zip(prev, tokens):
                 text = tokenizer.ids_to_text(token_item.tolist())
                 conditions.append(
-                    any(
-                        [
-                            p.item() == eod_id if end_string == END_OF_SEQ else text.endswith(end_string)
-                            for end_string in end_strings
-                        ]
-                    )
+                    any([text.endswith(end_string) for end_string in end_strings] + [p.item() in end_tokens])
                 )
             return torch.tensor(conditions, dtype=torch.bool, device=tokens.device)
 

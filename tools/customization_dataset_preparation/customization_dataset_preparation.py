@@ -41,6 +41,7 @@ Other flags that can be set
 1.   `--drop_duplicates` : Use this flag to drop rows that are exactly the same for both prompt and completion
 2.   `--split_train_validation` : Use this flag to split one file into separate train and validation files.
 3.   `--val_proportion 0.1`: Use a float (default 0.1) between 0 and 1 to control how much of the dataset to allocate to the validation set and the remaining for the train dataset.
+4.   `--short_context_model`: Use this flag to prepare data for use with models that have shorter context length of 2048 tokens (e.g. 5B and 20B models)
 
 What to expect
 
@@ -397,6 +398,12 @@ if __name__ == "__main__":
     parser.add_argument("--drop_duplicates", "-dd", action="store_true")
     parser.add_argument("--split_train_validation", "-stv", action="store_true")
     parser.add_argument(
+        "--short_context_model",
+        "-scm",
+        action="store_true",
+        help="Specifies if using models with shorter context length of 2048 tokens e.g. 5B and 20B models",
+    )
+    parser.add_argument(
         "--val_proportion",
         "-vp",
         default=0.1,
@@ -409,8 +416,13 @@ if __name__ == "__main__":
     messages = []
     messages.append(str(args))
 
+    if args.short_context_model:
+        MAX_TOKEN_LENGTH = 2048
+    else:
+        MAX_TOKEN_LENGTH = 4096
+
     # every token is around 4 chars
-    MAX_TOTAL_CHAR_LENGTH = 4 * 2048
+    MAX_TOTAL_CHAR_LENGTH = 4 * MAX_TOKEN_LENGTH
 
     df, message = load_file_into_df(args.filename)
     messages.append(message)

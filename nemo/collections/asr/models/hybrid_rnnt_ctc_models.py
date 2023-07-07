@@ -645,6 +645,20 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         self.finalize_interctc_metrics(metrics, outputs, prefix="test_")
         return metrics
 
+    # EncDecRNNTModel is exported in 2 parts
+    def list_export_subnets(self):
+        if self.cur_decoder == 'rnnt':
+            return ['encoder', 'decoder_joint']
+        else:
+            return ['self']
+
+    @property
+    def output_module(self):
+        if self.cur_decoder == 'rnnt':
+            return self.decoder
+        else:
+            return self.ctc_decoder
+
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """

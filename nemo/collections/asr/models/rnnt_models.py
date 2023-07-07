@@ -28,7 +28,7 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import AudioToCharDALIDataset, DALIOutputs
 from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss_name
 from nemo.collections.asr.metrics.rnnt_wer import RNNTWER, RNNTDecoding, RNNTDecodingConfig
-from nemo.collections.asr.models.asr_model import ASRModel
+from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
@@ -39,7 +39,7 @@ from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, L
 from nemo.utils import logging
 
 
-class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
+class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
     """Base class for encoder decoder RNNT-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -959,6 +959,14 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
     @property
     def decoder_joint(self):
         return RNNTDecoderJoint(self.decoder, self.joint)
+
+    def set_export_config(self, args):
+        if 'decoder_type' in args:
+            if hasattr(self, 'change_decoding_strategy'):
+                self.change_decoding_strategy(decoder_type=args['decoder_type'])
+            else:
+                raise Exception("Model does not have decoder type option")
+        super().set_export_config(args)
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:

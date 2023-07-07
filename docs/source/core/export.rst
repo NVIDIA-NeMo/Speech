@@ -177,6 +177,37 @@ Another common requirement for models that are being exported is to run certain 
     # call base method for common set of modifications
 	Exportable._prepare_for_export(self, **kwargs)
 
+Some models that require control flow, need to be exported in multiple parts. Typical examples are RNNT nets.
+To facilitate that, the hooks below are provided. To export, for example, 'encoder' and 'decoder' subnets of the model, overload list_export_subnets to return ['encoder', 'decoder'].
+
+.. code-block:: Python
+
+    def get_export_subnet(self, subnet=None):
+        """
+        Returns Exportable subnet model/module to export 
+        """
+
+
+    def list_export_subnets(self):
+        """
+        Returns default set of subnet names exported for this model
+        First goes the one receiving input (input_example)
+        """
+
+Some nertworks may be exported differently according to user-settable options (like ragged batch support for TTS or cache support for ASR). To facilitate that - `set_export_config()` method is provided by Exportable to set key/value pairs to predefined model.export_config dictionary, to be used during the export:
+
+.. code-block:: Python	
+    def set_export_config(self, args):
+        """
+        Sets/updates export_config dictionary
+        """
+Also, if an action hook on setting config is desired, this method may be overloaded by `Exportable` descendants to include one.
+An example can be found in ``<NeMo_git_root>/nemo/collections/asr/models/rnnt_models.py``.
+
+Here is example on now `set_export_config()` call is being tied to command line arguments in ``<NeMo_git_root>/scripts/export.py`` :
+
+.. code-block:: Python
+    python scripts/export.py  hybrid_conformer.nemo hybrid_conformer.onnx --config decoder_type=ctc
 
 Exportable Model Code
 ~~~~~~~~~~~~~~~~~~~~~

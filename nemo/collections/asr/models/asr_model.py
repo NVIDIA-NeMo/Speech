@@ -215,3 +215,11 @@ class ExportableEncDecModel(Exportable):
     @property
     def disabled_deployment_output_names(self):
         return self.encoder.disabled_deployment_output_names
+
+    def set_export_config(self, args):
+        if 'cache_support' in args:
+            enable = bool(args['cache_support'])
+            self.encoder.export_cache_support = enable
+            logging.info(f"Caching support enabled: {enable}")
+            self.encoder.setup_streaming_params()
+        super().set_export_config(args)

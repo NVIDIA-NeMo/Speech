@@ -188,7 +188,7 @@ class GreedySequenceGenerator:
             param.requires_grad = False
         self.decoder.eval()
         for param in self.log_softmax.parameters():
-            param.require_grad = False
+            param.requires_grad = False
         self.log_softmax.eval()
 
     def unfreeze(self) -> None:
@@ -201,7 +201,7 @@ class GreedySequenceGenerator:
             param.requires_grad = True
         self.decoder.train()
         for param in self.log_softmax.parameters():
-            param.require_grad = True
+            param.requires_grad = True
         self.log_softmax.train()
 
     @contextmanager
@@ -701,10 +701,10 @@ class EnsembleBeamSearchSequenceGenerator:
                 param.requires_grad = False
             self.decoders[model_num].eval()
             for param in self.log_softmaxes[model_num].parameters():
-                param.require_grad = False
+                param.requires_grad = False
             self.log_softmaxes[model_num].eval()
             for param in self.encoders[model_num].parameters():
-                param.require_grad = False
+                param.requires_grad = False
             self.encoders[model_num].eval()
 
     def unfreeze(self) -> None:
@@ -718,10 +718,10 @@ class EnsembleBeamSearchSequenceGenerator:
                 param.requires_grad = True
             self.decoders[model_num].train()
             for param in self.log_softmaxes[model_num].parameters():
-                param.require_grad = True
+                param.requires_grad = True
             self.log_softmaxes[model_num].train()
             for param in self.encoders[model_num].parameters():
-                param.require_grad = True
+                param.requires_grad = True
             self.encoders[model_num].train()
 
     @contextmanager

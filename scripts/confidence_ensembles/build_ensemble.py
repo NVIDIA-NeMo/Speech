@@ -458,7 +458,7 @@ def find_best_confidence(
     return best_conf_spec.to_confidence_config(), best_pipe
 
 
-@hydra_runner(schema=BuildEnsembleConfig)
+@hydra_runner(config_name="BuildEnsembleConfig", schema=BuildEnsembleConfig)
 def main(cfg: BuildEnsembleConfig):
     # silencing all messages from nemo/ptl to avoid dumping tons of configs to the stdout
     logging.getLogger('pytorch_lightning').setLevel(logging.CRITICAL)
@@ -471,12 +471,10 @@ def main(cfg: BuildEnsembleConfig):
     pl.seed_everything(cfg.random_seed)
     cfg.transcription.random_seed = None  # seed is already applied
     cfg.transcription.return_transcriptions = True
-    # that sets preserve_alignment to True
-    cfg.transcription.compute_timestamps = True
+    cfg.transcription.preserve_alignment = True
     cfg.transcription.ctc_decoding.temperature = cfg.temperature
     cfg.transcription.rnnt_decoding.temperature = cfg.temperature
     # this ensures that generated output is after log-softmax for consistency with CTC
-    cfg.transcription.rnnt_decoding.confidence_cfg.preserve_frame_confidence = True
 
     train_confidences = []
     dev_confidences = []

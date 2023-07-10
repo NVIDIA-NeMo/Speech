@@ -106,6 +106,11 @@ def get_filtered_logprobs(hypothesis: Hypothesis, exclude_blank: bool) -> torch.
                 filtered_logprobs = logprobs[:1]
         else:
             filtered_logprobs = logprobs
+
+    # need to make sure logprobs are always normalized, so checking if they sum up to 1
+    if not torch.allclose(filtered_logprobs[0].exp().sum(), torch.tensor(1.0)):
+        filtered_logprobs = torch.log_softmax(filtered_logprobs, dim=1)
+
     return filtered_logprobs
 
 
@@ -217,10 +222,6 @@ class ConfidenceEnsembleModel(ModelPT):
         with open_dict(decoding_cfg):
             decoding_cfg.temperature = self.cfg.temperature
             decoding_cfg.preserve_alignments = True
-            if 'confidence_cfg' in decoding_cfg:
-                decoding_cfg.confidence_cfg.preserve_frame_confidence = True
-            else:
-                decoding_cfg.confidence_cfg = ConfidenceConfig(preserve_frame_confidence=True)
 
     def setup_training_data(self, train_data_config: Union[DictConfig, Dict]):
         """Pass-through to the ensemble models.

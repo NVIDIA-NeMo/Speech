@@ -121,16 +121,10 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         self.log_images = cfg.get("log_images", False)
         self.log_train_images = False
 
-        loss_scale = 0.1 if self.learn_alignment else 1.0
-        dur_loss_scale = loss_scale
-        pitch_loss_scale = loss_scale
-        energy_loss_scale = loss_scale
-        if "dur_loss_scale" in cfg:
-            dur_loss_scale = cfg.dur_loss_scale
-        if "pitch_loss_scale" in cfg:
-            pitch_loss_scale = cfg.pitch_loss_scale
-        if "energy_loss_scale" in cfg:
-            energy_loss_scale = cfg.energy_loss_scale
+        default_prosody_loss_scale = 0.1 if self.learn_alignment else 1.0
+        dur_loss_scale = cfg.get("dur_loss_scale", default_prosody_loss_scale)
+        pitch_loss_scale = cfg.get("pitch_loss_scale", default_prosody_loss_scale)
+        energy_loss_scale = cfg.get("energy_loss_scale", default_prosody_loss_scale)
 
         self.mel_loss_fn = MelLoss()
         self.pitch_loss_fn = PitchLoss(loss_scale=pitch_loss_scale)
@@ -139,7 +133,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
 
         self.aligner = None
         if self.learn_alignment:
-            aligner_loss_scale = cfg.aligner_loss_scale if "aligner_loss_scale" in cfg else 1.0
+            aligner_loss_scale = cfg.get("aligner_loss_scale", 1.0)
             self.aligner = instantiate(self._cfg.alignment_module)
             self.forward_sum_loss_fn = ForwardSumLoss(loss_scale=aligner_loss_scale)
             self.bin_loss_fn = BinLoss(loss_scale=aligner_loss_scale)

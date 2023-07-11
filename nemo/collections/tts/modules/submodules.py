@@ -509,7 +509,7 @@ class ConditionalInput(torch.nn.Module):
                 inputs = inputs + conditioning
 
             if "concat" in self.condition_types:
-                conditioning = conditionting.repeat(1, inputs.shape[1], 1)
+                conditioning = conditioning.repeat(1, inputs.shape[1], 1)
                 inputs = torch.cat([inputs, conditioning])
                 inputs = self.concat_proj(inputs)
 

@@ -221,6 +221,7 @@ class MegatronBaseModel(NLPModel):
             merges_file=self.register_artifact("tokenizer.merge_file", self._cfg.tokenizer.get('merge_file', None)),
             use_fast=self.cfg.tokenizer.get('use_fast', False),
             delimiter=self.cfg.tokenizer.get('delimiter', None),
+            special_tokens=self.cfg.tokenizer.get('special_tokens', None),
             legacy=legacy,
         )
 

@@ -193,6 +193,8 @@ model:
   alignment_module:
     _target_: nemo.collections.tts.modules.aligner.AlignmentEncoder
     n_text_channels: ${model.symbols_embedding_dim}
+    dist_type: cosine
+    temperature: 15.0
 
   duration_predictor:
     _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor

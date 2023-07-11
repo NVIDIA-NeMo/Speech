@@ -147,15 +147,23 @@ class GPTSFTDataset(Dataset):
         output = example[self.label_key]
 
         if self.prompt_template is not None:
-            assert '{input}' in self.prompt_template
-            assert '{output}' in self.prompt_template
+            assert f'{{{self.context_key}}}' in self.prompt_template
+            assert f'{{{self.label_key}}}' in self.prompt_template
             # Make sure that '{output}' always occurs at the end of the prompt template string
-            assert self.prompt_template.index('{output}') == len(self.prompt_template) - len('{output}')
+            assert self.prompt_template.index(f'{{{self.label_key}}}') == len(self.prompt_template) - len(
+                f'{{{self.label_key}}}'
+            )
             # Get the context by replacing only the input
             original_context = context
-            context = self.prompt_template.replace('{input}', context).replace('{output}', '').strip(' ')
+            context = (
+                self.prompt_template.replace(f'{{{self.context_key}}}', context)
+                .replace(f'{{{self.label_key}}}', '')
+                .strip(' ')
+            )
             # Replace the input and output placeholders with the actual input and output
-            text = self.prompt_template.replace('{input}', original_context).replace('{output}', output)
+            text = self.prompt_template.replace(f'{{{self.context_key}}}', original_context).replace(
+                f'{{{self.label_key}}}', output
+            )
 
         if self.separate_prompt_and_response_with_newline and self.prompt_template is None:
             text = context + '\n' + output

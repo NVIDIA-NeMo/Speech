@@ -60,6 +60,8 @@ model:
   activations_checkpoint_num_layers: null # not used with 'selective'
   answer_only_loss: False # not used right now
   gradient_as_bucket_view: False
+  seq_len_interpolation_factor: null # if not None, seq_len_interpolation_factor will match the base model's value
+  use_flash_attention: null # if not None, will match the base model's value
 
   hidden_dropout: 0.0
   attention_dropout: 0.0

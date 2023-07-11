@@ -20,7 +20,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
 
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
@@ -37,15 +37,15 @@ from nemo.utils.model_utils import inject_model_parallel_rank
 
 def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
     """
-    This function modifies the original gpt pre-training config (gpt_cfg) with attributes from the finetuning config (cfg).
+    This function modifies the original gpt pre-training config (t5_cfg) with attributes from the finetuning config (cfg).
     The `add_cfg_to_tree` arg adds `cfg` to the top of the yaml tree which is needed for all `hparams.yaml` files when passed as an arg to `load_from_checkpoint()`.
     """
     OmegaConf.set_struct(gpt_cfg, True)
     OmegaConf.resolve(cfg)
     with open_dict(gpt_cfg):
         gpt_cfg.megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
-        gpt_cfg.micro_batch_size = cfg.model.data.train_ds.micro_batch_size
-        gpt_cfg.global_batch_size = cfg.model.data.train_ds.global_batch_size
+        gpt_cfg.micro_batch_size = cfg.model.micro_batch_size
+        gpt_cfg.global_batch_size = cfg.model.global_batch_size
         gpt_cfg.sequence_parallel = cfg.model.get("sequence_parallel", False)
         gpt_cfg.activations_checkpoint_granularity = cfg.model.get("activations_checkpoint_granularity", None)
         gpt_cfg.activations_checkpoint_num_layers = cfg.model.get("activations_checkpoint_num_layers", None)
@@ -53,25 +53,13 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
         gpt_cfg.data = cfg.model.data
         gpt_cfg.optim = cfg.model.optim
         gpt_cfg.precision = cfg.trainer.precision
-        gpt_cfg.answer_only_loss = cfg.model.answer_only_loss
-        gpt_cfg.restore_from_path = cfg.model.restore_from_path
+        gpt_cfg.restore_from_path = cfg.restore_from_path
         gpt_cfg.resume_from_checkpoint = cfg.model.resume_from_checkpoint
-        gpt_cfg.save_nemo_on_validation_end = cfg.model.save_nemo_on_validation_end
         gpt_cfg.gradient_as_bucket_view = cfg.model.gradient_as_bucket_view
-        gpt_cfg.hidden_dropout = cfg.model.get('hidden_dropout', 0.0)
-        gpt_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.0)
-        gpt_cfg.ffn_dropout = cfg.model.ffn_dropout
-        sft_cls = MegatronGPTSFTModel
-        gpt_cfg.target = f"{sft_cls.__module__}.{sft_cls.__name__}"
-
-        if cfg.model.get('use_flash_attention', None) is not None:
-            gpt_cfg.use_flash_attention = cfg.model.use_flash_attention
-
-        if cfg.model.get('seq_len_interpolation_factor', None) is not None:
-            gpt_cfg.seq_len_interpolation_factor = cfg.model.seq_len_interpolation_factor
-
-        sft_cls = MegatronGPTSFTModel
-        gpt_cfg.target = f"{sft_cls.__module__}.{sft_cls.__name__}"
+        gpt_cfg.encoder_seq_length = cfg.model.encoder_seq_length
+        gpt_cfg.max_position_embeddings = cfg.model.max_position_embeddings
+        gpt_cfg.seq_len_interpolation_factor = cfg.model.seq_len_interpolation_factor
+        gpt_cfg.use_flash_attention = cfg.model.use_flash_attention
 
         # This is needed when modifying a hparam file directly to load `.ckpt` files.
         # This is not needed to modify the cfg in `.nemo` files.
@@ -85,10 +73,10 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
 def load_from_nemo(cls, cfg, trainer, gpt_cfg, modify_confg_fn):
     gpt_cfg = modify_confg_fn(gpt_cfg, cfg, add_cfg_to_tree=False)
     save_restore_connector = NLPSaveRestoreConnector()
-    if os.path.isdir(cfg.model.restore_from_path):
-        save_restore_connector.model_extracted_dir = cfg.model.restore_from_path
+    if os.path.isdir(cfg.restore_from_path):
+        save_restore_connector.model_extracted_dir = cfg.restore_from_path
     model = cls.restore_from(
-        restore_path=cfg.model.restore_from_path,
+        restore_path=cfg.restore_from_path,
         trainer=trainer,
         override_config_path=gpt_cfg,
         save_restore_connector=save_restore_connector,
@@ -136,7 +124,7 @@ def validate_checkpoint_loading_args(cfg):
         raise ValueError(f'Hparams file {cfg.hparams_file} does not exist or is not a file.')
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_sft")
+@hydra_runner(config_path="conf", config_name="megatron_gpt_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
@@ -178,26 +166,26 @@ def main(cfg) -> None:
 
     trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
-
-    if cfg.model.restore_from_path:
+    if cfg.restore_from_path:
         save_restore_connector = NLPSaveRestoreConnector()
-        if os.path.isdir(cfg.model.restore_from_path):
-            save_restore_connector.model_extracted_dir = cfg.model.restore_from_path
-        gpt_cfg = MegatronGPTSFTModel.restore_from(
-            restore_path=cfg.model.restore_from_path,
+        if os.path.isdir(cfg.restore_from_path):
+            save_restore_connector.model_extracted_dir = cfg.restore_from_path
+        gpt_cfg = MegatronGPTModel.restore_from(
+            restore_path=cfg.restore_from_path,
             trainer=trainer,
             return_config=True,
             save_restore_connector=save_restore_connector,
         )
-        gpt_cfg = _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False)
-        model = load_from_nemo(MegatronGPTSFTModel, cfg, trainer, gpt_cfg, modify_confg_fn=_modify_config)
-    else:
+        model = load_from_nemo(MegatronGPTModel, cfg, trainer, gpt_cfg, modify_confg_fn=_modify_config)
+    elif cfg.model.get("pretrained_checkpoint", None) is not None:
         validate_checkpoint_loading_args(cfg.model.pretrained_checkpoint)
-        model = load_from_checkpoint_dir(MegatronGPTSFTModel, cfg, trainer, modify_confg_fn=_modify_config)
-
+        model = load_from_checkpoint_dir(MegatronGPTModel, cfg, trainer, gpt_cfg, modify_confg_fn=_modify_config)
+    else:
+        print(' > WARNING: No checkpoint provided. Starting from scratch.')
+        # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
+        with open_dict(cfg):
+            cfg.model.precision = cfg.trainer.precision
+        model = MegatronGPTModel(cfg.model, trainer)
     trainer.fit(model)
 
 

@@ -166,6 +166,7 @@ class GPTModel(MegatronModule):
         use_emha=False,
         ub_tp_comm_overlap=False,
         use_flash_attention=False,
+        seq_len_interpolation_factor=None,
     ):
         super(GPTModel, self).__init__(share_token_embeddings=share_embeddings_and_output_weights)
 
@@ -249,6 +250,7 @@ class GPTModel(MegatronModule):
             use_emha=use_emha,
             ub_tp_comm_overlap=ub_tp_comm_overlap,
             use_flash_attention=use_flash_attention,
+            seq_len_interpolation_factor=seq_len_interpolation_factor,
         )
 
         if self.share_embeddings_and_output_weights:

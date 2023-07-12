@@ -64,7 +64,7 @@ An example ASR train and validation configuration should look similar to the fol
 There are two ways to test/validate on more than one manifest:
 
 - Specify a list in the `manifest_filepath` field. Results will be reported for each, the first one being used for overall loss / WER (specify `val_dl_idx` if you wish to change that). In this case, all manifests will share configuration parameters.
-- Use the ds_item key and pass a list of config objects to it. This allows you to use differently configured datasets for validation, e.g. 
+- Use the ds_item key and pass a list of config objects to it. This allows you to use differently configured datasets for validation, e.g.
 
 .. code-block:: yaml
 

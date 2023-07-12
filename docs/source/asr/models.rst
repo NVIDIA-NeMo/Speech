@@ -142,7 +142,7 @@ With local attention, inference is possible on audios >1 hrs (256 subsampling ch
 
 Fast Conformer models were trained using CosineAnnealing (instead of Noam) as the scheduler.
 
-You may find the example CTC config at 
+You may find the example CTC config at
 ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer_ctc_bpe.yaml`` and
 the transducer config at ``<NeMo_git_root>/examples/asr/conf/fastconformer/fast-conformer_transducer_bpe.yaml``
 
@@ -310,7 +310,7 @@ The main idea is to separate labels and blank score predictions, which allows to
 When external LM is available for inference, the internal LM can be subtracted from HAT model prediction in beamsearch decoding to improve external LM efficiency.
 It can be helpful in the case of text-only adaptation for new domains.
 
-The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_ 
+The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_
 class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJiont" class.
 
     .. image:: images/hat.png
@@ -351,6 +351,38 @@ For the detailed information see:
 
 * :ref:`Text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>` preparation
 * :ref:`Configs and training <Hybrid-ASR-TTS_model__Config>`
+
+
+.. _Confidence-Ensembles:
+
+Confidence-based Ensembles
+--------------------------
+
+Confidence-based ensemble is a simple way to combine multiple models into a single system by only retaining the
+output of the most confident model. Below is a schematic illustration of how such ensembles work.
+
+    .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.19.0/conf-ensembles-overview.png
+        :align: center
+        :alt: confidence-based ensembles
+        :scale: 50%
+
+For more details about this model, see the `paper <https://arxiv.org/abs/2306.15824>`_
+or read our `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Confidence_Ensembles.ipynb>`_.
+
+NeMo support Confidence-based Ensembles through the
+:ref:`nemo.collections.asr.models.confidence_ensembles.ConfidenceEnsembleModel <confidence-ensembles-api>` class.
+
+A typical workflow to create and use the ensemble is like this
+
+1. Run `scripts/confidence_ensembles/build_ensemble.py <https://github.com/NVIDIA/NeMo/blob/main/scripts/confidence_ensembles/build_ensemble.py>`_
+   script to create ensemble from existing models. See the documentation inside the script for usage examples
+   and description of all the supported functionality.
+2. The script outputs a checkpoint that combines all the models in an ensemble. It can be directly used to transcribe
+   speech by calling ``.trascribe()`` method or using
+   `examples/asr/transcribe_speech.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/transcribe_speech.py>`_.
+
+Note that the ensemble cannot be modified after construction (e.g. it does not support finetuning) and only
+transcribe functionality is supported (e.g., ``.forward()`` is not properly defined).
 
 
 References

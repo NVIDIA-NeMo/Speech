@@ -151,7 +151,11 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
 class ConfidenceEnsembleModel(ModelPT):
     """Implementation of the confidence ensemble model.
 
-    See <PAPER TBD> for details.
+    See https://arxiv.org/abs/2306.15824 for details.
+
+    .. note::
+        Currently this class only support `transcribe` method as it requires
+        full-utterance confidence scores to operate.
     """
 
     def __init__(
@@ -206,7 +210,7 @@ class ConfidenceEnsembleModel(ModelPT):
         for model_idx in range(self.num_models):
             model = getattr(self, f"model{model_idx}")
             # for now we assume users are direclty responsible for matching
-            # decoder type when building ensemlbe with inference type
+            # decoder type when building ensemble with inference type
             # TODO: add automatic checks for errors
             if isinstance(model, EncDecHybridRNNTCTCModel):
                 self.update_decoding_parameters(model.cfg.decoding)
@@ -218,7 +222,7 @@ class ConfidenceEnsembleModel(ModelPT):
                 model.change_decoding_strategy(model.cfg.decoding)
 
     def update_decoding_parameters(self, decoding_cfg: DictConfig):
-        """Updating temperature/preserve_alignment/preserve_frame_confidence parameters of the config."""
+        """Updating temperature/preserve_alignment parameters of the config."""
         with open_dict(decoding_cfg):
             decoding_cfg.temperature = self.cfg.temperature
             decoding_cfg.preserve_alignments = True

@@ -269,7 +269,6 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             cfg.rnnt_decoding.fused_batch_size = -1
             cfg.rnnt_decoding.compute_timestamps = cfg.compute_timestamps
             cfg.rnnt_decoding.compute_langs = cfg.compute_langs
-
             if 'preserve_alignments' in cfg.rnnt_decoding:
                 cfg.rnnt_decoding.preserve_alignments = preserve_alignment
 

@@ -186,7 +186,7 @@ def rnnt_loss_gpu(
 
     # Select GPU index
     cuda.select_device(acts.device.index)
-    gpu_workspace = torch.zeros(gpu_size, device=acts.device, dtype=acts.dtype, requires_grad=False)
+    gpu_workspace = torch.zeros(gpu_size, device=acts.device, dtype=torch.float32, requires_grad=False)
 
     ### VIEW TENSORS AS VECTORS FOR POINTER INDEXING ###
     acts, acts_shape = rnnt_helper.flatten_tensor(acts)

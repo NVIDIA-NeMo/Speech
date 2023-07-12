@@ -57,7 +57,7 @@ class _RNNTNumba(Function):
         loss_func = rnnt.rnnt_loss_gpu if is_cuda else rnnt.rnnt_loss_cpu
         grads = torch.zeros_like(acts) if acts.requires_grad else None
         minibatch_size = acts.size(0)
-        costs = torch.zeros(minibatch_size, device=acts.device, dtype=acts.dtype)
+        costs = torch.zeros(minibatch_size, device=acts.device, dtype=torch.float32)
 
         loss_func(
             acts,
@@ -119,7 +119,6 @@ class _TDTNumba(Function):
         label_lens: Tensor of (batch) containing label length of each example
         fastemit_lambda: Float scaling factor for FastEmit regularization. Refer to
             FastEmit: Low-latency Streaming ASR with Sequence-level Emission Regularization.
-
         durations: list of durations for TDT model, must include 0 and 1, e.g.
             [0, 1, 2, 3, 4].
         sigma: hyper-parameter for logit under-normalization method for training
@@ -417,6 +416,10 @@ class RNNTLossNumba(Module):
         label_lens: Tensor of (batch) containing label length of each example
         """
         if not acts.is_cuda:
+            # Force FP32 until log_softmax() is implemented for fp16 on CPU
+            if acts.dtype == torch.float16:
+                acts = acts.float()
+
             # Since CPU requires log_softmax to be computed explicitly, we need to perform grad clipping
             # *after* we have obtained the gradients of loss(logsoftmax()).
             # This is highly wasteful since it requires a copy of the entire joint tensor which is expensive.

@@ -344,10 +344,15 @@ class RNNTLoss(Module):
         _assert_no_grad(label_lens)
         certify_inputs(acts, labels, act_lens, label_lens)
 
+        # CPU Patch for fp16 - force cast to fp32
+        if not acts.is_cuda and acts.dtype == torch.float16:
+            acts = acts.float()
+
         if self.clamp > 0.0:
             acts = LogSoftmaxGradModification.apply(acts, self.clamp)
 
         acts = torch.nn.functional.log_softmax(acts, -1)
+
         return self.rnnt(acts, labels, act_lens, label_lens, self.blank, self.fastemit_lambda)
 
 

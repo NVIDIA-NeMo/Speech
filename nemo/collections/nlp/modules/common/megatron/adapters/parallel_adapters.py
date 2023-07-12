@@ -268,7 +268,7 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
         # (@adithyare) the persistent=False will not pollute the indices into the state_dict of this module.
         self.register_buffer("indices", torch.LongTensor(list(range(self.virtual_tokens))), persistent=False)
         self.embedding = torch.nn.Embedding(self.virtual_tokens, self.embedding_dim)
-        self.inference_table = InferenceTable("taskname", self.embedding_dim, self.virtual_tokens)
+        self.inference_table = InferenceTable("taskname", self.output_dim, self.virtual_tokens)
         self.first = ColumnParallelLinear(
             self.embedding_dim,
             self.bottleneck_dim,

@@ -231,8 +231,8 @@ class CPURNNT:
         )
 
         # Scale llForward by FastEmit lambda
-        llForward *= 1.0 + self.fastemit_lambda_
-        llBackward *= 1.0 + self.fastemit_lambda_
+        llForward += llForward * self.fastemit_lambda_
+        llBackward += llBackward * self.fastemit_lambda_
 
         diff = (llForward - llBackward).abs()
         if diff > 0.1:
@@ -300,6 +300,10 @@ class CPURNNT:
         Returns:
             Loglikelihood of the forward variable and inplace updates the grad tensor.
         """
+        # Patch for CPU + fp16
+        if log_probs.dtype == torch.float16 and not log_probs.is_cuda:
+            log_probs = log_probs.float()
+
         idx = CpuRNNT_index(U, self.maxU_, self.minibatch_, self.alphabet_size_, self.batch_first)
         betas[idx(T - 1, U - 1)] = log_probs[idx(T - 1, U - 1) * 2]
 

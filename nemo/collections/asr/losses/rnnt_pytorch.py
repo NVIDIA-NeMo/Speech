@@ -47,7 +47,12 @@ class RNNTLossPytorch(Loss):
         self.reduction = reduction
 
     def forward(self, acts, labels, act_lens, label_lens):
+        # CPU patch for FP16
+        if not acts.is_cuda and acts.dtype == torch.float16:
+            acts = acts.float()
+
         acts = torch.log_softmax(acts, -1)
+
         forward_logprob = self.compute_forward_prob(acts, labels, act_lens, label_lens)
         losses = -forward_logprob
         if self.reduction == 'mean_batch':

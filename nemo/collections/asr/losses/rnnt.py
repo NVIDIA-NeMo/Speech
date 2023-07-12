@@ -38,9 +38,10 @@ from omegaconf import DictConfig, OmegaConf
 from nemo.collections.asr.losses.rnnt_pytorch import MultiblankRNNTLossPytorch, RNNTLossPytorch, TDTLossPytorch
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import LabelsType, LengthsType, LogprobsType, LossType, NeuralType
+from nemo.core.utils import numba_utils
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 from nemo.core.utils.numba_utils import NUMBA_INSTALLATION_MESSAGE
-from nemo.utils import logging, model_utils
+from nemo.utils import logging, logging_mode, model_utils
 
 try:
     import warprnnt_pytorch as warprnnt
@@ -98,7 +99,7 @@ RNNT_LOSS_RESOLVER = {
         min_version='0.53.0',
         is_available=NUMBA_RNNT_AVAILABLE,
         installation_msg=NUMBA_INSTALLATION_MESSAGE,
-        force_float32=True,
+        force_float32=not numba_utils.NUMBA_FP16_SUPPORTED,
     ),
     "pytorch": RNNTLossConfig(
         loss_name="pytorch",
@@ -387,7 +388,7 @@ class RNNTLoss(Loss):
                 for the standard "blank" symbol. In particular, say V is the number of non-blank tokens in
                 the vocabulary, then in the case of,
                 standard RNNT: num_classes = V
-                multiblank RNNT: num_classes = V + number-big-blanks (since we store big-blanks before 
+                multiblank RNNT: num_classes = V + number-big-blanks (since we store big-blanks before
                                  standard blank, and the standard blank is the last symbol in the vocab)
                 TDT: num_classes = V. Note, V here does not include any of the "duration outputs".
 
@@ -413,6 +414,7 @@ class RNNTLoss(Loss):
         self.reduction = reduction
         self._loss = resolve_rnnt_loss(loss_name, blank_idx=self._blank, loss_kwargs=loss_kwargs)
         self._force_float32 = RNNT_LOSS_RESOLVER[loss_name].force_float32
+        self._fp16_compat_checked = False
 
     def reduce(self, losses, target_lengths):
 
@@ -442,8 +444,22 @@ class RNNTLoss(Loss):
         max_targets_len = target_lengths.max()
 
         # Force cast joint to float32
-        # TODO: Remove once Numba supports FP16
-        if self._force_float32 and log_probs.dtype != torch.float32:
+        if not self._force_float32 and numba_utils.NUMBA_FP16_SUPPORTED:
+            # Execute the kernel in fp16
+            pass
+        elif self._force_float32 and log_probs.dtype != torch.float32:
+            # Log just once if fp16 tensor was passed and fp16 Numba CUDA loss could not be used.
+            if log_probs.dtype == torch.float16 and not self._fp16_compat_checked:
+                _, reason = numba_utils.is_numba_cuda_fp16_supported(return_reason=True)
+                logging.warning(
+                    f"Provided RNNT Joint tensor is of dtype {log_probs.dtype}, but RNNT loss could not be calculated "
+                    f"in fp16 due to following reason stated below. Loss will be calculated in fp32. \n\n"
+                    f"{reason}",
+                    mode=logging_mode.ONCE,
+                )
+                self._fp16_compat_checked = True
+
+            # Upcast the activation tensor and compute loss and grads in fp32
             logits_orig = log_probs
             log_probs = log_probs.float()
             del logits_orig  # save memory *before* computing the loss

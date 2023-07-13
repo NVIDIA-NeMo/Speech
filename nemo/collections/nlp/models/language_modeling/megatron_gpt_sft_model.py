@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+from functools import partial
 from typing import Any, Optional
 
 import torch

@@ -311,8 +311,10 @@ class ASRWithTTSModel(ASRModel):
                 )
             )
         else:
+            cfg = copy.deepcopy(cfg)  # copy to avoid modifying original config
             cfg.tts_model_path = f"{tts_model_path}"
             cfg.asr_model_path = f"{asr_model_path}"
+            cfg.enhancer_model_path = f"{enhancer_model_path}" if enhancer_model_path is not None else None
         return ASRWithTTSModel(cfg, trainer=trainer)
 
     def __setattr__(self, name, value):

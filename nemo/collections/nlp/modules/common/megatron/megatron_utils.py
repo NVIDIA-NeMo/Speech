@@ -14,13 +14,14 @@
 # limitations under the License.
 
 import os
+import shutil
 from typing import Dict, List
 
 import torch
 import wget
 from torch.hub import _get_torch_home
 
-from nemo.utils import logging
+from nemo.utils import get_rank, logging
 
 __all__ = [
     "get_megatron_lm_model",
@@ -202,16 +203,14 @@ def _download(path: str, url: str):
     if url is None:
         return None
 
-    if not os.path.exists(path):
-        master_device = not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0
-        if not os.path.exists(path):
-            if master_device:
-                os.makedirs(MEGATRON_CACHE, exist_ok=True)
-                logging.info(f"Downloading from {url}")
-                wget.download(url, path)
-            # wait until the master process downloads the file and writes it to the cache dir
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
+    if get_rank.is_global_rank_zero() and not os.path.exists(path):
+        os.makedirs(MEGATRON_CACHE, exist_ok=True)
+        logging.info(f"Downloading from {url} to {path}")
+        downloaded_path = wget.download(url)
+        shutil.move(downloaded_path, path)
+    # wait until the master process downloads the file and writes it to the cache dir
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
 
     return path
 

@@ -78,6 +78,7 @@ class TestGPTEval:
             "add_BOS": True,
             "all_probs": False,
             "compute_logprob": False,
+            "end_strings": ["<|endoftext|>"],
         }
 
         # test logprob

@@ -267,6 +267,7 @@ def main(cfg) -> None:
         "add_BOS": cfg.inference.add_BOS,
         "all_probs": cfg.inference.all_probs,
         "compute_logprob": cfg.inference.compute_logprob,
+        "end_strings": cfg.inference.end_strings,
     }
 
     fp8_enabled = hasattr(model.cfg, "fp8") and (model.cfg.fp8 == True)

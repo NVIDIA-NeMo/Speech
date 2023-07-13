@@ -37,6 +37,7 @@ class SamplingParam(TypedDict):
     add_BOS: bool  # add the bos token at the begining of the prompt
     all_probs: bool  # whether return the log prob for all the tokens in vocab
     compute_logprob: bool  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+    end_strings: List[str]  # generation will stop when one of these tokens is generated
 
 
 class OutputType(TypedDict):
@@ -88,6 +89,7 @@ class TextGeneration:
                     add_BOS: bool, Whether add the bos token at the begining of the prompt
                     all_probs: bool  # whether return the log prob for all the tokens in vocab
                     compute_logprob: bool  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+                    end_strings: List[str]  # generation will stop when one of these tokens is generated
                 Default None, If it is None, use_greedy will be "True".
         Returns:
             OutputType: It generates the output in a dictionary type. It has the following keys:

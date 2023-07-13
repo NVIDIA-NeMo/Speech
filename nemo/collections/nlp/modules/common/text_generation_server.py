@@ -141,6 +141,14 @@ class MegatronGenerate(Resource):
             if not (1.0 <= repetition_penalty):
                 return "repetition_penalty must be a positive number no less than 1.0"
 
+        end_strings = ['<|endoftext|>']
+        if 'end_strings' in request.get_json():
+            end_strings = request.get_json()['end_strings']
+            if not isinstance(end_strings, list):
+                return "expect end_strings to be a list of strings"
+            if not all([isinstance(s, str) for s in end_strings]):
+                return "expect end_strings to be a list of strings"
+
         min_tokens_to_generate = 0
         if "min_tokens_to_generate" in request.get_json():
             min_tokens_to_generate = request.get_json()["min_tokens_to_generate"]
@@ -156,14 +164,6 @@ class MegatronGenerate(Resource):
                 return "num of neighbors must be an integer no less than 0"
             if neighbors < 0:
                 return "num of neighbors must be an integer no less than 0"
-
-        end_strings = ['<|endoftext|>']
-        if 'end_strings' in request.get_json():
-            end_strings = request.get_json()['end_strings']
-            if not isinstance(end_strings, list):
-                return "expect end_strings to be a list of strings"
-            if not all([isinstance(s, str) for s in end_strings]):
-                return "expect end_strings to be a list of strings"
 
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
@@ -190,8 +190,8 @@ class MegatronGenerate(Resource):
                 top_p,
                 greedy,
                 repetition_penalty,
-                min_tokens_to_generate,
                 end_strings=end_strings,
+                min_tokens_to_generate=min_tokens_to_generate,
                 **extra,
             )
             for k in output:

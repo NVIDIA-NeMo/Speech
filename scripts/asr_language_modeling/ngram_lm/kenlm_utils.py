@@ -79,11 +79,8 @@ def setup_tokenizer(nemo_model_file):
         )
         model = nemo_asr.models.ASRModel.from_pretrained(nemo_model_file, map_location=torch.device('cpu'))
 
-    if type(model.tokenizer).__name__ == 'AggregateTokenizer':
-        is_aggregate_tokenizer = True
-    else:
-        is_aggregate_tokenizer = False
-
+    is_aggregate_tokenizer = False
+    tokenizer_nemo = None
     encoding_level = SUPPORTED_MODELS.get(type(model).__name__, None)
     if not encoding_level:
         logging.warning(
@@ -91,7 +88,12 @@ def setup_tokenizer(nemo_model_file):
         )
         encoding_level = 'char'
 
-    tokenizer_nemo = model.tokenizer
+    if encoding_level == 'subword':
+        if type(model.tokenizer).__name__ == 'AggregateTokenizer':
+            is_aggregate_tokenizer = True
+
+        tokenizer_nemo = model.tokenizer
+
     del model
 
     return tokenizer_nemo, encoding_level, is_aggregate_tokenizer
@@ -117,10 +119,10 @@ def iter_files(source_path, dest_path, tokenizer, encoding_level, is_aggregate_t
             if isinstance(dest_path, str):
                 with open(dest_path, 'w', encoding='utf-8') as f:
                     for line in dataset:
-                        f.write(line + "\n")
+                        f.write(line[0] + "\n")
             else:  # write to stdin of KenLM
                 for line in dataset:
-                    dest_path.write((line + '\n').encode())
+                    dest_path.write((line[0] + '\n').encode())
 
 
 def read_train_file(

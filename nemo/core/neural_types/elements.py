@@ -21,6 +21,7 @@ from nemo.core.neural_types.comparison import NeuralTypeComparisonResult
 __all__ = [
     'ElementType',
     'VoidType',
+    'BoolType',
     'ChannelType',
     'AcousticEncodedRepresentation',
     'AudioSignal',

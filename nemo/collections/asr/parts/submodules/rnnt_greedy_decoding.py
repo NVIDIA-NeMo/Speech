@@ -31,11 +31,11 @@ from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.utils import rnnt_utils
-from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeasureMixin, ConfidenceMethodConfig
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeasureConfig, ConfidenceMeasureMixin
 from nemo.collections.common.parts.rnn import label_collate
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, ElementType, HypothesisType, LengthsType, NeuralType
@@ -96,34 +96,32 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
 
-            name: The method name (str).
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size. If the temperature α is provided,
-                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
 
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
 
             entropy_norm: A mapping of the entropy value to the interval [0,1].
@@ -156,7 +154,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
         self.decoder = decoder_model
@@ -168,8 +166,8 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
 
-        # set confidence calculation method
-        self._init_confidence_measure(confidence_method_cfg)
+        # set confidence calculation measure
+        self._init_confidence_measure(confidence_measure_cfg)
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -265,31 +263,32 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
 
-            name: The method name (str).
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
 
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
 
             entropy_norm: A mapping of the entropy value to the interval [0,1].
@@ -306,7 +305,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -315,7 +314,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
 
     @typecheck()
@@ -503,31 +502,32 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
 
-            name: The method name (str).
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
 
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
 
             entropy_norm: A mapping of the entropy value to the interval [0,1].
@@ -544,7 +544,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -553,7 +553,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
 
         # Depending on availability of `blank_as_pad` support
@@ -1478,29 +1478,34 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
-            name: The method name (str).
+
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
             entropy_norm: A mapping of the entropy value to the interval [0,1].
                 Supported values:
                     - 'lin' for using the linear mapping.
@@ -1516,7 +1521,7 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -1525,7 +1530,7 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
         self.big_blank_durations = big_blank_durations
         self._SOS = blank_index - len(big_blank_durations)
@@ -1677,29 +1682,34 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
-            name: The method name (str).
+
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
             entropy_norm: A mapping of the entropy value to the interval [0,1].
                 Supported values:
                     - 'lin' for using the linear mapping.
@@ -1715,7 +1725,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -1724,7 +1734,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
         self.big_blank_durations = big_blank_durations
 
@@ -2193,7 +2203,31 @@ class GreedyRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     preserve_alignments: bool = False
     preserve_frame_confidence: bool = False
-    confidence_method_cfg: Optional[ConfidenceMethodConfig] = None
+    confidence_measure_cfg: Optional[ConfidenceMeasureConfig] = ConfidenceMeasureConfig()
+    confidence_method_cfg: str = "DEPRECATED"
+
+    def __post_init__(self):
+        # OmegaConf.structured ensures that post_init check is always executed
+        self.confidence_measure_cfg = OmegaConf.structured(
+            self.confidence_measure_cfg
+            if isinstance(self.confidence_measure_cfg, ConfidenceMeasureConfig)
+            else ConfidenceMeasureConfig(**self.confidence_measure_cfg)
+        )
+        if self.confidence_method_cfg != "DEPRECATED":
+            logging.warning(
+                "`confidence_method_cfg` is deprecated and will be removed in the future. "
+                "Please use `confidence_measure_cfg` instead."
+            )
+
+            # TODO (alaptev): delete the following two lines sometime in the future
+            logging.warning("Re-writing `confidence_measure_cfg` with the value of `confidence_method_cfg`.")
+            # OmegaConf.structured ensures that post_init check is always executed
+            self.confidence_measure_cfg = OmegaConf.structured(
+                self.confidence_method_cfg
+                if isinstance(self.confidence_method_cfg, ConfidenceMeasureConfig)
+                else ConfidenceMeasureConfig(**self.confidence_method_cfg)
+            )
+            self.confidence_method_cfg = "DEPRECATED"
 
 
 @dataclass
@@ -2201,7 +2235,31 @@ class GreedyBatchedRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     preserve_alignments: bool = False
     preserve_frame_confidence: bool = False
-    confidence_method_cfg: Optional[ConfidenceMethodConfig] = None
+    confidence_measure_cfg: Optional[ConfidenceMeasureConfig] = ConfidenceMeasureConfig()
+    confidence_method_cfg: str = "DEPRECATED"
+
+    def __post_init__(self):
+        # OmegaConf.structured ensures that post_init check is always executed
+        self.confidence_measure_cfg = OmegaConf.structured(
+            self.confidence_measure_cfg
+            if isinstance(self.confidence_measure_cfg, ConfidenceMeasureConfig)
+            else ConfidenceMeasureConfig(**self.confidence_measure_cfg)
+        )
+        if self.confidence_method_cfg != "DEPRECATED":
+            logging.warning(
+                "`confidence_method_cfg` is deprecated and will be removed in the future. "
+                "Please use `confidence_measure_cfg` instead."
+            )
+
+            # TODO (alaptev): delete the following two lines sometime in the future
+            logging.warning("Re-writing `confidence_measure_cfg` with the value of `confidence_method_cfg`.")
+            # OmegaConf.structured ensures that post_init check is always executed
+            self.confidence_measure_cfg = OmegaConf.structured(
+                self.confidence_method_cfg
+                if isinstance(self.confidence_method_cfg, ConfidenceMeasureConfig)
+                else ConfidenceMeasureConfig(**self.confidence_method_cfg)
+            )
+            self.confidence_method_cfg = "DEPRECATED"
 
 
 class GreedyTDTInfer(_GreedyRNNTInfer):
@@ -2230,29 +2288,34 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
-            name: The method name (str).
+
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
             entropy_norm: A mapping of the entropy value to the interval [0,1].
                 Supported values:
                     - 'lin' for using the linear mapping.
@@ -2268,7 +2331,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2277,7 +2340,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
         self.durations = durations
 
@@ -2481,29 +2544,34 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
+        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
             confidence scores.
-            name: The method name (str).
+
+            name: The measure name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
-                    - 'entropy' for using normalized entropy of a log-likelihood vector.
-            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
                 Supported values:
-                    - 'gibbs' for the (standard) Gibbs entropy. If the temperature α is provided,
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
-                        Note that for this entropy, the temperature should comply the following inequality:
-                        1/log(V) <= α <= -1/log(1-1/V) where V is the model vocabulary size.
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
                     - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
                         Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/Tsallis_entropy
-                    - 'renui' for the Rényi entropy.
+                    - 'renyi' for the Rényi entropy.
                         Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
                         where α is a parameter. When α == 1, it works like the Gibbs entropy.
                         More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
-            temperature: Temperature scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
-                When the temperature equals one, scaling is not applied to 'max_prob',
+
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
                 and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
             entropy_norm: A mapping of the entropy value to the interval [0,1].
                 Supported values:
                     - 'lin' for using the linear mapping.
@@ -2519,7 +2587,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_method_cfg: Optional[DictConfig] = None,
+        confidence_measure_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2528,7 +2596,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_method_cfg=confidence_method_cfg,
+            confidence_measure_cfg=confidence_measure_cfg,
         )
         self.durations = durations
 

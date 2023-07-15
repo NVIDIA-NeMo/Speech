@@ -32,6 +32,7 @@ from nemo.collections.asr.metrics.wer import (
     CTCDecodingConfig,
     word_error_rate,
     word_error_rate_detail,
+    word_error_rate_per_utt,
 )
 from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -135,6 +136,15 @@ class TestWordErrorRate:
             1.0,
             0.0,
         )
+
+        assert word_error_rate_per_utt(hypotheses=['kat'], references=['cat']) == ([1.0], 1.0)
+        assert word_error_rate_per_utt(hypotheses=['cat', ''], references=['', 'gpu']) == ([float("inf"), 1.0], 2.0)
+        assert word_error_rate_per_utt(
+            hypotheses=['ducuti motorcycle', 'G P U'], references=['ducati motorcycle', 'GPU']
+        ) == ([0.5, 3.0], 4 / 3)
+        assert word_error_rate_per_utt(
+            hypotheses=['ducuti motorcycle', 'G P U'], references=['ducati motorcycle', 'GPU'], use_cer=True
+        ) == ([1 / 17, 2 / 3], 0.15)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_dim_index", [0, 1])

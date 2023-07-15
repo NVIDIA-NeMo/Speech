@@ -18,46 +18,197 @@ from dataclasses import dataclass
 from functools import partial
 from typing import List, Optional
 
+import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.utils import logging
+
+
+class ConfidenceMeasureConstants:
+    NAMES = ("max_prob", "entropy")
+    ENTROPY_TYPES = ("gibbs", "tsallis", "renyi")
+    ENTROPY_NORMS = ("lin", "exp")
+
+    @classmethod
+    def print(cls):
+        return (
+            cls.__name__
+            + ": "
+            + str({"NAMES": cls.NAMES, "ENTROPY_TYPES": cls.ENTROPY_TYPES, "ENTROPY_NORMS": cls.ENTROPY_NORMS})
+        )
+
+
+class ConfidenceConstants:
+    AGGREGATIONS = ("mean", "min", "max", "prod")
+
+    @classmethod
+    def print(cls):
+        return cls.__name__ + ": " + str({"AGGREGATIONS": cls.AGGREGATIONS})
 
 
 @dataclass
-class ConfidenceMethodConfig:
+class ConfidenceMeasureConfig:
+    """A Config which contains the measure name and settings to compute per-frame confidence scores.
+
+    Args:
+        name: The measure name (str).
+            Supported values:
+                - 'max_prob' for using the maximum token probability as a confidence.
+                - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+        entropy_type: Which type of entropy to use (str).
+            Used if confidence_measure_cfg.name is set to `entropy`.
+            Supported values:
+                - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
+                    the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                    Note that for this entropy, the alpha should comply the following inequality:
+                    (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                    where V is the model vocabulary size.
+                - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                    Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                    where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                    More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                - 'renyi' for the Rényi entropy.
+                    Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                    where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                    More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+
+        alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+            When the alpha equals one, scaling is not applied to 'max_prob',
+            and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
+        entropy_norm: A mapping of the entropy value to the interval [0,1].
+            Supported values:
+                - 'lin' for using the linear mapping.
+                - 'exp' for using exponential mapping with linear shift.
+    """
+
     name: str = "entropy"
     entropy_type: str = "tsallis"
-    temperature: float = 0.33
+    alpha: float = 0.33
     entropy_norm: str = "exp"
+    temperature: str = "DEPRECATED"
 
     def __post_init__(self):
-        if self.name not in ("max_prob", "entropy"):
-            raise ValueError(f"`name` has to be one of the following: `max_prob`, `entropy`. Provided: {self.name}")
-        if self.entropy_type not in ("gibbs", "tsallis", "renui"):
-            raise ValueError(
-                f"`entropy_type` has to be one of the following: `gibbs`, `tsallis`, `renui`. Provided: {self.entropy_type}"
+        if self.temperature != "DEPRECATED":
+            logging.warning(
+                "`temperature` is deprecated and will be removed in the future. Please use `alpha` instead."
             )
-        if self.temperature <= 0.0:
-            raise ValueError(f"`temperature` has to be > 0. Provided: {self.temperature}")
-        if self.entropy_norm not in ("lin", "exp"):
+
+            # TODO (alaptev): delete the following two lines sometime in the future
+            logging.warning("Re-writing `alpha` with the value of `temperature`.")
+            # self.temperature has type str
+            self.alpha = float(self.temperature)
+            self.temperature = "DEPRECATED"
+        if self.name not in ConfidenceMeasureConstants.NAMES:
             raise ValueError(
-                f"`entropy_norm` has to be one of the following: `lin`, `exp`. Provided: {self.entropy_norm}"
+                f"`name` must be one of the following: "
+                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.NAMES) + '`'}. Provided: `{self.name}`"
+            )
+        if self.entropy_type not in ConfidenceMeasureConstants.ENTROPY_TYPES:
+            raise ValueError(
+                f"`entropy_type` must be one of the following: "
+                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.ENTROPY_TYPES) + '`'}. Provided: `{self.entropy_type}`"
+            )
+        if self.alpha <= 0.0:
+            raise ValueError(f"`alpha` must be > 0. Provided: {self.alpha}")
+        if self.entropy_norm not in ConfidenceMeasureConstants.ENTROPY_NORMS:
+            raise ValueError(
+                f"`entropy_norm` must be one of the following: "
+                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.ENTROPY_NORMS) + '`'}. Provided: `{self.entropy_norm}`"
             )
 
 
 @dataclass
 class ConfidenceConfig:
+    """A config which contains the following key-value pairs related to confidence scores.
+
+    Args:
+        preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
+            generated during decoding. When set to true, the Hypothesis will contain
+            the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of floats.
+        preserve_token_confidence: Bool flag which preserves the history of per-token confidence scores
+            generated during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `token_confidence` in it. Here, `token_confidence` is a List of floats.
+
+            The length of the list corresponds to the number of recognized tokens.
+        preserve_word_confidence: Bool flag which preserves the history of per-word confidence scores
+            generated during greedy decoding (sample / batched). When set to true, the Hypothesis will contain
+            the non-null value for `word_confidence` in it. Here, `word_confidence` is a List of floats.
+
+            The length of the list corresponds to the number of recognized words.
+        exclude_blank: Bool flag indicating that blank token confidence scores are to be excluded
+            from the `token_confidence`.
+        aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
+            Valid options are `mean`, `min`, `max`, `prod`.
+        measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+            confidence scores.
+
+            name: The measure name (str).
+                Supported values:
+                    - 'max_prob' for using the maximum token probability as a confidence.
+                    - 'entropy' for using a normalized entropy of a log-likelihood vector.
+
+            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+                Supported values:
+                    - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
+                        the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
+                        Note that for this entropy, the alpha should comply the following inequality:
+                        (log(V)+2-sqrt(log^2(V)+4))/(2*log(V)) <= α <= (1+log(V-1))/log(V-1)
+                        where V is the model vocabulary size.
+                    - 'tsallis' for the Tsallis entropy with the Boltzmann constant one.
+                        Tsallis entropy formula is the following: H_α = 1/(α-1)*(1-sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/Tsallis_entropy
+                    - 'renyi' for the Rényi entropy.
+                        Rényi entropy formula is the following: H_α = 1/(1-α)*log_2(sum_i(p^α_i)),
+                        where α is a parameter. When α == 1, it works like the Gibbs entropy.
+                        More: https://en.wikipedia.org/wiki/R%C3%A9nyi_entropy
+
+            alpha: Power scale for logsoftmax (α for entropies). Here we restrict it to be > 0.
+                When the alpha equals one, scaling is not applied to 'max_prob',
+                and any entropy type behaves like the Shannon entropy: H = -sum_i(p_i*log(p_i))
+
+            entropy_norm: A mapping of the entropy value to the interval [0,1].
+                Supported values:
+                    - 'lin' for using the linear mapping.
+                    - 'exp' for using exponential mapping with linear shift.
+    """
+
     preserve_frame_confidence: bool = False
     preserve_token_confidence: bool = False
     preserve_word_confidence: bool = False
     exclude_blank: bool = True
     aggregation: str = "min"
-    method_cfg: ConfidenceMethodConfig = ConfidenceMethodConfig()
+    measure_cfg: ConfidenceMeasureConfig = ConfidenceMeasureConfig()
+    method_cfg: str = "DEPRECATED"
 
     def __post_init__(self):
-        if self.aggregation not in ("mean", "min", "max", "prod"):
+        # OmegaConf.structured ensures that post_init check is always executed
+        self.measure_cfg = OmegaConf.structured(
+            self.measure_cfg
+            if isinstance(self.measure_cfg, ConfidenceMeasureConfig)
+            else ConfidenceMeasureConfig(**self.measure_cfg)
+        )
+        if self.method_cfg != "DEPRECATED":
+            logging.warning(
+                "`method_cfg` is deprecated and will be removed in the future. Please use `measure_cfg` instead."
+            )
+
+            # TODO (alaptev): delete the following two lines sometime in the future
+            logging.warning("Re-writing `measure_cfg` with the value of `method_cfg`.")
+            # OmegaConf.structured ensures that post_init check is always executed
+            self.measure_cfg = OmegaConf.structured(
+                self.method_cfg
+                if isinstance(self.method_cfg, ConfidenceMeasureConfig)
+                else ConfidenceMeasureConfig(**self.method_cfg)
+            )
+            self.method_cfg = "DEPRECATED"
+        if self.aggregation not in ConfidenceConstants.AGGREGATIONS:
             raise ValueError(
-                f"`aggregation` has to be one of the following: `mean`, `min`, `max`, `prod`. Provided: {self.aggregation}"
+                f"`aggregation` has to be one of the following: "
+                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.AGGREGATIONS) + '`'}. Provided: `{self.aggregation}`"
             )
 
 
@@ -70,32 +221,32 @@ def get_confidence_measure_bank():
         entropy_gibbs_exp: Gibbs entropy with exponential normalization
         entropy_tsallis_lin: Tsallis entropy with linear normalization
         entropy_tsallis_exp: Tsallis entropy with exponential normalization
-        entropy_renui_lin: Rényi entropy with linear normalization
-        entropy_renui_exp: Rényi entropy with exponential normalization
+        entropy_renyi_lin: Rényi entropy with linear normalization
+        entropy_renyi_exp: Rényi entropy with exponential normalization
 
     Returns:
         dictionary with lambda functions.
     """
     # helper functions
-    # Gibbs entropy is implemented without temperature
+    # Gibbs entropy is implemented without alpha
     neg_entropy_gibbs = lambda x: (x.exp() * x).sum(-1)
-    neg_entropy_temperature = lambda x, t: (x * t).exp().sum(-1)
-    neg_entropy_temperature_gibbs = lambda x, t: ((x * t).exp() * x).sum(-1)
+    neg_entropy_alpha = lambda x, t: (x * t).exp().sum(-1)
+    neg_entropy_alpha_gibbs = lambda x, t: ((x * t).exp() * x).sum(-1)
     # too big for a lambda
     def entropy_tsallis_exp(x, v, t):
         exp_neg_max_ent = math.exp((1 - math.pow(v, 1 - t)) / (1 - t))
-        return (((1 - neg_entropy_temperature(x, t)) / (1 - t)).exp() - exp_neg_max_ent) / (1 - exp_neg_max_ent)
+        return (((1 - neg_entropy_alpha(x, t)) / (1 - t)).exp() - exp_neg_max_ent) / (1 - exp_neg_max_ent)
 
     def entropy_gibbs_exp(x, v, t):
         exp_neg_max_ent = math.pow(v, -t * math.pow(v, 1 - t))
-        return ((neg_entropy_temperature_gibbs(x, t) * t).exp() - exp_neg_max_ent) / (1 - exp_neg_max_ent)
+        return ((neg_entropy_alpha_gibbs(x, t) * t).exp() - exp_neg_max_ent) / (1 - exp_neg_max_ent)
 
     # use Gibbs entropies for Tsallis and Rényi with t == 1.0
     entropy_gibbs_lin_baseline = lambda x, v: 1 + neg_entropy_gibbs(x) / math.log(v)
     entropy_gibbs_exp_baseline = lambda x, v: (neg_entropy_gibbs(x).exp() * v - 1) / (v - 1)
     # fill the measure bank
     confidence_measure_bank = {}
-    # Maximum probability measure is implemented without temperature
+    # Maximum probability measure is implemented without alpha
     confidence_measure_bank["max_prob"] = (
         lambda x, v, t: (x.max(dim=-1)[0].exp() * v - 1) / (v - 1)
         if t == 1.0
@@ -104,7 +255,7 @@ def get_confidence_measure_bank():
     confidence_measure_bank["entropy_gibbs_lin"] = (
         lambda x, v, t: entropy_gibbs_lin_baseline(x, v)
         if t == 1.0
-        else 1 + neg_entropy_temperature_gibbs(x, t) / math.log(v) / math.pow(v, 1 - t)
+        else 1 + neg_entropy_alpha_gibbs(x, t) / math.log(v) / math.pow(v, 1 - t)
     )
     confidence_measure_bank["entropy_gibbs_exp"] = (
         lambda x, v, t: entropy_gibbs_exp_baseline(x, v) if t == 1.0 else entropy_gibbs_exp(x, v, t)
@@ -112,20 +263,20 @@ def get_confidence_measure_bank():
     confidence_measure_bank["entropy_tsallis_lin"] = (
         lambda x, v, t: entropy_gibbs_lin_baseline(x, v)
         if t == 1.0
-        else 1 + (1 - neg_entropy_temperature(x, t)) / (math.pow(v, 1 - t) - 1)
+        else 1 + (1 - neg_entropy_alpha(x, t)) / (math.pow(v, 1 - t) - 1)
     )
     confidence_measure_bank["entropy_tsallis_exp"] = (
         lambda x, v, t: entropy_gibbs_exp_baseline(x, v) if t == 1.0 else entropy_tsallis_exp(x, v, t)
     )
-    confidence_measure_bank["entropy_renui_lin"] = (
+    confidence_measure_bank["entropy_renyi_lin"] = (
         lambda x, v, t: entropy_gibbs_lin_baseline(x, v)
         if t == 1.0
-        else 1 + neg_entropy_temperature(x, t).log2() / (t - 1) / math.log(v, 2)
+        else 1 + neg_entropy_alpha(x, t).log2() / (t - 1) / math.log(v, 2)
     )
-    confidence_measure_bank["entropy_renui_exp"] = (
+    confidence_measure_bank["entropy_renyi_exp"] = (
         lambda x, v, t: entropy_gibbs_exp_baseline(x, v)
         if t == 1.0
-        else (neg_entropy_temperature(x, t).pow(1 / (t - 1)) * v - 1) / (v - 1)
+        else (neg_entropy_alpha(x, t).pow(1 / (t - 1)) * v - 1) / (v - 1)
     )
     return confidence_measure_bank
 
@@ -160,48 +311,55 @@ class ConfidenceMeasureMixin(ABC):
     It initializes per-frame confidence measure.
     """
 
-    def _init_confidence_measure(self, confidence_method_cfg: Optional[DictConfig] = None):
+    def _init_confidence_measure(self, confidence_measure_cfg: Optional[DictConfig] = None):
         """Initialize per-frame confidence measure from config.
         """
-        if confidence_method_cfg is None:
-            confidence_method_cfg = OmegaConf.structured(ConfidenceMethodConfig())
+        # OmegaConf.structured ensures that post_init check is always executed
+        confidence_measure_cfg = OmegaConf.structured(
+            ConfidenceMeasureConfig()
+            if confidence_measure_cfg is None
+            else ConfidenceMeasureConfig(**confidence_measure_cfg)
+        )
 
-        # set confidence calculation method
+        # set confidence calculation measure
         # we suppose that self.blank_id == len(vocabulary)
         self.num_tokens = (self.blank_id if hasattr(self, "blank_id") else self._blank_index) + 1
-        self.temperature = confidence_method_cfg.temperature
+        self.alpha = confidence_measure_cfg.alpha
 
         # init confidence measure bank
         self.confidence_measure_bank = get_confidence_measure_bank()
 
-        method = None
+        measure = None
         # construct measure_name
         measure_name = ""
-        if confidence_method_cfg.name == "max_prob":
+        if confidence_measure_cfg.name == "max_prob":
             measure_name = "max_prob"
-        elif confidence_method_cfg.name == "entropy":
+        elif confidence_measure_cfg.name == "entropy":
             measure_name = '_'.join(
-                [confidence_method_cfg.name, confidence_method_cfg.entropy_type, confidence_method_cfg.entropy_norm]
+                [confidence_measure_cfg.name, confidence_measure_cfg.entropy_type, confidence_measure_cfg.entropy_norm]
             )
         else:
-            raise ValueError(f"Unsupported `confidence_method_cfg.name`: `{confidence_method_cfg.name}`")
+            raise ValueError(f"Unsupported `confidence_measure_cfg.name`: `{confidence_measure_cfg.name}`")
         if measure_name not in self.confidence_measure_bank:
             raise ValueError(f"Unsupported measure setup: `{measure_name}`")
-        method = partial(self.confidence_measure_bank[measure_name], v=self.num_tokens, t=self.temperature)
-        self._get_confidence = lambda x: method(x).tolist()
+        measure = partial(self.confidence_measure_bank[measure_name], v=self.num_tokens, t=self.alpha)
+        self._get_confidence = lambda x: measure(torch.nan_to_num(x)).tolist()
 
 
 class ConfidenceMixin(ABC):
     """Confidence Mixin class.
 
-    It initializes per-frame confidence measure.
+    It is responsible for confidence estimation method initialization and high-level confidence score calculation.
     """
 
     def _init_confidence(self, confidence_cfg: Optional[DictConfig] = None):
         """Initialize confidence-related fields and confidence aggregation function from config.
         """
-        if confidence_cfg is None:
-            confidence_cfg = OmegaConf.structured(ConfidenceConfig())
+        # OmegaConf.structured ensures that post_init check is always executed
+        confidence_cfg = OmegaConf.structured(
+            ConfidenceConfig() if confidence_cfg is None else ConfidenceConfig(**confidence_cfg)
+        )
+        self.confidence_measure_cfg = confidence_cfg.measure_cfg
 
         # extract the config
         self.preserve_word_confidence = confidence_cfg.get('preserve_word_confidence', False)
@@ -216,7 +374,6 @@ class ConfidenceMixin(ABC):
         )
         self.exclude_blank_from_confidence = confidence_cfg.get('exclude_blank', True)
         self.word_confidence_aggregation = confidence_cfg.get('aggregation', "min")
-        self.confidence_method_cfg = confidence_cfg.get('method_cfg', None)
 
         # define aggregation functions
         self.confidence_aggregation_bank = get_confidence_aggregation_bank()
@@ -226,7 +383,13 @@ class ConfidenceMixin(ABC):
         if self.preserve_frame_confidence is False:
             if self.cfg.strategy in ['greedy', 'greedy_batch']:
                 self.preserve_frame_confidence = self.cfg.greedy.get('preserve_frame_confidence', False)
-                self.confidence_method_cfg = self.cfg.greedy.get('confidence_method_cfg', None)
+                # OmegaConf.structured ensures that post_init check is always executed
+                confidence_measure_cfg = OmegaConf.structured(self.cfg.greedy).get('confidence_measure_cfg', None)
+                self.confidence_measure_cfg = (
+                    OmegaConf.structured(ConfidenceMeasureConfig())
+                    if confidence_measure_cfg is None
+                    else OmegaConf.structured(ConfidenceMeasureConfig(**confidence_measure_cfg))
+                )
 
     @abstractmethod
     def compute_confidence(self, hypotheses_list: List[Hypothesis]) -> List[Hypothesis]:

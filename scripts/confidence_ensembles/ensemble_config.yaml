@@ -16,8 +16,8 @@ temperature: 1.0
 confidence:
     exclude_blank: True
     aggregation: mean
-    method_cfg:
+    measure_cfg:
         name: entropy
-        entropy_type: renui
-        temperature: 0.25  # this is not really temperature, but alpha, see https://arxiv.org/abs/2212.08703
+        entropy_type: renyi
+        alpha: 0.25
         entropy_norm: lin

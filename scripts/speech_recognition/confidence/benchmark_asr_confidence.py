@@ -12,31 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
-import copy
 import json
 import os
 from dataclasses import dataclass, is_dataclass
 from pathlib import Path
 from typing import Optional
 
-import matplotlib.pyplot as plt
-import numpy as np
 import pytorch_lightning as pl
-import texterrors
 import torch
-from omegaconf import MISSING, OmegaConf, open_dict
-from sklearn.metrics import PrecisionRecallDisplay, RocCurveDisplay, precision_recall_curve, roc_curve
+from omegaconf import MISSING, OmegaConf
 from sklearn.model_selection import ParameterGrid
 
 from nemo.collections.asr.metrics.rnnt_wer import RNNTDecodingConfig
 from nemo.collections.asr.metrics.wer import CTCDecodingConfig
-from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models import ASRModel, EncDecRNNTModel
+from nemo.collections.asr.parts.utils.asr_confidence_benchmarking_utils import (
+    apply_confidence_parameters,
+    run_confidence_benchmark,
+)
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
-from nemo.collections.asr.parts.utils.confidence_metrics import auc_nt, auc_pr, auc_roc, auc_yc, ece, nce
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
-
 
 """
 Get confidence metrics and curve plots for a given model, dataset, and confidence parameters.
@@ -74,123 +70,8 @@ python benchmark_asr_confidence.py \
     amp=True \
     target_level="word" \
     confidence_cfg.exclude_blank=False \
-    'grid_params="{\"aggregation\": [\"min\", \"prod\"], \"temperature\": [0.33, 0.5]}"'
+    'grid_params="{\"aggregation\": [\"min\", \"prod\"], \"alpha\": [0.33, 0.5]}"'
 """
-
-
-def get_correct_marks(r, h):
-    """Get correct marks by aligning the reference text with a hypothesis.
-
-    This method considers only insertions and substitutions as incorrect marks.
-    """
-    return [
-        a == b
-        for a, b in zip(*(texterrors.align_texts([str(rr) for rr in r], [str(hh) for hh in h], False)[:-1]))
-        if b != "<eps>"
-    ]
-
-
-def get_token_targets_with_confidence(hyp):
-    return [[y, c] for y, c in zip(hyp.y_sequence, hyp.token_confidence)]
-
-
-def get_word_targets_with_confidence(hyp):
-    return [[y, c] for y, c in zip(hyp.words, hyp.word_confidence)]
-
-
-def run_benchmark(
-    model, batch_size, num_workers, is_rnnt, target_level, filepaths, reference_texts, plot_dir, autocast
-):
-    """Run benchmark and plot histograms and curves.
-
-    Returns:
-        Dictionary with benchmark results of the following scheme:
-        `level: (auc_roc, auc_pr, auc_nt, nce, ece, auc_yc, max_yc, std_yc)` with `level` being 'token' or 'word'.
-    """
-    # transcribe audio
-    with autocast():
-        with torch.no_grad():
-            transcriptions = model.transcribe(
-                paths2audio_files=filepaths, batch_size=batch_size, return_hypotheses=True, num_workers=num_workers
-            )
-    if is_rnnt:
-        transcriptions = transcriptions[0]
-
-    levels = []
-    if target_level != "word":
-        levels.append("token")
-    if target_level != "token":
-        levels.append("word")
-    results = {}
-    for level in levels:
-        if level == "token":
-            targets_with_confidence = [get_token_targets_with_confidence(tran) for tran in transcriptions]
-            correct_marks = [
-                get_correct_marks(model.tokenizer.text_to_ids(r), model.tokenizer.text_to_ids(h.text))
-                for r, h in zip(reference_texts, transcriptions)
-            ]
-        else:  # "word"
-            targets_with_confidence = [get_word_targets_with_confidence(tran) for tran in transcriptions]
-            correct_marks = [get_correct_marks(r.split(), h.words) for r, h in zip(reference_texts, transcriptions)]
-
-        y_true, y_score = np.array(
-            [[f, p[1]] for cm, twc in zip(correct_marks, targets_with_confidence) for f, p in zip(cm, twc)]
-        ).T
-        mask_correct = y_true == 1
-        y_score_correct = y_score[mask_correct]
-        y_score_incorrect = y_score[~mask_correct]
-        result_yc = auc_yc(y_true, y_score, return_std_maximum=True, return_curve=True)
-        results[level] = [
-            auc_roc(y_true, y_score),
-            auc_pr(y_true, y_score),
-            auc_nt(y_true, y_score),
-            nce(y_true, y_score),
-            ece(y_true, y_score),
-        ] + list(result_yc[:-1])
-
-        os.makedirs(plot_dir, exist_ok=True)
-        plt.hist(np.array(y_score_correct), 50, range=(0, 1))
-        plt.savefig(plot_dir / Path(level + "_" + "hist_correct.png"), dpi=300)
-        plt.clf()
-        plt.hist(np.array(y_score_incorrect), 50, range=(0, 1))
-        plt.savefig(plot_dir / Path(level + "_" + "hist_incorrect.png"), dpi=300)
-        plt.clf()
-        fpr, tpr, _ = roc_curve(1 - y_true, 1 - y_score)
-        RocCurveDisplay(fpr=fpr, tpr=tpr).plot()
-        plt.savefig(plot_dir / Path(level + "_" + "roc.png"), dpi=300)
-        plt.clf()
-        precision, recall, _ = precision_recall_curve(y_true, y_score)
-        PrecisionRecallDisplay(precision=precision, recall=recall).plot()
-        plt.savefig(plot_dir / Path(level + "_" + "pr.png"), dpi=300)
-        plt.clf()
-        precision, recall, _ = precision_recall_curve(1 - y_true, 1 - y_score)
-        PrecisionRecallDisplay(precision=precision, recall=recall).plot()
-        plt.savefig(plot_dir / Path(level + "_" + "nt.png"), dpi=300)
-        plt.clf()
-        plt.plot(*result_yc[-1])
-        plt.ylim([0, 1])
-        plt.savefig(plot_dir / Path(level + "_" + "yc.png"), dpi=300)
-        plt.clf()
-
-    return results
-
-
-def apply_parameters(decoding_cfg, hp):
-    """Apply parameters from a parameter grid to a decoding config.
-
-    Returns:
-        Updated decoding config.
-    """
-    new_decoding_cfg = copy.deepcopy(decoding_cfg)
-    confidence_cfg_fields = ("aggregation", "exclude_blank")
-    confidence_method_cfg_fields = ("name", "temperature", "entropy_type", "entropy_norm")
-    with open_dict(new_decoding_cfg):
-        for p, v in hp.items():
-            if p in confidence_cfg_fields:
-                new_decoding_cfg.confidence_cfg[p] = v
-            elif p in confidence_method_cfg_fields:
-                new_decoding_cfg.confidence_cfg.method_cfg[p] = v
-    return new_decoding_cfg
 
 
 def get_experiment_params(cfg):
@@ -202,23 +83,23 @@ def get_experiment_params(cfg):
     """
     blank = "no_blank" if cfg.exclude_blank else "blank"
     aggregation = cfg.aggregation
-    method_name = cfg.method_cfg.name
-    temperature = cfg.method_cfg.temperature
+    method_name = cfg.measure_cfg.name
+    alpha = cfg.measure_cfg.alpha
     if method_name == "entropy":
-        entropy_type = cfg.method_cfg.entropy_type
-        entropy_norm = cfg.method_cfg.entropy_norm
+        entropy_type = cfg.measure_cfg.entropy_type
+        entropy_norm = cfg.measure_cfg.entropy_norm
         experiment_param_list = [
             aggregation,
             str(cfg.exclude_blank),
             method_name,
             entropy_type,
             entropy_norm,
-            str(temperature),
+            str(alpha),
         ]
-        experiment_str = "-".join([aggregation, blank, method_name, entropy_type, entropy_norm, str(temperature)])
+        experiment_str = "-".join([aggregation, blank, method_name, entropy_type, entropy_norm, str(alpha)])
     else:
-        experiment_param_list = [aggregation, str(cfg.exclude_blank), method_name, "-", "-", str(temperature)]
-        experiment_str = "-".join([aggregation, blank, method_name, str(temperature)])
+        experiment_param_list = [aggregation, str(cfg.exclude_blank), method_name, "-", "-", str(alpha)]
+        experiment_str = "-".join([aggregation, blank, method_name, str(alpha)])
     return experiment_param_list, experiment_str
 
 
@@ -294,7 +175,7 @@ def main(cfg: ConfidenceBenchmarkingConfig):
     asr_model = asr_model.eval()
 
     # Check if ctc or rnnt model
-    is_rnnt = hasattr(asr_model, 'joint')
+    is_rnnt = isinstance(asr_model, EncDecRNNTModel)
 
     # Check that the model has the `change_decoding_strategy` method
     if not hasattr(asr_model, 'change_decoding_strategy'):
@@ -317,14 +198,10 @@ def main(cfg: ConfidenceBenchmarkingConfig):
             reference_texts.append(item['text'])
 
     # setup AMP (optional)
+    autocast = None
     if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):
         logging.info("AMP enabled!\n")
         autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
 
     # do grid-based benchmarking if grid_params is provided, otherwise a regular one
     work_dir = Path(cfg.output_dir)
@@ -338,7 +215,7 @@ def main(cfg: ConfidenceBenchmarkingConfig):
                 "method_name",
                 "entropy_type",
                 "entropy_norm",
-                "temperature",
+                "alpha",
                 "target_level",
                 "auc_roc",
                 "auc_pr",
@@ -346,8 +223,8 @@ def main(cfg: ConfidenceBenchmarkingConfig):
                 "nce",
                 "ece",
                 "auc_yc",
-                "max_yc",
                 "std_yc",
+                "max_yc",
             ]
         )
         + "\n"
@@ -374,17 +251,16 @@ def main(cfg: ConfidenceBenchmarkingConfig):
             f.flush()
             for i, hp in enumerate(hp_grid):
                 logging.info(f"Run # {i + 1}, grid: `{hp}`")
-                asr_model.change_decoding_strategy(apply_parameters(asr_model.cfg.decoding, hp))
+                asr_model.change_decoding_strategy(apply_confidence_parameters(asr_model.cfg.decoding, hp))
                 param_list, experiment_name = get_experiment_params(asr_model.cfg.decoding.confidence_cfg)
                 plot_dir = work_dir / Path(experiment_name)
-                results = run_benchmark(
+                results = run_confidence_benchmark(
                     asr_model,
-                    cfg.batch_size,
-                    cfg.num_workers,
-                    is_rnnt,
                     cfg.target_level,
                     filepaths,
                     reference_texts,
+                    cfg.batch_size,
+                    cfg.num_workers,
                     plot_dir,
                     autocast,
                 )
@@ -406,11 +282,10 @@ def main(cfg: ConfidenceBenchmarkingConfig):
         with open(report_file, "tw", encoding="utf-8") as f:
             f.write(report_legend)
             f.flush()
-            results = run_benchmark(
+            results = run_confidence_benchmark(
                 asr_model,
                 cfg.batch_size,
                 cfg.num_workers,
-                is_rnnt,
                 cfg.target_level,
                 filepaths,
                 reference_texts,

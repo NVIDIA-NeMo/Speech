@@ -59,7 +59,7 @@ Usage examples:
 
     python build_ensemble.py
         <all arguments as in the previous examples>
-        tune_confidence_config.confidence_type='[entropy_renui_exp,entropy_tsallis_exp]'  # only tune over this set
+        tune_confidence_config.confidence_type='[entropy_renyi_exp,entropy_tsallis_exp]'  # only tune over this set
         tune_confidence_config.alpha='[0.1,0.5,1.0]'  # only tune over this set
 
 You can check the dataclasses in this file for the full list of supported
@@ -97,7 +97,7 @@ from nemo.collections.asr.models.confidence_ensemble import (
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import (
     ConfidenceConfig,
-    ConfidenceMethodConfig,
+    ConfidenceMeasureConfig,
     get_confidence_aggregation_bank,
     get_confidence_measure_bank,
 )
@@ -143,8 +143,8 @@ class TuneConfidenceConfig:
     # not including max prob, as there is always an entropy-based metric
     # that's better but otherwise including everything
     confidence_type: Tuple[str] = (
-        "entropy_renui_exp",
-        "entropy_renui_lin",
+        "entropy_renyi_exp",
+        "entropy_renyi_lin",
         "entropy_tsallis_exp",
         "entropy_tsallis_lin",
         "entropy_gibbs_lin",
@@ -214,14 +214,9 @@ class BuildEnsembleConfig:
         preserve_frame_confidence=True,
         exclude_blank=True,
         aggregation="mean",
-        method_cfg=ConfidenceMethodConfig(
-            name="entropy",
-            entropy_type="renui",
-            temperature=0.25,  # this is not really temperature, but alpha, see https://arxiv.org/abs/2212.08703
-            entropy_norm="lin",
-        ),
+        measure_cfg=ConfidenceMeasureConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
     )
-    temperature: float = 1.0  # this is a real temperature that will be applied to logits
+    temperature: float = 1.0
 
     # this is optional, but can be used to change any aspect of the transcription
     # config, such as batch size or amp usage. Note that model, data and confidence

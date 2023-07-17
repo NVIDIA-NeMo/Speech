@@ -26,14 +26,15 @@ KENLM_MAX_ORDER=10 # Maximum order of KenLM model, also specified in the setup_o
 cd $NEMO_PATH
 
 if [ $(id -u) -eq 0 ]; then
-  alias aptupdate='apt-get update'
-  alias b2install='./b2'
-else
-  alias aptupdate='sudo apt-get update'
-  alias b2install='sudo ./b2'
+   alias aptupdate='apt-get update'
+   alias b2install='./b2'
+ else
+   alias aptupdate='sudo apt-get update'
+   alias b2install='sudo ./b2'
 fi
 
-aptupdate && apt-get upgrade -y && apt-get install -y liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder'
+aptupdate && apt-get upgrade -y && apt-get install -y liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder
+
 
 git clone https://github.com/NVIDIA/OpenSeq2Seq
 cd OpenSeq2Seq

@@ -53,7 +53,7 @@ with open(args.input_name, "r", encoding="utf-8") as f:
 print("Size of customization vocabulary:", len(custom_phrases))
 
 # Load n-gram mappings vocabulary
-ngram_mapping_vocab, ban_ngram = load_ngram_mappings(args.ngram_mappings, max_misspelled_freq=125000)
+ngram_mapping_vocab, ban_ngram = load_ngram_mappings(args.ngram_mappings, max_misspelled_freq=args.max_misspelled_freq)
 
 # Generate index of custom phrases
 phrases, ngram2phrases = get_index(

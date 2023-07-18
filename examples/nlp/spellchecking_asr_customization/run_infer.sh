@@ -31,7 +31,7 @@ BIG_SAMPLE=spellmapper_asr_customization_en/big_sample.txt
 ## File with input nemo ASR manifest
 INPUT_MANIFEST=spellmapper_en_evaluation/medical_manifest_ctc.json
 ## File containing custom words and phrases (plain text)
-CUSTOM_VOCAB=spellmapper_en_evaluation/medical_custom_vocab.json
+CUSTOM_VOCAB=spellmapper_en_evaluation/medical_custom_vocab.txt
 
 ## Other files will be created 
 ## File with index of custom vocabulary

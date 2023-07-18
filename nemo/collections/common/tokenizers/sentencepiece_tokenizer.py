@@ -299,7 +299,7 @@ def create_spt_model(
         byte_fallback: If <unk>, fallback to a byte sequence of the character.
         split_digits: If true, digits are split into individual tokens.
         split_by_whitespace: Whether to respect white space while creating subwords. If False, will learn merges across whitespace.
-        split_by_unicode_script: Whether to include multiple Unicode scripts. Ex. is Arabic diacritics which are considered part of the letter (عِدَّةُ)
+        split_by_unicode_script: Whether to include multiple Unicode scripts. Ex. is Arabic diacritics which are considered part of the letter (عِدَّةُ)
     """
 
     if not data_file or not os.path.exists(data_file):

@@ -1,7 +1,6 @@
 hydra-core>=1.2.0,<1.3
 omegaconf>=2.2,<2.3
 pytorch-lightning>=1.9.0,<=1.9.4
-pyyaml<6  # Pinned until omegaconf works with pyyaml>=6
 torchmetrics>=0.11.0
 transformers>=4.0.1
 wandb

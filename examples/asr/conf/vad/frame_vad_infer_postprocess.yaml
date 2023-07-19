@@ -1,6 +1,7 @@
 name: &name "vad_inference_postprocessing"
 
-dataset: null # Path of json file of evaluation data. Audio files should have unique names
+input_manifest: null # Path of json file of evaluation data. Audio files should have unique names
+output_dir: null  # Path to output directory where results will be stored
 num_workers: 12
 sample_rate: 16000
 evaluate: False  # whether to get AUROC and DERs, the manifest must contains groundtruth if enabled

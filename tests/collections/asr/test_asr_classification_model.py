@@ -94,8 +94,8 @@ def frame_classification_model():
     }
 
     decoder = {
-        'cls': 'nemo.collections.asr.modules.ConvASRDecoderClassification',
-        'params': {'feat_in': 32, 'num_classes': 5,},
+        'cls': 'nemo.collections.common.parts.MultiLayerPerceptron',
+        'params': {'hidden_size': 32, 'num_classes': 5,},
     }
 
     modelConfig = DictConfig(

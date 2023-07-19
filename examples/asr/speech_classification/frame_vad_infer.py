@@ -21,7 +21,8 @@ to the split points might have worse performance due to truncated context.
 ## Usage:
 python frame_vad_infer.py \
     --config-path="../conf/vad" --config-name="frame_vad_infer_postprocess" \
-    dataset=<Path of manifest file containing evaluation data. Audio files should have unique names>
+    input_manifest=<Path of manifest file containing evaluation data. Audio files should have unique names> \
+    output_dir=<Path of output directory>
 
 The manifest json file should have the following format (each line is a Python dictionary):
 {"audio_filepath": "/path/to/audio_file1", "offset": 0, "duration": 10000}  
@@ -58,15 +59,25 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @hydra_runner(config_path="../conf/vad", config_name="frame_vad_infer_postprocess")
 def main(cfg):
-    if not cfg.dataset:
+    if not cfg.input_manifest:
         raise ValueError("You must input the path of json file of evaluation data")
+    output_dir = cfg.output_dir if cfg.output_dir else "frame_vad_outputs"
+    if os.path.exists(output_dir):
+        logging.warning(
+            f"Output directory {output_dir} already exists, use this only if you're tuning post-processing params."
+        )
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    # each line of dataset should be have different audio_filepath and unique name to simplify edge cases or conditions
-    logging.info(f"Loading manifest file {cfg.dataset}")
+    cfg.frame_out_dir = os.path.join(output_dir, "frame_preds")
+    cfg.smoothing_out_dir = os.path.join(output_dir, "smoothing_preds")
+    cfg.rttm_out_dir = os.path.join(output_dir, "rttm_preds")
+
+    # each line of input_manifest should be have different audio_filepath and unique name to simplify edge cases or conditions
+    logging.info(f"Loading manifest file {cfg.input_manifest}")
     manifest_orig, key_labels_map, key_rttm_map = frame_vad_infer_load_manifest(cfg)
 
     # Prepare manifest for streaming VAD
-    manifest_vad_input = cfg.dataset
+    manifest_vad_input = cfg.input_manifest
     if cfg.prepare_manifest.auto_split:
         logging.info("Split long audio file to avoid CUDA memory issue")
         logging.debug("Try smaller split_duration if you still have CUDA memory issue")
@@ -76,6 +87,7 @@ def main(cfg):
             'split_duration': cfg.prepare_manifest.split_duration,
             'num_workers': cfg.num_workers,
             'prepared_manifest_vad_input': cfg.prepared_manifest_vad_input,
+            'out_dir': output_dir,
         }
         manifest_vad_input = prepare_manifest(config)
     else:
@@ -171,7 +183,7 @@ def main(cfg):
         key_pred_rttm_map[key] = entry['rttm_filepath']
 
     if not cfg.out_manifest_filepath:
-        out_manifest_filepath = "manifest_vad_output.json"
+        out_manifest_filepath = os.path.join(output_dir, "manifest_vad_output.json")
     else:
         out_manifest_filepath = cfg.out_manifest_filepath
     write_manifest(out_manifest_filepath, manifest_new)

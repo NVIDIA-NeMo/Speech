@@ -275,7 +275,9 @@ def generate_overlap_vad_seq(
     if out_dir:
         overlap_out_dir = out_dir
     else:
-        overlap_out_dir = frame_pred_dir + "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
+        overlap_out_dir = os.path.join(
+            frame_pred_dir, "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
+        )
 
     if not os.path.exists(overlap_out_dir):
         os.mkdir(overlap_out_dir)
@@ -732,7 +734,7 @@ def generate_vad_segment_table(
     if not out_dir:
         out_dir_name = "seg_output_"
         for key in postprocessing_params:
-            out_dir_name = out_dir_name + str(key) + str(postprocessing_params[key]) + "-"
+            out_dir_name = out_dir_name + "-" + str(key) + str(postprocessing_params[key])
 
         out_dir = os.path.join(vad_pred_dir, out_dir_name)
 

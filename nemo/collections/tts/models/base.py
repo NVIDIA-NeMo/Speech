@@ -68,6 +68,18 @@ class SpectrogramGenerator(ModelPT, ABC):
                 list_of_models.extend(subclass_models)
         return list_of_models
 
+    def set_export_config(self, args):
+        for k in ['enable_volume', 'enable_ragged_batches']:
+            if k in args:
+                self.export_config[k] = bool(args[k])
+                args.pop(k)
+        if 'num_speakers' in args:
+            self.export_config['num_speakers'] = int(args['num_speakers'])
+            args.pop('num_speakers')
+        if 'emb_range' in args:
+            raise Exception('embedding range is not user-settable')
+        super().set_export_config(args)
+
 
 class Vocoder(ModelPT, ABC):
     """

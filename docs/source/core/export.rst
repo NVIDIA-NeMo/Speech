@@ -207,7 +207,7 @@ An example can be found in ``<NeMo_git_root>/nemo/collections/asr/models/rnnt_mo
 Here is example on now `set_export_config()` call is being tied to command line arguments in ``<NeMo_git_root>/scripts/export.py`` :
 
 .. code-block:: Python
-    python scripts/export.py  hybrid_conformer.nemo hybrid_conformer.onnx --config decoder_type=ctc
+    python scripts/export.py  hybrid_conformer.nemo hybrid_conformer.onnx --export-config decoder_type=ctc
 
 Exportable Model Code
 ~~~~~~~~~~~~~~~~~~~~~

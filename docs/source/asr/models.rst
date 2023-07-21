@@ -218,7 +218,7 @@ You may find FastConformer variants of cache-aware streaming models under ``<NeM
 Note cache-aware streaming models are being exported without caching support by default.
 To include caching support, `model.set_export_config({'cache_support' : 'True'})` should be called before export.
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
-`python export.py cache_aware_conformer.nemo cache_aware_conformer.onnx --config cache_support=True`
+`python export.py cache_aware_conformer.nemo cache_aware_conformer.onnx --export-config cache_support=True`
 
 .. _LSTM-Transducer_model:
 
@@ -299,7 +299,7 @@ Similar example configs for FastConformer variants of Hybrid models can be found
 Note Hybrid models are being exported as RNNT (encoder and decoder+joint parts) by default.
 To export as CTC (single encoder+decoder graph), `model.set_export_config({'decoder_type' : 'ctc'})` should be called before export.
 Or, if ``<NeMo_git_root>/scripts/export.py`` is being used:
-`python export.py hybrid_transducer.nemo hybrid_transducer.onnx --config decoder_type=ctc`
+`python export.py hybrid_transducer.nemo hybrid_transducer.onnx --export-config decoder_type=ctc`
 
 .. _Conformer-HAT_model:
 

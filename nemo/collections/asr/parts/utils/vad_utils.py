@@ -276,7 +276,7 @@ def generate_overlap_vad_seq(
         overlap_out_dir = out_dir
     else:
         overlap_out_dir = os.path.join(
-            frame_pred_dir, "/overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
+            frame_pred_dir, "overlap_smoothing_output" + "_" + smoothing_method + "_" + str(overlap)
         )
 
     if not os.path.exists(overlap_out_dir):

@@ -44,23 +44,16 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_TRITON = False
 
-try:
-    import pynvml
-
-    HAVE_PYNVML = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_PYNVML = False
+import pynvml
 
 
 def HAVE_AMPERE_GPU():
-    if HAVE_PYNVML:
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        device_arch = pynvml.nvmlDeviceGetArchitecture(handle)
-        pynvml.nvmlShutdown()
-        return device_arch == pynvml.NVML_DEVICE_ARCH_AMPERE
-    else:
-        return False
+    pynvml.nvmlInit()
+    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    device_arch = pynvml.nvmlDeviceGetArchitecture(handle)
+    pynvml.nvmlShutdown()
+    return device_arch == pynvml.NVML_DEVICE_ARCH_AMPERE
+
 
 @pytest.mark.run_only_on('GPU')
 @pytest.mark.skipif(not HAVE_APEX, reason="apex is not installed")

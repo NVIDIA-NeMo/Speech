@@ -785,7 +785,7 @@ class NoisePerturbationWithNormalization(Perturbation):
         else:
             snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
         if data_rms is None:
-            data_rms = data.rms_db if ref_mic is None else data.rms_db[ref_mic]
+            data_rms = data.rms_db[ref_mic] if isinstance(data.rms_db, (list, np.ndarray)) else data.rms_db
 
         if norm_to_db is None:
             norm_to_db = data_rms

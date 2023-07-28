@@ -576,7 +576,7 @@ def check_lib_version(lib_name: str, checked_version: str, operator) -> Tuple[Op
                 f"Could not check version compatibility."
             )
             return False, msg
-    except (ImportError, ModuleNotFoundError, AttributeError):
+    except (ImportError, ModuleNotFoundError):
         pass
 
     msg = f"Lib {lib_name} has not been installed. Please use pip or conda to install this package."

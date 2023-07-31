@@ -92,6 +92,7 @@ model:
       n_samples: null
       min_duration: null
       max_duration: null
+      trunc_duration: 15.0
       dataset_meta: ${log_ds_meta}
 
     dataloader_params:

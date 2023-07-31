@@ -733,7 +733,10 @@ def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
     """
     batch_size, *_, max_lengths = tensor.shape
 
-    if len(tensor.shape) == 3:
+    if len(tensor.shape) == 2:
+        mask = torch.ones(batch_size, max_lengths).cumsum(dim=-1).type_as(lengths)
+        mask = mask <= rearrange(lengths, "b -> b 1")
+    elif len(tensor.shape) == 3:
         mask = torch.ones(batch_size, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
         mask = mask <= rearrange(lengths, "b -> b 1 1")
     elif len(tensor.shape) == 4:

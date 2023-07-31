@@ -65,6 +65,7 @@ class VocoderDataset(Dataset):
             will be ignored.
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
+        trunc_duration: Optional int, if provided audio will be truncated to at most 'trunc_duration' seconds.
         num_audio_retries: Number of read attempts to make when sampling audio file, to avoid training failing
             from sporadic IO errors.
     """
@@ -78,6 +79,7 @@ class VocoderDataset(Dataset):
         feature_processors: Optional[Dict[str, FeatureProcessor]] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        trunc_duration: Optional[float] = None,
         num_audio_retries: int = 5,
     ):
         super().__init__()
@@ -87,6 +89,11 @@ class VocoderDataset(Dataset):
         self.weighted_sampling_steps_per_epoch = weighted_sampling_steps_per_epoch
         self.num_audio_retries = num_audio_retries
         self.load_precomputed_mel = False
+
+        if trunc_duration:
+            self.trunc_samples = int(trunc_duration * self.sample_rate)
+        else:
+            self.trunc_samples = None
 
         if feature_processors:
             logging.info(f"Found feature processors {feature_processors.keys()}")
@@ -132,6 +139,10 @@ class VocoderDataset(Dataset):
         else:
             audio_segment = self._segment_audio(audio_filepath)
             audio_array = audio_segment.samples
+
+        if self.trunc_samples:
+            audio_array = audio_array[: self.trunc_samples]
+
         audio = torch.tensor(audio_array)
         audio_len = torch.tensor(audio.shape[0])
         return audio, audio_len

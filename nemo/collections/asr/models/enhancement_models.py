@@ -60,6 +60,11 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         self.mask_processor = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mask_processor)
         self.decoder = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.decoder)
 
+        if 'mixture_consistency' in self._cfg:
+            self.mixture_consistency = EncMaskDecAudioToAudioModel.from_config_dict(self._cfg.mixture_consistency)
+        else:
+            self.mixture_consistency = None
+
         # Future enhancement:
         # If subclasses need to modify the config before calling super()
         # Check ASRBPE* classes do with their mixin
@@ -316,7 +321,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
             "input_signal": NeuralType(
                 ('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)
             ),  # multi-channel format, channel dimension can be 1 for single-channel audio
-            "input_length": NeuralType(tuple('B'), LengthsType()),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
     @property
@@ -325,7 +330,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
             "output_signal": NeuralType(
                 ('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)
             ),  # multi-channel format, channel dimension can be 1 for single-channel audio
-            "output_length": NeuralType(tuple('B'), LengthsType()),
+            "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
     def match_batch_length(self, input: torch.Tensor, batch_length: int):
@@ -346,7 +351,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         return torch.nn.functional.pad(input, pad, 'constant', 0)
 
     @typecheck()
-    def forward(self, input_signal, input_length):
+    def forward(self, input_signal, input_length=None):
         """
         Forward pass of the model.
 
@@ -369,6 +374,10 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
 
         # Mask-based processor in the encoded domain
         processed, processed_length = self.mask_processor(input=encoded, input_length=encoded_length, mask=mask)
+
+        # Mixture consistency
+        if self.mixture_consistency is not None:
+            processed = self.mixture_consistency(mixture=encoded, estimate=processed)
 
         # Decoder
         processed, processed_length = self.decoder(input=processed, input_length=processed_length)

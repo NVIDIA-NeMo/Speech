@@ -35,6 +35,7 @@ from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
 rng = None
 att_factor = 0.8
+save_noise = False
 sample_rate = 16000
 
 
@@ -42,7 +43,7 @@ def get_out_dir_name(out_dir, input_name, noise_name, snr):
     return os.path.join(out_dir, input_name, noise_name + "_" + str(snr) + "db")
 
 
-def create_manifest(input_manifest, noise_manifest, snrs, out_path):
+def create_manifest(input_manifest, noise_manifest, snrs, out_path, save_noise):
     os.makedirs(os.path.join(out_path, "manifests"), exist_ok=True)
     for snr in snrs:
         out_dir = get_out_dir_name(
@@ -65,6 +66,10 @@ def create_manifest(input_manifest, noise_manifest, snrs, out_path):
             for line in inf:
                 row = json.loads(line.strip())
                 row['audio_filepath'] = os.path.join(out_dir, os.path.basename(row['audio_filepath']))
+                if save_noise:
+                    file_ext = os.path.splitext(row['audio_filepath'])[1]
+                    noise_filename = os.path.basename(row['audio_filepath']).replace(file_ext, "_noise" + file_ext)
+                    row['noise_filepath'] = os.path.join(out_dir, noise_filename)
                 outf.write(json.dumps(row) + "\n")
 
 
@@ -97,6 +102,13 @@ def process_row(row):
         norm_factor = att_factor / max_level
         new_samples = norm_factor * data.samples
         sf.write(out_f, new_samples.transpose(), sample_rate)
+
+        global save_noise
+        if save_noise:
+            noise_samples = new_samples - norm_factor * data_orig.samples
+            out_f_ext = os.path.splitext(out_f)[1]
+            out_f_noise = out_f.replace(out_f_ext, "_noise" + out_f_ext)
+            sf.write(out_f_noise, noise_samples.transpose(), sample_rate)
 
 
 def add_noise(infile, snrs, noise_manifest, out_dir, num_workers=1):
@@ -131,19 +143,25 @@ def main():
         "--attenuation_factor",
         default=0.8,
         type=float,
-        help="Attenuation factor applied on the noise added samples before writing to wave",
+        help="Attenuation factor applied on the normalized noise-added samples before writing to wave",
     )
+    parser.add_argument(
+        "--save_noise", default=False, action="store_true", help="save the noise added to the input signal"
+    )
+
     args = parser.parse_args()
     global sample_rate
     sample_rate = args.sample_rate
     global att_factor
     att_factor = args.attenuation_factor
+    global save_noise
+    save_noise = args.save_noise
     global rng
     rng = args.seed
     num_workers = args.num_workers
 
     add_noise(args.input_manifest, args.snrs, args.noise_manifest, args.out_dir, num_workers=num_workers)
-    create_manifest(args.input_manifest, args.noise_manifest, args.snrs, args.out_dir)
+    create_manifest(args.input_manifest, args.noise_manifest, args.snrs, args.out_dir, args.save_noise)
 
 
 if __name__ == '__main__':

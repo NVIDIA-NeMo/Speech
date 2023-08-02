@@ -1,6 +1,6 @@
-# This configuration contains the default values for training a multichannel speech enhancement model.
+# This configuration contains the exemplary values for training a multichannel speech enhancement model with a mask-based beamformer.
 #
-name: "multichannel_enhancement"
+name: "masking"
 
 model:
   sample_rate: 16000
@@ -25,7 +25,7 @@ model:
     input_key: audio_filepath # key of the input signal path in the manifest
     target_key: target_filepath
     target_channel_selector: 0 # target signal is the first channel from files in target_key
-    batch_size: 1 # batch size may be increased based on the available memory
+    batch_size: 64 # batch size may be increased based on the available memory
     shuffle: false
     num_workers: 4
     pin_memory: true
@@ -60,7 +60,7 @@ model:
     bidirectional: true # Use bi-directional RNN
     
   mask_processor:
-    _target_: nemo.collections.asr.modules.audio_modules.MaskBasedBeamformer # Mask-based multi-channel processing
+    _target_: nemo.collections.asr.modules.audio_modules.MaskReferenceChannel # Apply mask on the reference channel
     ref_channel: 0 # Reference channel for the output
 
   loss:
@@ -78,10 +78,10 @@ model:
     
   optim:
     name: adamw
-    lr: 1e-3
+    lr: 1e-4
     # optimizer arguments
     betas: [0.9, 0.98]
-    weight_decay: 0
+    weight_decay: 1e-3
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs

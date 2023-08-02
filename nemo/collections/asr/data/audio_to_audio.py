@@ -462,7 +462,7 @@ class ASRAudioProcessor:
 
             if duration + fixed_offset > min_audio_duration:
                 # The shortest file is shorter than the requested duration
-                logging.warning(
+                logging.debug(
                     f'Shortest file ({min_audio_duration}s) is less than the desired duration {duration}s + fixed offset {fixed_offset}s. Returned signals will be shortened to {available_duration} seconds.'
                 )
                 offset = fixed_offset

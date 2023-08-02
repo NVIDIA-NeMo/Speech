@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import concurrent
+import itertools
 import multiprocessing
 import os
+import random
 import warnings
 from typing import Dict, Iterable, List, Optional, Tuple, Union
 
@@ -33,7 +35,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
-from nemo.collections.asr.parts.utils.audio_utils import db2mag, mag2db, pow2db, rms
+from nemo.collections.asr.parts.utils.audio_utils import db2mag, generate_approximate_noise_field, mag2db, pow2db, rms
 from nemo.collections.asr.parts.utils.data_simulation_utils import (
     DataAnnotator,
     SpeechSampler,
@@ -1993,6 +1995,9 @@ def convert_placement_to_range(
     if not np.all(np.array(room_dim) > 0):
         raise ValueError(f'Room dimensions must be positive: {room_dim}')
 
+    if object_radius < 0:
+        raise ValueError(f'Object radius must be non-negative: {object_radius}')
+
     placement_range = [None] * 3
     min_to_wall = placement.get('min_to_wall', 0)
 
@@ -2117,7 +2122,13 @@ class RIRCorpusGenerator(object):
         if mic_cfg is None:
             raise ValueError('Mic configuration not provided')
 
-        for key in ['positions', 'placement', 'orientation']:
+        if mic_cfg.get('positions') == 'random':
+            # Only num_mics and placement are required
+            mic_cfg_keys = ['num_mics', 'placement']
+        else:
+            mic_cfg_keys = ['positions', 'placement', 'orientation']
+
+        for key in mic_cfg_keys:
             if key not in mic_cfg:
                 raise ValueError(f'Mic array {key} not provided')
 
@@ -2148,27 +2159,7 @@ class RIRCorpusGenerator(object):
 
         room_cfg = self.cfg.room
 
-        # width, length, height
-        room_dim = np.zeros(3)
-
-        # prepare dimensions
-        for idx, key in enumerate(['width', 'length', 'height']):
-            # get configured dimension
-            dim = room_cfg.dim[key]
-
-            # set a value
-            if dim is None:
-                raise ValueError(f'Room {key} needs to be a scalar or a range, currently it is None')
-            elif np.isscalar(dim):
-                assert dim > 0, f'Dimension should be positive for {key}: {dim}'
-                room_dim[idx] = dim
-            elif len(dim) == 2:
-                assert 0 < dim[0] <= dim[1], f'Expecting two non-decreasing values for {key}, received {dim}'
-                room_dim[idx] = self.random.uniform(low=dim[0], high=dim[1])
-            else:
-                raise ValueError(f'Unexpected value for {key}: {dim}')
-
-        # prepare rt60
+        # Prepare rt60
         if room_cfg.rt60 is None:
             raise ValueError(f'Room RT60 needs to be a scalar or a range, currently it is None')
 
@@ -2183,8 +2174,45 @@ class RIRCorpusGenerator(object):
         else:
             raise ValueError(f'Unexpected value for RT60: {room_cfg.rt60}')
 
-        # Get parameters from size and RT60
-        room_absorption, room_max_order = pra.inverse_sabine(rt60, room_dim)
+        # Generate a room with random dimensions
+        num_retries = self.cfg.get('num_retries', 20)
+
+        for n in range(num_retries):
+
+            # width, length, height
+            room_dim = np.zeros(3)
+
+            # prepare dimensions
+            for idx, key in enumerate(['width', 'length', 'height']):
+                # get configured dimension
+                dim = room_cfg.dim[key]
+
+                # set a value
+                if dim is None:
+                    raise ValueError(f'Room {key} needs to be a scalar or a range, currently it is None')
+                elif np.isscalar(dim):
+                    assert dim > 0, f'Dimension should be positive for {key}: {dim}'
+                    room_dim[idx] = dim
+                elif len(dim) == 2:
+                    assert 0 < dim[0] <= dim[1], f'Expecting two non-decreasing values for {key}, received {dim}'
+                    # Reduce dimension if the previous attempt failed
+                    room_dim[idx] = self.random.uniform(low=dim[0], high=dim[1] - n * (dim[1] - dim[0]) / num_retries)
+                else:
+                    raise ValueError(f'Unexpected value for {key}: {dim}')
+
+            try:
+                # Get parameters from size and RT60
+                room_absorption, room_max_order = pra.inverse_sabine(rt60, room_dim)
+                break
+            except Exception as e:
+                logging.debug('Inverse sabine failed: %s', str(e))
+                # Inverse sabine may fail if the room is too large for the selected RT60.
+                # Try again by generate a smaller room.
+                room_absorption = room_max_order = None
+                continue
+
+        if room_absorption is None or room_max_order is None:
+            raise RuntimeError(f'Evaluation of parameters failed for RT60 {rt60}s and room size {room_dim}.')
 
         # Return the required values
         room_params = {
@@ -2208,43 +2236,64 @@ class RIRCorpusGenerator(object):
             Randomly placed microphone array.
         """
         mic_cfg = self.cfg.mic_array
-        mic_array = ArrayGeometry(mic_cfg.positions)
 
-        # Randomize center placement
-        center = np.zeros(3)
-        placement_range = convert_placement_to_range(
-            placement=mic_cfg.placement, room_dim=room_dim, object_radius=mic_array.radius
-        )
+        if mic_cfg.positions == 'random':
+            # Create a radom set of microphones
+            num_mics = mic_cfg.num_mics
+            mic_positions = []
 
-        for idx in range(len(center)):
-            center[idx] = self.random.uniform(low=placement_range[idx][0], high=placement_range[idx][1])
+            # Each microphone is placed individually
+            placement_range = convert_placement_to_range(
+                placement=mic_cfg.placement, room_dim=room_dim, object_radius=0
+            )
 
-        # Place the array at the configured center point
-        mic_array.translate(to=center)
+            # Randomize mic placement
+            for m in range(num_mics):
+                position_m = [None] * 3
+                for idx in range(3):
+                    position_m[idx] = self.random.uniform(low=placement_range[idx][0], high=placement_range[idx][1])
+                mic_positions.append(position_m)
 
-        # Randomize orientation
-        orientation = dict()
-        for key in ['yaw', 'roll', 'pitch']:
-            # angle for current orientation
-            angle = mic_cfg.orientation[key]
+            mic_array = ArrayGeometry(mic_positions)
 
-            if angle is None:
-                raise ValueError(f'Mic array {key} should be a scalar or a range, currently it is set to None.')
+        else:
+            mic_array = ArrayGeometry(mic_cfg.positions)
 
-            # check it's within the expected range
-            check_angle(key, angle)
+            # Randomize center placement
+            center = np.zeros(3)
+            placement_range = convert_placement_to_range(
+                placement=mic_cfg.placement, room_dim=room_dim, object_radius=mic_array.radius
+            )
 
-            if np.isscalar(angle):
-                orientation[key] = angle
-            elif len(angle) == 2:
-                assert angle[0] <= angle[1], f"Expecting two non-decreasing values for {key}, received {angle}"
-                # generate integer values, for easier bucketing, if necessary
-                orientation[key] = self.random.uniform(low=angle[0], high=angle[1])
-            else:
-                raise ValueError(f'Unexpected value for orientation {key}: {angle}')
+            for idx in range(len(center)):
+                center[idx] = self.random.uniform(low=placement_range[idx][0], high=placement_range[idx][1])
 
-        # Rotate the array to match the selected orientation
-        mic_array.rotate(**orientation)
+            # Place the array at the configured center point
+            mic_array.translate(to=center)
+
+            # Randomize orientation
+            orientation = dict()
+            for key in ['yaw', 'roll', 'pitch']:
+                # angle for current orientation
+                angle = mic_cfg.orientation[key]
+
+                if angle is None:
+                    raise ValueError(f'Mic array {key} should be a scalar or a range, currently it is set to None.')
+
+                # check it's within the expected range
+                check_angle(key, angle)
+
+                if np.isscalar(angle):
+                    orientation[key] = angle
+                elif len(angle) == 2:
+                    assert angle[0] <= angle[1], f"Expecting two non-decreasing values for {key}, received {angle}"
+                    # generate integer values, for easier bucketing, if necessary
+                    orientation[key] = self.random.uniform(low=angle[0], high=angle[1])
+                else:
+                    raise ValueError(f'Unexpected value for orientation {key}: {angle}')
+
+            # Rotate the array to match the selected orientation
+            mic_array.rotate(**orientation)
 
         return mic_array
 
@@ -2326,9 +2375,12 @@ class RIRCorpusGenerator(object):
                 examples.append(example)
 
             # Simulation
-            if self.num_workers is not None and self.num_workers > 1:
-                logging.info(f'Simulate using {self.num_workers} workers')
-                with multiprocessing.Pool(processes=self.num_workers) as pool:
+            if (num_workers := self.cfg.get('num_workers')) is None:
+                num_workers = os.cpu_count() - 1
+
+            if num_workers > 1:
+                logging.info(f'Simulate using {num_workers} workers')
+                with multiprocessing.Pool(processes=num_workers) as pool:
                     metadata = list(tqdm(pool.imap(simulate_room_kwargs, examples), total=len(examples)))
 
             else:
@@ -2810,22 +2862,23 @@ class RIRMixGenerator(object):
         # interference configuration
         interference_cfg = self.cfg.get('interference')
         if not interference_cfg:
-            raise ValueError(
-                'Interference configuration not provided. Expecting audio manifests in format {subset: path_to_manifest}'
-            )
-        interference_probability = interference_cfg.get('interference_probability', 0)
-        max_num_interferers = interference_cfg.get('max_num_interferers', 0)
-        min_azimuth_to_target = interference_cfg.get('min_azimuth_to_target', 0)
-        if interference_probability is not None:
-            if interference_probability < 0:
-                raise ValueError(f'Interference probability must be non-negative. Current value: {interference_prob}')
-            elif interference_probability > 0:
-                assert (
-                    max_num_interferers is not None and max_num_interferers > 0
-                ), f'Max number of interferers must be positive. Current value: {max_num_interferers}'
-                assert (
-                    min_azimuth_to_target is not None and min_azimuth_to_target >= 0
-                ), f'Min azimuth to target must be non-negative'
+            logging.info('Interference configuration not provided.')
+        else:
+            interference_probability = interference_cfg.get('interference_probability', 0)
+            max_num_interferers = interference_cfg.get('max_num_interferers', 0)
+            min_azimuth_to_target = interference_cfg.get('min_azimuth_to_target', 0)
+            if interference_probability is not None:
+                if interference_probability < 0:
+                    raise ValueError(
+                        f'Interference probability must be non-negative. Current value: {interference_prob}'
+                    )
+                elif interference_probability > 0:
+                    assert (
+                        max_num_interferers is not None and max_num_interferers > 0
+                    ), f'Max number of interferers must be positive. Current value: {max_num_interferers}'
+                    assert (
+                        min_azimuth_to_target is not None and min_azimuth_to_target >= 0
+                    ), f'Min azimuth to target must be non-negative'
 
         # mix configuration
         mix_cfg = self.cfg.get('mix')
@@ -2835,71 +2888,6 @@ class RIRMixGenerator(object):
             raise ValueError('Reference microphone not defined.')
         if 'ref_mic_rms' not in mix_cfg:
             raise ValueError('Reference microphone RMS not defined.')
-
-    def get_audio_list(
-        self, metadata: List[dict], min_duration: float, manifest_filepath: str = None, duration_eps: float = 0.01
-    ) -> List[dict]:
-        """Prepare a list of audio files with duration of at least min_duration.
-        Audio files are randomly selected from manifest metadata.
-
-        If a selected file is longer than required duration, then a random offset is selected
-        before taking a min_duration segment.
-        If a selected file is shorter than the required duration, then a the whole file is selected
-        and a next file is randomly selected.
-        Needs manifest filepath to support relative path resolution.
-
-        Args:
-            metadata: metadata loaded from a manifest file
-            min_duration: minimal duration for the output file
-            manifest_filepath: path to the manifest file, used to resolve relative paths.
-                               For relative paths, manifest parent directory is assume to
-                               be the base directory.
-            duration_eps: A small extra duration selected from each file. This is to make
-                          sure that the signal will be long enough even if it needs to be
-                          resampled, etc.
-        
-        Returns:
-            List of audio files with some metadata (offset, duration).
-        """
-        # load a bit more than required, to compensate to floor rounding
-        # when loading samples from a file
-        total_duration = additional_duration = 0
-
-        audio_list = []
-
-        while total_duration < min_duration + additional_duration:
-
-            data = self.random.choice(metadata)
-            audio_filepath = data['audio_filepath']
-            if not os.path.isabs(audio_filepath) and manifest_filepath is not None:
-                manifest_dir = os.path.dirname(manifest_filepath)
-                audio_filepath = os.path.join(manifest_dir, audio_filepath)
-
-            remaining_duration = min_duration - total_duration + additional_duration
-
-            # select a random offset
-            if data['duration'] <= remaining_duration:
-                # take the whole noise file
-                offset = 0
-                duration = data['duration']
-                additional_duration += duration_eps
-            else:
-                # select a random offset in seconds
-                max_offset = data['duration'] - remaining_duration
-                offset = self.random.uniform(low=0, high=max_offset)
-                duration = remaining_duration
-
-            audio_example = {
-                'audio_filepath': audio_filepath,
-                'offset': offset,
-                'duration': duration,
-                'type': data.get('type'),
-            }
-
-            audio_list.append(audio_example)
-            total_duration += duration
-
-        return audio_list
 
     def generate_target(self, subset: str) -> dict:
         """
@@ -2927,41 +2915,81 @@ class RIRMixGenerator(object):
         Returns:
             Dictionary with target configuration, including room, source index, and audio information.
         """
+        # Utility function
+        def select_target_source(room_metadata, room_indices):
+            """Find a room and a source that satisfies the constraints.
+            """
+            for room_index in room_indices:
+                # Select room
+                room_data = room_metadata[room_index]
+
+                # Candidate sources
+                sources = self.random.choice(room_data['num_sources'], size=self.num_retries, replace=False)
+
+                # Select target source in this room
+                for source in sources:
+                    # Check constraints
+                    constraints_met = []
+                    for constraint in ['azimuth', 'elevation', 'distance']:
+                        if self.cfg.target.get(constraint) is not None:
+                            # Check that the selected source is in the range
+                            source_value = room_data[f'source_{constraint}'][source]
+                            if self.cfg.target[constraint][0] <= source_value <= self.cfg.target[constraint][1]:
+                                constraints_met.append(True)
+                            else:
+                                constraints_met.append(False)
+                                # No need to check the remaining constraints
+                                break
+
+                    # Check if a feasible source is found
+                    if all(constraints_met):
+                        # A feasible source has been found
+                        return source, room_index
+
+            return None, None
+
         # Prepare room & source position
         room_metadata = self.metadata[subset]['room']
-
-        for _ in range(self.num_retries):
-            # Select room
-            room_index = self.random.integers(low=0, high=len(room_metadata))
-            room_data = room_metadata[room_index]
-
-            # Select target source in this room
-            for _ in range(self.num_retries):
-                # Select a source for the target
-                source = self.random.integers(low=0, high=room_data['num_sources'])
-                # Check constraints
-                for constraint in ['azimuth', 'elevation', 'distance']:
-                    if self.cfg.target.get(constraint) is None:
-                        continue
-                    else:
-                        # Check that the selected source is in the range
-                        source_value = room_data[f'source_{constraint}'][source]
-                        if self.cfg.target[constraint][0] <= source_value <= self.cfg.target[constraint][1]:
-                            continue
-                        else:
-                            # Pick a new one
-                            source = None
-                            break
-
-            if source is not None:
-                # A feasible source has been found
-                break
+        room_indices = self.random.choice(len(room_metadata), size=self.num_retries, replace=False)
+        source, room_index = select_target_source(room_metadata, room_indices)
 
         if source is None:
             raise RuntimeError(f'Could not find a feasible source given target constraints {self.cfg.target}')
 
-        # Prepare audio data
-        audio_data = self.random.choice(self.metadata[subset]['target'])
+        room_data = room_metadata[room_index]
+
+        # Optional: select subset of channels
+        num_available_mics = len(room_data['mic_positions'])
+        if 'mic_array' in self.cfg:
+            num_mics = self.cfg.mic_array['num_mics']
+            mic_selection = self.cfg.mic_array['selection']
+
+            if mic_selection == 'random':
+                logging.debug('Randomly selecting %d mics', num_mics)
+                selected_mics = self.random.choice(num_available_mics, size=num_mics, replace=False)
+            elif isinstance(mic_selection, Iterable):
+                logging.debug('Using explicitly selected mics: %s', str(mic_selection))
+                assert (
+                    0 <= min(mic_selection) < num_available_mics
+                ), f'Expecting mic_selection in range [0,{num_available_mics}), current value: {mic_selection}'
+                selected_mics = np.array(mic_selection)
+            else:
+                raise ValueError(f'Unexpected value for mic_selection: {mic_selection}')
+        else:
+            logging.debug('Using all %d available mics', num_available_mics)
+            num_mics = num_available_mics
+            selected_mics = np.arange(num_mics)
+
+        # Double-check the number of mics is as expected
+        assert (
+            len(selected_mics) == num_mics
+        ), f'Expecting {num_mics} mics, but received {len(selected_mics)} mics: {selected_mics}'
+        logging.debug('Selected mics: %s', str(selected_mics))
+
+        # Calculate distance from the source to each microphone
+        mic_positions = np.array(room_data['mic_positions'])[selected_mics]
+        source_position = np.array(room_data['source_position'][source])
+        distance_source_to_mic = np.linalg.norm(mic_positions - source_position, axis=1)
 
         # Handle relative paths
         room_filepath = room_data['room_filepath']
@@ -2969,48 +2997,24 @@ class RIRMixGenerator(object):
             manifest_dir = os.path.dirname(self.cfg.room[subset])
             room_filepath = os.path.join(manifest_dir, room_filepath)
 
-        audio_filepath = audio_data['audio_filepath']
-        if not os.path.isabs(audio_filepath):
-            manifest_dir = os.path.dirname(self.cfg.target[subset])
-            audio_filepath = os.path.join(manifest_dir, audio_filepath)
-
         target_cfg = {
             'room_index': int(room_index),
             'room_filepath': room_filepath,
             'source': source,
             'rt60': room_data['rir_rt60_measured'][source],
-            'num_mics': len(room_data['mic_positions']),
+            'selected_mics': selected_mics.tolist(),
+            # Positions
+            'source_position': source_position.tolist(),
+            'mic_positions': mic_positions.tolist(),
+            # Relative to center of the array
             'azimuth': room_data['source_azimuth'][source],
             'elevation': room_data['source_elevation'][source],
             'distance': room_data['source_distance'][source],
-            'audio_filepath': audio_filepath,
-            'text': audio_data.get('text'),
-            'duration': audio_data['duration'],
+            # Relative to mics
+            'distance_source_to_mic': distance_source_to_mic,
         }
 
         return target_cfg
-
-    def generate_noise(self, subset: str, target_cfg: dict) -> List[dict]:
-        """
-        Prepare a list of dictionaries with noise configuration.
-
-        Args:
-            subset: string denoting a subset which will be used to select noise audio.
-            target_cfg: dictionary with target configuration. This is used determine
-                        the minimal required duration for the noise signal.
-        
-        Returns:
-            List of dictionary with noise configuration, including audio information
-            for one or more noise files.
-        """
-        if (noise_metadata := self.metadata[subset]['noise']) is None:
-            return None
-
-        noise_cfg = self.get_audio_list(
-            noise_metadata, min_duration=target_cfg['duration'], manifest_filepath=self.cfg.noise[subset]
-        )
-
-        return noise_cfg
 
     def generate_interference(self, subset: str, target_cfg: dict) -> List[dict]:
         """
@@ -3084,14 +3088,11 @@ class RIRMixGenerator(object):
             # Current source setup
             interfering_source = {
                 'source': source,
+                'selected_mics': target_cfg['selected_mics'],
+                'position': room_data['source_position'][source],
                 'azimuth': room_data['source_azimuth'][source],
                 'elevation': room_data['source_elevation'][source],
                 'distance': room_data['source_distance'][source],
-                'audio': self.get_audio_list(
-                    interference_metadata,
-                    min_duration=target_cfg['duration'],
-                    manifest_filepath=self.cfg.interference[subset],
-                ),
             }
 
             # Done with interference for this source
@@ -3099,7 +3100,7 @@ class RIRMixGenerator(object):
 
         return interference_cfg
 
-    def generate_mix(self, subset: str) -> dict:
+    def generate_mix(self, subset: str, target_cfg: dict) -> dict:
         """Generate scaling parameters for mixing
         the target speech at the microphone, background noise
         and interference signal at the microphone.
@@ -3114,6 +3115,7 @@ class RIRMixGenerator(object):
 
         Args:
             subset: string denoting the subset of configuration
+            target_cfg: dictionary with target configuration
 
         Returns:
             Dictionary containing configured RSNR, RSIR, ref_mic
@@ -3121,13 +3123,13 @@ class RIRMixGenerator(object):
         """
         mix_cfg = dict()
 
-        for key in ['rsnr', 'rsir', 'ref_mic', 'ref_mic_rms']:
+        for key in ['rsnr', 'rsir', 'ref_mic', 'ref_mic_rms', 'min_duration']:
             if key in self.cfg.mix[subset]:
                 # Take the value from subset config
-                value = self.cfg.mix[subset][key]
+                value = self.cfg.mix[subset].get(key)
             else:
                 # Take the global value
-                value = self.cfg.mix[key]
+                value = self.cfg.mix.get(key)
 
             if value is None:
                 mix_cfg[key] = None
@@ -3139,6 +3141,13 @@ class RIRMixGenerator(object):
             else:
                 # Select one of the multiple values
                 mix_cfg[key] = self.random.choice(value)
+
+        if mix_cfg['ref_mic'] == 'closest':
+            # Select the closest mic as the reference
+            mix_cfg['ref_mic'] = np.argmin(target_cfg['distance_source_to_mic'])
+
+        # Configuration for saving individual components
+        mix_cfg['save'] = OmegaConf.to_object(self.cfg.mix['save']) if 'save' in self.cfg.mix else {}
 
         return mix_cfg
 
@@ -3181,9 +3190,8 @@ class RIRMixGenerator(object):
             for n_example in tqdm(range(num_examples), total=num_examples, desc=f'Preparing {subset}'):
                 # prepare configuration
                 target_cfg = self.generate_target(subset)
-                noise_cfg = self.generate_noise(subset, target_cfg)
                 interference_cfg = self.generate_interference(subset, target_cfg)
-                mix_cfg = self.generate_mix(subset)
+                mix_cfg = self.generate_mix(subset, target_cfg)
 
                 # base file name
                 base_output_filepath = os.path.join(output_dir_subset, f'{subset}_example_{n_example:09d}')
@@ -3192,7 +3200,6 @@ class RIRMixGenerator(object):
                 example = {
                     'sample_rate': self.sample_rate,
                     'target_cfg': target_cfg,
-                    'noise_cfg': noise_cfg,
                     'interference_cfg': interference_cfg,
                     'mix_cfg': mix_cfg,
                     'base_output_filepath': base_output_filepath,
@@ -3200,13 +3207,33 @@ class RIRMixGenerator(object):
 
                 examples.append(example)
 
+            # Audio data
+            audio_metadata = {
+                'target': self.metadata[subset]['target'],
+                'target_dir': os.path.dirname(self.cfg.target[subset]),  # manifest_dir
+                'noise': self.metadata[subset]['noise'],
+                'noise_dir': os.path.dirname(self.cfg.noise[subset]),  # manifest_dir
+            }
+
+            if interference_cfg is not None:
+                audio_metadata.update(
+                    {
+                        'interference': self.metadata[subset]['interference'],
+                        'interference_dir': os.path.dirname(self.cfg.interference[subset]),  # manifest_dir
+                    }
+                )
+
             # Simulation
-            if self.num_workers is not None and self.num_workers > 1:
-                logging.info(f'Simulate using {self.num_workers} workers')
-                with multiprocessing.Pool(processes=self.num_workers) as pool:
+            if (num_workers := self.cfg.get('num_workers')) is None:
+                num_workers = os.cpu_count() - 1
+
+            if num_workers is not None and num_workers > 1:
+                logging.info(f'Simulate using {num_workers} workers')
+                examples_and_audio_metadata = zip(examples, itertools.repeat(audio_metadata, len(examples)))
+                with multiprocessing.Pool(processes=num_workers) as pool:
                     metadata = list(
                         tqdm(
-                            pool.imap(simulate_room_mix_kwargs, examples),
+                            pool.imap(simulate_room_mix_helper, examples_and_audio_metadata),
                             total=len(examples),
                             desc=f'Simulating {subset}',
                         )
@@ -3215,10 +3242,10 @@ class RIRMixGenerator(object):
                 logging.info('Simulate using a single worker')
                 metadata = []
                 for example in tqdm(examples, total=len(examples), desc=f'Simulating {subset}'):
-                    metadata.append(simulate_room_mix(**example))
+                    metadata.append(simulate_room_mix(**example, audio_metadata=audio_metadata))
 
             # Save manifest
-            manifest_filepath = os.path.join(output_dir, f'{subset}_manifest.json')
+            manifest_filepath = os.path.join(output_dir, f'{os.path.basename(output_dir)}_{subset}.json')
 
             if os.path.exists(manifest_filepath) and os.path.isfile(manifest_filepath):
                 raise RuntimeError(f'Manifest config file exists: {manifest_filepath}')
@@ -3232,7 +3259,7 @@ class RIRMixGenerator(object):
             write_manifest(manifest_filepath, metadata)
 
             # Generate plots with information about generated data
-            plot_filepath = os.path.join(output_dir, f'{subset}_info.png')
+            plot_filepath = os.path.join(output_dir, f'{os.path.basename(output_dir)}_{subset}_info.png')
 
             if os.path.exists(plot_filepath) and os.path.isfile(plot_filepath):
                 raise RuntimeError(f'Plot file exists: {plot_filepath}')
@@ -3269,6 +3296,7 @@ def convolve_rir(signal: np.ndarray, rir: np.ndarray) -> np.ndarray:
         out = np.zeros((num_samples, num_channels))
         for m in range(num_channels):
             out[:, m] = convolve(signal, rir[:, m])[:num_samples]
+
     else:
         raise RuntimeError(f'RIR with {rir.ndim} not supported')
 
@@ -3334,7 +3362,7 @@ def simultaneously_active_rms(
     x: np.ndarray,
     y: np.ndarray,
     sample_rate: float,
-    rms_threshold_db: float = -40,
+    rms_threshold_db: float = -60,
     window_len_ms: float = 200,
     min_active_duration: float = 0.5,
 ) -> Tuple[float, float]:
@@ -3421,43 +3449,198 @@ def scaled_disturbance(
     return scaled_disturbance
 
 
-def load_audio_from_multiple_files(items: List[Dict], sample_rate: int, total_len: int) -> np.ndarray:
-    """Load an audio from multiple files and concatenate into a single signal.
+def prepare_source_signal(
+    signal_type: str,
+    sample_rate: int,
+    audio_data: List[dict],
+    audio_dir: Optional[str] = None,
+    min_duration: Optional[int] = None,
+    ref_signal: Optional[np.ndarray] = None,
+    mic_positions: Optional[np.ndarray] = None,
+    num_retries: int = 10,
+) -> tuple:
+    """Prepare an audio signal for a source.
 
     Args:
-        items: list of dictionaries, each item has audio_filepath, offset, and duration
-        sample_rate: desired sample rate of the signal
-        total_len: total length in samples
+        signal_type: 'point' or 'diffuse'
+        sample_rate: Sampling rate for the signal
+        audio_data: List of audio items, each is a dictionary with audio_filepath, duration, offset and optionally text
+        audio_dir: Base directory for resolving paths, e.g., manifest basedir
+        min_duration: Minimal duration to be loaded if ref_signal is not provided, in seconds
+        ref_signal: Optional, used to determine the length of the signal
+        mic_positions: Optional, used to prepare approximately diffuse signal
+        num_retries: Number of retries when selecting the source files
 
     Returns:
-        Numpy array, shape (total_len, num_channels)
+        (audio_signal, metadata), where audio_signal is an ndarray and metadata is a dictionary
+        with audio filepaths, durations and offsets
     """
-    if items is None:
-        # Nothing is provided
+    if not signal_type in ['point', 'diffuse']:
+        raise ValueError(f'Unexpected signal type {signal_type}.')
+
+    if audio_data is None:
+        # No data to load
         return None
 
-    signal = None
-    samples_to_load = total_len
-    # if necessary, load multiple from files
-    for item in items:
-        check_min_sample_rate(item['audio_filepath'], sample_rate)
-        # load the pre-defined segment
-        segment = AudioSegment.from_file(
-            audio_file=item['audio_filepath'], target_sr=sample_rate, offset=item['offset'], duration=item['duration'],
-        )
-        # not perfect, since different files may have different distributions
-        segment_samples = normalize_max(segment.samples)
-        # concatenate
-        signal = np.concatenate((signal, segment_samples)) if signal is not None else segment_samples
-        # remaining samples
-        samples_to_load -= len(segment_samples)
+    metadata = {}
 
-        if samples_to_load <= 0:
-            break
-    # trim to length
-    signal = signal[:total_len, ...]
+    if ref_signal is None:
+        audio_signal = None
+        # load at least one sample if min_duration is not provided
+        samples_to_load = int(min_duration * sample_rate) if min_duration is not None else 1
+        source_signals_metadata = {'audio_filepath': [], 'duration': [], 'offset': [], 'text': []}
 
-    return signal
+        while samples_to_load > 0:
+            # Select a random item and load the audio
+            item = random.choice(audio_data)
+
+            audio_filepath = item['audio_filepath']
+            if not os.path.isabs(audio_filepath) and audio_dir is not None:
+                audio_filepath = os.path.join(audio_dir, audio_filepath)
+
+            # Load audio
+            check_min_sample_rate(audio_filepath, sample_rate)
+            audio_segment = AudioSegment.from_file(
+                audio_file=audio_filepath,
+                target_sr=sample_rate,
+                duration=item['duration'],
+                offset=item.get('offset', 0),
+            )
+
+            if signal_type == 'point':
+                if audio_segment.num_channels > 1:
+                    raise RuntimeError(
+                        f'Expecting single-channel source signal, but received {audio_segment.num_channels}. File: {audio_filepath}'
+                    )
+            else:
+                raise ValueError(f'Unexpected signal type {signal_type}.')
+
+            source_signals_metadata['audio_filepath'].append(audio_filepath)
+            source_signals_metadata['duration'].append(item['duration'])
+            source_signals_metadata['duration'].append(item.get('offset', 0))
+            source_signals_metadata['text'].append(item.get('text'))
+
+            # not perfect, since different files may have different distributions
+            segment_samples = normalize_max(audio_segment.samples)
+            # concatenate
+            audio_signal = (
+                np.concatenate((audio_signal, segment_samples)) if audio_signal is not None else segment_samples
+            )
+            # remaining samples
+            samples_to_load -= len(segment_samples)
+
+        # Finally, we need only the metadata for the complete signal
+        metadata = {
+            'duration': sum(source_signals_metadata['duration']),
+            'offset': 0,
+        }
+
+        # Add text only if all source signals have text
+        if all([isinstance(tt, str) for tt in source_signals_metadata['text']]):
+            metadata['text'] = ' '.join(source_signals_metadata['text'])
+    else:
+        # Load a signal with total_len samples and ensure it has enough simultaneous activity/overlap with ref_signal
+        # Concatenate multiple files if necessary
+        total_len = len(ref_signal)
+
+        for n in range(num_retries):
+
+            audio_signal = None
+            source_signals_metadata = {'audio_filepath': [], 'duration': [], 'offset': []}
+
+            if signal_type == 'point':
+                samples_to_load = total_len
+            elif signal_type == 'diffuse':
+                # Load longer signal so it can be reshaped into (samples, mics) and
+                # used to generate approximately diffuse noise field
+                num_mics = len(mic_positions)
+                samples_to_load = num_mics * total_len
+
+            while samples_to_load > 0:
+                # Select an audio file
+                item = random.choice(audio_data)
+
+                audio_filepath = item['audio_filepath']
+                if not os.path.isabs(audio_filepath) and audio_dir is not None:
+                    audio_filepath = os.path.join(audio_dir, audio_filepath)
+
+                # Load audio signal
+                check_min_sample_rate(audio_filepath, sample_rate)
+
+                if (max_offset := item['duration'] - np.ceil(samples_to_load / sample_rate)) > 0:
+                    # Load with a random offset if the example is longer than samples_to_load
+                    offset = random.uniform(0, max_offset)
+                    duration = -1
+                else:
+                    # Load the whole file
+                    offset, duration = 0, item['duration']
+                audio_segment = AudioSegment.from_file(
+                    audio_file=audio_filepath, target_sr=sample_rate, duration=duration, offset=offset
+                )
+
+                # Prepare a single-channel signal
+                if audio_segment.num_channels == 1:
+                    # Take all samples
+                    segment_samples = audio_segment.samples
+                else:
+                    # Take a random channel
+                    selected_channel = random.choice(range(audio_segment.num_channels))
+                    segment_samples = audio_segment.samples[:, selected_channel]
+
+                source_signals_metadata['audio_filepath'].append(audio_filepath)
+                source_signals_metadata['duration'].append(len(segment_samples) / sample_rate)
+                source_signals_metadata['offset'].append(offset)
+
+                # not perfect, since different files may have different distributions
+                segment_samples = normalize_max(segment_samples)
+                # concatenate
+                audio_signal = (
+                    np.concatenate((audio_signal, segment_samples)) if audio_signal is not None else segment_samples
+                )
+                # remaining samples
+                samples_to_load -= len(segment_samples)
+
+            if signal_type == 'diffuse' and num_mics > 1:
+                try:
+                    # Trim and reshape to num_mics to prepare num_mics source signals
+                    audio_signal = audio_signal[: num_mics * total_len].reshape(num_mics, -1).T
+
+                    # Make spherically diffuse noise
+                    audio_signal = generate_approximate_noise_field(
+                        mic_positions=np.array(mic_positions), noise_signal=audio_signal, sample_rate=sample_rate
+                    )
+                except Exception as e:
+                    logging.info('Failed to generate approximate noise field: %s', str(e))
+                    logging.info('Try again.')
+                    # Try again
+                    audio_signal, source_signals_metadata = None, {}
+                    continue
+
+            # Trim to length
+            audio_signal = audio_signal[:total_len, ...]
+
+            # Include the channel dimension if the reference includes it
+            if ref_signal.ndim == 2 and audio_signal.ndim == 1:
+                audio_signal = audio_signal[:, None]
+
+            try:
+                # Signal and ref_signal should be simultaneously active
+                simultaneously_active_rms(ref_signal, audio_signal, sample_rate=sample_rate)
+                # We have enough overlap
+                break
+            except Exception as e:
+                # Signal and ref_signal are not overlapping, try again
+                logging.info('Exception: %s', str(e))
+                logging.info('Signals are not overlapping, try again.')
+                audio_signal, source_signals_metadata = None, {}
+                continue
+
+    if audio_signal is None:
+        logging.warning('Audio signal not set: %s.', signal_type)
+
+    metadata['source_signals'] = source_signals_metadata
+
+    return audio_signal, metadata
 
 
 def check_min_sample_rate(filepath: str, sample_rate: float):
@@ -3479,9 +3662,9 @@ def check_min_sample_rate(filepath: str, sample_rate: float):
 def simulate_room_mix(
     sample_rate: int,
     target_cfg: dict,
-    noise_cfg: List[dict],
     interference_cfg: dict,
     mix_cfg: dict,
+    audio_metadata: dict,
     base_output_filepath: str,
     max_amplitude: float = 0.999,
     eps: float = 1e-16,
@@ -3499,6 +3682,7 @@ def simulate_room_mix(
                           index 
         mix_cfg: Dictionary with the mixture configuration. Includes RSNR, RSIR,
                  ref_mic and ref_mic_rms.
+        audio_metadata: Dictionary with a list of files for target, noise and interference
         base_output_filepath: All output audio files will be saved with this prefix by
                               adding a diffierent suffix for each component, e.g., _mic.wav.
         max_amplitude: Maximum amplitude of the mic signal, used to prevent clipping.
@@ -3510,7 +3694,9 @@ def simulate_room_mix(
         output manifest file.
     """
     # Local utilities
-    def load_rir(room_filepath: str, source: int, sample_rate: float, rir_key: str = 'rir') -> np.ndarray:
+    def load_rir(
+        room_filepath: str, source: int, selected_mics: list, sample_rate: float, rir_key: str = 'rir'
+    ) -> np.ndarray:
         """Load a RIR and check that the sample rate is matching the desired sample rate
 
         Args:
@@ -3527,31 +3713,84 @@ def simulate_room_mix(
             raise RuntimeError(
                 f'RIR sample rate ({sample_rate}) is not matching the expected sample rate ({sample_rate}). File: {room_filepath}'
             )
-        return rir
+        return rir[:, selected_mics]
+
+    def get_early_rir(
+        rir: np.ndarray, rir_anechoic: np.ndarray, sample_rate: int, early_duration: float = 0.050
+    ) -> np.ndarray:
+        """Return only the early part of the RIR.
+        """
+        early_len = int(early_duration * sample_rate)
+        direct_path_delay = np.min(np.argmax(rir_anechoic, axis=0))
+        rir_early = rir.copy()
+        rir_early[direct_path_delay + early_len :, :] = 0
+        return rir_early
+
+    def save_audio(
+        base_path: str,
+        tag: str,
+        audio_signal: Optional[np.ndarray],
+        sample_rate: int,
+        save: str = 'all',
+        ref_mic: Optional[int] = None,
+        format: str = 'wav',
+        subtype: str = 'float',
+    ):
+        """Save audio signal and return filepath.
+        """
+        if (audio_signal is None) or (not save):
+            return None
+
+        if save == 'ref_mic':
+            # save only ref_mic
+            audio_signal = audio_signal[:, ref_mic]
+
+        audio_filepath = base_path + f'_{tag}.{format}'
+        sf.write(audio_filepath, audio_signal, sample_rate, subtype)
+
+        return audio_filepath
 
     # Target RIRs
-    target_rir = load_rir(target_cfg['room_filepath'], source=target_cfg['source'], sample_rate=sample_rate)
-    target_rir_anechoic = load_rir(
-        target_cfg['room_filepath'], source=target_cfg['source'], sample_rate=sample_rate, rir_key='anechoic'
+    target_rir = load_rir(
+        target_cfg['room_filepath'],
+        source=target_cfg['source'],
+        selected_mics=target_cfg['selected_mics'],
+        sample_rate=sample_rate,
     )
+    target_rir_anechoic = load_rir(
+        target_cfg['room_filepath'],
+        source=target_cfg['source'],
+        sample_rate=sample_rate,
+        selected_mics=target_cfg['selected_mics'],
+        rir_key='anechoic',
+    )
+    target_rir_early = get_early_rir(rir=target_rir, rir_anechoic=target_rir_anechoic, sample_rate=sample_rate)
 
     # Target signals
-    check_min_sample_rate(target_cfg['audio_filepath'], sample_rate)
-    target_segment = AudioSegment.from_file(
-        audio_file=target_cfg['audio_filepath'], target_sr=sample_rate, duration=target_cfg['duration']
+    target_signal, target_metadata = prepare_source_signal(
+        signal_type='point',
+        sample_rate=sample_rate,
+        audio_data=audio_metadata['target'],
+        audio_dir=audio_metadata['target_dir'],
+        min_duration=mix_cfg['min_duration'],
     )
-    if target_segment.num_channels > 1:
-        raise RuntimeError(
-            f'Expecting single-channel source signal, but received {target_segment.num_channels}. File: {target_cfg["audio_filepath"]}'
-        )
-    target_signal = normalize_max(target_segment.samples)
+    source_signals_metadata = {'target': target_metadata['source_signals']}
 
-    # Convolve
+    # Convolve target
     target_reverberant = convolve_rir(target_signal, target_rir)
     target_anechoic = convolve_rir(target_signal, target_rir_anechoic)
+    target_early = convolve_rir(target_signal, target_rir_early)
 
     # Prepare noise signal
-    noise = load_audio_from_multiple_files(noise_cfg, sample_rate=sample_rate, total_len=len(target_reverberant))
+    noise, noise_metadata = prepare_source_signal(
+        signal_type='diffuse',
+        sample_rate=sample_rate,
+        mic_positions=target_cfg['mic_positions'],
+        audio_data=audio_metadata['noise'],
+        audio_dir=audio_metadata['noise_dir'],
+        ref_signal=target_reverberant,
+    )
+    source_signals_metadata['noise'] = noise_metadata['source_signals']
 
     # Prepare interference signal
     if interference_cfg is None:
@@ -3559,20 +3798,31 @@ def simulate_room_mix(
     else:
         # Load interference signals
         interference = 0
+        source_signals_metadata['interference'] = []
         for i_cfg in interference_cfg:
-            # Load signal
-            i_signal = load_audio_from_multiple_files(
-                i_cfg['audio'], sample_rate=sample_rate, total_len=len(target_reverberant)
+            # Load single-channel signal for directional interference
+            i_signal, i_metadata = prepare_source_signal(
+                signal_type='point',
+                sample_rate=sample_rate,
+                audio_data=audio_metadata['interference'],
+                audio_dir=audio_metadata['interference_dir'],
+                ref_signal=target_signal,
             )
+            source_signals_metadata['interference'].append(i_metadata['source_signals'])
             # Load RIR from the same room as the target, but a difference source
-            i_rir = load_rir(target_cfg['room_filepath'], source=i_cfg['source'], sample_rate=sample_rate)
-            # Convolve
+            i_rir = load_rir(
+                target_cfg['room_filepath'],
+                source=i_cfg['source'],
+                selected_mics=i_cfg['selected_mics'],
+                sample_rate=sample_rate,
+            )
+            # Convolve interference
             i_reverberant = convolve_rir(i_signal, i_rir)
             # Sum
             interference += i_reverberant
 
     # Scale and add components of the signal
-    mix = target_reverberant.copy()
+    mic = target_reverberant.copy()
 
     if noise is not None:
         noise = scaled_disturbance(
@@ -3583,7 +3833,7 @@ def simulate_room_mix(
             ref_channel=mix_cfg['ref_mic'],
         )
         # Update mic signal
-        mix += noise
+        mic += noise
 
     if interference is not None:
         interference = scaled_disturbance(
@@ -3594,13 +3844,13 @@ def simulate_room_mix(
             ref_channel=mix_cfg['ref_mic'],
         )
         # Update mic signal
-        mix += interference
+        mic += interference
 
     # Set the final mic signal level
-    mix_rms = rms(mix[:, mix_cfg['ref_mic']])
-    global_gain = db2mag(mix_cfg['ref_mic_rms']) / (mix_rms + eps)
-    mix_max = np.max(np.abs(mix))
-    if (clipped_max := mix_max * global_gain) > max_amplitude:
+    mic_rms = rms(mic[:, mix_cfg['ref_mic']])
+    global_gain = db2mag(mix_cfg['ref_mic_rms']) / (mic_rms + eps)
+    mic_max = np.max(np.abs(mic))
+    if (clipped_max := mic_max * global_gain) > max_amplitude:
         # Downscale the global gain to prevent clipping + adjust ref_mic_rms accordingly
         clipping_prevention_gain = max_amplitude / clipped_max
         global_gain *= clipping_prevention_gain
@@ -3612,76 +3862,71 @@ def simulate_room_mix(
             mag2db(clipping_prevention_gain),
         )
 
-    # scale all signal components
-    mix *= global_gain
-    target_reverberant *= global_gain
-    target_anechoic *= global_gain
-    if noise is not None:
-        noise *= global_gain
-    if interference is not None:
-        interference *= global_gain
-
     # save signals
-    mic_filepath = base_output_filepath + '_mic.wav'
-    sf.write(mic_filepath, mix, sample_rate, 'float')
-
-    target_reverberant_filepath = base_output_filepath + '_target_reverberant.wav'
-    sf.write(target_reverberant_filepath, target_reverberant, sample_rate, 'float')
-
-    target_anechoic_filepath = base_output_filepath + '_target_anechoic.wav'
-    sf.write(target_anechoic_filepath, target_anechoic, sample_rate, 'float')
-
-    if noise is not None:
-        noise_filepath = base_output_filepath + '_noise.wav'
-        sf.write(noise_filepath, noise, sample_rate, 'float')
-    else:
-        noise_filepath = None
-
-    if interference is not None:
-        interference_filepath = base_output_filepath + '_interference.wav'
-        sf.write(interference_filepath, interference, sample_rate, 'float')
-    else:
-        interference_filepath = None
-
-    # calculate DRR
-    direct_path_delay = np.argmax(target_rir_anechoic, axis=0)
-    drr = calculate_drr(target_rir, sample_rate, direct_path_delay)
-
-    metadata = {
-        'audio_filepath': mic_filepath,
-        'target_reverberant_filepath': target_reverberant_filepath,
-        'target_anechoic_filepath': target_anechoic_filepath,
-        'noise_filepath': noise_filepath,
-        'interference_filepath': interference_filepath,
-        'text': target_cfg.get('text'),
-        'duration': target_cfg['duration'],
-        'target_cfg': target_cfg,
-        'noise_cfg': noise_cfg,
-        'interference_cfg': interference_cfg,
-        'mix_cfg': mix_cfg,
-        'rt60': target_cfg.get('rt60'),
-        'drr': drr,
-        'rsnr': None if noise_cfg is None else mix_cfg['rsnr'],
-        'rsir': None if interference_cfg is None else mix_cfg['rsir'],
+    signals = {
+        'mic': mic,
+        'target_reverberant': target_reverberant,
+        'target_anechoic': target_anechoic,
+        'target_early': target_early,
+        'noise': noise,
+        'interference': interference,
     }
+
+    metadata = {}
+
+    for tag, signal in signals.items():
+
+        if signal is not None:
+            # scale all signal components with the global gain
+            signal = global_gain * signal
+
+        audio_filepath = save_audio(
+            base_path=base_output_filepath,
+            tag=tag,
+            audio_signal=signal,
+            sample_rate=sample_rate,
+            save=mix_cfg['save'].get(tag, 'all'),
+            ref_mic=mix_cfg['ref_mic'],
+            format=mix_cfg['save'].get('format', 'wav'),
+            subtype=mix_cfg['save'].get('subtype', 'float'),
+        )
+
+        if tag == 'mic':
+            metadata['audio_filepath'] = audio_filepath
+        else:
+            metadata[tag + '_filepath'] = audio_filepath
+
+    # Add metadata
+    metadata.update(
+        {
+            'text': target_metadata.get('text'),
+            'duration': target_metadata['duration'],
+            'target_cfg': target_cfg,
+            'interference_cfg': interference_cfg,
+            'mix_cfg': mix_cfg,
+            'ref_channel': mix_cfg.get('ref_mic'),
+            'rt60': target_cfg.get('rt60'),
+            'drr': calculate_drr(target_rir, sample_rate, n_direct=np.argmax(target_rir_anechoic, axis=0)),
+            'rsnr': None if noise is None else mix_cfg['rsnr'],
+            'rsir': None if interference is None else mix_cfg['rsir'],
+            'source_signals': source_signals_metadata,
+        }
+    )
 
     return convert_numpy_to_serializable(metadata)
 
 
-def simulate_room_mix_kwargs(kwargs: dict) -> dict:
-    """Wrapper around `simulate_room_mix` to handle kwargs.
-
-    `pool.map(simulate_room_kwargs, examples)` would be
-    equivalent to `pool.starstarmap(simulate_room_mix, examples)`
-    if `starstarmap` would exist.
+def simulate_room_mix_helper(example_and_audio_metadata: tuple) -> dict:
+    """Wrapper around `simulate_room_mix` for pool.imap.
 
     Args:
-        kwargs: kwargs that are forwarded to `simulate_room_mix`
+        args: example and audio_metadata that are forwarded to `simulate_room_mix`
 
     Returns:
         Dictionary with metadata, see `simulate_room_mix`
     """
-    return simulate_room_mix(**kwargs)
+    example, audio_metadata = example_and_audio_metadata
+    return simulate_room_mix(**example, audio_metadata=audio_metadata)
 
 
 def plot_mix_manifest_info(filepath: str, plot_filepath: str = None):
@@ -3720,8 +3965,11 @@ def plot_mix_manifest_info(filepath: str, plot_filepath: str = None):
         drr += data['drr']  # average DRR across all mics
 
         # noise
-        rsnr.append(data['rsnr'])
-        rsir.append(data['rsir'])
+        if data['rsnr'] is not None:
+            rsnr.append(data['rsnr'])
+
+        if data['rsir'] is not None:
+            rsir.append(data['rsir'])
 
     # plot
     plt.figure(figsize=(12, 6))
@@ -3760,21 +4008,21 @@ def plot_mix_manifest_info(filepath: str, plot_filepath: str = None):
     plt.hist(drr, label='DRR')
     plt.xlabel('DRR / dB')
     plt.ylabel('# examples')
-    plt.title('DRR (average over mics)')
+    plt.title('DRR [avg over mics]')
 
-    if not any([val is None for val in rsnr]):
+    if len(rsnr) > 0:
         plt.subplot(2, 4, 7)
         plt.hist(rsnr, label='RSNR')
         plt.xlabel('RSNR / dB')
         plt.ylabel('# examples')
-        plt.title('RSNR')
+        plt.title(f'RSNR [{100 * len(rsnr) / len(rt60):.0f}% ex]')
 
-    if not any([val is None for val in rsir]):
+    if len(rsir):
         plt.subplot(2, 4, 8)
         plt.hist(rsir, label='RSIR')
         plt.xlabel('RSIR / dB')
         plt.ylabel('# examples')
-        plt.title('RSIR')
+        plt.title(f'RSIR [{100 * len(rsir) / len(rt60):.0f}% ex]')
 
     for n in range(8):
         plt.subplot(2, 4, n + 1)

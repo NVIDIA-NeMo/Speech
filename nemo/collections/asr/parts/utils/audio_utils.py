@@ -251,7 +251,7 @@ def transform_to_match_coherence(
     desired_coherence: npt.NDArray,
     method: str = 'cholesky',
     ref_channel: int = 0,
-    corrcoef_threshold: float = 0.05,
+    corrcoef_threshold: float = 0.2,
 ) -> npt.NDArray:
     """Transform the input multichannel signal to match the desired coherence.
     
@@ -291,9 +291,9 @@ def transform_to_match_coherence(
     corrcoef_matrix = np.corrcoef(signal.transpose())
     # mask the diagonal elements
     np.fill_diagonal(corrcoef_matrix, 0.0)
-    if np.any(corrcoef_matrix > corrcoef_threshold):
+    if np.any(np.abs(corrcoef_matrix) > corrcoef_threshold):
         raise RuntimeError(
-            f'Input channels are correlated above the threshold {corrcoef_threshold}. Off-diagonal elements of the coefficient matrix: {str(corrcoef_matrix)}.'
+            f'Input channels are correlated above the threshold {corrcoef_threshold}. Max abs off-diagonal element of the coefficient matrix: {np.abs(corrcoef_matrix).max()}.'
         )
 
     # analysis transform
@@ -324,7 +324,7 @@ def transform_to_match_coherence(
 
     # synthesis transform
     # transpose X from (subband, frame, channel) to (channel, subband, frame)
-    x = librosa.istft(X.transpose(2, 0, 1))
+    x = librosa.istft(X.transpose(2, 0, 1), length=len(signal))
     # (channel, sample) -> (sample, channel)
     x = x.transpose()
 

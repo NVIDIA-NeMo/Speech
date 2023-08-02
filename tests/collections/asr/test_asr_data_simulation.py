@@ -344,32 +344,40 @@ class TestRoomSimulation:
         sample_rate = 16000
         target_cfg = {
             'room_filepath': os.path.join(data_dir, 'test_room.h5'),
+            'mic_positions': np.random.rand(6, 3),  # random positions
+            'selected_mics': [0, 1, 2, 3, 4, 5],
             'source': 0,
             'audio_filepath': os.path.join(data_dir, 'target.wav'),
             'duration': 1.5,
         }
-        noise_cfg = [{'audio_filepath': os.path.join(data_dir, 'noise.wav'), 'offset': 0.8, 'duration': 1.5,}]
 
-        interference_cfg = [
-            {
-                'source': 1,
-                'audio': [
-                    {'audio_filepath': os.path.join(data_dir, 'interference_1.wav'), 'offset': 0.0, 'duration': 0.8},
-                    {
-                        'audio_filepath': os.path.join(data_dir, 'interference_2.wav'),
-                        'offset': 0.05,
-                        'duration': 0.701,
-                    },
-                ],
-            }
-        ]
+        interference_cfg = [{'source': 1, 'selected_mics': target_cfg['selected_mics']}]
 
-        mix_cfg = {'rsnr': 10, 'rsir': 15, 'ref_mic': 0, 'ref_mic_rms': -30}
+        audio_metadata = {
+            'target': [{'audio_filepath': 'target.wav', 'duration': 1.5, 'offset': 0.8}],
+            'target_dir': data_dir,
+            'noise': [{'audio_filepath': 'noise.wav', 'duration': 2.3}],
+            'noise_dir': data_dir,
+            'interference': [
+                {'audio_filepath': 'interference_1.wav', 'duration': 0.8},
+                {'audio_filepath': 'interference_2.wav', 'duration': 0.75},
+            ],
+            'interference_dir': data_dir,
+        }
+
+        mix_cfg = {'rsnr': 10, 'rsir': 15, 'ref_mic': 0, 'ref_mic_rms': -30, 'min_duration': None, 'save': {}}
 
         with tempfile.TemporaryDirectory() as output_dir:
             # Mix
             base_output_filepath = os.path.join(output_dir, 'test_output')
-            simulate_room_mix(sample_rate, target_cfg, noise_cfg, interference_cfg, mix_cfg, base_output_filepath)
+            simulate_room_mix(
+                sample_rate=sample_rate,
+                target_cfg=target_cfg,
+                interference_cfg=interference_cfg,
+                mix_cfg=mix_cfg,
+                audio_metadata=audio_metadata,
+                base_output_filepath=base_output_filepath,
+            )
 
             # Check target + noise + interference = mix
             mix_from_parts = 0

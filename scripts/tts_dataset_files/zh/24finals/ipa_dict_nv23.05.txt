@@ -1,0 +1,426 @@
+;;; # Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+;;; #
+;;; # Licensed under the Apache License, Version 2.0 (the "License");
+;;; # you may not use this file except in compliance with the License.
+;;; # You may obtain a copy of the License at
+;;; #
+;;; #     http://www.apache.org/licenses/LICENSE-2.0
+;;; #
+;;; # Unless required by applicable law or agreed to in writing, software
+;;; # distributed under the License is distributed on an "AS IS" BASIS,
+;;; # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;;; # See the License for the specific language governing permissions and
+;;; # limitations under the License.
+;;;
+A	a
+AI	ai
+AN	a n
+ANG	a ŋ
+AO	au
+BA	p a
+BAI	p ai
+BAN	p a n
+BANG	p a ŋ
+BAO	p au
+BEI	p ei
+BEN	p ə n
+BENG	p ə ŋ
+BI	p i
+BIAN	p i a n
+BIAO	p i au
+BIE	p j e
+BIN	p i n
+BING	p i ŋ
+BO	p o
+BU	p u
+CA	tsʰ a
+CAI	tsʰ ai
+CAN	tsʰ a n
+CANG	tsʰ a ŋ
+CAO	tsʰ au
+CE	tsʰ ɤ
+CEN	tsʰ ə n
+CENG	tsʰ ə ŋ
+CHA	ʈʂʰ a
+CHAI	ʈʂʰ ai
+CHAN	ʈʂʰ a n
+CHANG	ʈʂʰ a ŋ
+CHAO	ʈʂʰ au
+CHE	ʈʂʰ ɤ
+CHEN	ʈʂʰ ə n
+CHENG	ʈʂʰ ə ŋ
+CHI	ʈʂʰ i
+CHONG	ʈʂʰ ʊ ŋ
+CHOU	ʈʂʰ ou
+CHU	ʈʂʰ u
+CHUAI	ʈʂʰ u ai
+CHUAN	ʈʂʰ u a n
+CHUANG	ʈʂʰ u a ŋ
+CHUI	ʈʂʰ w ei
+CHUN	ʈʂʰ w ə n
+CHUO	ʈʂʰ u o
+CI	tsʰ i
+CONG	tsʰ ʊ ŋ
+COU	tsʰ ou
+CU	tsʰ u
+CUAN	tsʰ u a n
+CUI	tsʰ w ei
+CUN	tsʰ w ə n
+CUO	tsʰ u o
+DA	t a
+DAI	t ai
+DAN	t a n
+DANG	t a ŋ
+DAO	t au
+DE	t ɤ
+DEI	t ei
+DEN	t ə n
+DENG	t ə ŋ
+DI	t i
+DIA	t i a
+DIAN	t i a n
+DIAO	t i au
+DIE	t j e
+DING	t i ŋ
+DIU	t j ou
+DONG	t ʊ ŋ
+DOU	t ou
+DU	t u
+DUAN	t u a n
+DUI	t w ei
+DUN	t w ə n
+DUO	t u o
+E	ɤ
+EI	ei
+EN	ə n
+ER	ɚ
+FA	f a
+FAI	f ai
+FAN	f a n
+FANG	f a ŋ
+FEI	f ei
+FEN	f ə n
+FENG	f ə ŋ
+FO	f o
+FOU	f ou
+FU	f u
+GA	k a
+GAI	k ai
+GAN	k a n
+GANG	k a ŋ
+GAO	k au
+GE	k ɤ
+GEI	k ei
+GEN	k ə n
+GENG	k ə ŋ
+GONG	k ʊ ŋ
+GOU	k ou
+GU	k u
+GUA	k u a
+GUAI	k u ai
+GUAN	k u a n
+GUANG	k u a ŋ
+GUI	k w ei
+GUN	k w ə n
+GUO	k u o
+HA	x a
+HAI	x ai
+HAN	x a n
+HANG	x a ŋ
+HAO	x au
+HE	x ɤ
+HEI	x ei
+HEN	x ə n
+HENG	x ə ŋ
+HONG	x ʊ ŋ
+HOU	x ou
+HU	x u
+HUA	x u a
+HUAI	x u ai
+HUAN	x u a n
+HUANG	x u a ŋ
+HUI	x w ei
+HUN	x w ə n
+HUO	x u o
+JI	tɕ i
+JIA	tɕ i a
+JIAN	tɕ i a n
+JIANG	tɕ i a ŋ
+JIAO	tɕ i au
+JIE	tɕ j e
+JIN	tɕ i n
+JING	tɕ i ŋ
+JIONG	tɕ i ʊ ŋ
+JIU	tɕ j ou
+JU	tɕ y
+JUAN	tɕ y a n
+JUE	tɕ ɥ e
+JUN	tɕ y n
+KA	kʰ a
+KAI	kʰ ai
+KAN	kʰ a n
+KANG	kʰ a ŋ
+KAO	kʰ au
+KE	kʰ ɤ
+KEI	kʰ ei
+KEN	kʰ ə n
+KENG	kʰ ə ŋ
+KIU	kʰ j ou
+KONG	kʰ ʊ ŋ
+KOU	kʰ ou
+KU	kʰ u
+KUA	kʰ u a
+KUAI	kʰ u ai
+KUAN	kʰ u a n
+KUANG	kʰ u a ŋ
+KUI	kʰ w ei
+KUN	kʰ w ə n
+KUO	kʰ u o
+LA	l a
+LAI	l ai
+LAN	l a n
+LANG	l a ŋ
+LAO	l au
+LE	l ɤ
+LEI	l ei
+LENG	l ə ŋ
+LI	l i
+LIA	l i a
+LIAN	l i a n
+LIANG	l i a ŋ
+LIAO	l i au
+LIE	l j e
+LIN	l i n
+LING	l i ŋ
+LIU	l j ou
+LO	l o
+LONG	l ʊ ŋ
+LOU	l ou
+LU	l u
+LUAN	l u a n
+LUN	l w ə n
+LUO	l u o
+LV	l y
+LVE	l ɥ e
+MA	m a
+MAI	m ai
+MAN	m a n
+MANG	m a ŋ
+MAO	m au
+ME	m ɤ
+MEI	m ei
+MEN	m ə n
+MENG	m ə ŋ
+MI	m i
+MIAN	m i a n
+MIAO	m i au
+MIE	m j e
+MIN	m i n
+MING	m i ŋ
+MIU	m j ou
+MO	m o
+MOU	m ou
+MU	m u
+NA	n a
+NAI	n ai
+NAN	n a n
+NANG	n a ŋ
+NAO	n au
+NE	n ɤ
+NEI	n ei
+NEN	n ə n
+NENG	n ə ŋ
+NG	n ə n
+NI	n i
+NIAN	n i a n
+NIANG	n i a ŋ
+NIAO	n i au
+NIE	n j e
+NIN	n i n
+NING	n i ŋ
+NIU	n j ou
+NONG	n ʊ ŋ
+NOU	n ou
+NU	n u
+NUAN	n u a n
+NUO	n u o
+NV	n y
+NVE	n ɥ e
+O	o
+OU	ou
+PA	pʰ a
+PAI	pʰ ai
+PAN	pʰ a n
+PANG	pʰ a ŋ
+PAO	pʰ au
+PEI	pʰ ei
+PEN	pʰ ə n
+PENG	pʰ ə ŋ
+PI	pʰ i
+PIAN	pʰ i a n
+PIAO	pʰ i au
+PIE	pʰ j e
+PIN	pʰ i n
+PING	pʰ i ŋ
+PO	pʰ o
+POU	pʰ ou
+PU	pʰ u
+QI	tɕʰ i
+QIA	tɕʰ i a
+QIAN	tɕʰ i a n
+QIANG	tɕʰ i a ŋ
+QIAO	tɕʰ i au
+QIE	tɕʰ j e
+QIN	tɕʰ i n
+QING	tɕʰ i ŋ
+QIONG	tɕʰ i ʊ ŋ
+QIU	tɕʰ j ou
+QU	tɕʰ y
+QUAN	tɕʰ y a n
+QUE	tɕʰ ɥ e
+QUN	tɕʰ y n
+RAN	ʐ a n
+RANG	ʐ a ŋ
+RAO	ʐ au
+RE	ʐ ɤ
+REN	ʐ ə n
+RENG	ʐ ə ŋ
+RI	ʐ i
+RONG	ʐ ʊ ŋ
+ROU	ʐ ou
+RU	ʐ u
+RUAN	ʐ u a n
+RUI	ʐ w ei
+RUN	ʐ w ə n
+RUO	ʐ u o
+SA	s a
+SAI	s ai
+SAN	s a n
+SANG	s a ŋ
+SAO	s au
+SE	s ɤ
+SEI	s ei
+SEN	s ə n
+SENG	s ə ŋ
+SHA	ʂ a
+SHAI	ʂ ai
+SHAN	ʂ a n
+SHANG	ʂ a ŋ
+SHAO	ʂ au
+SHE	ʂ ɤ
+SHEI	ʂ ei
+SHEN	ʂ ə n
+SHENG	ʂ ə ŋ
+SHI	ʂ i
+SHOU	ʂ ou
+SHU	ʂ u
+SHUA	ʂ u a
+SHUAI	ʂ u ai
+SHUAN	ʂ u a n
+SHUANG	ʂ u a ŋ
+SHUI	ʂ w ei
+SHUN	ʂ w ə n
+SHUO	ʂ u o
+SI	s i
+SONG	s ʊ ŋ
+SOU	s ou
+SU	s u
+SUAN	s u a n
+SUI	s w ei
+SUN	s w ə n
+SUO	s u o
+TA	tʰ a
+TAI	tʰ ai
+TAN	tʰ a n
+TANG	tʰ a ŋ
+TAO	tʰ au
+TE	tʰ ɤ
+TEI	tʰ ei
+TENG	tʰ ə ŋ
+TI	tʰ i
+TIAN	tʰ i a n
+TIAO	tʰ i au
+TIE	tʰ j e
+TING	tʰ i ŋ
+TONG	tʰ ʊ ŋ
+TOU	tʰ ou
+TU	tʰ u
+TUAN	tʰ u a n
+TUI	tʰ w ei
+TUN	tʰ w ə n
+TUO	tʰ u o
+WA	w a
+WAI	w ai
+WAN	w a n
+WANG	w a ŋ
+WEI	w ei
+WEN	w ə n
+WENG	w ə ŋ
+WO	w o
+WU	w u
+XI	ɕ i
+XIA	ɕ i a
+XIAN	ɕ i a n
+XIANG	ɕ i a ŋ
+XIAO	ɕ i au
+XIE	ɕ j e
+XIN	ɕ i n
+XING	ɕ i ŋ
+XIONG	ɕ i ʊ ŋ
+XIU	ɕ j ou
+XU	ɕ y
+XUAN	ɕ y a n
+XUE	ɕ ɥ e
+XUN	ɕ y n
+YA	j a
+YAN	j a n
+YANG	j a ŋ
+YAO	j au
+YE	j ɤ
+YI	j i
+YIN	j i n
+YING	j i ŋ
+YO	j o
+YONG	j ʊ ŋ
+YOU	j ou
+YU	j y
+YUAN	j y a n
+YUE	j ɥ e
+YUN	j y n
+ZA	ts a
+ZAI	ts ai
+ZAN	ts a n
+ZANG	ts a ŋ
+ZAO	ts au
+ZE	ts ɤ
+ZEI	ts ei
+ZEN	ts ə n
+ZENG	ts ə ŋ
+ZHA	ʈʂ a
+ZHAI	ʈʂ ai
+ZHAN	ʈʂ a n
+ZHANG	ʈʂ a ŋ
+ZHAO	ʈʂ au
+ZHE	ʈʂ ɤ
+ZHEI	ʈʂ ei
+ZHEN	ʈʂ ə n
+ZHENG	ʈʂ ə ŋ
+ZHI	ʈʂ i
+ZHONG	ʈʂ ʊ ŋ
+ZHOU	ʈʂ ou
+ZHU	ʈʂ u
+ZHUA	ʈʂ u a
+ZHUAI	ʈʂ u ai
+ZHUAN	ʈʂ u a n
+ZHUANG	ʈʂ u a ŋ
+ZHUI	ʈʂ w ei
+ZHUN	ʈʂ w ə n
+ZHUO	ʈʂ u o
+ZI	ts i
+ZONG	ts ʊ ŋ
+ZOU	ts ou
+ZU	ts u
+ZUAN	ts u a n
+ZUI	ts w ei
+ZUN	ts w ə n
+ZUO	ts u o

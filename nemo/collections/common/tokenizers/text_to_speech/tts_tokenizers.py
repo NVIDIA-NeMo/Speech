@@ -694,7 +694,10 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         pad_with_space=False,
         text_preprocessing_func=chinese_text_preprocessing,
     ):
-        """Chinese phoneme-based tokenizer.
+        """
+        Chinese phoneme-based tokenizer.
+        Note: This tokenizer for now covers Chinese phonemes/tones and English letters because our dataset contains
+              both Chinese and English graphemes.
         Args:
             g2p: Grapheme to phoneme module.
             punct: Whether to reserve grapheme for basic punctuation or not.

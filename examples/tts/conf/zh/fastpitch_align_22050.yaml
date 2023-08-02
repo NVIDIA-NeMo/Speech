@@ -1,5 +1,5 @@
-# This config contains the default values for training FastPitch model with aligner using 22KHz sampling 
-# rate. If you want to train model on other dataset, you can change config values according to your dataset. 
+# This config contains the default values for training FastPitch model with aligner using 22KHz sampling
+# rate. If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
 name: FastPitch
@@ -28,7 +28,13 @@ lowfreq: 0
 highfreq: null
 window: hann
 
-phoneme_dict_path: "scripts/tts_dataset_files/zh/pinyin_dict_nv_22.10.txt"
+# There are four candidates of `phoneme_dict_path` provided for Chinese as shown below,
+#     1) 24-final Pinyin: "scripts/tts_dataset_files/zh/24finals/pinyin_dict_nv_22.10.txt",
+#     2) IPA converted from 24-final Pinyin: "scripts/tts_dataset_files/zh/24finals/ipa_dict_nv23.05.txt",
+#     3) 36-final Pinyin: "scripts/tts_dataset_files/zh/36finals/pinyin_dict_nv23.05.txt",
+#     4) (default) IPA converted from 36-final Pinyin: "scripts/tts_dataset_files/zh/36finals/ipa_dict_nv23.05.txt"
+# Suggest to choose IPA symbol set converted from 36-final Pinyin because better audio quality were observed.
+phoneme_dict_path: "scripts/tts_dataset_files/zh/36finals/ipa_dict_nv23.05.txt"
 
 model:
   learn_alignment: true
@@ -73,6 +79,11 @@ model:
       _target_: nemo.collections.tts.g2p.models.zh_cn_pinyin.ChineseG2p
       phoneme_dict: ${phoneme_dict_path}
       word_segmenter: jieba # Only jieba is supported now.
+      phoneme_prefix: ""
+      phoneme_case: lower
+      tone_prefix: "#"
+      ascii_letter_prefix: ""
+      ascii_letter_case: upper
 
   train_ds:
     dataset:

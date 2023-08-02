@@ -1,0 +1,442 @@
+;;; # Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES.  All rights reserved.
+;;; #
+;;; # Licensed under the Apache License, Version 2.0 (the "License");
+;;; # you may not use this file except in compliance with the License.
+;;; # You may obtain a copy of the License at
+;;; #
+;;; #     http://www.apache.org/licenses/LICENSE-2.0
+;;; #
+;;; # Unless required by applicable law or agreed to in writing, software
+;;; # distributed under the License is distributed on an "AS IS" BASIS,
+;;; # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;;; # See the License for the specific language governing permissions and
+;;; # limitations under the License.
+;;;
+;;; Notes ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+;;; [May 24, 2023] 
+;;;     - Added syllables: {'BIANG', 'CEI', 'CHUA', 'ENG', 'RUA'}
+;;;     - Removed syllables that are not existing in standard Mandarin: {'FAI', 'KIU', 'NG', 'SEI'}
+;;;     - Increased the number of finals to 35 from 24 and updated all syllable entries.
+;;;		- Initials and finals are directly obtained by running,
+;;;		  ```
+;;;			from pypinyin.contrib.tone_convert import to_initials, to_finals
+;;;			initial = to_initials(syllable).upper()
+;;;			final = to_finals(syllable).upper()
+;;;		  ```
+;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;
+A	A
+AI	AI
+AN	AN
+ANG	ANG
+AO	AO
+BA	B A
+BAI	B AI
+BAN	B AN
+BANG	B ANG
+BAO	B AO
+BEI	B EI
+BEN	B EN
+BENG	B ENG
+BI	B I
+BIAN	B IAN
+BIANG	B IANG
+BIAO	B IAO
+BIE	B IE
+BIN	B IN
+BING	B ING
+BO	B O
+BU	B U
+CA	C A
+CAI	C AI
+CAN	C AN
+CANG	C ANG
+CAO	C AO
+CE	C E
+CEI	C EI
+CEN	C EN
+CENG	C ENG
+CHA	CH A
+CHAI	CH AI
+CHAN	CH AN
+CHANG	CH ANG
+CHAO	CH AO
+CHE	CH E
+CHEN	CH EN
+CHENG	CH ENG
+CHI	CH I
+CHONG	CH ONG
+CHOU	CH OU
+CHU	CH U
+CHUA	CH UA
+CHUAI	CH UAI
+CHUAN	CH UAN
+CHUANG	CH UANG
+CHUI	CH UEI
+CHUN	CH UEN
+CHUO	CH UO
+CI	C I
+CONG	C ONG
+COU	C OU
+CU	C U
+CUAN	C UAN
+CUI	C UEI
+CUN	C UEN
+CUO	C UO
+DA	D A
+DAI	D AI
+DAN	D AN
+DANG	D ANG
+DAO	D AO
+DE	D E
+DEI	D EI
+DEN	D EN
+DENG	D ENG
+DI	D I
+DIA	D IA
+DIAN	D IAN
+DIAO	D IAO
+DIE	D IE
+DING	D ING
+DIU	D IOU
+DONG	D ONG
+DOU	D OU
+DU	D U
+DUAN	D UAN
+DUI	D UEI
+DUN	D UEN
+DUO	D UO
+E	E
+EI	EI
+EN	EN
+ENG	ENG
+ER	ER
+FA	F A
+FAN	F AN
+FANG	F ANG
+FEI	F EI
+FEN	F EN
+FENG	F ENG
+FO	F O
+FOU	F OU
+FU	F U
+GA	G A
+GAI	G AI
+GAN	G AN
+GANG	G ANG
+GAO	G AO
+GE	G E
+GEI	G EI
+GEN	G EN
+GENG	G ENG
+GONG	G ONG
+GOU	G OU
+GU	G U
+GUA	G UA
+GUAI	G UAI
+GUAN	G UAN
+GUANG	G UANG
+GUI	G UEI
+GUN	G UEN
+GUO	G UO
+HA	H A
+HAI	H AI
+HAN	H AN
+HANG	H ANG
+HAO	H AO
+HE	H E
+HEI	H EI
+HEN	H EN
+HENG	H ENG
+HONG	H ONG
+HOU	H OU
+HU	H U
+HUA	H UA
+HUAI	H UAI
+HUAN	H UAN
+HUANG	H UANG
+HUI	H UEI
+HUN	H UEN
+HUO	H UO
+JI	J I
+JIA	J IA
+JIAN	J IAN
+JIANG	J IANG
+JIAO	J IAO
+JIE	J IE
+JIN	J IN
+JING	J ING
+JIONG	J IONG
+JIU	J IOU
+JU	J V
+JUAN	J VAN
+JUE	J VE
+JUN	J VN
+KA	K A
+KAI	K AI
+KAN	K AN
+KANG	K ANG
+KAO	K AO
+KE	K E
+KEI	K EI
+KEN	K EN
+KENG	K ENG
+KONG	K ONG
+KOU	K OU
+KU	K U
+KUA	K UA
+KUAI	K UAI
+KUAN	K UAN
+KUANG	K UANG
+KUI	K UEI
+KUN	K UEN
+KUO	K UO
+LA	L A
+LAI	L AI
+LAN	L AN
+LANG	L ANG
+LAO	L AO
+LE	L E
+LEI	L EI
+LENG	L ENG
+LI	L I
+LIA	L IA
+LIAN	L IAN
+LIANG	L IANG
+LIAO	L IAO
+LIE	L IE
+LIN	L IN
+LING	L ING
+LIU	L IOU
+LO	L O
+LONG	L ONG
+LOU	L OU
+LU	L U
+LUAN	L UAN
+LUN	L UEN
+LUO	L UO
+LV	L V
+LVE	L VE
+MA	M A
+MAI	M AI
+MAN	M AN
+MANG	M ANG
+MAO	M AO
+ME	M E
+MEI	M EI
+MEN	M EN
+MENG	M ENG
+MI	M I
+MIAN	M IAN
+MIAO	M IAO
+MIE	M IE
+MIN	M IN
+MING	M ING
+MIU	M IOU
+MO	M O
+MOU	M OU
+MU	M U
+NA	N A
+NAI	N AI
+NAN	N AN
+NANG	N ANG
+NAO	N AO
+NE	N E
+NEI	N EI
+NEN	N EN
+NENG	N ENG
+NI	N I
+NIAN	N IAN
+NIANG	N IANG
+NIAO	N IAO
+NIE	N IE
+NIN	N IN
+NING	N ING
+NIU	N IOU
+NONG	N ONG
+NOU	N OU
+NU	N U
+NUAN	N UAN
+NUO	N UO
+NV	N V
+NVE	N VE
+O	O
+OU	OU
+PA	P A
+PAI	P AI
+PAN	P AN
+PANG	P ANG
+PAO	P AO
+PEI	P EI
+PEN	P EN
+PENG	P ENG
+PI	P I
+PIAN	P IAN
+PIAO	P IAO
+PIE	P IE
+PIN	P IN
+PING	P ING
+PO	P O
+POU	P OU
+PU	P U
+QI	Q I
+QIA	Q IA
+QIAN	Q IAN
+QIANG	Q IANG
+QIAO	Q IAO
+QIE	Q IE
+QIN	Q IN
+QING	Q ING
+QIONG	Q IONG
+QIU	Q IOU
+QU	Q V
+QUAN	Q VAN
+QUE	Q VE
+QUN	Q VN
+RAN	R AN
+RANG	R ANG
+RAO	R AO
+RE	R E
+REN	R EN
+RENG	R ENG
+RI	R I
+RONG	R ONG
+ROU	R OU
+RU	R U
+RUA	R UA
+RUAN	R UAN
+RUI	R UEI
+RUN	R UEN
+RUO	R UO
+SA	S A
+SAI	S AI
+SAN	S AN
+SANG	S ANG
+SAO	S AO
+SE	S E
+SEN	S EN
+SENG	S ENG
+SHA	SH A
+SHAI	SH AI
+SHAN	SH AN
+SHANG	SH ANG
+SHAO	SH AO
+SHE	SH E
+SHEI	SH EI
+SHEN	SH EN
+SHENG	SH ENG
+SHI	SH I
+SHOU	SH OU
+SHU	SH U
+SHUA	SH UA
+SHUAI	SH UAI
+SHUAN	SH UAN
+SHUANG	SH UANG
+SHUI	SH UEI
+SHUN	SH UEN
+SHUO	SH UO
+SI	S I
+SONG	S ONG
+SOU	S OU
+SU	S U
+SUAN	S UAN
+SUI	S UEI
+SUN	S UEN
+SUO	S UO
+TA	T A
+TAI	T AI
+TAN	T AN
+TANG	T ANG
+TAO	T AO
+TE	T E
+TEI	T EI
+TENG	T ENG
+TI	T I
+TIAN	T IAN
+TIAO	T IAO
+TIE	T IE
+TING	T ING
+TONG	T ONG
+TOU	T OU
+TU	T U
+TUAN	T UAN
+TUI	T UEI
+TUN	T UEN
+TUO	T UO
+WA	UA
+WAI	UAI
+WAN	UAN
+WANG	UANG
+WEI	UEI
+WEN	UEN
+WENG	UENG
+WO	UO
+WU	U
+XI	X I
+XIA	X IA
+XIAN	X IAN
+XIANG	X IANG
+XIAO	X IAO
+XIE	X IE
+XIN	X IN
+XING	X ING
+XIONG	X IONG
+XIU	X IOU
+XU	X V
+XUAN	X VAN
+XUE	X VE
+XUN	X VN
+YA	IA
+YAN	IAN
+YANG	IANG
+YAO	IAO
+YE	IE
+YI	I
+YIN	IN
+YING	ING
+YO	O
+YONG	IONG
+YOU	IOU
+YU	V
+YUAN	VAN
+YUE	VE
+YUN	VN
+ZA	Z A
+ZAI	Z AI
+ZAN	Z AN
+ZANG	Z ANG
+ZAO	Z AO
+ZE	Z E
+ZEI	Z EI
+ZEN	Z EN
+ZENG	Z ENG
+ZHA	ZH A
+ZHAI	ZH AI
+ZHAN	ZH AN
+ZHANG	ZH ANG
+ZHAO	ZH AO
+ZHE	ZH E
+ZHEI	ZH EI
+ZHEN	ZH EN
+ZHENG	ZH ENG
+ZHI	ZH I
+ZHONG	ZH ONG
+ZHOU	ZH OU
+ZHU	ZH U
+ZHUA	ZH UA
+ZHUAI	ZH UAI
+ZHUAN	ZH UAN
+ZHUANG	ZH UANG
+ZHUI	ZH UEI
+ZHUN	ZH UEN
+ZHUO	ZH UO
+ZI	Z I
+ZONG	Z ONG
+ZOU	Z OU
+ZU	Z U
+ZUAN	Z UAN
+ZUI	Z UEI
+ZUN	Z UEN
+ZUO	Z UO

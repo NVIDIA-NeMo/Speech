@@ -82,12 +82,26 @@ Each CTM file will contain lines of the format:
 `<utt_id> 1 <start time in seconds> <duration in seconds> <text, ie token/word/segment>`.
 Note the second item in the line (the 'channel ID', which is required by the CTM file format) is always 1, as NFA operates on single channel audio.
 
+### `CTMFileConfig` parameters
+The `CTMFileConfig` (which is passed into the main NFA config) has the following parameters:
+* `remove_blank_tokens`: bool (default `False`) to specify if the token-level CTM files should have the timestamps of the blank tokens removed.
+* `minimum_timestamp_duration`: float (default `0`) to specify the minimum duration that will be applied to all timestamps. If any line in the CTM has a duration lower than this, it will be enlarged from the middle outwards until it meets the `minimum_timestamp_duration`, or reaches the beginning or end of the audio file. Note that using a non-zero value may cause timestamps to overlap.
+
 # Output ASS file format
 NFA will produce the following ASS files, which you can use to generate subtitle videos:
 * ASS files with token-level highlighting will be at `<output_dir>/ass/tokens/<utt_id>.ass,`
 * ASS files with word-level highlighting will be at `<output_dir>/ass/words/<utt_id>.ass`.
 All words belonging to the same segment 'segments' will appear at the same time in the subtitles generated with the ASS files. If you find that your segments are not the right size, you can use set `ass_file_config.resegment_text_to_fill_space=true` and specify some number of `ass_file_config.max_lines_per_segment`.
 
+### `ASSFileConfig` parameters
+The `ASSFileConfig` (which is passed into the main NFA config) has the following parameters:
+* `fontsize`: int (default value `20`) which will be the fontsize of the text
+* `vertical_alignment`: string (default value `center`) to specify the vertical alignment of the text. Can be one of `center`, `top`, `bottom`.
+* `resegment_text_to_fill_space`: bool (default value `False`). If `True`, the text will be resegmented such that each segment will not take up more than (approximately) `max_lines_per_segment` when the ASS file is applied to a video.
+* `max_lines_per_segment`: int (defaulst value `2`) which specifies the number of lines per segment to display. This parameter is only used if `resegment_text_to_fill_space` is `True`.
+* `text_already_spoken_rgb`: List of 3 ints (default value is [49, 46, 61], which makes a dark gray). The RGB values of the color that will be used to highlight text that has already been spoken.
+* `text_being_spoken_rgb`: List of 3 ints (default value is [57, 171, 9] which makes a dark green). The RGB values of the color that will be used to highlight text that is being spoken.
+* `text_not_yet_spoken_rgb`: List of 3 ints (default value is [194, 193, 199] which makes a dark green). The RGB values of the color that will be used to highlight text that has not yet been spoken.
 
 # Output JSON manifest file format
 A new manifest file will be saved at `<output_dir>/<original manifest file name>_with_output_file_paths.json`. It will contain the same fields as the original manifest, and additionally:

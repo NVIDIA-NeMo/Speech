@@ -32,6 +32,7 @@ PLAYERRESX = 384
 PLAYERRESY = 288
 MARGINL = 10
 MARGINR = 10
+MARGINV = 20
 
 
 def seconds_to_ass_format(seconds_float):
@@ -54,6 +55,11 @@ def seconds_to_ass_format(seconds_float):
     srt_format_time = f"{hh}:{mm}:{ss_decimals}"
 
     return srt_format_time
+
+
+def rgb_list_to_hex_bgr(rgb_list):
+    r, g, b = rgb_list
+    return f"{b:x}{g:x}{r:x}"
 
 
 def make_ass_files(
@@ -107,7 +113,7 @@ def resegment_utt_obj(utt_obj, ass_file_config):
     approx_chars_per_line = (PLAYERRESX - MARGINL - MARGINR) / (
         ass_file_config.fontsize * 0.6
     )  # assume chars 0.6 as wide as they are tall
-    approx_lines_per_segment = (PLAYERRESY - ass_file_config.marginv) / (
+    approx_lines_per_segment = (PLAYERRESY - MARGINV) / (
         ass_file_config.fontsize * 1.15
     )  # assume line spacing is 1.15
     if approx_lines_per_segment > ass_file_config.max_lines_per_segment:
@@ -183,16 +189,29 @@ def make_word_level_ass_file(
         "BorderStyle": "1",
         "Outline": "1",
         "Shadow": "0",
-        "Alignment": "2",
+        "Alignment": None,  # will specify below
         "MarginL": str(MARGINL),
         "MarginR": str(MARGINR),
-        "MarginV": str(ass_file_config.marginv),
+        "MarginV": str(MARGINV),
         "Encoding": "0",
     }
+
+    if ass_file_config.vertical_alignment == "top":
+        default_style_dict["Alignment"] = "8"  # text will be 'center-justified' and in the top of the screen
+    elif ass_file_config.vertical_alignment == "center":
+        default_style_dict["Alignment"] = "5"  # text will be 'center-justified' and in the middle of the screen
+    elif ass_file_config.vertical_alignment == "bottom":
+        default_style_dict["Alignment"] = "2"  # text will be 'center-justified' and in the bottom of the screen
+    else:
+        raise ValueError(f"got an unexpected value for ass_file_config.vertical_alignment")
 
     output_dir = os.path.join(output_dir_root, "ass", "words")
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{utt_obj.utt_id}.ass")
+
+    already_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_already_spoken_rgb) + r"&}"
+    being_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_being_spoken_rgb) + r"&}"
+    not_yet_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_not_yet_spoken_rgb) + r"&}"
 
     with open(output_file, 'w') as f:
         default_style_top_line = "Format: " + ", ".join(default_style_dict.keys())
@@ -225,7 +244,7 @@ def make_word_level_ass_file(
                         words_in_first_segment.append(word_or_token)
                 break
 
-        text_before_speech = r"{\c&c7c1c2&}" + " ".join([x.text for x in words_in_first_segment]) + r"{\r}"
+        text_before_speech = not_yet_spoken_color_code + " ".join([x.text for x in words_in_first_segment]) + r"{\r}"
         subtitle_text = (
             f"Dialogue: 0,{seconds_to_ass_format(0)},{seconds_to_ass_format(words_in_first_segment[0].t_start)},Default,,0,0,0,,"
             + text_before_speech.rstrip()
@@ -247,16 +266,16 @@ def make_word_level_ass_file(
                     text_before = " ".join([x.text for x in words_in_segment[:word_i]])
                     if text_before != "":
                         text_before += " "
-                    text_before = r"{\c&H3d2e31&}" + text_before + r"{\r}"
+                    text_before = already_spoken_color_code + text_before + r"{\r}"
 
                     if word_i < len(words_in_segment) - 1:
                         text_after = " " + " ".join([x.text for x in words_in_segment[word_i + 1 :]])
                     else:
                         text_after = ""
-                    text_after = r"{\c&c7c1c2&}" + text_after + r"{\r}"
+                    text_after = not_yet_spoken_color_code + text_after + r"{\r}"
 
-                    aligned_text = r"{\c&H09ab39&}" + word.text + r"{\r}"
-                    aligned_text_off = r"{\c&H3d2e31&}" + word.text + r"{\r}"
+                    aligned_text = being_spoken_color_code + word.text + r"{\r}"
+                    aligned_text_off = already_spoken_color_code + word.text + r"{\r}"
 
                     subtitle_text = (
                         f"Dialogue: 0,{seconds_to_ass_format(word.t_start)},{seconds_to_ass_format(word.t_end)},Default,,0,0,0,,"
@@ -307,16 +326,29 @@ def make_token_level_ass_file(
         "BorderStyle": "1",
         "Outline": "1",
         "Shadow": "0",
-        "Alignment": "2",
+        "Alignment": None,  # will specify below
         "MarginL": str(MARGINL),
         "MarginR": str(MARGINR),
-        "MarginV": str(ass_file_config.marginv),
+        "MarginV": str(MARGINV),
         "Encoding": "0",
     }
+
+    if ass_file_config.vertical_alignment == "top":
+        default_style_dict["Alignment"] = "8"  # text will be 'center-justified' and in the top of the screen
+    elif ass_file_config.vertical_alignment == "center":
+        default_style_dict["Alignment"] = "5"  # text will be 'center-justified' and in the middle of the screen
+    elif ass_file_config.vertical_alignment == "bottom":
+        default_style_dict["Alignment"] = "2"  # text will be 'center-justified' and in the bottom of the screen
+    else:
+        raise ValueError(f"got an unexpected value for ass_file_config.vertical_alignment")
 
     output_dir = os.path.join(output_dir_root, "ass", "tokens")
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"{utt_obj.utt_id}.ass")
+
+    already_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_already_spoken_rgb) + r"&}"
+    being_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_being_spoken_rgb) + r"&}"
+    not_yet_spoken_color_code = r"{\c&H" + rgb_list_to_hex_bgr(ass_file_config.text_not_yet_spoken_rgb) + r"&}"
 
     with open(output_file, 'w') as f:
         default_style_top_line = "Format: " + ", ".join(default_style_dict.keys())
@@ -360,7 +392,9 @@ def make_token_level_ass_file(
             )  # replace underscores used in subword tokens with spaces
             token.text_cased = token.text_cased.replace(SPACE_TOKEN, " ")  # space token with actual space
 
-        text_before_speech = r"{\c&c7c1c2&}" + "".join([x.text_cased for x in tokens_in_first_segment]) + r"{\r}"
+        text_before_speech = (
+            not_yet_spoken_color_code + "".join([x.text_cased for x in tokens_in_first_segment]) + r"{\r}"
+        )
         subtitle_text = (
             f"Dialogue: 0,{seconds_to_ass_format(0)},{seconds_to_ass_format(tokens_in_first_segment[0].t_start)},Default,,0,0,0,,"
             + text_before_speech.rstrip()
@@ -391,16 +425,16 @@ def make_token_level_ass_file(
                 for token_i, token in enumerate(tokens_in_segment):
 
                     text_before = "".join([x.text_cased for x in tokens_in_segment[:token_i]])
-                    text_before = r"{\c&H3d2e31&}" + text_before + r"{\r}"
+                    text_before = already_spoken_color_code + text_before + r"{\r}"
 
                     if token_i < len(tokens_in_segment) - 1:
                         text_after = "".join([x.text_cased for x in tokens_in_segment[token_i + 1 :]])
                     else:
                         text_after = ""
-                    text_after = r"{\c&c7c1c2&}" + text_after + r"{\r}"
+                    text_after = not_yet_spoken_color_code + text_after + r"{\r}"
 
-                    aligned_text = r"{\c&H09ab39&}" + token.text_cased + r"{\r}"
-                    aligned_text_off = r"{\c&H3d2e31&}" + token.text_cased + r"{\r}"
+                    aligned_text = being_spoken_color_code + token.text_cased + r"{\r}"
+                    aligned_text_off = already_spoken_color_code + token.text_cased + r"{\r}"
 
                     subtitle_text = (
                         f"Dialogue: 0,{seconds_to_ass_format(token.t_start)},{seconds_to_ass_format(token.t_end)},Default,,0,0,0,,"

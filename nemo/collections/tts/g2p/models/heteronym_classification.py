@@ -121,8 +121,8 @@ class HeteronymClassificationModel(NLPModel):
         self.log('train_loss', loss)
         return loss
 
-    def training_epoch_end(self, outputs):
-        return super().training_epoch_end(outputs)
+    def on_train_epoch_end(self):
+        return super().on_train_epoch_end()
 
     # Validation and Testing
     def validation_step(self, batch, batch_idx, split="val"):
@@ -138,15 +138,21 @@ class HeteronymClassificationModel(NLPModel):
         self.log(f"{split}_loss", val_loss)
         tag_preds = torch.argmax(logits, axis=-1)[subtokens_mask > 0]
         tp, fn, fp, _ = self.classification_report(tag_preds, targets)
-        return {f'{split}_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
+        loss = {f'{split}_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
-    def validation_epoch_end(self, outputs, split="val"):
-        """
-        Args:
-            outputs: list of individual outputs of each test step.
-            split: dataset split name: "val" or "test"
-        """
-        avg_loss = torch.stack([x[f'{split}_loss'] for x in outputs]).mean()
+        if split == 'val':
+            self.validation_step_outputs.append(loss)
+        elif split == 'test':
+            self.test_step_outputs.append(loss)
+
+        return loss
+
+    def on_validation_epoch_end(self):
+        split = "test" if self.trainer.testing else "val"
+        if split == 'val':
+            avg_loss = torch.stack([x[f'{split}_loss'] for x in self.validation_step_outputs]).mean()
+        elif split == 'test':
+            avg_loss = torch.stack([x[f'{split}_loss'] for x in self.test_step_outputs]).mean()
 
         # calculate metrics and classification report
         precision, recall, f1, report = self.classification_report.compute()
@@ -173,20 +179,25 @@ class HeteronymClassificationModel(NLPModel):
 
         self.classification_report.reset()
 
+        if split == 'val':
+            self.validation_step_outputs.clear()  # free memory
+        elif split == 'test':
+            self.test_step_outputs.clear()
+
     def test_step(self, batch, batch_idx):
         """
         Lightning calls this inside the test loop with the data from the test dataloader passed in as `batch`.
         """
         return self.validation_step(batch, batch_idx, "test")
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
 
         Args:
             outputs: list of individual outputs of each test step.
         """
-        return self.validation_epoch_end(outputs, "test")
+        return self.on_validation_epoch_end()
 
     def set_wordid_to_phonemes(self, wordid_to_phonemes_file: str):
         if wordid_to_phonemes_file is None or not os.path.exists(wordid_to_phonemes_file):

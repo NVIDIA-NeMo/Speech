@@ -280,7 +280,7 @@ class Tacotron2Model(SpectrogramGenerator):
             spec_target_len=spec_target_len,
             pad_value=self.pad_value,
         )
-        return {
+        loss = {
             "val_loss": loss,
             "mel_target": spec_target,
             "mel_postnet": spec_pred_postnet,
@@ -288,8 +288,10 @@ class Tacotron2Model(SpectrogramGenerator):
             "gate_target": gate_target,
             "alignments": alignments,
         }
+        self.validation_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.logger is not None and self.logger.experiment is not None:
             logger = self.logger.experiment
             for logger in self.trainer.loggers:
@@ -298,14 +300,27 @@ class Tacotron2Model(SpectrogramGenerator):
                     break
             if isinstance(logger, TensorBoardLogger):
                 tacotron2_log_to_tb_func(
-                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                    logger,
+                    self.validation_step_outputs[0].values(),
+                    self.global_step,
+                    tag="val",
+                    log_images=True,
+                    add_audio=False,
                 )
             elif isinstance(logger, WandbLogger):
                 tacotron2_log_to_wandb_func(
-                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                    logger,
+                    self.validation_step_outputs[0].values(),
+                    self.global_step,
+                    tag="val",
+                    log_images=True,
+                    add_audio=False,
                 )
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()  # This reduces across batches, not workers!
+        avg_loss = torch.stack(
+            [x['val_loss'] for x in self.validation_step_outputs]
+        ).mean()  # This reduces across batches, not workers!
         self.log('val_loss', avg_loss)
+        self.validation_step_outputs.clear()  # free memory
 
     def _setup_normalizer(self, cfg):
         if "text_normalizer" in cfg:

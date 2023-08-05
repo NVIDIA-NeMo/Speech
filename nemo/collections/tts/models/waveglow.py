@@ -114,14 +114,16 @@ class WaveGlowModel(GlowVocoder, Exportable):
             audio=audio, audio_len=audio_len, run_inverse=(batch_idx == 0)
         )
         loss = self.loss(z=z, log_s_list=log_s_list, log_det_W_list=log_det_W_list, sigma=self.sigma)
-        return {
+        loss = {
             "val_loss": loss,
             "audio_pred": audio_pred,
             "mel_target": spec,
             "mel_len": spec_len,
         }
+        self.validation_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.logger is not None and self.logger.experiment is not None:
             tb_logger = self.logger.experiment
             for logger in self.trainer.loggers:
@@ -130,13 +132,14 @@ class WaveGlowModel(GlowVocoder, Exportable):
                     break
             waveglow_log_to_tb_func(
                 tb_logger,
-                outputs[0].values(),
+                self.validation_step_outputs[0].values(),
                 self.global_step,
                 tag="eval",
                 mel_fb=self.audio_to_melspec_precessor.fb,
             )
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        avg_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
         self.log('val_loss', avg_loss)
+        self.validation_step_outputs.clear()  # free memory
 
     def __setup_dataloader_from_config(self, cfg, shuffle_should_be: bool = True, name: str = "train"):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):

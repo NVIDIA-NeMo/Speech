@@ -25,6 +25,7 @@ from nemo.collections.common.metrics.classification_accuracy import ExactStringP
 from nemo.collections.nlp.data.common.sequence_to_sequence_dataset import SequenceToSequenceDataset
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model, T5Sentinel
 from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
+from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
 try:
@@ -168,38 +169,10 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         )
         return super().on_test_epoch_start()
 
-    def on_test_epoch_end(self):
-        self.on_inference_epoch_end(self.cfg.data.test_ds)
-        return super().on_test_epoch_end()
-
-    def on_validation_epoch_end(self):
-        self.on_inference_epoch_end(self.cfg.data.validation_ds)
-        return super().on_validation_epoch_end()
-
-    def on_inference_epoch_end(self, ds):
-        app_state = AppState()
-        if hasattr(self, "_train_ds"):
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=self.cfg.data.train_ds.global_batch_size,
-                micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
-        # When running `trainer.validate()`, the training dataset is not available.
-        else:
-            logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=ds.global_batch_size,
-                micro_batch_size=ds.micro_batch_size,
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
-
     def on_train_epoch_start(self) -> None:
         # Same logic as validation epoch end, but this may be need if there is no validation sanity check to trigger validation_epoch_end()
-        self.on_validation_epoch_end()
+        # Commenting as on_validation_epoch_end was a no-op in PTL 1.9
+        # self.on_validation_epoch_end()
         return super().on_train_epoch_start()
 
     def cast_for_metric(self, pred, label, metric_name, class_labels=None, labels_are_strings=False):
@@ -333,58 +306,73 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         return loss_mean
 
     def inference_step(self, dataloader_iter, batch_idx: int, mode: str, dataloader_idx=0):
-        # Regular finetuning datasets will return a list of dicts for each microbatch.
-        # But T0 datasets will return a single dict for the global batch.
-        batch = next(dataloader_iter)
-        batch_has_lang_information = isinstance(batch, list) and len(batch[0]) == 7
-        data_cfg = self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
+        # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of the iterator
+        try:
+            # Regular finetuning datasets will return a list of dicts for each microbatch.
+            # But T0 datasets will return a single dict for the global batch.
+            batch = next(dataloader_iter)
+            batch_has_lang_information = isinstance(batch, list) and len(batch[0]) == 7
+            data_cfg = self.cfg.data.validation_ds if mode == 'validation' else self.cfg.data.test_ds
 
-        self._reconfigure_and_process_inference_batch(batch, data_cfg)
+            self._reconfigure_and_process_inference_batch(batch, data_cfg)
 
-        # NOTE: There could be extra keys in the processed_batch dictionary such as "langs" for XNLI,
-        # this will be ignored.
-        loss = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
+            # NOTE: There could be extra keys in the processed_batch dictionary such as "langs" for XNLI,
+            # this will be ignored.
+            loss = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
 
-        predicted_token_ids, _ = self.decode(
-            tokens_enc=batch['text_enc'],
-            enc_mask=batch['enc_mask'],
-            num_tokens_to_generate=30,
-            bos_id=self.tokenizer.pad_id if data_cfg.get('replace_bos_with_pad', False) else self.tokenizer.bos_id,
-        )
-
-        # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
-        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
-        labels_text = MegatronT5FinetuneModel.ids_to_text(batch['labels'], self.tokenizer)
-        input_text = MegatronT5FinetuneModel.ids_to_text(batch['text_enc'], self.tokenizer)
-
-        if not batch_has_lang_information:
-            categories = [None] * len(preds_text)
-        else:
-            categories = batch['lang']
-
-        metric = self.val_metric[dataloader_idx] if mode == 'validation' else self.test_metric[dataloader_idx]
-        assert len(categories) == len(preds_text) == len(labels_text)
-        for _, (pred, label, category) in enumerate(zip(preds_text, labels_text, categories)):
-            # To compute metrics like pearson or spearman correlation, we need to cast the predicted string and labels to floats.
-            pred, label = self.cast_for_metric(
-                pred=pred,
-                label=label,
-                metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
-                class_labels=data_cfg.metric.get('class_labels', None),
-                labels_are_strings=data_cfg.metric.get('labels_are_strings', False),
+            predicted_token_ids, _ = self.decode(
+                tokens_enc=batch['text_enc'],
+                enc_mask=batch['enc_mask'],
+                num_tokens_to_generate=30,
+                bos_id=self.tokenizer.pad_id if data_cfg.get('replace_bos_with_pad', False) else self.tokenizer.bos_id,
             )
-            if batch_has_lang_information:
-                _ = metric(pred, label, category)
-            else:
-                _ = metric(pred, label)
 
-        return {
-            'loss': loss,
-            'preds': preds_text,
-            'labels': labels_text,
-            'categories': categories,
-            'inputs': input_text,
-        }
+            # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
+            preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
+            labels_text = MegatronT5FinetuneModel.ids_to_text(batch['labels'], self.tokenizer)
+            input_text = MegatronT5FinetuneModel.ids_to_text(batch['text_enc'], self.tokenizer)
+
+            if not batch_has_lang_information:
+                categories = [None] * len(preds_text)
+            else:
+                categories = batch['lang']
+
+            metric = self.val_metric[dataloader_idx] if mode == 'validation' else self.test_metric[dataloader_idx]
+            assert len(categories) == len(preds_text) == len(labels_text)
+            for _, (pred, label, category) in enumerate(zip(preds_text, labels_text, categories)):
+                # To compute metrics like pearson or spearman correlation, we need to cast the predicted string and labels to floats.
+                pred, label = self.cast_for_metric(
+                    pred=pred,
+                    label=label,
+                    metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
+                    class_labels=data_cfg.metric.get('class_labels', None),
+                    labels_are_strings=data_cfg.metric.get('labels_are_strings', False),
+                )
+                if batch_has_lang_information:
+                    _ = metric(pred, label, category)
+                else:
+                    _ = metric(pred, label)
+
+            outputs = {
+                'loss': loss,
+                'preds': preds_text,
+                'labels': labels_text,
+                'categories': categories,
+                'inputs': input_text,
+            }
+            if mode == 'validation':
+                if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+                    self.validation_step_outputs[dataloader_idx].append(outputs)
+                else:
+                    self.validation_step_outputs.append(outputs)
+            else:
+                if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
+                    self.test_step_outputs[dataloader_idx].append(outputs)
+                else:
+                    self.test_step_outputs.append(outputs)
+            return outputs
+        except StopIteration:
+            return
 
     @classmethod
     def ids_to_text(cls, batch_ids, tokenizer):
@@ -434,7 +422,24 @@ class MegatronT5FinetuneModel(MegatronT5Model):
         metric_name = self.val_metric_name if mode == 'validation' else self.test_metric_name
         # Log metrics for each provided validation/test dataset.
         for dataloader_idx, output in enumerate(outputs):
-            loss = super().validation_epoch_end([x['loss'] for x in output])
+            # Expand on_validation_epoch_end from parent class MegatronLMEncoderDecoderModel as it doesnt take arg outputs
+            # loss = super().validation_epoch_end([x['loss'] for x in output])
+            loss_vals = [x['loss'] for x in output]
+            # NOTE: we need to make sure outputs is not empty (this is a workaround for a bug in pytorch lightning (?))
+            if len(loss_vals) == 0:
+                logging.warning("validation_epoch_end: outputs is empty")
+                return
+            if parallel_state.is_pipeline_last_stage():
+                # only the last pipeline parallel stages return loss
+                loss = torch.stack(loss_vals).mean()
+            else:
+                loss = torch.tensor(0.0).cuda()
+
+            # we can only log on one rank if it is rank zero so we broadcast from last rank
+            torch.distributed.broadcast(loss, get_last_rank())
+            self.log('val_loss', loss, prog_bar=True, rank_zero_only=True, batch_size=1)
+            self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True, batch_size=1)
+
             # Determine the key used to log the loss based on the user provided name of the dataset or the dataloader index.
             loss_log_key = self._determine_log_key(data_cfg, dataloader_idx, "loss", mode)
             # Determine the key used to log the eval metric based on the user provided name of the dataset or the dataloader index.
@@ -522,6 +527,7 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                         deduplicated_outputs, f"{data_cfg.output_file_path_prefix}_{filename_log_key}"
                     )
                 torch.distributed.barrier()
+            outputs[dataloader_idx].clear()  # free memory
 
         # Logging of the averaged metrics:
         averaged_loss = sum(averaged_loss) / len(averaged_loss)
@@ -541,6 +547,26 @@ class MegatronT5FinetuneModel(MegatronT5Model):
             self.log("test_loss", averaged_loss, batch_size=1)
             self.log(f"test_{self.test_metric_name}", averaged_metric, batch_size=1)
 
+        app_state = AppState()
+        if hasattr(self, "_train_ds"):
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=self.cfg.data.train_ds.global_batch_size,
+                micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+        # When running `trainer.validate()`, the training dataset is not available.
+        else:
+            logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=data_cfg.global_batch_size,
+                micro_batch_size=data_cfg.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+
         return averaged_loss, averaged_metric
 
     def write_predictions_to_file(self, outputs, output_file_path_prefix):
@@ -552,14 +578,18 @@ class MegatronT5FinetuneModel(MegatronT5Model):
     def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
         return self.inference_step(dataloader_iter, batch_idx, 'validation', dataloader_idx)
 
-    def validation_epoch_end(self, outputs):
-        _ = self.inference_epoch_end(outputs, 'validation', self.cfg.data.validation_ds)
+    def on_validation_epoch_end(self):
+        _ = self.inference_epoch_end(self.validation_step_outputs, 'validation', self.cfg.data.validation_ds)
+        # Commenting as on_validation_epoch_end was a no-op in PTL 1.9
+        # return super().on_validation_epoch_end()
 
     def test_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
         return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
 
-    def test_epoch_end(self, outputs):
-        _ = self.inference_epoch_end(outputs, 'test', self.cfg.data.test_ds)
+    def on_test_epoch_end(self):
+        _ = self.inference_epoch_end(self.test_step_outputs, 'test', self.cfg.data.test_ds)
+        # Commenting as on_test_epoch_end was a no-op in PTL 1.9
+        # return super().on_test_epoch_end()
 
     def build_data_loader(
         self, dataset, global_batch_size, shuffle, num_workers, pin_memory, drop_last,

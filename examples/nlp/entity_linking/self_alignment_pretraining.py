@@ -27,6 +27,10 @@ from nemo.utils.exp_manager import exp_manager
 
 @hydra_runner(config_path="conf", config_name="umls_medical_entity_linking_config.yaml")
 def main(cfg: DictConfig) -> None:
+    # PTL 2.0 has find_unused_parameters as False by default, so its required to set it to True
+    # when there are unused parameters here
+    if cfg.trainer.strategy == 'ddp':
+        cfg.trainer.strategy = "ddp_find_unused_parameters_true"
     logging.info(f"\nConfig Params:\n{OmegaConf.to_yaml(cfg)}")
     trainer = Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))

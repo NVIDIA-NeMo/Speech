@@ -192,7 +192,7 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
             collate_fn=dataset.collate_fn,
         )
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, split='val'):
         """
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
@@ -206,7 +206,7 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
 
         tp, fn, fp, _ = self.classification_report(preds, labels)
 
-        return {
+        loss = {
             'val_loss': val_loss,
             'tp': tp,
             'fn': fn,
@@ -215,14 +215,16 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
             'input_ids': input_ids,
             'labels': labels,
         }
+        self.validation_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self, split="val"):
         """
         Get metrics based on the candidate label with the highest predicted likelihood and the ground truth label for intent
         """
-        output_logits = torch.cat([output['logits'] for output in outputs], dim=0)
-        output_input_ids = torch.cat([output['input_ids'] for output in outputs], dim=0)
-        output_labels = torch.cat([output['labels'] for output in outputs], dim=0)
+        output_logits = torch.cat([output['logits'] for output in self.validation_step_outputs], dim=0)
+        output_input_ids = torch.cat([output['input_ids'] for output in self.validation_step_outputs], dim=0)
+        output_labels = torch.cat([output['labels'] for output in self.validation_step_outputs], dim=0)
 
         if self.cfg.library == 'huggingface':
             entail_logits = output_logits[..., 2]
@@ -291,7 +293,7 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
         precision, recall, f1, report = self.classification_report.compute()
         label_acc = np.mean([int(predicted_labels[i] == ground_truth_labels[i]) for i in range(len(predicted_labels))])
 
-        avg_loss = torch.stack([x[f'val_loss'] for x in outputs]).mean()
+        avg_loss = torch.stack([x[f'val_loss'] for x in self.validation_step_outputs]).mean()
 
         logging.info(report)
 
@@ -301,6 +303,7 @@ class DialogueZeroShotIntentModel(TextClassificationModel):
         self.log('unfied_accuracy', label_acc * 100)
         self.log('val_loss', avg_loss, prog_bar=True)
 
+        self.validation_step_outputs.clear()  # free memory
         self.classification_report.reset()
 
     def predict(

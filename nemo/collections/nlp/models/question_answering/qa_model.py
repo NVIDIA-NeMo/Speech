@@ -94,16 +94,20 @@ class QAModel(NLPModel):
             'start_logits': start_logits,
             'end_logits': end_logits,
         }
-        return {f'{prefix}_loss': loss, f'{prefix}_tensors': tensors}
+        loss = {f'{prefix}_loss': loss, f'{prefix}_tensors': tensors}
+        self.validation_step_outputs.append(loss) if prefix == 'val' else self.test_step_outputs.append(loss)
+        return loss
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.trainer.testing:
             prefix = 'test'
+            outputs = self.test_step_outputs
         else:
             prefix = 'val'
+            outputs = self.validation_step_outputs
 
         avg_loss = torch.stack([x[f'{prefix}_loss'] for x in outputs]).mean()
 
@@ -159,9 +163,10 @@ class QAModel(NLPModel):
         self.log(f'{prefix}_loss', avg_loss)
         self.log(f'{prefix}_exact_match', exact_match)
         self.log(f'{prefix}_f1', f1)
+        self.validation_step_outputs.clear() if prefix == 'val' else self.test_step_outputs.clear()  # free memory
 
-    def test_epoch_end(self, outputs):
-        return self.validation_epoch_end(outputs)
+    def on_test_epoch_end(self):
+        return self.on_validation_epoch_end()
 
     @torch.no_grad()
     def inference(

@@ -42,11 +42,11 @@ from collections import OrderedDict
 from typing import Any, Optional
 
 import torch
+from lightning_fabric.utilities.cloud_io import _load as pl_load
 from megatron.core import parallel_state
 from pytorch_lightning.core.saving import _load_state as ptl_load_state
 from pytorch_lightning.core.saving import load_hparams_from_tags_csv, load_hparams_from_yaml
 from pytorch_lightning.trainer.trainer import Trainer
-from pytorch_lightning.utilities.cloud_io import load as pl_load
 from pytorch_lightning.utilities.migration import pl_legacy_patch
 
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel

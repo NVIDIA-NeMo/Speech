@@ -5,7 +5,7 @@ trainer:
   num_nodes: 1
   max_steps: 2285714 # precedence over max_epochs
   num_sanity_val_steps: 0 # needed for bert pretraining from preproc
-  replace_sampler_ddp: false # needed for bert pretraining from preproc
+  use_distributed_sampler: false # needed for bert pretraining from preproc
   accumulate_grad_batches: 1 # accumulates grads every k batches
   precision: 16 # 16 to use AMP
   accelerator: gpu

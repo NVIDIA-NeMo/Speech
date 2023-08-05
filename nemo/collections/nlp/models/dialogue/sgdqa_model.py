@@ -151,6 +151,11 @@ class SGDQAModel(NLPModel):
         """
         loss, tensors = self.eval_step_helper(batch=batch)
         self.log(f'val_loss', loss)
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append({f'val_loss': loss, f'tensors': tensors})
+        else:
+            self.validation_step_outputs.append({f'val_loss': loss, f'tensors': tensors})
+
         return {f'val_loss': loss, f'tensors': tensors}
 
     def test_step(self, batch: List[torch.Tensor], batch_idx: int, dataloader_idx: int = 0) -> dict:
@@ -162,6 +167,11 @@ class SGDQAModel(NLPModel):
             dataloader_idx: dataloader index
         """
         loss, tensors = self.eval_step_helper(batch=batch)
+        if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
+            self.test_step_outputs[dataloader_idx].append({f'test_loss': loss, f'tensors': tensors})
+        else:
+            self.test_step_outputs.append({f'test_loss': loss, f'tensors': tensors})
+
         return {f'test_loss': loss, f'tensors': tensors}
 
     def eval_step_helper(self, batch: List[torch.Tensor]):

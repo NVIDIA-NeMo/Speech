@@ -60,7 +60,9 @@ class ExampleModel(ModelPT):
         return (self.l1(batch) - batch.mean(dim=1)).mean()
 
     def validation_step(self, batch, batch_idx):
-        return (self.l1(batch) - batch.mean(dim=1)).mean()
+        loss = (self.l1(batch) - batch.mean(dim=1)).mean()
+        self.validation_step_outputs.append(loss)
+        return loss
 
     def training_step(self, batch, batch_idx):
         return (self.l1(batch) - batch.mean(dim=1)).mean()
@@ -74,10 +76,11 @@ class ExampleModel(ModelPT):
     def setup_validation_data(self):
         pass
 
-    def validation_epoch_end(self, loss):
-        if not loss:
+    def on_validation_epoch_end(self):
+        if not self.validation_step_outputs:
             return
-        self.log("val_loss", torch.stack(loss).mean(), sync_dist=True)
+        self.log("val_loss", torch.stack(self.validation_step_outputs).mean(), sync_dist=True)
+        self.validation_step_outputs.clear()  # free memory
 
 
 class TestStatelessTimer:
@@ -94,7 +97,7 @@ class TestStatelessTimer:
             max_steps=10000,
             accelerator='gpu',
             strategy='ddp',
-            logger=None,
+            logger=False,
             enable_checkpointing=False,
         )
         exp_manager_cfg = ExpManagerConfig(

@@ -147,23 +147,28 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         }
 
     def validation_step(self, dataloader_iter, batch_idx, inference=False):
-        batch = next(dataloader_iter)
-        enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
+        # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of iterables
+        try:
+            batch = next(dataloader_iter)
+            enc_input, dec_input, labels, loss_mask, enc_mask, dec_mask, position_ids, taskname_ids = batch
 
-        mode = self.training
-        self.eval()
-        gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
-        self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
-        loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
+            mode = self.training
+            self.eval()
+            gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
+            self._reconfigure_and_process_inference_batch(enc_input.size(0), gbs)
+            loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
 
-        if self.cfg.get('report_validation_metric', False):
-            metrics = self.compute_accuracy(enc_input, enc_mask, labels)
-            metrics['loss'] = loss_mean
-        else:
-            metrics = {'loss': loss_mean}
+            if self.cfg.get('report_validation_metric', False):
+                metrics = self.compute_accuracy(enc_input, enc_mask, labels)
+                metrics['loss'] = loss_mean
+            else:
+                metrics = {'loss': loss_mean}
 
-        self.train(mode=mode)
-        return metrics
+            self.validation_step_outputs.append(metrics)
+            self.train(mode=mode)
+            return metrics
+        except StopIteration:
+            return
 
     def predict_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> Any:
 
@@ -277,11 +282,11 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
                         adapter_module.load_state_dict(state_dict[state_adapter_key], strict)
                 module.set_enabled_adapters(enabled=True)
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
             if parallel_state.is_pipeline_last_stage():
                 # only the last pipeline parallel stages return loss
-                averaged_loss = torch.stack([i['loss'] for i in outputs]).mean()
+                averaged_loss = torch.stack([i['loss'] for i in self.validation_step_outputs]).mean()
             else:
                 averaged_loss = torch.tensor(0.0).cuda()
 
@@ -292,15 +297,15 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
             logging.info(f'Validation loss: {averaged_loss}')
 
         else:
-            averaged_loss = torch.stack([item['loss'] for item in outputs]).mean()
+            averaged_loss = torch.stack([item['loss'] for item in self.validation_step_outputs]).mean()
             logging.info(f'Validation loss: {averaged_loss}')
             self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
 
         if self.cfg.get('report_validation_accuracy', False):
             gather_results = [None for _ in range(parallel_state.get_data_parallel_world_size())]
-            all_preds = list(itertools.chain(*[item['predicted_token_ids'] for item in outputs]))
-            all_labels = list(itertools.chain(*[item['labels'] for item in outputs]))
-            all_inputs = list(itertools.chain(*[item['enc_inputs'] for item in outputs]))
+            all_preds = list(itertools.chain(*[item['predicted_token_ids'] for item in self.validation_step_outputs]))
+            all_labels = list(itertools.chain(*[item['labels'] for item in self.validation_step_outputs]))
+            all_inputs = list(itertools.chain(*[item['enc_inputs'] for item in self.validation_step_outputs]))
 
             assert len(all_preds) == len(all_labels)
             assert len(all_preds) == len(all_inputs)
@@ -334,6 +339,7 @@ class MegatronT5BaseAdapterModel(MegatronT5PromptLearningModel):
         gbs = self.cfg.global_batch_size
         mbs = self.cfg.micro_batch_size
         self._reconfigure_batch_sizes(gbs, mbs)
+        self.validation_step_outputs.clear()  # free memory
 
 
 class MegatronT5AdapterLearningModel(MegatronT5BaseAdapterModel):

@@ -226,7 +226,7 @@ class HifiGanModel(Vocoder, Exportable):
         self.log_dict(metrics, on_step=True, sync_dist=True)
         self.log("g_l1_loss", loss_mel, prog_bar=True, logger=False, sync_dist=True)
 
-    def training_epoch_end(self, outputs) -> None:
+    def on_train_epoch_end(self) -> None:
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):

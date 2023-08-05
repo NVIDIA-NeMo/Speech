@@ -39,6 +39,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
     get_computeprob_response,
     megatron_gpt_generate,
 )
+from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
 try:
@@ -159,7 +160,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
     def setup(self, stage=None):
         # NOTE: super().__init__ will try and setup train/val/test datasets, but we sidestep this using a if self._train_ds is not None condition
         # We then set things up for real only once setup() of this class is called.
-        resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+        resume_checkpoint_path = self.trainer.ckpt_path
         if resume_checkpoint_path:
             init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:
@@ -179,6 +180,13 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             self._validation_dl = self.setup_eval_dataloader(self._validation_ds, self.cfg.data.validation_ds)
         if hasattr(self.cfg.data, 'test_ds'):
             self._test_dl = self.setup_eval_dataloader(self._test_ds, self.cfg.data.test_ds)
+
+        # Raise error if using multiple dataloaders
+        if type(self._validation_dl) == list and len(self._validation_dl) > 1:
+            raise NotImplementedError('Lightning 2.0 does not support multiple dataloaders with dataloader_iter')
+
+        if type(self._test_dl) == list and len(self._test_dl) > 1:
+            raise NotImplementedError('Lightning 2.0 does not support multiple dataloaders with dataloader_iter')
 
         # when using pipeline model parallel the final stage need to initialize word embeddings
         if parallel_state.get_pipeline_model_parallel_world_size() > 1:
@@ -359,88 +367,102 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         return loss_mean
 
     def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
-        return self.inference_step(dataloader_iter, batch_idx, 'validation', dataloader_idx)
-
-    def validation_epoch_end(self, outputs):
-        _ = self.inference_epoch_end(outputs, 'validation', self.cfg.data.validation_ds)
+        # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of iterables
+        try:
+            return self.inference_step(dataloader_iter, batch_idx, 'validation', dataloader_idx)
+        except StopIteration:
+            return
 
     def test_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
         return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
 
-    def test_epoch_end(self, outputs):
-        _ = self.inference_epoch_end(outputs, 'test', self.cfg.data.test_ds)
-
     def inference_step(self, dataloader_iter, batch_idx, mode, dataloader_idx=0):
         # Call parent validation step to get the loss.
         loss = super().validation_step(dataloader_iter, batch_idx)
-        return {
-            'loss': loss,
-            'preds': None,
-            'labels': None,
-            'inputs': None,
-        }
-        # TODO (sandeepsub): Figure out the subsequent decode bits.
-        length_params: LengthParam = {
-            "min_length": 0,
-            "max_length": batch['tokens'].size(1) - batch['context_lengths'].max(),
-        }
-        sampling_params: SamplingParam = {
-            "use_greedy": True,
-            "temperature": 1.0,
-            "top_k": 1,
-            "top_p": 0.94,
-            "repetition_penalty": 1.2,
-            "add_BOS": False,
-            "all_probs": False,
-            "compute_logprob": False,
-            "end_strings": ["<|endoftext|>"],
-        }
-        result = megatron_gpt_generate(
-            model=self,
-            inputs=(
-                batch['tokens'].cuda(),
-                (batch['context_lengths'] - 1).cuda(),
-            ),  # NOTE: We do -1 here to remove the space between context and response.
-            tokenizer=self.tokenizer,
-            sampling_params=sampling_params,
-            length_params=length_params,
-            check_sequence_parallel_and_checkpointing=False,  # We need to skip these checks since we'll manually enbale and disable checkpointing between training and validation.
-        )
+        # loss can be None as super().validation_step returns None when dataloader_iter is exhausted
+        # which can lead to error, adding check to prevent it
+        if loss is not None:  # Ensure its not None
+            outputs = {
+                'loss': loss,
+                'preds': None,
+                'labels': None,
+                'inputs': None,
+            }
+            if mode == 'validation':
+                if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+                    # super().validation_step appends just loss to self.validation_step_outputs, replace the last appended loss with the outputs dict
+                    self.validation_step_outputs[dataloader_idx][-1] = outputs
+                else:
+                    # super().validation_step appends just loss to self.validation_step_outputs, replace the last appended loss with the outputs dict
+                    self.validation_step_outputs[-1] = outputs
+            else:
+                if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
+                    self.test_step_outputs[dataloader_idx].append(outputs)
+                else:
+                    self.test_step_outputs.append(outputs)
+            return outputs
+            # TODO (sandeepsub): Figure out the subsequent decode bits.
+            # length_params: LengthParam = {
+            #     "min_length": 0,
+            #     "max_length": batch['tokens'].size(1) - batch['context_lengths'].max(),
+            # }
+            # sampling_params: SamplingParam = {
+            #     "use_greedy": True,
+            #     "temperature": 1.0,
+            #     "top_k": 1,
+            #     "top_p": 0.94,
+            #     "repetition_penalty": 1.2,
+            #     "add_BOS": False,
+            #     "all_probs": False,
+            #     "compute_logprob": False,
+            #     "end_strings": ["<|endoftext|>"],
+            # }
+            # result = megatron_gpt_generate(
+            #     model=self,
+            #     inputs=(
+            #         batch['tokens'].cuda(),
+            #         (batch['context_lengths'] - 1).cuda(),
+            #     ),  # NOTE: We do -1 here to remove the space between context and response.
+            #     tokenizer=self.tokenizer,
+            #     sampling_params=sampling_params,
+            #     length_params=length_params,
+            #     check_sequence_parallel_and_checkpointing=False,  # We need to skip these checks since we'll manually enbale and disable checkpointing between training and validation.
+            # )
 
-        preds_text = []
-        labels_text = []
-        input_text = []
-        for idx, item in enumerate(result['token_ids']):
-            pred = self.tokenizer.ids_to_text(item[batch['context_lengths'][idx] - 1 :])
-            input = self.tokenizer.ids_to_text(item[: batch['context_lengths'][idx] - 1])
-            label = self.tokenizer.ids_to_text(batch['tokens'][idx][batch['context_lengths'][idx] :].tolist())
-            preds_text.append(pred.strip())
-            labels_text.append(label.strip())
-            input_text.append(input.strip())
+            # preds_text = []
+            # labels_text = []
+            # input_text = []
+            # for idx, item in enumerate(result['token_ids']):
+            #     pred = self.tokenizer.ids_to_text(item[batch['context_lengths'][idx] - 1 :])
+            #     input = self.tokenizer.ids_to_text(item[: batch['context_lengths'][idx] - 1])
+            #     label = self.tokenizer.ids_to_text(batch['tokens'][idx][batch['context_lengths'][idx] :].tolist())
+            #     preds_text.append(pred.strip())
+            #     labels_text.append(label.strip())
+            #     input_text.append(input.strip())
 
-        metric = self.val_metric[dataloader_idx] if mode == 'validation' else self.test_metric[dataloader_idx]
-        assert len(preds_text) == len(labels_text) == len(input_text)
-        for _, (pred, label) in enumerate(zip(preds_text, labels_text)):
-            # To compute metrics like pearson or spearman correlation, we need to cast the predicted string and labels to floats.
-            pred, label = self.cast_for_metric(
-                pred=pred.strip(),
-                label=label.strip(),
-                metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
-                class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None)
-                if mode == 'validation'
-                else self.cfg.data.test_ds.metric.get('class_labels', None),
-                labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False)
-                if mode == 'validation'
-                else self.cfg.data.test_ds.metric.get('labels_are_strings', False),
-            )
-            _ = metric(pred, label)
+            # metric = self.val_metric[dataloader_idx] if mode == 'validation' else self.test_metric[dataloader_idx]
+            # assert len(preds_text) == len(labels_text) == len(input_text)
+            # for _, (pred, label) in enumerate(zip(preds_text, labels_text)):
+            #     # To compute metrics like pearson or spearman correlation, we need to cast the predicted string and labels to floats.
+            #     pred, label = self.cast_for_metric(
+            #         pred=pred.strip(),
+            #         label=label.strip(),
+            #         metric_name=self.val_metric_name if mode == 'validation' else self.test_metric_name,
+            #         class_labels=self.cfg.data.validation_ds.metric.get('class_labels', None)
+            #         if mode == 'validation'
+            #         else self.cfg.data.test_ds.metric.get('class_labels', None),
+            #         labels_are_strings=self.cfg.data.validation_ds.metric.get('labels_are_strings', False)
+            #         if mode == 'validation'
+            #         else self.cfg.data.test_ds.metric.get('labels_are_strings', False),
+            #     )
+            #     _ = metric(pred, label)
 
-        return {
-            'loss': loss,
-            'preds': preds_text,
-            'labels': labels_text,
-            'inputs': input_text,
-        }
+            # return {
+            #     'loss': loss,
+            #     'preds': preds_text,
+            #     'labels': labels_text,
+            #     'inputs': input_text,
+            # }
 
     def inference_epoch_end(self, outputs, mode, data_cfg):
         # Parent class will handle logging of the loss.
@@ -455,10 +477,29 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         metric_name = self.val_metric_name if mode == 'validation' else self.test_metric_name
         # Log metrics for each provided validation/test dataset.
         for dataloader_idx, output in enumerate(outputs):
-            loss = super().validation_epoch_end([x['loss'] for x in output])
+            # Expand on_validation_epoch_end from parent class MegatronGPTModel as on_validation_epoch_end doesnt take outputs arg
+            # loss = super().on_validation_epoch_end([x['loss'] for x in output])
+            loss_vals = [x['loss'] for x in output]
+            if parallel_state.is_pipeline_last_stage():
+                # only the last pipeline parallel stages return loss with their batch size
+                if self.cfg.data.get('validation_drop_last', True):
+                    loss = torch.stack(loss_vals).mean()
+                else:
+                    # Compute the avg loss by total_loss across all samples / total number of samples
+                    total_loss_and_total_samples = torch.vstack(loss_vals).sum(axis=0)
+                    avg_loss = total_loss_and_total_samples[0] / total_loss_and_total_samples[1]
+                    loss = avg_loss.type(torch.float32).cuda()
+            else:
+                loss = torch.tensor(0.0, dtype=torch.float32).cuda()
+
+            # we can only log on one rank if it is rank zero so we broadcast from last rank
+            torch.distributed.broadcast(loss, get_last_rank())
+
+            self.log('val_loss', loss, prog_bar=True, rank_zero_only=True, batch_size=1)
+
             # Determine the key used to log the loss based on the user provided name of the dataset or the dataloader index.
             loss_log_key = self._determine_log_key(data_cfg, dataloader_idx, "loss", mode)
-            self.log(loss_log_key, loss)
+            self.log(loss_log_key, loss, batch_size=1)
             averaged_loss.append(loss)
 
             # Skip the rest of this loop if the user wants to monitor the loss only.
@@ -528,7 +569,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
                         deduplicated_outputs, f"{data_cfg.output_file_path_prefix}_{filename_log_key}"
                     )
                 torch.distributed.barrier()
-
+            outputs[dataloader_idx].clear()  # free memory
         # Logging of the averaged metrics:
         averaged_loss = sum(averaged_loss) / len(averaged_loss)
         averaged_metric = sum(averaged_metric) / len(averaged_metric) if len(averaged_metric) > 1 else None
@@ -541,13 +582,35 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             averaged_metric = 0.0 if monitor_mode == 'max' else 1e5
 
         if mode == 'validation':
-            self.log("validation_loss", averaged_loss)
+            self.log("validation_loss", averaged_loss, batch_size=1)
             if averaged_metric is not None:
                 self.log(f"validation_{self.val_metric_name}", averaged_metric)
         elif mode == 'test':
             self.log("test_loss", averaged_loss)
             if averaged_metric is not None:
                 self.log(f"test_{self.test_metric_name}", averaged_metric)
+
+        # Merge the functionality of previous on_inference_epoch_end() within inference_epoch_end() func here
+        app_state = AppState()
+        self._restore_activation_checkpointing_args()
+        if hasattr(self, "_train_ds"):
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=self.cfg.data.train_ds.global_batch_size,
+                micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
+        # When running `trainer.validate()`, the training dataset is not available.
+        else:
+            logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
+            _reconfigure_microbatch_calculator(
+                rank=app_state.global_rank,
+                rampup_batch_size=None,
+                global_batch_size=data_cfg.global_batch_size,
+                micro_batch_size=data_cfg.micro_batch_size,
+                data_parallel_size=parallel_state.get_data_parallel_world_size(),
+            )
 
         return averaged_loss, averaged_metric
 
@@ -757,36 +820,16 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         return super().on_test_epoch_start()
 
     def on_test_epoch_end(self):
-        self.on_inference_epoch_end(self.cfg.data.test_ds)
-        return super().on_test_epoch_end()
+        _ = self.inference_epoch_end(self.test_step_outputs, 'test', self.cfg.data.test_ds)
+        # Commenting as on_test_epoch_end was a no-op in PTL 1.9
+        # return super().on_test_epoch_end()
 
     def on_validation_epoch_end(self):
-        self.on_inference_epoch_end(self.cfg.data.validation_ds)
-        return super().on_validation_epoch_end()
-
-    def on_inference_epoch_end(self, ds):
-        app_state = AppState()
-        self._restore_activation_checkpointing_args()
-        if hasattr(self, "_train_ds"):
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=self.cfg.data.train_ds.global_batch_size,
-                micro_batch_size=self.cfg.data.train_ds.micro_batch_size,
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
-        # When running `trainer.validate()`, the training dataset is not available.
-        else:
-            logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
-            _reconfigure_microbatch_calculator(
-                rank=app_state.global_rank,
-                rampup_batch_size=None,
-                global_batch_size=ds.global_batch_size,
-                micro_batch_size=ds.micro_batch_size,
-                data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            )
+        _ = self.inference_epoch_end(self.validation_step_outputs, 'validation', self.cfg.data.validation_ds)
+        # Commenting as on_validation_epoch_end was a no-op in PTL 1.9
+        # return super().on_validation_epoch_end()
 
     def on_train_epoch_start(self) -> None:
-        # Same logic as validation epoch end, but this may be need if there is no validation sanity check to trigger validation_epoch_end()
+        # Same logic as validation epoch end, but this may be need if there is no validation sanity check to trigger on_validation_epoch_end()
         self.on_validation_epoch_end()
         return super().on_train_epoch_start()

@@ -120,7 +120,7 @@ class DuplexTaggerModel(NLPModel):
                 torch.tensor(cur_preds).to(self.device), torch.tensor(cur_labels).to(self.device)
             )
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
@@ -141,12 +141,12 @@ class DuplexTaggerModel(NLPModel):
         """
         return self.validation_step(batch, batch_idx)
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
         :param outputs: list of individual outputs of each test step.
         """
-        return self.validation_epoch_end(outputs)
+        return self.on_validation_epoch_end()
 
     # Functions for inference
     @torch.no_grad()

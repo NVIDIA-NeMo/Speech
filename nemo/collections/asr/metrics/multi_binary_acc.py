@@ -36,13 +36,14 @@ class MultiBinaryAccuracy(Metric):
             loss = self.loss(logits=preds, labels=targets)
             self._accuracy_valid(preds, targets, signal_lengths)
             f1_acc = self._accuracy.compute()
-            return {'val_loss': loss, 'val_f1_acc': f1_acc}
+            self.val_outputs = {'val_loss': loss, 'val_f1_acc': f1_acc}
+            return self.val_outputs
 
-        def validation_epoch_end(self, outputs):
+        def on_validation_epoch_end(self):
             ...
-            val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-            correct_counts = torch.stack([x['val_correct_counts'] for x in outputs]).sum(axis=0)
-            total_counts = torch.stack([x['val_total_counts'] for x in outputs]).sum(axis=0)
+            val_loss_mean = torch.stack([x['val_loss'] for x in self.val_outputs]).mean()
+            correct_counts = torch.stack([x['val_correct_counts'] for x in self.val_outputs]).sum(axis=0)
+            total_counts = torch.stack([x['val_total_counts'] for x in self.val_outputs]).sum(axis=0)
 
             self._accuracy_valid.correct_counts_k = correct_counts
             self._accuracy_valid.total_counts_k = total_counts
@@ -51,6 +52,7 @@ class MultiBinaryAccuracy(Metric):
 
             self.log('val_loss', val_loss_mean)
             self.log('val_f1_acc', f1_acc)
+            self.val_outputs.clear()  # free memory
             return {'val_loss': val_loss_mean, 'val_f1_acc': f1_acc}
 
     Args:

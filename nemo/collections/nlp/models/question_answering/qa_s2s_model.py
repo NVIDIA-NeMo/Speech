@@ -82,7 +82,7 @@ class S2SQAModel(BaseQAModel):
 
         labels[labels == -100] = self.tokenizer.tokenizer.pad_token_id
 
-        return {
+        loss = {
             "unique_ids": unique_ids,
             f"{prefix}_loss": loss,
             "per_sample_perplexity": per_sample_perplexity,
@@ -90,17 +90,31 @@ class S2SQAModel(BaseQAModel):
             "ground_truth_answers": self.tokenizer.tokenizer.batch_decode(labels, skip_special_tokens=True),
             "generated_answers": generated_answers,
         }
+        if prefix == 'val':
+            self.validation_step_outputs.append(loss)
+        else:
+            self.test_step_outputs.append(loss)
+
+        return loss
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         prefix = "test" if self.trainer.testing else "val"
 
-        loss_terms = [x[f"{prefix}_loss"] for x in outputs]
-        generated_answers, unique_ids, per_sample_perplexity = QAMetrics.convert_dict_outputs_to_lists(
-            outputs, ["generated_answers", "unique_ids", "per_sample_perplexity"]
-        )
+        if prefix == 'val':
+            loss_terms = [x[f"{prefix}_loss"] for x in self.validation_step_outputs]
+            generated_answers, unique_ids, per_sample_perplexity = QAMetrics.convert_dict_outputs_to_lists(
+                self.validation_step_outputs, ["generated_answers", "unique_ids", "per_sample_perplexity"]
+            )
+            self.validation_step_outputs.clear()  # free memory
+        else:
+            loss_terms = [x[f"{prefix}_loss"] for x in self.test_step_outputs]
+            generated_answers, unique_ids, per_sample_perplexity = QAMetrics.convert_dict_outputs_to_lists(
+                self.test_step_outputs, ["generated_answers", "unique_ids", "per_sample_perplexity"]
+            )
+            self.test_step_outputs.clear()  # free memory
 
         avg_loss = torch.stack(loss_terms).mean()
 
@@ -114,8 +128,8 @@ class S2SQAModel(BaseQAModel):
             logging.info(f"{prefix} {eval_key}: {eval_results[eval_key]}")
             self.log(f"{prefix}_{eval_key}", eval_results[eval_key])
 
-    def test_epoch_end(self, outputs):
-        self.validation_epoch_end(outputs)
+    def on_test_epoch_end(self):
+        self.on_validation_epoch_end()
 
     @typecheck()
     def forward(self, input_ids, input_attn_mask, labels):

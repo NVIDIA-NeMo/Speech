@@ -19,8 +19,8 @@ from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks.timer import Timer
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
-from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
+from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
+from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_retro_fine_tune_model import MegatronRetroFinetuneModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -82,18 +82,22 @@ def main(cfg) -> None:
         timeout=datetime.timedelta(seconds=18000),
     )
 
-    if cfg.trainer.precision in [16, 'bf16']:
+    if cfg.trainer.precision in [16, '16', '16-mixed', 'bf16', 'bf16-mixed']:
         scaler = None
-        if cfg.trainer.precision == 16:
+        if cfg.trainer.precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
                 init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 hysteresis=cfg.model.get('hysteresis', 2),
             )
-        if megatron_amp_o2:
-            plugins.append(MegatronHalfPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+            # MixedPrecisionPlugin in PTL >= 2.0 requires precision to be 16-mixed or bf16-mixed
+            plugin_precision = '16-mixed'
         else:
-            plugins.append(NativeMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+            plugin_precision = 'bf16-mixed'
+        if megatron_amp_o2:
+            plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
+        else:
+            plugins.append(MixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
@@ -102,10 +106,10 @@ def main(cfg) -> None:
     exp_manager(trainer, cfg.exp_manager)
 
     # update resume from checkpoint found by exp_manager
-    resume_from_checkpoint = trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+    resume_from_checkpoint = trainer.ckpt_path
     logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
 
-    trainer._checkpoint_connector = CheckpointConnector(trainer, resume_from_checkpoint=resume_from_checkpoint)
+    trainer._checkpoint_connector = _CheckpointConnector(trainer)
 
     # Override timer callback to a stateless one
     for idx, callback in enumerate(trainer.callbacks):

@@ -58,7 +58,9 @@ class ExampleModel(ModelPT):
         return batch.mean()
 
     def validation_step(self, batch, batch_idx):
-        return self(batch)
+        loss = self(batch)
+        self.validation_step_outputs.append(loss)
+        return loss
 
     def training_step(self, batch, batch_idx):
         return self(batch)
@@ -72,13 +74,15 @@ class ExampleModel(ModelPT):
     def setup_validation_data(self):
         pass
 
-    def validation_epoch_end(self, loss):
-        self.log("val_loss", torch.stack(loss).mean())
+    def on_validation_epoch_end(self):
+        self.log("val_loss", torch.stack(self.validation_step_outputs).mean())
+        self.validation_step_outputs.clear()  # free memory
 
 
 def instantiate_multinode_ddp_if_possible():
     num_gpus = torch.cuda.device_count()
-    trainer = Trainer(devices=num_gpus, accelerator='gpu', strategy='ddp', logger=None, enable_checkpointing=False)
+    ## Change logger=None to logger=False to support PTL 2.0
+    trainer = Trainer(devices=num_gpus, accelerator='gpu', strategy='ddp', logger=False, enable_checkpointing=False)
     exp_manager_cfg = ExpManagerConfig(exp_dir='./ddp_check/', use_datetime_version=False, version="")
     exp_manager(trainer, cfg=OmegaConf.structured(exp_manager_cfg))
     return trainer

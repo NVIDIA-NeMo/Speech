@@ -89,13 +89,17 @@ class DialogueS2SGenerationModel(NLPModel):
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
-        return self.eval_step_helper(batch=batch)
+        loss = self.eval_step_helper(batch=batch)
+        self.validation_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
-        self.eval_epoch_end(outputs, mode='val')
+    def on_validation_epoch_end(self):
+        self.eval_epoch_end(self.validation_step_outputs, mode='val')
+        self.validation_step_outputs.clear()  # free memory
 
-    def test_epoch_end(self, outputs):
-        self.eval_epoch_end(outputs, mode='test')
+    def on_test_epoch_end(self):
+        self.eval_epoch_end(self.test_step_outputs, mode='test')
+        self.test_step_outputs.clear()  # free memory
 
     def eval_epoch_end(self, outputs, mode='val'):
 
@@ -142,7 +146,9 @@ class DialogueS2SGenerationModel(NLPModel):
                 torch.save(self.language_model.state_dict(), filename)
 
     def test_step(self, batch, batch_idx):
-        return self.eval_step_helper(batch=batch, mode='test')
+        loss = self.eval_step_helper(batch=batch, mode='test')
+        self.test_step_outputs.append(loss)
+        return loss
 
     # for inference only
     def predict_step(self, batch, batch_idx, dataloader_idx=None):

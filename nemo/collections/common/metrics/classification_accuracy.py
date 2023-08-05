@@ -35,20 +35,22 @@ class TopKClassificationAccuracy(Metric):
         def validation_step(self, batch, batch_idx):
             ...
             correct_count, total_count = self._accuracy(logits, labels)
-            return {'val_loss': loss_value, 'val_correct_count': correct_count, 'val_total_count': total_count}
+            self.val_outputs = {'val_loss': loss_value, 'val_correct_count': correct_count, 'val_total_count': total_count}
+            return self.val_outputs
 
-        def validation_epoch_end(self, outputs):
+        def on_validation_epoch_end(self):
             ...
-            val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-            correct_counts = torch.stack([x['val_correct_counts'] for x in outputs])
-            total_counts = torch.stack([x['val_total_counts'] for x in outputs])
+            val_loss_mean = torch.stack([x['val_loss'] for x in self.val_outputs]).mean()
+            correct_counts = torch.stack([x['val_correct_counts'] for x in self.val_outputs])
+            total_counts = torch.stack([x['val_total_counts'] for x in self.val_outputs])
 
             topk_scores = compute_topk_accuracy(correct_counts, total_counts)
 
             tensorboard_log = {'val_loss': val_loss_mean}
             for top_k, score in zip(self._accuracy.top_k, topk_scores):
                 tensorboard_log['val_epoch_top@{}'.format(top_k)] = score
-
+            
+            self.val_outputs.clear()  # free memory
             return {'log': tensorboard_log}
 
     Args:

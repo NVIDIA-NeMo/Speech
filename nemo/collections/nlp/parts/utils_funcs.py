@@ -31,11 +31,11 @@ def dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[b
     if megatron_amp_O2 is not None and megatron_amp_O2 is False:
         return torch.float32
 
-    if precision == 'bf16':
+    if precision in ['bf16', 'bf16-mixed']:
         return torch.bfloat16
-    elif int(precision) == 16:
+    elif precision in [16, '16', '16-mixed']:
         return torch.float16
-    elif int(precision) == 32:
+    elif precision in [32, '32', '32-true']:
         return torch.float32
     else:
         raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")

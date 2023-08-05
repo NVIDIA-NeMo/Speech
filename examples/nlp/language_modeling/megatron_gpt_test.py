@@ -19,7 +19,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import Meg
 from nemo.collections.nlp.modules.common.megatron.megatron_utils import compute_model_parallel_rank
 from nemo.collections.nlp.parts.nlp_overrides import (
     NLPDDPStrategy,
-    NLPNativeMixedPrecisionPlugin,
+    NLPMixedPrecisionPlugin,
     NLPPrecisionPlugin,
     NLPSaveRestoreConnector,
 )
@@ -37,7 +37,7 @@ def main(cfg) -> None:
     if cfg.trainer.precision == 16:
         trainer = Trainer(
             plugins=[
-                NLPNativeMixedPrecisionPlugin(
+                NLPMixedPrecisionPlugin(
                     init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
                     growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 ),

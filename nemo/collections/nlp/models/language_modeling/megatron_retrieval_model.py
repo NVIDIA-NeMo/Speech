@@ -17,7 +17,6 @@ from typing import Any, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
@@ -102,7 +101,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         elif int(self.cfg.precision) == 16:
             self.autocast_dtype = torch.half
         else:
-            raise ValueError('precision must be in [32, 16, "bf16"]')
+            raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
         self.model.model_type = ModelType.encoder_and_decoder
 
         self.enable_autocast = (
@@ -310,6 +309,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         return lm_loss
 
     def validation_step(self, batch, batch_idx):
+        prefix = "test" if self.trainer.testing else "val"
         input_tokens_id = batch['tokens']
         input_attn_mask = batch['tokens_mask']
         loss_mask = batch['loss_mask']
@@ -331,26 +331,32 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         loss_mask = loss_mask.float()
         lm_loss = torch.sum(loss.view(-1) * loss_mask.reshape(-1)) / loss_mask.sum()
         reduced_loss = average_losses_across_data_parallel_group([lm_loss])
+        if prefix == 'val':
+            self.validation_step_outputs.append(reduced_loss)
+        else:
+            self.test_step_outputs.apped(reduced_loss)
         return reduced_loss
 
-    def validation_epoch_end(self, outputs):
-        if len(outputs) == 0:
-            return
-        averaged_loss = torch.stack(outputs).mean()
+    def on_validation_epoch_end(self):
+        if len(self.validation_step_outputs) == 0:
+            return None
+        averaged_loss = torch.stack(self.validation_step_outputs).mean()
         self.log('val_loss', averaged_loss, prog_bar=True, batch_size=1)
         # formula to compute the perplexity
         # https://towardsdatascience.com/the-relationship-between-perplexity-and-entropy-in-nlp-f81888775ccc
         self.log('perplexity', torch.exp(averaged_loss), prog_bar=True, batch_size=1)
+        self.validation_step_outputs.clear()  # free memory
         return averaged_loss
 
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def test_epoch_end(self, outputs):
-        averaged_loss = torch.stack(outputs).mean()
+    def on_test_epoch_end(self):
+        averaged_loss = torch.stack(self.test_step_outputs).mean()
         self.log('test_loss', averaged_loss, prog_bar=True, batch_size=1)
         logging.info(f'test_loss: {averaged_loss} ')
         self.log('perplexity', torch.exp(averaged_loss), prog_bar=True, batch_size=1)
+        self.test_step_outputs.clear()  # free memory
         return averaged_loss
 
     def build_train_valid_test_datasets(self):
@@ -434,7 +440,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         )
 
     def setup(self, stage=None):
-        resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+        resume_checkpoint_path = self.trainer.ckpt_path
         if resume_checkpoint_path:
             init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:

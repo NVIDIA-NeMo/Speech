@@ -23,7 +23,7 @@ import torch
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 from pytorch_lightning import Callback
-from pytorch_lightning.loops import TrainingEpochLoop
+from pytorch_lightning.loops import _TrainingEpochLoop
 
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
@@ -106,7 +106,8 @@ class ExampleModel(ModelPT):
         return output
 
     def validation_step(self, batch, batch_idx):
-        return self(batch)
+        self.loss = self(batch)
+        return self.loss
 
     def training_step(self, batch, batch_idx):
         return self(batch)
@@ -124,8 +125,8 @@ class ExampleModel(ModelPT):
     def setup_validation_data(self):
         pass
 
-    def validation_epoch_end(self, loss):
-        self.log("val_loss", torch.stack(loss).mean())
+    def on_validation_epoch_end(self):
+        self.log("val_loss", torch.stack([self.loss]).mean())
 
 
 class DoNothingModel(ExampleModel):
@@ -329,17 +330,13 @@ class TestExpManager:
             {"resume_if_exists": True, "explicit_log_dir": str(tmp_path / "test_resume" / "default" / "version_0")},
         )
         checkpoint = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last.ckpt")
-        assert (
-            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
-        )
+        assert Path(test_trainer.ckpt_path).resolve() == checkpoint.resolve()
 
         # Succeed again and make sure that run_0 exists and previous log files were moved
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
         exp_manager(test_trainer, {"resume_if_exists": True, "explicit_log_dir": str(log_dir)})
         checkpoint = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last.ckpt")
-        assert (
-            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve() == checkpoint.resolve()
-        )
+        assert Path(test_trainer.ckpt_path).resolve() == checkpoint.resolve()
         prev_run_dir = Path(tmp_path / "test_resume" / "default" / "version_0" / "run_0")
         assert prev_run_dir.exists()
         prev_log = Path(tmp_path / "test_resume" / "default" / "version_0" / "run_0" / "lightning_logs.txt")
@@ -372,10 +369,7 @@ class TestExpManager:
                 "explicit_log_dir": str(dirpath_log_dir),
             },
         )
-        assert (
-            Path(test_trainer._checkpoint_connector.resume_from_checkpoint_fit_path).resolve()
-            == dirpath_checkpoint.resolve()
-        )
+        assert Path(test_trainer.ckpt_path).resolve() == dirpath_checkpoint.resolve()
 
     @pytest.mark.unit
     def test_nemo_checkpoint_save_best_model_1(self, tmp_path):
@@ -593,14 +587,14 @@ class TestExpManager:
         """
         tmp_path = tmp_path / "test_3"
 
-        class CustomLoop(TrainingEpochLoop):
+        class CustomLoop(_TrainingEpochLoop):
             ...
 
         trainer = pl.Trainer(
             accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1, val_check_interval=0.33
         )
-        loop = CustomLoop()
-        loop.trainer = trainer
+        ## _TrainingEpochLoop in PTL 2.0 takes trainer as an arg
+        loop = CustomLoop(trainer)
         trainer.fit_loop.epoch_loop = loop
         with pytest.warns(UserWarning, match="Detected custom epoch loop"):
             exp_manager(trainer, {"explicit_log_dir": str(tmp_path)})

@@ -62,6 +62,10 @@ on how to convert WikiHomograph data for HeteronymClassificationModel training/e
 
 @hydra_runner(config_path="conf", config_name="g2p_heteronym_classification.yaml")
 def main(cfg):
+    # PTL 2.0 has find_unused_parameters as False by default, so its required to set it to True
+    # when there are unused parameters like in this model
+    if cfg.trainer.strategy == 'ddp':
+        cfg.trainer.strategy = "ddp_find_unused_parameters_true"
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
 

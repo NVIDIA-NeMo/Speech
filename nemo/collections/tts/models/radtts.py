@@ -225,23 +225,25 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             binarization_loss = torch.zeros_like(loss)
         loss_outputs['binarization_loss'] = binarization_loss
 
-        return {
+        val_outputs = {
             "loss_outputs": loss_outputs,
             "attn": outputs["attn"] if batch_idx == 0 else None,
             "attn_soft": outputs["attn_soft"] if batch_idx == 0 else None,
             "audiopaths": "audio_1" if batch_idx == 0 else None,
         }
+        self.validation_step_outputs.append(val_outputs)
+        return val_outputs
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
 
-        loss_outputs = outputs[0]["loss_outputs"]
+        loss_outputs = self.validation_step_outputs[0]["loss_outputs"]
 
         for k, v in loss_outputs.items():
             if k != "binarization_loss":
                 self.log("val/" + k, loss_outputs[k][0], sync_dist=True, on_epoch=True)
 
-        attn = outputs[0]["attn"]
-        attn_soft = outputs[0]["attn_soft"]
+        attn = self.validation_step_outputs[0]["attn"]
+        attn_soft = self.validation_step_outputs[0]["attn_soft"]
 
         self.tb_logger.add_image(
             'attention_weights_mas',
@@ -257,6 +259,7 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             dataformats='HWC',
         )
         self.log_train_images = True
+        self.validation_step_outputs.clear()  # free memory
 
     def configure_optimizers(self):
         logging.info("Initializing %s optimizer" % (self.optim.name))

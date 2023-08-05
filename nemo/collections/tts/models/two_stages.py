@@ -182,7 +182,7 @@ class TwoStagesModel(Vocoder):
     def validation_step(self, batch, batch_idx):
         pass
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self, outputs):
         pass
 
     def __setup_dataloader_from_config(self, cfg, shuffle_should_be: bool = True, name: str = "train"):

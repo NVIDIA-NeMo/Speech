@@ -131,7 +131,8 @@ def main(cfg: MTEncDecConfig) -> None:
 
     if cfg.do_training:
         trainer.fit(mt_model)
-
+    # Reset for PTL 2.0 as test uses the same ckpt as train via previously set self._ckpt_path
+    trainer.ckpt_path = None
     if cfg.do_testing:
         trainer.test(mt_model)
 

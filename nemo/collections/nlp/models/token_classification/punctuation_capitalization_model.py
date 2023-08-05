@@ -22,7 +22,6 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
-from pytorch_lightning.utilities.types import EPOCH_OUTPUT
 from tqdm import tqdm
 
 from nemo.collections.common.losses import AggregatorLoss, CrossEntropyLoss
@@ -272,7 +271,12 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             ``'capit_class_report'`` which values are ``None``. Values are ``None`` because metrics are computed using
             ``torchmetrics``.
         """
-        return self.eval_step(batch, 'val', dataloader_idx)
+        loss = self.eval_step(batch, 'val', dataloader_idx)
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append(loss)
+        else:
+            self.validation_step_outputs.append(loss)
+        return loss
 
     def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int, dataloader_idx: int = 0) -> Dict[str, None]:
         """
@@ -289,9 +293,14 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             ``'capit_class_report'`` which values are ``None``. Values are ``None`` because metrics are computed using
             ``torchmetrics``.
         """
-        return self.eval_step(batch, 'test', dataloader_idx)
+        loss = self.eval_step(batch, 'test', dataloader_idx)
+        if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
+            self.test_step_outputs[dataloader_idx].append(loss)
+        else:
+            self.test_step_outputs.append(loss)
+        return loss
 
-    def training_epoch_end(self, outputs: EPOCH_OUTPUT) -> None:
+    def on_train_epoch_end(self) -> None:
         """
         Called at the end of training epoch. This method properly shuffles
         :class:`~nemo.collections.nlp.data.token_classification.punctuation_capitalization_dataset.BertPunctuationCapitalizationDataset`.
@@ -605,6 +614,11 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         if test_data_config is None:
             test_data_config = self._cfg.test_ds
         self._test_dl = self._setup_dataloader_from_config(cfg=test_data_config, train=False)
+        # Check for multiple dataloaders here as it may not get called in ModelPT when models are being restored
+        if type(self._test_dl) == list and len(self._test_dl) > 1:
+            for _ in range(len(self._test_dl)):
+                self.test_step_outputs.append([])
+
         loss_kw, punct_kw, capit_kw = self._get_eval_metrics_kwargs()
         self.metrics['test']['loss'].append(GlobalAverageLossMetric(**loss_kw))
         self.metrics['test']['punct_class_report'].append(ClassificationReport(**punct_kw))

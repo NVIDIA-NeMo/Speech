@@ -183,7 +183,7 @@ class MultiLabelIntentSlotClassificationModel(IntentSlotClassificationModel):
         slot_labels = slot_labels[subtokens_mask]
         self.slot_classification_report.update(preds, slot_labels)
 
-        return {
+        loss = {
             "val_loss": val_loss,
             "intent_tp": self.intent_classification_report.tp,
             "intent_fn": self.intent_classification_report.fn,
@@ -192,6 +192,8 @@ class MultiLabelIntentSlotClassificationModel(IntentSlotClassificationModel):
             "slot_fn": self.slot_classification_report.fn,
             "slot_fp": self.slot_classification_report.fp,
         }
+        self.validation_step_outputs.append(loss)
+        return loss
 
     def _setup_dataloader_from_config(self, cfg: DictConfig) -> DataLoader:
         """

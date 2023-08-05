@@ -120,7 +120,7 @@ class SchedulerNoOpCallback(Callback):
                 scheduler.scheduler.step()
 
             # Increase the max step count by 1
-            trainer.fit_loop.max_steps = trainer.fit_loop.max_steps + 1
+            trainer.fit_loop.epoch_loop.max_steps = trainer.fit_loop.epoch_loop.max_steps + 1
 
     def assert_counts(self, trainer, module, count):
         num_skips = module.max_steps // 3

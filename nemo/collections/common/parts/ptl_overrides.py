@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import torch
-from pytorch_lightning.plugins.precision.native_amp import NativeMixedPrecisionPlugin
+from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
 
 
-class NeMoNativeMixedPrecisionPlugin(NativeMixedPrecisionPlugin):
+class NeMoMixedPrecisionPlugin(MixedPrecisionPlugin):
     def __init__(self, init_scale: float = 2 ** 32, growth_interval: int = 1000) -> None:
         super().__init__(precision=16)
 

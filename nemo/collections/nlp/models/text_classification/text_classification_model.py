@@ -108,7 +108,7 @@ class TextClassificationModel(NLPModel, Exportable):
             'lr': lr,
         }
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, split="val"):
         """
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
@@ -122,29 +122,35 @@ class TextClassificationModel(NLPModel, Exportable):
 
         tp, fn, fp, _ = self.classification_report(preds, labels)
 
-        return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
+        loss = {f'{split}_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
+        if split == 'val':
+            self.validation_step_outputs.append(loss)
+        elif split == 'test':
+            self.test_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self, split="val"):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        if self.trainer.testing:
-            prefix = 'test'
-        else:
-            prefix = 'val'
-
-        avg_loss = torch.stack([x[f'val_loss'] for x in outputs]).mean()
+        avg_loss = torch.tensor(0)
+        if split == 'val':
+            avg_loss = torch.stack([x[f'val_loss'] for x in self.validation_step_outputs]).mean()
+            self.validation_step_outputs.clear()  # free memory
+        elif split == 'test':
+            avg_loss = torch.stack([x[f'test_loss'] for x in self.test_step_outputs]).mean()
+            self.test_step_outputs.clear()  # free memory
 
         # calculate metrics and classification report
         precision, recall, f1, report = self.classification_report.compute()
 
-        logging.info(f'{prefix}_report: {report}')
+        logging.info(f'{split}_report: {report}')
 
-        self.log(f'{prefix}_loss', avg_loss, prog_bar=True)
-        self.log(f'{prefix}_precision', precision)
-        self.log(f'{prefix}_f1', f1)
-        self.log(f'{prefix}_recall', recall)
+        self.log(f'{split}_loss', avg_loss, prog_bar=True)
+        self.log(f'{split}_precision', precision)
+        self.log(f'{split}_f1', f1)
+        self.log(f'{split}_recall', recall)
 
         self.classification_report.reset()
 
@@ -153,14 +159,14 @@ class TextClassificationModel(NLPModel, Exportable):
         Lightning calls this inside the test loop with the data from the test dataloader
         passed in as `batch`.
         """
-        return self.validation_step(batch, batch_idx)
+        return self.validation_step(batch, batch_idx, 'test')
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
         :param outputs: list of individual outputs of each test step.
         """
-        return self.validation_epoch_end(outputs)
+        return self.on_validation_epoch_end(split='test')
 
     def setup_training_data(self, train_data_config: Optional[DictConfig]):
         if not train_data_config or not train_data_config.file_path:

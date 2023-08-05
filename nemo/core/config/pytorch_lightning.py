@@ -40,12 +40,8 @@ class TrainerConfig:
     default_root_dir: Optional[str] = None
     gradient_clip_val: float = 0
     num_nodes: int = 1
-    gpus: Optional[Any] = None
-    auto_select_gpus: bool = False
-    tpu_cores: Optional[Any] = None
     enable_progress_bar: bool = True
     overfit_batches: Any = 0.0
-    track_grad_norm: Any = -1
     check_val_every_n_epoch: int = 1
     fast_dev_run: bool = False
     accumulate_grad_batches: Any = 1
@@ -62,29 +58,22 @@ class TrainerConfig:
     sync_batchnorm: bool = False
     precision: Any = 32
     num_sanity_val_steps: int = 2
-    resume_from_checkpoint: Optional[str] = None
     profiler: Optional[Any] = None
     benchmark: bool = False
     deterministic: bool = False
-    auto_lr_find: Any = False
-    replace_sampler_ddp: bool = True
+    use_distributed_sampler: bool = True
     detect_anomaly: bool = False
-    auto_scale_batch_size: Any = False
-    amp_backend: str = 'native'
-    amp_level: Optional[str] = None
     plugins: Optional[Any] = None  # Optional[Union[str, list]]
-    move_metrics_to_cpu: bool = False
-    multiple_trainloader_mode: str = 'max_size_cycle'
     limit_predict_batches: float = 1.0
     gradient_clip_algorithm: str = 'norm'
     max_time: Optional[Any] = None  # can be one of Union[str, timedelta, Dict[str, int], None]
     reload_dataloaders_every_n_epochs: int = 0
-    ipus: Optional[int] = None
     devices: Any = None
     strategy: Any = None
     enable_checkpointing: bool = False
     enable_model_summary: bool = True
     inference_mode: bool = True
+    barebones: bool = False
 
 
 # Register the trainer config.

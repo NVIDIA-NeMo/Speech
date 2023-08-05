@@ -21,7 +21,7 @@ from nemo.utils.exp_manager import exp_manager
 
 @hydra_runner(config_path="conf", config_name="vits")
 def main(cfg):
-    trainer = pl.Trainer(replace_sampler_ddp=False, **cfg.trainer)
+    trainer = pl.Trainer(use_distributed_sampler=False, **cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
     model = VitsModel(cfg=cfg.model, trainer=trainer)
 

@@ -14,16 +14,17 @@
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 from typing import Any, Mapping, Optional
 
+from lightning_fabric.utilities.cloud_io import _load as pl_load
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from pytorch_lightning.core.saving import _load_state as ptl_load_state
 from pytorch_lightning.core.saving import load_hparams_from_tags_csv, load_hparams_from_yaml
 from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.utilities.cloud_io import load as pl_load
 from pytorch_lightning.utilities.migration import pl_legacy_patch
 from transformers import TRANSFORMERS_CACHE
 
@@ -133,6 +134,19 @@ class NLPModel(ModelPT, Exportable):
             self.bert_model = bert_model
             # register encoder config
             self.register_bert_model()
+
+    def _prefetch(self, iterator):
+        """Checks if the iterator still has elements to return.
+        Used in models using dataloader_iter to prefetch the next batch before fwd_bwd func
+        is called to avoid PP rank 2 from wait indefinitely to get outpits from PP 1
+        """
+        try:
+            element = next(iterator)
+        except StopIteration:
+            return iterator, True
+
+        # return a new iterator with the prefetched element reinserted at the front
+        return itertools.chain([element], iterator), False
 
     def register_artifact(
         self, config_path: str, src: str, verify_src_exists: bool = False,

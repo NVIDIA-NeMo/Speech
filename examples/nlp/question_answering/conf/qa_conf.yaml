@@ -25,7 +25,6 @@ trainer:
   accelerator: gpu
   log_every_n_steps: 5  # interval of logging.
   val_check_interval: 1.0  # set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  resume_from_checkpoint: null # the path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   enable_checkpointing: False # provided by exp_manager
   logger: False  # provided by exp_manager

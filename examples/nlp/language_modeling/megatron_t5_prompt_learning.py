@@ -49,7 +49,7 @@ def main(cfg) -> None:
 
     plugins = []
     strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
-    if cfg.trainer.precision == 16:
+    if cfg.trainer.precision == 16 or cfg.trainer.precision == '16-mixed':
         scaler = GradScaler(
             init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
             growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
@@ -58,7 +58,8 @@ def main(cfg) -> None:
             if cfg.model.pipeline_model_parallel_size > 1
             else True,  # turn off the grad scale for pipeline parallel LM model
         )
-        plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+        # MixedPrecisionPlugin in PTL >= 2.0 requires precision to be 16-mixed or bf16-mixed
+        plugins.append(PipelineMixedPrecisionPlugin(precision='16-mixed', device='cuda', scaler=scaler))
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())

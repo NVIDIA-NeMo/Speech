@@ -425,7 +425,11 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         }
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        return self.eval_step(batch, batch_idx, 'test', dataloader_idx)
+        loss = self.eval_step(batch, batch_idx, 'test', dataloader_idx)
+        if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
+            self.test_step_outputs[dataloader_idx].append(loss)
+        else:
+            self.test_step_outputs.append(loss)
 
     @rank_zero_only
     def log_param_stats(self):
@@ -443,7 +447,13 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
         """
-        return self.eval_step(batch, batch_idx, 'val', dataloader_idx)
+        loss = self.eval_step(batch, batch_idx, 'val', dataloader_idx)
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append(loss)
+        else:
+            self.validation_step_outputs.append(loss)
+
+        return loss
 
     def eval_epoch_end(self, outputs, mode, global_rank):
         # if user specifies one validation dataloader, then PTL reverts to giving a list of dictionary instead of a list of list of dictionary
@@ -523,20 +533,21 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
                 self.log(f"{mode}_loss_dl_index_{dataloader_idx}", eval_loss, sync_dist=True)
                 self.log(f"{mode}_sacreBLEU_dl_index_{dataloader_idx}", sb_score, sync_dist=True)
                 getattr(self, f'{mode}_loss_{dataloader_idx}').reset()
+            outputs[dataloader_idx].clear()  # free memory
 
         if len(loss_list) > 1:
             self.log(f"{mode}_loss_avg", np.mean(loss_list), sync_dist=True)
             self.log(f"{mode}_sacreBLEU_avg", np.mean(sb_score_list), sync_dist=True)
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        self.eval_epoch_end(outputs, 'val', self.global_rank)
+        self.eval_epoch_end(self.validation_step_outputs, 'val', self.global_rank)
 
-    def test_epoch_end(self, outputs):
-        self.eval_epoch_end(outputs, 'test', self.global_rank)
+    def on_test_epoch_end(self):
+        self.eval_epoch_end(self.test_step_outputs, 'test', self.global_rank)
 
     @classmethod
     def setup_enc_dec_tokenizers(

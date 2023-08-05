@@ -1,0 +1,286 @@
+# This config contains the default values for training an English 44.1kHz FastPitch model.
+# If you want to train a model on other dataset, you can change config values according to your dataset.
+# Most dataset-specific arguments are in the head of the config file, see below.
+
+name: FastPitch
+
+max_epochs: ???
+batch_size: 32
+weighted_sampling_steps_per_epoch: null
+
+n_speakers: ???
+speaker_path: null
+feature_stats_path: null
+
+train_ds_meta: ???
+val_ds_meta: ???
+log_ds_meta: ???
+
+phoneme_dict_path: ???
+heteronyms_path: ???
+
+log_dir: ???
+vocoder_type: ???
+vocoder_name: null
+vocoder_checkpoint_path: null
+
+# The below feature config should match the feature.yaml config used during preprocessing.
+sample_rate: 44100
+win_length: 2048
+hop_length: 512
+
+mel_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.MelSpectrogramFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  mel_dim: 80
+  lowfreq: 0
+  highfreq: null
+
+pitch_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.PitchFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  pitch_fmin: 60
+  pitch_fmax: 640
+
+energy_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.EnergyFeaturizer
+  spec_featurizer: ${mel_feature}
+
+featurizers:
+  pitch: ${pitch_feature}
+  energy: ${energy_feature}
+
+
+model:
+  learn_alignment: true
+  bin_loss_warmup_epochs: 100
+
+  n_speakers: ${n_speakers}
+  n_mel_channels: ${mel_feature.mel_dim}
+  min_token_duration: 1
+  max_token_duration: 75
+  symbols_embedding_dim: 384
+  pitch_embedding_kernel_size: 3
+  energy_embedding_kernel_size: 3
+  speaker_emb_condition_prosody: true
+  speaker_emb_condition_aligner: true
+  use_log_energy: false
+  dur_loss_scale: 0.1
+  pitch_loss_scale: 0.1
+  energy_loss_scale: 0.1
+  aligner_loss_scale: 0.1
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    features: ${mel_feature.mel_dim}
+    lowfreq: ${mel_feature.lowfreq}
+    highfreq: ${mel_feature.highfreq}
+    n_fft: ${win_length}
+    n_window_size: ${win_length}
+    window_size: false
+    n_window_stride: ${hop_length}
+    window_stride: false
+    pad_to: 1
+    pad_value: 0
+    sample_rate: ${sample_rate}
+    window: hann
+    normalize: null
+    preemph: null
+    dither: 0.0
+    frame_splicing: 1
+    log: true
+    log_zero_guard_type: add
+    log_zero_guard_value: 1.0
+    mag_power: 1.0
+    mel_norm: null
+
+  text_tokenizer:
+    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.IPATokenizer
+    punct: true
+    apostrophe: true
+    pad_with_space: true
+    g2p:
+      _target_: nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p
+      phoneme_dict: ${phoneme_dict_path}
+      heteronyms: ${heteronyms_path}
+      phoneme_probability: 0.8
+      ignore_ambiguous_words: false
+      use_chars: true
+      use_stresses: true
+
+  pitch_processor:
+    _target_: nemo.collections.tts.parts.preprocessing.feature_processors.MeanVarianceSpeakerNormalization
+    field: pitch
+    stats_path: ${feature_stats_path}
+
+  energy_processor:
+    _target_: nemo.collections.tts.parts.preprocessing.feature_processors.MeanVarianceSpeakerNormalization
+    field: energy
+    stats_path: ${feature_stats_path}
+
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
+      dataset_meta: ${train_ds_meta}
+      weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
+      sample_rate: ${sample_rate}
+      speaker_path: ${speaker_path}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
+      feature_processors:
+        pitch: ${model.pitch_processor}
+        energy: ${model.energy_processor}
+      min_duration: 0.1
+      max_duration: 10.0
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 4
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
+      dataset_meta: ${val_ds_meta}
+      sample_rate: ${sample_rate}
+      speaker_path: ${speaker_path}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
+      feature_processors:
+        pitch: ${model.pitch_processor}
+        energy: ${model.energy_processor}
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      num_workers: 2
+
+  log_config:
+    log_dir: ${log_dir}
+    log_epochs: [10, 50]
+    epoch_frequency: 100
+    log_tensorboard: false
+    log_wandb: false
+
+    generators:
+      - _target_: nemo.collections.tts.parts.utils.callbacks.FastPitchArtifactGenerator
+        log_spectrogram: true
+        log_alignment: true
+        audio_params:
+          _target_: nemo.collections.tts.parts.utils.callbacks.LogAudioParams
+          log_audio_gta: true
+          vocoder_type: ${vocoder_type}
+          vocoder_name: ${vocoder_name}
+          vocoder_checkpoint_path: ${vocoder_checkpoint_path}
+
+    dataset:
+      _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
+      text_tokenizer: ${model.text_tokenizer}
+      sample_rate: ${sample_rate}
+      speaker_path: ${speaker_path}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
+
+      feature_processors:
+        pitch: ${model.pitch_processor}
+        energy: ${model.energy_processor}
+
+      dataset_meta: ${log_ds_meta}
+
+    dataloader_params:
+      batch_size: 8
+      num_workers: 2
+
+  input_fft:
+    _target_: nemo.collections.tts.modules.transformer.FFTransformerEncoder
+    n_layer: 6
+    n_head: 2
+    d_model: ${model.symbols_embedding_dim}
+    d_head: 64
+    d_inner: 1536
+    kernel_size: 3
+    dropout: 0.1
+    dropatt: 0.1
+    dropemb: 0.0
+    d_embed: ${model.symbols_embedding_dim}
+
+  output_fft:
+    _target_: nemo.collections.tts.modules.transformer.FFTransformerDecoder
+    n_layer: 6
+    n_head: 1
+    d_model: ${model.symbols_embedding_dim}
+    d_head: 64
+    d_inner: 1536
+    kernel_size: 3
+    dropout: 0.1
+    dropatt: 0.1
+    dropemb: 0.0
+
+  alignment_module:
+    _target_: nemo.collections.tts.modules.aligner.AlignmentEncoder
+    n_text_channels: ${model.symbols_embedding_dim}
+    dist_type: cosine
+    temperature: 15.0
+
+  duration_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+
+  pitch_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+
+  energy_predictor:
+    _target_: nemo.collections.tts.modules.fastpitch.TemporalPredictor
+    input_size: ${model.symbols_embedding_dim}
+    kernel_size: 3
+    filter_size: 256
+    dropout: 0.1
+    n_layers: 2
+
+  optim:
+    name: adamw
+    lr: 1e-3
+    betas: [0.9, 0.999]
+    weight_decay: 1e-6
+
+    sched:
+      name: NoamAnnealing
+      warmup_steps: 1000
+      last_epoch: -1
+      d_model: 1  # Disable scaling based on model dim
+
+trainer:
+  num_nodes: 1
+  devices: 1
+  accelerator: gpu
+  strategy: ddp
+  precision: 16
+  max_epochs: ${max_epochs}
+  accumulate_grad_batches: 1
+  gradient_clip_val: 10.0
+  enable_checkpointing: false # Provided by exp_manager
+  logger: false # Provided by exp_manager
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 10
+  benchmark: false
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    monitor: val_loss
+  resume_if_exists: false
+  resume_ignore_no_checkpoint: false

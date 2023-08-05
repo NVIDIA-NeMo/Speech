@@ -1,13 +1,8 @@
-# This config contains the default values for training a HiFi-GAN model.
+# This config contains the default values for training a 22.05kHz HiFi-GAN model.
 # If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
 name: "HifiGan"
-
-defaults:
-  - feature: ???
-  - sample: ???
-  - model/generator: ???
 
 max_epochs: ???
 batch_size: 16
@@ -19,6 +14,19 @@ log_ds_meta: ???
 
 log_dir: ???
 
+mel_dim: 80
+lowfreq: 0
+highfreq: null
+
+# Change these values depending on your sampling rate.
+sample_rate: 22050
+win_length: 1024
+hop_length: 256
+upsample_rates: [8, 8, 2, 2]
+train_n_samples: 8192
+val_min_duration_seconds: 3.0
+val_n_samples: 66048
+
 model:
 
   max_epochs: ${max_epochs}
@@ -27,16 +35,16 @@ model:
 
   preprocessor:
     _target_: nemo.collections.asr.parts.preprocessing.features.FilterbankFeatures
-    nfilt: ${feature.mel_feature.mel_dim}
-    lowfreq: ${feature.mel_feature.lowfreq}
-    highfreq: ${feature.mel_feature.highfreq}
-    n_fft: ${feature.win_length}
-    n_window_size: ${feature.win_length}
-    n_window_stride: ${feature.hop_length}
+    nfilt: ${mel_dim}
+    lowfreq: ${lowfreq}
+    highfreq: ${highfreq}
+    n_fft: ${win_length}
+    n_window_size: ${win_length}
+    n_window_stride: ${hop_length}
     pad_to: 0
     pad_value: 0
     exact_pad: true
-    sample_rate: ${feature.sample_rate}
+    sample_rate: ${sample_rate}
     window: hann
     normalize: null
     preemph: null
@@ -49,12 +57,21 @@ model:
     mel_norm: null
     use_grads: false
 
+  generator:
+    _target_: nemo.collections.tts.modules.hifigan_modules.Generator
+    resblock: 1
+    upsample_rates: ${upsample_rates}
+    upsample_kernel_sizes: [16, 16, 4, 4]
+    upsample_initial_channel: 512
+    resblock_kernel_sizes: [3, 7, 11]
+    resblock_dilation_sizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
+
   train_ds:
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
       weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
-      sample_rate: ${feature.sample_rate}
-      n_samples: ${sample.train_n_samples}
+      sample_rate: ${sample_rate}
+      n_samples: ${train_n_samples}
       min_duration: 0.4
       max_duration: null
       dataset_meta: ${train_ds_meta}
@@ -66,9 +83,9 @@ model:
   validation_ds:
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
-      sample_rate: ${feature.sample_rate}
-      n_samples: ${sample.val_n_samples}
-      min_duration: 3.0
+      sample_rate: ${sample_rate}
+      n_samples: ${val_n_samples}
+      min_duration: ${val_min_duration_seconds}
       max_duration: null
       dataset_meta: ${val_ds_meta}
 
@@ -88,7 +105,7 @@ model:
 
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
-      sample_rate: ${feature.sample_rate}
+      sample_rate: ${sample_rate}
       n_samples: null
       min_duration: null
       max_duration: null

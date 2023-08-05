@@ -1,11 +1,8 @@
-# This config contains the default values for training an English FastPitch model.
+# This config contains the default values for training an English 22.05kHz FastPitch model.
 # If you want to train a model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
 name: FastPitch
-
-defaults:
-  - feature: ???
 
 max_epochs: ???
 batch_size: 32
@@ -27,12 +24,43 @@ vocoder_type: ???
 vocoder_name: null
 vocoder_checkpoint_path: null
 
+# The below feature config should match the feature.yaml config used during preprocessing.
+sample_rate: 22050
+win_length: 1024
+hop_length: 256
+
+mel_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.MelSpectrogramFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  mel_dim: 80
+  lowfreq: 0
+  highfreq: null
+
+pitch_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.PitchFeaturizer
+  sample_rate: ${sample_rate}
+  win_length: ${win_length}
+  hop_length: ${hop_length}
+  pitch_fmin: 60
+  pitch_fmax: 640
+
+energy_feature:
+  _target_: nemo.collections.tts.parts.preprocessing.features.EnergyFeaturizer
+  spec_featurizer: ${mel_feature}
+
+featurizers:
+  pitch: ${pitch_feature}
+  energy: ${energy_feature}
+
+
 model:
   learn_alignment: true
   bin_loss_warmup_epochs: 100
 
   n_speakers: ${n_speakers}
-  n_mel_channels: ${feature.mel_feature.mel_dim}
+  n_mel_channels: ${mel_feature.mel_dim}
   min_token_duration: 1
   max_token_duration: 75
   symbols_embedding_dim: 384
@@ -48,17 +76,17 @@ model:
 
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
-    features: ${feature.mel_feature.mel_dim}
-    lowfreq: ${feature.mel_feature.lowfreq}
-    highfreq: ${feature.mel_feature.highfreq}
-    n_fft: ${feature.win_length}
-    n_window_size: ${feature.win_length}
+    features: ${mel_feature.mel_dim}
+    lowfreq: ${mel_feature.lowfreq}
+    highfreq: ${mel_feature.highfreq}
+    n_fft: ${win_length}
+    n_window_size: ${win_length}
     window_size: false
-    n_window_stride: ${feature.hop_length}
+    n_window_stride: ${hop_length}
     window_stride: false
     pad_to: 1
     pad_value: 0
-    sample_rate: ${feature.sample_rate}
+    sample_rate: ${sample_rate}
     window: hann
     normalize: null
     preemph: null
@@ -99,10 +127,10 @@ model:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
       dataset_meta: ${train_ds_meta}
       weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
-      sample_rate: ${feature.sample_rate}
+      sample_rate: ${sample_rate}
       speaker_path: ${speaker_path}
-      align_prior_hop_length: ${feature.hop_length}
-      featurizers: ${feature.featurizers}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
       feature_processors:
         pitch: ${model.pitch_processor}
         energy: ${model.energy_processor}
@@ -117,10 +145,10 @@ model:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
       dataset_meta: ${val_ds_meta}
-      sample_rate: ${feature.sample_rate}
+      sample_rate: ${sample_rate}
       speaker_path: ${speaker_path}
-      align_prior_hop_length: ${feature.hop_length}
-      featurizers: ${feature.featurizers}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
       feature_processors:
         pitch: ${model.pitch_processor}
         energy: ${model.energy_processor}
@@ -150,10 +178,10 @@ model:
     dataset:
       _target_: nemo.collections.tts.data.text_to_speech_dataset.TextToSpeechDataset
       text_tokenizer: ${model.text_tokenizer}
-      sample_rate: ${feature.sample_rate}
+      sample_rate: ${sample_rate}
       speaker_path: ${speaker_path}
-      align_prior_hop_length: ${feature.hop_length}
-      featurizers: ${feature.featurizers}
+      align_prior_hop_length: ${hop_length}
+      featurizers: ${featurizers}
 
       feature_processors:
         pitch: ${model.pitch_processor}

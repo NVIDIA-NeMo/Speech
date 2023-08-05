@@ -732,7 +732,7 @@ def generate_vad_segment_table(
     vad_pred_filepath_list = [os.path.join(vad_pred_dir, x) for x in os.listdir(vad_pred_dir) if x.endswith(suffixes)]
 
     if not out_dir:
-        out_dir_name = "seg_output_"
+        out_dir_name = "seg_output"
         for key in postprocessing_params:
             out_dir_name = out_dir_name + "-" + str(key) + str(postprocessing_params[key])
 

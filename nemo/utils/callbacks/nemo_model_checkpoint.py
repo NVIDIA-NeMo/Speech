@@ -96,7 +96,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             if checkpoint[-10:] == '-last.ckpt':
                 continue
             index = checkpoint.find(self.monitor) + len(self.monitor) + 1  # Find monitor in str + 1 for '='
-            if index != -1:
+            if index != len(self.monitor):
                 match = re.search('[A-z]', checkpoint[index:])
                 if match:
                     value = checkpoint[index : index + match.start() - 1]  # -1 due to separator hypen

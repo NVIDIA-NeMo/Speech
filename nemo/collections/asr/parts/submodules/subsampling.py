@@ -64,7 +64,7 @@ class ConvSubsampling(torch.nn.Module):
     VGGNet Subsampling: Transformer-transducer: end-to-end speech recognition with self-attention (https://arxiv.org/pdf/1910.12977.pdf)
     Striding Subsampling: "Speech-Transformer: A No-Recurrence Sequence-to-Sequence Model for Speech Recognition" by Linhao Dong et al. (https://ieeexplore.ieee.org/document/8462506)
     Args:
-        subsampling (str): The subsampling technique from {"vggnet", "striding"}
+        subsampling (str): The subsampling technique from {"vggnet", "striding", "dw-striding"}
         subsampling_factor (int): The subsampling factor which should be a power of 2
         subsampling_conv_chunking_factor (int): Input chunking factor which can be -1 (no chunking) 
         1 (auto) or a power of 2. Default is 1

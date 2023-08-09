@@ -23,7 +23,9 @@ For the word-level ASS files, the text will be highlighted word-by-word, with th
 by the NFA alignemtns.
 """
 
+import math
 import os
+import soundfile as sf
 
 from utils.constants import BLANK_TOKEN, SPACE_TOKEN
 from utils.data_prep import Segment, Token, Word
@@ -74,8 +76,13 @@ def make_ass_files(
     if ass_file_config.resegment_text_to_fill_space:
         utt_obj = resegment_utt_obj(utt_obj, ass_file_config)
 
-    utt_obj = make_word_level_ass_file(utt_obj, output_dir_root, ass_file_config,)
-    utt_obj = make_token_level_ass_file(utt_obj, output_dir_root, ass_file_config,)
+    # get duration of the utterance, so we know the final timestamp of the final set of subtitles,
+    # which we will keep showing until the end
+    with sf.SoundFile(utt_obj.audio_filepath) as f:
+        audio_dur = f.frames / f.samplerate
+
+    utt_obj = make_word_level_ass_file(utt_obj, output_dir_root, ass_file_config, audio_dur)
+    utt_obj = make_token_level_ass_file(utt_obj, output_dir_root, ass_file_config, audio_dur)
 
     return utt_obj
 
@@ -166,9 +173,7 @@ def resegment_utt_obj(utt_obj, ass_file_config):
     return utt_obj
 
 
-def make_word_level_ass_file(
-    utt_obj, output_dir_root, ass_file_config,
-):
+def make_word_level_ass_file(utt_obj, output_dir_root, ass_file_config, audio_dur):
 
     default_style_dict = {
         "Name": "Default",
@@ -298,14 +303,33 @@ def make_word_level_ass_file(
                             )
                             f.write(subtitle_text + '\n')
 
+        # write final set of subtitles for text after speech has been spoken
+        words_in_final_segment = []
+        for segment_or_token in utt_obj.segments_and_tokens[::-1]:
+            if type(segment_or_token) is Segment:
+                final_segment = segment_or_token
+
+                for word_or_token in final_segment.words_and_tokens:
+                    if type(word_or_token) is Word:
+                        words_in_final_segment.append(word_or_token)
+                break
+
+        text_after_speech = already_spoken_color_code + " ".join([x.text for x in words_in_final_segment]) + r"{\r}"
+        # note: for now doing some extra padding with math.ceil(audio_dur)+1) to account for the fact that the video with subtitles can become
+        # longer than the original audio during the MP4 creation stage.
+        subtitle_text = (
+            f"Dialogue: 0,{seconds_to_ass_format(words_in_final_segment[-1].t_end)},{seconds_to_ass_format(math.ceil(audio_dur)+1)},Default,,0,0,0,,"
+            + text_after_speech.rstrip()
+        )
+
+        f.write(subtitle_text + '\n')
+
     utt_obj.saved_output_files[f"words_level_ass_filepath"] = output_file
 
     return utt_obj
 
 
-def make_token_level_ass_file(
-    utt_obj, output_dir_root, ass_file_config,
-):
+def make_token_level_ass_file(utt_obj, output_dir_root, ass_file_config, audio_dur):
 
     default_style_dict = {
         "Name": "Default",
@@ -456,6 +480,42 @@ def make_token_level_ass_file(
                                 + text_after.rstrip()
                             )
                             f.write(subtitle_text + '\n')
+
+        # Write final set of subtitles for text after speech has been spoken.
+        # To do this, we need to collect 'tokens_in_final_segment' so that we know what the final line is.
+        tokens_in_final_segment = []
+        for segment_or_token in utt_obj.segments_and_tokens[::-1]:
+            # Collect tokens from final segment - will 'break' so we only look at the final one.
+            if type(segment_or_token) is Segment:
+                # 'segment_or_token' is known to be Segment, which has attribute 'words_and_tokens'
+                for word_or_token in segment_or_token.words_and_tokens:
+                    if type(word_or_token) is Token:
+                        if word_or_token.text != BLANK_TOKEN:
+                            tokens_in_final_segment.append(word_or_token)
+                    else:
+                        # 'word_or_token' is known to be a Word, which has attribute 'tokens'
+                        for token in word_or_token.tokens:
+                            if token.text != BLANK_TOKEN:
+                                tokens_in_final_segment.append(token)
+                break
+
+        for token in tokens_in_final_segment:
+            token.text_cased = token.text_cased.replace(
+                "▁", " "
+            )  # replace underscores used in subword tokens with spaces
+            token.text_cased = token.text_cased.replace(SPACE_TOKEN, " ")  # space token with actual space
+
+        text_after_speech = (
+            already_spoken_color_code + "".join([x.text_cased for x in tokens_in_final_segment]) + r"{\r}"
+        )
+        # note: for now doing some extra padding with math.ceil(audio_dur)+1) to account for the fact that the video with subtitles can become
+        # longer than the original audio during the MP4 creation stage.
+        subtitle_text = (
+            f"Dialogue: 0,{seconds_to_ass_format(tokens_in_final_segment[-1].t_end)},{seconds_to_ass_format(math.ceil(audio_dur)+1)},Default,,0,0,0,,"
+            + text_after_speech.rstrip()
+        )
+
+        f.write(subtitle_text + '\n')
 
     utt_obj.saved_output_files[f"tokens_level_ass_filepath"] = output_file
 

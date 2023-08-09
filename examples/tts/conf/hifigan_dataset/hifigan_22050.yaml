@@ -129,7 +129,7 @@ trainer:
   num_nodes: 1
   devices: 1
   accelerator: gpu
-  strategy: ddp
+  strategy: ddp_find_unused_parameters_true
   precision: 16
   max_epochs: ${max_epochs}
   accumulate_grad_batches: 1

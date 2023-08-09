@@ -267,7 +267,7 @@ class AudioCodecModel(ModelPT):
         self.log_dict(metrics, on_step=True, sync_dist=True)
         self.log("t_loss", train_loss_mel, prog_bar=True, logger=False, sync_dist=True)
 
-    def training_epoch_end(self, outputs):
+    def on_train_epoch_end(self):
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):

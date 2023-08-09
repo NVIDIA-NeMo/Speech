@@ -72,7 +72,7 @@ trainer:
   num_nodes: 1
   devices: 1
   accelerator: gpu
-  strategy: ddp
+  strategy: ddp_find_unused_parameters_true
   precision: 32
   max_steps: ${model.max_steps}
   accumulate_grad_batches: 1

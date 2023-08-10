@@ -102,19 +102,19 @@ model:
       num_workers: 2
 
   audio_encoder:
-    _target_: nemo.collections.tts.modules.audio_codec_modules.SEANetEncoder
+    _target_: nemo.collections.tts.modules.encodec_modules.SEANetEncoder
     down_sample_rates: ${down_sample_rates}
 
   audio_decoder:
-    _target_: nemo.collections.tts.modules.audio_codec_modules.SEANetDecoder
+    _target_: nemo.collections.tts.modules.encodec_modules.SEANetDecoder
     up_sample_rates: ${up_sample_rates}
 
   vector_quantizer:
-    _target_: nemo.collections.tts.modules.vector_quantization.ResidualVectorQuantizer
+    _target_: nemo.collections.tts.modules.encodec_modules.ResidualVectorQuantizer
     num_codebooks: 8
 
   discriminator:
-    _target_: nemo.collections.tts.modules.audio_codec_modules.MultiResolutionDiscriminatorSTFT
+    _target_: nemo.collections.tts.modules.encodec_modules.MultiResolutionDiscriminatorSTFT
     resolutions: [[128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]]
 
   # The original EnCodec uses hinged loss, but squared-GAN loss is more stable

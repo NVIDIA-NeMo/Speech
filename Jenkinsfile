@@ -3815,6 +3815,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.test_ds.global_batch_size=1 \
         model.data.test_ds.micro_batch_size=1 \
         model.data.test_ds.tokens_to_generate=10 \
+        model.data.test_ds.write_predictions_to_file=True \
+        model.data.test_ds.output_file_path_prefix='/home/TestData/nlp/lora_tuning_tp2/out' \
         inference.greedy=True \
         inference.repetition_penalty=1.0 \
         inference.outfile_path='/home/TestData/nlp/lora_tuning_tp2/out.jsonl'"
@@ -3874,6 +3876,8 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
             model.data.test_ds.micro_batch_size=1 \
             model.data.test_ds.tokens_to_generate=30 \
             model.data.test_ds.max_seq_length=6000 \
+            model.data.test_ds.write_predictions_to_file=True \
+            model.data.test_ds.output_file_path_prefix='examples/nlp/language_modeling/out' \
             inference.greedy=True \
             inference.repetition_penalty=1.0 \
             inference.outfile_path='examples/nlp/language_modeling/out.jsonl' && \

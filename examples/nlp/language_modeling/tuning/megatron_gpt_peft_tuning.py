@@ -85,6 +85,9 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
         gpt_cfg.activations_checkpoint_granularity = cfg.model.get("activations_checkpoint_granularity", None)
         gpt_cfg.activations_checkpoint_num_layers = cfg.model.get("activations_checkpoint_num_layers", None)
         gpt_cfg.activations_checkpoint_method = cfg.model.get("activations_checkpoint_method", None)
+        gpt_cfg.activations_checkpoint_layers_per_pipeline = cfg.model.get(
+            "activations_checkpoint_layers_per_pipeline", None
+        )
         gpt_cfg.data = cfg.model.data
         gpt_cfg.optim = cfg.model.optim
         gpt_cfg.precision = cfg.trainer.precision

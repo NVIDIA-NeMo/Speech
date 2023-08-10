@@ -68,6 +68,7 @@ model:
   # of each chunk at the specified granularity
   # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
   activations_checkpoint_num_layers: null # not used with 'selective'
+  activations_checkpoint_layers_per_pipeline: null
   answer_only_loss: True
   gradient_as_bucket_view: False
 
@@ -160,7 +161,7 @@ model:
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
       prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
-
+      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
@@ -188,7 +189,7 @@ model:
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
       prompt_template: ${model.data.train_ds.prompt_template}
-
+      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.

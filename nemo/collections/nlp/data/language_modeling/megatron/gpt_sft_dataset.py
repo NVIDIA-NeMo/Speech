@@ -72,7 +72,7 @@ class GPTSFTDataset(Dataset):
         truncation_field: Field to use for truncation. (Options: "answer", "context"). Field to be used for truncation if the combined length exceeds the max sequence length.
         pad_to_max_length: Whether to pad the input to the max sequence length. If False, will pad to the max length of the current batch.
         index_mapping_dir: Directory to save the index mapping to. If None, will write to the same folder as the dataset.
-        prompt_template: Prompt template to inject via an fstring. Formatted like Q: {input}\n\nA: {output}
+        prompt_template: Prompt template to inject via an fstring. Formatted like Q: {context_key}\n\nA: {label_key}
         hf_dataset: Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
         """
         self.tokenizer = tokenizer
@@ -150,6 +150,9 @@ class GPTSFTDataset(Dataset):
                 idx = idx.item()
 
         assert idx < len(self.indexed_dataset)
+        # idx may < 0 because we pad_samples_to_global_batch_size, e.g. id = -1
+        if idx < 0:
+            idx = len(self) + idx
         try:
             example = self.indexed_dataset[idx]
         except Exception as e:
@@ -185,9 +188,9 @@ class GPTSFTDataset(Dataset):
                 f'{{{self.label_key}}}', output
             )
 
-        if self.separate_prompt_and_response_with_newline and self.prompt_template is None:
+        elif self.separate_prompt_and_response_with_newline:
             text = context + '\n' + output
-        elif not self.separate_prompt_and_response_with_newline and self.prompt_template is None:
+        else:
             text = context + ' ' + output
 
         if self.virtual_tokens:
@@ -206,7 +209,8 @@ class GPTSFTDataset(Dataset):
             total_ids += 1
         if self.add_sep:
             total_ids += 1
-        if self.add_eos:
+        # Only training need to consider eos token
+        if self.add_eos and self.tokens_to_generate == 0:
             total_ids += 1
 
         # If the total number of token is greater than the max, we will try to truncate the answer
@@ -217,34 +221,41 @@ class GPTSFTDataset(Dataset):
             elif self.truncation_field == "context":
                 context_ids = context_ids[: -min(truncation_length, len(context_ids))]
 
-        if len(context_ids) > self.max_seq_length:
-            context_ids = context_ids[: self.max_seq_length]
-
-        assert len(context_ids) <= self.max_seq_length
         input_ids = context_ids
-
         answer_start_idx = len(input_ids)
+
+        # Adds bos token in the start
+        if self.add_bos:
+            context_ids = [self.tokenizer.bos_id] + context_ids
+            input_ids = [self.tokenizer.bos_id] + input_ids
+            answer_start_idx += 1
+
         # Adds sep token between text/prompt and answer
         if self.add_sep:
+            context_ids = context_ids + [self.sep_id]
             input_ids = input_ids + [self.sep_id]
             answer_start_idx += 1
 
         input_ids = input_ids + answer_ids
 
-        if self.add_bos:
-            input_ids = [self.tokenizer.bos_id] + input_ids
-            answer_start_idx += 1
-        if self.add_eos:
+        # Only training need to consider eos token
+        if self.add_eos and self.tokens_to_generate == 0:
             input_ids = input_ids + [self.tokenizer.eos_id]
 
-        if len(input_ids) < self.min_seq_length or len(input_ids) > self.max_seq_length:
+        if len(input_ids) > self.max_seq_length:
+            logging.warning(f'Input ids length {len(input_ids)} exceed max sequence length {self.max_seq_length}')
             input_ids = input_ids[: self.max_seq_length]
+
+        # store metadata in dataset, in case user may have keys required in the prediction json files
+        metadata = {k: v for k, v in example.items() if k not in [self.context_key, self.label_key]}
 
         processed_example = {
             'input_ids': input_ids,
             'answer_start_idx': answer_start_idx,
             'context_ids': context_ids,
             'context_length': len(context_ids),
+            'answer_ids': answer_ids,
+            'metadata': metadata,
         }
 
         return processed_example
@@ -292,9 +303,11 @@ class GPTSFTDataset(Dataset):
         labels = [item['input_ids'][1:] for item in batch]
         contexts = [item['context_ids'] for item in batch]
         context_lengths = torch.LongTensor([item['context_length'] for item in batch])
+        answers = [item['answer_ids'] for item in batch]
         loss_mask = [self._build_loss_mask(item)[1:] for item in batch]
+        metadata = [item['metadata'] for item in batch]
 
-        max_length = max([len(x) for x in input_ids]) + self.tokens_to_generate
+        max_length = max(max([len(x) for x in input_ids]), max([len(x) for x in contexts]) + self.tokens_to_generate)
         # increase max length to nearest multiple of 4 or 8
         if self.pad_to_max_length:
             max_length = self.max_seq_length
@@ -312,6 +325,7 @@ class GPTSFTDataset(Dataset):
         labels = torch.LongTensor(self._collate_item(labels, max_length=max_length, pad_id=self.tokenizer.eos_id))
         loss_mask = torch.LongTensor(self._collate_item(loss_mask, max_length=max_length, pad_id=0))
         contexts = torch.LongTensor(self._collate_item(contexts, max_length=max_length, pad_id=self.tokenizer.eos_id))
+        answers = torch.LongTensor(self._collate_item(answers, max_length=max_length, pad_id=self.tokenizer.eos_id))
 
         processed_batch = {
             'tokens': input_ids,
@@ -321,6 +335,8 @@ class GPTSFTDataset(Dataset):
             'position_ids': position_ids,
             'contexts': contexts,
             'context_lengths': context_lengths,
+            'answers': answers,
+            'metadata': metadata,
         }
 
         return processed_batch

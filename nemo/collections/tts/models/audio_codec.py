@@ -52,7 +52,13 @@ class AudioCodecModel(ModelPT):
         self.sample_rate = cfg.sample_rate
         self.samples_per_frame = cfg.samples_per_frame
 
-        self.disc_update_prob = cfg.get("disc_update_prob", 1.0)
+        self.disc_updates_per_period = cfg.get("disc_updates_per_period", 1)
+        self.disc_update_period = cfg.get("disc_update_period", 1)
+        if self.disc_updates_per_period > self.disc_update_period:
+            raise ValueError(
+                f'Number of discriminator updates ({self.disc_updates_per_period}) per period must be less or equal to the configured period ({self.disc_update_period})'
+            )
+
         self.audio_encoder = instantiate(cfg.audio_encoder)
 
         # Optionally, add gaussian noise to encoder output as an information bottleneck
@@ -204,18 +210,26 @@ class AudioCodecModel(ModelPT):
 
         return audio, audio_len, audio_gen, commit_loss
 
+    @property
+    def disc_update_prob(self) -> float:
+        """Probability of updating the discriminator.
+        """
+        return self.disc_updates_per_period / self.disc_update_period
+
+    def should_update_disc(self, batch_idx) -> bool:
+        """Decide whether to update the descriminator based
+        on the batch index and configured discriminator update period.
+        """
+        disc_update_step = batch_idx % self.disc_update_period
+        return disc_update_step < self.disc_updates_per_period
+
     def training_step(self, batch, batch_idx):
         optim_gen, optim_disc = self.optimizers()
-        optim_gen.zero_grad()
 
         audio, audio_len, audio_gen, commit_loss = self._process_batch(batch)
 
-        if self.disc_update_prob < random.random():
-            loss_disc = None
-        else:
+        if self.should_update_disc(batch_idx):
             # Train discriminator
-            optim_disc.zero_grad()
-
             disc_scores_real, disc_scores_gen, _, _ = self.discriminator(
                 audio_real=audio, audio_gen=audio_gen.detach()
             )
@@ -224,6 +238,9 @@ class AudioCodecModel(ModelPT):
 
             self.manual_backward(train_disc_loss)
             optim_disc.step()
+            optim_disc.zero_grad()
+        else:
+            loss_disc = None
 
         loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
         train_loss_time_domain = self.time_domain_loss_scale * loss_time_domain
@@ -245,6 +262,7 @@ class AudioCodecModel(ModelPT):
 
         self.manual_backward(loss_gen_all)
         optim_gen.step()
+        optim_gen.zero_grad()
 
         self.update_lr()
 

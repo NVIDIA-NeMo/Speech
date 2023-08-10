@@ -37,7 +37,9 @@ model:
   samples_per_frame: ${samples_per_frame}
   time_domain_loss_scale: 0.1
   # Probability of updating the discriminator during each training step
-  disc_update_prob: 0.67
+  # For example, update the discriminator 2/3 times (2 updates for every 3 batches)
+  disc_updates_per_period: 2
+  disc_update_period: 3
 
   # All resolutions for mel reconstruction loss, ordered [num_fft, hop_length, window_length]
   mel_loss_resolutions: [

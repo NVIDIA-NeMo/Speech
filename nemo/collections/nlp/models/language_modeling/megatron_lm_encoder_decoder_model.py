@@ -240,7 +240,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             )  # For models before separate encoder/decoder configs, tokens_head_bias was always True.
 
     def model_provider_func(self, pre_process, post_process, add_encoder, add_decoder):
-        # TODO: create get_encoder_decoder_model()here for different losses (e..g, nll, vae, mim)
         if not hasattr(self.cfg, 'encoder') or not hasattr(self.cfg, 'decoder'):
             logging.warning(
                 'Could not find encoder or decoder in config. This is probably because of restoring an old checkpoint. Copying shared model configs to encoder and decoder configs.'
@@ -282,6 +281,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             share_token_embeddings=self.cfg.get('share_token_embeddings', True),
             share_decoder_tokens_head_embeddings=self.cfg.get('share_decoder_tokens_head_embeddings', True),
             tokens_head_bias=self.cfg.get('tokens_head_bias', True),
+            hiddens_cfg=self.cfg.get('hiddens', None),
         )
         return model
 
@@ -313,6 +313,40 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         return output_tensor
 
+    def _execute_fwd_bwd_function(self, data_iterator, forward_only, tensor_shape, decoder_seq_length):
+        """
+        An auxiliary function that executes the fwd_bwd_step function and parse the returned values.
+        """
+        fwd_bwd_function = get_forward_backward_func()
+
+        losses_reduced_per_micro_batch = fwd_bwd_function(
+            forward_step_func=self.get_forward_output_and_loss_func(),
+            data_iterator=data_iterator,
+            model=[self.enc_dec_model],
+            num_microbatches=get_num_microbatches(),
+            forward_only=forward_only,
+            tensor_shape=tensor_shape,
+            decoder_seq_length=decoder_seq_length,
+            dtype=self.autocast_dtype,
+            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
+            sequence_parallel=self.cfg.get('sequence_parallel', False),
+            enable_autocast=self.enable_autocast,
+        )
+
+        # only the last stages of the pipeline return losses
+        if losses_reduced_per_micro_batch:
+            mean_loss_dict = {}
+            for k in losses_reduced_per_micro_batch[0].keys():
+                # average loss across micro batches
+                mean_loss_dict[k] = torch.stack(
+                    [loss_reduced[k] for loss_reduced in losses_reduced_per_micro_batch]
+                ).mean()
+        else:
+            loss_mean = torch.tensor(0.0).cuda()
+            mean_loss_dict = {"loss": loss_mean}
+
+        return mean_loss_dict
+
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
         """
             Dataloader produces a global batch which is turned into a list of microbatches.
@@ -321,34 +355,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # Get seq length of batch
         tensor_shape = [self.max_encoder_seq_length, self.cfg.micro_batch_size, self.cfg.encoder.hidden_size]
 
-        fwd_bwd_function = get_forward_backward_func()
-
-        losses_reduced_per_micro_batch = fwd_bwd_function(
-            forward_step_func=self.get_forward_output_and_loss_func(),
+        return self._execute_fwd_bwd_function(
             data_iterator=dataloader_iter,
-            model=[self.enc_dec_model],
-            num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
             tensor_shape=tensor_shape,
             decoder_seq_length=self.max_decoder_seq_length,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            enable_autocast=self.enable_autocast,
         )
-
-        # only the last stages of the pipeline return losses
-        if losses_reduced_per_micro_batch:
-            # average loss across micro batches
-            loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
-            loss_tensor = torch.concat(loss_tensors_list)
-            loss_mean = loss_tensor.mean()
-        else:
-            if forward_only:
-                loss_mean = []
-            else:
-                loss_mean = torch.tensor(0.0).cuda()
-
-        return loss_mean
 
     def training_step(self, dataloader_iter, batch_idx):
         """
@@ -362,7 +374,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # we zero grads here because we also call backward in the megatron fwd/bwd functions
         self._optimizer.zero_grad()
 
-        loss_mean = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
 
         if self.with_distributed_adam:
             # synchronize asynchronous grad reductions
@@ -386,14 +398,16 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         ## logging
         # we can only log on one rank if it is rank zero so we broadcast from last rank
         # we can avoid this broadcast by updating the PTL log function to accept specific ranks
-        torch.distributed.broadcast(loss_mean, get_last_rank())
+        for k, v in loss_dict.items():
+            torch.distributed.broadcast(v, get_last_rank())
+            n = f'reduced_train_{k}'
+            self.log(n, v, prog_bar=n.endswith("_loss"), rank_zero_only=True, batch_size=1)
 
         if self.cfg.precision == 16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
                 self.log('loss_scale', loss_scale, batch_size=1)
 
-        self.log('reduced_train_loss', loss_mean, prog_bar=True, rank_zero_only=True, batch_size=1)
         lr = self._optimizer.param_groups[0]['lr']
         self.log('lr', lr, rank_zero_only=True, batch_size=1)
         self.log(
@@ -407,7 +421,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             rank_zero_only=True,
             batch_size=1,
         )
-        return loss_mean
+        return loss_dict
 
     @property
     def max_decoder_seq_length(self) -> int:
@@ -556,16 +570,26 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             global_batch["labels"],
             global_batch["enc_mask"],
             global_batch["dec_mask"],
+            global_batch.get('data', None),
         ]
 
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(dataloader_iter, model):
             batch = next(dataloader_iter)
+            # convert to list if not already converted.
             if isinstance(batch, dict):
                 # convert to list if not already converted.
                 batch = self._process_batch(batch)
-            batch = [x.cuda(non_blocking=True) for x in batch]
-            encoder_input_ids, decoder_input_ids, loss_mask, lm_labels, encoder_attn_mask, decoder_attn_mask = batch
+            batch = [x.cuda(non_blocking=True) if torch.is_tensor(x) else x for x in batch]
+            (
+                encoder_input_ids,
+                decoder_input_ids,
+                loss_mask,
+                lm_labels,
+                encoder_attn_mask,
+                decoder_attn_mask,
+                batch_data,
+            ) = batch
 
             output = model(
                 encoder_input_ids,  # enc_input_ids
@@ -574,12 +598,32 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 decoder_attn_mask,  # dec_attn_mask
                 None,  # token_type_ids
                 lm_labels,  # labels
+                batch_data,  # batch_data
             )
 
             def loss_func(output_tensor):
-                loss = self.loss_func(loss_mask, output_tensor)
-                reduced_loss = average_losses_across_data_parallel_group([loss])
-                return loss, {'avg': reduced_loss}
+                if isinstance(output_tensor, dict):
+                    # handle loss of hidden transformations
+                    loss_dict = output_tensor
+                    output_tensor = loss_dict.pop("output")
+                    # compute reconstruction (tokens) only loss from per-token reconstruction loss
+                    tokens_loss = self.loss_func(loss_mask, output_tensor)
+                    loss_dict["tokens_loss"] = tokens_loss
+                    tokens_loss_weight = loss_dict.get("tokens_loss_weight", 1.0)
+                    # compute total loss
+                    loss = loss_dict["loss"] = loss_dict["hiddens_loss"] + tokens_loss_weight * tokens_loss
+                    # average losses across data parallel group
+                    loss_dict = {
+                        k: average_losses_across_data_parallel_group([v.mean()]) for k, v in loss_dict.items()
+                    }
+                else:
+                    # compute reconstruction (tokens) only loss from per-token reconstruction loss
+                    loss = self.loss_func(loss_mask, output_tensor)
+                    # average losses across data parallel group
+                    reduced_loss = average_losses_across_data_parallel_group([loss])
+                    loss_dict = {'loss': reduced_loss}
+
+                return loss, loss_dict
 
             return output, loss_func
 
@@ -645,75 +689,104 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         def fwd_output_only_func(dataloader_iter, model):
             batch = next(dataloader_iter)
-            batch = [x.cuda(non_blocking=True) for x in batch]
+            batch = [x.cuda(non_blocking=True) if torch.is_tensor(x) else x for x in batch]
 
             # map batch and shared args into forward args
             args = self._build_forward_args_from_kwargs(args_name=arg_names, args=batch, **kwargs)
             output = model(*args).contiguous()
 
             def id_func(output_tensor):
+                if isinstance(output_tensor, dict):
+                    # handle loss of hidden transformations ("output" is the default output)
+                    output_tensor = output_tensor["output"]
+
                 return output_tensor, {output_name: output_tensor}
 
             return output, id_func
 
         return fwd_output_only_func
 
-    def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
+    ##########
+
+    def _test_validation_step(self, step_outputs, dataloader_iter, batch_idx, dataloader_idx=0):
         """
-        return_values - if given, returns a dictionary with given keys and corresponding values
+        Shared code for validation and test step
         """
         # Prefetch the dataloader_iter before fwd_bwd func to avoid PP rank 2 from waiting indefinitely with PP rank 1 reaches the end of dataloader_iter
         dataloader_iter, done = self._prefetch(dataloader_iter)
         if done:
             return
-        prefix = "test" if self.trainer.testing else "val"
-        loss = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
-        if prefix == 'val':
-            if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-                self.validation_step_outputs[dataloader_idx].append(loss)
-            else:
-                self.validation_step_outputs.append(loss)
-        else:
-            if type(self.trainer.test_dataloaders) == list and len(self.trainer.test_dataloaders) > 1:
-                self.test_step_outputs[dataloader_idx].append(loss)
-            else:
-                self.test_step_outputs.append(loss)
 
-        return loss
+        loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
+        step_outputs.append(loss_dict)
+
+        return loss_dict
+
+    def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
+        """
+        return_values - if given, returns a dictionary with given keys and corresponding values
+        """
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            step_outputs = self.validation_step_outputs[dataloader_idx]
+        else:
+            step_outputs = self.validation_step_outputs
+
+        return self._test_validation_step(
+            step_outputs=step_outputs,
+            dataloader_iter=dataloader_iter,
+            batch_idx=batch_idx,
+            dataloader_idx=dataloader_idx,
+        )
+
+    def test_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            step_outputs = self.test_step_outputs[dataloader_idx]
+        else:
+            step_outputs = self.test_step_outputs
+
+        return self._test_validation_step(
+            step_outputs=step_outputs,
+            dataloader_iter=dataloader_iter,
+            batch_idx=batch_idx,
+            dataloader_idx=dataloader_idx,
+        )
+
+    def _test_validation_epoch_end(self, step_outputs, prefix):
+        """
+        Shared logging for validation and test
+        """
+        # NOTE: we need to make sure outputs is not empty (this is a workaround for a bug in pytorch lightning (?))
+        if not step_outputs:
+            logging.warning(f"{prefix} epoch end: outputs is empty")
+            return None
+
+        # only the last pipeline parallel stages return loss
+        if parallel_state.is_pipeline_last_stage() and len(step_outputs):
+            averaged_loss = {k: torch.stack([x[k] for x in step_outputs]).mean() for k in step_outputs[0].keys()}
+        else:
+            # if we are here we assume that only loss is available and hidden transforms are disabled (since not supported in pipleline parallel)
+            averaged_loss = {'loss': torch.tensor(0.0).cuda()}
+
+        # we can only log on one rank if it is rank zero so we broadcast from last rank
+        for k, v in averaged_loss.items():
+            torch.distributed.broadcast(v, get_last_rank())
+            averaged_loss[k] = v
+            n = f'{prefix}_{k}'
+            # log only '*_loss' values in progress bar
+            self.log(n, v, prog_bar=(n.endswith("_loss")), rank_zero_only=True, batch_size=1)
+
+        # free memory
+        step_outputs.clear()
+
+        return averaged_loss
 
     def on_validation_epoch_end(self):
-        # NOTE: we need to make sure outputs is not empty (this is a workaround for a bug in pytorch lightning (?))
-        if not self.validation_step_outputs:
-            logging.warning("validation_epoch_end: outputs is empty")
-            return None
-        if parallel_state.is_pipeline_last_stage():
-            # only the last pipeline parallel stages return loss
-            averaged_loss = torch.stack(self.validation_step_outputs).mean()
-        else:
-            averaged_loss = torch.tensor(0.0).cuda()
-
-        # we can only log on one rank if it is rank zero so we broadcast from last rank
-        torch.distributed.broadcast(averaged_loss, get_last_rank())
-        self.log('val_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
+        # FIXME: do we need this? 'global_step' is logged in training_step
         self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True, batch_size=1)
-        self.validation_step_outputs.clear()  # free memory
-        return averaged_loss
-
-    def test_step(self, dataloader_iter, batch_idx):
-        return self.validation_step(dataloader_iter, batch_idx)
+        return self._test_validation_epoch_end(step_outputs=self.validation_step_outputs, prefix="val",)
 
     def on_test_epoch_end(self):
-        if parallel_state.is_pipeline_last_stage():
-            # only the last pipeline parallel stages return loss
-            averaged_loss = torch.stack(self.test_step_outputs).mean()
-        else:
-            averaged_loss = torch.tensor(0.0).cuda()
-
-        # we can only log on one rank if it is rank zero so we broadcast from last rank
-        torch.distributed.broadcast(averaged_loss, get_last_rank())
-        self.log('test_loss', averaged_loss, prog_bar=True, rank_zero_only=True, batch_size=1)
-        self.test_step_outputs.clear()  # free memory
-        return averaged_loss
+        return self._test_validation_epoch_end(step_outputs=self.test_step_outputs, prefix="test",)
 
     def loss_func(self, loss_mask, tokens_loss):
         """
@@ -937,11 +1010,14 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         logging.info(f"response: {response}")
         return response
 
-    def encode(self, tokens_enc, enc_mask, encoder_input=None, reconfigure_microbatch=True):
+    def encode(self, tokens_enc, enc_mask, encoder_input=None, batch_data=None, reconfigure_microbatch=True):
         """
         tokens_enc - encoder input tokens
         enc_mask - corresponding mask
         encoder_input - encoder input (bypass tokens), if given tokens_enc can be None.
+        batch_data - passed directly to all hidden transformations and losses. 
+                     Can be used to pass additional data like class label.
+                     Format is not defined and should match the expected format of the used hiddens modules.
         """
         # Check whether the DDP is initialized. This is needed when running inference outside of training loop.
         if parallel_state.is_unitialized():
@@ -987,8 +1063,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         # build input arguments description
         if tokens_enc is not None:
-            batch_for_pipeline = [tokens_enc, enc_mask]
-            arg_names = ['enc_input_ids', 'enc_attn_mask']
+            batch_for_pipeline = [tokens_enc, enc_mask, batch_data]
+            arg_names = ['enc_input_ids', 'enc_attn_mask', 'batch_data']
         else:
             if encoder_input is None:
                 raise ValueError("At least one of tokens_enc and encoder_input must be provided with not None value")
@@ -1060,6 +1136,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         ignore_ids=[],
         bos_id=None,  # If bos=None, will use tokenizer.bos_id unless explicitly set to something else.
         predicted_tokens_dec=None,
+        batch_data=None,
         sampling_method: str = "greedy-search",
         sampling_kwargs: dict = {},
     ):
@@ -1168,8 +1245,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             dec_mask = predicted_tokens_dec != tokenizer.pad_id
             dec_mask[:, 0] = 1  # Make sure you never mask the first token even if it is <pad>.
 
-            batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask]
-            arg_names = ['enc_output', 'enc_output_attn_mask', 'dec_input_ids', 'dec_attn_mask']
+            batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask, batch_data]
+            arg_names = ['enc_output', 'enc_output_attn_mask', 'dec_input_ids', 'dec_attn_mask', 'batch_data']
 
             forward_step_func = self._get_forward_output_only_func(arg_names=arg_names, output_name="logits")
             fwd_bwd_func = get_forward_backward_func()

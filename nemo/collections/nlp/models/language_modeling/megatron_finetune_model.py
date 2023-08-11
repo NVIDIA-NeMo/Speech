@@ -276,46 +276,26 @@ class MegatronT5FinetuneModel(MegatronT5Model):
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
         """
             Dataloader produces a global batch which is turned into a list of microbatches.
-            The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions.
+            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
-        # Get seq length of batch
         batch = next(dataloader_iter)
         if isinstance(batch, dict):
             # convert to list if not already converted.
             batch = self._process_batch(batch)
 
-        _, seq_length = batch[0].shape
-        _, dec_seq_length = batch[1].shape
-        tensor_shape = [seq_length, get_micro_batch_size(), self.cfg.encoder.hidden_size]
+        # Get seq length of batch
+        encoder_seq_length = batch[0].size(1)
+        decoder_seq_length = batch[1].size(1)
+
+        tensor_shape = [encoder_seq_length, get_micro_batch_size(), self.cfg.encoder.hidden_size]
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
 
-        fwd_bwd_function = get_forward_backward_func()
-
-        losses_reduced_per_micro_batch = fwd_bwd_function(
-            forward_step_func=self.get_forward_output_and_loss_func(),
+        return self._execute_fwd_bwd_function(
             data_iterator=data_iter,
-            model=[self.enc_dec_model],
-            num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
             tensor_shape=tensor_shape,
-            decoder_seq_length=dec_seq_length,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
+            decoder_seq_length=decoder_seq_length,
         )
-
-        # only the last stages of the pipeline return losses
-        if losses_reduced_per_micro_batch:
-            # average loss across micro batches
-            loss_tensors_list = [loss_reduced['avg'] for loss_reduced in losses_reduced_per_micro_batch]
-            loss_tensor = torch.concat(loss_tensors_list)
-            loss_mean = loss_tensor.mean()
-        else:
-            # we're not on the last pipeline stage so no losses
-            loss_mean = torch.tensor(0.0).cuda()
-
-        return loss_mean
 
     def inference_step(self, dataloader_iter, batch_idx: int, mode: str, dataloader_idx=0):
         # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of the iterator
@@ -366,12 +346,16 @@ class MegatronT5FinetuneModel(MegatronT5Model):
                     _ = metric(pred, label)
 
             outputs = {
-                'loss': loss,
                 'preds': preds_text,
                 'labels': labels_text,
                 'categories': categories,
                 'inputs': input_text,
             }
+
+            if isinstance(loss, dict):
+                outputs.update(loss)
+            else:
+                outputs['loss'] = loss
             if mode == 'validation':
                 if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
                     self.validation_step_outputs[dataloader_idx].append(outputs)

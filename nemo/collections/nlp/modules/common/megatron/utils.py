@@ -383,8 +383,12 @@ def get_iterator_k_split(batch: List[torch.Tensor], num_microbatches: int) -> It
         microbatches = [dict(elem) for elem in microbatches]
     else:
         assert batch[0].shape[0] % num_microbatches == 0, "Issue with batch size configuration!"
-        split_batch = [torch.tensor_split(item, num_microbatches, dim=0) for item in batch]
-        microbatches = [[elem[i] for elem in split_batch] for i in range(num_microbatches)]
+        split_batch = [
+            torch.tensor_split(item, num_microbatches, dim=0) if torch.is_tensor(item) else item for item in batch
+        ]
+        microbatches = [
+            [elem[i] if elem is not None else elem for elem in split_batch] for i in range(num_microbatches)
+        ]
 
     return itertools.chain(microbatches)
 

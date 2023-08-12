@@ -760,7 +760,6 @@ class MegatronHalfPrecisionPlugin(MixedPrecisionPlugin):
         self,
         optimizer: torch.optim.Optimizer,
         model: Union["pl.LightningModule", torch.nn.Module],
-        optimizer_idx: int,
         closure: Callable[[], Any],
         **kwargs: Any,
     ) -> None:
@@ -771,13 +770,11 @@ class MegatronHalfPrecisionPlugin(MixedPrecisionPlugin):
         if self.scaler is None:
             assert optimizer.fp32_grad_accumulation, "BF16 uses FP32 grad accumulation"
             _ = closure()
-            self._after_closure(model, optimizer, optimizer_idx)
+            self._after_closure(model, optimizer)
             return optimizer.step(**kwargs)
 
         if isinstance(optimizer, torch.optim.LBFGS):
-            raise MisconfigurationException(
-                f"Native AMP and the LBFGS optimizer are not compatible (optimizer {optimizer_idx})."
-            )
+            raise MisconfigurationException(f"Native AMP and the LBFGS optimizer are not compatible (optimizer).")
         assert not optimizer.fp32_grad_accumulation, "FP16 uses FP16 grad accumulation"
         closure_result = closure()
 
@@ -788,7 +785,7 @@ class MegatronHalfPrecisionPlugin(MixedPrecisionPlugin):
         # `unscale` after the closure is executed but before the `on_before_optimizer_step` hook.
         # unscale main (fp32) gradients
         self.scaler.unscale_(optimizer)
-        self._after_closure(model, optimizer, optimizer_idx)
+        self._after_closure(model, optimizer)
         skipped_backward = closure_result is None
         # in manual optimization, the closure does not return a value
         if not isinstance(model, pl.LightningModule) or not model.automatic_optimization or not skipped_backward:

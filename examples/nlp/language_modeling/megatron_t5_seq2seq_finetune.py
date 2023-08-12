@@ -186,8 +186,6 @@ def main(cfg) -> None:
         trainer.ckpt_path = cfg.model.resume_from_checkpoint
     logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
-    trainer._checkpoint_connector = _CheckpointConnector(trainer)
-
     if hasattr(cfg.model.data.train_ds, 'task_name'):
         if cfg.model.restore_from_path:
             t5_cfg = MegatronT5GLUEModel.restore_from(

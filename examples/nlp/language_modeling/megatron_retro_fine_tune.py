@@ -105,11 +105,7 @@ def main(cfg) -> None:
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.exp_manager)
 
-    # update resume from checkpoint found by exp_manager
-    resume_from_checkpoint = trainer.ckpt_path
-    logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
-
-    trainer._checkpoint_connector = _CheckpointConnector(trainer)
+    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     # Override timer callback to a stateless one
     for idx, callback in enumerate(trainer.callbacks):

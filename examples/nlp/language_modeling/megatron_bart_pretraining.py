@@ -69,12 +69,9 @@ def main(cfg) -> None:
 
     # update resume from checkpoint found by exp_manager
     if cfg.model.resume_from_checkpoint is not None:
-        resume_from_checkpoint = cfg.model.resume_from_checkpoint
-    else:
-        resume_from_checkpoint = trainer._checkpoint_connector._ckpt_path
-    logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
+        trainer.ckpt_path = cfg.model.resume_from_checkpoint
 
-    trainer._checkpoint_connector = _CheckpointConnector(trainer)
+    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):

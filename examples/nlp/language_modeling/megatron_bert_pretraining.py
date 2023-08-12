@@ -71,13 +71,8 @@ def main(cfg) -> None:
 
     exp_manager(trainer, cfg.exp_manager)
 
-    # update resume from checkpoint found by exp_manager
-    # Avoid calling protected API trainer._checkpoint_connector._ckpt_path as lightning 2.0 supports ckpt_path as trainer arg
-    resume_from_checkpoint = trainer.ckpt_path
     # resume_from_checkpoint = uninject_model_parallel_rank(resume_from_checkpoint)
-    logging.info(f'Resuming training from checkpoint: {resume_from_checkpoint}')
-
-    trainer._checkpoint_connector = _CheckpointConnector(trainer)
+    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
     with open_dict(cfg):

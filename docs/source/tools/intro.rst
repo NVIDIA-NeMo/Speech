@@ -7,6 +7,7 @@ NeMo provides a set of tools useful for developing Automatic Speech Recognitions
 .. toctree::
    :maxdepth: 1
 
+   nemo_forced_aligner
    ctc_segmentation
    speech_data_explorer
    comparison_tool

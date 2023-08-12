@@ -166,8 +166,6 @@ def main(cfg) -> None:
 
     logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
-    trainer._checkpoint_connector = _CheckpointConnector(trainer)
-
     if cfg.restore_from_path:
         save_restore_connector = NLPSaveRestoreConnector()
         if os.path.isdir(cfg.restore_from_path):

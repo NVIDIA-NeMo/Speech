@@ -624,7 +624,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True, batch_size=1,
         )
 
-        consumed_samples = self.compute_consumed_samples(self.trainer.global_step - self.init_global_step)
+        consumed_samples = self._compute_consumed_samples_after_training_step()
         # TODO: make sure compute_consumed_samples works for pipeline parallelism
         self.log(
             'consumed_samples', consumed_samples, prog_bar=True, rank_zero_only=True, batch_size=1,

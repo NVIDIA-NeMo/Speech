@@ -416,7 +416,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # TODO: make sure compute_consumed_samples works for pipeline parallelism
         self.log(
             'consumed_samples',
-            self.compute_consumed_samples(self.trainer.global_step - self.init_global_step),
+            self._compute_consumed_samples_after_training_step(),
             prog_bar=True,
             rank_zero_only=True,
             batch_size=1,

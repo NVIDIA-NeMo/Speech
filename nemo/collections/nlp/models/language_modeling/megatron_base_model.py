@@ -532,6 +532,10 @@ class MegatronBaseModel(NLPModel):
             )
         return int(consumed_samples)
 
+    def _compute_consumed_samples_after_training_step(self):
+        # Add +1 to account for the current batch, which is not counted yet in `trainer.global_step`.
+        return self.compute_consumed_samples(self.trainer.global_step + 1 - self.init_global_step)
+
     def _extract_consumed_samples_from_ckpt(self, ckpt_path):
         try:
             init_consumed_samples = int(float(re.findall(r"consumed_samples\=([0-9]+.[0-9]+)", ckpt_path)[0]))

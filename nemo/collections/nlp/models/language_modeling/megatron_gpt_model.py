@@ -18,7 +18,6 @@ import warnings
 from functools import partial
 from typing import Any, Dict, Iterator, List, Optional, Union
 
-import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.accelerators import CPUAccelerator
@@ -71,6 +70,7 @@ except (ImportError, ModuleNotFoundError):
 try:
     from megatron.core import parallel_state
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
+    from megatron.core.transformer.transformer_config import TransformerConfig
 
     # TODO @tmoon: Use once available in Megatron-LM
     # from megatron.core.pipeline_parallel.schedules import DataIteratorList
@@ -251,14 +251,17 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 for module in self.model:
                     converted_model.append(
                         Float16Module(
+                            config=self.model_parallel_config,
                             module=module,
                             precision=cfg.precision,
                             share_token_embeddings=self.cfg.get('share_embeddings_and_output_weights', True),
                         )
                     )
+
                 self.model = converted_model
             else:
                 self.model = Float16Module(
+                    config=self.model_parallel_config,
                     module=self.model,
                     precision=cfg.precision,
                     share_token_embeddings=self.cfg.get('share_embeddings_and_output_weights', True),
@@ -310,6 +313,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     def model_provider_func(self, pre_process, post_process):
         """Model depends on pipeline paralellism."""
         model = GPTModel(
+            config=self.model_parallel_config,
             vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),
             hidden_size=self.cfg.hidden_size,
             max_position_embeddings=self.cfg.max_position_embeddings,
@@ -325,7 +329,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             init_method_std=self.cfg.get('init_method_std', 0.02),
             use_scaled_init_method=self.cfg.get('use_scaled_init_method', True),
             fp16_lm_cross_entropy=self.cfg.get('fp16_lm_cross_entropy', False),
-            use_cpu_initialization=self.cfg.get('use_cpu_initialization', False),
             megatron_amp_O2=self.cfg.get('megatron_amp_O2', False),
             hidden_dropout=self.cfg.get('hidden_dropout', 0.1),
             attention_dropout=self.cfg.get('attention_dropout', 0.1),
@@ -354,9 +357,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             share_embeddings_and_output_weights=self.cfg.get('share_embeddings_and_output_weights', True),
             attention_type=self.cfg.get('attention_type', 'multihead'),
             masked_softmax_fusion=self.cfg.get('masked_softmax_fusion', True),
-            gradient_accumulation_fusion=self.cfg.get('gradient_accumulation_fusion', False),
             persist_layer_norm=self.cfg.get('persist_layer_norm', False),
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
             transformer_engine=self.cfg.get('transformer_engine', False),
             fp8=self.cfg.get('fp8', False),
             fp8_e4m3=self.cfg.get('fp8_e4m3', False),
@@ -367,7 +368,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             fp8_amax_compute_algo=self.cfg.get('fp8_amax_compute_algo', 'most_recent'),
             reduce_amax=self.cfg.get('reduce_amax', True),
             use_emha=self.cfg.get('use_emha', False),
-            ub_tp_comm_overlap=self.cfg.get('ub_tp_comm_overlap', False),
             use_flash_attention=self.cfg.get('use_flash_attention', False),
             megatron_legacy=self.cfg.get('megatron_legacy', False),
             seq_len_interpolation_factor=self.cfg.get('seq_len_interpolation_factor', None),
@@ -458,7 +458,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         return output_tensor
 
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
-        tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
 
         # handle asynchronous grad reduction
         no_sync_func = None
@@ -468,6 +467,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_o2,)
             grad_sync_func = self.reduce_overlap_gradients
             param_sync_func = self.sync_overlap_parameters
+
+        # pipeline schedules will get these from self.model.config
+        for module in self.get_gpt_module_list():
+            module.config.no_sync_func = no_sync_func
+            module.config.grad_sync_func = grad_sync_func
+            module.config.param_sync_func = param_sync_func
 
         # run forward and backwards passes for an entire global batch
         # we do this inside training_step to support pipeline parallelism
@@ -480,16 +485,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             model=self.model,
             num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
-            tensor_shape=tensor_shape,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
-            no_sync_func=no_sync_func,
-            grad_sync_func=grad_sync_func,
-            param_sync_func=param_sync_func,
-            overlap_p2p_comm=self.cfg.get('overlap_p2p_comm', False),
-            batch_p2p_comm=self.cfg.get('batch_p2p_comm', True),
+            seq_length=self.cfg.encoder_seq_length,
+            micro_batch_size=self.cfg.micro_batch_size,
         )
 
         # only the last stages of the pipeline return losses

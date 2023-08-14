@@ -39,7 +39,7 @@ except (ImportError, ModuleNotFoundError):
     ModelType = ApexGuardDefaults()
 
 try:
-    from megatron.core import tensor_parallel
+    from megatron.core import ModelParallelConfig, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
 except (ImportError, ModuleNotFoundError):
@@ -55,6 +55,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         vocab_size,
         hidden_size,
         max_position_embeddings,
@@ -68,7 +69,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         post_process=True,
         init_method_std=0.02,
         fp16_cross_entropy=False,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -133,12 +133,12 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
 
         if pre_process:
             self.encoder_embedding = Embedding(
+                config=config,
                 hidden_size=hidden_size,
                 vocab_size=vocab_size,
                 max_sequence_length=max_position_embeddings,
                 init_method=init_method_normal(init_method_std),
                 num_tokentypes=num_tokentypes,
-                use_cpu_initialization=use_cpu_initialization,
                 embedding_dropout_prob=hidden_dropout,
                 position_embedding_type='learned_absolute' if add_position_embedding else '',
                 transpose_batch_sequence=False,
@@ -162,6 +162,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                     enc_layer_types.append(LayerType.encoder)
 
             self.encoder = get_encoder_model(
+                config=config,
                 arch="retro",
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
@@ -176,7 +177,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 if megatron_lm_compatible
                 else post_process,  # megatron lm model has no final layer_norm
                 init_method_std=init_method_std,
-                use_cpu_initialization=use_cpu_initialization,
                 megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
@@ -229,6 +229,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
 
             # it is used to process the inputs for encoder to use as context (H in the paper)
             self.pre_decoder = get_decoder_model(
+                config=config,
                 arch="retro",
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
@@ -241,7 +242,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=pre_process,
                 post_process=False,  # no need for post process
                 init_method_std=init_method_std,
-                use_cpu_initialization=use_cpu_initialization,
                 megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
@@ -274,6 +274,7 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
 
             # it is where the chunked cross attention happens
             self.post_decoder = get_decoder_model(
+                config=config,
                 arch="retro",
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
@@ -286,7 +287,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=False,  # directly take the pre_decoder output, skip preprocess
                 post_process=post_process,
                 init_method_std=init_method_std,
-                use_cpu_initialization=use_cpu_initialization,
                 megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,

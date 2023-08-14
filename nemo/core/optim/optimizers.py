@@ -62,7 +62,7 @@ if HAVE_APEX:
 
         AVAILABLE_OPTIMIZERS['distributed_fused_adam'] = MegatronDistributedFusedAdam
     except (ImportError, ModuleNotFoundError):
-        logging.warning("Could not import distributed_fused_adam optimizer from Apex")
+        HAVE_APEX_DISTRIBUTED_ADAM = False
 
 __all__ = ['get_optimizer', 'register_optimizer', 'parse_optimizer_args']
 

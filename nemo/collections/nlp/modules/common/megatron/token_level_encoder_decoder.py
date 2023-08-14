@@ -53,7 +53,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
 
@@ -105,6 +105,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         encoder_cfg: DictConfig,
         decoder_cfg: DictConfig,
         vocab_size: int,  # TODO: This should eventually go inside encoder_cfg and decoder_cfg when separate enc/dec tokenizers are supported.
@@ -114,7 +115,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         pre_process=True,
         post_process=True,
         fp16_cross_entropy=False,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         precision=16,
         embedding_init_method_std=0.02,
@@ -127,7 +127,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         tokens_head_bias=True,
         hiddens_cfg: DictConfig = None,  # allows for hidden state transformations before the decoder
     ):
-        super(MegatronTokenLevelEncoderDecoderModule, self).__init__()
+        super(MegatronTokenLevelEncoderDecoderModule, self).__init__(config=config)
 
         self.encoder_cfg = encoder_cfg
         self.decoder_cfg = decoder_cfg
@@ -152,12 +152,12 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
         if add_encoder:
             if pre_process:
                 self.encoder_embedding = Embedding(
+                    config=self.config,
                     hidden_size=encoder_cfg.hidden_size,
                     vocab_size=vocab_size,
                     max_sequence_length=max_position_embeddings,
                     init_method=init_method_normal(embedding_init_method_std),
                     num_tokentypes=num_tokentypes,
-                    use_cpu_initialization=use_cpu_initialization,
                     dtype=self.dtype,
                     embedding_dropout_prob=embedding_dropout,
                     position_embedding_type=encoder_cfg.get('position_embedding_type', 'learned_absolute'),
@@ -204,6 +204,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 raise ValueError('flash-attention not supported with relative or kerple at this point')
 
             encoder = get_encoder_model(
+                config=config,
                 arch=encoder_cfg.arch,
                 hidden_size=encoder_cfg.hidden_size,
                 ffn_hidden_size=encoder_cfg.ffn_hidden_size,
@@ -219,7 +220,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=pre_process,
                 post_process=post_process,
                 init_method_std=encoder_cfg.get('init_method_std', 0.02),
-                use_cpu_initialization=use_cpu_initialization,
                 megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=encoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=encoder_cfg.get('attention_dropout', 0.1),
@@ -262,12 +262,12 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 else:
                     # This is the case where PP > 1 and first decoder first stage, or when not sharing embeddings with encoder
                     self.decoder_embedding = Embedding(
+                        config=self.config,
                         hidden_size=decoder_cfg.hidden_size,
                         vocab_size=vocab_size,
                         max_sequence_length=max_position_embeddings,
                         init_method=init_method_normal(embedding_init_method_std),
                         num_tokentypes=num_tokentypes,
-                        use_cpu_initialization=use_cpu_initialization,
                         dtype=self.dtype,
                         embedding_dropout_prob=embedding_dropout,
                         position_embedding_type=decoder_cfg.get('position_embedding_type', 'learned_absolute'),
@@ -343,6 +343,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 raise ValueError('flash-attention not supported with relative or kerple at this point')
 
             decoder = get_decoder_model(
+                config=config,
                 arch=decoder_cfg.arch,
                 hidden_size=decoder_cfg.hidden_size,
                 ffn_hidden_size=decoder_cfg.ffn_hidden_size,
@@ -358,7 +359,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=pre_process,
                 post_process=post_process,
                 init_method_std=decoder_cfg.get('init_method_std', 0.02),
-                use_cpu_initialization=use_cpu_initialization,
                 megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=decoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=decoder_cfg.get('attention_dropout', 0.1),
@@ -393,6 +393,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
 
         hiddens_module = get_hiddens_module(hiddens_cfg)
         self.enc_dec_model = MegatronTransformerEncoderDecoderModule(
+            config=config,
             encoder=encoder,
             decoder=decoder,
             hidden_steps=encoder_cfg.get('hidden_steps', -1),
@@ -417,11 +418,10 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 self.tokens_head = tensor_parallel.ColumnParallelLinear(
                     input_size=decoder_cfg.hidden_size,
                     output_size=vocab_size,
+                    config=config,
                     bias=tokens_head_bias,
                     gather_output=not self.parallel_output,
                     init_method=init_method_normal(decoder_cfg.init_method_std),
-                    use_cpu_initialization=use_cpu_initialization,
-                    params_dtype=self.dtype,
                 )
 
             self._tokens_head_key = 'tokens_head'

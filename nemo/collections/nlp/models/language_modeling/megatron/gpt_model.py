@@ -39,7 +39,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
 
@@ -108,6 +108,7 @@ class GPTModel(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         vocab_size,
         hidden_size,
         max_position_embeddings,
@@ -123,7 +124,6 @@ class GPTModel(MegatronModule):
         init_method_std=0.02,
         use_scaled_init_method=True,
         fp16_lm_cross_entropy=False,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -148,12 +148,10 @@ class GPTModel(MegatronModule):
         rotary_percentage=1.0,
         attention_type='multihead',
         share_embeddings_and_output_weights=True,
-        gradient_accumulation_fusion=False,
         persist_layer_norm=False,
         openai_gelu=False,
         megatron_legacy=False,
         onnx_safe=False,
-        sequence_parallel=False,
         transformer_engine=False,
         fp8=False,
         fp8_e4m3=False,
@@ -168,14 +166,13 @@ class GPTModel(MegatronModule):
         use_flash_attention=False,
         seq_len_interpolation_factor=None,
     ):
-        super(GPTModel, self).__init__(share_token_embeddings=share_embeddings_and_output_weights)
+        super(GPTModel, self).__init__(config=config, share_token_embeddings=share_embeddings_and_output_weights)
 
         self.parallel_output = parallel_output
         self.pre_process = pre_process
         self.post_process = post_process
         self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
-        self.sequence_parallel = sequence_parallel
-        self.gradient_accumulation_fusion = gradient_accumulation_fusion
+        self.sequence_parallel = self.config.sequence_parallel
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
 
@@ -191,6 +188,7 @@ class GPTModel(MegatronModule):
             else init_method_normal(init_method_std)
         )
         self.language_model, self._language_model_key = get_language_model(
+            config=config,
             vocab_size=vocab_size,
             hidden_size=hidden_size,
             hidden_dropout=hidden_dropout,
@@ -210,7 +208,6 @@ class GPTModel(MegatronModule):
             pre_process=self.pre_process,
             post_process=self.post_process,
             init_method_std=init_method_std,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             precision=precision,
             fp32_residual_connection=fp32_residual_connection,
@@ -226,7 +223,6 @@ class GPTModel(MegatronModule):
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
             masked_softmax_fusion=masked_softmax_fusion,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
             activation=activation,
             headscale=headscale,
             transformer_block_type=transformer_block_type,
@@ -237,7 +233,6 @@ class GPTModel(MegatronModule):
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
             megatron_legacy=megatron_legacy,
-            sequence_parallel=sequence_parallel,
             transformer_engine=transformer_engine,
             fp8=fp8,
             fp8_e4m3=fp8_e4m3,
@@ -309,7 +304,7 @@ class GPTModel(MegatronModule):
                 self.fp16_lm_cross_entropy,
                 return_logits=encoder_input is not None,
                 sequence_parallel=self.sequence_parallel,
-                gradient_accumulation_fusion=self.gradient_accumulation_fusion,
+                gradient_accumulation_fusion=self.config.gradient_accumulation_fusion,
             )
         else:
             return lm_output

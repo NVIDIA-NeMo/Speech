@@ -44,6 +44,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
+    from megatron.core import ModelParallelConfig
     from megatron.core.enums import ModelType
 
     HAVE_MEGATRON_CORE = True
@@ -51,6 +52,12 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+
+@pytest.fixture()
+def model_parallel_config():
+    config = ModelParallelConfig()
+    return config
 
 
 @pytest.mark.run_only_on('GPU')
@@ -89,7 +96,7 @@ class TestRetrievalModule:
         torch.distributed.barrier()
 
     @pytest.mark.unit
-    def test_cross_attn(self):
+    def test_cross_attn(self, model_parallel_config):
         num_layers = 1
         init_method_std = 0.02
         batch = 2
@@ -136,6 +143,7 @@ class TestRetrievalModule:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         cross_attn = (
             ParallelChunkedCrossAttention(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 layer_number=1,
@@ -155,7 +163,7 @@ class TestRetrievalModule:
         assert bias.shape == torch.Size([dim])
 
     @pytest.mark.unit
-    def test_retrieval_encoder(self):
+    def test_retrieval_encoder(self, model_parallel_config):
 
         init_method_std = 0.02
 
@@ -186,6 +194,7 @@ class TestRetrievalModule:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         encoder = (
             MegatronRetrievalTransformerEncoderModule(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 hidden_size=dim,
@@ -203,7 +212,7 @@ class TestRetrievalModule:
         assert out.shape == torch.Size([batch, chunks, neighbors, 2 * text_chunk_size, dim])
 
     @pytest.mark.unit
-    def test_retrieval_decoder(self):
+    def test_retrieval_decoder(self, model_parallel_config):
 
         init_method_std = 0.02
 
@@ -241,6 +250,7 @@ class TestRetrievalModule:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         decoder = (
             MegatronRetrievalTransformerDecoderModule(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 hidden_size=dim,
@@ -258,7 +268,7 @@ class TestRetrievalModule:
         assert out.shape == torch.Size([input_length, batch, dim])
 
     @pytest.mark.unit
-    def test_encoder_decoder_module(self):
+    def test_encoder_decoder_module(self, model_parallel_config):
         # rotary pos emb dim
         batch = 2
         neighbors = 2
@@ -291,6 +301,7 @@ class TestRetrievalModule:
 
         encoder_decoder = (
             MegatronRetrievalTokenLevelEncoderDecoderModule(
+                config=model_parallel_config,
                 vocab_size=vocab_size,
                 hidden_size=dim,
                 max_position_embeddings=input_length,
@@ -320,6 +331,7 @@ class TestRetrievalModule:
 
         encoder_decoder = (
             MegatronRetrievalTokenLevelEncoderDecoderModule(
+                config=model_parallel_config,
                 vocab_size=vocab_size,
                 hidden_size=dim,
                 max_position_embeddings=8,

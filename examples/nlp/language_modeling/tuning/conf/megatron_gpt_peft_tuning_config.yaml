@@ -117,7 +117,7 @@ model:
       micro_batch_size: ${model.micro_batch_size}
       shuffle: True
       num_workers: 0
-      memmap_workers: null
+      memmap_workers: 2
       pin_memory: True
       max_seq_length: 2048
       min_seq_length: 1
@@ -172,7 +172,7 @@ model:
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
       shuffle: False
-      num_workers: 4
+      num_workers: 0
       memmap_workers: ${model.data.train_ds.memmap_workers}
       pin_memory: True
       max_seq_length: 2048

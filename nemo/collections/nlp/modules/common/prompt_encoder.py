@@ -20,13 +20,12 @@ import torch.nn.init as init
 from torch import nn
 
 from nemo.collections.nlp.modules.common.megatron.fused_bias_gelu import fused_bias_gelu
-from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults, init_method_normal
+from nemo.collections.nlp.modules.common.megatron.utils import init_method_normal
 from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.classes.common import typecheck
-from nemo.core.neural_types import ChannelType, NeuralType
 
 try:
-    from megatron.core import tensor_parallel
+    from megatron.core import ModelParallelConfig, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
 
@@ -137,11 +136,17 @@ class TPMLP(NeuralModule, Exportable):
     """
 
     def __init__(
-        self, total_virtual_tokens: int, hidden_size: int, output_size: int, init_std: float,
+        self,
+        config: ModelParallelConfig,
+        total_virtual_tokens: int,
+        hidden_size: int,
+        output_size: int,
+        init_std: float,
     ):
         """
         Initializes the Tensor Model parallel MLP PromptEncoderMLP module.
         Args:
+            config: the model parallel config used my megatron core
             total_virtual_tokens: the total number of vitural tokens
             hidden_size: hidden dimension
             output_size:  the output dimension
@@ -153,29 +158,23 @@ class TPMLP(NeuralModule, Exportable):
         self.total_virtual_tokens = total_virtual_tokens
         self.activation = "gelu"
 
-        sequence_parallel = False
-        gradient_accumulation_fusion = False
         self.first = tensor_parallel.ColumnParallelLinear(
             self.output_size,
             self.hidden_size,
+            config=config,
             gather_output=False,
             init_method=init_method_normal(init_std),
             skip_bias_add=True,
-            use_cpu_initialization=False,
             bias=True,
-            sequence_parallel_enabled=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
         self.second = tensor_parallel.RowParallelLinear(
             self.hidden_size,
             self.output_size,
+            config=config,
             input_is_parallel=True,
             init_method=init_method_normal(init_std),
             skip_bias_add=True,
-            use_cpu_initialization=False,
             bias=True,
-            sequence_parallel_enabled=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
     def forward(self, input_embeds) -> torch.Tensor:
@@ -194,6 +193,7 @@ class PromptEncoder(NeuralModule, Exportable):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         encoder_type: enum,
         total_virtual_tokens: int,
         token_dim: int,
@@ -206,6 +206,7 @@ class PromptEncoder(NeuralModule, Exportable):
         """
         Initializes the PromptEncoder module.
         Args:
+            config: the model parallel config used my megatron core
             total_virtual_tokens: the total number of vitural tokens
             hidden_size: hidden dimension
             lstm_dropout: the dropout used for the LSTM
@@ -263,7 +264,7 @@ class PromptEncoder(NeuralModule, Exportable):
             self.mlp_head = nn.Sequential(*layers)
 
         elif self.encoder_type == PromptEncoderType.TPMLP:
-            self.tpmlp = TPMLP(self.total_virtual_tokens, self.hidden_size, self.output_size, self.init_std,)
+            self.tpmlp = TPMLP(config, self.total_virtual_tokens, self.hidden_size, self.output_size, self.init_std,)
         else:
             raise ValueError("Prompt encoder type not recognized. Please use one of MLP (recommended) or LSTM.")
 

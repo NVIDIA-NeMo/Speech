@@ -44,7 +44,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
     from megatron.core.parallel_state import get_tensor_model_parallel_world_size
 
     HAVE_MEGATRON_CORE = True
@@ -64,11 +64,11 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         hidden_size,
         ffn_hidden_size,
-        use_cpu_initialization=False,
         dtype=torch.float32,
         bias_activation_fusion=True,
         openai_gelu=False,
@@ -79,11 +79,9 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         normalization='layernorm',
         layernorm_epsilon=1e-5,
         persist_layer_norm=False,
-        sequence_parallel=False,
-        gradient_accumulation_fusion=False,
         dropout=0.0,
     ):
-        super(ParallelMLP, self).__init__()
+        super(ParallelMLP, self).__init__(config=config)
         self.activation = activation
         self.bias = bias
         self.transformer_block_type = transformer_block_type
@@ -112,24 +110,18 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
             )
 
         self.fast_glu_activation = activation in ['fast-geglu', 'fast-swiglu', 'fast-reglu']
-        async_tensor_model_parallel_allreduce = (
-            parallel_state.get_tensor_model_parallel_world_size() > 1 and not sequence_parallel
-        )
+
         # Project to 4h.
         self.dense_h_to_4h = tensor_parallel.ColumnParallelLinear(
             hidden_size,
             ffn_hidden_size * 2
             if self.fast_glu_activation
             else ffn_hidden_size,  # NOTE: When using geglu, divide ffn dim by 2/3 to keep overall params the same.
+            config=config,
             gather_output=False,
             init_method=init_method,
             skip_bias_add=True,
-            use_cpu_initialization=use_cpu_initialization,
-            params_dtype=dtype,
             bias=bias,
-            sequence_parallel_enabled=sequence_parallel,
-            async_tensor_model_parallel_allreduce=async_tensor_model_parallel_allreduce,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
         if activation in ['geglu', 'reglu', 'swiglu']:
@@ -138,15 +130,11 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
             self.dense_h_to_4h_2 = tensor_parallel.ColumnParallelLinear(
                 hidden_size,
                 ffn_hidden_size,  # NOTE: When using *glu, divide ffn dim by 2/3 to keep overall params the same.
+                config=config,
                 gather_output=False,
                 init_method=init_method,
                 skip_bias_add=True,
-                use_cpu_initialization=use_cpu_initialization,
-                params_dtype=dtype,
                 bias=bias,
-                sequence_parallel_enabled=sequence_parallel,
-                async_tensor_model_parallel_allreduce=async_tensor_model_parallel_allreduce,
-                gradient_accumulation_fusion=gradient_accumulation_fusion,
             )
 
         self.glu_activation_family = activation in [
@@ -195,14 +183,11 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         self.dense_4h_to_h = tensor_parallel.RowParallelLinear(
             ffn_hidden_size,
             hidden_size,
+            config=config,
             input_is_parallel=True,
             init_method=output_layer_init_method,
             skip_bias_add=True,
-            use_cpu_initialization=use_cpu_initialization,
-            params_dtype=dtype,
             bias=bias,
-            sequence_parallel_enabled=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
         # Normformer normalization
@@ -215,7 +200,7 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 self.normalization = LayerNorm1P(
                     ffn_hidden_size // get_tensor_model_parallel_world_size(),
                     layernorm_epsilon,
-                    sequence_parallel_enabled=sequence_parallel,
+                    sequence_parallel_enabled=config.sequence_parallel,
                 )
             else:
                 self.normalization = MixedFusedRMSNorm(
@@ -279,12 +264,12 @@ class SwitchMLP(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         num_experts,
         init_method,
         output_layer_init_method,
         hidden_size,
         ffn_hidden_size,
-        use_cpu_initialization=False,
         dtype=torch.float32,
         bias_activation_fusion=True,
         openai_gelu=False,
@@ -296,32 +281,28 @@ class SwitchMLP(MegatronModule):
         layernorm_epsilon=1e-5,
         persist_layer_norm=False,
         sequence_parallel=False,
-        gradient_accumulation_fusion=False,
         dropout=0.0,
     ):
-        super(SwitchMLP, self).__init__()
+        super(SwitchMLP, self).__init__(config=config)
 
         self.num_experts = num_experts
         self.route_algo = SwitchMLP.sinkhorn
         self.router = tensor_parallel.RowParallelLinear(
             hidden_size,
             num_experts,
+            config=config,
             input_is_parallel=False,
             init_method=init_method,
             skip_bias_add=False,
-            use_cpu_initialization=use_cpu_initialization,
-            params_dtype=dtype,
             bias=bias,
-            sequence_parallel_enabled=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
         )
 
         mlp_args = {
+            'config': config,
             'init_method': init_method,
             'output_layer_init_method': output_layer_init_method,
             'hidden_size': hidden_size,
             'ffn_hidden_size': ffn_hidden_size,
-            'use_cpu_initialization': use_cpu_initialization,
             'dtype': dtype,
             'bias_activation_fusion': bias_activation_fusion,
             'openai_gelu': openai_gelu,
@@ -332,8 +313,6 @@ class SwitchMLP(MegatronModule):
             'normalization': normalization,
             'layernorm_epsilon': layernorm_epsilon,
             'persist_layer_norm': persist_layer_norm,
-            'sequence_parallel': sequence_parallel,
-            'gradient_accumulation_fusion': gradient_accumulation_fusion,
             'dropout': dropout,
         }
         self.experts = torch.nn.ModuleList([ParallelMLP(**mlp_args) for _ in range(num_experts)])

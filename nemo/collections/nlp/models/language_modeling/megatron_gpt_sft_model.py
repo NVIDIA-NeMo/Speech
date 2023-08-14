@@ -328,7 +328,6 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         # Pass only torch.Tensor to prevent errors when process get_iterator_k_split()
         batch = {k: v for k, v in batch.items() if isinstance(v, torch.Tensor)}
         _, seq_length = batch['tokens'].shape
-        tensor_shape = [seq_length, get_micro_batch_size(), self.cfg.hidden_size]
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
 
         # handle asynchronous grad reduction
@@ -348,16 +347,8 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             model=[self.model],
             num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
-            tensor_shape=tensor_shape,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
-            no_sync_func=no_sync_func,
-            grad_sync_func=grad_sync_func,
-            param_sync_func=param_sync_func,
-            overlap_p2p_comm=self.cfg.get('overlap_p2p_comm', False),
-            batch_p2p_comm=self.cfg.get('batch_p2p_comm', True),
+            seq_length=seq_length,
+            micro_batch_size=get_micro_batch_size(),
         )
 
         # only the last stages of the pipeline return losses
@@ -397,7 +388,11 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             return
 
     def test_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
-        return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
+        # Add try except since dataloader_iter in PTL 2.0 doesnt catch the end of iterables
+        try:
+            return self.inference_step(dataloader_iter, batch_idx, 'test', dataloader_idx)
+        except StopIteration:
+            return
 
     def inference_step(self, dataloader_iter, batch_idx, mode, dataloader_idx=0):
         batch = next(dataloader_iter)
@@ -422,7 +417,6 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             self.tokenizer.ids_to_text(t[l.item() :][: data_cfg.get('tokens_to_generate')])
             for t, l in zip(output['token_ids'], batch['context_lengths'])
         ]
-
         outputs = {
             'loss': loss,
             'preds': preds_text,  # [str]

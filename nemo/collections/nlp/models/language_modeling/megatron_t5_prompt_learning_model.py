@@ -181,7 +181,6 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
         batch = next(dataloader_iter)
         _, seq_length = batch[0].shape
         _, dec_seq_length = batch[1].shape
-        tensor_shape = [seq_length, get_micro_batch_size(), self.hidden_size]
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
 
         fwd_bwd_function = get_forward_backward_func()
@@ -192,12 +191,9 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             model=[self],
             num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
-            tensor_shape=tensor_shape,
+            seq_length=seq_length,
+            micro_batch_size=get_micro_batch_size(),
             decoder_seq_length=dec_seq_length,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
         )
 
         # only the last stages of the pipeline return losses

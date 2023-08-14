@@ -21,7 +21,7 @@ from torch.nn.parameter import Parameter
 from nemo.utils import logging
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
 
     HAVE_MEGATRON_CORE = True
 
@@ -43,12 +43,13 @@ class MegatronModule(torch.nn.Module):
     """Megatron specific extensions of torch Module with support
     for pipelining."""
 
-    def __init__(self, share_token_embeddings=True):
+    def __init__(self, config: ModelParallelConfig = None, share_token_embeddings=True):
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super(MegatronModule, self).__init__()
+        self.config = config
         self.share_token_embeddings = share_token_embeddings
 
     def word_embeddings_weight(self):
@@ -140,7 +141,7 @@ class MegatronModule(torch.nn.Module):
             # set word_embeddings weights to 0 here, then copy first
             # stage's weights using all_reduce below.
             self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
-                vocab_size, hidden_size, init_method=init_method, params_dtype=param_dtype
+                vocab_size, hidden_size, init_method=init_method, config=self.config,
             )
             self.word_embeddings.weight.data.fill_(0)
             self.word_embeddings.weight.shared = True
@@ -254,12 +255,12 @@ def float16_to_fp32(val):
 
 
 class Float16Module(MegatronModule):
-    def __init__(self, module, precision, share_token_embeddings=True):
+    def __init__(self, config: ModelParallelConfig, module, precision, share_token_embeddings=True):
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
                 "Megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        super().__init__(share_token_embeddings=share_token_embeddings)
+        super().__init__(config=config, share_token_embeddings=share_token_embeddings)
         self.precision = precision
 
         if precision == 'bf16':

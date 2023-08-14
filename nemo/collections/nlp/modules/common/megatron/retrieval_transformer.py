@@ -33,6 +33,15 @@ except (ImportError, ModuleNotFoundError):
     ModelType = ApexGuardDefaults()
     HAVE_APEX = False
 
+try:
+    from megatron.core import ModelParallelConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 MIN_DIM_HEAD = 32
 
 
@@ -42,6 +51,7 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         hidden_size,
@@ -53,7 +63,6 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         layer_type=[],
         pre_process=True,
         post_process=True,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -76,14 +85,12 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
         parent_model_type=ModelType.encoder_or_decoder,
         chunk_size=64,
         layer_number_offset=0,  # this is use only for attention norm_factor scaling
-        sequence_parallel=False,
-        gradient_accumulation_fusion=False,
         normalize_attention_scores=True,
         megatron_legacy=False,
         turn_off_rop=False,
         version=1,  # model version
     ):
-        super(MegatronRetrievalTransformerEncoderModule, self).__init__()
+        super(MegatronRetrievalTransformerEncoderModule, self).__init__(config=config)
 
         self.transformer_block_type = transformer_block_type
         self.pre_process = pre_process
@@ -106,6 +113,7 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
 
         # Transformer.
         self.model = ParallelTransformer(
+            config=config,
             init_method=self.init_method,
             output_layer_init_method=self.output_layer_init_method,
             num_layers=self.num_layers,
@@ -126,7 +134,6 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
             layernorm_epsilon=layernorm_epsilon,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
@@ -141,8 +148,6 @@ class MegatronRetrievalTransformerEncoderModule(MegatronModule):
             model_type=parent_model_type,
             chunk_size=chunk_size,
             layer_number_offset=layer_number_offset,
-            sequence_parallel=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
             normalize_attention_scores=normalize_attention_scores,
             megatron_legacy=megatron_legacy,
         )
@@ -327,6 +332,7 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         hidden_size,
@@ -338,7 +344,6 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         layer_type=[],
         pre_process=True,
         post_process=True,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -361,14 +366,12 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
         parent_model_type=ModelType.encoder_or_decoder,
         chunk_size=64,
         layer_number_offset=0,  # this is use only for attention norm_factor scaling
-        sequence_parallel=False,
-        gradient_accumulation_fusion=False,
         normalize_attention_scores=True,
         megatron_legacy=False,
         turn_off_rop=False,
         version=1,  # model version
     ):
-        super(MegatronRetrievalTransformerDecoderModule, self).__init__()
+        super(MegatronRetrievalTransformerDecoderModule, self).__init__(config=config)
 
         self.pre_process = pre_process
         self.post_process = post_process
@@ -390,6 +393,7 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
 
         # Transformer.
         self.model = ParallelTransformer(
+            config=config,
             init_method=self.init_method,
             output_layer_init_method=self.output_layer_init_method,
             num_layers=self.num_layers,
@@ -410,7 +414,6 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             layernorm_epsilon=layernorm_epsilon,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
@@ -425,8 +428,6 @@ class MegatronRetrievalTransformerDecoderModule(MegatronModule):
             model_type=parent_model_type,
             chunk_size=chunk_size,
             layer_number_offset=layer_number_offset,
-            sequence_parallel=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
             normalize_attention_scores=normalize_attention_scores,
             megatron_legacy=megatron_legacy,
         )

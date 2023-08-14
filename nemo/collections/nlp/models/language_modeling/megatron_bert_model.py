@@ -132,10 +132,14 @@ class MegatronBertModel(MegatronBaseModel):
             if isinstance(self.model, list):
                 converted_model = []
                 for module in self.model:
-                    converted_model.append(Float16Module(module=module, precision=cfg.precision))
-                    self.model = converted_model
+                    converted_model.append(
+                        Float16Module(config=self.model_parallel_config, module=module, precision=cfg.precision)
+                    )
+                self.model = converted_model
             else:
-                self.model = Float16Module(module=self.model, precision=cfg.precision)
+                self.model = Float16Module(
+                    config=self.model_parallel_config, module=self.model, precision=cfg.precision
+                )
 
         if hasattr(self, '_nsys_profile_enabled'):
             mp_size = cfg.get('tensor_model_parallel_size', 1) * cfg.get('pipeline_model_parallel_size', 1)
@@ -149,6 +153,7 @@ class MegatronBertModel(MegatronBaseModel):
         num_tokentypes = 2 if cfg.bert_binary_head else 0
 
         model = BertModel(
+            config=self.model_parallel_config,
             vocab_size=self.padded_vocab_size,
             hidden_size=cfg.hidden_size,
             max_position_embeddings=cfg.max_position_embeddings,
@@ -163,7 +168,6 @@ class MegatronBertModel(MegatronBaseModel):
             post_process=post_process,
             init_method_std=cfg.get('init_method_std', 0.02),
             fp16_lm_cross_entropy=cfg.get('fp16_lm_cross_entropy', False),
-            use_cpu_initialization=cfg.get('use_cpu_initialization', False),
             megatron_amp_O2=self.cfg.get('megatron_amp_O2', False),
             hidden_dropout=cfg.get('hidden_dropout', 0.1),
             precision=cfg.get('precision', 16),
@@ -180,7 +184,6 @@ class MegatronBertModel(MegatronBaseModel):
             onnx_safe=cfg.get('onnx_safe', False),
             add_binary_head=cfg.bert_binary_head,
             megatron_legacy=cfg.get('megatron_legacy', False),
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
             position_embedding_type=self.cfg.get("position_embedding_type", "learned_absolute"),
         )
 
@@ -312,9 +315,8 @@ class MegatronBertModel(MegatronBaseModel):
         if self.cfg.data.dataloader_type == "LDDL":
             # this is of type bert dataset
             seq_length = dataloader_iter.iterator.loaders.get_seqlen()
-            tensor_shape = [seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
         else:
-            tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
+            seq_length = self.cfg.encoder_seq_length
 
         # run forward and backwards passes for an entire global batch
         # we do this inside training_step to support pipeline parallelism
@@ -326,11 +328,8 @@ class MegatronBertModel(MegatronBaseModel):
             model=[self.model],
             num_microbatches=get_num_microbatches(),
             forward_only=False,
-            tensor_shape=tensor_shape,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
+            seq_length=seq_length,
+            micro_batch_size=self.cfg.micro_batch_size,
         )
 
         if losses_reduced_per_micro_batch:
@@ -425,9 +424,8 @@ class MegatronBertModel(MegatronBaseModel):
         prefix = "test" if self.trainer.testing else "val"
         if self.cfg.data.dataloader_type == "LDDL":
             seq_length = dataloader_iter.iterator.get_seqlen()
-            tensor_shape = [seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
         else:
-            tensor_shape = [self.cfg.encoder_seq_length, self.cfg.micro_batch_size, self.cfg.hidden_size]
+            seq_length = self.cfg.encoder_seq_length
 
         fwd_bwd_function = get_forward_backward_func()
 
@@ -437,10 +435,8 @@ class MegatronBertModel(MegatronBaseModel):
             model=[self.model],
             num_microbatches=get_num_microbatches(),
             forward_only=True,
-            tensor_shape=tensor_shape,
-            dtype=self.autocast_dtype,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
+            seq_length=seq_length,
+            micro_batch_size=self.cfg.micro_batch_size,
         )
 
         if losses_reduced_per_micro_batch:

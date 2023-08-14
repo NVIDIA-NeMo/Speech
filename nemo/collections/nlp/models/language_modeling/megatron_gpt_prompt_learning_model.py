@@ -53,7 +53,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
     from megatron.core.enums import ModelType
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
@@ -93,6 +93,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 
     def init_model(self, cfg: DictConfig, trainer: Trainer):
         self.cfg = cfg
+        self.config: ModelParallelConfig = self.model_parallel_config
         save_restore_connector = NLPSaveRestoreConnector()
         if os.path.isdir(cfg.get('language_model_path')):
             save_restore_connector.model_extracted_dir = cfg.get('language_model_path')
@@ -102,6 +103,8 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             return_config=True,
             save_restore_connector=save_restore_connector,
         )
+
+        setattr(self.config, 'hidden_size', frozen_model_cfg.hidden_size)
 
         # Need to overwrite some params in frozen model's config before restoring
         with open_dict(frozen_model_cfg):
@@ -120,6 +123,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             frozen_model_cfg.activations_checkpoint_method = self.cfg.get("activations_checkpoint_method", None)
 
         if self.trainer.precision in ['bf16', 'bf16-mixed']:
+            # set hidden size in the model parallel config for pipeline parallel schedules
             self.autocast_dtype = torch.bfloat16
         elif self.trainer.precision in [32, '32', '32-true']:
             self.autocast_dtype = torch.float
@@ -299,7 +303,6 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         # Get seq length of batch
         batch = next(dataloader_iter)
         _, seq_length = batch[0].shape
-        tensor_shape = [seq_length, get_micro_batch_size(), self.hidden_size]
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
 
         fwd_bwd_function = get_forward_backward_func()
@@ -310,11 +313,8 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             model=[self],
             num_microbatches=get_num_microbatches(),
             forward_only=forward_only,
-            tensor_shape=tensor_shape,
-            dtype=self.autocast_dtype,
-            grad_scaler=self.trainer.precision_plugin.scaler.scale if self.cfg.precision == 16 else None,
-            sequence_parallel=self.cfg.get('sequence_parallel', False),
-            enable_autocast=self.enable_autocast,
+            seq_length=seq_length,
+            micro_batch_size=get_micro_batch_size(),
         )
 
         # only the last stages of the pipeline return losses

@@ -33,7 +33,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core import ModelParallelConfig, parallel_state, tensor_parallel
     from megatron.core.tensor_parallel.layers import linear_with_grad_accumulation_and_async_allreduce
 
     HAVE_MEGATRON_CORE = True
@@ -71,7 +71,7 @@ def parallel_lm_logits(
         word_embeddings_weight (torch.Tensor): [(padded) vocab size, h]
         parallel_output (bool): False will gather logits from tensor model parallel region
         bias (torch.Tensor, optional): bias tensor. Defaults to None.
-        async_tensor_model_parallel_allreduce (bool, optional): TODO: understand this flag. Defaults to False.
+        async_tensor_model_parallel_allreduce (bool, optional): Defaults to False.
         sequence_parallel (bool, optional): If True will use sequence parallelism. Defaults to False.
         gradient_accumulation_fusioa (bool, optional): If True fuse gradient accumulation to WGRAD GEMM
 
@@ -98,7 +98,7 @@ def parallel_lm_logits(
         bias=bias,
         gradient_accumulation_fusion=gradient_accumulation_fusion,
         async_grad_allreduce=async_grad_allreduce,
-        sequence_parallel_enabled=sequence_parallel,
+        sequence_parallel=sequence_parallel,
     )
 
     # Gather if needed.

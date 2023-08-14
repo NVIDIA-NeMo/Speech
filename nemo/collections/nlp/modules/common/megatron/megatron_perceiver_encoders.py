@@ -36,6 +36,16 @@ except (ImportError, ModuleNotFoundError):
     AttnMaskType = ApexGuardDefaults()
     ModelType = ApexGuardDefaults()
 
+try:
+    from megatron.core import ModelParallelConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
+
 __all__ = ["MegatronPerceiverEncoderModule"]
 
 
@@ -45,6 +55,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         hidden_size,
@@ -55,7 +66,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         kv_channels=None,
         pre_process=True,
         post_process=True,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         encoder_attn_mask_type=AttnMaskType.padding,
         hidden_dropout=0.1,
@@ -83,8 +93,9 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         normalize_attention_scores=True,
         megatron_legacy=False,
     ):
-        super(MegatronPerceiverEncoderModule, self).__init__()
+        super(MegatronPerceiverEncoderModule, self).__init__(config=config)
 
+        self.config = config
         self.pre_process = pre_process
         self.post_process = post_process
         self.hidden_size = hidden_size
@@ -118,7 +129,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         self.headscale = headscale
         self.hidden_dropout = hidden_dropout
         self.attention_dropout = attention_dropout
-        self.use_cpu_initialization = use_cpu_initialization
         self.normalization = normalization
         self.parent_model_type = parent_model_type
         self.transformer_block_type = transformer_block_type
@@ -146,6 +156,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
 
     def _build_cross_attn_layer(self):
         return ParallelTransformer(
+            config=self.config,
             layer_type=LayerType.decoder,
             init_method=self.init_method,
             output_layer_init_method=self.output_layer_init_method,
@@ -166,7 +177,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
             ffn_dropout=self.ffn_dropout,
-            use_cpu_initialization=self.use_cpu_initialization,
             megatron_amp_O2=self.megatron_amp_O2,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_add_fusion=self.bias_dropout_add_fusion,
@@ -186,6 +196,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
 
     def _build_self_attn_layer(self):
         return ParallelTransformer(
+            config=self.config,
             layer_type=LayerType.encoder,
             init_method=self.init_method,
             output_layer_init_method=self.output_layer_init_method,
@@ -206,7 +217,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
             ffn_dropout=self.ffn_dropout,
-            use_cpu_initialization=self.use_cpu_initialization,
             megatron_amp_O2=self.megatron_amp_O2,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_add_fusion=self.bias_dropout_add_fusion,

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """Transformer based language model."""
+from MeCab import Model
 from nemo.collections.nlp.modules.common.megatron.megatron_perceiver_encoders import MegatronPerceiverEncoderModule
 from nemo.collections.nlp.modules.common.megatron.megatron_transformer_encoder import MegatronTransformerEncoderModule
 from nemo.collections.nlp.modules.common.megatron.retrieval_transformer import (
@@ -34,12 +35,22 @@ except (ImportError, ModuleNotFoundError):
     AttnMaskType = ApexGuardDefaults()
     ModelType = ApexGuardDefaults()
 
+try:
+    from megatron.core import ModelParallelConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 __all__ = []
 
 AVAILABLE_ENCODERS = ["transformer", "perceiver", "retro"]
 
 
 def get_encoder_model(
+    config: ModelParallelConfig,
     arch,
     hidden_size,
     ffn_hidden_size,
@@ -53,7 +64,6 @@ def get_encoder_model(
     pre_process=True,
     post_process=True,
     init_method_std=0.02,
-    use_cpu_initialization=False,
     megatron_amp_O2=False,
     hidden_dropout=0.1,
     attention_dropout=0.1,
@@ -84,7 +94,6 @@ def get_encoder_model(
     megatron_legacy=False,
     normalize_attention_scores=True,
     sequence_parallel=False,
-    gradient_accumulation_fusion=False,
     num_moe_experts=1,
     moe_frequency=1,
     moe_dropout=0.0,
@@ -110,6 +119,7 @@ def get_encoder_model(
     if arch == "transformer":
         # Language encoder.
         encoder = MegatronTransformerEncoderModule(
+            config=config,
             init_method=init_method,
             output_layer_init_method=scaled_init_method,
             hidden_size=hidden_size,
@@ -121,7 +131,6 @@ def get_encoder_model(
             encoder_attn_mask_type=encoder_attn_mask_type,
             pre_process=pre_process,
             post_process=post_process,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
@@ -154,6 +163,7 @@ def get_encoder_model(
         )
     elif arch == "retro":
         encoder = MegatronRetrievalTransformerEncoderModule(
+            config=config,
             init_method=init_method,
             output_layer_init_method=scaled_init_method,
             hidden_size=hidden_size,
@@ -165,7 +175,6 @@ def get_encoder_model(
             ffn_hidden_size=ffn_hidden_size,
             pre_process=pre_process,
             post_process=post_process,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
@@ -190,13 +199,12 @@ def get_encoder_model(
             layer_number_offset=layer_number_offset,
             megatron_legacy=megatron_legacy,
             normalize_attention_scores=normalize_attention_scores,
-            sequence_parallel=sequence_parallel,
-            gradient_accumulation_fusion=gradient_accumulation_fusion,
             turn_off_rop=turn_off_rop,
             version=version,
         )
     elif arch == "perceiver":
         encoder = MegatronPerceiverEncoderModule(
+            config=config,
             init_method=init_method,
             output_layer_init_method=scaled_init_method,
             hidden_size=hidden_size,
@@ -208,7 +216,6 @@ def get_encoder_model(
             encoder_attn_mask_type=encoder_attn_mask_type,
             pre_process=pre_process,
             post_process=post_process,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,

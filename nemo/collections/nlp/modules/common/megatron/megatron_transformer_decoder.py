@@ -36,6 +36,15 @@ except (ImportError, ModuleNotFoundError):
     LayerType = ApexGuardDefaults()
     ModelType = ApexGuardDefaults()
 
+try:
+    from megatron.core import ModelParallelConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 
 __all__ = ["MegatronTransformerDecoderModule"]
 
@@ -46,6 +55,7 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
 
     def __init__(
         self,
+        config: ModelParallelConfig,
         init_method,
         output_layer_init_method,
         hidden_size,
@@ -56,7 +66,6 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
         kv_channels=None,
         pre_process=True,
         post_process=True,
-        use_cpu_initialization=False,
         megatron_amp_O2=False,
         decoder_attn_mask_type=AttnMaskType.causal,
         hidden_dropout=0.1,
@@ -88,7 +97,7 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
         position_embedding_type='learned_absolute',
         use_flash_attention=False,
     ):
-        super(MegatronTransformerDecoderModule, self).__init__()
+        super(MegatronTransformerDecoderModule, self).__init__(config=config)
 
         self.pre_process = pre_process
         self.post_process = post_process
@@ -110,6 +119,7 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
 
         # Transformer.
         self.model = ParallelTransformer(
+            config=config,
             layer_type=LayerType.decoder,
             init_method=self.init_method,
             output_layer_init_method=self.output_layer_init_method,
@@ -131,7 +141,6 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
             ffn_dropout=ffn_dropout,
-            use_cpu_initialization=use_cpu_initialization,
             megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
@@ -145,7 +154,6 @@ class MegatronTransformerDecoderModule(MegatronModule, Exportable, MegatronDecod
             model_type=parent_model_type,
             transformer_block_type=transformer_block_type,
             headscale=headscale,
-            gradient_accumulation_fusion=False,  # TODO: This has to be False for enc-dec models for now.
             megatron_legacy=megatron_legacy,
             normalize_attention_scores=normalize_attention_scores,
             num_moe_experts=num_moe_experts,

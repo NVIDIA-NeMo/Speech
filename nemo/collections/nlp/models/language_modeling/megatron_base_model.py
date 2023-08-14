@@ -13,13 +13,15 @@
 # limitations under the License.
 
 import gc
+import itertools
 import os
 import re
+from dataclasses import fields
 from typing import Any, Dict, Optional, Union
 
 import omegaconf
 import torch
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
 from pytorch_lightning.trainer.connectors.logger_connector.fx_validator import _FxValidator
@@ -49,7 +51,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 try:
-    from megatron.core import parallel_state
+    from megatron.core import ModelParallelConfig, parallel_state
 
     HAVE_MEGATRON_CORE = True
 
@@ -98,6 +100,9 @@ class MegatronBaseModel(NLPModel):
 
         super().__init__(cfg, trainer=trainer, no_lm_init=no_lm_init)
 
+        # set the megatron core model parallel config
+        self.model_parallel_config: ModelParallelConfig = self.build_model_parallel_config()
+
         self.with_distributed_adam = cfg.optim.get('name') == 'distributed_fused_adam'
 
         # used in NVIDIA NGC PyTorch containers
@@ -120,18 +125,30 @@ class MegatronBaseModel(NLPModel):
             init_global_rank = trainer.global_rank
             init_local_rank = trainer.local_rank
 
+        # Set virtual pipeline size to None if it is 1 and
+        # confirm that the number of model chunks is the same across all pipeline stages.
+        vp_size = self.cfg.get('virtual_pipeline_model_parallel_size', None)
+
+        if vp_size is not None:
+            if vp_size == 1:
+                self.cfg.virtual_pipeline_model_parallel_size = None
+            else:
+                assert (
+                    self.cfg.num_layers // self.cfg.pipeline_model_parallel_size
+                ) % vp_size == 0, 'Make sure the number of model chunks is the same across all pipeline stages.'
+
         initialize_model_parallel_for_nemo(
             world_size=init_world_size,
             global_rank=init_global_rank,
             local_rank=init_local_rank,
-            tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
-            pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
-            virtual_pipeline_model_parallel_size=cfg.get('virtual_pipeline_model_parallel_size', None),
-            pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
-            micro_batch_size=cfg.get('micro_batch_size'),
-            global_batch_size=cfg.get('global_batch_size'),
-            rampup_batch_size=cfg.get('rampup_batch_size'),
-            use_fp8=cfg.get('fp8', False),
+            tensor_model_parallel_size=self.cfg.get('tensor_model_parallel_size', 1),
+            pipeline_model_parallel_size=self.cfg.get('pipeline_model_parallel_size', 1),
+            virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
+            pipeline_model_parallel_split_rank=self.cfg.get('pipeline_model_parallel_split_rank', 0),
+            micro_batch_size=self.cfg.get('micro_batch_size'),
+            global_batch_size=self.cfg.get('global_batch_size'),
+            rampup_batch_size=self.cfg.get('rampup_batch_size'),
+            use_fp8=self.cfg.get('fp8', False),
             init_mpi_proc_group=cfg.get('ub_tp_comm_overlap', False),
             seed=self.cfg.get('seed', 1234),
             apex_transformer_log_level=self.cfg.get('apex_transformer_log_level', 30),
@@ -582,12 +599,15 @@ class MegatronBaseModel(NLPModel):
         if self.cfg.get('use_emha', False):
             raise ValueError('use_emha is not yet supported please set to False')
 
-        if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
-            assert (
-                self.cfg.num_layers // self.cfg.pipeline_model_parallel_size
-            ) % self.cfg.virtual_pipeline_model_parallel_size == 0, (
-                'Make sure the number of model chunks is the same across all pipeline stages.'
-            )
+        vp_size = self.cfg.get('virtual_pipeline_model_parallel_size', None)
+
+        if vp_size is not None:
+            if vp_size == 1:
+                self.cfg['virtual_pipeline_model_parallel_size'] = None
+            else:
+                assert (
+                    self.cfg.num_layers // self.cfg.pipeline_model_parallel_size
+                ) % vp_size == 0, 'Make sure the number of model chunks is the same across all pipeline stages.'
 
         if self.cfg.get('ub_tp_comm_overlap', False):
             if not self.cfg.get('transformer_engine', False) or not self.cfg.get('sequence_parallel', False):
@@ -693,3 +713,95 @@ class MegatronBaseModel(NLPModel):
         total_num_parameters = torch.tensor(num_parameters_on_device).cuda()
         torch.distributed.all_reduce(total_num_parameters, group=parallel_state.get_model_parallel_group())
         return num_parameters_on_device, total_num_parameters
+
+    def build_model_parallel_config(self):
+        """ For attributes in the nemo model config that are the same as the
+            megatron core ModelParallelConfig we will use the value from the nemo config.
+            For attributes in ModelParallelConfig that are not in the nemo model config, we add custom logic.
+        """
+        cfg = OmegaConf.to_container(self.cfg, resolve=True)
+
+        # map precision related configs
+        precision = cfg.get('precision', 32)  # PTL trainer precision
+        megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
+
+        # instantiate weights in bfloat16 if using megatron amp O2 and bf16
+        params_dtype = torch.bfloat16 if precision == 'bf16' and megatron_amp_O2 else torch.float32
+
+        # dtype used in p2p communication
+        pipeline_dtype = (
+            torch.bfloat16 if precision == 'bf16' else torch.half if precision in [16, '16'] else torch.float32
+        )
+
+        # same as pipeline_dtype when not using megatron amp O2
+        autocast_dtype = pipeline_dtype if not megatron_amp_O2 else None
+
+        # maps NeMo model configs to ModelParallelConfig from megatron core
+        config_mapping = {
+            "perform_initialization": True,  # initailize weights when constructing the module
+            "fp16": False,  # NeMo does not currently support fp16 training with megatron amp O2
+            "bf16": precision == 'bf16' and megatron_amp_O2,
+            "params_dtype": params_dtype,
+            "timers": None,  # NeMo dues not currently support megatron core timers
+            "async_tensor_model_parallel_allreduce": self.cfg.get('tensor_model_parallel_world_size', 1) > 1
+            and not self.cfg.get('sequence_parallel', False),
+            "pipeline_dtype": pipeline_dtype,
+            "grad_scale_func": self.trainer.precision_plugin.scaler.scale if precision in [16, '16'] else None,
+            "enable_autocast": not megatron_amp_O2 and precision in [16, '16', 'bf16'],
+            "autocast_dtype": autocast_dtype,
+            "variable_seq_lengths": False,  # set dynamically during training
+            "num_microbatches_with_partial_activation_checkpoints": self.cfg.get(
+                'num_micro_batches_with_partial_activation_checkpoints', None
+            ),
+            "batch_p2p_sync": True,  # call torch.cuda.synchronize() after batch isend/rcv
+            "use_ring_exchange_p2p": False,  # not supported in NeMo
+            "deallocate_pipeline_outputs": False,  # not supported in NeMo
+            "no_sync_func": None,  # set dynamically during training
+            "grad_sync_func": None,  # set dynamically during training
+            "param_sync_func": None,  # set dynamically during training
+        }
+
+        # instantitate ModelParallelConfig from this dict
+        mp_config_dict = {}
+
+        for field in fields(ModelParallelConfig):
+            # model config has priority
+            if field.name in cfg:
+                mp_config_dict[field.name] = cfg[field.name]
+            # then config_mapping
+            elif field.name in config_mapping:
+                mp_config_dict[field.name] = config_mapping[field.name]
+            else:
+                logging.warning(
+                    f"The model: {self} does not have field.name: {field.name} in its cfg. "
+                    f"Add this key to cfg or config_mapping to make to make it configurable."
+                )
+
+        model_parallel_config = ModelParallelConfig(**mp_config_dict)
+
+        try:
+            # hidden size is needed for pipeline schedules but is not currently in ModelParallelConfig
+            setattr(model_parallel_config, 'hidden_size', self.cfg.hidden_size)
+        except AttributeError:
+            logging.warning(
+                f'hidden_size not found in {self.cfg}. Set this in model_parallel_config if using pipeline parallelism.'
+            )
+
+        return model_parallel_config
+
+    def _prefetch(self, iterator):
+        """Checks if the iterator still has elements to return.
+        Used in models using dataloader_iter to prefetch the next batch before fwd_bwd func
+        is called to avoid PP rank 2 from wait indefinitely to get outpits from PP 1
+        """
+        elements = []
+        num_microbatches = get_num_microbatches()
+        for _ in range(num_microbatches):
+            try:
+                element = next(iterator)
+                elements.append(element)
+            except StopIteration:
+                return iterator, True
+
+        # return a new iterator with the prefetched element reinserted at the front
+        return itertools.chain(elements, iterator), False

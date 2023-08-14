@@ -59,10 +59,10 @@ pipeline {
 
     stage('Megatron Core installation') {
       steps {
-        // commit points to core_transformer merge
+        // commit has api fix for TE
         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
             cd Megatron-LM && \
-            git checkout 3316e811cc5335ee24c2d203416d864edcf2f7a8 && \
+            git checkout 0609f27fe8376f17ab65c001d3d8f35cd8175950 && \
             pip install -e .'
       }
     }

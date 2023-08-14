@@ -104,6 +104,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             save_restore_connector=save_restore_connector,
         )
 
+        # set hidden size in the model parallel config for pipeline parallel schedules
         setattr(self.config, 'hidden_size', frozen_model_cfg.hidden_size)
 
         # Need to overwrite some params in frozen model's config before restoring

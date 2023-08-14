@@ -131,7 +131,7 @@ class MegatronBaseModel(NLPModel):
 
         if vp_size is not None:
             if vp_size == 1:
-                self.cfg.virtual_pipeline_model_parallel_size = None
+                vp_size = None
             else:
                 assert (
                     self.cfg.num_layers // self.cfg.pipeline_model_parallel_size
@@ -141,14 +141,14 @@ class MegatronBaseModel(NLPModel):
             world_size=init_world_size,
             global_rank=init_global_rank,
             local_rank=init_local_rank,
-            tensor_model_parallel_size=self.cfg.get('tensor_model_parallel_size', 1),
-            pipeline_model_parallel_size=self.cfg.get('pipeline_model_parallel_size', 1),
-            virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
-            pipeline_model_parallel_split_rank=self.cfg.get('pipeline_model_parallel_split_rank', 0),
-            micro_batch_size=self.cfg.get('micro_batch_size'),
-            global_batch_size=self.cfg.get('global_batch_size'),
-            rampup_batch_size=self.cfg.get('rampup_batch_size'),
-            use_fp8=self.cfg.get('fp8', False),
+            tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
+            pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
+            virtual_pipeline_model_parallel_size=vp_size,
+            pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
+            micro_batch_size=cfg.get('micro_batch_size'),
+            global_batch_size=cfg.get('global_batch_size'),
+            rampup_batch_size=cfg.get('rampup_batch_size'),
+            use_fp8=cfg.get('fp8', False),
             init_mpi_proc_group=cfg.get('ub_tp_comm_overlap', False),
             seed=self.cfg.get('seed', 1234),
             apex_transformer_log_level=self.cfg.get('apex_transformer_log_level', 30),
@@ -156,6 +156,9 @@ class MegatronBaseModel(NLPModel):
 
         # This must be called after initialize model parallel since it needs to know the data parallel size
         self._validate_and_override_config()
+
+        # set the megatron core model parallel config
+        self.model_parallel_config: ModelParallelConfig = self.build_model_parallel_config()
 
         self.grad_clip_pl_default = False  # use pytorch default for gradient clipping. Default False
 
@@ -643,8 +646,13 @@ class MegatronBaseModel(NLPModel):
                 and parallel_state.is_pipeline_last_stage(ignore_virtual=True)
                 and self.cfg.get('share_embeddings_and_output_weights', True)
             ):
+                word_embeddings_weight = (
+                    model[-1].module.shared_embedding_or_output_weight()
+                    if getattr(self, 'mcore_gpt', False)
+                    else model[-1].word_embeddings_weight()
+                )
                 # substract the embedding weights on the last virtual stage
-                num_word_embedding_parameters = sum([p.nelement() for p in model[-1].word_embeddings_weight()])
+                num_word_embedding_parameters = sum([p.nelement() for p in word_embeddings_weight])
                 num_parameters_on_device -= num_word_embedding_parameters
         else:
             num_parameters_on_device = sum([p.nelement() for p in model.parameters()])
@@ -653,8 +661,13 @@ class MegatronBaseModel(NLPModel):
                 and parallel_state.is_pipeline_last_stage(ignore_virtual=True)
                 and self.cfg.get('share_embeddings_and_output_weights', True)
             ):
+                word_embeddings_weight = (
+                    model.module.shared_embedding_or_output_weight()
+                    if getattr(self, 'mcore_gpt', False)
+                    else model.word_embeddings_weight()
+                )
                 # substract the embedding weights on the last stage
-                num_word_embedding_parameters = sum([p.nelement() for p in model.word_embeddings_weight()])
+                num_word_embedding_parameters = sum([p.nelement() for p in word_embeddings_weight])
                 num_parameters_on_device -= num_word_embedding_parameters
 
         # to be summed across data parallel group
@@ -714,7 +727,7 @@ class MegatronBaseModel(NLPModel):
         torch.distributed.all_reduce(total_num_parameters, group=parallel_state.get_model_parallel_group())
         return num_parameters_on_device, total_num_parameters
 
-    def build_model_parallel_config(self):
+    def build_model_parallel_config(self) -> ModelParallelConfig:
         """ For attributes in the nemo model config that are the same as the
             megatron core ModelParallelConfig we will use the value from the nemo config.
             For attributes in ModelParallelConfig that are not in the nemo model config, we add custom logic.
@@ -742,7 +755,7 @@ class MegatronBaseModel(NLPModel):
             "fp16": False,  # NeMo does not currently support fp16 training with megatron amp O2
             "bf16": precision == 'bf16' and megatron_amp_O2,
             "params_dtype": params_dtype,
-            "timers": None,  # NeMo dues not currently support megatron core timers
+            "timers": None,  # NeMo does not currently support megatron core timers
             "async_tensor_model_parallel_allreduce": self.cfg.get('tensor_model_parallel_world_size', 1) > 1
             and not self.cfg.get('sequence_parallel', False),
             "pipeline_dtype": pipeline_dtype,

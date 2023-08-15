@@ -263,13 +263,13 @@ class Float16Module(MegatronModule):
         super().__init__(config=config, share_token_embeddings=share_token_embeddings)
         self.precision = precision
 
-        if precision == 'bf16':
+        if precision in ['bf16', 'bf16-mixed']:
             self.add_module('module', module.bfloat16())
 
             def float16_converter(val):
                 return val.bfloat16()
 
-        elif int(precision) == 16:
+        elif precision in [16, '16', '16-mixed']:
             self.add_module('module', module.half())
 
             def float16_converter(val):

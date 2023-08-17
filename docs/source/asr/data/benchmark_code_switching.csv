@@ -1,0 +1,3 @@
+Model,Model Base Class,Model Card
+stt_enes_conformer_ctc_large_codesw,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_ctc_large_codesw"
+stt_enes_conformer_transducer_large_codesw,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large_codesw"

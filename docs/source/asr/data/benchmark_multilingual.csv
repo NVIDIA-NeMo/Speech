@@ -1,0 +1,5 @@
+Model,Model Base Class,Model Card
+stt_enes_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_ctc_large"
+stt_enes_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_enes_conformer_transducer_large"
+stt_multilingual_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc"
+stt_multilingual_fastconformer_hybrid_large_pc_blend_eu,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_multilingual_fastconformer_hybrid_large_pc_blend_eu"

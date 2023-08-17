@@ -298,3 +298,23 @@ Ukrainian
    :align: left
    :widths: 40, 10, 50
    :header-rows: 1
+
+-----------------------------
+
+Multilingual
+^^^^^^^^^^^
+.. csv-table::
+   :file: data/benchmark_multilingual.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1
+
+-----------------------------
+
+Code-Switching
+^^^^^^^^^^^
+.. csv-table::
+   :file: data/benchmark_code_switching.csv
+   :align: left
+   :widths: 40, 10, 50
+   :header-rows: 1

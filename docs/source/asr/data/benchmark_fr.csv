@@ -6,3 +6,4 @@ stt_fr_contextnet_1024,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models
 stt_fr_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
 stt_fr_no_hyphen_conformer_ctc_large,EncDecCTCModelBPE,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_ctc_large"
 stt_fr_conformer_transducer_large,EncDecRNNTBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_conformer_transducer_large"
+stt_fr_fastconformer_hybrid_large_pc,EncDecHybridRNNTCTCBPEModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_fr_fastconformer_hybrid_large_pc"

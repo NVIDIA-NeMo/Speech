@@ -17,7 +17,7 @@
 import enum
 import logging
 from dataclasses import dataclass
-
+from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -106,8 +106,8 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         out_features: int,
         dim: int,
         activation: str = 'swish',
-        norm_position: str = 'post',
-        norm_type: str = 'mixedfusedlayernorm',
+        norm_position: Optional[str] = 'post',
+        norm_type: Optional[str] = 'mixedfusedlayernorm',
         column_init_method: str = 'xavier',  # TODO: (@adithyare) should rename this to input_init_method to be more precise.
         row_init_method: str = 'zero',  # TODO: (@adithyare) should rename this to output_init_method to be more precise.
         gather_output: bool = True,
@@ -161,6 +161,8 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
                 self.layer_norm = nn.LayerNorm(ln_features)
             else:
                 raise NotImplementedError("norm_type should be either mixedfusedlayernorm or layernorm")
+        else:
+            self.layer_norm = None
 
         if dropout > 0.0:
             self.dropout = nn.Dropout(dropout)
@@ -215,8 +217,8 @@ class ParallelLinearAdapterConfig:
     out_features: int
     dim: int
     activation: str = 'swish'
-    norm_position: str = 'post'
-    norm_type: str = 'mixedfusedlayernorm'
+    norm_position: Optional[str] = 'post'
+    norm_type: Optional[str] = 'mixedfusedlayernorm'
     column_init_method: str = 'xavier'
     row_init_method: str = 'zero'
     gather_output: bool = True
@@ -375,3 +377,153 @@ class PromptEncoderAdapterConfig:
     init_std: float
     output_dim: int
     _target_: str = "{0}.{1}".format(PromptEncoderAdapter.__module__, PromptEncoderAdapter.__name__)
+
+
+class ParallelLinearAdapterWeightTying(ParallelLinearAdapter):
+    """
+    Extends parallel linear adapter for weight tying by providing a position embedding and convenience methods for tying weights
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        dim: int,
+        activation: str = 'swish',
+        norm_position: Optional[str] = 'post',
+        norm_type: Optional[str] = 'mixedfusedlayernorm',
+        column_init_method: str = 'xavier',  # TODO: (@adithyare) should rename this to input_init_method to be more precise.
+        row_init_method: str = 'zero',  # TODO: (@adithyare) should rename this to output_init_method to be more precise.
+        gather_output: bool = True,
+        dropout: float = 0.0,
+        num_position_embeddings: int = 1,
+        dim_position_embeddings: int = 1024,
+        position_embedding_strategy: Optional[str] = "add",
+    ):
+        self.position_embeddings = None
+        self.mlp = None
+        self.position_embedding_strategy = position_embedding_strategy
+        assert self.position_embedding_strategy in ["add", "concat", "mlpconcat", "biasadd", None]
+        if self.position_embedding_strategy == "concat":
+            in_features += dim_position_embeddings
+        elif self.position_embedding_strategy == "mlpconcat":
+            in_features += dim_position_embeddings
+        elif self.position_embedding_strategy == "biasadd":
+            assert (
+                out_features == dim_position_embeddings
+            ), "adapter output feature size should match position emb size to bias add"
+        elif self.position_embedding_strategy == "add":
+            assert (
+                in_features == dim_position_embeddings
+            ), "adapter input feature size should match position emb size to add"
+        super().__init__(
+            in_features,
+            out_features,
+            dim,
+            activation,
+            norm_position,
+            norm_type,
+            column_init_method,
+            row_init_method,
+            gather_output,
+            dropout,
+        )
+        if self.position_embedding_strategy:
+            self.position_embeddings = torch.nn.Embedding(num_position_embeddings, dim_position_embeddings)
+            self.position_embeddings.weight.data.fill_(0.0)
+        if self.position_embedding_strategy == "mlpconcat":
+            self.mlp = torch.nn.Sequential(
+                torch.nn.Linear(dim_position_embeddings, dim_position_embeddings, bias=False),
+                torch.nn.GELU(),
+                torch.nn.Linear(dim_position_embeddings, dim_position_embeddings, bias=False),
+            )
+        self.register_buffer("position_id", torch.LongTensor([1]), persistent=False)
+
+    def set_position(self, position_id):
+        self.position_id *= position_id
+
+    def tie_weights(self, position_id, adapter):
+
+        self.set_position(position_id)
+        if self.linear_in:
+            self.linear_in.weight = adapter.linear_in.weight
+        if self.linear_out:
+            self.linear_out.weight = adapter.linear_out.weight
+        if self.layer_norm:
+            self.layer_norm.weight = adapter.layer_norm.weight
+            self.layer_norm.bias = adapter.layer_norm.bias
+        if self.mlp:
+            self.mlp[0].weight = adapter.mlp[0].weight
+            self.mlp[2].weight = adapter.mlp[2].weight
+        if self.position_embeddings:
+            self.position_embeddings.weight = adapter.position_embeddings.weight
+
+        return True
+
+    def forward(self, x):
+
+        if self.position_embedding_strategy:
+            pos = self.position_embeddings(self.position_id).unsqueeze(0)
+            if self.position_embedding_strategy == "add":
+                pos = pos.expand_as(x)
+                x = x + pos
+
+            elif self.position_embedding_strategy == "concat":
+                pos = pos.expand(x.shape[0], x.shape[1], pos.shape[2])
+                x = torch.cat((x, pos), dim=2)
+            elif self.position_embedding_strategy == "mlpconcat":
+                pos = pos.expand(x.shape[0], x.shape[1], pos.shape[2])
+                pos = self.mlp(pos)
+                x = torch.cat((x, pos), dim=2)
+
+        if self.norm_position == 'pre':
+            x = self.layer_norm(x)
+
+        x, _ = self.linear_in(x)  # (@adithyare) ColumnLinear returns output and bias, we are ignoring the bias term.
+        x = self.activation(x)
+        x, _ = self.linear_out(x)
+        if self.norm_position == 'post':
+            x = self.layer_norm(x)
+
+        if self.position_embedding_strategy == "biasadd":
+            pos = pos.expand_as(x)
+            x = x + pos
+
+        # Add dropout if available
+        if self.dropout is not None:
+            x = self.dropout(x)
+
+        return x
+
+
+@dataclass
+class ParallelLinearAdapterWeightTyingConfig:
+    in_features: int
+    out_features: int
+    dim: int
+    activation: str = 'swish'
+    norm_position: Optional[str] = 'post'
+    norm_type: Optional[str] = 'mixedfusedlayernorm'
+    column_init_method: str = 'xavier'
+    row_init_method: str = 'zero'
+    gather_output: bool = True
+    dropout: float = 0.0
+    num_position_embeddings: int = 1
+    dim_position_embeddings: int = 1024
+    position_embedding_strategy: Optional[str] = "concat"
+    _target_: str = "{0}.{1}".format(
+        ParallelLinearAdapterWeightTying.__module__, ParallelLinearAdapterWeightTying.__name__
+    )
+
+
+class LoraKQVAdapterWeightTying(ParallelLinearAdapterWeightTying):
+    """
+    TODO 
+    """
+
+    pass
+
+
+@dataclass
+class LoraKQVAdapterWeightTyingConfig(ParallelLinearAdapterWeightTyingConfig):
+    _target_: str = "{0}.{1}".format(LoraKQVAdapterWeightTying.__module__, LoraKQVAdapterWeightTying.__name__)

@@ -22,6 +22,7 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     AdapterName,
     InfusedAdapterConfig,
     LoraKQVAdapterConfig,
+    LoraKQVAdapterWeightTyingConfig,
     LoraKVAdapterConfig,
     LoraQAdapterConfig,
 )
@@ -143,6 +144,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 LoraKQVAdapterConfig._target_,
                 LoraQAdapterConfig._target_,
                 LoraKVAdapterConfig._target_,
+                LoraKQVAdapterWeightTyingConfig._target_,
             ]
         )
 

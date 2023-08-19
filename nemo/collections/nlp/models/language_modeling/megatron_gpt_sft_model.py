@@ -402,21 +402,24 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         metadata = batch.get('metadata', [{}] * len(batch['tokens']))
         loss = super().validation_step(itertools.chain([batch]), batch_idx)
 
-        # We need _inference_config to get generation params
-        # add_BOS and tokens_to_generate are set in dataset
-        if self.get_inference_config() is None:
-            self.set_inference_config(inference_config={})
-        self._inference_config['add_BOS'] = data_cfg.add_bos
-        self._inference_config['tokens_to_generate'] = data_cfg.get('tokens_to_generate')
+        if data_cfg.get("write_predictions_to_file", False) or data_cfg.metric.name != 'loss':
+            # We need _inference_config to get generation params
+            # add_BOS and tokens_to_generate are set in dataset
+            if self.get_inference_config() is None:
+                self.set_inference_config(inference_config={})
+            self._inference_config['add_BOS'] = data_cfg.add_bos
+            self._inference_config['tokens_to_generate'] = data_cfg.get('tokens_to_generate')
 
-        output = self.predict_step(batch, batch_idx, dataloader_idx)
+            output = self.predict_step(batch, batch_idx, dataloader_idx)
+            inputs_text = [self.tokenizer.ids_to_text(c.tolist()) for c in batch['contexts']]
+            labels_text = [self.tokenizer.ids_to_text(a.tolist()) for a in batch['answers']]
+            preds_text = [
+                self.tokenizer.ids_to_text(t[l.item() :][: data_cfg.get('tokens_to_generate')])
+                for t, l in zip(output['token_ids'], batch['context_lengths'])
+            ]
+        else:
+            inputs_text, labels_text, preds_text = [], [], []
 
-        inputs_text = [self.tokenizer.ids_to_text(c.tolist()) for c in batch['contexts']]
-        labels_text = [self.tokenizer.ids_to_text(a.tolist()) for a in batch['answers']]
-        preds_text = [
-            self.tokenizer.ids_to_text(t[l.item() :][: data_cfg.get('tokens_to_generate')])
-            for t, l in zip(output['token_ids'], batch['context_lengths'])
-        ]
         outputs = {
             'loss': loss,
             'preds': preds_text,  # [str]

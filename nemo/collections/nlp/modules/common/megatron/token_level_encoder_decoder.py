@@ -393,7 +393,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule):
                 use_flash_attention=decoder_cfg.get('use_flash_attention', False),
             )
 
-        hiddens_module = get_hiddens_module(hiddens_cfg)
+        hiddens_module = get_hiddens_module(hiddens_cfg, model_parallel_cfg=config)
         self.enc_dec_model = MegatronTransformerEncoderDecoderModule(
             config=config,
             encoder=encoder,

@@ -77,6 +77,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         fp32_residual_connection=False,
         activations_checkpoint_method=None,
         activations_checkpoint_num_layers=1,
+        activations_checkpoint_granularity=None,
         layernorm_epsilon=1e-5,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
@@ -119,6 +120,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         self.fp32_residual_connection = fp32_residual_connection
         self.activations_checkpoint_method = activations_checkpoint_method
         self.activations_checkpoint_num_layers = activations_checkpoint_num_layers
+        self.activations_checkpoint_granularity = activations_checkpoint_granularity
         self.layernorm_epsilon = layernorm_epsilon
         self.bias_activation_fusion = bias_activation_fusion
         self.bias_dropout_add_fusion = bias_dropout_add_fusion
@@ -175,6 +177,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             fp32_residual_connection=self.fp32_residual_connection,
             activations_checkpoint_method=self.activations_checkpoint_method,
             activations_checkpoint_num_layers=self.activations_checkpoint_num_layers,
+            activations_checkpoint_granularity=self.activations_checkpoint_granularity,
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
@@ -215,6 +218,7 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             fp32_residual_connection=self.fp32_residual_connection,
             activations_checkpoint_method=self.activations_checkpoint_method,
             activations_checkpoint_num_layers=self.activations_checkpoint_num_layers,
+            activations_checkpoint_granularity=self.activations_checkpoint_granularity,
             layernorm_epsilon=self.layernorm_epsilon,
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,

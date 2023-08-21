@@ -2634,6 +2634,107 @@ pipeline {
         sh "rm -rf examples/nlp/machine_translation/megatron_nmt_results"
       }
     }
+    stage('L2: Megatron BART Perceiver MIM Training TP=2') {
+      // Testing Megatron hidden transformations
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "python examples/nlp/language_modeling/megatron_bart_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=10 \
+        trainer.precision=16 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/megatron_mim_results \
+        model.tensor_model_parallel_size=2 \
+        model.seq_length=128 \
+        model.encoder.num_layers=4 \
+        model.encoder.hidden_size=64 \
+        model.encoder.arch=perceiver \
+        model.encoder.num_attention_heads=8 \
+        model.encoder.activation='swiglu' \
+        model.encoder.masked_softmax_fusion=False \
+        model.encoder.bias_activation_fusion=False \
+        model.encoder.activations_checkpoint_method='block' \
+        model.encoder.activations_checkpoint_num_layers=1 \
+        model.decoder.num_layers=2 \
+        model.decoder.hidden_size=64 \
+        model.decoder.num_attention_heads=8 \
+        model.decoder.activation='swiglu' \
+        model.decoder.masked_softmax_fusion=False \
+        model.decoder.bias_activation_fusion=False \
+        model.decoder.activations_checkpoint_method='block' \
+        model.decoder.activations_checkpoint_num_layers=1 \
+        model.micro_batch_size=2 \
+        model.global_batch_size=4 \
+        model.data.data_impl=text_mmap \
+        model.data.data_prefix=[1.0,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src] \
+        model.data.splits_string=\'\"800,100,100\"\' \
+        model.data.whole_word_masking=False \
+        model.tokenizer.library=sentencepiece \
+        model.tokenizer.model=/home/TestData/nlp/nmt/toy_data/spm_64k_all_langs_plus_en.model \
+        ++model.hiddens.enc_output_name=z \
+        ++model.hiddens.transform.q_z_given_x.cls_name=cond_gaussian \
+        ++model.hiddens.transform.q_z_given_x.hidden_size=64 \
+        ++model.hiddens.loss.mim.cls_name=a_mim \
+        ++model.hiddens.loss.mim.loss_weight=0.5"
+        // Change val_check_interval to 1 for resume as the len(dataloder) is 1 due to max_steps being the same as that of training and Lightning 2.0 raises an error
+        // if val_check_interval > len(dataloder: https://github.com/Lightning-AI/lightning/blob/2.0.6/src/lightning/pytorch/loops/fit_loop.py#L259 at the beginning of fit_loop.run()
+        sh "python examples/nlp/language_modeling/megatron_bart_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=1 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=10 \
+        trainer.precision=16 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/megatron_mim_results \
+        model.tensor_model_parallel_size=2 \
+        model.seq_length=128 \
+        model.encoder.num_layers=4 \
+        model.encoder.hidden_size=64 \
+        model.encoder.arch=perceiver \
+        model.encoder.num_attention_heads=8 \
+        model.encoder.activation='swiglu' \
+        model.encoder.masked_softmax_fusion=False \
+        model.encoder.bias_activation_fusion=False \
+        model.encoder.activations_checkpoint_method='block' \
+        model.encoder.activations_checkpoint_num_layers=1 \
+        model.decoder.num_layers=2 \
+        model.decoder.hidden_size=64 \
+        model.decoder.num_attention_heads=8 \
+        model.decoder.activation='swiglu' \
+        model.decoder.masked_softmax_fusion=False \
+        model.decoder.bias_activation_fusion=False \
+        model.decoder.activations_checkpoint_method='block' \
+        model.decoder.activations_checkpoint_num_layers=1 \
+        model.micro_batch_size=2 \
+        model.global_batch_size=4 \
+        model.data.data_impl=text_mmap \
+        model.data.data_prefix=[1.0,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src] \
+        model.data.splits_string=\'\"800,100,100\"\' \
+        model.data.whole_word_masking=False \
+        model.tokenizer.library=sentencepiece \
+        model.tokenizer.model=/home/TestData/nlp/nmt/toy_data/spm_64k_all_langs_plus_en.model \
+        ++model.hiddens.enc_output_name=z \
+        ++model.hiddens.transform.q_z_given_x.cls_name=cond_gaussian \
+        ++model.hiddens.transform.q_z_given_x.hidden_size=64 \
+        ++model.hiddens.loss.mim.cls_name=a_mim \
+        ++model.hiddens.loss.mim.loss_weight=0.5"
+        sh "rm -rf examples/nlp/language_modeling/megatron_mim_results"
+      }
+    }
     // stage('L2: NMT Bottleneck Fallback') {
     //   when {
     //     anyOf {

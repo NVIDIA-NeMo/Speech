@@ -13,9 +13,13 @@
 # limitations under the License.
 
 
+import asyncio
 import json
 import os
+import threading
+from functools import partial
 
+import torch
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
@@ -25,6 +29,8 @@ from torch.utils.data import DataLoader
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_peft_models import MegatronGPTPEFTModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
 from nemo.collections.nlp.models.nlp_model import NLPModel
+from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
+from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     MegatronHalfPrecisionPlugin,
@@ -35,6 +41,13 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+
+try:
+    from megatron.core import parallel_state
+
+    HAVE_MEGATRON_CORE = True
+except:
+    pass
 
 mp.set_start_method("spawn", force=True)
 """
@@ -177,7 +190,47 @@ def main(cfg) -> None:
     config = OmegaConf.to_container(cfg.inference, resolve=True)
     model.set_inference_config(config)
 
-    trainer.test(model)
+    if not cfg.server:
+        trainer.test(model)
+    else:
+        if not HAVE_MEGATRON_CORE:
+            raise ValueError('Megatron-core needs to be installed to use this feature!')
+
+        from nemo.collections.nlp.modules.common.megatron_web_server import get_chatbot_demo, get_demo
+
+        trainer.test(model, dataloaders=None)
+
+        if parallel_state.is_pipeline_first_stage() and parallel_state.get_tensor_model_parallel_rank() == 0:
+            if cfg.web_server:
+                if cfg.chat:
+                    defaults = {
+                        'user': cfg.chatbot_config.user,
+                        'assistant': cfg.chatbot_config.assistant,
+                        'system': cfg.chatbot_config.system,
+                    }
+                    web_ui = partial(
+                        get_chatbot_demo,
+                        defaults=defaults,
+                        value=cfg.chatbot_config.value,
+                        attributes=cfg.chatbot_config.attributes,
+                    )
+                else:
+                    web_ui = get_demo
+                loop = asyncio.new_event_loop()
+                thread = threading.Thread(
+                    target=web_ui,
+                    daemon=True,
+                    args=(cfg.share, cfg.username, cfg.password, cfg.port, cfg.web_port, loop),
+                )
+                thread.start()
+            server = MegatronServer(model.cuda())
+            server.run("0.0.0.0", port=cfg.port)
+
+        while True:
+            choice = torch.cuda.LongTensor(1)
+            torch.distributed.broadcast(choice, 0)
+            if choice[0].item() == 0:
+                generate(model.cuda())
 
 
 if __name__ == "__main__":

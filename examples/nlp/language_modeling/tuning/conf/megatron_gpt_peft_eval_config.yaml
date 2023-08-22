@@ -132,3 +132,67 @@ inference:
   compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
   outfile_path: output.txt
   compute_attention_mask: True
+
+# server-related configs
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: True  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+web_port: 9889 # the port number of the web server 1058
+chat: False # use the chat interface
+chatbot_config:
+  value: False   # whether to inject the value attributes
+  attributes:
+    - name: Quality
+      min: 0
+      max: 4
+      key: quality
+      type: int
+      default: 4
+    - name: Toxicity
+      min: 0
+      max: 4
+      key: toxcity
+      type: int
+      default: 0
+    - name: Humor
+      min: 0
+      max: 4
+      key: humor
+      type: int
+      default: 0
+    - name: Creativity
+      min: 0
+      max: 4
+      key: creativity
+      type: int
+      default: 0
+    - name: Violence
+      min: 0
+      max: 4
+      key: violence
+      type: int
+      default: 0
+    - name: Helpfulness
+      min: 0
+      max: 4
+      key: helpfulness
+      type: int
+      default: 4
+    - name: Not_Appropriate
+      min: 0
+      max: 4
+      key: not_appropriate
+      type: int
+      default: 0
+    - name: Language
+      choices: ['ar', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'eo', 'es', 'eu', 'fa', 'fi', 'fr', 'gl', 'he', 'hu', 'id', 'it', 'ja', 'ko', 'nb', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'th', 'tr', 'uk', 'vi', 'zh']
+      key: lang
+      type: list
+      default: en
+   
+  user: User
+  assistant: Assistant
+  system: "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"

@@ -68,9 +68,22 @@ class AdapterName(str, enum.Enum):
 
 
 class InfusedAdapter(nn.Module, AdapterModuleUtil):
-    def __init__(self, in_features: int, **kwargs) -> None:
+    def __init__(
+        self, in_features: int, model_parallel_config: Optional[ModelParallelConfig] = None, **kwargs
+    ) -> None:
         super().__init__()
+
+        if model_parallel_config is None:
+            model_parallel_config = ModelParallelConfig()
+
         self.scalers = nn.Parameter(torch.ones(in_features))
+
+        # cast all parameters when using amp O2 training
+        if model_parallel_config.bf16:
+            self.bfloat16()
+        elif model_parallel_config.fp16:
+            self.half()
+
         # Setup adapter strategy
         self.setup_adapter_strategy(adapter_mixin_strategies.ReturnResultAdapterStrategy())
 
@@ -173,6 +186,12 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             self.dropout = nn.Dropout(dropout)
         else:
             self.dropout = None
+
+        # cast all parameters when using amp O2 training
+        if model_parallel_config.bf16:
+            self.bfloat16()
+        elif model_parallel_config.fp16:
+            self.half()
 
         # Setup adapter strategy
         self.setup_adapter_strategy(adapter_mixin_strategies.ReturnResultAdapterStrategy())
@@ -322,6 +341,13 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
             skip_bias_add=True,
             bias=True,
         )
+
+        # cast all parameters when using amp O2 training
+        if model_parallel_config.bf16:
+            self.bfloat16()
+        elif model_parallel_config.fp16:
+            self.half()
+
         # Setup adapter strategy
         self.setup_adapter_strategy(adapter_mixin_strategies.ReturnResultAdapterStrategy())
 

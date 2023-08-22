@@ -47,6 +47,10 @@ class MegatronGPTPEFTModel(MegatronGPTSFTModel):
     def first_stage_of_pipeline(self):
         if hasattr(self, "model") and hasattr(self.model, "pre_process"):
             return self.model.pre_process
+        elif hasattr(self, "model") and hasattr(self.model, "module") and hasattr(self.model.module, "pre_process"):
+            # (guyueh1): this if condition is used to handle amp O2
+            # when amp_O2 is on, self.model will be wrapped by the Float16Module class
+            return self.model.module.pre_process
         logging.warning("no attribute named model or no model.pre_process found. Can not detect stage of pipeline...")
         return False
 
@@ -83,9 +87,12 @@ class MegatronGPTPEFTModel(MegatronGPTSFTModel):
         """ 
         Gets the keys associated with the adapters only.
         """
-        state_dict = self.model.state_dict(prefix="model.")
+        state_dict = self.model.state_dict(prefix="model.module." if self.cfg.megatron_amp_O2 else "model.")
         peft_state_dict = {}
         for k in self.adapter_keys:
+            # state_dict keys needs to be in non-O2 format and will be corrected in PEFTSaveRestoreConnector if O2=True
+            new_k = k.replace("model.module.", "model.", 1)
+            peft_state_dict[new_k] = state_dict[k]
             peft_state_dict[k] = state_dict[k]
         return peft_state_dict
 
@@ -322,7 +329,8 @@ class MegatronGPTPTuningModel(MegatronGPTPEFTModel):
         self.virtual_tokens = cfg.peft.p_tuning.virtual_tokens
         self.trainable_keys = self.adapter_keys - set(
             [
-                "model.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight"
+                "model.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight",
+                "model.module.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight",  # for Float16Model models
             ]
         )
         # we exclude the above parameter from training because it is present for backward compatibility for inference using FasterTransformer (@adithyare)
@@ -422,6 +430,24 @@ class MegatronGPTAdapterPTuningModel(MegatronGPTPEFTModel):
         }
         super().__init__(cfg, trainer)
         self.virtual_tokens = cfg.peft.p_tuning.virtual_tokens
+
+    def setup_optimizer_param_groups(self):
+        super().setup_optimizer_param_groups()
+
+        # (guyueh1) This part is used to avoid adding frozen parameters in trainable adapter modules
+        # in the setup_optimizer_param_groups() of the MegatronPEFTModel class, all parameters
+        # in an adapter module are going to be set requires_grad=True. However in ptuning
+        # adapter the inference table should be untrainable. We explicitely set that parameter
+        # to untrainable here.
+        self.trainable_keys = self.adapter_keys - set(
+            [
+                "model.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight",
+                "model.module.language_model.adapter_layer.ptuning_adapter.inference_table.prompt_table.taskname.prompt_embeddings.weight",  # for Float16Model or BFloat16Model models
+            ]
+        )
+        for n, p in self.named_parameters():
+            if not (n in self.trainable_keys):
+                p.requires_grad_(False)
 
 
 class MegatronGPTLoRAModel(MegatronGPTLayerwisePEFTModel):

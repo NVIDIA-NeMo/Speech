@@ -55,7 +55,7 @@ RUN git clone https://github.com/NVIDIA/apex.git && \
 # install megatron core, this can be removed once 0.3 pip package is released
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
   cd Megatron-LM && \
-  git checkout 0609f27fe8376f17ab65c001d3d8f35cd8175950 && \
+  git checkout f24fac4ed0dcf0522056521a93445d9a82f501a9 && \
   pip install -e .
 
 # uninstall stuff from base container

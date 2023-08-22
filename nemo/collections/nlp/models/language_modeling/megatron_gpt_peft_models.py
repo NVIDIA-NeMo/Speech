@@ -93,7 +93,6 @@ class MegatronGPTPEFTModel(MegatronGPTSFTModel):
             # state_dict keys needs to be in non-O2 format and will be corrected in PEFTSaveRestoreConnector if O2=True
             new_k = k.replace("model.module.", "model.", 1)
             peft_state_dict[new_k] = state_dict[k]
-            peft_state_dict[k] = state_dict[k]
         return peft_state_dict
 
     def state_dict(self, destination=None, prefix=None, keep_vars=False):

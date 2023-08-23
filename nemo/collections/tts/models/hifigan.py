@@ -75,6 +75,8 @@ class HifiGanModel(Vocoder, Exportable):
         self.log_audio = cfg.get("log_audio", False)
         self.log_config = cfg.get("log_config", None)
         self.lr_schedule_interval = None
+
+        # Important: this property activates manual optimization.
         self.automatic_optimization = False
 
     @property
@@ -350,7 +352,7 @@ class HifiGanModel(Vocoder, Exportable):
         if "dataset" not in cfg or not isinstance(cfg.dataset, DictConfig):
             raise ValueError(f"No dataset for {name}")
         if "dataloader_params" not in cfg or not isinstance(cfg.dataloader_params, DictConfig):
-            raise ValueError(f"No dataloder_params for {name}")
+            raise ValueError(f"No dataloader_params for {name}")
         if shuffle_should_be:
             if 'shuffle' not in cfg.dataloader_params:
                 logging.warning(

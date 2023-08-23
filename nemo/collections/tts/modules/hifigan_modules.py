@@ -334,7 +334,7 @@ class MultiPeriodDiscriminator(NeuralModule):
         )
 
     @property
-    def output_types(self):
+    def input_types(self):
         return {
             "y": NeuralType(('B', 'S', 'T'), AudioSignal()),
             "y_hat": NeuralType(('B', 'S', 'T'), AudioSignal()),

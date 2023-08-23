@@ -29,3 +29,5 @@ class MLFlowParams:
     artifact_location: Optional[str] = None
     # provide run_id if resuming a previously started run
     run_id: Optional[str] = None
+    # Log checkpoints created by ModelCheckpoint as MLFlow artifacts.
+    log_model: bool = False

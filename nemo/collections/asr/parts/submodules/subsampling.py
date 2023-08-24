@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 from torch.nn import LayerNorm
 
-from nemo.collections.asr.parts.submodules.causal_convs import CausalConv2D
+from nemo.collections.asr.parts.submodules.causal_convs import CausalConv1D, CausalConv2D
 from nemo.utils import logging
 
 
@@ -251,19 +251,128 @@ class ConvSubsampling(torch.nn.Module):
                     )
                 layers.append(activation)
                 in_channels = conv_channels
+
+        elif subsampling == 'striding_conv1d':
+
+            in_channels = feat_in
+
+            self._stride = 2
+            self._kernel_size = 5
+            self._ceil_mode = False
+
+            if self.is_causal:
+                self._left_padding = self._kernel_size - 1
+                self._right_padding = self._stride - 1
+                self._max_cache_len = subsampling_factor + 1
+            else:
+                self._left_padding = (self._kernel_size - 1) // 2
+                self._right_padding = (self._kernel_size - 1) // 2
+                self._max_cache_len = 0
+
+            for i in range(self._sampling_num):
+                if self.is_causal:
+                    layers.append(
+                        CausalConv1D(
+                            in_channels=in_channels,
+                            out_channels=feat_out if self._sampling_num == i + 1 else conv_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=None,
+                        )
+                    )
+                else:
+                    layers.append(
+                        torch.nn.Conv1d(
+                            in_channels=in_channels,
+                            out_channels=feat_out if self._sampling_num == i + 1 else conv_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=self._left_padding,
+                        )
+                    )
+                layers.append(activation)
+                in_channels = conv_channels
+
+        elif subsampling == 'dw_striding_conv1d':
+
+            in_channels = feat_in
+
+            self._stride = 2
+            self._kernel_size = 5
+            self._ceil_mode = False
+
+            self._left_padding = (self._kernel_size - 1) // 2
+            self._right_padding = (self._kernel_size - 1) // 2
+
+            # Layer 1
+            layers.extend(
+                [
+                    torch.nn.Conv1d(
+                        in_channels=in_channels,
+                        out_channels=in_channels,
+                        kernel_size=self._kernel_size,
+                        stride=self._stride,
+                        padding=self._left_padding,
+                        groups=in_channels,
+                    ),
+                    torch.nn.Conv1d(
+                        in_channels=in_channels,
+                        out_channels=feat_out if self._sampling_num == 1 else conv_channels,
+                        kernel_size=1,
+                        stride=1,
+                        padding=0,
+                        groups=1,
+                    ),
+                ]
+            )
+            in_channels = conv_channels
+            layers.append(activation)
+
+            for i in range(self._sampling_num - 1):
+                layers.extend(
+                    [
+                        torch.nn.Conv1d(
+                            in_channels=in_channels,
+                            out_channels=in_channels,
+                            kernel_size=self._kernel_size,
+                            stride=self._stride,
+                            padding=self._left_padding,
+                            groups=in_channels,
+                        ),
+                        torch.nn.Conv1d(
+                            in_channels=in_channels,
+                            out_channels=feat_out if self._sampling_num == i + 2 else conv_channels,
+                            kernel_size=1,
+                            stride=1,
+                            padding=0,
+                            groups=1,
+                        ),
+                    ]
+                )
+                layers.append(activation)
+                in_channels = conv_channels
+
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")
 
-        in_length = torch.tensor(feat_in, dtype=torch.float)
-        out_length = calc_length(
-            lengths=in_length,
-            all_paddings=self._left_padding + self._right_padding,
-            kernel_size=self._kernel_size,
-            stride=self._stride,
-            ceil_mode=self._ceil_mode,
-            repeat_num=self._sampling_num,
-        )
-        self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
+        if subsampling in ["vggnet", "dw_striding", "striding"]:
+
+            in_length = torch.tensor(feat_in, dtype=torch.float)
+            out_length = calc_length(
+                lengths=in_length,
+                all_paddings=self._left_padding + self._right_padding,
+                kernel_size=self._kernel_size,
+                stride=self._stride,
+                ceil_mode=self._ceil_mode,
+                repeat_num=self._sampling_num,
+            )
+            self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
+            self.conv2d_subsampling = True
+        elif subsampling in ["striding_conv1d", "dw_striding_conv1d"]:
+            self.conv2d_subsampling = False
+        else:
+            raise ValueError(f"Not valid sub-sampling: {subsampling}!")
+
         self.conv = torch.nn.Sequential(*layers)
 
     def get_sampling_frames(self):
@@ -281,10 +390,16 @@ class ConvSubsampling(torch.nn.Module):
             ceil_mode=self._ceil_mode,
             repeat_num=self._sampling_num,
         )
-        x = x.unsqueeze(1)
+
+        # Unsqueeze Channel Axis
+        if self.conv2d_subsampling:
+            x = x.unsqueeze(1)
+        # Transpose to Channel First mode
+        else:
+            x = x.transpose(1, 2)
 
         # split inputs if chunking_factor is set
-        if self.subsampling_conv_chunking_factor != -1:
+        if self.subsampling_conv_chunking_factor != -1 and self.conv2d_subsampling:
             if self.subsampling_conv_chunking_factor == 1:
                 # if subsampling_conv_chunking_factor is 1, we split only if needed
                 # avoiding a bug / feature limiting indexing of tensors to 2**31
@@ -310,8 +425,14 @@ class ConvSubsampling(torch.nn.Module):
         else:
             x = self.conv(x)
 
-        b, c, t, f = x.size()
-        x = self.out(x.transpose(1, 2).reshape(b, t, -1))
+        # Flatten Channel and Frequency Axes
+        if self.conv2d_subsampling:
+            b, c, t, f = x.size()
+            x = self.out(x.transpose(1, 2).reshape(b, t, -1))
+        # Transpose to Channel Last mode
+        else:
+            x = x.transpose(1, 2)
+
         return x, lengths
 
     def reset_parameters(self):

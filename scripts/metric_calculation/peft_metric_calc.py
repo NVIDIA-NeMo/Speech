@@ -17,6 +17,7 @@ import json
 import re
 import string
 from collections import Counter
+from rouge_score import rouge_scorer
 
 
 """
@@ -117,31 +118,36 @@ def main():
 
     ground_truth_file = args.ground_truth
     pred_file = args.preds
-
+    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
     preds = open(pred_file, encoding="utf-8").readlines()
     ground_truth = open(ground_truth_file).readlines()
-    f1 = exact_match = total = 0
+    f1 = exact_match = total = r_score = 0
 
     for i in range(len(preds)):
         truth = json.loads(ground_truth[i])
-        pred_answer = preds[i]
+        pred_answer = json.loads(preds[i])
 
         # Need to separate out preditions from prompt, spliting on the provided "split string"
         if args.split_string is not None:
-            pred_answer = pred_answer.split(args.split_string)[-1].strip()
+            pred_answer = pred_answer["sentence"].split(args.split_string)[-1].strip()
 
         true_answers = truth[args.answer_field]
         if not isinstance(true_answers, list):
             true_answers = [true_answers]
 
+        r_scores = []
+        for ta in true_answers:
+            r_scores.append(scorer.score(ta, pred_answer)['rougeL'].fmeasure)
+        r_score += max(r_scores)
         exact_match += metric_max_over_ground_truths(exact_match_score, pred_answer, true_answers)
         f1 += metric_max_over_ground_truths(f1_score, pred_answer, true_answers)
         total += 1
 
     exact_match = 100.0 * exact_match / total
     f1 = 100.0 * f1 / total
-
-    print({'exact_match': exact_match, 'f1': f1, 'total': total})
+    r_score = 100 * (r_score / total)
+    res = {'exact_match': exact_match, 'f1': f1, "rougeL": r_score, 'total': total}
+    print('\t'.join([f"{k} {v:.3f}" for k, v in res.items()]))
 
 
 if __name__ == "__main__":

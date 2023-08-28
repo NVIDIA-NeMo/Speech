@@ -150,7 +150,7 @@ class MegatronBaseModel(NLPModel):
             pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
             micro_batch_size=cfg.get('micro_batch_size'),
             global_batch_size=cfg.get('global_batch_size'),
-            rampup_batch_size=cfg.get('rampup_batch_size'),
+            rampup_batch_size=cfg.get('rampup_batch_size', None),
             use_fp8=cfg.get('fp8', False),
             init_mpi_proc_group=cfg.get('ub_tp_comm_overlap', False),
             seed=self.cfg.get('seed', 1234),

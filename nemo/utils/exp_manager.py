@@ -568,9 +568,16 @@ def check_resume(
     # Use <log_dir>/checkpoints/ unless `dirpath` is set
     checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
 
+    # when using distributed checkpointing, checkpoint_dir is a directory of directories
+    # we check for this here
+    dist_checkpoints = [d for d in list(checkpoint_dir.glob("*")) if d.is_dir()]
+    end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
+    last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
+
     checkpoint = None
-    end_checkpoints = list(checkpoint_dir.rglob("*end.ckpt"))
-    last_checkpoints = list(checkpoint_dir.rglob("*last.ckpt"))
+    end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.glob("*end.ckpt"))
+    last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.glob("*last.ckpt"))
+
     if not checkpoint_dir.exists():
         if resume_ignore_no_checkpoint:
             logging.warning(

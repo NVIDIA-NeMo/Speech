@@ -14,6 +14,7 @@
 
 import os
 import re
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -27,7 +28,7 @@ from nemo.collections.common.callbacks import EMA
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.model_utils import inject_model_parallel_rank, uninject_model_parallel_rank
+from nemo.utils.model_utils import ckpt_to_dir, inject_model_parallel_rank, uninject_model_parallel_rank
 
 
 class NeMoModelCheckpoint(ModelCheckpoint):
@@ -93,7 +94,8 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             if 'mp_rank' in str(checkpoint) or 'tp_rank' in str(checkpoint):
                 checkpoint = uninject_model_parallel_rank(checkpoint)
             checkpoint = str(checkpoint)
-            if checkpoint[-10:] == '-last.ckpt':
+            # second case is for distributed checkpoints, since they are a directory there's no extension
+            if checkpoint[-10:] == '-last.ckpt' or checkpoint[-5:] == '-last':
                 continue
             index = checkpoint.find(self.monitor) + len(self.monitor) + 1  # Find monitor in str + 1 for '='
             if index != len(self.monitor):
@@ -108,12 +110,18 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         best_k_models = sorted(self.best_k_models, key=self.best_k_models.get, reverse=_reverse)
 
-        ### This section should be ok as rank zero will delete all excess checkpoints, since all other ranks are
-        ### instantiated after rank zero. models_to_delete should be 0 for all other ranks.
+        # This section should be ok as rank zero will delete all excess checkpoints, since all other ranks are
+        # instantiated after rank zero. models_to_delete should be 0 for all other ranks.
         if self.model_parallel_size is not None:
-            models_to_delete = len(best_k_models) - self.model_parallel_size * self.save_top_k
+            # check for distributed checkpoint
+            if checkpoints[0].is_dir():
+                models_to_delete = len(best_k_models) - self.save_top_k
+            else:
+                models_to_delete = len(best_k_models) - self.model_parallel_size * self.save_top_k
         else:
             models_to_delete = len(best_k_models) - self.save_top_k
+
+        models_to_delete = max(0, models_to_delete)
         logging.debug(f'Number of models to delete: {models_to_delete}')
 
         # If EMA enabled, delete the additional EMA weights
@@ -208,18 +216,36 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             pl_module.save_to(save_path=os.path.join(self.dirpath, self.prefix + self.postfix))
 
     def _del_model_without_trainer(self, filepath: str) -> None:
-        app_state = AppState()
-        if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
-            # filepath needs to be updated to include mp_rank
-            filepath = inject_model_parallel_rank(filepath)
 
-        # each model parallel rank needs to remove its model
-        if is_global_rank_zero() or (app_state.model_parallel_size is not None and app_state.data_parallel_rank == 0):
-            try:
-                self._fs.rm(filepath)
-                logging.info(f"Removed checkpoint: {filepath}")
-            except:
-                logging.info(f"Tried to remove checkpoint: {filepath} but failed.")
+        filepath = Path(filepath)
+
+        # check if filepath is a distributed a checkpoint
+        if ckpt_to_dir(filepath).is_dir():
+            if is_global_rank_zero():
+                try:
+                    dist_ckpt = ckpt_to_dir(filepath)
+                    shutil.rmtree(dist_ckpt)
+                    logging.info(f"Removed distributed checkpoint: {dist_ckpt}")
+                except:
+                    logging.info(f"Tried to remove distributed checkpoint: {dist_ckpt} but failed.")
+
+        else:
+            app_state = AppState()
+
+            # legacy model parallel checkpoint
+            if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
+                # filepath needs to be updated to include mp_rank
+                filepath = inject_model_parallel_rank(filepath)
+
+            # each model parallel rank needs to remove its model
+            if is_global_rank_zero() or (
+                app_state.model_parallel_size is not None and app_state.data_parallel_rank == 0
+            ):
+                try:
+                    self._fs.rm(filepath)
+                    logging.info(f"Removed checkpoint: {filepath}")
+                except:
+                    logging.info(f"Tried to remove checkpoint: {filepath} but failed.")
 
     def _ema_callback(self, trainer: 'pytorch_lightning.Trainer') -> Optional[EMA]:
         ema_callback = None
@@ -262,4 +288,9 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
     @property
     def _saved_checkpoint_paths(self) -> Iterable[Path]:
-        return Path(self.dirpath).rglob("*.ckpt")
+        # distributed checkpoints are directories so we check for them here
+        dist_checkpoints = [d for d in list(Path(self.dirpath).glob("*")) if d.is_dir()]
+        if dist_checkpoints:
+            return dist_checkpoints
+        else:
+            return Path(self.dirpath).rglob("*.ckpt")

@@ -23,6 +23,13 @@ from apex.contrib.optimizers.distributed_fused_adam import (
     _disable_pre_forward_hook,
 )
 from megatron.core import parallel_state
+from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
+from megatron.core.dist_checkpointing.mapping import ShardedTensor
+from megatron.core.dist_checkpointing.optimizer import (
+    get_param_id_to_sharded_param_map,
+    make_sharded_optimizer_tensor,
+    optim_state_to_sharding_state,
+)
 
 
 def _str_to_dtype(dtype):
@@ -318,3 +325,24 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                 old_main_param.copy_(new_main_param.detach())
             del state_dict['fp32_optim_fp32_params']
         return super().load_state_dict(state_dict)
+
+    def sharded_state_dict(self, model_sharded_state_dict):
+        optimizer_state_dict = self.state_dict()
+
+        id_to_sharded_param_map = get_param_id_to_sharded_param_map(
+            model_sharded_state_dict=model_sharded_state_dict,
+            optim_params_iter=self.parameters(with_fp32_optim_params=True),
+        )
+        # Convert state
+        step = optimizer_state_dict['state'].pop('step')
+        optim_state_to_sharding_state(optimizer_state_dict, id_to_sharded_param_map)
+        optimizer_state_dict['state']['step'] = step
+
+        def rename_fp32_params(x):
+            if isinstance(x, ShardedTensor) and x.key.startswith('optimizer.state.param'):
+                x.key = x.key.replace('optimizer.state.param', 'optimizer.state.fp32_param')
+            return x
+
+        dict_list_map_inplace(rename_fp32_params, optimizer_state_dict)
+
+        return optimizer_state_dict

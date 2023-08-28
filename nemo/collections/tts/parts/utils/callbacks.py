@@ -29,6 +29,7 @@ from pytorch_lightning.loggers.logger import Logger
 from pytorch_lightning.loggers.wandb import WandbLogger
 
 from nemo.collections.tts.parts.utils.helpers import create_plot
+from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
 HAVE_WANDB = True
@@ -160,16 +161,27 @@ class LoggingCallback(Callback):
         self.log_wandb = log_wandb
 
         if log_tensorboard:
+            logging.info('Creating tensorboard logger')
             self.tensorboard_logger = _get_logger(self.loggers, TensorBoardLogger)
         else:
+            logging.debug('Not using tensorbord logger')
             self.tensorboard_logger = None
 
         if log_wandb:
             if not HAVE_WANDB:
                 raise ValueError("Wandb not installed.")
+            logging.info('Creating wandb logger')
             self.wandb_logger = _get_logger(self.loggers, WandbLogger)
         else:
+            logging.debug('Not using wandb logger')
             self.wandb_logger = None
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tlog_epochs:      %s', self.log_epochs)
+        logging.debug('\tepoch_frequency: %s', self.epoch_frequency)
+        logging.debug('\toutput_dir:      %s', self.output_dir)
+        logging.debug('\tlog_tensorboard: %s', self.log_tensorboard)
+        logging.debug('\tlog_wandb:       %s', self.log_wandb)
 
     def _log_audio(self, audio: AudioArtifact, log_dir: Path, step: int):
         if log_dir:
@@ -270,10 +282,20 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
     Generator for logging Audio Codec model outputs.
     """
 
-    def __init__(self, log_audio: bool = True, log_encoding: bool = False, log_quantized: bool = False):
+    def __init__(self, log_audio: bool = True, log_encoding: bool = False, log_dequantized: bool = False):
+        # Log reconstructed audio (decoder output)
         self.log_audio = log_audio
+        # Log encoded representation of the input audio (encoder output)
         self.log_encoding = log_encoding
-        self.log_quantized = log_quantized
+        # Log dequantized encoded representation of the input audio (decoder input)
+        self.log_dequantized = log_dequantized
+        # Input audio will be logged only once
+        self.input_audio_logged = False
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tlog_audio:       %s', self.log_audio)
+        logging.debug('\tlog_encoding:    %s', self.log_encoding)
+        logging.debug('\tlog_dequantized: %s', self.log_dequantized)
 
     def _generate_audio(self, model, audio_ids, audio, audio_len):
         if not self.log_audio:
@@ -284,10 +306,14 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
             audio_pred, audio_pred_len = model(audio=audio, audio_len=audio_len)
 
         audio_artifacts = []
+        # Log output audio
         for i, audio_id in enumerate(audio_ids):
             audio_pred_i = audio_pred[i, : audio_pred_len[i]].cpu().numpy()
             audio_artifact = AudioArtifact(
-                id=f"audio_{audio_id}", data=audio_pred_i, filename=f"{audio_id}.wav", sample_rate=model.sample_rate,
+                id=f"audio_out_{audio_id}",
+                data=audio_pred_i,
+                filename=f"{audio_id}_audio_out.wav",
+                sample_rate=model.sample_rate,
             )
             audio_artifacts.append(audio_artifact)
 
@@ -296,7 +322,7 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
     def _generate_images(self, model, audio_ids, audio, audio_len):
         image_artifacts = []
 
-        if not self.log_encoding and not self.log_quantized:
+        if not self.log_encoding and not self.log_dequantized:
             return image_artifacts
 
         with torch.no_grad():
@@ -309,30 +335,30 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
                 encoded_artifact = ImageArtifact(
                     id=f"encoded_{audio_id}",
                     data=encoded_i,
-                    filename=f"{audio_id}_encode.png",
+                    filename=f"{audio_id}_encoded.png",
                     x_axis="Audio Frames",
                     y_axis="Channels",
                 )
                 image_artifacts.append(encoded_artifact)
 
-        if not self.log_quantized:
+        if not self.log_dequantized:
             return image_artifacts
 
         with torch.no_grad():
             # [B, D, T]
-            indices = model.quantize_encode(encoded=encoded, encoded_len=encoded_len)
-            quantized = model.quantize_decode(indices=indices, encoded_len=encoded_len)
+            tokens = model.quantize(encoded=encoded, encoded_len=encoded_len)
+            dequantized = model.dequantize(tokens=tokens, tokens_len=encoded_len)
 
         for i, audio_id in enumerate(audio_ids):
-            quantized_i = quantized[i, :, : encoded_len[i]].cpu().numpy()
-            quantized_artifact = ImageArtifact(
-                id=f"quantized_{audio_id}",
-                data=quantized_i,
-                filename=f"{audio_id}_quantized.png",
+            dequantized_i = dequantized[i, :, : encoded_len[i]].cpu().numpy()
+            dequantized_artifact = ImageArtifact(
+                id=f"dequantized_{audio_id}",
+                data=dequantized_i,
+                filename=f"{audio_id}_dequantized.png",
                 x_axis="Audio Frames",
                 y_axis="Channels",
             )
-            image_artifacts.append(quantized_artifact)
+            image_artifacts.append(dequantized_artifact)
 
         return image_artifacts
 

@@ -293,7 +293,7 @@ class SEANetDecoder(NeuralModule):
         for res_block, up_sample_conv, up_sample_rate in zip(
             self.res_blocks, self.up_sample_conv_layers, self.up_sample_rates
         ):
-            audio_len *= up_sample_rate
+            audio_len = audio_len * up_sample_rate
             out = self.activation(out)
             # [B, C / 2, T * up_sample_rate]
             out = up_sample_conv(out, audio_len)
@@ -610,8 +610,8 @@ class EuclideanCodebook(NeuralModule):
 
     def _dequantize(self, indices: Tensor) -> Tensor:
         # [B, D]
-        quantized = F.embedding(indices, self.codes)
-        return quantized
+        dequantized = F.embedding(indices, self.codes)
+        return dequantized
 
     @property
     def input_types(self):
@@ -623,7 +623,7 @@ class EuclideanCodebook(NeuralModule):
     @property
     def output_types(self):
         return {
-            "quantized": NeuralType(('B', 'T', 'D'), EncodedRepresentation()),
+            "dequantized": NeuralType(('B', 'T', 'D'), EncodedRepresentation()),
             "indices": NeuralType(('B', 'T'), Index()),
         }
 
@@ -635,16 +635,16 @@ class EuclideanCodebook(NeuralModule):
         # [B, T]
         indices = indices_flat.view(*inputs.shape[:-1])
         # [B, T, D]
-        quantized = self._dequantize(indices=indices)
+        dequantized = self._dequantize(indices=indices)
 
         if self.training:
             # We do expiry of codes here because buffers are in sync and all the workers will make the same decision.
             self._expire_codes(inputs=input_flat)
             self._update_codes(inputs=input_flat, indices=indices_flat)
 
-        quantized = _mask_3d(quantized, input_len)
+        dequantized = _mask_3d(dequantized, input_len)
         indices = mask_sequence_tensor(indices, input_len)
-        return quantized, indices
+        return dequantized, indices
 
     @typecheck(
         input_types={
@@ -664,13 +664,13 @@ class EuclideanCodebook(NeuralModule):
 
     @typecheck(
         input_types={"indices": NeuralType(('B', 'T'), Index()), "input_len": NeuralType(tuple('B'), LengthsType()),},
-        output_types={"quantized": NeuralType(('B', 'T', 'D'), EncodedRepresentation())},
+        output_types={"dequantized": NeuralType(('B', 'T', 'D'), EncodedRepresentation())},
     )
     def decode(self, indices, input_len):
         # [B, T, D]
-        quantized = self._dequantize(indices=indices)
-        quantized = _mask_3d(quantized, input_len)
-        return quantized
+        dequantized = self._dequantize(indices=indices)
+        dequantized = _mask_3d(dequantized, input_len)
+        return dequantized
 
 
 class ResidualVectorQuantizer(NeuralModule):
@@ -741,8 +741,8 @@ class ResidualVectorQuantizer(NeuralModule):
     @property
     def output_types(self):
         return {
-            "quantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "indices": NeuralType(('B', 'T'), Index()),
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
             "commit_loss": NeuralType((), LossType()),
         }
 
@@ -751,35 +751,35 @@ class ResidualVectorQuantizer(NeuralModule):
         residual = rearrange(inputs, "B D T -> B T D")
 
         index_list = []
-        quantized = torch.zeros_like(residual)
+        dequantized = torch.zeros_like(residual)
         for codebook in self.codebooks:
-            quantized_i, indices_i = codebook(inputs=residual, input_len=input_len)
+            dequantized_i, indices_i = codebook(inputs=residual, input_len=input_len)
 
             if self.training:
-                quantized_i = residual + (quantized_i - residual).detach()
-                quantized_i_const = quantized_i.detach()
-                commit_loss_i = self._commit_loss(input=residual, target=quantized_i_const, input_len=input_len)
+                dequantized_i = residual + (dequantized_i - residual).detach()
+                dequantized_i_const = dequantized_i.detach()
+                commit_loss_i = self._commit_loss(input=residual, target=dequantized_i_const, input_len=input_len)
                 commit_loss = commit_loss + commit_loss_i
 
-                residual = residual - quantized_i_const
+                residual = residual - dequantized_i_const
 
             else:
-                residual = residual - quantized_i
+                residual = residual - dequantized_i
 
-            quantized = quantized + quantized_i
+            dequantized = dequantized + dequantized_i
             index_list.append(indices_i)
 
-        # [N, B, T]
+        # [N, B, T], first dimension is number of codebooks
         indices = torch.stack(index_list)
-        quantized = rearrange(quantized, "B T D -> B D T")
-        return quantized, indices, commit_loss
+        dequantized = rearrange(dequantized, "B T D -> B D T")
+        return dequantized, indices, commit_loss
 
     @typecheck(
         input_types={
             "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"indices": NeuralType(('N', 'B', 'T'), Index())},
+        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
     )
     def encode(self, inputs: Tensor, input_len: Tensor) -> Tensor:
         residual = rearrange(inputs, "B D T -> B T D")
@@ -788,8 +788,8 @@ class ResidualVectorQuantizer(NeuralModule):
             # [B, T]
             indices_i = codebook.encode(inputs=residual, input_len=input_len)
             # [B, D, T]
-            quantized_i = codebook.decode(indices=indices_i, input_len=input_len)
-            residual = residual - quantized_i
+            dequantized_i = codebook.decode(indices=indices_i, input_len=input_len)
+            residual = residual - dequantized_i
             index_list.append(indices_i)
         # [N, B, T]
         indices = torch.stack(index_list)
@@ -797,16 +797,16 @@ class ResidualVectorQuantizer(NeuralModule):
 
     @typecheck(
         input_types={
-            "indices": NeuralType(('N', 'B', 'T'), Index()),
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"quantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
     )
     def decode(self, indices: Tensor, input_len: Tensor) -> Tensor:
         # [B, T, D]
-        quantized = torch.zeros([indices.shape[1], indices.shape[2], self.codebook_dim], device=indices.device)
+        dequantized = torch.zeros([indices.shape[1], indices.shape[2], self.codebook_dim], device=indices.device)
         for codebook_indices, codebook in zip(indices, self.codebooks):
-            quantized_i = codebook.decode(indices=codebook_indices, input_len=input_len)
-            quantized = quantized + quantized_i
-        quantized = rearrange(quantized, "B T D -> B D T")
-        return quantized
+            dequantized_i = codebook.decode(indices=codebook_indices, input_len=input_len)
+            dequantized = dequantized + dequantized_i
+        dequantized = rearrange(dequantized, "B T D -> B D T")
+        return dequantized

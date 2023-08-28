@@ -90,7 +90,7 @@ model:
       - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator
         log_audio: true
         log_encoding: true
-        log_quantized: true
+        log_dequantized: true
 
     dataset:
       _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset

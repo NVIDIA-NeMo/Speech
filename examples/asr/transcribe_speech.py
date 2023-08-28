@@ -142,6 +142,7 @@ class TranscriptionConfig:
     cuda: Optional[int] = None
     allow_mps: bool = False  # allow to select MPS device (Apple Silicon M-series GPU)
     amp: bool = False
+    amp_dtype: str = "float16"  # can be set to "float16" or "bfloat16" when using amp
     audio_type: str = "wav"
 
     # Recompute model transcription, even if the output folder exists with scores.
@@ -304,7 +305,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     else:
 
         @contextlib.contextmanager
-        def autocast():
+        def autocast(dtype=None):
             yield
 
     # Compute output filename
@@ -319,7 +320,10 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         return cfg
 
     # transcribe audio
-    with autocast():
+
+    amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
+
+    with autocast(dtype=amp_dtype):
         with torch.no_grad():
             if partial_audio:
                 transcriptions = transcribe_partial_audio(

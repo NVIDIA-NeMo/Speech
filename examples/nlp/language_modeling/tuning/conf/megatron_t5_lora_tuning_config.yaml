@@ -14,7 +14,6 @@ trainer:
   val_check_interval: 2
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  resume_from_checkpoint: null 
   benchmark: False
 
 exp_manager:
@@ -25,6 +24,7 @@ exp_manager:
   wandb_logger_kwargs:
     project: null
     name: null
+  resume_from_checkpoint: null
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
   create_checkpoint_callback: True

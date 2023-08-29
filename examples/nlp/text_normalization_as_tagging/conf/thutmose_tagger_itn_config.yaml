@@ -17,7 +17,6 @@ trainer:
   strategy: ddp
   log_every_n_steps: 1  # Interval of logging.
   val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
-  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
 
 model:
   do_training: true
@@ -64,6 +63,7 @@ exp_manager:
     save_top_k: 3
     monitor: "val_loss"
     mode: "min"
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
 
 tokenizer:
     tokenizer_name: ${model.transformer} # or sentencepiece

@@ -333,24 +333,15 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         resume_if_exists=cfg.resume_if_exists,
     )
 
-    if cfg.resume_if_exists:
-        # Check for existing checkpoints in `dirpath` if it's specified, use <log_dir>/checkpoints otherwise
-        if cfg.checkpoint_callback_params.dirpath:
-            check_resume(
-                trainer,
-                log_dir,
-                cfg.resume_past_end,
-                cfg.resume_ignore_no_checkpoint,
-                cfg.checkpoint_callback_params.dirpath,
-            )
-        else:
-            check_resume(trainer, log_dir, cfg.resume_past_end, cfg.resume_ignore_no_checkpoint)
-
-    #  TODO: this behavior is undesirable, need ckpts in exp_dir to take priority if present over resume_from_checkpoint
-    # if cfg.resume_from_checkpoint is not None:
-    #     trainer.ckpt_path = cfg.resume_from_checkpoint
-
-    logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
+    check_resume(
+        trainer,
+        log_dir,
+        cfg.resume_if_exists,
+        cfg.resume_past_end,
+        cfg.resume_ignore_no_checkpoint,
+        cfg.checkpoint_callback_params.dirpath,
+        cfg.resume_from_checkpoint,
+    )
 
     checkpoint_name = name
     # If name returned from get_log_dir is "", use cfg.name for checkpointing
@@ -544,9 +535,11 @@ def error_checks(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictC
 def check_resume(
     trainer: 'pytorch_lightning.Trainer',
     log_dir: str,
+    resume_if_exists: bool = False,
     resume_past_end: bool = False,
     resume_ignore_no_checkpoint: bool = False,
     dirpath: str = None,
+    resume_from_checkpoint: str = None,
 ):
     """Checks that resume=True was used correctly with the arguments pass to exp_manager. Sets
     trainer._checkpoint_connector._ckpt_path as necessary.
@@ -565,64 +558,66 @@ def check_resume(
     if not log_dir:
         raise ValueError(f"Resuming requires the log_dir {log_dir} to be passed to exp_manager")
 
-    # Use <log_dir>/checkpoints/ unless `dirpath` is set
-    checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
-
-    # when using distributed checkpointing, checkpoint_dir is a directory of directories
-    # we check for this here
-    dist_checkpoints = [d for d in list(checkpoint_dir.glob("*")) if d.is_dir()]
-    end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
-    last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
-
     checkpoint = None
-    end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.glob("*end.ckpt"))
-    last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.glob("*last.ckpt"))
+    if resume_from_checkpoint:
+        checkpoint = resume_from_checkpoint
+    if resume_if_exists:
+        # Use <log_dir>/checkpoints/ unless `dirpath` is set
+        checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
 
-    if not checkpoint_dir.exists():
-        if resume_ignore_no_checkpoint:
-            logging.warning(
-                f"There was no checkpoint folder at checkpoint_dir :{checkpoint_dir}. Training from scratch."
-            )
-            return
+        # when using distributed checkpointing, checkpoint_dir is a directory of directories
+        # we check for this here
+        dist_checkpoints = [d for d in list(checkpoint_dir.glob("*")) if d.is_dir()]
+        end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
+        last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
+
+        end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.glob("*end.ckpt"))
+        last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.glob("*last.ckpt"))
+
+        if not checkpoint_dir.exists() or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
+            if resume_ignore_no_checkpoint:
+                warn = f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. "
+                if checkpoint is None:
+                    warn += "Training from scratch."
+                elif checkpoint == resume_from_checkpoint:
+                    warn += f"Training from {resume_from_checkpoint}."
+                logging.warning(warn)
+            else:
+                raise NotFoundError(
+                    f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. Cannot resume."
+                )
+        elif len(end_checkpoints) > 0:
+            if resume_past_end:
+                if len(end_checkpoints) > 1:
+                    if 'mp_rank' in str(end_checkpoints[0]):
+                        checkpoint = end_checkpoints[0]
+                    else:
+                        raise ValueError(f"Multiple checkpoints {end_checkpoints} that matches *end.ckpt.")
+            else:
+                raise ValueError(
+                    f"Found {end_checkpoints[0]} indicating that the last training run has already completed."
+                )
+        elif len(last_checkpoints) > 1:
+            if 'mp_rank' in str(last_checkpoints[0]) or 'tp_rank' in str(last_checkpoints[0]):
+                checkpoint = last_checkpoints[0]
+                checkpoint = uninject_model_parallel_rank(checkpoint)
+            else:
+                raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
         else:
-            raise NotFoundError(f"There was no checkpoint folder at checkpoint_dir :{checkpoint_dir}. Cannot resume.")
-    elif len(end_checkpoints) > 0:
-        if resume_past_end:
-            if len(end_checkpoints) > 1:
-                if 'mp_rank' in str(end_checkpoints[0]):
-                    checkpoint = end_checkpoints[0]
-                else:
-                    raise ValueError(f"Multiple checkpoints {end_checkpoints} that matches *end.ckpt.")
-            logging.info(f"Resuming from {end_checkpoints[0]}")
-        else:
-            raise ValueError(
-                f"Found {end_checkpoints[0]} indicating that the last training run has already completed."
-            )
-    elif not len(last_checkpoints) > 0:
-        if resume_ignore_no_checkpoint:
-            logging.warning(f"There were no checkpoints found in {checkpoint_dir}. Training from scratch.")
-            return
-        else:
-            raise NotFoundError(f"There were no checkpoints found in {checkpoint_dir}. Cannot resume.")
-    elif len(last_checkpoints) > 1:
-        if 'mp_rank' in str(last_checkpoints[0]) or 'tp_rank' in str(last_checkpoints[0]):
             checkpoint = last_checkpoints[0]
-            checkpoint = uninject_model_parallel_rank(checkpoint)
-        else:
-            raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
-    else:
-        logging.info(f"Resuming from {last_checkpoints[0]}")
-        checkpoint = last_checkpoints[0]
 
     # PTL 2.0 supports ckpt_path instead of resume_from_checkpoint as the trainer flag
-    trainer.ckpt_path = str(checkpoint)
+    if checkpoint is not None:
+        trainer.ckpt_path = str(checkpoint)
+        logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
     if is_global_rank_zero():
         # Check to see if any files exist that need to be moved
         files_to_move = []
-        for child in Path(log_dir).iterdir():
-            if child.is_file():
-                files_to_move.append(child)
+        if Path(log_dir).exists():
+            for child in Path(log_dir).iterdir():
+                if child.is_file():
+                    files_to_move.append(child)
 
         if len(files_to_move) > 0:
             # Move old files to a new folder

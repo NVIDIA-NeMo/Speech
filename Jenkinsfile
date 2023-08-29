@@ -134,7 +134,7 @@ pipeline {
           }
         }
 
-        stage('L2: Speech to Text WPE - CitriNet') {
+        stage('Speech to Text WPE - CitriNet') {
           steps {
             sh 'python examples/asr/asr_ctc/speech_to_text_ctc_bpe.py \
             --config-path="../conf/citrinet/" --config-name="config_bpe" \
@@ -150,7 +150,7 @@ pipeline {
           }
         }
 
-        stage('L2: Speech Pre-training - CitriNet') {
+        stage('Speech Pre-training - CitriNet') {
           steps {
             sh 'python examples/asr/speech_pretraining/speech_pre_training.py \
             --config-path="../conf/ssl/citrinet/" --config-name="citrinet_ssl_ci" \
@@ -161,6 +161,22 @@ pipeline {
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_pre_training_results'
             sh 'rm -rf examples/asr/speech_pre_training_results'
+          }
+        }
+
+        stage('Speech To Text Finetuning') {
+          steps {
+            sh 'python examples/asr/speech_to_text_finetune.py \
+            --config-path="conf" --config-name="speech_to_text_finetune" \
+            model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
+            model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
+            init_from_nemo_model=/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo \
+            model.tokenizer.update_tokenizer=False \
+            trainer.devices=[1] \
+            trainer.accelerator="gpu" \
+            +trainer.fast_dev_run=True \
+            exp_manager.exp_dir=examples/asr/speech_finetuning_results'
+            sh 'rm -rf examples/asr/speech_finetuning_results'
           }
         }
 

@@ -984,8 +984,8 @@ Main parts of the config:
       batch_size: 16 # you may increase batch_size if your memory allows
       # other params
 
-Finetuning
-~~~~~~~~~~~
+Finetuning with Text-Only Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 To finetune existing ASR model using text-only data use ``<NeMo_git_root>/examples/asr/asr_with_tts/speech_to_text_bpe_with_text_finetune.py`` script with the corresponding config ``<NeMo_git_root>/examples/asr/conf/asr_tts/hybrid_asr_tts.yaml``.
 
@@ -1030,7 +1030,47 @@ Fine-tuning Configurations
 
 All ASR scripts support easy fine-tuning by partially/fully loading the pretrained weights from a checkpoint into the **currently instantiated model**. Note that the currently instantiated model should have parameters that match the pre-trained checkpoint (such that weights may load properly). In order to directly fine-tune a pre-existing checkpoint, please follow the tutorial  `ASR Language Fine-tuning. <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/ASR_CTC_Language_Finetuning.ipynb>`_
 
-Pre-trained weights can be provided in multiple ways -
+Models can be fine-tuned in two ways: 
+* By updating or retaining current tokenizer alone
+* By updating model architecture and tokenizer
+
+Fine-tuning by updating or retaining current tokenizer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this case, the model architecture is not updated. The model is initialized with the pre-trained weights by 
+two ways:
+
+1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
+2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
+
+Then users can use existing tokenizer or update the tokenizer with new vocabulary. This is useful when users don't want to update the model architecture 
+but want to update the tokenizer with new vocabulary.
+
+The same script can be used to finetune CTC, RNNT or Hybrid models as well.
+
+<NeMo_repo>/examples/asr/speech_to_text_finetune.py script supports this type of fine-tuning with the following arguments:
+
+.. code-block:: sh
+
+    python examples/asr/speech_to_text_finetune.py \
+        --config-path=<path to dir of configs> \
+        --config-name=<name of config without .yaml>) \
+        model.train_ds.manifest_filepath="<path to manifest file>" \
+        model.validation_ds.manifest_filepath="<path to manifest file>" \
+        model.tokenizer.update_tokenizer=<True/False> \ # True to update tokenizer, False to retain existing tokenizer
+        model.tokenizer.dir=<path to tokenizer dir> \ # Path to tokenizer dir when update_tokenizer=True
+        model.tokenizer.type=<tokenizer type> \ # tokenizer type when update_tokenizer=True
+        trainer.devices=-1 \
+        trainer.accelerator='gpu' \
+        trainer.max_epochs=50 \
+        +init_from_nemo_model="<path to .nemo model file>" (or +init_from_pretrained_model="<name of pretrained checkpoint>")
+
+Fine-tuning by changing model architecture and tokenizer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If users want to update the model architecture as well they can use the following script:
+
+For providing pretrained model, users can provide Pre-trained weights in multiple ways -
 
 1) Providing a path to a NeMo model (via ``init_from_nemo_model``)
 2) Providing a name of a pretrained NeMo model (which will be downloaded via the cloud) (via ``init_from_pretrained_model``)
@@ -1038,9 +1078,6 @@ Pre-trained weights can be provided in multiple ways -
 
 There are multiple ASR subtasks inside the ``examples/asr/`` directory, you can substitute the ``<subtask>`` tag below.
 
-Fine-tuning via a NeMo model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 .. code-block:: sh
 
     python examples/asr/<subtask>/script_to_<script_name>.py \
@@ -1051,38 +1088,16 @@ Fine-tuning via a NeMo model
         trainer.devices=-1 \
         trainer.accelerator='gpu' \
         trainer.max_epochs=50 \
-        +init_from_nemo_model="<path to .nemo model file>"
+        +init_from_nemo_model="<path to .nemo model file>" # (or +init_from_pretrained_model, +init_from_ptl_ckpt )
 
+To reinitialize part of the model, to make it different from the pretrained model, users can mention them through config:
 
-Fine-tuning via a NeMo pretrained model name
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: sh
-
-    python examples/asr/<subtask>/script_to_<script_name>.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_pretrained_model="<name of pretrained checkpoint>"
-
-Fine-tuning via a Pytorch Lightning checkpoint
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: sh
-
-    python examples/asr/<subtask>/script_to_<script_name>.py \
-        --config-path=<path to dir of configs> \
-        --config-name=<name of config without .yaml>) \
-        model.train_ds.manifest_filepath="<path to manifest file>" \
-        model.validation_ds.manifest_filepath="<path to manifest file>" \
-        trainer.devices=-1 \
-        trainer.accelerator='gpu' \
-        trainer.max_epochs=50 \
-        +init_from_ptl_ckpt="<name of pytorch lightning checkpoint>"
+.. code-block:: yaml
+    
+    init_from_nemo_model: "<path to .nemo model file>"
+        asr_model:
+            include: ["preprocessor","encoder"]
+            exclude: ["decoder"]
 
 Fine-tuning Execution Flow Diagram
 ----------------------------------

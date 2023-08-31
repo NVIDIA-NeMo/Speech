@@ -60,6 +60,7 @@ try:
         make_sharded_optimizer_tensor,
         optim_state_to_sharding_state,
     )
+    from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
 
     HAVE_MEGATRON_CORE = True
 
@@ -324,7 +325,7 @@ class NLPDDPStrategy(DDPStrategy):
                 model_key = 'enc_dec_model'
                 model_attr = self.lightning_module.enc_dec_model
             if model_key is not None:
-                if isinstance(model_attr, Float16Module):
+                if isinstance(model_attr, Float16Module) or isinstance(model_attr, MCoreFloat16Module):
                     new_state_dict = {}
                     for key in checkpoint['state_dict'].keys():
                         new_key = key.replace(f'{model_key}.', f'{model_key}.module.', 1)

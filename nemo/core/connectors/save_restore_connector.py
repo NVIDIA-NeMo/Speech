@@ -133,7 +133,7 @@ class SaveRestoreConnector:
                 # Change current working directory to
                 os.chdir(tmpdir)
                 if override_config_path is None:
-                    config_yaml = os.path.join(tmpdir, self.model_config_yaml)
+                    config_yaml = self.model_config_yaml
                 else:
                     # can be str path or OmegaConf / DictConfig object
                     config_yaml = override_config_path

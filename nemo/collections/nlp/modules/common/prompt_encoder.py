@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import enum
 from typing import Dict, Optional
 
@@ -159,6 +160,10 @@ class TPMLP(NeuralModule, Exportable):
         self.output_size = output_size
         self.total_virtual_tokens = total_virtual_tokens
         self.activation = "gelu"
+
+        config = copy.deepcopy(config)
+        config.sequence_parallel = False
+        config.gradient_accumulation_fusion = False
 
         self.first = tensor_parallel.ColumnParallelLinear(
             self.output_size,

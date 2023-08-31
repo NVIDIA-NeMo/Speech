@@ -59,10 +59,10 @@ pipeline {
 
     stage('Megatron Core installation') {
       steps {
-        // commit has api fix for TE
+        // pinned MCore https://github.com/NVIDIA/Megatron-LM/commit/99b044bff07f8e5d48b45223ed4bb11bd4e884e6
         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
             cd Megatron-LM && \
-            git checkout 84f64880b3651c4f7cf90da337ee4e7d9968acab && \
+            git checkout 99b044bff07f8e5d48b45223ed4bb11bd4e884e6 && \
             pip install -e .'
       }
     }
@@ -111,6 +111,26 @@ pipeline {
         sh 'CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat'
       }
     }
+
+    // TODO: this requires TE >= v0.11 which is not available in 23.06.
+    //        please uncomment this test once mcore CI is ready.
+    // stage('L2: Community LLM Checkpoints tests') {
+    //   when {
+    //     anyOf {
+    //       branch 'main'
+    //       changeRequest target: 'main'
+    //     }
+    //   }
+    //   failFast true
+    //   steps {
+    //     sh 'CUDA_VISIBLE_DEVICES=0 python scripts/nlp_language_modeling/convert_hf_llama_to_nemo.py \
+    //     --in-file=/home/TestData/nlp/megatron_llama/llama-ci-hf \
+    //     --out-file=/home/TestData/nlp/megatron_llama/ci.nemo \
+    //     --fast-swiglu \
+    //     --precision=16'
+    //     sh 'rm -f /home/TestData/nlp/megatron_llama/ci.nemo'
+    //   }
+    // }
 
     stage('L2: ASR dev run') {
       when {

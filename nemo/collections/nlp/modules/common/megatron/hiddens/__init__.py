@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .megatron_hidden_loss import *
-from .megatron_hidden_transform import *
+from nemo.collections.nlp.modules.common.megatron.hiddens.megatron_hidden_loss import *
+from nemo.collections.nlp.modules.common.megatron.hiddens.megatron_hidden_transform import *
+from nemo.collections.nlp.modules.common.megatron.hiddens.megatron_hiddens import *

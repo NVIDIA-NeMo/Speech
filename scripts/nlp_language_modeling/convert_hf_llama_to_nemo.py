@@ -70,6 +70,12 @@ def load_model(cls, checkpoint, strict, **kwargs):
                     checkpoint['state_dict'].pop(name)
                 else:
                     print(f"Unexpected key: {name} not in checkpoint but in model.")
+
+            for name, buffer in model.named_buffers():
+                if name in checkpoint['state_dict']:
+                    buffer.data = checkpoint['state_dict'][name]
+                    checkpoint['state_dict'].pop(name)
+
             if len(checkpoint['state_dict'].keys()) != 0:
                 raise RuntimeError(
                     f"Additional keys: {checkpoint['state_dict'].keys()} in checkpoint but not in model."

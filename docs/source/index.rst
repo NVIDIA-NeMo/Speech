@@ -9,7 +9,7 @@ NVIDIA NeMo User Guide
    starthere/intro
    starthere/tutorials
    starthere/best-practices
-
+   starthere/migration-guide
 
 .. toctree::
    :maxdepth: 2

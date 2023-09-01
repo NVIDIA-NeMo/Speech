@@ -279,13 +279,9 @@ class MegatronGPTSFTModel(MegatronGPTModel):
                 sep_id=self.sep_id,
                 max_num_samples=num_samples[0],
                 seed=data_cfg.get('seed', 1234),
-                context_key=data_cfg.get('context_key', 'text'),
                 label_key=data_cfg.get('label_key', 'answer'),
-                separate_prompt_and_response_with_newline=data_cfg.get(
-                    'separate_prompt_and_response_with_newline', True
-                ),
                 answer_only_loss=self.cfg.get('answer_only_loss', True),
-                truncation_field=data_cfg.get('truncation_field', 'context'),
+                truncation_field=data_cfg.get('truncation_field', 'text'),
                 pad_to_max_length=data_cfg.get('pad_to_max_length', False),
                 index_mapping_dir=data_cfg.get('index_mapping_dir', None),
                 prompt_template=data_cfg.get('prompt_template', None),
@@ -299,6 +295,9 @@ class MegatronGPTSFTModel(MegatronGPTModel):
                 hf_dataset=data_cfg.get(
                     'hf_dataset', False
                 ),  # Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
+                truncation_method=data_cfg.get(
+                    'truncation_method', 'right'
+                ),  # used to choose truncation method. Options: ['random', 'left', 'right']
             )
             datasets.append(dataset)
 

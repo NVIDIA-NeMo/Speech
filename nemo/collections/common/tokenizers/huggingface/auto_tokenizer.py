@@ -149,6 +149,7 @@ class AutoTokenizer(TokenizerSpec):
                 f'see NLP_Tokenizers.ipynb for more details.'
             )
         self.add_special_tokens(special_tokens_dict)
+        self.space_sensitive = self.text_to_tokens('x y') != self.text_to_tokens('x') + self.text_to_tokens('y')
 
     @property
     def vocab_size(self):

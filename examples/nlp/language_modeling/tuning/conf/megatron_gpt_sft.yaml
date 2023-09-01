@@ -95,16 +95,15 @@ model:
       #   - 0.25
       #   - 0.25
       concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
-      context_key: 'input'
       label_key: 'output'
       add_eos: True
       add_sep: False
       add_bos: False
-      separate_prompt_and_response_with_newline: False
-      truncation_field: "context" # Options: ['context', 'answer']
+      truncation_field: "input" # # Can be multiple keys separated with ',' Options: keys in prompt_template
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: null # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
+      prompt_template: "{input} {output}" # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       hf_dataset: False # Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
+      truncation_method: 'right' # Truncation from which position, Options: ['left', 'right'] 
 
     validation_ds:
       file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
@@ -115,22 +114,21 @@ model:
       num_workers: 4
       memmap_workers: ${model.data.train_ds.memmap_workers}
       pin_memory: True
-      max_seq_length: 2048
+      max_seq_length: ${model.data.train_ds.max_seq_length}
       min_seq_length: 1
       drop_last: False
-      context_key: ${model.data.train_ds.context_key}
       label_key: ${model.data.train_ds.label_key}
       add_eos: ${model.data.train_ds.add_eos}
       add_sep: ${model.data.train_ds.add_sep}
       add_bos: ${model.data.train_ds.add_bos}
-      separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
       write_predictions_to_file: False
       output_file_path_prefix: null # Prefix of the file to write predictions to.
-      truncation_field: "context" # Options: ['context', 'answer']
+      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
       index_mapping_dir: null # Path to a directory to write index mapping files.
       prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       hf_dataset: False # Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
+      truncation_method: 'right' # Truncation from which position, Options: ['left', 'right'] 
 
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss', 'rouge', 'token_f1']
@@ -146,21 +144,21 @@ model:
       num_workers: 4
       memmap_workers: ${model.data.train_ds.memmap_workers}
       pin_memory: True
-      max_seq_length: 2048
+      max_seq_length: ${model.data.train_ds.max_seq_length}
       min_seq_length: 1
       drop_last: False
-      context_key: ${model.data.train_ds.context_key}
       label_key: ${model.data.train_ds.label_key}
       add_eos: ${model.data.train_ds.add_eos}
       add_sep: ${model.data.train_ds.add_sep}
       add_bos: ${model.data.train_ds.add_bos}
-      separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
       write_predictions_to_file: False
       output_file_path_prefix: null # Prefix of the file to write predictions to.
-      truncation_field: "context" # Options: ['context', 'answer']
+      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
       index_mapping_dir: null # Path to a directory to write index mapping files.
       prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
+      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       hf_dataset: False # Whether to load the json file with the HuggingFace dataset. otherwise, will load the jsonl file with the JSONLMemMapDataset.
+      truncation_method: 'right' # Truncation from which position, Options: Options: ['left', 'right']
 
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']

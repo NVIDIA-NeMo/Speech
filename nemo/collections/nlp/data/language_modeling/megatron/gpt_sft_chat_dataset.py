@@ -237,6 +237,9 @@ def _check_token_in_vocab(tokenizer, token):
 
 
 class GPTSFTChatDataset(GPTSFTDataset):
+    def _maybe_validate_prompt_template(self):
+        pass
+
     def _build_samples_mapping(self):
         super()._build_samples_mapping()
         assert hasattr(self.tokenizer, "vocab"), "tokenizer should have vocab property, not supported"

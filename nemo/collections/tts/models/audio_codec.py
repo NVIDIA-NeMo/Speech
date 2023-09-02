@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import itertools
-import random
 from pathlib import Path
 from typing import List, Tuple
 
@@ -34,7 +33,7 @@ from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, Index, LengthsType
+from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, LengthsType, TokenIndex
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
@@ -168,7 +167,7 @@ class AudioCodecModel(ModelPT):
             "encoded": NeuralType(('B', 'D', 'T_encoded'), EncodedRepresentation()),
             "encoded_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"tokens": NeuralType(('B', 'C', 'T_encoded'), Index())},
+        output_types={"tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex())},
     )
     def quantize(self, encoded: torch.Tensor, encoded_len: torch.Tensor) -> torch.Tensor:
         """Quantize the continuous encoded representation into a discrete
@@ -192,7 +191,7 @@ class AudioCodecModel(ModelPT):
 
     @typecheck(
         input_types={
-            "tokens": NeuralType(('B', 'C', 'T_encoded'), Index()),
+            "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
             "tokens_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={"dequantized": NeuralType(('B', 'D', 'T_encoded'), EncodedRepresentation()),},
@@ -221,7 +220,7 @@ class AudioCodecModel(ModelPT):
             "audio_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={
-            "tokens": NeuralType(('B', 'C', 'T_encoded'), Index()),
+            "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
             "tokens_len": NeuralType(tuple('B'), LengthsType()),
         },
     )
@@ -244,7 +243,7 @@ class AudioCodecModel(ModelPT):
 
     @typecheck(
         input_types={
-            "tokens": NeuralType(('B', 'C', 'T_encoded'), Index()),
+            "tokens": NeuralType(('B', 'C', 'T_encoded'), TokenIndex()),
             "tokens_len": NeuralType(tuple('B'), LengthsType()),
         },
         output_types={

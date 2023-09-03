@@ -8,11 +8,11 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 # Automatic Speech Recognition
 
-1) `ASR_with_NeMo`: Discussion of the task of ASR, handling of data, understanding the acoutic features, using an Acoustic Model and train on an ASR dataset, and finally evaluating the model's performance.
+1) `ASR_with_NeMo`: Discussion of the task of ASR, handling of data, understanding the acoustic features, using an Acoustic Model and train on an ASR dataset, and finally evaluating the model's performance.
 
 2) `ASR_with_Subword_Tokenization`: Modern ASR models benefit from several improvements in neural network design and data processing. In this tutorial we discuss how we can use Tokenizers (commonly found in NLP) to significantly improve the efficiency of ASR models without sacrificing any accuracy during transcription.
 
-3) `ASR_CTC_Language_Finetuning`: Until now, we have discussed how to train ASR models from scratch. Once we get pretrained ASR models, we can then fine-tune them on domain specific use cases, or even other languages ! This notebook discusses how to fine-tune an English ASR model onto another language, and discusses several methods to improve the efficiency of tranfer learning.
+3) `ASR_CTC_Language_Finetuning`: Until now, we have discussed how to train ASR models from scratch. Once we get pretrained ASR models, we can then fine-tune them on domain specific use cases, or even other languages! This notebook discusses how to fine-tune an English ASR model onto another language, and discusses several methods to improve the efficiency of transfer learning.
 
 4) `Online_ASR_Microphone_Demo`: A short notebook that enables us to speak into a microphone and transcribe speech in an online manner. Note that this is not the most efficient way to perform streaming ASR, and it is more of a demo.
 
@@ -20,7 +20,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 6) `ASR_for_telephony_speech`: Audio sources are not homogenous, nor are the ways to store large audio datasets. Here, we discuss our observations and recommendations when working with audio obtained from Telephony speech sources.
 
-7) `Online_Noise_Augmentation`: While academic datasets are useful for training ASR model, there can often be cases where such datasets are prestine and dont really represent the use case in the real world. So we discuss how to make the model more noise robust with Online audio augmentation.
+7) `Online_Noise_Augmentation`: While academic datasets are useful for training ASR model, there can often be cases where such datasets are pristine and don't really represent the use case in the real world. So we discuss how to make the model more noise robust with Online audio augmentation.
 
 8) `Intro_to_Transducers`: Previous tutorials discuss ASR models in context of the Connectionist Temporal Classification Loss. In this tutorial, we introduce the Transducer loss, and the components of this loss function that are constructed in the config file. This tutorial is a prerequisite to the `ASR_with_Transducers` tutorial.
 
@@ -37,7 +37,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 ----------------
 
-# Automatic Speech Recogntion with Adapters
+# Automatic Speech Recognition with Adapters
 
 Please refer to the `asr_adapter` sub-folder which contains tutorials on the use of `Adapter` modules to perform domain adaptation on ASR models, as well as its sub-domains.
 

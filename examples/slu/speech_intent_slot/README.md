@@ -8,7 +8,7 @@ This example shows how to train an end-to-end model for spoken language understa
 We present the main results of our models in the following table.
 |                                                  |                |                          | **Intent (Scenario_Action)** |               | **Entity** |        |              | **SLURP Metrics** |                     |
 |--------------------------------------------------|----------------|--------------------------|------------------------------|---------------|------------|--------|--------------|-------------------|---------------------|
-|                     **Model**                    | **Params (M)** |      **Pretrained**      |         **Accuracy**         | **Precision** | **Recall** | **F1** | **Precsion** |     **Recall**    |        **F1**       |
+|                     **Model**                    | **Params (M)** |      **Pretrained**      |         **Accuracy**         | **Precision** | **Recall** | **F1** | **Precision** |     **Recall**    |        **F1**       |
 | NeMo-Conformer-Transformer-Large                 | 127            | NeMo ASR-Set 3.0         |                        90.14 |         86.46 |      82.29 |  84.33 |        84.31 |             80.33 |               82.27 |
 | NeMo-Conformer-Transformer-Large                 | 127            | NeMo SSL-LL60kh          |                        89.04 |         73.19 |       71.8 |  72.49 |         77.9 |             76.65 |               77.22 |
 | NeMo-Conformer-Transformer-Large                 | 127            | None                     |                        72.56 |         43.19 |       43.5 |  43.34 |        53.59 |             53.92 |               53.76 |

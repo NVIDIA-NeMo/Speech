@@ -114,7 +114,7 @@ Mandatory fields are `audio_filepath`, `offset`, `duration`, `label:"infer"` and
 
 Some of important options in config file: 
 
-- **`diarizer.vad.model_path`: voice activity detection modle name or path to the model**
+- **`diarizer.vad.model_path`: voice activity detection model name or path to the model**
 
 Specify the name of VAD model, then the script will download the model from NGC. Currently, we have 'vad_multilingual_marblenet', 'vad_marblenet' and  'vad_telephony_marblenet' as options for VAD models.
 

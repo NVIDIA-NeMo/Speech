@@ -13,7 +13,7 @@ NFA is a tool for generating token-, word- and segment-level timestamps of speec
 
 ## Quickstart
 1. Install [NeMo](https://github.com/NVIDIA/NeMo#installation).
-2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
+2. Prepare a NeMo-style manifest containing the paths of audio files you would like to process, and (optionally) their text.
 3. Run NFA's `align.py` script with the desired config, e.g.:
     ``` bash
     python <path_to_NeMo>/tools/nemo_forced_aligner/align.py \

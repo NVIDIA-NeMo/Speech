@@ -4,7 +4,7 @@ Contained within this directory are scripts to perform streaming or buffered inf
 
 ## Difference between streaming and buffered ASR
 
-While we primarily showcase the defalts of these models in buffering mode, note that the major difference between streaming ASR and buffered ASR is the chunk size and the total context buffer size.
+While we primarily showcase the defaults of these models in buffering mode, note that the major difference between streaming ASR and buffered ASR is the chunk size and the total context buffer size.
 
 If you reduce your chunk size, the latency for your first prediction is reduced, and the model appears to predict the text with shorter delay. On the other hand, since the amount of information in the chunk is reduced, it causes higher WER.
 

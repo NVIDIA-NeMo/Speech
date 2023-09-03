@@ -8,7 +8,7 @@ For further discussion of what are adapters, how they are trained and how are th
 
 Using the `train_asr_adapter.py` script, you can provide the path to a pre-trained model, a config to define and add an adapter module to this pre-trained model, some information to setup datasets for training / validation - and then easily add any number of adapter modules to this network.
 
-**Note**: In order to train multiple adapters on a single model, provide the `model.nemo_model` (in the config) to be a previously adapted model ! Ensure that you use a new unique `model.adapter.adapter_name` in the config.
+**Note**: In order to train multiple adapters on a single model, provide the `model.nemo_model` (in the config) to be a previously adapted model! Ensure that you use a new unique `model.adapter.adapter_name` in the config.
 
 ## Training execution flow diagram
 
@@ -57,7 +57,7 @@ graph TD
     Ho --> I["trainer.test(model)"]
 ```
 
-**Note**: If you with to evaluate the base model (with all adapters disabled), simply pass `model.adapter.adapter_name=null` to the config of this script to disable all adapters and evaluate just the base model.
+**Note**: If you wish to evaluate the base model (with all adapters disabled), simply pass `model.adapter.adapter_name=null` to the config of this script to disable all adapters and evaluate just the base model.
 
 # Scoring and Analysis of Results
 

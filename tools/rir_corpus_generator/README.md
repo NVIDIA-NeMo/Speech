@@ -67,7 +67,7 @@ Each directory, e.g, `{train, dev, test}`, corresponds to a subset of data and c
 - `num_sources`: number of sources simulated in this room
 - `rir_rt60_theory`: Theoretically calculated RT60
 - `rir_rt60_measured`: RT60 calculated from the generated RIRs, list with `num_sources` elements
-- `mic_positions`: microphone postions in the room, list with `num_mics` elements
+- `mic_positions`: microphone positions in the room, list with `num_mics` elements
 - `mic_center`: center of the microphone array
 - `source_position`: position of each source, list with `num_source` elements
 - `source_distance`: distance of each source to microphone center, list with `num_source` elements
@@ -124,7 +124,7 @@ flowchart TD
 	G --> |Statistics| J[*.png]
 ```
 
-Microphone signals are constructed by mixing target, backgoround noise and interference signal. This is illustrated in the following diagram for an example with two interfering sources:
+Microphone signals are constructed by mixing target, background noise and interference signal. This is illustrated in the following diagram for an example with two interfering sources:
 
 ```mermaid
 flowchart LR
@@ -186,7 +186,7 @@ OUTPUT_DIR
 +--{train, dev, test}_info.png
 ```
 
-Each directory, e.g, `{train, dev, test}`, corresponds to a subset of data and contain the `*.wav` files with the generated audio signals. Corresponding `*_manifest.json` files contain metadata for each subset. Each row corresponds to a single example/set of `*.wav` files and includes the following fields
+Each directory, e.g, `{train, dev, test}`, corresponds to a subset of data and contains the `*.wav` files with the generated audio signals. Corresponding `*_manifest.json` files contain metadata for each subset. Each row corresponds to a single example/set of `*.wav` files and includes the following fields
 
 - `audio_filepath`: path to the mic file
 - `{tag}_filepath`: path to the corresponding signal component, such as `noise` or `interference`

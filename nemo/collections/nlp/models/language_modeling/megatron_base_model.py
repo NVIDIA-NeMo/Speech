@@ -446,7 +446,7 @@ class MegatronBaseModel(NLPModel):
 
             # Make sure embedding grad reductions are in FP32
             for name, param in self.named_parameters():
-                if 'word_embedding' in name or 'position_embedding' in name:
+                if 'word_embedding' in name or 'position_embedding' in name or 'output_layer' in name:
                     param._with_fp32_optimizer = True
 
             # Match param allgather with model dtype

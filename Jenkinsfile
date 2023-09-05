@@ -59,10 +59,11 @@ pipeline {
 
     stage('Megatron Core installation') {
       steps {
-        // pinned MCore https://github.com/NVIDIA/Megatron-LM/commit/99b044bff07f8e5d48b45223ed4bb11bd4e884e6
+        // pinned MCore https://github.com/NVIDIA/Megatron-LM/commit/01c8704453af7e26134441224c8a351746ca0349
+        // ToT for 23.08 branch
         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
             cd Megatron-LM && \
-            git checkout 99b044bff07f8e5d48b45223ed4bb11bd4e884e6 && \
+            git checkout 01c8704453af7e26134441224c8a351746ca0349 && \
             pip install -e .'
       }
     }

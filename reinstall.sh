@@ -20,7 +20,7 @@ if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
   echo 'Installing NeMo in NVIDIA PyTorch container:' "${NVIDIA_PYTORCH_VERSION}" 'so will not install numba'
 else
   if [ -n "${CONDA_PREFIX}" ]; then
-    NUMBA_VERSION=0.55
+    NUMBA_VERSION=0.57.1
     echo 'Installing numba=='${NUMBA_VERSION}
     conda install -y -c conda-forge numba==${NUMBA_VERSION}
   fi

@@ -912,7 +912,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
             # Advance inference sequence offset.
             if self.inference_params:
-                self.inference_params.sequence_len_offset += output_tensor.size(1)
+                # if last stage, then (final) output is [b, s, h], otherwise it's [s, b, h]
+                if parallel_state.is_pipeline_last_stage():
+                    self.inference_params.sequence_len_offset += output_tensor.size(1)
+                else:
+                    self.inference_params.sequence_len_offset += output_tensor.size(0)
 
             def id_func(output_tensor):
                 return output_tensor, {'logits': output_tensor}

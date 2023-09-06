@@ -213,6 +213,8 @@ def main(cfg) -> None:
             pretrained_cfg.precision = trainer.precision
             if trainer.precision == "16":
                 pretrained_cfg.megatron_amp_O2 = False
+            elif trainer.precision in ['bf16', 'bf16-mixed'] and cfg.get('megatron_amp_O2', False):
+                pretrained_cfg.megatron_amp_O2 = True
         model = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file,
             trainer=trainer,

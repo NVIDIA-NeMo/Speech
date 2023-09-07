@@ -461,7 +461,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             used_params = set()
             for bucket in buckets:
                 used_params.update(bucket)
-            buckets[-1].extend(p for p in self.parameters() if p not in used_params)
+            remaining_params = [p for p in self.parameters() if p not in used_params]
+            if remaining_params:
+                buckets.append(remaining_params)
             self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()
@@ -1312,7 +1314,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
     def sharded_state_dict(self, prefix: str = '') -> Dict[str, Any]:
         """
         Creates the sharded state dict which is used by dist_checkpoint to save the sharded tensors to disk.
-        When given the sharded_stated_dict, dist_checkpoint.load will load the tensors corresponding to 
+        When given the sharded_stated_dict, dist_checkpoint.load will load the tensors corresponding to
         self.state_dict().
         The sharded tensor mapping is defined in the GPTModel class from mcore.
         """
@@ -1444,7 +1446,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
     def build_transformer_config(self) -> TransformerConfig:
         """ Builds the megatron core gpt transformer config for the model.
-            For attributes in the nemo model config that are the same 
+            For attributes in the nemo model config that are the same
             as the megatron core TransformerConfig, we will use the value from the nemo model config.
             For attributes in TransformerConfig that are not in the nemo model config, we add custom logic.
         """

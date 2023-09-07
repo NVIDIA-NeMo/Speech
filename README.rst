@@ -41,14 +41,14 @@
 Introduction
 ------------
 
-NVIDIA NeMo is a conversational AI toolkit built for researchers working on automatic speech recognition (ASR), 
-text-to-speech synthesis (TTS), large language models (LLMs), and 
+NVIDIA NeMo is a conversational AI toolkit built for researchers working on automatic speech recognition (ASR),
+text-to-speech synthesis (TTS), large language models (LLMs), and
 natural language processing (NLP).
-The primary objective of NeMo is to help researchers from industry and academia to reuse prior work (code and pretrained models) 
+The primary objective of NeMo is to help researchers from industry and academia to reuse prior work (code and pretrained models)
 and make it easier to create new `conversational AI models <https://developer.nvidia.com/conversational-ai#started>`_.
 
-All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_ and 
-training is automatically scalable to 1000s of GPUs. 
+All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_ and
+training is automatically scalable to 1000s of GPUs.
 Additionally, NeMo Megatron LLM models can be trained up to 1 trillion parameters using tensor and pipeline model parallelism.
 NeMo models can be optimized for inference and deployed for production use-cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
 
@@ -57,14 +57,14 @@ State of the Art pretrained NeMo models are freely available on `HuggingFace Hub
 `NVIDIA NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_.
 These models can be used to transcribe audio, synthesize speech, or translate text in just a few lines of code.
 
-We have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that 
+We have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that
 can all be run on `Google Colab <https://colab.research.google.com>`_.
 
-For advanced users that want to train NeMo models from scratch or finetune existing NeMo models 
+For advanced users that want to train NeMo models from scratch or finetune existing NeMo models
 we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ that support multi-GPU/multi-node training.
 
 For scaling NeMo LLM training on Slurm clusters or public clouds, please see the `NVIDIA NeMo Megatron Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_.
-The NM launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_ 
+The NM launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_
 which can be used to find the optimal model parallel configuration for training on a specific cluster.
 
 Also see our `introductory video <https://www.youtube.com/embed/wBgpMf_KQVw>`_ for a high level overview of NeMo.
@@ -247,7 +247,7 @@ To install Apex, run
 
     git clone https://github.com/NVIDIA/apex.git
     cd apex
-    git checkout 7995de18677295c5edeeab082179edbfdb6ee16a
+    git checkout 52e18c894223800cb611682dce27d88050edf1de
     pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" --global-option="--fast_layer_norm" --global-option="--distributed_adam" --global-option="--deprecated_fused_adam" ./
 
 It is highly recommended to use the NVIDIA PyTorch or NeMo container if having issues installing Apex or any other dependencies.
@@ -287,7 +287,7 @@ Transformer Engine requires PyTorch to be built with CUDA 11.8.
 
 Flash Attention
 ~~~~~~~~~~~~~~~~~~~~
-Transformer Engine already supports Flash Attention for GPT models. If you want to use Flash Attention for non-causal models or use with attention bias (introduced from position encoding, e.g. Alibi), please install `flash-attn <https://github.com/HazyResearch/flash-attention>`_. 
+Transformer Engine already supports Flash Attention for GPT models. If you want to use Flash Attention for non-causal models or use with attention bias (introduced from position encoding, e.g. Alibi), please install `flash-attn <https://github.com/HazyResearch/flash-attention>`_.
 
 .. code-block:: bash
 
@@ -296,7 +296,7 @@ Transformer Engine already supports Flash Attention for GPT models. If you want 
 
 NLP inference UI
 ~~~~~~~~~~~~~~~~~~~~
-To launch the inference web UI server, please install the gradio `gradio <https://gradio.app/>`_. 
+To launch the inference web UI server, please install the gradio `gradio <https://gradio.app/>`_.
 
 .. code-block:: bash
 

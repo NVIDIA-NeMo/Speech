@@ -81,10 +81,6 @@ def main(cfg) -> None:
 
     trainer._checkpoint_connector = _CheckpointConnector(trainer)
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
-
     if hasattr(cfg.model, 'pretrained_model_path') and cfg.model.pretrained_model_path is not None:
         if not hasattr(cfg.model, 'pretrained_model_type'):
             raise ValueError(f"Pretrained model type must be in [T5, BART].")

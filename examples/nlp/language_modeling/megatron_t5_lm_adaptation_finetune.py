@@ -72,10 +72,6 @@ def main(cfg) -> None:
         trainer.ckpt_path = cfg.model.resume_from_checkpoint
     logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
-
     if hasattr(cfg.model, 'pretrained_model_path') and cfg.model.pretrained_model_path is not None:
         pretrained_cfg = MegatronT5Model.restore_from(
             cfg.model.pretrained_model_path, trainer=trainer, return_config=True

@@ -72,9 +72,6 @@ def main(cfg) -> None:
     # resume_from_checkpoint = uninject_model_parallel_rank(resume_from_checkpoint)
     logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
     # load existing nemo retro model
     if cfg.get("restore_from_path", None) is not None:
         save_restore_connector = NLPSaveRestoreConnector()

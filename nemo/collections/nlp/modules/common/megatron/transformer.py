@@ -187,7 +187,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         self.bias = bias
         self.transformer_block_type = transformer_block_type
         self.position_embedding_type = position_embedding_type
-        self.param_dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+        self.param_dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
 
         self.set_accepted_adapter_types(
             [
@@ -729,7 +729,7 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
         )
 
         # Dtype for forward pass - ignore amp O2
-        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2=None)
+        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2=None)
 
     def forward(
         self,
@@ -845,7 +845,7 @@ class AutocastTransformerLayer(TransformerLayer):
         # use_emha=use_emha,
 
         # Dtype for forward pass - ignore amp O2
-        self.dtype = utils_funcs.dtype_from_precision(autocast_dtype, megatron_amp_O2=None)
+        self.dtype = utils_funcs.torch_dtype_from_precision(autocast_dtype, megatron_amp_O2=None)
 
     def forward(
         self,

@@ -176,7 +176,7 @@ class GPTModel(MegatronModule):
         self.fp16_lm_cross_entropy = fp16_lm_cross_entropy
         self.sequence_parallel = self.config.sequence_parallel
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
-        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
 
         if kv_channels is None:
             assert (

@@ -42,7 +42,6 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
     compute_beam_search_len_penalty,
     get_sampling_token_fn,
 )
-from nemo.collections.nlp.parts import nlp_overrides
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
@@ -126,17 +125,8 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
             # Model wrapper to convert both model and inputs to half precision
             self.enc_dec_model = Float16Module(
-                config=self.model_parallel_config, module=self.enc_dec_model, precision=cfg.precision
+                config=self.model_parallel_config, module=self.enc_dec_model, precision=self.cfg.precision
             )
-
-        if self.cfg.precision in ['bf16', 'bf16-mixed']:
-            self.autocast_dtype = torch.bfloat16
-        elif self.cfg.precision in [32, '32', '32-true']:
-            self.autocast_dtype = torch.float
-        elif self.cfg.precision in [16, '16', '16-mixed']:
-            self.autocast_dtype = torch.half
-        else:
-            raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
 
         self.enable_autocast = (
             True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
@@ -405,7 +395,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             n = f'reduced_train_{k}'
             self.log(n, v, prog_bar=n.endswith("_loss"), rank_zero_only=True, batch_size=1)
 
-        if self.cfg.precision == 16:
+        if self.torch_dtype == torch.float16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
                 self.log('loss_scale', loss_scale, batch_size=1)

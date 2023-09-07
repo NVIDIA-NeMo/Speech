@@ -31,7 +31,8 @@ from nemo.collections.nlp.modules.common.megatron.utils import squared_relu
 from nemo.utils import logging
 
 
-def dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool]) -> torch.dtype:
+def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool] = None) -> torch.dtype:
+    """ Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
     if megatron_amp_O2 is not None and megatron_amp_O2 is False:
         return torch.float32
 

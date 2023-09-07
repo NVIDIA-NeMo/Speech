@@ -92,10 +92,6 @@ def main(cfg) -> None:
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.exp_manager)
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
-
     # load existing or init new soft prompt GPT model
     if cfg.model.get("restore_path", None):
         model = MegatronT5AdapterLearningModel.restore_from(

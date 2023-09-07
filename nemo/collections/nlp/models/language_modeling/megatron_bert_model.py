@@ -39,7 +39,6 @@ from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, MaskType, NeuralType
 from nemo.utils import AppState, logging
 
-
 try:
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
@@ -51,6 +50,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     import logging
+
     from lddl.torch_mp import get_bert_pretrain_data_loader
 
     HAVE_LDDL = True
@@ -88,15 +88,6 @@ class MegatronBertModel(MegatronBaseModel):
         super().__init__(cfg, trainer=trainer, no_lm_init=False)
 
         self._validate_trainer()
-
-        if self.trainer.precision in ['bf16', 'bf16-mixed']:
-            self.autocast_dtype = torch.bfloat16
-        elif self.trainer.precision in [32, '32', '32-true']:
-            self.autocast_dtype = torch.float
-        elif self.trainer.precision in [16, '16', '16-mixed']:
-            self.autocast_dtype = torch.half
-        else:
-            raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
 
         self.enable_autocast = (
             True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False

@@ -182,9 +182,6 @@ def main(cfg) -> None:
         model = load_from_checkpoint_dir(MegatronGPTModel, cfg, trainer, gpt_cfg, modify_confg_fn=_modify_config)
     else:
         print(' > WARNING: No checkpoint provided. Starting from scratch.')
-        # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-        with open_dict(cfg):
-            cfg.model.precision = cfg.trainer.precision
         model = MegatronGPTModel(cfg.model, trainer)
     trainer.fit(model)
 

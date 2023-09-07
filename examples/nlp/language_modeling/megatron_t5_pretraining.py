@@ -30,10 +30,6 @@ def main(cfg) -> None:
     trainer = MegatronT5TrainerBuilder(cfg).create_trainer()
     exp_manager(trainer, cfg.exp_manager)
 
-    # hydra interpolation does not work here as the interpolation key is lost when PTL saves hparams
-    with open_dict(cfg):
-        cfg.model.precision = cfg.trainer.precision
-
     model = MegatronT5Model(cfg.model, trainer)
     trainer.fit(model)
 

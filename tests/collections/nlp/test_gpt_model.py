@@ -198,15 +198,7 @@ class TestGPTModel:
     @pytest.mark.unit
     def test_forward(self, gpt_model, test_text):
 
-        dtype = None
-        if gpt_model.cfg['precision'] == 32:
-            dtype = torch.float
-        elif gpt_model.cfg['precision'] == 16:
-            dtype = torch.float16
-        elif gpt_model.cfg['precision'] == 'bf16':
-            dtype = torch.bfloat16
-        else:
-            raise ValueError(f"precision: {gpt_model.cfg['precision']} is not supported.")
+        dtype = gpt_model.torch_dtype
 
         gpt_model.eval()
 

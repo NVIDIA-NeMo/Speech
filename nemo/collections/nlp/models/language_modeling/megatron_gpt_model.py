@@ -54,6 +54,7 @@ from nemo.collections.nlp.modules.common.transformer.text_generation import (
     SamplingParam,
     TextGeneration,
 )
+from nemo.collections.nlp.parts import utils_funcs
 from nemo.collections.nlp.parts.utils_funcs import activation_to_func, get_last_rank
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo
@@ -114,15 +115,7 @@ class MegatronGPTExportableModel(torch.nn.Module, Exportable):
                 margin=0, interval=1, fp8_format=transformer_engine.common.recipe.Format.E4M3
             )
 
-        self.dtype = None
-        if model.cfg['precision'] == 'bf16':
-            self.dtype = torch.bfloat16
-        elif int(model.cfg['precision']) == 32:
-            self.dtype = torch.float
-        elif int(model.cfg['precision']) == 16:
-            self.dtype = torch.float16
-        else:
-            raise ValueError(f"precision: {model.cfg['precision']} is not supported.")
+        self.dtype = utils_funcs.torch_dtype_from_precision(model.cfg.precision)
 
     def forward(self, tokens, position_ids, attention_mask):
         if self.fp8_enabled and HAVE_TE:
@@ -259,15 +252,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     self.model.cuda(torch.cuda.current_device())
 
             self._wrap_model_for_O2()
-
-        if self.trainer.precision in ['bf16', 'bf16-mixed']:
-            self.autocast_dtype = torch.bfloat16
-        elif self.trainer.precision in [32, '32', '32-true']:
-            self.autocast_dtype = torch.float
-        elif self.trainer.precision in [16, '16', '16-mixed']:
-            self.autocast_dtype = torch.half
-        else:
-            raise ValueError('precision must be in ["32-true", "16-mixed", "bf16-mixed"]')
 
         self.enable_autocast = (
             True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False

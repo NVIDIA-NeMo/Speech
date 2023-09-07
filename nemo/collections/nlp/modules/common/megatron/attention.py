@@ -146,7 +146,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         self.multi_query_attention = multi_query_attention
 
         self.megatron_legacy = megatron_legacy
-        self.dtype = utils_funcs.dtype_from_precision(precision, megatron_amp_O2)
+        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
 
         self.set_accepted_adapter_types(
             [

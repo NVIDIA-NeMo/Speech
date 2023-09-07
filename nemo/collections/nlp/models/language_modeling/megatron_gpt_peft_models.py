@@ -159,6 +159,41 @@ class MegatronGPTPEFTModel(MegatronGPTSFTModel):
         else:
             super().load_state_dict(state_dict, strict=True)
 
+    def on_load_checkpoint(self, checkpoint) -> None:
+        """LightningModule hook:
+         https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-load-checkpoint
+         """
+        if self.setup_complete:
+            # same as super().on_load_checkpoint() but strict=False and only check unexpected keys
+            # mcore uses distributed checkpointing
+            print('enter peft loading')
+            if self.mcore_gpt:
+                for index, module in enumerate(self.get_gpt_module_list()):
+                    if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+                        checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
+                    else:
+                        checkpoint_state_dict = checkpoint['state_dict']
+                    # checkpoint_state_dict has "model." but module does not so we need to remove it when loading
+                    checkpoint_state_dict = {
+                        key.replace('model.', ''): checkpoint_state_dict.pop(key)
+                        for key in list(checkpoint_state_dict.keys())
+                    }
+                    missing_keys, unexpected_keys = module.load_state_dict(checkpoint_state_dict, strict=False)
+
+                    assert len(unexpected_keys) == 0, 'Unexpected key(s) in state_dict: {}. '.format(
+                        ', '.join('"{}"'.format(k) for k in unexpected_keys)
+                    )
+
+            # legacy checkpointing for interleaved
+            else:
+                if isinstance(self.model, list):
+                    for i in range(len(self.model)):
+                        parallel_state.set_virtual_pipeline_model_parallel_rank(i)
+                        self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
+                    parallel_state.set_virtual_pipeline_model_parallel_rank(0)
+        else:
+            super().on_load_checkpoint(checkpoint)
+
     def setup_optimizer_param_groups(self):
         """
         ModelPT override. Optimizer will get self._optimizer_param_groups. 

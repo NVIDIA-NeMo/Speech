@@ -36,6 +36,15 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, model_utils
 
+try:
+    from megatron.core import parallel_state
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 
 class MegatronGPTPEFTModel(MegatronGPTSFTModel):
     """

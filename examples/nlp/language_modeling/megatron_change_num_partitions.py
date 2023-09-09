@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+import shutil
+import tarfile
 import tempfile
 from argparse import ArgumentParser
 from typing import Dict, List
@@ -233,7 +235,7 @@ def compute_tp_splits(
             for i in range(tp_size):
                 tp_qkv = torch.cat([tp_qkv_splits[item] for item in range(i, tp_size * 2, tp_size)])
                 split.append(tp_qkv)
-        elif ('dense_h_to_4h.weight' in param_name or 'linear_fc1.weight' in param_name) and fast_glu_activation:
+        elif ('dense_h_to_4h' in param_name or 'linear_fc1' in param_name) and fast_glu_activation:
             # For Megatron GPT model with Fast Glu activation
             # Handle gated linear units
             # concat all the first halves ('W's) and all the second halves ('V's)
@@ -275,7 +277,7 @@ def compute_tp_merge(idx, name, param, partitions_pp, model_cfg):
         concated = torch.cat([partitions_pp[i][idx].data for i in range(len(partitions_pp))], dim=0)
 
     # Logic for Fast Glu activation
-    if 'dense_h_to_4h.weight' in name and fast_glu_activation:
+    if 'dense_h_to_4h' in name and fast_glu_activation:
         # concat all the first halves ('W's) and all the second halves ('V's)
         wk_splits = []
         for tpr in range(len(partitions_pp)):
@@ -977,6 +979,31 @@ def main():
     if vp_size > 1:
         set_virtual_parallel_rank_safely(0)
 
+    # Extract tokenizer artifact from the model to temp directory
+    logging.info("Extracting tokenizer artifact from NeMo file...")
+    temp_dir = tempfile.mkdtemp()
+    tokenizer_model_path = None
+    with tarfile.open(args.model_file, "r") as tar:
+        for member in tar.getmembers():
+            if '.model' in member.name:
+                extracted_file = tar.extractfile(member)
+                extracted_file_path = os.path.join(temp_dir, member.name)
+
+                if tokenizer_model_path is None:
+                    logging.info(f"Found tokenizer. Extracting {member.name} to {extracted_file_path}")
+
+                    tokenizer_model_path = extracted_file_path
+                    with open(extracted_file_path, "wb") as f:
+                        f.write(extracted_file.read())
+                else:
+                    if args.tokenizer_model_path is None:
+                        logging.warning(
+                            f"\n\nFound multiple tokenizer artifacts in the model file.\n"
+                            f"Using only {tokenizer_model_path}.\n"
+                            f"If this is incorrect, manually pass the correct tokenizer using "
+                            f"`--tokenizer_model_path`.\n\n"
+                        )
+
     # If input model has TP > 1 or PP > 1
     # Reconstruct the model to have TP = 1 and PP = 1
     # Note that this is a forward loop that will process PP [0..N] TP [0..M] in sequential order.
@@ -1384,6 +1411,15 @@ def main():
                 with open_dict(model.cfg):
                     model.cfg.tokenizer.model = args.tokenizer_model_path
 
+            else:
+                if tokenizer_model_path is None:
+                    logging.warning("Could not extract tokenizer model file from checkpoint.")
+
+                else:
+                    # Extract tokenizer info
+                    with open_dict(model.cfg):
+                        model.cfg.tokenizer.model = tokenizer_model_path
+
             model.cfg, restore_dict = force_cpu_model(model.cfg)
 
             model = cls(model.cfg, trainer)
@@ -1457,6 +1493,9 @@ def main():
             )
 
     logging.info("Successfully finished changing partitions!")
+
+    if temp_dir is not None:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == '__main__':

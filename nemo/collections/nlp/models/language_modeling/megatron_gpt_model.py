@@ -207,6 +207,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self._validate_trainer()
 
         # build the transformer config
+        # TODO: add type hint once pip package is out
         self.transformer_config = self.build_transformer_config()
 
         self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
@@ -274,6 +275,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.initialize_ub = self.cfg.get('ub_tp_comm_overlap', False)
 
         self.inference_params = None
+
+        # default to false since this doesn't work with sequence parallelism currently
+        self.use_loss_mask = self.cfg.get('use_loss_mask', False)
+
+        if self.use_loss_mask and self.transformer_config.sequence_parallel:
+            raise ValueError('Loss mask is not supported with sequence parallelism.')
 
     def get_gpt_module_list(self):
         if isinstance(self.model, list):
@@ -826,8 +833,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 'labels': batch['labels'],
                 'loss_mask': batch['loss_mask'],
             }
+
             if not self.mcore_gpt:
                 forward_args['checkpoint_activations_all_layers'] = checkpoint_activations_all_layers
+                if not self.use_loss_mask:
+                    forward_args.pop('loss_mask')
             else:
                 # TODO: @eharper can we add this to mcore?
                 forward_args.pop('loss_mask')

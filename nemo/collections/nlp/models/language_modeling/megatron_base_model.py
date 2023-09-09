@@ -102,10 +102,12 @@ class MegatronBaseModel(NLPModel):
         # this prevents base constructor from initializing tokenizer
         self.tokenizer = None
 
+        with open_dict(cfg):
+            if cfg.get('precision', None) is None and trainer is not None:
+                cfg.precision = trainer.precision
+
         super().__init__(cfg, trainer=trainer, no_lm_init=no_lm_init)
 
-        with open_dict(self.cfg):
-            self.cfg.precision = trainer.precision
         # TODO: @maanug-nv consolidate into one attribute (requires lots of changes in subclasses)
         self.torch_dtype = utils_funcs.torch_dtype_from_precision(self.cfg.precision)  # Mixed precision datatype
         self.autocast_dtype = self.torch_dtype  # Mixed precision datatype

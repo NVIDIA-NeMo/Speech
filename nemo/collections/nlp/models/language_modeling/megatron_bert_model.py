@@ -124,12 +124,12 @@ class MegatronBertModel(MegatronBaseModel):
                 converted_model = []
                 for module in self.model:
                     converted_model.append(
-                        Float16Module(config=self.model_parallel_config, module=module, precision=cfg.precision)
+                        Float16Module(config=self.model_parallel_config, module=module, precision=self.cfg.precision)
                     )
                 self.model = converted_model
             else:
                 self.model = Float16Module(
-                    config=self.model_parallel_config, module=self.model, precision=cfg.precision
+                    config=self.model_parallel_config, module=self.model, precision=self.cfg.precision
                 )
 
         if hasattr(self, '_nsys_profile_enabled'):
@@ -358,7 +358,7 @@ class MegatronBertModel(MegatronBaseModel):
 
         torch.distributed.broadcast(loss_mean, get_last_rank())
 
-        if self.cfg.precision == 16:
+        if self.torch_dtype == torch.float16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
                 self.log('loss_scale', loss_scale, batch_size=1)

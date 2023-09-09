@@ -37,6 +37,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import Meg
 from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     MegatronHalfPrecisionPlugin,
+    NLPDDPStrategy,
     NLPSaveRestoreConnector,
     PipelineMixedPrecisionPlugin,
 )
@@ -179,7 +180,7 @@ def convert(args):
     nemo_config.precision = precision
     print(f"nemo_config: {nemo_config}")
 
-    trainer = Trainer(plugins=plugins, accelerator='cpu', precision=precision)
+    trainer = Trainer(plugins=plugins, accelerator='cpu', precision=precision, strategy=NLPDDPStrategy())
 
     hidden_size = hf_config["hidden_size"]
     head_num = hf_config["num_attention_heads"]

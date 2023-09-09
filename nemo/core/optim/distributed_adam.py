@@ -21,11 +21,7 @@ from apex.contrib.optimizers.distributed_fused_adam import DistributedFusedAdam,
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
-from megatron.core.dist_checkpointing.optimizer import (
-    get_param_id_to_sharded_param_map,
-    make_sharded_optimizer_tensor,
-    optim_state_to_sharding_state,
-)
+from megatron.core.dist_checkpointing.optimizer import get_param_id_to_sharded_param_map, optim_state_to_sharding_state
 
 
 def _str_to_dtype(dtype: Union[str, torch.dtype]) -> torch.dtype:

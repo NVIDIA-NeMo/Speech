@@ -1291,17 +1291,22 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # mcore uses distributed checkpointing
         if self.mcore_gpt:
-            for index, module in enumerate(self.get_gpt_module_list()):
-                if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
-                    checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
-                else:
-                    checkpoint_state_dict = checkpoint['state_dict']
-                # checkpoint_state_dict has "model." but module does not so we need to remove it when loading
-                checkpoint_state_dict = {
-                    key.replace('model.', ''): checkpoint_state_dict.pop(key)
-                    for key in list(checkpoint_state_dict.keys())
-                }
-                module.load_state_dict(checkpoint_state_dict, strict=True)
+            if 'state_dict' in checkpoint:
+                for index, module in enumerate(self.get_gpt_module_list()):
+                    if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+                        checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
+                    else:
+                        checkpoint_state_dict = checkpoint['state_dict']
+                    # checkpoint_state_dict has "model." but module does not so we need to remove it when loading
+                    checkpoint_state_dict = {
+                        key.replace('model.', ''): checkpoint_state_dict.pop(key)
+                        for key in list(checkpoint_state_dict.keys())
+                    }
+                    module.load_state_dict(checkpoint_state_dict, strict=True)
+            else:
+                # when restoring a distributed checkpoint from a ptl checkpoint we need to defer loading the state_dict
+                # see NLPModel.on_load_checkpoint
+                checkpoint['state_dict'] = {}
 
         # legacy checkpointing for interleaved
         else:

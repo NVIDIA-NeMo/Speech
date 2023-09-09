@@ -41,7 +41,7 @@ from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.core.optim import MainParamsOptimizerWrapper
 from nemo.utils import AppState, logging
 from nemo.utils.get_rank import is_global_rank_zero
-from nemo.utils.model_utils import ckpt_to_dir, inject_model_parallel_rank
+from nemo.utils.model_utils import ckpt_to_dir, inject_model_parallel_rank, uninject_model_parallel_rank
 
 try:
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
@@ -448,12 +448,38 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
     def save_to(self, model, save_path: str):
         app_state = AppState()
-        if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
+
+        # Check if using distributed checkpointing
+        dist_ckpt = hasattr(model, 'sharded_state_dict') and model.sharded_state_dict() is not None
+
+        dist_ckpt_dir = None
+
+        if (app_state.model_parallel_size is not None and app_state.model_parallel_size > 1) or dist_ckpt:
 
             dir_name = os.path.dirname(save_path)
 
-            # first we save the weights for each model parallel rank
-            if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
+            # dist ckpt calls save on every rank
+            if dist_ckpt:
+                # model weights is a directory
+                dist_ckpt_dir = ckpt_to_dir(os.path.join(dir_name, self.model_weights_ckpt))
+                fs = get_filesystem(dist_ckpt_dir)
+                if is_global_rank_zero():
+                    fs.makedirs(dist_ckpt_dir, exist_ok=True)
+                sharded_state_dict = model.sharded_state_dict()
+                # dist checkpoint needs torch.distributed to save the checkpoint
+                if parallel_state.is_unitialized():
+
+                    def dummy():
+                        return
+
+                    if model.trainer.strategy.launcher is not None:
+                        model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
+                    model.trainer.strategy.setup_environment()
+                dist_checkpointing.save(sharded_state_dict=sharded_state_dict, checkpoint_dir=dist_ckpt_dir)
+
+            else:
+
+                # first we save the weights for each model parallel rank
                 if app_state.data_parallel_rank == 0:
                     if app_state.pipeline_model_parallel_size == 1:
                         mp_model_weights = os.path.join(
@@ -468,54 +494,56 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
 
                     self._save_state_dict_to_disk(model.state_dict(), mp_model_weights)
 
-                if torch.distributed.is_initialized():
-                    torch.distributed.barrier()
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
 
-                # create nemo file from folder with all mp_ranks checkpoints
-                if (
-                    app_state.pipeline_model_parallel_rank == 0
-                    and app_state.tensor_model_parallel_rank == 0
-                    and app_state.data_parallel_rank == 0
-                ):
-                    with tempfile.TemporaryDirectory() as tmpdir:
+            # create nemo file from folder with all mp_ranks checkpoints
+            if (
+                app_state.pipeline_model_parallel_rank == 0
+                and app_state.tensor_model_parallel_rank == 0
+                and app_state.data_parallel_rank == 0
+            ):
+                with tempfile.TemporaryDirectory() as tmpdir:
 
-                        if app_state.pipeline_model_parallel_size == 1:
-                            # move weights to the tmpdir
-                            for tp_rank in range(app_state.tensor_model_parallel_size):
-                                os.makedirs(os.path.join(tmpdir, f'mp_rank_{tp_rank:02d}'))
-                                mp_model_weights = os.path.join(
-                                    dir_name, f'mp_rank_{tp_rank:02d}_' + self.model_weights_ckpt
-                                )
-                                shutil.move(
-                                    mp_model_weights,
-                                    os.path.join(tmpdir, f'mp_rank_{tp_rank:02d}', self.model_weights_ckpt),
-                                )
-                        else:
-                            # move weights to the tmpdir
-                            for tp_rank, pp_rank in itertools.product(
-                                range(app_state.tensor_model_parallel_size),
-                                range(app_state.pipeline_model_parallel_size),
-                            ):
-                                os.makedirs(os.path.join(tmpdir, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}'))
-                                mp_model_weights = os.path.join(
-                                    dir_name, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}_' + self.model_weights_ckpt
-                                )
-                                shutil.move(
-                                    mp_model_weights,
-                                    os.path.join(
-                                        tmpdir, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}', self.model_weights_ckpt
-                                    ),
-                                )
+                    if dist_ckpt:
+                        shutil.move(str(dist_ckpt_dir), tmpdir)
 
-                        # create config and artifacts in tmpdir
-                        config_yaml = os.path.join(tmpdir, self.model_config_yaml)
-                        model.to_config_file(path2yaml_file=config_yaml)
-                        if hasattr(model, 'artifacts') and model.artifacts is not None:
-                            self._handle_artifacts(model, nemo_file_folder=tmpdir)
-                            self._update_artifact_paths(model, path2yaml_file=config_yaml)
+                    elif app_state.pipeline_model_parallel_size == 1:
+                        # move weights to the tmpdir
+                        for tp_rank in range(app_state.tensor_model_parallel_size):
+                            os.makedirs(os.path.join(tmpdir, f'mp_rank_{tp_rank:02d}'))
+                            mp_model_weights = os.path.join(
+                                dir_name, f'mp_rank_{tp_rank:02d}_' + self.model_weights_ckpt
+                            )
+                            shutil.move(
+                                mp_model_weights,
+                                os.path.join(tmpdir, f'mp_rank_{tp_rank:02d}', self.model_weights_ckpt),
+                            )
+                    else:
+                        # move weights to the tmpdir
+                        for tp_rank, pp_rank in itertools.product(
+                            range(app_state.tensor_model_parallel_size), range(app_state.pipeline_model_parallel_size),
+                        ):
+                            os.makedirs(os.path.join(tmpdir, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}'))
+                            mp_model_weights = os.path.join(
+                                dir_name, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}_' + self.model_weights_ckpt
+                            )
+                            shutil.move(
+                                mp_model_weights,
+                                os.path.join(
+                                    tmpdir, f'tp_rank_{tp_rank:02d}_pp_rank_{pp_rank:03d}', self.model_weights_ckpt
+                                ),
+                            )
 
-                        # create tar file
-                        self._make_nemo_file_from_folder(save_path, tmpdir)
+                    # create config and artifacts in tmpdir
+                    config_yaml = os.path.join(tmpdir, self.model_config_yaml)
+                    model.to_config_file(path2yaml_file=config_yaml)
+                    if hasattr(model, 'artifacts') and model.artifacts is not None:
+                        self._handle_artifacts(model, nemo_file_folder=tmpdir)
+                        self._update_artifact_paths(model, path2yaml_file=config_yaml)
+
+                    # create tar file
+                    self._make_nemo_file_from_folder(save_path, tmpdir)
 
         else:
             return super().save_to(model, save_path)
@@ -538,6 +566,21 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
             state_dict = new_state_dict
 
         return state_dict
+
+    def _load_state_dict_from_disk(self, model_weights, map_location=None):
+        # if model_weights with the extension removed is a directory, we assume it is a distributed checkpoint
+        # we need to defer loading the state dict so we return None
+        uninject_model_weights = uninject_model_parallel_rank(model_weights)
+
+        # legacy model_weights will have mp rank injected
+        if os.path.isfile(model_weights):
+            return super()._load_state_dict_from_disk(model_weights, map_location)
+
+        # dist checkpoint will be a dir
+        elif os.path.isdir(os.path.splitext(uninject_model_weights)[0]):
+            return None
+        else:
+            raise ValueError(f'Expected {model_weights} to be a file or directory.')
 
     def restore_from(
         self,
@@ -571,6 +614,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         Returns:
             An instance of type cls or its underlying config (if return_config is set).
         """
+
         # Get path where the command is executed - the artifacts will be "retrieved" there
         # (original .nemo behavior)
         loaded_params = super().load_config_and_state_dict(
@@ -579,8 +623,52 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         if not isinstance(loaded_params, tuple) or return_config is True:
             return loaded_params
         conf, instance, state_dict = loaded_params
-        state_dict = self.modify_state_dict(conf, state_dict)
-        super().load_instance_with_state_dict(instance, state_dict, strict)
+
+        # if we're using dist checkpointing then state_dict will be None
+        if state_dict is None:
+            # dist checkpointing needs torch.distributed to load the checkpoint
+            if parallel_state.is_unitialized():
+
+                def dummy():
+                    return
+
+                if trainer.strategy.launcher is not None:
+                    trainer.strategy.launcher.launch(dummy, trainer=trainer)
+                trainer.strategy.setup_environment()
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Check if self.model_extracted_dir is set, and is a valid path
+                if self.model_extracted_dir is not None and os.path.isdir(self.model_extracted_dir):
+                    # Log that NeMo will use the provided `model_extracted_dir`
+                    logging.info(
+                        f"Restoration will occur within pre-extracted directory : " f"`{self.model_extracted_dir}`."
+                    )
+
+                    # Override `tmpdir` above with the pre-extracted `model_extracted_dir`
+                    tmpdir = self.model_extracted_dir
+
+                else:
+                    # Extract the nemo file into the temporary directory
+                    self._unpack_nemo_file(
+                        path2file=restore_path, out_folder=tmpdir, extract_config_only=return_config is True
+                    )
+                checkpoint = {}
+                sharded_state_dict = instance.sharded_state_dict()
+                checkpoint['state_dict'] = sharded_state_dict
+                # remove model weights extension
+                tmp_model_weights_ckpt = os.path.join(tmpdir, self.model_weights_ckpt)
+                tmp_model_weights_dir = os.path.splitext(tmp_model_weights_ckpt)[0]
+                assert os.path.isdir(tmp_model_weights_dir), f'Expected {tmp_model_weights_dir} to be a directory.'
+                checkpoint = dist_checkpointing.load(
+                    sharded_state_dict=checkpoint, checkpoint_dir=tmp_model_weights_dir
+                )
+                instance.on_load_checkpoint(checkpoint)
+                if hasattr(instance, 'setup_transformer_engine_tp_groups'):
+                    instance.setup_transformer_engine_tp_groups()
+
+        else:
+            state_dict = self.modify_state_dict(conf, state_dict)
+            super().load_instance_with_state_dict(instance, state_dict, strict)
         logging.info(f'Model {instance.__class__.__name__} was successfully restored from {restore_path}.')
         return instance
 

@@ -24,10 +24,12 @@ Conversion script to convert PTL checkpoints into nemo checkpoint.
      --pipeline_model_parallel_size <pipeline_model_parallel_size>
 """
 
+import dis
 import os
 from argparse import ArgumentParser
 
 import torch
+from genericpath import isdir
 from megatron.core import parallel_state
 from omegaconf import open_dict
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
@@ -40,7 +42,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 from nemo.collections.nlp.models.machine_translation.megatron_nmt_model import MegatronNMTModel
-from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.utils import AppState, logging
 from nemo.utils.distributed import initialize_distributed
 from nemo.utils.model_utils import inject_model_parallel_rank
@@ -100,12 +102,16 @@ def convert(local_rank, rank, world_size, args):
     app_state = AppState()
     app_state.data_parallel_rank = 0
     num_nodes = world_size // args.gpus_per_node
+    plugins = []
+    strategy = "auto"
     if args.bcp:
-        trainer = Trainer(
-            devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu', plugins=[TorchElasticEnvironment()]
-        )
-    else:
-        trainer = Trainer(devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu')
+        plugins.append(TorchElasticEnvironment())
+    if args.model_type == 'gpt':
+        strategy = NLPDDPStrategy()
+
+    trainer = Trainer(
+        devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu', plugins=plugins, strategy=strategy
+    )
 
     app_state.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     app_state.tensor_model_parallel_size = args.tensor_model_parallel_size
@@ -135,8 +141,13 @@ def convert(local_rank, rank, world_size, args):
     app_state.pipeline_model_parallel_rank = parallel_state.get_pipeline_model_parallel_rank()
     app_state.tensor_model_parallel_rank = parallel_state.get_tensor_model_parallel_rank()
 
-    # inject model parallel rank
-    checkpoint_path = inject_model_parallel_rank(os.path.join(args.checkpoint_folder, args.checkpoint_name))
+    # check for distributed checkpoint
+    dist_ckpt_dir = os.path.join(args.checkpoint_folder, args.checkpoint_name)
+    if os.path.isdir(dist_ckpt_dir):
+        checkpoint_path = dist_ckpt_dir
+    else:
+        # legacy checkpoint needs model parallel injection
+        checkpoint_path = inject_model_parallel_rank(os.path.join(args.checkpoint_folder, args.checkpoint_name))
 
     logging.info(
         f'rank: {rank}, local_rank: {local_rank}, is loading checkpoint: {checkpoint_path} for tp_rank: {app_state.tensor_model_parallel_rank} and pp_rank: {app_state.pipeline_model_parallel_rank}'

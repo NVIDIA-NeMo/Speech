@@ -17,20 +17,25 @@
 shopt -s expand_aliases
 
 NEMO_PATH=/workspace/nemo  # Path to NeMo folder: /workspace/nemo if you use NeMo/Dockerfile
-if [ "$#" -eq 1 ]
-then
+if [ "$#" -eq 1 ]; then
   NEMO_PATH=$1
 fi
 KENLM_MAX_ORDER=10 # Maximum order of KenLM model, also specified in the setup_os2s_decoders.py
 
+if [ -d "$NEMO_PATH" ]; then
+  echo "The folder '$NEMO_PATH' exists."
+else
+  echo "Error: The folder '$NEMO_PATH' does not exist. Specify it as a first command line positional argument!"
+  exit 1
+fi
 cd $NEMO_PATH
 
 if [ $(id -u) -eq 0 ]; then
-   alias aptupdate='apt-get update'
-   alias b2install='./b2'
- else
-   alias aptupdate='sudo apt-get update'
-   alias b2install='sudo ./b2'
+  alias aptupdate='apt-get update'
+  alias b2install='./b2'
+else
+  alias aptupdate='sudo apt-get update'
+  alias b2install='sudo ./b2'
 fi
 
 aptupdate && apt-get upgrade -y && apt-get install -y liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder

@@ -160,6 +160,14 @@ def get_computeprob_response(tokenizer, response, inputs):
                     token_len = int(inputs[1][batch_id].item())
                     new_token_id = inputs[0][batch_id][:token_len].tolist()
                     new_text = tokenizer.ids_to_text(new_token_id)
+                else:
+                    raise TypeError(
+                        f"Unsupported type of `inputs[0]`: {type(inputs[0])}. Supported types: `str`, `torch.Tensor`."
+                    )
+            else:
+                raise TypeError(
+                    f"Unsupported type of parameter `inputs`: {type(inputs)}. Supported types: `list` and `tuple`"
+                )
             new_token_ids.append(new_token_id)
             new_tokens.append(response['tokens'][batch_id][:token_len])
             new_texts.append(new_text)

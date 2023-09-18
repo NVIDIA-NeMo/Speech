@@ -554,7 +554,9 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
             if rotary_percentage < 1:
                 rotary_dim = int(rotary_dim * rotary_percentage)
             self.rotary_pos_emb = RotaryEmbedding(
-                rotary_dim, seq_len_interpolation_factor=seq_len_interpolation_factor
+                rotary_dim,
+                seq_len_interpolation_factor=seq_len_interpolation_factor,
+                pretrained_max_position_embeddings=max_position_embeddings,
             )
 
         elif position_embedding_type == 'alibi':

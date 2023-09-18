@@ -61,7 +61,9 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
         gpt_cfg.max_position_embeddings = cfg.model.max_position_embeddings
         gpt_cfg.seq_len_interpolation_factor = cfg.model.seq_len_interpolation_factor
         gpt_cfg.use_flash_attention = cfg.model.use_flash_attention
-
+        assert (
+            gpt_cfg.encoder_seq_length == gpt_cfg.max_position_embeddings * gpt_cfg.seq_len_interpolation_factor
+        ), 'seq_length should be equal to max_position_embedding * seq_len_interpolation_factor'
         # This is needed when modifying a hparam file directly to load `.ckpt` files.
         # This is not needed to modify the cfg in `.nemo` files.
         if add_cfg_to_tree:

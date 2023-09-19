@@ -97,7 +97,7 @@ from nemo.collections.asr.models.confidence_ensemble import (
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import (
     ConfidenceConfig,
-    ConfidenceMeasureConfig,
+    ConfidenceMethodConfig,
     get_confidence_aggregation_bank,
     get_confidence_measure_bank,
 )
@@ -214,7 +214,7 @@ class BuildEnsembleConfig:
         preserve_frame_confidence=True,
         exclude_blank=True,
         aggregation="mean",
-        measure_cfg=ConfidenceMeasureConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
+        method_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
     )
     temperature: float = 1.0
 

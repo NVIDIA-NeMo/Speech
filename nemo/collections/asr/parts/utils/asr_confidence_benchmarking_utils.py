@@ -173,11 +173,11 @@ def apply_confidence_parameters(decoding_cfg, hp):
     """
     new_decoding_cfg = copy.deepcopy(decoding_cfg)
     confidence_cfg_fields = ("aggregation", "exclude_blank")
-    confidence_measure_cfg_fields = ("name", "alpha", "entropy_type", "entropy_norm")
+    confidence_method_cfg_fields = ("name", "alpha", "entropy_type", "entropy_norm")
     with open_dict(new_decoding_cfg):
         for p, v in hp.items():
             if p in confidence_cfg_fields:
                 new_decoding_cfg.confidence_cfg[p] = v
-            elif p in confidence_measure_cfg_fields:
-                new_decoding_cfg.confidence_cfg.measure_cfg[p] = v
+            elif p in confidence_method_cfg_fields:
+                new_decoding_cfg.confidence_cfg.method_cfg[p] = v
     return new_decoding_cfg

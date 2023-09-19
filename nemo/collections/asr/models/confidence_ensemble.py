@@ -25,7 +25,7 @@ from nemo.collections.asr.models.asr_model import ASRModel
 from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.utils.asr_confidence_utils import (
     ConfidenceConfig,
-    ConfidenceMeasureConfig,
+    ConfidenceMethodConfig,
     get_confidence_aggregation_bank,
     get_confidence_measure_bank,
 )
@@ -61,7 +61,7 @@ class ConfidenceSpec:
         return ConfidenceConfig(
             exclude_blank=self.exclude_blank,
             aggregation=self.aggregation,
-            measure_cfg=ConfidenceMeasureConfig(
+            method_cfg=ConfidenceMethodConfig(
                 name=name, entropy_type=entropy_type, alpha=self.alpha, entropy_norm=entropy_norm,
             ),
         )
@@ -126,7 +126,7 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
         hypothesis: generated hypothesis as returned from the transcribe
             method of the ASR model.
         confidence_cfg: confidence config specifying what kind of
-            measure/aggregation should be used.
+            method/aggregation should be used.
 
     Returns:
         float: confidence score.
@@ -135,12 +135,12 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
     filtered_logprobs = get_filtered_logprobs(hypothesis, confidence_cfg.exclude_blank)
     vocab_size = filtered_logprobs.shape[1]
     aggr_func = get_confidence_aggregation_bank()[confidence_cfg.aggregation]
-    if confidence_cfg.measure_cfg.name == "max_prob":
+    if confidence_cfg.method_cfg.name == "max_prob":
         conf_type = "max_prob"
         alpha = 1.0
     else:
-        conf_type = f"entropy_{confidence_cfg.measure_cfg.entropy_type}_{confidence_cfg.measure_cfg.entropy_norm}"
-        alpha = confidence_cfg.measure_cfg.alpha
+        conf_type = f"entropy_{confidence_cfg.method_cfg.entropy_type}_{confidence_cfg.method_cfg.entropy_norm}"
+        alpha = confidence_cfg.method_cfg.alpha
     conf_func = get_confidence_measure_bank()[conf_type]
 
     conf_value = aggr_func(conf_func(filtered_logprobs, v=vocab_size, t=alpha)).cpu().item()

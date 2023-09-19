@@ -242,8 +242,7 @@ class TestEncDecHybridRNNTCTCModel:
 
     @pytest.mark.unit
     def test_GreedyRNNTInferConfig(self):
-        # confidence_method_cfg is deprecated
-        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index', 'confidence_method_cfg']
+        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']
 
         result = assert_dataclass_signature_match(
             greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyRNNTInferConfig, ignore_args=IGNORE_ARGS
@@ -257,8 +256,7 @@ class TestEncDecHybridRNNTCTCModel:
 
     @pytest.mark.unit
     def test_GreedyBatchedRNNTInferConfig(self):
-        # confidence_method_cfg is deprecated
-        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index', 'confidence_method_cfg']
+        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']
 
         result = assert_dataclass_signature_match(
             greedy_decode.GreedyBatchedRNNTInfer, greedy_decode.GreedyBatchedRNNTInferConfig, ignore_args=IGNORE_ARGS

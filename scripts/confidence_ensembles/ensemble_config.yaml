@@ -16,7 +16,7 @@ temperature: 1.0
 confidence:
     exclude_blank: True
     aggregation: mean
-    measure_cfg:
+    method_cfg:
         name: entropy
         entropy_type: renyi
         alpha: 0.25

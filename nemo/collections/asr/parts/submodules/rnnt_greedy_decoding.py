@@ -35,7 +35,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.utils import rnnt_utils
-from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeasureConfig, ConfidenceMeasureMixin
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.collections.common.parts.rnn import label_collate
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, ElementType, HypothesisType, LengthsType, NeuralType
@@ -69,7 +69,7 @@ def _states_to_device(dec_state, device='cpu'):
     return dec_state
 
 
-class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
+class _GreedyRNNTInfer(Typing, ConfidenceMethodMixin):
     """A greedy transducer decoder.
 
     Provides a common abstraction for sample level and batch level greedy decoding.
@@ -96,15 +96,15 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -154,7 +154,7 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
         self.decoder = decoder_model
@@ -166,8 +166,8 @@ class _GreedyRNNTInfer(Typing, ConfidenceMeasureMixin):
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
 
-        # set confidence calculation measure
-        self._init_confidence_measure(confidence_measure_cfg)
+        # set confidence calculation method
+        self._init_confidence_method(confidence_method_cfg)
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
@@ -263,15 +263,15 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -305,7 +305,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -314,7 +314,7 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
 
     @typecheck()
@@ -502,15 +502,15 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -544,7 +544,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -553,7 +553,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
 
         # Depending on availability of `blank_as_pad` support
@@ -1478,15 +1478,15 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -1521,7 +1521,7 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -1530,7 +1530,7 @@ class GreedyMultiblankRNNTInfer(GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
         self.big_blank_durations = big_blank_durations
         self._SOS = blank_index - len(big_blank_durations)
@@ -1682,15 +1682,15 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -1725,7 +1725,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -1734,7 +1734,7 @@ class GreedyBatchedMultiblankRNNTInfer(GreedyBatchedRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
         self.big_blank_durations = big_blank_durations
 
@@ -2203,31 +2203,15 @@ class GreedyRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     preserve_alignments: bool = False
     preserve_frame_confidence: bool = False
-    confidence_measure_cfg: Optional[ConfidenceMeasureConfig] = ConfidenceMeasureConfig()
-    confidence_method_cfg: str = "DEPRECATED"
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = ConfidenceMethodConfig()
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
-        self.confidence_measure_cfg = OmegaConf.structured(
-            self.confidence_measure_cfg
-            if isinstance(self.confidence_measure_cfg, ConfidenceMeasureConfig)
-            else ConfidenceMeasureConfig(**self.confidence_measure_cfg)
+        self.confidence_method_cfg = OmegaConf.structured(
+            self.confidence_method_cfg
+            if isinstance(self.confidence_method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.confidence_method_cfg)
         )
-        if self.confidence_method_cfg != "DEPRECATED":
-            logging.warning(
-                "`confidence_method_cfg` is deprecated and will be removed in the future. "
-                "Please use `confidence_measure_cfg` instead."
-            )
-
-            # TODO (alaptev): delete the following two lines sometime in the future
-            logging.warning("Re-writing `confidence_measure_cfg` with the value of `confidence_method_cfg`.")
-            # OmegaConf.structured ensures that post_init check is always executed
-            self.confidence_measure_cfg = OmegaConf.structured(
-                self.confidence_method_cfg
-                if isinstance(self.confidence_method_cfg, ConfidenceMeasureConfig)
-                else ConfidenceMeasureConfig(**self.confidence_method_cfg)
-            )
-            self.confidence_method_cfg = "DEPRECATED"
 
 
 @dataclass
@@ -2235,31 +2219,15 @@ class GreedyBatchedRNNTInferConfig:
     max_symbols_per_step: Optional[int] = 10
     preserve_alignments: bool = False
     preserve_frame_confidence: bool = False
-    confidence_measure_cfg: Optional[ConfidenceMeasureConfig] = ConfidenceMeasureConfig()
-    confidence_method_cfg: str = "DEPRECATED"
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = ConfidenceMethodConfig()
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
-        self.confidence_measure_cfg = OmegaConf.structured(
-            self.confidence_measure_cfg
-            if isinstance(self.confidence_measure_cfg, ConfidenceMeasureConfig)
-            else ConfidenceMeasureConfig(**self.confidence_measure_cfg)
+        self.confidence_method_cfg = OmegaConf.structured(
+            self.confidence_method_cfg
+            if isinstance(self.confidence_method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.confidence_method_cfg)
         )
-        if self.confidence_method_cfg != "DEPRECATED":
-            logging.warning(
-                "`confidence_method_cfg` is deprecated and will be removed in the future. "
-                "Please use `confidence_measure_cfg` instead."
-            )
-
-            # TODO (alaptev): delete the following two lines sometime in the future
-            logging.warning("Re-writing `confidence_measure_cfg` with the value of `confidence_method_cfg`.")
-            # OmegaConf.structured ensures that post_init check is always executed
-            self.confidence_measure_cfg = OmegaConf.structured(
-                self.confidence_method_cfg
-                if isinstance(self.confidence_method_cfg, ConfidenceMeasureConfig)
-                else ConfidenceMeasureConfig(**self.confidence_method_cfg)
-            )
-            self.confidence_method_cfg = "DEPRECATED"
 
 
 class GreedyTDTInfer(_GreedyRNNTInfer):
@@ -2288,15 +2256,15 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -2331,7 +2299,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2340,7 +2308,7 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
         self.durations = durations
 
@@ -2544,15 +2512,15 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
             The length of the list corresponds to the Acoustic Length (T).
             Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more confidence scores.
             U is the number of target tokens for the current timestep Ti.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -2587,7 +2555,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2596,7 +2564,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer):
             max_symbols_per_step=max_symbols_per_step,
             preserve_alignments=preserve_alignments,
             preserve_frame_confidence=preserve_frame_confidence,
-            confidence_measure_cfg=confidence_measure_cfg,
+            confidence_method_cfg=confidence_method_cfg,
         )
         self.durations = durations
 

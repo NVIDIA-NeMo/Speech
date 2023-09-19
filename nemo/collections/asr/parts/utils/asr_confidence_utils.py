@@ -25,7 +25,7 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.utils import logging
 
 
-class ConfidenceMeasureConstants:
+class ConfidenceMethodConstants:
     NAMES = ("max_prob", "entropy")
     ENTROPY_TYPES = ("gibbs", "tsallis", "renyi")
     ENTROPY_NORMS = ("lin", "exp")
@@ -48,17 +48,17 @@ class ConfidenceConstants:
 
 
 @dataclass
-class ConfidenceMeasureConfig:
-    """A Config which contains the measure name and settings to compute per-frame confidence scores.
+class ConfidenceMethodConfig:
+    """A Config which contains the method name and settings to compute per-frame confidence scores.
 
     Args:
-        name: The measure name (str).
+        name: The method name (str).
             Supported values:
                 - 'max_prob' for using the maximum token probability as a confidence.
                 - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
         entropy_type: Which type of entropy to use (str).
-            Used if confidence_measure_cfg.name is set to `entropy`.
+            Used if confidence_method_cfg.name is set to `entropy`.
             Supported values:
                 - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                     the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -92,31 +92,25 @@ class ConfidenceMeasureConfig:
 
     def __post_init__(self):
         if self.temperature != "DEPRECATED":
-            logging.warning(
-                "`temperature` is deprecated and will be removed in the future. Please use `alpha` instead."
-            )
-
-            # TODO (alaptev): delete the following two lines sometime in the future
-            logging.warning("Re-writing `alpha` with the value of `temperature`.")
             # self.temperature has type str
             self.alpha = float(self.temperature)
             self.temperature = "DEPRECATED"
-        if self.name not in ConfidenceMeasureConstants.NAMES:
+        if self.name not in ConfidenceMethodConstants.NAMES:
             raise ValueError(
                 f"`name` must be one of the following: "
-                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.NAMES) + '`'}. Provided: `{self.name}`"
+                f"{'`' + '`, `'.join(ConfidenceMethodConstants.NAMES) + '`'}. Provided: `{self.name}`"
             )
-        if self.entropy_type not in ConfidenceMeasureConstants.ENTROPY_TYPES:
+        if self.entropy_type not in ConfidenceMethodConstants.ENTROPY_TYPES:
             raise ValueError(
                 f"`entropy_type` must be one of the following: "
-                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.ENTROPY_TYPES) + '`'}. Provided: `{self.entropy_type}`"
+                f"{'`' + '`, `'.join(ConfidenceMethodConstants.ENTROPY_TYPES) + '`'}. Provided: `{self.entropy_type}`"
             )
         if self.alpha <= 0.0:
             raise ValueError(f"`alpha` must be > 0. Provided: {self.alpha}")
-        if self.entropy_norm not in ConfidenceMeasureConstants.ENTROPY_NORMS:
+        if self.entropy_norm not in ConfidenceMethodConstants.ENTROPY_NORMS:
             raise ValueError(
                 f"`entropy_norm` must be one of the following: "
-                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.ENTROPY_NORMS) + '`'}. Provided: `{self.entropy_norm}`"
+                f"{'`' + '`, `'.join(ConfidenceMethodConstants.ENTROPY_NORMS) + '`'}. Provided: `{self.entropy_norm}`"
             )
 
 
@@ -142,15 +136,15 @@ class ConfidenceConfig:
             from the `token_confidence`.
         aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
             Valid options are `mean`, `min`, `max`, `prod`.
-        measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -181,34 +175,19 @@ class ConfidenceConfig:
     preserve_word_confidence: bool = False
     exclude_blank: bool = True
     aggregation: str = "min"
-    measure_cfg: ConfidenceMeasureConfig = ConfidenceMeasureConfig()
-    method_cfg: str = "DEPRECATED"
+    method_cfg: ConfidenceMethodConfig = ConfidenceMethodConfig()
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
-        self.measure_cfg = OmegaConf.structured(
-            self.measure_cfg
-            if isinstance(self.measure_cfg, ConfidenceMeasureConfig)
-            else ConfidenceMeasureConfig(**self.measure_cfg)
+        self.method_cfg = OmegaConf.structured(
+            self.method_cfg
+            if isinstance(self.method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.method_cfg)
         )
-        if self.method_cfg != "DEPRECATED":
-            logging.warning(
-                "`method_cfg` is deprecated and will be removed in the future. Please use `measure_cfg` instead."
-            )
-
-            # TODO (alaptev): delete the following two lines sometime in the future
-            logging.warning("Re-writing `measure_cfg` with the value of `method_cfg`.")
-            # OmegaConf.structured ensures that post_init check is always executed
-            self.measure_cfg = OmegaConf.structured(
-                self.method_cfg
-                if isinstance(self.method_cfg, ConfidenceMeasureConfig)
-                else ConfidenceMeasureConfig(**self.method_cfg)
-            )
-            self.method_cfg = "DEPRECATED"
         if self.aggregation not in ConfidenceConstants.AGGREGATIONS:
             raise ValueError(
                 f"`aggregation` has to be one of the following: "
-                f"{'`' + '`, `'.join(ConfidenceMeasureConstants.AGGREGATIONS) + '`'}. Provided: `{self.aggregation}`"
+                f"{'`' + '`, `'.join(ConfidenceConstants.AGGREGATIONS) + '`'}. Provided: `{self.aggregation}`"
             )
 
 
@@ -284,7 +263,7 @@ def get_confidence_measure_bank():
 def get_confidence_aggregation_bank():
     """Generate a dictionary with confidence aggregation functions.
 
-    Supported confidence measures:
+    Supported confidence aggregation functions:
         min: minimum
         max: maximum
         mean: arithmetic mean
@@ -305,26 +284,26 @@ def get_confidence_aggregation_bank():
     return confidence_aggregation_bank
 
 
-class ConfidenceMeasureMixin(ABC):
-    """Confidence Measure Mixin class.
+class ConfidenceMethodMixin(ABC):
+    """Confidence Method Mixin class.
 
-    It initializes per-frame confidence measure.
+    It initializes per-frame confidence method.
     """
 
-    def _init_confidence_measure(self, confidence_measure_cfg: Optional[DictConfig] = None):
-        """Initialize per-frame confidence measure from config.
+    def _init_confidence_method(self, confidence_method_cfg: Optional[DictConfig] = None):
+        """Initialize per-frame confidence method from config.
         """
         # OmegaConf.structured ensures that post_init check is always executed
-        confidence_measure_cfg = OmegaConf.structured(
-            ConfidenceMeasureConfig()
-            if confidence_measure_cfg is None
-            else ConfidenceMeasureConfig(**confidence_measure_cfg)
+        confidence_method_cfg = OmegaConf.structured(
+            ConfidenceMethodConfig()
+            if confidence_method_cfg is None
+            else ConfidenceMethodConfig(**confidence_method_cfg)
         )
 
-        # set confidence calculation measure
+        # set confidence calculation method
         # we suppose that self.blank_id == len(vocabulary)
         self.num_tokens = (self.blank_id if hasattr(self, "blank_id") else self._blank_index) + 1
-        self.alpha = confidence_measure_cfg.alpha
+        self.alpha = confidence_method_cfg.alpha
 
         # init confidence measure bank
         self.confidence_measure_bank = get_confidence_measure_bank()
@@ -332,14 +311,14 @@ class ConfidenceMeasureMixin(ABC):
         measure = None
         # construct measure_name
         measure_name = ""
-        if confidence_measure_cfg.name == "max_prob":
+        if confidence_method_cfg.name == "max_prob":
             measure_name = "max_prob"
-        elif confidence_measure_cfg.name == "entropy":
+        elif confidence_method_cfg.name == "entropy":
             measure_name = '_'.join(
-                [confidence_measure_cfg.name, confidence_measure_cfg.entropy_type, confidence_measure_cfg.entropy_norm]
+                [confidence_method_cfg.name, confidence_method_cfg.entropy_type, confidence_method_cfg.entropy_norm]
             )
         else:
-            raise ValueError(f"Unsupported `confidence_measure_cfg.name`: `{confidence_measure_cfg.name}`")
+            raise ValueError(f"Unsupported `confidence_method_cfg.name`: `{confidence_method_cfg.name}`")
         if measure_name not in self.confidence_measure_bank:
             raise ValueError(f"Unsupported measure setup: `{measure_name}`")
         measure = partial(self.confidence_measure_bank[measure_name], v=self.num_tokens, t=self.alpha)
@@ -359,7 +338,7 @@ class ConfidenceMixin(ABC):
         confidence_cfg = OmegaConf.structured(
             ConfidenceConfig() if confidence_cfg is None else ConfidenceConfig(**confidence_cfg)
         )
-        self.confidence_measure_cfg = confidence_cfg.measure_cfg
+        self.confidence_method_cfg = confidence_cfg.method_cfg
 
         # extract the config
         self.preserve_word_confidence = confidence_cfg.get('preserve_word_confidence', False)
@@ -384,11 +363,11 @@ class ConfidenceMixin(ABC):
             if self.cfg.strategy in ['greedy', 'greedy_batch']:
                 self.preserve_frame_confidence = self.cfg.greedy.get('preserve_frame_confidence', False)
                 # OmegaConf.structured ensures that post_init check is always executed
-                confidence_measure_cfg = OmegaConf.structured(self.cfg.greedy).get('confidence_measure_cfg', None)
-                self.confidence_measure_cfg = (
-                    OmegaConf.structured(ConfidenceMeasureConfig())
-                    if confidence_measure_cfg is None
-                    else OmegaConf.structured(ConfidenceMeasureConfig(**confidence_measure_cfg))
+                confidence_method_cfg = OmegaConf.structured(self.cfg.greedy).get('confidence_method_cfg', None)
+                self.confidence_method_cfg = (
+                    OmegaConf.structured(ConfidenceMethodConfig())
+                    if confidence_method_cfg is None
+                    else OmegaConf.structured(ConfidenceMethodConfig(**confidence_method_cfg))
                 )
 
     @abstractmethod

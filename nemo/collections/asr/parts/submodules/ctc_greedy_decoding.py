@@ -19,7 +19,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.asr.parts.utils import rnnt_utils
-from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMeasureConfig, ConfidenceMeasureMixin
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodConfig, ConfidenceMethodMixin
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, NeuralType
 from nemo.utils import logging
@@ -55,7 +55,7 @@ def _states_to_device(dec_state, device='cpu'):
     return dec_state
 
 
-class GreedyCTCInfer(Typing, ConfidenceMeasureMixin):
+class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
     """A greedy CTC decoder.
 
     Provides a common abstraction for sample level and batch level greedy decoding.
@@ -71,15 +71,15 @@ class GreedyCTCInfer(Typing, ConfidenceMeasureMixin):
         preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
             generated during decoding. When set to true, the Hypothesis will contain
             the non-null value for `frame_confidence` in it. Here, `frame_confidence` is a List of floats.
-        confidence_measure_cfg: A dict-like object which contains the measure name and settings to compute per-frame
+        confidence_method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
-            name: The measure name (str).
+            name: The method name (str).
                 Supported values:
                     - 'max_prob' for using the maximum token probability as a confidence.
                     - 'entropy' for using a normalized entropy of a log-likelihood vector.
 
-            entropy_type: Which type of entropy to use (str). Used if confidence_measure_cfg.name is set to `entropy`.
+            entropy_type: Which type of entropy to use (str). Used if confidence_method_cfg.name is set to `entropy`.
                 Supported values:
                     - 'gibbs' for the (standard) Gibbs entropy. If the alpha (α) is provided,
                         the formula is the following: H_α = -sum_i((p^α_i)*log(p^α_i)).
@@ -130,7 +130,7 @@ class GreedyCTCInfer(Typing, ConfidenceMeasureMixin):
         preserve_alignments: bool = False,
         compute_timestamps: bool = False,
         preserve_frame_confidence: bool = False,
-        confidence_measure_cfg: Optional[DictConfig] = None,
+        confidence_method_cfg: Optional[DictConfig] = None,
     ):
         super().__init__()
 
@@ -140,8 +140,8 @@ class GreedyCTCInfer(Typing, ConfidenceMeasureMixin):
         self.compute_timestamps = compute_timestamps | preserve_frame_confidence
         self.preserve_frame_confidence = preserve_frame_confidence
 
-        # set confidence calculation measure
-        self._init_confidence_measure(confidence_measure_cfg)
+        # set confidence calculation method
+        self._init_confidence_method(confidence_method_cfg)
 
     @typecheck()
     def forward(
@@ -253,27 +253,12 @@ class GreedyCTCInferConfig:
     preserve_alignments: bool = False
     compute_timestamps: bool = False
     preserve_frame_confidence: bool = False
-    confidence_measure_cfg: Optional[ConfidenceMeasureConfig] = ConfidenceMeasureConfig()
-    confidence_method_cfg: str = "DEPRECATED"
+    confidence_method_cfg: Optional[ConfidenceMethodConfig] = ConfidenceMethodConfig()
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
-        self.confidence_measure_cfg = OmegaConf.structured(
-            self.confidence_measure_cfg
-            if isinstance(self.confidence_measure_cfg, ConfidenceMeasureConfig)
-            else ConfidenceMeasureConfig(**self.confidence_measure_cfg)
+        self.confidence_method_cfg = OmegaConf.structured(
+            self.confidence_method_cfg
+            if isinstance(self.confidence_method_cfg, ConfidenceMethodConfig)
+            else ConfidenceMethodConfig(**self.confidence_method_cfg)
         )
-        if self.confidence_method_cfg != "DEPRECATED":
-            logging.warning(
-                "`confidence_method_cfg` is deprecated and will be removed in the future. "
-                "Please use `confidence_measure_cfg` instead."
-            )
-
-            # TODO (alaptev): delete the following two lines sometime in the future
-            logging.warning("Re-writing `confidence_measure_cfg` with the value of `confidence_method_cfg`.")
-            # OmegaConf.structured ensures that post_init check is always executed
-            self.confidence_measure_cfg = OmegaConf.structured(
-                self.confidence_method_cfg
-                if isinstance(self.confidence_method_cfg, ConfidenceMeasureConfig)
-                else ConfidenceMeasureConfig(**self.confidence_method_cfg)
-            )

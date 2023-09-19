@@ -27,11 +27,6 @@ from tqdm import tqdm
 def get_args():
     parser = argparse.ArgumentParser(description='Download LJSpeech and create manifests with predefined split')
     parser.add_argument("--data-root", required=True, type=Path)
-    parser.add_argument(
-        '--whitelist-path',
-        type=str,
-        default="lj_speech.tsv extracted from the readme file in the dataset. You can also download the file from https://github.com/NVIDIA/NeMo-text-processing/blob/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
-    )
 
     args = parser.parse_args()
     return args
@@ -57,20 +52,9 @@ def __extract_file(filepath, data_dir):
         print(f"Error while extracting {filepath}. Already extracted?")
 
 
-def __process_data(data_root, whitelist_path):
-    if whitelist_path is None:
-        wget.download(
-            "https://raw.githubusercontent.com/NVIDIA/NeMo-text-processing/main/nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv",
-            out=str(data_root),
-        )
-        whitelist_path = data_root / "lj_speech.tsv"
-
+def __process_data(data_root):
     text_normalizer = Normalizer(
-        lang="en",
-        input_case="cased",
-        whitelist=whitelist_path,
-        overwrite_cache=True,
-        cache_dir=data_root / "cache_dir",
+        lang="en", input_case="cased", overwrite_cache=True, cache_dir=data_root / "cache_dir",
     )
     text_normalizer_call_kwargs = {"punct_pre_process": True, "punct_post_process": True}
     normalizer_call = lambda x: text_normalizer.normalize(x, **text_normalizer_call_kwargs)
@@ -117,9 +101,8 @@ def main():
     __extract_file(str(tarred_data_path), str(args.data_root))
 
     data_root = args.data_root / "LJSpeech-1.1"
-    whitelist_path = args.whitelist_path
 
-    __process_data(data_root, whitelist_path)
+    __process_data(data_root)
 
 
 if __name__ == '__main__':

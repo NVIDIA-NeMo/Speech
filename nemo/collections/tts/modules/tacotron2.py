@@ -312,11 +312,8 @@ class Decoder(NeuralModule):
 
         self.initialize_decoder_states(memory, mask=mask)
 
-        mel_lengths = torch.zeros([memory.size(0)], dtype=torch.int32)
-        not_finished = torch.ones([memory.size(0)], dtype=torch.int32)
-        if torch.cuda.is_available():
-            mel_lengths = mel_lengths.cuda()
-            not_finished = not_finished.cuda()
+        mel_lengths = torch.zeros([memory.size(0)], dtype=torch.int32).to(memory.device)
+        not_finished = torch.ones([memory.size(0)], dtype=torch.int32).to(memory.device)
 
         mel_outputs, gate_outputs, alignments = [], [], []
         stepped = False

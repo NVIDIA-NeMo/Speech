@@ -272,7 +272,10 @@ class GPTSFTDataset(Dataset):
             for i, (ids, key) in enumerate(zip(template_ids, template_ids_keys)):
                 if key in self.truncation_fields:
                     truncation_length = truncation_length_list.pop()
-                    assert len(ids) >= truncation_length, f'{key} is not long enough to truncate.'
+                    if len(ids) < truncation_length:
+                        logging.warning(f'{key} is not long enough to truncate.')
+                        truncation_length = len(ids)
+
                     if self.truncation_method == 'left':
                         window_offset = truncation_length
                     elif self.truncation_method == 'right':
@@ -328,6 +331,7 @@ class GPTSFTDataset(Dataset):
         if len(input_ids) > self.max_seq_length:
             logging.warning(f'Input ids length {len(input_ids)} exceed max sequence length {self.max_seq_length}')
             input_ids = input_ids[: self.max_seq_length]
+            answer_ids = input_ids[answer_start_idx:]
 
         # store metadata in dataset, in case user may have keys required in the prediction json files
         metadata = {k: v for k, v in example.items() if k not in self.prompt_template_keys}

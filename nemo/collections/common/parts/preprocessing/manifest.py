@@ -91,16 +91,26 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
         item['audio_file'] = item.pop('audio_filename')
     elif 'audio_filepath' in item:
         item['audio_file'] = item.pop('audio_filepath')
-    elif 'audio_file' not in item:
+
+    # Video File
+    if 'video_filename' in item:
+        item['video_file'] = item.pop('video_filename')
+    elif 'video_filepath' in item:
+        item['video_file'] = item.pop('video_filepath')
+
+    if 'video_file' not in item and 'audio_file' not in item:
         raise ValueError(
-            f"Manifest file {manifest_file} has invalid json line structure: {line} without proper audio file key."
+            f"Manifest file {manifest_file} has invalid json line structure: {line} without proper audio/video file key."
         )
 
-    # If the audio path is a relative path and does not exist,
+    # If the audio/video path is a relative path and does not exist,
     # try to attach the parent directory of manifest to the audio path.
     # Revert to the original path if the new path still doesn't exist.
     # Assume that the audio path is like "wavs/xxxxxx.wav".
-    item['audio_file'] = get_full_path(audio_file=item['audio_file'], manifest_file=manifest_file)
+    if 'audio_file' in item:
+        item['audio_file'] = get_full_path(audio_file=item['audio_file'], manifest_file=manifest_file)
+    if 'video_file' in item:
+        item['video_file'] = get_full_path(audio_file=item['video_file'], manifest_file=manifest_file)
 
     # Duration.
     if 'duration' not in item:
@@ -144,7 +154,8 @@ def __parse_item(line: str, manifest_file: str) -> Dict[str, Any]:
         item['feature_file'] = get_full_path(audio_file=item['feature_file'], manifest_file=manifest_file)
 
     item = dict(
-        audio_file=item['audio_file'],
+        audio_file=item.get('audio_file', None),
+        video_file=item.get('video_file', None),
         duration=item['duration'],
         text=item['text'],
         rttm_file=item['rttm_file'],

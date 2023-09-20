@@ -46,6 +46,7 @@ class DatasetMeta:
 
 @dataclass
 class DatasetSample:
+    dataset_name: str
     manifest_entry: Dict[str, Any]
     audio_dir: Path
     feature_dir: Path
@@ -180,6 +181,7 @@ class TextToSpeechDataset(Dataset):
                 speaker_index = 0
 
             sample = DatasetSample(
+                dataset_name=dataset_name,
                 manifest_entry=entry,
                 audio_dir=Path(dataset.audio_dir),
                 feature_dir=Path(dataset.feature_dir),
@@ -204,7 +206,12 @@ class TextToSpeechDataset(Dataset):
         audio, _ = librosa.load(audio_filepath_abs, sr=self.sample_rate)
         tokens = self.text_tokenizer(data.text)
 
-        example = {"audio_filepath": audio_filepath_rel, "audio": audio, "tokens": tokens}
+        example = {
+            "dataset_name": data.dataset_name,
+            "audio_filepath": audio_filepath_rel,
+            "audio": audio,
+            "tokens": tokens,
+        }
 
         if data.speaker is not None:
             example["speaker"] = data.speaker
@@ -229,6 +236,7 @@ class TextToSpeechDataset(Dataset):
         return example
 
     def collate_fn(self, batch: List[dict]):
+        dataset_name_list = []
         audio_filepath_list = []
         audio_list = []
         audio_len_list = []
@@ -238,6 +246,7 @@ class TextToSpeechDataset(Dataset):
         prior_list = []
 
         for example in batch:
+            dataset_name_list.append(example["dataset_name"])
             audio_filepath_list.append(example["audio_filepath"])
 
             audio_tensor = torch.tensor(example["audio"], dtype=torch.float32)
@@ -264,6 +273,7 @@ class TextToSpeechDataset(Dataset):
         batch_tokens = stack_tensors(token_list, max_lens=[token_max_len], pad_value=self.text_tokenizer.pad)
 
         batch_dict = {
+            "dataset_names": dataset_name_list,
             "audio_filepaths": audio_filepath_list,
             "audio": batch_audio,
             "audio_lens": batch_audio_len,

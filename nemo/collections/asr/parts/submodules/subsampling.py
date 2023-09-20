@@ -369,6 +369,7 @@ class ConvSubsampling(torch.nn.Module):
             self.out = torch.nn.Linear(conv_channels * int(out_length), feat_out)
             self.conv2d_subsampling = True
         elif subsampling in ["striding_conv1d", "dw_striding_conv1d"]:
+            self.out = None
             self.conv2d_subsampling = False
         else:
             raise ValueError(f"Not valid sub-sampling: {subsampling}!")

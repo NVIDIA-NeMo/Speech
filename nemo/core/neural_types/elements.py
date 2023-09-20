@@ -25,6 +25,7 @@ __all__ = [
     'ChannelType',
     'AcousticEncodedRepresentation',
     'AudioSignal',
+    'VideoSignal',
     'SpectrogramType',
     'MelSpectrogramType',
     'MFCCSpectrogramType',
@@ -193,6 +194,21 @@ class AudioSignal(ElementType):
     def __init__(self, freq: int = None):
         self._params = {}
         self._params['freq'] = freq
+
+    @property
+    def type_parameters(self):
+        return self._params
+
+
+class VideoSignal(ElementType):
+    """Element type to represent encoded representation returned by the visual encoder model
+    Args:
+        fps (int): frames per second.
+    """
+
+    def __init__(self, fps: int = None):
+        self._params = {}
+        self._params['fps'] = fps
 
     @property
     def type_parameters(self):

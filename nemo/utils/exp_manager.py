@@ -504,7 +504,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         # Add lightning file logging to global_rank zero
         add_filehandlers_to_pl_logger(log_dir / 'lightning_logs.txt', log_dir / 'nemo_error_log.txt')
 
-    elif trainer.num_devices * trainer.num_devices > 1:
+    elif trainer.num_nodes * trainer.num_devices > 1:
         # sleep other ranks so rank 0 can finish
         # doing the initialization such as moving files
         time.sleep(cfg.seconds_to_sleep)

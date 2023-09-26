@@ -66,6 +66,9 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
         gpt_cfg.attention_dropout = cfg.model.get('attention_dropout', 0.0)
         gpt_cfg.ffn_dropout = cfg.model.ffn_dropout
         gpt_cfg.use_flash_attention = cfg.model.get('use_flash_attention', False)
+        gpt_cfg.tensor_model_parallel_size = cfg.model.get('tensor_model_parallel_size', 1)
+        gpt_cfg.pipeline_model_parallel_size = cfg.model.get('pipeline_model_parallel_size', 1)
+        gpt_cfg.pipeline_model_parallel_split_rank = cfg.model.get('pipeline_model_parallel_split_rank', 0)
 
         sft_cls = MegatronGPTSFTModel
         gpt_cfg.target = f"{sft_cls.__module__}.{sft_cls.__name__}"

@@ -20,6 +20,7 @@ from typing import Optional
 from lightning_utilities.core.apply_func import apply_to_collection
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from pytorch_lightning.loggers import Logger
+from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities.parsing import AttributeDict
 
 from nemo.utils import logging
@@ -81,6 +82,7 @@ class DLLogger(Logger):
             )
         dllogger.init(backends=backends)
 
+    @rank_zero_only
     def log_hyperparams(self, params, *args, **kwargs):
         if isinstance(params, Namespace):
             params = vars(params)
@@ -91,6 +93,7 @@ class DLLogger(Logger):
         params = _sanitize_callable_params(_flatten_dict(_convert_params(params)))
         dllogger.log(step="PARAMETER", data=params)
 
+    @rank_zero_only
     def log_metrics(self, metrics, step=None):
         if step is None:
             step = tuple()

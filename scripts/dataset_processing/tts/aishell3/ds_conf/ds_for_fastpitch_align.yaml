@@ -1,0 +1,49 @@
+name: "ds_for_fastpitch_align"
+
+manifest_filepath: "train_manifest.json"
+sup_data_path: "sup_data"
+sup_data_types: [ "align_prior_matrix", "pitch", "speaker_id"]
+phoneme_dict_path: "scripts/tts_dataset_files/zh/24finals/pinyin_dict_nv_22.10.txt"
+
+dataset:
+  _target_: nemo.collections.tts.data.dataset.TTSDataset
+  manifest_filepath: ${manifest_filepath}
+  sample_rate: 22050
+  sup_data_path: ${sup_data_path}
+  sup_data_types: ${sup_data_types}
+  n_fft: 1024
+  win_length: 1024
+  hop_length: 256
+  window: "hann"
+  n_mels: 80
+  lowfreq: 0
+  highfreq: null
+  max_duration: null
+  min_duration: 0.1
+  ignore_file: null
+  trim: true
+  trim_top_db: 50
+  trim_frame_length: 1024
+  trim_hop_length: 256
+  pitch_fmin: 65.40639132514966
+  pitch_fmax: 2093.004522404789
+
+  text_normalizer:
+    _target_: nemo_text_processing.text_normalization.normalize.Normalizer
+    lang: zh
+    input_case: cased
+
+  text_normalizer_call_kwargs:
+    verbose: false
+    punct_pre_process: true
+    punct_post_process: true
+
+  text_tokenizer:
+    _target_: nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.ChinesePhonemesTokenizer
+    punct: true
+    apostrophe: true
+    pad_with_space: true
+    g2p:
+      _target_: nemo.collections.tts.g2p.models.zh_cn_pinyin.ChineseG2p
+      phoneme_dict: ${phoneme_dict_path}
+      word_segmenter: jieba # Only jieba is supported now.

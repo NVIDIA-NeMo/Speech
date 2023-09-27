@@ -22,9 +22,9 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/preprocess_text.py \
     --input_manifest="<data_root_path>/manifest.json" \
     --output_manifest="<data_root_path>/manifest_processed.json" \
     --normalizer_config_path="<nemo_root_path>/examples/tts/conf/text/normalizer_en.yaml" \
-    --lower_case=True \
+    --lower_case \
     --num_workers=4 \
-    --batch_size=16
+    --joblib_batch_size=16
 """
 
 import argparse

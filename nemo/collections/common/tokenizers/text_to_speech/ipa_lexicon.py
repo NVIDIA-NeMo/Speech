@@ -15,7 +15,7 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT"]
 
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
@@ -48,6 +48,12 @@ GRAPHEME_CHARACTER_SETS = {
         'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
         'U', 'V', 'W', 'X', 'Y', 'Z', 'Ä', 'Ö', 'Ü', 'ẞ',
     ),
+    "it-IT": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'À', 'È', 'É', 'Ì',
+        'Ò', 'Ù'
+    ),
 }
 
 IPA_CHARACTER_SETS = {
@@ -70,7 +76,20 @@ IPA_CHARACTER_SETS = {
         'w', 'x', 'y', 'z', 'ç', 'ø', 'ŋ', 'œ', 'ɐ', 'ɑ',
         'ɒ', 'ɔ', 'ə', 'ɛ', 'ɜ', 'ɡ', 'ɪ', 'ɹ', 'ɾ', 'ʃ',
         'ʊ', 'ʌ', 'ʒ', '̃', 'θ'
-    )
+    ),
+    "it-IT": (
+        'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l',
+        'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'v', 'w',
+        'x', 'z', 'æ', 'ɐ', 'ɑ', 'ɔ', 'ə', 'ɚ',
+        'ɜ', 'ɬ', 'ɹ', 'ʌ', 'ʔ', 'ʲ', '̃', '̩', 'ᵻ',
+        'ð', 'ŋ', 'ɛ', 'ɡ', 'ɣ', 'ɪ', 'ɲ', 'ɾ', 'ʃ', 
+        'ʊ', 'ʎ', 'ʒ', 'ʝ', 'β', 'θ', 'd͡', 't͡', 'ø', 'ɒ',
+        'ɕ', 'ɓ', 'ç', 'ɖ', 'ɘ', 'ɝ', 'ɞ', 'ɟ','ʄ','ɡ','ɠ',
+        'ɢ','ʛ','ɦ','ɧ','ħ','ɥ','ʜ','ɨ','ɬ','ɫ','ɮ','ʟ',
+        'ɱ','ɯ','ɰ','ɳ','ɵ','ɸ','œ','ɶ','ʘ','ɺ','ɻ','ʀ','ʁ',
+        'ɽ','ʂ','ʈ','ʧ','ʉ','ʋ','ⱱ','ɤ','ʍ','χ','ʏ','ʑ','ʐ',
+        'ʔ','ʡ','ʕ','ʢ','ǀ','ǁ','ǂ','ᵻ'
+    ),
 }
 
 GRAPHEME_CHARACTER_CASES = ["upper", "lower", "mixed"]
@@ -124,7 +143,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES"]:
+    if locale in ["de-DE", "es-ES", "it-IT"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -138,6 +157,31 @@ def get_ipa_punctuation_list(locale):
                 '‒',  # figure dash, U+2012, decimal 8210
                 '–',  # en dash, U+2013, decimal 8211
                 '—',  # em dash, U+2014, decimal 8212
+            ]
+        )
+    if locale == "it-IT":
+        # ref: https://en.wikipedia.org/wiki/German_orthography#Punctuation
+        punct_set.update(
+            [
+                '„',  # double low-9 quotation mark, U+201E, decimal 8222
+                '“',  # left double quotation mark, U+201C, decimal 8220
+                '‚',  # single low-9 quotation mark, U+201A, decimal 8218
+                '‘',  # left single quotation mark, U+2018, decimal 8216
+                '‒',  # figure dash, U+2012, decimal 8210
+                '–',  # en dash, U+2013, decimal 8211
+                '—',  # em dash, U+2014, decimal 8212
+                'ʴ',
+                'ʰ',
+                'ʱ',
+                'ʲ',
+                'ʷ',
+                'ˠ',
+                'ˤ',
+                '˞↓',
+                '↑',
+                '→',
+                '↗',
+                '↘,',
             ]
         )
     elif locale == "es-ES":

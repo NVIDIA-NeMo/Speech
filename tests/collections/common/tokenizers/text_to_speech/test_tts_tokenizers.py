@@ -18,6 +18,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers import (
     EnglishCharsTokenizer,
     GermanCharsTokenizer,
     IPATokenizer,
+    ItalianCharsTokenizer,
     SpanishCharsTokenizer,
 )
 from nemo.collections.tts.g2p.models.i18n_ipa import IpaG2p
@@ -84,6 +85,18 @@ class TestTTSTokenizers:
         expected_output = "Was ist dein Lieblingsgetränk?"
 
         tokenizer = GermanCharsTokenizer()
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+        assert len(tokens) == len(input_text)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_italian_chars_tokenizer(self):
+        input_text = "Ciao mondo!"
+        expected_output = "ciao mondo!"
+
+        tokenizer = ItalianCharsTokenizer()
         chars, tokens = self._parse_text(tokenizer, input_text)
 
         assert chars == expected_output

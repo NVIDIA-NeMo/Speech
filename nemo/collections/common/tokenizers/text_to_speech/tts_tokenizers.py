@@ -28,6 +28,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_text_preprocessing,
     chinese_text_preprocessing,
     english_text_preprocessing,
+    italian_text_preprocessing,
     spanish_text_preprocessing,
 )
 from nemo.utils import logging
@@ -264,6 +265,34 @@ class SpanishCharsTokenizer(BaseCharsTokenizer):
             pad_with_space=pad_with_space,
             non_default_punct_list=non_default_punct_list,
             text_preprocessing_func=spanish_text_preprocessing,
+        )
+
+
+class ItalianCharsTokenizer(BaseCharsTokenizer):
+    PUNCT_LIST = get_ipa_punctuation_list("it-IT")
+
+    def __init__(
+        self, punct=True, apostrophe=True, add_blank_at=None, pad_with_space=False, non_default_punct_list=None
+    ):
+        """Italian grapheme tokenizer.
+        Args:
+            punct: Whether to reserve grapheme for basic punctuation or not.
+            apostrophe: Whether to use apostrophe or not.
+            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+            if None then no blank in labels.
+            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+            non_default_punct_list: List of punctuation marks which will be used instead default.
+        """
+
+        it_alphabet = "abcdefghijklmnopqrstuvwxyzàèéìòù"
+        super().__init__(
+            chars=it_alphabet,
+            punct=punct,
+            apostrophe=apostrophe,
+            add_blank_at=add_blank_at,
+            pad_with_space=pad_with_space,
+            non_default_punct_list=non_default_punct_list,
+            text_preprocessing_func=italian_text_preprocessing,
         )
 
 
@@ -694,8 +723,7 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
         pad_with_space=False,
         text_preprocessing_func=chinese_text_preprocessing,
     ):
-        """
-        Chinese phoneme-based tokenizer.
+        """Chinese phoneme-based tokenizer.
         Note: This tokenizer for now covers Chinese phonemes/tones and English letters because our dataset contains
               both Chinese and English graphemes.
         Args:

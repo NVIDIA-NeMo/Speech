@@ -29,6 +29,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated
 from nemo.utils.exp_manager import exp_manager
 
 mp.set_start_method("spawn", force=True)
@@ -56,6 +57,10 @@ Usage:
 """
 
 
+@deprecated(
+    explanation=f"{__file__} is deprecated. Please use MegatronGPTSFTModel.add_adapter() for PEFT features."
+    "See updated scripts `megatron_gpt_peft_tuning.py` and `megatron_gpt_peft_eval.py` for examples."
+)
 @hydra_runner(config_path="conf", config_name="megatron_gpt_ia3_tuning_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")

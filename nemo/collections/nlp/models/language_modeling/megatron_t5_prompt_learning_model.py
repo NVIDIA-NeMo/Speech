@@ -25,8 +25,8 @@ from nemo.collections.nlp.data.language_modeling.megatron.t5_prompt_learning_dat
 from nemo.collections.nlp.models.language_modeling.megatron_base_prompt_learning_model import (
     MegatronBasePromptLearningModel,
 )
-from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.modules.common.megatron.utils import (
     average_losses_across_data_parallel_group,
     get_iterator_k_split,
@@ -296,9 +296,9 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             else self.tokenizer.bos_id,
         )
         # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
-        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
-        labels_text = MegatronT5FinetuneModel.ids_to_text(labels, self.tokenizer)
-        input_text = MegatronT5FinetuneModel.ids_to_text(input_ids, self.tokenizer)
+        preds_text = MegatronT5SFTModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        labels_text = MegatronT5SFTModel.ids_to_text(labels, self.tokenizer)
+        input_text = MegatronT5SFTModel.ids_to_text(input_ids, self.tokenizer)
         return {
             'predicted_token_ids': preds_text,
             'labels': labels_text,
@@ -482,11 +482,11 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
             else self.tokenizer.bos_id,
         )
         # Special ids to text function to handle stripping <eos> and special tokens with sentencepiece tokenizers.
-        preds_text = MegatronT5FinetuneModel.ids_to_text(predicted_token_ids, self.tokenizer)
-        input_text = MegatronT5FinetuneModel.ids_to_text(input_ids, self.tokenizer)
+        preds_text = MegatronT5SFTModel.ids_to_text(predicted_token_ids, self.tokenizer)
+        input_text = MegatronT5SFTModel.ids_to_text(input_ids, self.tokenizer)
 
         if labels is not None:
-            labels_text = MegatronT5FinetuneModel.ids_to_text(labels, self.tokenizer)
+            labels_text = MegatronT5SFTModel.ids_to_text(labels, self.tokenizer)
         else:
             labels_text = [None] * len(preds_text)
 

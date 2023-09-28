@@ -81,7 +81,6 @@ Modules
 .. autoclass:: nemo.collections.nlp.modules.common.megatron.module.Float16Module
     :show-inheritance: 
 
-
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron.gpt_model.GPTModel
     :show-inheritance: 
     :no-members:
@@ -140,11 +139,22 @@ Datasets
 .. autoclass:: nemo.collections.nlp.data.language_modeling.megatron.ul2_dataset.UL2Dataset
     :show-inheritance: 
 
+
+Adapter Mixin Class
+-------------------------
+
+.. autoclass:: nemo.collections.nlp.parts.mixins.nlp_adapter_mixins.NLPAdapterModelMixin
+    :show-inheritance:
+    :members: add_adapter, load_adapters, merge_cfg_with, merge_inference_cfg
+    :exclude-members: first_stage_of_pipeline, tie_weights, get_peft_state_dict, state_dict, sharded_state_dict, load_state_dict, on_load_checkpoint
+    :member-order: bysource
+
+
 Exportable Model Classes
 -------------------------
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_gpt_model.MegatronGPTExportableModel
-    :show-inheritance: 
+    :show-inheritance:
 
 .. toctree::
    :maxdepth: 1

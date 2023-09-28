@@ -23,7 +23,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_sampler
     MegatronPretrainingBatchSampler,
 )
 from nemo.collections.nlp.data.language_modeling.t0_dataset import T0Dataset
-from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.utils import AppState, logging
 
 try:
@@ -48,8 +48,8 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ['MegatronT0Model']
 
 
-class MegatronT0Model(MegatronT5FinetuneModel):
-    """T0 (https://arxiv.org/abs/2110.08207) Model that Inherits from MegatronT5FinetuneModel and overrides the dataset building."""
+class MegatronT0Model(MegatronT5SFTModel):
+    """T0 (https://arxiv.org/abs/2110.08207) Model that Inherits from MegatronT5SFTModel and overrides the dataset building."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer=trainer)
@@ -154,7 +154,7 @@ class MegatronT0Model(MegatronT5FinetuneModel):
             return datasets
 
     def training_step(self, dataloader_iter, batch_idx):
-        return super(MegatronT5FinetuneModel, self).training_step(dataloader_iter, batch_idx)
+        return super().training_step(dataloader_iter, batch_idx)
 
     # Override the parent batch reconfiguring logic.
     def _reconfigure_and_process_inference_batch(self, batch):
@@ -236,10 +236,10 @@ class MegatronT0Model(MegatronT5FinetuneModel):
 
     # TODO: Temporary overrides of finetune model. This needs to removed in the finetune model.
     def on_train_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_train_start()
+        super().on_train_start()
 
     def on_validation_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_validation_start()
+        super().on_validation_start()
 
     def on_test_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_test_start()
+        super().on_test_start()

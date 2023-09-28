@@ -52,6 +52,7 @@ autodoc_mock_imports = [
     'attr',  # attrdict in requirements, attr in import
     'torchmetrics',  # inherited from PTL
     'lightning_utilities',  # inherited from PTL
+    'lightning_fabric',
     'apex',
     'megatron.core',
     'transformer_engine',

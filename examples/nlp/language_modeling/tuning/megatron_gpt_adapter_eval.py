@@ -27,6 +27,7 @@ from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import Meg
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated
 
 mp.set_start_method("spawn", force=True)
 
@@ -47,6 +48,10 @@ if not torch.cuda.is_available():
     raise EnvironmentError("GPU is needed for the inference")
 
 
+@deprecated(
+    explanation=f"{__file__} is deprecated. Please use MegatronGPTSFTModel.add_adapter() for PEFT features."
+    "See updated scripts `megatron_gpt_peft_tuning.py` and `megatron_gpt_peft_eval.py` for examples."
+)
 @hydra_runner(config_path="conf", config_name="megatron_gpt_adapter_inference")
 def main(cfg) -> None:
 

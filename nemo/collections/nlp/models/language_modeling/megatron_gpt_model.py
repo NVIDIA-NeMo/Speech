@@ -196,9 +196,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             raise ImportError(
                 "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-
         if not HAVE_MEGATRON_CORE:
-            raise ImportError(
+            logging.warning(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         # this prevents base constructor from initializing tokenizer

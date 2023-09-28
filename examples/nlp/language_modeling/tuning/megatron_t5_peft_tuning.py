@@ -15,10 +15,9 @@
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf
 
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
-
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -26,32 +25,17 @@ from nemo.utils.exp_manager import exp_manager
 mp.set_start_method("spawn", force=True)
 
 """
-This is the script to finetuning a GPT Model with any PEFT method.
-A base GPT Model is required as a starting point. This script will then insert
+This is the script to finetuning a T5 Model with any PEFT method.
+A base T5 Model is required as a starting point. This script will then insert
 Adapters into each Transformer layer and will train/update only these adapters
-during training. The base GPT Model weights will remain frozen.
+during training. The base T5 Model weights will remain frozen.
 
-During training this script will only save the newly trained Adapter weights
-in checkpoints. At the end of training a .nemo file of Adapter weights will 
-be saved.
-
-Usage:
-    Assuming the base model is a 125m GPT Model, with TP=1, PP=1:
-    a. run a training run for a base gpt nemo file:
-        python megatron_gpt_peft_tuning.py \
-            "model.data.train_ds.file_names=[PATH TO TRAINING JSONL FILE]",
-            "model.data.train_ds.concat_sampling_probabilities=[SAMPLING VAL]",
-            "model.data.validation_ds.file_names=[PATH TO VALIDATION JSONL FILE]",
-            "model.data.validation_ds.names=[NAME FOR METRIC LOGGING]",
-            model.restore_from_path="PATH TO BASE GPT MODEL .nemo FILE"
-            model.peft.peft_scheme='lora'  # lora, ptuning, adapter, ia3, or none for full fineutning
-            name="NAME OF TRAINING RUN"
-            exp_manager.exp_dir="DIR TO SAVE CHECKPOINTS and .nemo FILE",
-Please see lora.ipynb for a step-by-step guide.
+This script is exactly the same as the peft tuning script for GPT. For more details
+please refer to the GPT script and docs.
 """
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_peft_tuning_config")
+@hydra_runner(config_path="conf", config_name="megatron_t5_peft_tuning_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
@@ -59,8 +43,8 @@ def main(cfg) -> None:
     trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
     exp_manager(trainer, cfg.exp_manager)
 
-    model_cfg = MegatronGPTSFTModel.merge_cfg_with(cfg.model.restore_from_path, cfg)
-    model = MegatronGPTSFTModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
+    model_cfg = MegatronT5SFTModel.merge_cfg_with(cfg.model.restore_from_path, cfg)
+    model = MegatronT5SFTModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
     peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
 
     if cfg.model.peft.restore_from_path is not None:

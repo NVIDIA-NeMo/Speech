@@ -1,4 +1,4 @@
-name: megatron_gpt_peft_${model.peft.peft_scheme}_tuning
+name: megatron_t5_peft_${model.peft.peft_scheme}_tuning
 
 trainer:
   devices: 1
@@ -39,7 +39,7 @@ model:
   seed: 1234
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
-
+  
   global_batch_size: 1
   micro_batch_size: 1
   restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
@@ -110,8 +110,8 @@ model:
     test_ds:
       file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
       names: ??? # Names of the corresponding datasets used to log metrics.
-      global_batch_size: 1
-      micro_batch_size: 1
+      global_batch_size: 1 #${model.global_batch_size}
+      micro_batch_size: 1 #${model.micro_batch_size}
       shuffle: False
       num_workers: 0
       pin_memory: True
@@ -123,13 +123,13 @@ model:
       add_eos: ${data.train_ds.add_eos}
       add_sep: ${data.train_ds.add_sep}
       add_bos: ${data.train_ds.add_bos}
+      separate_prompt_and_response_with_newline: ${data.train_ds.separate_prompt_and_response_with_newline}
       write_predictions_to_file: False
       output_file_path_prefix: null # Prefix of the file to write predictions to.
-      truncation_field: ${data.train_ds.truncation_field} # Options: keys in prompt_template
+      truncation_field: ${data.train_ds.truncation_field} # Options: keys in prompt_template      index_mapping_dir: null # Path to a directory to write index mapping files.
       index_mapping_dir: null # Path to a directory to write index mapping files.
       prompt_template: ${data.train_ds.prompt_template}
       tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
-      truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
 
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']

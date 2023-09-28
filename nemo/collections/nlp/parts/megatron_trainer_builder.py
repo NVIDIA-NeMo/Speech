@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
 from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelSummary
@@ -22,8 +24,10 @@ from nemo.collections.nlp.parts.nlp_overrides import (
     GradScaler,
     MegatronHalfPrecisionPlugin,
     NLPDDPStrategy,
+    NLPDDPStrategyNotebook,
     PipelineMixedPrecisionPlugin,
 )
+from nemo.utils import logging
 
 
 class MegatronTrainerBuilder:
@@ -39,6 +43,12 @@ class MegatronTrainerBuilder:
         """
         Returns a ddp strategy passed to Trainer.strategy.
         """
+        # check interactive environment
+        _IS_INTERACTIVE = hasattr(sys, "ps1") or bool(sys.flags.interactive)
+        if _IS_INTERACTIVE and self.cfg.trainer.devices == 1:
+            logging.info("Detected interactive environment, using NLPDDPStrategyNotebook")
+            return NLPDDPStrategyNotebook(no_ddp_communication_hook=True, find_unused_parameters=False,)
+
         return NLPDDPStrategy(
             no_ddp_communication_hook=True,
             gradient_as_bucket_view=self.cfg.model.gradient_as_bucket_view,
@@ -61,7 +71,9 @@ class MegatronTrainerBuilder:
             plugins: list of plugins passed to Trainer.plugins including precision plugins.
         """
         megatron_amp_o2 = self.cfg.model.get('megatron_amp_O2', False)
-        with_distributed_adam = self.cfg.model.optim.get('name') == 'distributed_fused_adam'
+        with_distributed_adam = (
+            self.cfg.model.optim.get('name') == 'distributed_fused_adam' if self.cfg.model.get('optim') else False
+        )
 
         plugins = []
         if self.cfg.trainer.precision in [16, '16', 'bf16', '16-mixed', 'bf16-mixed']:
@@ -109,4 +121,16 @@ class MegatronT5TrainerBuilder(MegatronTrainerBuilder):
             strategy=strategy,
             **self.cfg.trainer,
             callbacks=[ModelSummary(max_depth=3), CustomProgressBar()]
+        )
+
+
+class MegatronLMPPTrainerBuilder(MegatronTrainerBuilder):
+    """Builder for scripts where grad scaler is turned off for pipeline parallel LM model. E.g. PEFT tuning scripts"""
+
+    def _grad_scaler(self) -> GradScaler:
+        return GradScaler(
+            init_scale=self.cfg.model.get("native_amp_init_scale", 2 ** 32),
+            growth_interval=self.cfg.model.get("native_amp_growth_interval", 1000),
+            hysteresis=self.cfg.model.get("hysteresis", 2),
+            enabled=False if self.cfg.model.pipeline_model_parallel_size > 1 else True,
         )

@@ -32,6 +32,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import AppState, logging
+from nemo.utils.decorators import deprecated
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.model_utils import inject_model_parallel_rank
 
@@ -145,6 +146,10 @@ def validate_checkpoint_loading_args(cfg):
         raise ValueError(f'Hparams file {cfg.hparams_file} does not exist or is not a file.')
 
 
+@deprecated(
+    explanation=f"{__file__} is deprecated. PEFT and SFT scripts are now consolidated"
+    "See updated scripts `megatron_gpt_peft_tuning.py` and `megatron_gpt_peft_eval.py` for examples."
+)
 @hydra_runner(config_path="conf", config_name="megatron_gpt_sft")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")

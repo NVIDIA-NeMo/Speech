@@ -16,8 +16,9 @@ import copy
 import hashlib
 import json
 import os
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Union
 
+import torch
 from lightning_fabric.utilities.cloud_io import _load as pl_load
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
@@ -39,6 +40,7 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.classes import ModelPT
 from nemo.core.classes.exportable import Exportable
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import AppState, logging
 
 try:
@@ -439,3 +441,22 @@ class NLPModel(ModelPT, Exportable):
             del state_dict["bert_model.embeddings.position_ids"]
         results = super(NLPModel, self).load_state_dict(state_dict, strict=strict)
         return results
+
+    @classmethod
+    def restore_from(
+        cls,
+        restore_path: str,
+        override_config_path: Optional[Union[OmegaConf, str]] = None,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+        return_config: bool = False,
+        save_restore_connector: SaveRestoreConnector = None,
+        trainer: Optional[Trainer] = None,
+    ):
+        if save_restore_connector is None:
+            save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(restore_path):
+            save_restore_connector.model_extracted_dir = restore_path
+        return super().restore_from(
+            restore_path, override_config_path, map_location, strict, return_config, save_restore_connector, trainer
+        )

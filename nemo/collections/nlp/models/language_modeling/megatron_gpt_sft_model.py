@@ -32,13 +32,9 @@ from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_sampler
 )
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_split
-from nemo.collections.nlp.modules.common.text_generation_utils import (
-    LengthParam,
-    SamplingParam,
-    generate,
-    get_computeprob_response,
-    megatron_gpt_generate,
-)
+from nemo.collections.nlp.modules.common.text_generation_utils import generate, get_computeprob_response
+
+from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
 
@@ -68,7 +64,7 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ['MegatronGPTSFTModel']
 
 
-class MegatronGPTSFTModel(MegatronGPTModel):
+class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
     """
     Megatron GPT Supervised Fine-Tuning
     """
@@ -169,6 +165,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
         # NOTE: super().__init__ will try and setup train/val/test datasets, but we sidestep this using a if self._train_ds is not None condition
         # We then set things up for real only once setup() of this class is called.
         resume_checkpoint_path = self.trainer.ckpt_path
+        self.setup_complete = True
         if resume_checkpoint_path:
             init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:
@@ -209,6 +206,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
 
         if self.cfg.get('transformer_engine', False):
             self.setup_transformer_engine_tp_groups()
+        self.setup_complete = True
 
     def _build_dataset(self, data_cfg, is_train=True):
         datasets = []
@@ -567,7 +565,7 @@ class MegatronGPTSFTModel(MegatronGPTModel):
 
         # Logging of the averaged metrics:
         averaged_loss = sum(averaged_loss) / len(averaged_loss)
-        averaged_metric = sum(averaged_metric) / len(averaged_metric) if len(averaged_metric) > 1 else None
+        averaged_metric = sum(averaged_metric) / len(averaged_metric) if len(averaged_metric) >= 1 else None
 
         # Handle case where metrics can be nan or inf. This can break checkpoint save/load.
         if averaged_metric is not None and (torch.isinf(averaged_metric) or torch.isnan(averaged_metric)):
@@ -834,6 +832,9 @@ class MegatronGPTSFTModel(MegatronGPTModel):
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
         return super().on_test_epoch_start()
+
+    def on_predict_epoch_start(self):
+        return self.on_test_epoch_start()
 
     def on_test_epoch_end(self):
         _ = self.inference_epoch_end(self.test_step_outputs, 'test', self.cfg.data.test_ds)

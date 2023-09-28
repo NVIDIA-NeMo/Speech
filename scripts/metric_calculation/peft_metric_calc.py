@@ -92,46 +92,35 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
 def main():
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument(
-        '--ground-truth',
-        type=str,
-        help="ground truth .jsonl file made from /NeMo/scripts/dataset_processing/nlp/squad/prompt_learning_squad_preprocessing.py",
-    )
-    parser.add_argument(
-        '--preds',
+        '--pred-file',
         type=str,
         help="Text file with test set prompts + model predictions. Prediction file can be made by running NeMo/examples/nlp/language_modeling/megatron_gpt_prompt_learning_eval.py",
     )
     parser.add_argument(
-        '--split-string',
+        '--pred-field',
         type=str,
-        help="The text at the end of the prompt, write before the predicted answer. This will be used to find the model's predictions in pred files when the pred file containers both the prompt and prediction.",
-        default=None,
-    )  # If the pred file only has preditions, just pass none
+        help="The field in the json file that contains the prediction tokens",
+        default="pred",
+    )
     parser.add_argument(
-        '--answer-field',
+        '--ground-truth-field',
         type=str,
         help="The field in the json file that contains the ground truth tokens",
-        default="answer",
+        default="original_answers",
     )
 
     args = parser.parse_args()
 
-    ground_truth_file = args.ground_truth
-    pred_file = args.preds
+    pred_file = args.pred_file
     scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
     preds = open(pred_file, encoding="utf-8").readlines()
-    ground_truth = open(ground_truth_file).readlines()
     f1 = exact_match = total = r_score = 0
 
     for i in range(len(preds)):
-        truth = json.loads(ground_truth[i])
-        pred_answer = json.loads(preds[i])
+        pred_line = json.loads(preds[i])
 
-        # Need to separate out preditions from prompt, spliting on the provided "split string"
-        if args.split_string is not None:
-            pred_answer = pred_answer["sentence"].split(args.split_string)[-1].strip()
-
-        true_answers = truth[args.answer_field]
+        pred_answer = pred_line[args.pred_field]
+        true_answers = pred_line[args.ground_truth_field]
         if not isinstance(true_answers, list):
             true_answers = [true_answers]
 

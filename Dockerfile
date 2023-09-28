@@ -38,7 +38,7 @@ RUN apt-get update && \
   libsndfile1 sox \
   libfreetype6 \
   swig \
-  ffmpeg \
+  ffmpeg=ffmpeg_5.1.2-3ubuntu1 \
   libavdevice-dev && \
   rm -rf /var/lib/apt/lists/*
 

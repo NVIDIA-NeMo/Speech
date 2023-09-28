@@ -42,6 +42,11 @@ class AdapterRegistryInfo:
         self.adapter_class_path = f'{self.adapter_class.__module__}.{self.adapter_class.__name__}'
 
 
+class AdapterConfig:
+    # superclass for all adapter config dataclasses
+    pass
+
+
 def register_adapter(base_class: type, adapter_class: type):
     """
     Registers a pair (Base class, Adapter class) into the adapter registry, used for de-referencing.
@@ -144,8 +149,8 @@ class AdapterModuleMixin(ABC):
                 metadata of the adapter config.
 
     .. note::
-    
-        This module is **not** responsible for maintaining its config. Subclasses must ensure config is updated 
+
+        This module is **not** responsible for maintaining its config. Subclasses must ensure config is updated
         or preserved as needed. It is the responsibility of the subclasses to propagate the most up to date config to
         lower layers.
     """
@@ -153,7 +158,7 @@ class AdapterModuleMixin(ABC):
     adapter_global_cfg_key = "global_cfg"
     adapter_metadata_cfg_key = "adapter_meta_cfg"
 
-    def add_adapter(self, name: str, cfg: DictConfig, **kwargs):
+    def add_adapter(self, name: str, cfg: Union[DictConfig, AdapterConfig], **kwargs):
         """
         Add an Adapter module to this module.
 
@@ -520,7 +525,7 @@ class AdapterModuleMixin(ABC):
         Perform the forward step of a single adapter module on some input data.
 
         .. note::
-        
+
             Subclasses can override this method to accommodate more complicate adapter forward steps.
 
         Args:
@@ -608,7 +613,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                     f"Finished setup of adapter : '{full_adapter_name}'. Enabled: {adapter_cfg.get('enabled', True)}."
                 )
 
-    def add_adapter(self, name: str, cfg: DictConfig):
+    def add_adapter(self, name: str, cfg: Union[DictConfig, AdapterConfig]):
         """
         Add an Adapter module to this model.
 
@@ -758,7 +763,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
         Utility method that saves only the adapter module(s), and not the entire model itself.
         This allows the sharing of adapters which are often just a fraction of the size of the full model,
         enabling easier deliver.
-        
+
         .. note::
 
             The saved file is a pytorch compatible pickle file, containing the state dicts of the adapter(s),
@@ -840,7 +845,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
         enabling easier deliver.
 
         .. note::
-        
+
             During restoration, assumes that the model does not currently already have an adapter with
             the name (if provided), or any adapter that shares a name with the state dict's modules
             (if name is not provided). This is to ensure that each adapter name is globally unique
@@ -971,7 +976,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
         List of valid adapter modules that are supported by the model.
 
         .. note::
-        
+
             Subclasses should override this property and return a list of str names, of all the modules
             that they support, which will enable users to determine where to place the adapter modules.
 

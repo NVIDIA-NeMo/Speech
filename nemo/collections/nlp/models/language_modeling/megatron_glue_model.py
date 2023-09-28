@@ -18,7 +18,7 @@ from nemo.collections.nlp.data.glue_benchmark.glue_benchmark_dataset import (
     TextToTextGLUEDataset,
     TextToTextXNLIDataset,
 )
-from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.utils import logging
 
 try:
@@ -33,8 +33,8 @@ except (ImportError, ModuleNotFoundError):
 __all__ = ['MegatronT5GLUEModel']
 
 
-class MegatronT5GLUEModel(MegatronT5FinetuneModel):
-    """GLUE Model that Inherits from MegatronT5FinetuneModel and overrides the dataset building."""
+class MegatronT5GLUEModel(MegatronT5SFTModel):
+    """GLUE Model that Inherits from MegatronT5SFTModel and overrides the dataset building."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer=trainer)

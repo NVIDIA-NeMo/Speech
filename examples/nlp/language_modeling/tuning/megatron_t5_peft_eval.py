@@ -22,7 +22,7 @@ import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf
 
 
-from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
@@ -33,8 +33,8 @@ try:
     from megatron.core import parallel_state
 
     HAVE_MEGATRON_CORE = True
-except:
-    pass
+except (ImportError, ModuleNotFoundError):
+    HAVE_MEGATRON_CORE = False
 
 mp.set_start_method("spawn", force=True)
 """
@@ -42,7 +42,7 @@ This is the script to run inference with a PEFT model or an SFT Model.
 
 If you want to evaluate an SFT .nemo file:
 
-python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+python examples/nlp/language_modeling/tuning/megatron_t5_peft_eval.py \
 	model.restore_from_path=<path_to_sft_nemo_file> \
 	model.peft.restore_from_path=null \
 	trainer.devices=1 model.data.test_ds.file_names=\[<path_to_test_jsonl_file1>, <path_to_test_jsonl_file2>] \
@@ -53,11 +53,11 @@ python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
 	inference.greedy=True \
 	inference.outfile_path=\'<path_to_jsonl_output_file>'  
 
-If you want to evaluate a PEFT Model, you should provide a base GPT model and a PEFT model .nemo file
+If you want to evaluate a PEFT Model, you should provide a base T5 model and a PEFT model .nemo file
 
-python examples/nlp/language_modeling/tuning/megatron_gpt_peft_eval.py \
+python examples/nlp/language_modeling/tuning/megatron_t5_peft_eval.py \
 	model.restore_from_path=<path_to_sft_nemo_file> \
-	model.peft.restore_from_path=<path_to_peft_nemo_file> \ # this will be created if you use `megatron_gpt_peft_tuning.py`
+	model.peft.restore_from_path=<path_to_peft_nemo_file> \ # this will be created if you use `megatron_t5_peft_tuning.py`
 	trainer.devices=1 model.data.test_ds.file_names=\[<path_to_test_jsonl_file1>, <path_to_test_jsonl_file2>] \
 	model.data.test_ds.names=\['name_for_test_file1', 'name_for_test_file2'] \  # this is not the filename just some identifier
 	model.data.test_ds.global_batch_size=4 \  # or some other value
@@ -108,29 +108,22 @@ def use_inference_server(cfg, model, trainer):
             generate(model.cuda())
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_peft_eval_config")
+@hydra_runner(config_path="conf", config_name="megatron_t5_peft_eval_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f"\n{OmegaConf.to_yaml(cfg)}")
     trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
 
-    if cfg.model.peft.restore_from_path:
-        model_cfg = MegatronGPTSFTModel.merge_inference_cfg(cfg.model.peft.restore_from_path, cfg)
-    else:
-        model_cfg = MegatronGPTSFTModel.merge_inference_cfg(cfg.model.restore_from_path, cfg)
+    model_cfg = MegatronT5SFTModel.merge_inference_cfg(cfg.model.peft.restore_from_path, cfg)
+    model = MegatronT5SFTModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
 
-    model = MegatronGPTSFTModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
-
-    if cfg.model.peft.restore_from_path:
-        model.load_adapters(cfg.model.peft.restore_from_path)
+    model.load_adapters(cfg.model.peft.restore_from_path)
 
     model.freeze()
     logging.info(f"Freezing parameters for PEFT eval:\n{model.summarize()}")
 
     if not cfg.model.get('use_flash_attention', False):
         cfg.inference.compute_attention_mask = True
-    config = OmegaConf.to_container(cfg.inference, resolve=True)
-    model.set_inference_config(config)
 
     if not cfg.server:
         trainer.test(model)

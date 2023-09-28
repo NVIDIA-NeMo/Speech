@@ -38,7 +38,7 @@ void build_blending_indices(py::array_t<uint8_t>& dataset_index,
 			    const int32_t num_datasets,
 			    const int64_t size, const bool verbose) {
   /* Given multiple datasets and a weighting array, build samples
-   such that it follows those wieghts.*/
+   such that it follows those weights.*/
 
   if (verbose) {
     std::cout << "> building indices for blendable datasets ..." << std::endl;

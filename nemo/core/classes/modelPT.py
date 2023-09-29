@@ -179,18 +179,11 @@ class ModelPT(LightningModule, Model):
 
         # Create list of lists for val and test outputs to support multiple dataloaders
         # Initialize an empty list as sometimes self._validation_dl can be None at this stage
-        self.validation_step_outputs = []
-        # Check len(self._validation_dl) > 1 as sometimes single dataloader can be in a list: [<Dataloader obj>] when ds_item in
-        # config has 1 item passed in a list
-        if self._validation_dl and type(self._validation_dl) == list and len(self._validation_dl) > 1:
-            for _ in range(len(self._validation_dl)):
-                self.validation_step_outputs.append([])
+        self._validation_step_outputs = None
 
         # Initialize an empty list as sometimes self._test_dl can be None at this stage
-        self.test_step_outputs = []
-        if self._test_dl and type(self._test_dl) == list and len(self._test_dl) > 1:
-            for _ in range(len(self._test_dl)):
-                self.test_step_outputs.append([])
+        self._test_step_outputs = None
+
         # ModelPT wrappers over subclass implementations
         self.training_step = model_utils.wrap_training_step(self.training_step)
 
@@ -1573,6 +1566,61 @@ class ModelPT(LightningModule, Model):
         if hasattr(self, '_hparams_initial') and 'cfg' in self._hparams_initial:
             self._hparams_initial['cfg'] = OmegaConf.to_object(self._cfg)
 
+    @property
+    def validation_step_outputs(self):
+        """
+        Cached outputs of validation_step. It can be a list of items (for single data loader) or a list of lists
+        (for multiple data loaders).
+
+        Returns:
+            List of outputs of validation_step.
+        """
+        if self._validation_step_outputs is not None:
+            return self._validation_step_outputs
+
+        # Initialize new output list
+        self._validation_step_outputs = []
+        # Check len(self._validation_dl) > 1 as sometimes single dataloader can be in a list: [<Dataloader obj>] when ds_item in
+        # config has 1 item passed in a list
+        if (
+            self._validation_dl is not None
+            and isinstance(self._validation_dl, (list, tuple))
+            and len(self._validation_dl) > 1
+        ):
+            for _ in range(len(self._validation_dl)):
+                self._validation_step_outputs.append([])
+
+        return self._validation_step_outputs
+
+    @validation_step_outputs.setter
+    def validation_step_outputs(self, value):
+        self._validation_step_outputs = value
+
+    @property
+    def test_step_outputs(self):
+        """
+        Cached outputs of test_step. It can be a list of items (for single data loader) or a list of lists (for multiple data loaders).
+
+        Returns:
+            List of outputs of test_step.
+        """
+        if self._test_step_outputs is not None:
+            return self._test_step_outputs
+
+        # Initialize new output list
+        self._test_step_outputs = []
+        # Check len(self._test_dl) > 1 as sometimes single dataloader can be in a list: [<Dataloader obj>] when ds_item in
+        # config has 1 item passed in a list
+        if self._test_dl is not None and isinstance(self._test_dl, (list, tuple)) and len(self._test_dl) > 1:
+            for _ in range(len(self._test_dl)):
+                self._test_step_outputs.append([])
+
+        return self._test_step_outputs
+
+    @test_step_outputs.setter
+    def test_step_outputs(self, value):
+        self._test_step_outputs = value
+
     @staticmethod
     def _is_model_being_restored() -> bool:
         app_state = AppState()
@@ -1714,15 +1762,40 @@ class ModelPT(LightningModule, Model):
                         logging.info("====== End nsys profiling ======")
                         torch.cuda.cudart().cudaProfilerStop()
 
+    def _cleanup_on_execution_end(self):
+        """
+        Utility function to clean up the module state at the end of execution.
+        """
+
+        # dynamic freezing cleanup
+        if hasattr(self, '_freeze_cfg'):
+            delattr(self, '_freeze_cfg')
+
+        # Clear up the val and test output caches
+        self._validation_step_outputs = None
+        self._test_step_outputs = None
+
     def on_train_end(self):
         """ PyTorch Lightning hook:
             https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-end
             We use it here to cleanup the dynamic freezing config.
         """
 
-        # dynamic freezing cleanup
-        if hasattr(self, '_freeze_cfg'):
-            delattr(self, '_freeze_cfg')
+        self._cleanup_on_execution_end()
+
+    def on_test_end(self):
+        """ PyTorch Lightning hook:
+            https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-test-end
+        """
+
+        self._cleanup_on_execution_end()
+
+    def on_predict_end(self):
+        """ PyTorch Lightning hook:
+            https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-test-end
+        """
+
+        self._cleanup_on_execution_end()
 
     # TODO: Remove in PTL 1.7.2
     def cuda(self, device=None):

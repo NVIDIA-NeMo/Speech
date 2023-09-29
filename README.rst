@@ -67,7 +67,22 @@ For scaling NeMo LLM training on Slurm clusters or public clouds, please see the
 The NM launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_
 which can be used to find the optimal model parallel configuration for training on a specific cluster.
 
-Also see our `introductory video <https://www.youtube.com/embed/wBgpMf_KQVw>`_ for a high level overview of NeMo.
+Also see the two introductory videos below for a high level overview of NeMo.
+
+* Developing State-Of-The-Art Conversational AI Models in Three Lines of Code.
+* NVIDIA NeMo: Toolkit for Conversational AI at PyData Yerevan 2022.
+
+|three_lines|     |pydata|
+
+.. |pydata| image:: https://img.youtube.com/vi/J-P6Sczmas8/maxres3.jpg
+    :target: https://www.youtube.com/embed/J-P6Sczmas8?mute=0&start=14&autoplay=0
+    :width: 600
+    :alt: Develop Conversational AI Models in 3 Lines
+
+.. |three_lines| image:: https://img.youtube.com/vi/wBgpMf_KQVw/maxresdefault.jpg
+    :target: https://www.youtube.com/embed/wBgpMf_KQVw?mute=0&start=0&autoplay=0
+    :width: 600
+    :alt: Introduction at PyData@Yerevan 2022
 
 Key Features
 ------------

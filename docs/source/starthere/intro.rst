@@ -19,13 +19,22 @@ Conversational AI architectures are typically large and require a lot of data an
 for training. NeMo uses `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for easy and performant multi-GPU/multi-node
 mixed-precision training.
 
-`Pre-trained NeMo models. <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ 
+`Pre-trained NeMo models. <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_
 
+Also see the two introductory videos below for a high level overview of NeMo.
+
+* Developing State-Of-The-Art Conversational AI Models in Three Lines of Code.
 .. raw:: html
 
     <div style="position: relative; padding-bottom: 3%; height: 0; overflow: hidden; max-width: 100%; height: auto;">
         <iframe width="560" height="315" src="https://www.youtube.com/embed/wBgpMf_KQVw" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
     </div>
+
+* NVIDIA NeMo: Toolkit for Conversational AI at PyData Yerevan 2022.
+.. image:: https://img.youtube.com/vi/J-P6Sczmas8/maxres3.jpg
+    :target: https://www.youtube.com/embed/J-P6Sczmas8?mute=0&start=14&autoplay=0
+    :width: 560
+    :alt: Develop Conversational AI Models in 3 Lines
 
 For more information and questions, visit the `NVIDIA NeMo Discussion Board <https://github.com/NVIDIA/NeMo/discussions>`_.
 

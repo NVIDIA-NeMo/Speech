@@ -173,16 +173,18 @@ class GLUEModel(NLPModel):
             model_output = torch.argmax(model_output, 1)
 
         eval_tensors = {'preds': model_output, 'labels': labels}
-        return {'val_loss': val_loss, 'eval_tensors': eval_tensors}
+        output = {'val_loss': val_loss, 'eval_tensors': eval_tensors}
+        self.validation_step_outputs.append(output)
+        return output
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
         """
         Called at the end of validation to aggregate outputs.
         outputs: list of individual outputs of each validation step.
         """
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-        preds = torch.cat([x['eval_tensors']['preds'] for x in outputs])
-        labels = torch.cat([x['eval_tensors']['labels'] for x in outputs])
+        avg_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
+        preds = torch.cat([x['eval_tensors']['preds'] for x in self.validation_step_outputs])
+        labels = torch.cat([x['eval_tensors']['labels'] for x in self.validation_step_outputs])
 
         all_preds = []
         all_labels = []

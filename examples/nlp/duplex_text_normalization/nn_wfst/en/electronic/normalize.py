@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo_text_processing.text_normalization.normalize import Normalizer
-from nemo_text_processing.text_normalization.token_parser import TokenParser
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+    from nemo_text_processing.text_normalization.token_parser import TokenParser
+except (ImportError, ModuleNotFoundError):
+    raise ModuleNotFoundError(
+        "The package `nemo_text_processing` was not installed in this environment. Please refer to"
+        " https://github.com/NVIDIA/NeMo-text-processing and install this package before using "
+        "this script"
+    )
 
 from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
 
@@ -21,7 +28,7 @@ from nemo.collections.common.tokenizers.moses_tokenizers import MosesProcessor
 class ElectronicNormalizer(Normalizer):
     """
     Normalizer for ELECTRONIC.
-    
+
     Args:
         input_case: accepting either "lower_cased" or "cased" input.
         lang: language

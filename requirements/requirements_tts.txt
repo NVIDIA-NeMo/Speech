@@ -4,7 +4,8 @@ jieba
 kornia
 librosa
 matplotlib
-nemo_text_processing
+# pynini does not currently support aarch, disable nemo_text_processing for now
+nemo_text_processing; 'arm' not in platform_machine and 'aarch' not in platform_machine
 nltk
 pandas
 pypinyin

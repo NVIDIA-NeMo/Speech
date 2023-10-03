@@ -12,15 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-from nemo_text_processing.text_normalization.en.graph_utils import GraphFst
-from nemo_text_processing.text_normalization.en.verbalizers.whitelist import WhiteListFst
+try:
+    from nemo_text_processing.text_normalization.en.graph_utils import GraphFst
+    from nemo_text_processing.text_normalization.en.verbalizers.whitelist import WhiteListFst
+except (ImportError, ModuleNotFoundError):
+    raise ModuleNotFoundError(
+        "The package `nemo_text_processing` was not installed in this environment. Please refer to"
+        " https://github.com/NVIDIA/NeMo-text-processing and install this package before using "
+        "this script"
+    )
 
 
 class VerbalizeFst(GraphFst):
     """
     Composes other verbalizer grammars.
-    For deployment, this grammar will be compiled and exported to OpenFst Finate State Archiv (FAR) File. 
+    For deployment, this grammar will be compiled and exported to OpenFst Finate State Archiv (FAR) File.
     More details to deployment at NeMo/tools/text_processing_deployment.
 
     Args:

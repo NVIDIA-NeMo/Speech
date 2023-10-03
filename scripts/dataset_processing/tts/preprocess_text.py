@@ -32,9 +32,17 @@ from pathlib import Path
 
 from hydra.utils import instantiate
 from joblib import Parallel, delayed
-from nemo_text_processing.text_normalization.normalize import Normalizer
 from omegaconf import OmegaConf
 from tqdm import tqdm
+
+try:
+    from nemo_text_processing.text_normalization.normalize import Normalizer
+except (ImportError, ModuleNotFoundError):
+    raise ModuleNotFoundError(
+        "The package `nemo_text_processing` was not installed in this environment. Please refer to"
+        " https://github.com/NVIDIA/NeMo-text-processing and install this package before using "
+        "this script"
+    )
 
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 

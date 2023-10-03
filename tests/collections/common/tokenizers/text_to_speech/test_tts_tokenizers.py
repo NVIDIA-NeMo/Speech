@@ -34,6 +34,10 @@ class TestTTSTokenizers:
         "BUENOS": ["bwˈenos"],
         "DÍAS": ["dˈias"],
     }
+    PHONEME_DICT_IT = {
+        "CIAO": ["tʃˈao"],
+        "MONDO": ["mˈondo"],
+    }
 
     @staticmethod
     def _parse_text(tokenizer, text):
@@ -142,6 +146,18 @@ class TestTTSTokenizers:
 
         g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_DE, locale="de-DE")
         tokenizer = IPATokenizer(g2p=g2p, locale="de-DE")
+        chars, tokens = self._parse_text(tokenizer, input_text)
+
+        assert chars == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_ipa_tokenizer_it_it(self):
+        input_text = "Ciao mondo"
+        expected_output = "tʃˈao mˈondo"
+
+        g2p = IpaG2p(phoneme_dict=self.PHONEME_DICT_IT, locale="it-IT")
+        tokenizer = IPATokenizer(g2p=g2p, locale="it-IT")
         chars, tokens = self._parse_text(tokenizer, input_text)
 
         assert chars == expected_output

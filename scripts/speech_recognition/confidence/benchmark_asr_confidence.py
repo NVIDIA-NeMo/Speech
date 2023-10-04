@@ -32,7 +32,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_benchmarking_utils import (
 )
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 from nemo.core.config import hydra_runner
-from nemo.utils import logging
+from nemo.utils import logging, model_utils
 
 """
 Get confidence metrics and curve plots for a given model, dataset, and confidence parameters.

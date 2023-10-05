@@ -19,7 +19,7 @@ python multi_label_intent_slot_classification.py \
             model.data_dir=/home/user/multiatis \
             model.validation_ds.prefix=dev \
             model.test_ds.prefix=dev \
-            trainer.gpus=[0] \
+            trainer.devices=[0] \
             +trainer.fast_dev_run=true \
             exp_manager.exp_dir=checkpoints
 

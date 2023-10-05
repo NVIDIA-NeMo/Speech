@@ -24,7 +24,7 @@ python speech_to_text_transformer.py \
     model.tokenizer.dir=<path to directory of tokenizer (not full path to the vocab file!)> \
     model.tokenizer.model_path=<path to speech tokenizer model> \
     model.tokenizer.type=<either bpe, wpe, or yttm> \
-    trainer.gpus=-1 \
+    trainer.devices=-1 \
     trainer.accelerator="ddp" \
     trainer.max_epochs=100 \
     model.optim.name="adamw" \

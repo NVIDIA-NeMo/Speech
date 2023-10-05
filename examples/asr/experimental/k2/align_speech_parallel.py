@@ -46,7 +46,7 @@ By setting the trainer config you may control these configs. For example to do t
 
 python align_speech_parallel.py \
     trainer.precision=16 \
-    trainer.gpus=2 \
+    trainer.devices=2 \
     ...
 
 You may control the dataloader's config by setting the predict_ds:

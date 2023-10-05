@@ -107,7 +107,7 @@ Prepare the msdd training dataset for both train and validation. After the train
 .. code-block:: bash
 
     python ./multiscale_diar_decoder.py --config-path='../conf/neural_diarizer' --config-name='msdd_5scl_15_05_50Povl_256x3x32x2.yaml' \
-        trainer.gpus=1 \
+        trainer.devices=1 \
         trainer.max_epochs=20  \
         model.base.diarizer.speaker_embeddings.model_path="titanet_large" \
         model.train_ds.manifest_filepath="<train_manifest_path>" \

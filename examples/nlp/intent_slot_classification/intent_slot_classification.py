@@ -23,6 +23,10 @@ from nemo.utils.exp_manager import exp_manager
 
 @hydra_runner(config_path="conf", config_name="intent_slot_classification_config")
 def main(cfg: DictConfig) -> None:
+    # PTL 2.0 has find_unused_parameters as False by default, so its required to set it to True
+    # when there are unused parameters like here
+    if cfg.trainer.strategy == 'ddp':
+        cfg.trainer.strategy = "ddp_find_unused_parameters_true"
     logging.info(f'Config Params:\n {OmegaConf.to_yaml(cfg)}')
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))

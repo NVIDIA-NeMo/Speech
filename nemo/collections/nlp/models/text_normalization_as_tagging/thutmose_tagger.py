@@ -236,7 +236,7 @@ class ThutmoseTaggerModel(NLPModel):
         val_loss_tag = self.loss_fn(logits=tag_logits, labels=tag_labels, loss_mask=labels_mask)
         val_loss_semiotic = self.loss_fn(logits=semiotic_logits, labels=semiotic_labels, loss_mask=labels_mask)
         val_loss = val_loss_tag + val_loss_semiotic
-        self.validation_step_outputs.append(val_loss)
+        self.validation_step_outputs.append({'val_loss': val_loss})
         return {'val_loss': val_loss}
 
     def on_validation_epoch_end(self):

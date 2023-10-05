@@ -17,7 +17,7 @@ from typing import List, Union
 
 import hydra
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 
 from nemo.collections.asr.metrics.audio import AudioMetricWrapper
@@ -67,12 +67,15 @@ class AudioToAudioModel(ModelPT, ABC):
                 logging.debug('Found %d metrics for tag %s, not necesary to initialize again', num_dataloaders, tag)
                 return
 
-        if 'metrics' not in self._cfg or tag not in self._cfg['metrics']:
+        if self.cfg.get('metrics') is None:
             # Metrics are not available in the configuration, nothing to do
-            logging.debug('No metrics configured for %s in model.metrics.%s', tag, tag)
+            logging.debug('No metrics configured in model.metrics')
             return
 
-        metrics_cfg = self._cfg['metrics'][tag]
+        if (metrics_cfg := self.cfg['metrics'].get(tag)) is None:
+            # Metrics configuration is not available in the configuration, nothing to do
+            logging.debug('No metrics configured for %s in model.metrics', tag)
+            return
 
         if 'loss' in metrics_cfg:
             raise ValueError(
@@ -86,16 +89,19 @@ class AudioToAudioModel(ModelPT, ABC):
         # Setup metrics for each dataloader
         self.metrics[tag] = torch.nn.ModuleList()
         for dataloader_idx in range(num_dataloaders):
-            metrics_dataloader_idx = torch.nn.ModuleDict(
-                {
-                    name: AudioMetricWrapper(
-                        metric=hydra.utils.instantiate(cfg),
-                        channel=cfg.get('channel'),
-                        metric_using_batch_averaging=cfg.get('metric_using_batch_averaging'),
-                    )
-                    for name, cfg in metrics_cfg.items()
-                }
-            )
+            metrics_dataloader_idx = {}
+            for name, cfg in metrics_cfg.items():
+                logging.debug('Initialize %s for dataloader_idx %s', name, dataloader_idx)
+                cfg_dict = OmegaConf.to_container(cfg)
+                cfg_channel = cfg_dict.pop('channel', None)
+                cfg_batch_averaging = cfg_dict.pop('metric_using_batch_averaging', None)
+                metrics_dataloader_idx[name] = AudioMetricWrapper(
+                    metric=hydra.utils.instantiate(cfg_dict),
+                    channel=cfg_channel,
+                    metric_using_batch_averaging=cfg_batch_averaging,
+                )
+
+            metrics_dataloader_idx = torch.nn.ModuleDict(metrics_dataloader_idx)
             self.metrics[tag].append(metrics_dataloader_idx.to(self.device))
 
             logging.info(

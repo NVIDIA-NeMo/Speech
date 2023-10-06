@@ -198,6 +198,7 @@ class SEANetEncoder(NeuralModule):
 
     def remove_weight_norm(self):
         self.pre_conv.remove_weight_norm()
+        self.post_conv.remove_weight_norm()
         for res_block in self.res_blocks:
             res_block.remove_weight_norm()
         for down_sample_conv in self.down_sample_conv_layers:
@@ -544,8 +545,8 @@ class EuclideanCodebook(NeuralModule):
         codebook_size: int,
         codebook_dim: int,
         decay: float = 0.99,
-        threshold_ema_dead_code: Optional[int] = 2,
-        kmeans_iters: Optional[int] = None,
+        threshold_ema_dead_code: Optional[float] = 2.0,
+        kmeans_iters: Optional[int] = 50,
     ):
         super().__init__()
         self.decay = decay
@@ -686,7 +687,6 @@ class ResidualVectorQuantizer(NeuralModule):
 
     Args:
         num_codebooks: Number of codebooks to use.
-        commit_loss_scale: Loss scale for codebook commit loss.
         codebook_size: Number of codes to use for each codebook.
         codebook_dim: Dimension of each code.
         decay: Decay for exponential moving average over the codebooks.
@@ -700,20 +700,15 @@ class ResidualVectorQuantizer(NeuralModule):
     def __init__(
         self,
         num_codebooks: int,
-        commit_loss_scale: float = 1.0,
         codebook_size: int = 1024,
         codebook_dim: int = 128,
         decay: float = 0.99,
-        threshold_ema_dead_code: Optional[int] = 2,
+        threshold_ema_dead_code: Optional[float] = 2.0,
         kmeans_iters: Optional[int] = 50,
     ):
         super().__init__()
         self.codebook_dim = codebook_dim
-
-        if commit_loss_scale:
-            self.commit_loss_fn = MaskedMSELoss(loss_scale=commit_loss_scale)
-        else:
-            self.commit_loss_fn = None
+        self.commit_loss_fn = MaskedMSELoss()
 
         self.codebooks = nn.ModuleList(
             [
@@ -726,16 +721,6 @@ class ResidualVectorQuantizer(NeuralModule):
                 )
                 for _ in range(num_codebooks)
             ]
-        )
-
-    def _commit_loss(self, input, target, input_len):
-        if not self.commit_loss_fn:
-            return 0.0
-
-        return self.commit_loss_fn(
-            predicted=rearrange(input, "B T D -> B D T"),
-            target=rearrange(target, "B T D -> B D T"),
-            target_len=input_len,
         )
 
     @property
@@ -764,13 +749,17 @@ class ResidualVectorQuantizer(NeuralModule):
             dequantized_i, indices_i = codebook(inputs=residual, input_len=input_len)
 
             if self.training:
-                dequantized_i = residual + (dequantized_i - residual).detach()
                 dequantized_i_const = dequantized_i.detach()
-                commit_loss_i = self._commit_loss(input=residual, target=dequantized_i_const, input_len=input_len)
+
+                commit_loss_i = self.commit_loss_fn(
+                    predicted=rearrange(residual, "B T D -> B D T"),
+                    target=rearrange(dequantized_i_const, "B T D -> B D T"),
+                    target_len=input_len,
+                )
                 commit_loss = commit_loss + commit_loss_i
 
                 residual = residual - dequantized_i_const
-
+                dequantized_i = residual + (dequantized_i - residual).detach()
             else:
                 residual = residual - dequantized_i
 

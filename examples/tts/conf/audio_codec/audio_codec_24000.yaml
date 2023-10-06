@@ -1,4 +1,4 @@
-# This config contains the default values for training 24khz EnCodec model
+# This config contains the default values for training 24khz audio codec model
 # If you want to train model on other dataset, you can change config values according to your dataset.
 # Most dataset-specific arguments are in the head of the config file, see below.
 
@@ -36,17 +36,23 @@ model:
   sample_rate: ${sample_rate}
   samples_per_frame: ${samples_per_frame}
 
-  mel_loss_scale: 5.0
-  time_domain_loss_scale: 0.1
+  mel_loss_l1_scale: 15.0
+  mel_loss_l2_scale: 0.0
+  stft_loss_scale: 15.0
+  time_domain_loss_scale: 0.0
+
   # Probability of updating the discriminator during each training step
   # For example, update the discriminator 2/3 times (2 updates for every 3 batches)
   disc_updates_per_period: 2
   disc_update_period: 3
 
-  # All resolutions for mel reconstruction loss, ordered [num_fft, hop_length, window_length]
-  mel_loss_resolutions: [
+  # All resolutions for reconstruction loss, ordered [num_fft, hop_length, window_length]
+  loss_resolutions: [
     [32, 8, 32], [64, 16, 64], [128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]
   ]
+  mel_loss_dims: [5, 10, 20, 40, 80, 160, 320]
+  mel_loss_log_guard: 1.0
+  stft_loss_log_guard: 1.0
 
   train_ds:
     dataset:
@@ -106,7 +112,7 @@ model:
       num_workers: 2
 
   audio_encoder:
-    _target_: nemo.collections.tts.modules.encodec_modules.SEANetEncoder
+    _target_: nemo.collections.tts.modules.encodec_modules.HifiGanEncoder
     down_sample_rates: ${down_sample_rates}
 
   audio_decoder:
@@ -136,7 +142,7 @@ model:
 
     sched:
       name: ExponentialLR
-      gamma: 0.999
+      gamma: 0.998
 
 trainer:
   num_nodes: 1
@@ -149,7 +155,7 @@ trainer:
   enable_checkpointing: False # Provided by exp_manager
   logger: false # Provided by exp_manager
   log_every_n_steps: 100
-  check_val_every_n_epoch: 5
+  check_val_every_n_epoch: 10
   benchmark: false
 
 exp_manager:

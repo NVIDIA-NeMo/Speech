@@ -14,8 +14,10 @@
 
 import pytest
 import torch
+from torchmetrics import ScaleInvariantSignalDistortionRatio
 
-from nemo.collections.tts.losses.audio_codec_loss import MaskedMAELoss, MaskedMSELoss
+from nemo.collections.tts.losses.audio_codec_loss import MaskedMAELoss, MaskedMSELoss, SISDRLoss
+from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 class TestAudioCodecLoss:
@@ -42,3 +44,47 @@ class TestAudioCodecLoss:
         loss = loss_fn(predicted=predicted, target=target, target_len=target_len)
 
         assert loss == (4 / 3)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_si_sdr_loss(self):
+        loss_fn = SISDRLoss()
+        sdr_fn = ScaleInvariantSignalDistortionRatio(zero_mean=True)
+
+        num_samples = 1000
+        torch.manual_seed(100)
+        target = torch.rand([1, num_samples])
+        predicted = torch.rand([1, num_samples])
+        target_len = torch.tensor([num_samples, num_samples])
+
+        torch_si_sdr = sdr_fn(preds=predicted, target=target)
+        loss = loss_fn(audio_real=target, audio_gen=predicted, audio_len=target_len)
+        si_sdr = -loss
+
+        torch.testing.assert_close(actual=si_sdr, expected=torch_si_sdr)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_si_sdr_loss_batch(self):
+        loss_fn = SISDRLoss()
+        si_sdr_fn = ScaleInvariantSignalDistortionRatio(zero_mean=True)
+
+        batch_size = 3
+        num_samples = 1000
+        torch.manual_seed(100)
+        target = torch.rand([batch_size, num_samples])
+        predicted = torch.rand([batch_size, num_samples])
+
+        target_len = torch.tensor([500, 250, 900])
+        target = mask_sequence_tensor(target, lengths=target_len)
+        predicted = mask_sequence_tensor(predicted, lengths=target_len)
+
+        torch_si_sdr = 0.0
+        for i in range(batch_size):
+            torch_si_sdr += si_sdr_fn(preds=predicted[i, : target_len[i]], target=target[i, : target_len[i]])
+        torch_si_sdr /= batch_size
+
+        loss = loss_fn(audio_real=target, audio_gen=predicted, audio_len=target_len)
+        si_sdr = -loss
+
+        torch.testing.assert_close(actual=si_sdr, expected=torch_si_sdr)

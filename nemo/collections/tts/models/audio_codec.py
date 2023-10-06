@@ -25,7 +25,9 @@ from pytorch_lightning import Trainer
 
 from nemo.collections.tts.losses.audio_codec_loss import (
     MultiResolutionMelLoss,
+    MultiResolutionSTFTLoss,
     RelativeFeatureMatchingLoss,
+    SISDRLoss,
     TimeDomainLoss,
 )
 from nemo.collections.tts.modules.common import GaussianDropout
@@ -85,25 +87,42 @@ class AudioCodecModel(ModelPT):
         # Discriminator setup
         self.discriminator = instantiate(cfg.discriminator)
 
-        # Loss setup
-        mel_loss_dim = cfg.get("mel_loss_dim", 64)
-        mel_loss_resolutions = cfg.mel_loss_resolutions
-        self.time_domain_loss_scale = cfg.get("time_domain_loss_scale", 1.0)
-        self.mel_loss_scale = cfg.get("mel_loss_scale", 1.0)
-        mel_loss_l1_scale = cfg.get("mel_loss_l1_scale", 1.0)
-        self.gen_loss_scale = cfg.get("gen_loss_scale", 1.0)
-        self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
-
-        self.time_domain_loss_fn = TimeDomainLoss()
+        # Mel loss setup
+        loss_resolutions = cfg.loss_resolutions
+        mel_loss_dims = cfg.get("mel_loss_dims")
+        mel_loss_log_guard = cfg.get("mel_loss_log_guard", 1.0)
+        self.mel_loss_l1_scale = cfg.get("mel_loss_l1_scale", 1.0)
+        self.mel_loss_l2_scale = cfg.get("mel_loss_l2_scale", 1.0)
         self.mel_loss_fn = MultiResolutionMelLoss(
             sample_rate=self.sample_rate,
-            mel_dim=mel_loss_dim,
-            resolutions=mel_loss_resolutions,
-            l1_scale=mel_loss_l1_scale,
+            mel_dims=mel_loss_dims,
+            resolutions=loss_resolutions,
+            log_guard=mel_loss_log_guard,
         )
+
+        # STFT loss setup
+        stft_loss_log_guard = cfg.get("stft_loss_log_guard", 1.0)
+        self.stft_loss_scale = cfg.get("stft_loss_scale", 0.0)
+        self.stft_loss_fn = MultiResolutionSTFTLoss(resolutions=loss_resolutions, log_guard=stft_loss_log_guard,)
+
+        # Time domain loss setup
+        self.time_domain_loss_scale = cfg.get("time_domain_loss_scale", 1.0)
+        self.si_sdr_loss_scale = cfg.get("si_sdr_loss_scale", 0.0)
+        self.time_domain_loss_fn = TimeDomainLoss()
+        self.si_sdr_loss_fn = SISDRLoss()
+
+        # Discriminator loss setup
+        self.gen_loss_scale = cfg.get("gen_loss_scale", 1.0)
+        self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
         self.feature_loss_fn = RelativeFeatureMatchingLoss()
+
+        # Codebook loss setup
+        if self.vector_quantizer:
+            self.commit_loss_scale = cfg.get("commit_loss_scale", 1.0)
+        else:
+            self.commit_loss_scale = 0.0
 
         # Log setup
         self.log_config = cfg.get("log_config", None)
@@ -336,10 +355,10 @@ class AudioCodecModel(ModelPT):
         if self.vector_quantizer:
             encoded, _, commit_loss = self.vector_quantizer(inputs=encoded, input_len=encoded_len)
         else:
-            commit_loss = None
+            commit_loss = 0.0
 
         # [B, T]
-        audio_gen, audio_gen_len = self.audio_decoder(inputs=encoded, input_len=encoded_len)
+        audio_gen, _ = self.audio_decoder(inputs=encoded, input_len=encoded_len)
 
         return audio, audio_len, audio_gen, commit_loss
 
@@ -361,37 +380,65 @@ class AudioCodecModel(ModelPT):
 
         audio, audio_len, audio_gen, commit_loss = self._process_batch(batch)
 
+        metrics = {
+            "global_step": self.global_step,
+            "lr": optim_gen.param_groups[0]['lr'],
+        }
+
         if self.should_update_disc(batch_idx):
             # Train discriminator
             disc_scores_real, disc_scores_gen, _, _ = self.discriminator(
                 audio_real=audio, audio_gen=audio_gen.detach()
             )
             loss_disc = self.disc_loss_fn(disc_scores_real=disc_scores_real, disc_scores_gen=disc_scores_gen)
-            train_disc_loss = loss_disc
+            metrics["d_loss"] = loss_disc
 
             optim_disc.zero_grad()
-            self.manual_backward(train_disc_loss)
+            self.manual_backward(loss_disc)
             optim_disc.step()
-        else:
-            loss_disc = None
 
-        loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
-        train_loss_time_domain = self.time_domain_loss_scale * loss_time_domain
+        generator_losses = []
 
-        loss_mel = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
-        train_loss_mel = self.mel_loss_scale * loss_mel
+        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        if self.mel_loss_l1_scale:
+            metrics["g_loss_mel_l1"] = loss_mel_l1
+            generator_losses.append(self.mel_loss_l1_scale * loss_mel_l1)
+        if self.mel_loss_l2_scale:
+            metrics["g_loss_mel_l2"] = loss_mel_l2
+            generator_losses.append(self.mel_loss_l2_scale * loss_mel_l2)
+
+        if self.stft_loss_scale:
+            loss_stft = self.stft_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+            metrics["g_loss_stft"] = loss_stft
+            generator_losses.append(self.stft_loss_scale * loss_stft)
+
+        if self.time_domain_loss_scale:
+            loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+            metrics["g_loss_time_domain"] = loss_time_domain
+            generator_losses.append(self.time_domain_loss_scale * loss_time_domain)
+
+        if self.si_sdr_loss_scale:
+            loss_si_sdr = self.si_sdr_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+            metrics["g_loss_si_sdr"] = loss_si_sdr
+            generator_losses.append(self.si_sdr_loss_scale * loss_si_sdr)
 
         _, disc_scores_gen, fmaps_real, fmaps_gen = self.discriminator(audio_real=audio, audio_gen=audio_gen)
 
-        loss_gen = self.gen_loss_fn(disc_scores_gen=disc_scores_gen)
-        train_loss_gen = self.gen_loss_scale * loss_gen
+        if self.gen_loss_scale:
+            loss_gen = self.gen_loss_fn(disc_scores_gen=disc_scores_gen)
+            metrics["g_loss_gen"] = loss_gen
+            generator_losses.append(self.gen_loss_scale * loss_gen)
 
-        loss_feature = self.feature_loss_fn(fmaps_real=fmaps_real, fmaps_gen=fmaps_gen)
-        train_loss_feature = self.feature_loss_scale * loss_feature
+        if self.feature_loss_scale:
+            loss_feature = self.feature_loss_fn(fmaps_real=fmaps_real, fmaps_gen=fmaps_gen)
+            metrics["g_loss_feature"] = loss_feature
+            generator_losses.append(self.feature_loss_scale * loss_feature)
 
-        loss_gen_all = train_loss_time_domain + train_loss_mel + train_loss_gen + train_loss_feature
-        if commit_loss is not None:
-            loss_gen_all += commit_loss
+        if self.commit_loss_scale:
+            metrics["g_loss_commit"] = commit_loss
+            generator_losses.append(self.commit_loss_scale * commit_loss)
+
+        loss_gen_all = sum(generator_losses)
 
         optim_gen.zero_grad()
         self.manual_backward(loss_gen_all)
@@ -399,36 +446,30 @@ class AudioCodecModel(ModelPT):
 
         self.update_lr()
 
-        metrics = {
-            "g_loss_time_domain": loss_time_domain,
-            "g_loss_mel": loss_mel,
-            "g_loss_gen": loss_gen,
-            "g_loss_feature": loss_feature,
-            "g_loss": loss_gen_all,
-            "global_step": self.global_step,
-            "lr": optim_gen.param_groups[0]['lr'],
-        }
-
-        if loss_disc is not None:
-            metrics["d_loss"] = loss_disc
-
-        if commit_loss is not None:
-            metrics["g_loss_commit"] = commit_loss
-
         self.log_dict(metrics, on_step=True, sync_dist=True)
-        self.log("t_loss", train_loss_mel, prog_bar=True, logger=False, sync_dist=True)
+        self.log("t_loss", loss_mel_l1, prog_bar=True, logger=False, sync_dist=True)
 
     def on_train_epoch_end(self):
         self.update_lr("epoch")
 
     def validation_step(self, batch, batch_idx):
         audio, audio_len, audio_gen, _ = self._process_batch(batch)
+
+        loss_mel_l1, loss_mel_l2 = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        loss_stft = self.stft_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
         loss_time_domain = self.time_domain_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
-        loss_mel = self.mel_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+        loss_si_sdr = self.si_sdr_loss_fn(audio_real=audio, audio_gen=audio_gen, audio_len=audio_len)
+
+        # Use only main reconstruction losses for val_loss
+        val_loss = loss_mel_l1 + loss_stft + loss_time_domain
+
         metrics = {
-            "val_loss": loss_time_domain + loss_mel,
+            "val_loss": val_loss,
+            "val_loss_mel_l1": loss_mel_l1,
+            "val_loss_mel_l2": loss_mel_l2,
+            "val_loss_stft": loss_stft,
             "val_loss_time_domain": loss_time_domain,
-            "val_loss_mel": loss_mel,
+            "val_loss_si_sdr": loss_si_sdr,
         }
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 

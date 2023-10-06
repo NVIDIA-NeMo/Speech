@@ -15,12 +15,7 @@
 import pytest
 import torch
 
-from nemo.collections.tts.modules.audio_codec_modules import (
-    Conv1dNorm,
-    ConvTranspose1dNorm,
-    get_down_sample_padding,
-    get_up_sample_padding,
-)
+from nemo.collections.tts.modules.audio_codec_modules import Conv1dNorm, ConvTranspose1dNorm, get_down_sample_padding
 
 
 class TestAudioCodecModules:

@@ -141,7 +141,7 @@ def get_mask_from_lengths(lengths: Optional[torch.Tensor] = None, x: Optional[to
         lengths: Optional[torch.tensor] (torch.tensor): 1D tensor with lengths
         x: Optional[torch.tensor] = tensor to be used on, last dimension is for mask 
     Returns:
-        mask (torch.tensor): num_sequences x max_length x 1 binary tensor
+        mask (torch.tensor): num_sequences x max_length binary tensor
     """
     if lengths is None:
         assert x is not None

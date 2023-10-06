@@ -38,7 +38,7 @@ RUN apt-get update && \
   libsndfile1 sox \
   libfreetype6 \
   swig \
-  ffmpeg=ffmpeg_5.1.2-3ubuntu1 \
+  ffmpeg \
   libavdevice-dev && \
   rm -rf /var/lib/apt/lists/*
 
@@ -111,7 +111,7 @@ RUN /usr/bin/test -n "$NEMO_VERSION" && \
   /bin/echo "export BASE_IMAGE=${BASE_IMAGE}" >> /root/.bashrc
 
 # Install NeMo
-RUN --mount=from=nemo-src,target=/tmp/nemo cd /tmp/nemo && pip install ".[all]"
+RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && pip install ".[all]"
 
 # Check install
 RUN python -c "import nemo.collections.nlp as nemo_nlp" && \

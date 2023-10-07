@@ -16,6 +16,11 @@ import pytest
 import torch
 
 from nemo.collections.common.metrics.classification_accuracy import TopKClassificationAccuracy
+from nemo.collections.common.metrics.punct_er import (
+    DatasetPunctuationErrorRate,
+    OccurancePunctuationErrorRate,
+    punctuation_error_rate,
+)
 
 from .loss_inputs import ALL_NUM_MEASUREMENTS_ARE_ZERO, NO_ZERO_NUM_MEASUREMENTS, SOME_NUM_MEASUREMENTS_ARE_ZERO
 from .perplexity_inputs import NO_PROBS_NO_LOGITS, ONLY_LOGITS1, ONLY_LOGITS100, ONLY_PROBS, PROBS_AND_LOGITS
@@ -149,3 +154,71 @@ class TestLoss(LossTester):
             dist_sync_on_step=dist_sync_on_step,
             take_avg_loss=take_avg_loss,
         )
+
+
+class TestPunctuationErrorRate:
+    reference = "Hi, dear! Nice to see you. What's"
+    hypothesis = "Hi dear! Nice to see you! What's?"
+    punctuation_marks = [".", ",", "!", "?"]
+
+    operation_amounts = {
+        '.': {'Correct': 0, 'Deletions': 0, 'Insertions': 0, 'Substitutions': 1},
+        ',': {'Correct': 0, 'Deletions': 1, 'Insertions': 0, 'Substitutions': 0},
+        '!': {'Correct': 1, 'Deletions': 0, 'Insertions': 0, 'Substitutions': 0},
+        '?': {'Correct': 0, 'Deletions': 0, 'Insertions': 1, 'Substitutions': 0},
+    }
+    substitution_amounts = {
+        '.': {'.': 0, ',': 0, '!': 1, '?': 0},
+        ',': {'.': 0, ',': 0, '!': 0, '?': 0},
+        '!': {'.': 0, ',': 0, '!': 0, '?': 0},
+        '?': {'.': 0, ',': 0, '!': 0, '?': 0},
+    }
+    correct_rate = 0.25
+    deletions_rate = 0.25
+    insertions_rate = 0.25
+    substitutions_rate = 0.25
+    punct_er = 0.75
+    operation_rates = {
+        '.': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 1.0},
+        ',': {'Correct': 0.0, 'Deletions': 1.0, 'Insertions': 0.0, 'Substitutions': 0.0},
+        '!': {'Correct': 1.0, 'Deletions': 0.0, 'Insertions': 0.0, 'Substitutions': 0.0},
+        '?': {'Correct': 0.0, 'Deletions': 0.0, 'Insertions': 1.0, 'Substitutions': 0.0},
+    }
+    substitution_rates = {
+        '.': {'.': 0.0, ',': 0.0, '!': 1.0, '?': 0.0},
+        ',': {'.': 0.0, ',': 0.0, '!': 0.0, '?': 0.0},
+        '!': {'.': 0.0, ',': 0.0, '!': 0.0, '?': 0.0},
+        '?': {'.': 0.0, ',': 0.0, '!': 0.0, '?': 0.0},
+    }
+
+    @pytest.mark.unit
+    def test_punctuation_error_rate(self):
+        assert punctuation_error_rate([self.reference], [self.hypothesis], self.punctuation_marks) == self.punct_er
+
+    @pytest.mark.unit
+    def test_OccurancePunctuationErrorRate(self):
+        oper_obj = OccurancePunctuationErrorRate(self.punctuation_marks)
+        operation_amounts, substitution_amounts, punctuation_rates = oper_obj.compute(self.reference, self.hypothesis)
+
+        assert operation_amounts == self.operation_amounts
+        assert substitution_amounts == self.substitution_amounts
+        assert punctuation_rates.correct_rate == self.correct_rate
+        assert punctuation_rates.deletions_rate == self.deletions_rate
+        assert punctuation_rates.insertions_rate == self.insertions_rate
+        assert punctuation_rates.substitutions_rate == self.substitutions_rate
+        assert punctuation_rates.punct_er == self.punct_er
+        assert punctuation_rates.operation_rates == self.operation_rates
+        assert punctuation_rates.substitution_rates == self.substitution_rates
+
+    @pytest.mark.unit
+    def test_DatasetPunctuationErrorRate(self):
+        dper_obj = DatasetPunctuationErrorRate([self.reference], [self.hypothesis], self.punctuation_marks)
+        dper_obj.compute()
+
+        assert dper_obj.correct_rate == self.correct_rate
+        assert dper_obj.deletions_rate == self.deletions_rate
+        assert dper_obj.insertions_rate == self.insertions_rate
+        assert dper_obj.substitutions_rate == self.substitutions_rate
+        assert dper_obj.punct_er == self.punct_er
+        assert dper_obj.operation_rates == self.operation_rates
+        assert dper_obj.substitution_rates == self.substitution_rates

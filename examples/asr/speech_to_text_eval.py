@@ -25,12 +25,18 @@ same directory during execution.
 for full list of arguments >>
 
     dataset_manifest: Required - path to dataset JSON manifest file (in NeMo format)
-    output_filename: Optional - output filename where the transcriptions will be written.
+    output_filename: Optional - output filename where the transcriptions will be written. (if scores_per_sample=True, 
+    metrics per sample will be written there too)
 
     use_cer: Bool, whether to compute CER or WER
+    use_punct_er: Bool, compute dataset Punctuation Error Rate (set the punctuation marks for metrics computation with 
+    "text_processing.punctuation_marks")
+     
     tolerance: Float, minimum WER/CER required to pass some arbitrary tolerance.
 
     only_score_manifest: Bool, when set will skip audio transcription and just calculate WER of provided manifest.
+    scores_per_sample: Bool, compute metrics for each sample separately (if only_score_manifest=True, scores per sample
+    will be added to the manifest at the dataset_manifest path)
 
 # Usage
 
@@ -66,7 +72,12 @@ import transcribe_speech
 from omegaconf import MISSING, OmegaConf, open_dict
 
 from nemo.collections.asr.metrics.wer import word_error_rate
-from nemo.collections.asr.parts.utils.transcribe_utils import PunctuationCapitalization, TextProcessingConfig
+from nemo.collections.asr.parts.utils.transcribe_utils import (
+    PunctuationCapitalization,
+    TextProcessingConfig,
+    compute_metrics_per_sample,
+)
+from nemo.collections.common.metrics.punct_er import DatasetPunctuationErrorRate
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -82,9 +93,11 @@ class EvaluationConfig(transcribe_speech.TranscriptionConfig):
     att_context_size: Optional[list] = None
 
     use_cer: bool = False
+    use_punct_er: bool = False
     tolerance: Optional[float] = None
 
     only_score_manifest: bool = False
+    scores_per_sample: bool = False
 
     text_processing: Optional[TextProcessingConfig] = TextProcessingConfig(
         punctuation_marks=".,?", separate_punctuation=False, do_lowercase=False, rm_punctuation=False,
@@ -154,6 +167,29 @@ def main(cfg: EvaluationConfig):
             f"contain value for `pred_text`."
         )
 
+    if cfg.use_punct_er:
+        dper_obj = DatasetPunctuationErrorRate(
+            hypotheses=predicted_text,
+            references=ground_truth_text,
+            punctuation_marks=list(cfg.text_processing.punctuation_marks),
+        )
+        dper_obj.compute()
+
+    if cfg.scores_per_sample:
+        metrics_to_compute = ["wer", "cer"]
+
+        if cfg.use_punct_er:
+            metrics_to_compute.append("punct_er")
+
+        samples_with_metrics = compute_metrics_per_sample(
+            manifest_path=cfg.dataset_manifest,
+            reference_field="text",
+            hypothesis_field="pred_text",
+            metrics=metrics_to_compute,
+            punctuation_marks=cfg.text_processing.punctuation_marks,
+            output_manifest_path=cfg.output_filename,
+        )
+
     # Compute the WER
     cer = word_error_rate(hypotheses=predicted_text, references=ground_truth_text, use_cer=True)
     wer = word_error_rate(hypotheses=predicted_text, references=ground_truth_text, use_cer=False)
@@ -172,6 +208,10 @@ def main(cfg: EvaluationConfig):
         logging.info(f'Got {metric_name} of {metric_value}. Tolerance was {cfg.tolerance}')
 
     logging.info(f'Dataset WER/CER ' + str(round(100 * wer, 2)) + "%/" + str(round(100 * cer, 2)) + "%")
+
+    if cfg.use_punct_er:
+        dper_obj.print()
+        dper_obj.reset()
 
     # Inject the metric name and score into the config, and return the entire config
     with open_dict(cfg):

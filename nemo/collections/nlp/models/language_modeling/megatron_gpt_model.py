@@ -1515,10 +1515,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         activation_func = activation_to_func(activation)
 
         normalization = self.cfg.get('normalization', 'layernorm')
+        layernorm_zero_centered_gamma = self.cfg.get('normalization', 'layernorm') == 'layernorm1p'
         if normalization == 'layernorm':
             normalization = 'LayerNorm'
         elif normalization == 'rmsnorm':
             normalization = 'RMSNorm'
+        elif normalization == 'layernorm1p':
+            normalization = 'LayerNorm'
+            layernorm_zero_centered_gamma = True
         else:
             logging.warning(
                 f"The normalization type: {normalization} might not be supported in megatron core."
@@ -1562,7 +1566,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # any configs that are not in the nemo model config will be added here
         config_mapping = {
             'apply_residual_connection_post_layernorm': False,  # we don't use this in NeMo
-            'layernorm_zero_centered_gamma': False,  # not currently used in NeMo
+            'layernorm_zero_centered_gamma': layernorm_zero_centered_gamma,
             'add_bias_linear': add_bias_linear,
             'gated_linear_unit': gated_linear_unit,
             'activation_func': activation_func,

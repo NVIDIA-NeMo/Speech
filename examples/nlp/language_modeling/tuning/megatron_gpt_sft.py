@@ -15,11 +15,12 @@
 import os
 import tempfile
 
+import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_chat_dataset import get_prompt_template_example
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -35,6 +36,8 @@ from nemo.utils import AppState, logging
 from nemo.utils.decorators import deprecated
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.model_utils import inject_model_parallel_rank
+
+mp.set_start_method("spawn", force=True)
 
 
 def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
@@ -70,6 +73,13 @@ def _modify_config(gpt_cfg, cfg, add_cfg_to_tree=False):
         gpt_cfg.tensor_model_parallel_size = cfg.model.get('tensor_model_parallel_size', 1)
         gpt_cfg.pipeline_model_parallel_size = cfg.model.get('pipeline_model_parallel_size', 1)
         gpt_cfg.pipeline_model_parallel_split_rank = cfg.model.get('pipeline_model_parallel_split_rank', 0)
+
+        if cfg.model.data.get('chat', False):
+            # chat model, overwrite the prompt template
+            prompt_template = get_prompt_template_example(cfg.model.data.chat_prompt_tokens)
+            gpt_cfg.data.train_ds.prompt_template = prompt_template
+            gpt_cfg.data.validation_ds.prompt_template = prompt_template
+            gpt_cfg.data.test_ds.prompt_template = prompt_template
 
         sft_cls = MegatronGPTSFTModel
         gpt_cfg.target = f"{sft_cls.__module__}.{sft_cls.__name__}"

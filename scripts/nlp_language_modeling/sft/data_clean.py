@@ -41,7 +41,7 @@ def data_clean(
     )
     if library == 'huggingface':
         tokenizer.add_special_tokens({'additional_special_tokens': ['<extra_id_0>', '<extra_id_1>', '<extra_id_2>']})
-    d = GPTSFTChatDataset(dataset_file, tokenizer, seq_len, 1)
+    d = GPTSFTChatDataset(dataset_file, tokenizer, seq_len, 1, hf_dataset=True)
     total_records = len(d)
     removed_ids = set()
     for i in range(total_records):

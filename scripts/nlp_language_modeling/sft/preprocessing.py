@@ -80,11 +80,12 @@ def parse_conversations(tree_obj):
         raise ValueError(f'unknown role {prompt_obj["role"]}')
     turn = {'value': prompt_obj['text'], 'from': role}
     if 'labels' in prompt_obj:
-        turn['human_labels'] = prompt_obj['labels']
-        for key in turn['human_labels']:
-            value_set = label_values.get(key, set())
-            value_set.add(turn['human_labels'][key]['value'])
-            label_values[key] = value_set
+        # remove human labels
+        # turn['human_labels'] = prompt_obj['labels']
+        # for key in turn['human_labels']:
+        #     value_set = label_values.get(key, set())
+        #     value_set.add(turn['human_labels'][key]['value'])
+        #     label_values[key] = value_set
         turn['label'] = encode_labels(prompt_obj['labels'])
     if 'lang' in prompt_obj:
         turn['lang'] = prompt_obj['lang'].split('-')[0]

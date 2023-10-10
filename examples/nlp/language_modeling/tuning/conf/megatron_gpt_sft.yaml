@@ -71,6 +71,12 @@ model:
 
   data:
     chat: False # whether use chatbot data or not
+    chat_prompt_tokens:  # special tokens for the chat prompts, a dictionary of {token_type: token}. note that some tokenizer may combine the characters at the junction between {end_of_turn}{turn_start}. e.g. '<im end><im start>', the '><' sometimes is merged to be a single token. This is not supported, try to avoid
+      system_turn_start: '<extra_id_0>'
+      turn_start: '<extra_id_1>'
+      label_start: '<extra_id_2>'
+      end_of_turn: "\x0A"  # \0x0A is '\n'
+      end_of_name: "\x0A"  # \0x0A is '\n'
     train_ds:
       # Example of how to specify paths to multiple datasets
       # file_names: 

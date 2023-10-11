@@ -1,4 +1,5 @@
 defaults:
+  - _self_
   - optional tp_overlap@model.ub_tp_comm_overlap_cfg:
 
 name: megatron_gpt

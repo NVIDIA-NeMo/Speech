@@ -215,7 +215,7 @@ class BuildEnsembleConfig:
             preserve_frame_confidence=True,
             exclude_blank=True,
             aggregation="mean",
-            measure_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
+            method_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
         )
     )
     temperature: float = 1.0

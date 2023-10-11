@@ -33,7 +33,10 @@ import speech_to_text_eval
     [
         "ensemble.0.model=stt_es_conformer_ctc_large ensemble.1.model=stt_it_conformer_ctc_large",
         "ensemble.0.model=stt_es_conformer_transducer_large ensemble.1.model=stt_it_conformer_transducer_large",
-        "ensemble.0.model=stt_es_fastconformer_hybrid_large_pc ensemble.1.model=stt_it_fastconformer_hybrid_large_pc",
+        (
+            "ensemble.0.model=stt_es_fastconformer_hybrid_large_pc ensemble.1.model=stt_it_fastconformer_hybrid_large_pc "
+            "confidence.method_cfg.alpha=0.33 confidence.method_cfg.entropy_norm=exp "
+        ),
         (
             "ensemble.0.model=stt_es_fastconformer_hybrid_large_pc "
             "ensemble.1.model=stt_it_fastconformer_hybrid_large_pc "

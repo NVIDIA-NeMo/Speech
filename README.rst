@@ -58,7 +58,7 @@ State of the Art pretrained NeMo models are freely available on `HuggingFace Hub
 These models can be used to transcribe audio, synthesize speech, or translate text in just a few lines of code.
 
 We have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that
-can all be run on `Google Colab <https://colab.research.google.com>`_.
+can be run on `Google Colab <https://colab.research.google.com>`_.
 
 For advanced users that want to train NeMo models from scratch or finetune existing NeMo models
 we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ that support multi-GPU/multi-node training.
@@ -67,30 +67,14 @@ For scaling NeMo LLM training on Slurm clusters or public clouds, please see the
 The NM launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_
 which can be used to find the optimal model parallel configuration for training on a specific cluster.
 
-Also see the two introductory videos below for a high level overview of NeMo.
-
-* Developing State-Of-The-Art Conversational AI Models in Three Lines of Code.
-* NVIDIA NeMo: Toolkit for Conversational AI at PyData Yerevan 2022.
-
-|three_lines|     |pydata|
-
-.. |pydata| image:: https://img.youtube.com/vi/J-P6Sczmas8/maxres3.jpg
-    :target: https://www.youtube.com/embed/J-P6Sczmas8?mute=0&start=14&autoplay=0
-    :width: 600
-    :alt: Develop Conversational AI Models in 3 Lines
-
-.. |three_lines| image:: https://img.youtube.com/vi/wBgpMf_KQVw/maxresdefault.jpg
-    :target: https://www.youtube.com/embed/wBgpMf_KQVw?mute=0&start=0&autoplay=0
-    :width: 600
-    :alt: Introduction at PyData@Yerevan 2022
-
 Key Features
 ------------
 
 * Speech processing
     * `HuggingFace Space for Audio Transcription (File, Microphone and YouTube) <https://huggingface.co/spaces/smajumdar/nemo_multilingual_language_id>`_
+    * `Pretrained models <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_asr>`_ available in 14+ languages
     * `Automatic Speech Recognition (ASR) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/intro.html>`_
-        * Supported ASR models: `<https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html>`_
+        * Supported ASR `models <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html>`_:
             * Jasper, QuartzNet, CitriNet, ContextNet
             * Conformer-CTC, Conformer-Transducer, FastConformer-CTC, FastConformer-Transducer
             * Squeezeformer-CTC and Squeezeformer-Transducer
@@ -101,7 +85,7 @@ Key Features
             * Hybrid Transducer/CTC
             * NeMo Original `Multi-blank Transducers <https://arxiv.org/abs/2211.03541>`_ and `Token-and-Duration Transducers (TDT) <https://arxiv.org/abs/2304.06795>`_
         * Streaming/Buffered ASR (CTC/Transducer) - `Chunked Inference Examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/asr_chunked_inference>`_
-        * Cache-aware Streaming Conformer with multiple lookaheads - `<https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer>`_
+        * `Cache-aware Streaming Conformer <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#cache-aware-streaming-conformer>`_ with multiple lookaheads.
         * Beam Search decoding
         * `Language Modelling for ASR (CTC and RNNT) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/asr_language_modeling.html>`_: N-gram LM in fusion with Beam Search decoding, Neural Rescoring with Transformer
         * `Support of long audios for Conformer with memory efficient local attention <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.html#inference-on-long-audio>`_
@@ -113,8 +97,6 @@ Key Features
         * Clustering Diarizer: TitaNet, ECAPA_TDNN, SpeakerNet
         * Neural Diarizer: MSDD (Multi-scale Diarization Decoder)
     * `Speech Intent Detection and Slot Filling <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_intent_slot/intro.html>`_: Conformer-Transformer
-    * `Pretrained models on different languages. <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_asr>`_: English, Spanish, German, Russian, Chinese, French, Italian, Polish, ...
-    * `NGC collection of pre-trained speech processing models. <https://ngc.nvidia.com/catalog/collections/nvidia:nemo_asr>`_
 * Natural Language Processing
     * `NeMo Megatron pre-training of Large Language Models <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/nlp/nemo_megatron/intro.html>`_
     * `Neural Machine Translation (NMT) <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/nlp/machine_translation/machine_translation.html>`_
@@ -151,7 +133,7 @@ Requirements
 
 1) Python 3.10 or above
 2) Pytorch 1.13.1 or above
-3) NVIDIA GPU for training
+3) NVIDIA GPU, if you intend to do model training
 
 Documentation
 -------------
@@ -178,6 +160,15 @@ Tutorials
 ---------
 A great way to start with NeMo is by checking `one of our tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_.
 
+You can also get a high-level overview of NeMo by watching the talk *NVIDIA NeMo: Toolkit for Conversational AI*, presented at PyData Yerevan 2022:
+
+|pydata|
+
+.. |pydata| image:: https://img.youtube.com/vi/J-P6Sczmas8/maxres3.jpg
+    :target: https://www.youtube.com/embed/J-P6Sczmas8?mute=0&start=14&autoplay=0
+    :width: 600
+    :alt: NeMo presentation at PyData@Yerevan 2022
+
 Getting help with NeMo
 ----------------------
 FAQ can be found on NeMo's `Discussions board <https://github.com/NVIDIA/NeMo/discussions>`_. You are welcome to ask questions or start discussions there.
@@ -185,7 +176,6 @@ FAQ can be found on NeMo's `Discussions board <https://github.com/NVIDIA/NeMo/di
 
 Installation
 ------------
-
 Conda
 ~~~~~
 
@@ -240,6 +230,33 @@ Use this installation mode if you are contributing to NeMo.
 
 If you only want the toolkit without additional conda-based dependencies, you may replace ``reinstall.sh``
 with ``pip install -e .`` when your PWD is the root of the NeMo repository.
+
+Mac computers with Apple silicon
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+To install NeMo on Mac with Apple M-Series GPU:
+
+- create a new Conda environment
+
+- install PyTorch 2.0 or higher
+
+- run the following code:
+
+.. code-block:: shell
+
+    # [optional] install mecab using Homebrew, to use sacrebleu for NLP collection
+    # you can install Homebrew here: https://brew.sh
+    brew install mecab
+
+    # [optional] install pynini using Conda, to use text normalization
+    conda install -c conda-forge pynini
+
+    # install Cython manually
+    pip install cython
+
+    # clone the repo and install in development mode
+    git clone https://github.com/NVIDIA/NeMo
+    cd NeMo
+    ./reinstall.sh
 
 RNNT
 ~~~~
@@ -338,7 +355,7 @@ To build a nemo container with Dockerfile from a branch, please run
     DOCKER_BUILDKIT=1 docker build -f Dockerfile -t nemo:latest .
 
 
-If you chose to work with main branch, we recommend using NVIDIA's PyTorch container version 23.06-py3 and then installing from GitHub.
+If you choose to work with the main branch, we recommend using NVIDIA's PyTorch container version 23.06-py3 and then installing from GitHub.
 
 .. code-block:: bash
 
@@ -355,7 +372,7 @@ Many examples can be found under the `"Examples" <https://github.com/NVIDIA/NeMo
 Contributing
 ------------
 
-We welcome community contributions! Please refer to the  `CONTRIBUTING.md <https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md>`_ CONTRIBUTING.md for the process.
+We welcome community contributions! Please refer to `CONTRIBUTING.md <https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md>`_ for the process.
 
 Publications
 ------------
@@ -367,4 +384,4 @@ Please refer to the instructions in the `README of that branch <https://github.c
 
 License
 -------
-NeMo is under `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.
+NeMo is released under an `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.

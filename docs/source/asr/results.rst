@@ -157,6 +157,9 @@ Language Models for ASR
 
 |
 
+
+.. _asr-checkpoint-list-by-language:
+
 Speech Recognition (Languages)
 ------------------------------
 

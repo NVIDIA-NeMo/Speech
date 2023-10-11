@@ -162,6 +162,8 @@ these files using ``--dest_folder``. In order to generate files in the supported
 
 After the script finishes, the ``train.json``, ``dev.json``, ``test.json``, and ``vocab.txt`` files can be found in the ``dest_folder`` directory.
 
+.. _section-with-manifest-format-explanation:
+
 Preparing Custom ASR Data
 -------------------------
 

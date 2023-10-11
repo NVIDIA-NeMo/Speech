@@ -39,6 +39,7 @@ penalty term to consider the sequence length in the scores. Larger alpha means m
 importance on the acoustic model. Negative values for beta will give penalty to longer sequences and make the decoder
 to prefer shorter predictions, while positive values would result in longer candidates.
 
+.. _train-ngram-lm:
 
 Train N-gram LM
 ===============

@@ -112,7 +112,7 @@ model:
       num_workers: 2
 
   audio_encoder:
-    _target_: nemo.collections.tts.modules.encodec_modules.HifiGanEncoder
+    _target_: nemo.collections.tts.modules.encodec_modules.SEANetEncoder
     down_sample_rates: ${down_sample_rates}
 
   audio_decoder:

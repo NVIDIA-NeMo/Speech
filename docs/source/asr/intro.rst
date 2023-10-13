@@ -31,9 +31,9 @@ You can also obtain timestamps for each word in the transcription as follows:
     from omegaconf import OmegaConf, open_dict
     decoding_cfg = asr_model.cfg.decoding
     with open_dict(decoding_cfg):
-    decoding_cfg.preserve_alignments = True
-    decoding_cfg.compute_timestamps = True
-    asr_model.change_decoding_strategy(decoding_cfg)
+        decoding_cfg.preserve_alignments = True
+        decoding_cfg.compute_timestamps = True
+        asr_model.change_decoding_strategy(decoding_cfg)
 
     # specify flag `return_hypotheses=True``        
     hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], return_hypotheses=True)

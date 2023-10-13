@@ -68,7 +68,7 @@ def main(cfg: DictConfig) -> None:
     try:
         strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=True,)
     except (ImportError, ModuleNotFoundError):
-        strategy = None
+        strategy = 'auto'
 
     trainer = pl.Trainer(**cfg.trainer, strategy=strategy)
 

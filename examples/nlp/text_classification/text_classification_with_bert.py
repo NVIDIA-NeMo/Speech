@@ -111,7 +111,7 @@ def main(cfg: DictConfig) -> None:
     try:
         strategy = NLPDDPStrategy(find_unused_parameters=True)
     except (ImportError, ModuleNotFoundError):
-        strategy = None
+        strategy = 'auto'
 
     trainer = pl.Trainer(strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))

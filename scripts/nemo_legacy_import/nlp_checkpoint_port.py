@@ -81,7 +81,7 @@ def nemo_convert(argv):
 
     # Create a PL trainer object which is required for restoring Megatron models
     cfg_trainer = TrainerConfig(
-        gpus=1,
+        devices=1,
         accelerator="ddp",
         num_nodes=1,
         # Need to set the following two to False as ExpManager will take care of them differently.

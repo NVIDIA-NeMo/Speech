@@ -101,7 +101,7 @@ class ParallelAlignmentConfig:
     output_path: str = MISSING
     model_stride: int = 8
 
-    trainer: TrainerConfig = field(default_factory=lambda: TrainerConfig(gpus=-1, accelerator="ddp"))
+    trainer: TrainerConfig = field(default_factory=lambda: TrainerConfig(devices=-1, accelerator="ddp"))
 
     # there arguments will be ignored
     return_predictions: bool = False

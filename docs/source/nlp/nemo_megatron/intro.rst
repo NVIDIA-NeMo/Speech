@@ -26,6 +26,8 @@ team at NVIDIA. NeMo Megatron supports several types of models:
    retro/retro_model
    hiddens/hiddens_module
    peft/landing_page
+   flash_attention
+   positional_embeddings
 
 
 References

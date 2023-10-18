@@ -56,6 +56,7 @@ from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, Index, LengthsType, LossType, VoidType
 from nemo.core.neural_types.neural_type import NeuralType
+from nemo.utils import logging
 from nemo.utils.decorators import experimental
 
 
@@ -806,4 +807,144 @@ class ResidualVectorQuantizer(NeuralModule):
             dequantized_i = codebook.decode(indices=codebook_indices, input_len=input_len)
             dequantized = dequantized + dequantized_i
         dequantized = rearrange(dequantized, "B T D -> B D T")
+        return dequantized
+
+
+class GroupResidualVectorQuantizer(NeuralModule):
+    """Split the input vector into groups and apply RVQ on each group separately.
+
+    Args:
+        num_codebooks: total number of codebooks
+        num_groups: number of groups to split the input into, each group will be quantized separately using num_codebooks//num_groups codebooks
+        codebook_dim: embedding dimension, will be split into num_groups
+        **kwargs: parameters of ResidualVectorQuantizer
+
+    References:
+        Yang et al, HiFi-Codec: Group-residual Vector quantization for High Fidelity Audio Codec, 2023 (http://arxiv.org/abs/2305.02765).
+    """
+
+    def __init__(self, num_codebooks: int, num_groups: int, codebook_dim: int, **kwargs):
+        super().__init__()
+
+        self.num_codebooks = num_codebooks
+        self.num_groups = num_groups
+        self.codebook_dim = codebook_dim
+
+        # Initialize RVQ for each group
+        self.rvqs = torch.nn.ModuleList(
+            [
+                ResidualVectorQuantizer(
+                    num_codebooks=self.num_codebooks_per_group, codebook_dim=self.codebook_dim_per_group, **kwargs
+                )
+                for _ in range(self.num_groups)
+            ]
+        )
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tnum_codebooks:           %d', self.num_codebooks)
+        logging.debug('\tnum_groups:              %d', self.num_groups)
+        logging.debug('\tcodebook_dim:            %d', self.codebook_dim)
+        logging.debug('\tnum_codebooks_per_group: %d', self.num_codebooks_per_group)
+        logging.debug('\tcodebook_dim_per_group:  %d', self.codebook_dim_per_group)
+
+    @property
+    def num_codebooks_per_group(self):
+        """Number of codebooks for each group.
+        """
+        if self.num_codebooks % self.num_groups != 0:
+            raise ValueError(
+                f'num_codebooks ({self.num_codebooks}) must be divisible by num_groups ({self.num_groups})'
+            )
+
+        return self.num_codebooks // self.num_groups
+
+    @property
+    def codebook_dim_per_group(self):
+        """Input vector dimension for each group.
+        """
+        if self.codebook_dim % self.num_groups != 0:
+            raise ValueError(f'codebook_dim ({self.codebook_dim}) must be divisible by num_groups ({self.num_groups})')
+
+        return self.codebook_dim // self.num_groups
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "commit_loss": NeuralType((), LossType()),
+        }
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        """Quantize each group separately, then concatenate the results.
+        """
+        inputs_grouped = inputs.chunk(self.num_groups, dim=1)
+
+        dequantized, indices = [], []
+        commit_loss = 0
+
+        for in_group, rvq_group in zip(inputs_grouped, self.rvqs):
+            dequantized_group, indices_group, commit_loss_group = rvq_group(inputs=in_group, input_len=input_len)
+            dequantized.append(dequantized_group)
+            indices.append(indices_group)
+            commit_loss += commit_loss_group
+
+        # concatenate along the feature dimension
+        dequantized = torch.cat(dequantized, dim=1)
+
+        # concatente along the codebook dimension
+        indices = torch.cat(indices, dim=0)
+
+        return dequantized, indices, commit_loss
+
+    @typecheck(
+        input_types={
+            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
+    )
+    def encode(self, inputs: Tensor, input_len: Tensor) -> Tensor:
+        """Input is split into groups, each group is encoded separately, then the results are concatenated.
+        """
+        inputs_grouped = inputs.chunk(self.num_groups, dim=1)
+        indices = []
+
+        for in_group, rvq_group in zip(inputs_grouped, self.rvqs):
+            indices_group = rvq_group.encode(inputs=in_group, input_len=input_len)
+            indices.append(indices_group)
+
+        # concatenate along the codebook dimension
+        indices = torch.cat(indices, dim=0)
+
+        return indices
+
+    @typecheck(
+        input_types={
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+    )
+    def decode(self, indices: Tensor, input_len: Tensor) -> Tensor:
+        """Input indices are split into groups, each group is decoded separately, then the results are concatenated.
+        """
+        indices_grouped = indices.chunk(self.num_groups, dim=0)
+        dequantized = []
+
+        for indices_group, rvq_group in zip(indices_grouped, self.rvqs):
+            dequantized_group = rvq_group.decode(indices=indices_group, input_len=input_len)
+            dequantized.append(dequantized_group)
+
+        # concatenate along the feature dimension
+        dequantized = torch.cat(dequantized, dim=1)
+
         return dequantized

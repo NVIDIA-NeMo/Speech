@@ -240,7 +240,7 @@ where the mlm loss uses targets from the quantization module of the contrastive 
 
 We can also use other losses which require labels instead of mlm, such as ctc or rnnt loss. Since these losses, unlike mlm,
 don't require our targets to have a direct alignment with our steps, we may also want to use set the ``reduce_ids`` parameter of the
-contrastive loss to true, to convert any sequence of consecutive equivalent ids to a single occurence of that id.
+contrastive loss to true, to convert any sequence of consecutive equivalent ids to a single occurrence of that id.
 
 An example of a ``loss_list`` consisting of contrastive+ctc loss can look like this:
 

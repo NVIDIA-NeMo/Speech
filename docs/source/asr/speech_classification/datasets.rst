@@ -121,7 +121,7 @@ Voxlingua107
 
 VoxLingua107 consists of short speech segments automatically extracted from YouTube videos. 
 It contains 107 languages. The total amount of speech in the training set is 6628 hours, and 62 hours per language on average but it's highly imbalanced. 
-It also includes seperate evaluation set containing 1609 speech segments from 33 languages, validated by at least two volunteers.
+It also includes separate evaluation set containing 1609 speech segments from 33 languages, validated by at least two volunteers.
 
 You could download dataset from its `official website <http://bark.phon.ioc.ee/voxlingua107/>`_.
 

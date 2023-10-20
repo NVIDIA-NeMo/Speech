@@ -300,7 +300,7 @@ Bucketing Datasets
 For training ASR models, audios with different lengths may be grouped into a batch. It would make it necessary to use paddings to make all the same length.
 These extra paddings is a significant source of computation waste. Splitting the training samples into buckets with different lengths and sampling from the same bucket for each batch would increase the computation efficicncy.
 It may result into training speeedup of more than 2X. To enable and use the bucketing feature, you need to create the bucketing version of the dataset by using `conversion script here <https://github.com/NVIDIA/NeMo/tree/stable/scripts/speech_recognition/convert_to_tarred_audio_dataset.py>`_.
-You may use --buckets_num to specify the number of buckets (Recommened to use 4 to 8 buckets). It creates multiple tarred datasets, one per bucket, based on the audio durations. The range of [min_duration, max_duration) is split into equal sized buckets.
+You may use --buckets_num to specify the number of buckets (Recommend to use 4 to 8 buckets). It creates multiple tarred datasets, one per bucket, based on the audio durations. The range of [min_duration, max_duration) is split into equal sized buckets.
 
 
 To enable the bucketing feature in the dataset section of the config files, you need to pass the multiple tarred datasets as a list of lists.

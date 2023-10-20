@@ -8,7 +8,7 @@ from observed part of the input (e.g., filling in the blanks in a sentence or pr
 an image is upright or inverted).
 
 SSL for speech/audio understanding broadly falls into either contrastive or reconstruction 
-based approaches. In contrastive methods, models learn by distinguising between true and distractor 
+based approaches. In contrastive methods, models learn by distinguishing between true and distractor 
 tokens (or latents). Examples of contrastive approaches are Contrastive Predictive Coding (CPC), 
 Masked Language Modeling (MLM) etc. In reconstruction methods, models learn by directly estimating 
 the missing (intentionally leftout) portions of the input. Masked Reconstruction, Autoregressive 

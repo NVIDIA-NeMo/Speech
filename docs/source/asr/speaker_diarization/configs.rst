@@ -121,7 +121,7 @@ The hyper-parameters for MSDD models are under the ``msdd_module`` key. The mode
     num_lstm_layers: 3 # Number of stacked LSTM layers
     dropout_rate: 0.5 # Dropout rate
     cnn_output_ch: 32 # Number of filters in a conv-net layer.
-    conv_repeat: 2 # Determins the number of conv-net layers. Should be greater or equal to 1.
+    conv_repeat: 2 # Determines the number of conv-net layers. Should be greater or equal to 1.
     emb_dim: 192 # Dimension of the speaker embedding vectors
     scale_n: ${model.scale_n} # Number of scales for multiscale segmentation input
     weighting_scheme: 'conv_scale_weight' # Type of weighting algorithm. Options: ('conv_scale_weight', 'attn_scale_weight')

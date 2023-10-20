@@ -43,7 +43,7 @@ The data flow of the multiscale speaker diarization system is shown in the above
 .. image:: images/scale_weight_cnn.png
         :align: center
         :width: 800px
-        :alt: A figure explaing CNN based scale weighting mechanism
+        :alt: A figure explaining CNN based scale weighting mechanism
 
 
 A neural network model named multi-scale diarization decoder (MSDD) is trained to take advantage of a multi-scale approach by dynamically calculating the weight of each scale. MSDD takes the initial clustering results and compares the extracted speaker embeddings with the cluster-average speaker representation vectors. 
@@ -53,7 +53,7 @@ Most importantly, the weight of each scale at each time step is determined throu
 .. image:: images/weighted_sum.png
         :align: center
         :width: 800px
-        :alt: A figure explaing weighted sum of cosine similarity values
+        :alt: A figure explaining weighted sum of cosine similarity values
 
 The estimated scale weights are applied to cosine similarity values calculated for each speaker and each scale. The above figure shows the process of calculating the context vector by applying the estimated scale weights on cosine similarity calculated between cluster-average speaker embedding and input speaker embeddings. 
 

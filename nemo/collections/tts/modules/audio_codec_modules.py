@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 
 import torch.nn as nn
 
+from nemo.collections.asr.parts.utils.activations import Snake
 from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
@@ -40,6 +41,25 @@ def get_up_sample_padding(kernel_size: int, stride: int) -> Tuple[int, int]:
     output_padding = (kernel_size - stride) % 2
     padding = (kernel_size - stride + 1) // 2
     return padding, output_padding
+
+
+class CodecActivation(nn.Module):
+    """
+    Choose between snake or Elu activation based on the input parameter.
+    """
+
+    def __init__(self, activation: str = "elu", channels: int = 1):
+        super().__init__()
+        activation = activation.lower()
+        if activation == "snake":
+            self.activation = Snake(channels)
+        elif activation == "elu":
+            self.activation = nn.ELU()
+        else:
+            raise ValueError(f"Unknown activation {activation}")
+
+    def forward(self, x):
+        return self.activation(x)
 
 
 class Conv1dNorm(NeuralModule):

@@ -87,10 +87,10 @@ model:
   # Remove this section to disable logging.
   log_config:
     log_dir: ${log_dir}
-    log_epochs: [10, 50]
+    log_epochs: [10, 50, 100, 150, 200]
     epoch_frequency: 100
     log_tensorboard: false
-    log_wandb: false
+    log_wandb: true
 
     generators:
       - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator

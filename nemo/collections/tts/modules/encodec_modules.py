@@ -45,6 +45,7 @@ from torch import Tensor
 
 from nemo.collections.tts.losses.audio_codec_loss import MaskedMSELoss
 from nemo.collections.tts.modules.audio_codec_modules import (
+    CodecActivation,
     Conv1dNorm,
     Conv2dNorm,
     ConvTranspose1dNorm,
@@ -61,12 +62,13 @@ from nemo.utils.decorators import experimental
 
 
 class SEANetResnetBlock(NeuralModule):
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, activation: str = "elu"):
         super().__init__()
-        self.activation = nn.ELU()
+        self.pre_activation = CodecActivation(activation=activation, channels=channels)
         hidden_channels = channels // 2
         self.pre_conv = Conv1dNorm(in_channels=channels, out_channels=channels, kernel_size=1)
         self.res_conv1 = Conv1dNorm(in_channels=channels, out_channels=hidden_channels, kernel_size=3)
+        self.post_activation = CodecActivation(activation=activation, channels=hidden_channels)
         self.res_conv2 = Conv1dNorm(in_channels=hidden_channels, out_channels=channels, kernel_size=1)
 
     @property
@@ -89,9 +91,9 @@ class SEANetResnetBlock(NeuralModule):
 
     @typecheck()
     def forward(self, inputs, input_len):
-        res = self.activation(inputs)
+        res = self.pre_activation(inputs)
         res = self.res_conv1(inputs=res, input_len=input_len)
-        res = self.activation(res)
+        res = self.post_activation(res)
         res = self.res_conv2(inputs=res, input_len=input_len)
 
         out = self.pre_conv(inputs=inputs, input_len=input_len) + res
@@ -148,6 +150,7 @@ class SEANetEncoder(NeuralModule):
         in_kernel_size: int = 7,
         out_kernel_size: int = 7,
         encoded_dim: int = 128,
+        activation: str = "elu",
         rnn_layers: int = 2,
         rnn_type: str = "lstm",
         rnn_skip: bool = True,
@@ -158,15 +161,16 @@ class SEANetEncoder(NeuralModule):
         super().__init__()
 
         self.down_sample_rates = down_sample_rates
-        self.activation = nn.ELU()
         self.pre_conv = Conv1dNorm(in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size)
 
         in_channels = base_channels
         self.res_blocks = nn.ModuleList([])
         self.down_sample_conv_layers = nn.ModuleList([])
+        self.activations = nn.ModuleList([])
         for i, down_sample_rate in enumerate(self.down_sample_rates):
             res_block = SEANetResnetBlock(channels=in_channels)
             self.res_blocks.append(res_block)
+            self.activations.append(CodecActivation(activation=activation, channels=in_channels))
 
             out_channels = 2 * in_channels
             kernel_size = 2 * down_sample_rate
@@ -180,6 +184,7 @@ class SEANetEncoder(NeuralModule):
             in_channels = out_channels
             self.down_sample_conv_layers.append(down_sample_conv)
 
+        self.post_activation = CodecActivation(activation=activation, channels=in_channels)
         self.rnn = SEANetRNN(dim=in_channels, num_layers=rnn_layers, rnn_type=rnn_type, use_skip=rnn_skip)
         self.post_conv = Conv1dNorm(in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size)
 
@@ -211,19 +216,19 @@ class SEANetEncoder(NeuralModule):
         audio = rearrange(audio, "B T -> B 1 T")
         # [B, C, T_audio]
         out = self.pre_conv(inputs=audio, input_len=encoded_len)
-        for res_block, down_sample_conv, down_sample_rate in zip(
-            self.res_blocks, self.down_sample_conv_layers, self.down_sample_rates
+        for res_block, down_sample_conv, down_sample_rate, activation in zip(
+            self.res_blocks, self.down_sample_conv_layers, self.down_sample_rates, self.activations
         ):
             # [B, C, T]
             out = res_block(inputs=out, input_len=encoded_len)
-            out = self.activation(out)
+            out = activation(out)
 
             encoded_len = encoded_len // down_sample_rate
             # [B, 2 * C, T / down_sample_rate]
             out = down_sample_conv(inputs=out, input_len=encoded_len)
 
         out = self.rnn(inputs=out, input_len=encoded_len)
-        out = self.activation(out)
+        out = self.post_activation(out)
         # [B, encoded_dim, T_encoded]
         encoded = self.post_conv(inputs=out, input_len=encoded_len)
         return encoded, encoded_len
@@ -237,6 +242,7 @@ class SEANetDecoder(NeuralModule):
         in_kernel_size: int = 7,
         out_kernel_size: int = 3,
         encoded_dim: int = 128,
+        activation: str = "elu",
         rnn_layers: int = 2,
         rnn_type: str = "lstm",
         rnn_skip: bool = True,
@@ -247,14 +253,15 @@ class SEANetDecoder(NeuralModule):
         super().__init__()
 
         self.up_sample_rates = up_sample_rates
-        self.activation = nn.ELU()
         self.pre_conv = Conv1dNorm(in_channels=encoded_dim, out_channels=base_channels, kernel_size=in_kernel_size)
         self.rnn = SEANetRNN(dim=base_channels, num_layers=rnn_layers, rnn_type=rnn_type, use_skip=rnn_skip)
 
         in_channels = base_channels
         self.res_blocks = nn.ModuleList([])
         self.up_sample_conv_layers = nn.ModuleList([])
+        self.activations = nn.ModuleList([])
         for i, up_sample_rate in enumerate(self.up_sample_rates):
+            self.activations.append(CodecActivation(activation=activation, channels=in_channels))
             out_channels = in_channels // 2
             kernel_size = 2 * up_sample_rate
             up_sample_conv = ConvTranspose1dNorm(
@@ -266,6 +273,7 @@ class SEANetDecoder(NeuralModule):
             res_block = SEANetResnetBlock(channels=in_channels)
             self.res_blocks.append(res_block)
 
+        self.post_activation = CodecActivation(activation=activation, channels=in_channels)
         self.post_conv = Conv1dNorm(in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size)
         self.out_activation = nn.Tanh()
 
@@ -296,16 +304,16 @@ class SEANetDecoder(NeuralModule):
         # [B, C, T_encoded]
         out = self.pre_conv(inputs=inputs, input_len=audio_len)
         out = self.rnn(inputs=out, input_len=audio_len)
-        for res_block, up_sample_conv, up_sample_rate in zip(
-            self.res_blocks, self.up_sample_conv_layers, self.up_sample_rates
+        for res_block, up_sample_conv, up_sample_rate, activation in zip(
+            self.res_blocks, self.up_sample_conv_layers, self.up_sample_rates, self.activations
         ):
             audio_len = audio_len * up_sample_rate
-            out = self.activation(out)
+            out = activation(out)
             # [B, C / 2, T * up_sample_rate]
             out = up_sample_conv(inputs=out, input_len=audio_len)
             out = res_block(inputs=out, input_len=audio_len)
 
-        out = self.activation(out)
+        out = self.post_activation(out)
         # [B, 1, T_audio]
         out = self.post_conv(inputs=out, input_len=audio_len)
         audio = self.out_activation(out)

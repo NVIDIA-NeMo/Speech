@@ -405,6 +405,27 @@ class IpaG2p(BaseG2p):
                     else:
                         return self.phoneme_dict[word_found][0] + ["z"], True
 
+        if self.locale == "fr-FR":
+            # contracted prefix (with apostrophe) - not in phoneme dict
+            contractions_g = ['l', 'c', 'd', 'j', 'm', 'n', 'qu', 's', 't', 'puisqu', 'lorsqu', 'jusqu']
+            contractions_p = ['l', 's', 'd', 'ʒ', 'm', 'n', 'k', 's', 't', 'pyisk', 'loʁsk', 'ʒysk']
+
+            for cont_g, cont_p in zip(contractions_g, contractions_p):
+                starter = cont_g + "'"
+                if len(word) > 2 and (word.startswith(starter) or word.startswith(starter.upper())):
+                    word_found = None
+                    if (word not in self.phoneme_dict) and (word.upper() not in self.phoneme_dict):
+                        start_index = len(starter)
+                        if word[start_index:] in self.phoneme_dict:
+                            word_found = word[start_index:]
+                        elif word[start_index:].upper() in self.phoneme_dict:
+                            word_found = word[start_index:].upper()
+
+                    if word_found is not None and (
+                        not self.ignore_ambiguous_words or self.is_unique_in_phoneme_dict(word_found)
+                    ):
+                        return [c for c in cont_p] + self.phoneme_dict[word_found][0], True
+
         # For the words that have a single pronunciation, directly look it up in the phoneme_dict; for the
         # words that have multiple pronunciation variants, if we don't want to ignore them, then directly choose their
         # first pronunciation variant as the target phonemes.

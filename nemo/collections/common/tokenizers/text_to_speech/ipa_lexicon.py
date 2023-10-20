@@ -15,7 +15,7 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR"]
 
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
@@ -48,6 +48,13 @@ GRAPHEME_CHARACTER_SETS = {
         'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
         'U', 'V', 'W', 'X', 'Y', 'Z', 'Ä', 'Ö', 'Ü', 'ẞ',
     ),
+    "fr-FR": (
+        'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 
+        'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 
+        'U', 'V', 'W', 'X', 'Y', 'Z', 'À', 'Â', 'Ä', 'Æ', 
+        'Ç', 'È', 'É', 'Ê', 'Ë', 'Í', 'Î', 'Ï', 'Ñ', 'Ô', 
+        'Ö', 'Ù', 'Û', 'Ü', 'Ō', 'Œ',
+    ),
     "it-IT": (
         'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
         'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
@@ -76,6 +83,13 @@ IPA_CHARACTER_SETS = {
         'w', 'x', 'y', 'z', 'ç', 'ø', 'ŋ', 'œ', 'ɐ', 'ɑ',
         'ɒ', 'ɔ', 'ə', 'ɛ', 'ɜ', 'ɡ', 'ɪ', 'ɹ', 'ɾ', 'ʃ',
         'ʊ', 'ʌ', 'ʒ', '̃', 'θ'
+    ),
+    "fr-FR": (
+        'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l', 
+        'm', 'n', 'o', 'p', 'r', 's', 't', 'u', 'v', 'w', 
+        'y', 'z', 'ð', 'ø', 'ŋ', 'œ', 'ɐ', 'ɑ', 'ɒ', 'ɔ', 
+        'ə', 'ɛ', 'ɜ', 'ɡ', 'ɪ', 'ɲ', 'ɹ', 'ʁ', 'ʃ', 'ʊ', 
+        'ʌ', 'ʒ', 'θ', 'ː', '̃'
     ),
     "it-IT": (
         'a', 'b', 'd', 'e', 'f', 'h', 'i', 'j', 'k', 'l',
@@ -143,7 +157,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES", "it-IT"]:
+    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -190,6 +204,20 @@ def get_ipa_punctuation_list(locale):
     elif locale == "es-ES":
         # ref: https://en.wikipedia.org/wiki/Spanish_orthography#Punctuation
         punct_set.update(['¿', '¡'])
+    elif locale == "fr-FR":
+        punct_set.update(
+            [
+                '–',  # en dash, U+2013, decimal 8211
+                '“',  # left double quotation mark, U+201C, decimal 8220
+                '”',  # right double quotation mark, U+201D, decimal 8221
+                '…',  # horizontal ellipsis, U+2026, decimal 8230
+                '̀',  # combining grave accent, U+0300, decimal 768
+                '́',  # combining acute accent, U+0301, decimal 769
+                '̂',  # combining circumflex accent, U+0302, decimal 770
+                '̈',  # combining diaeresis, U+0308, decimal 776
+                '̧',  # combining cedilla, U+0327, decimal 807
+            ]
+        )
 
     punct_list = sorted(list(punct_set))
     return punct_list

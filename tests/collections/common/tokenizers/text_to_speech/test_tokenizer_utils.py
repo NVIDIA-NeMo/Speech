@@ -16,6 +16,7 @@ import pytest
 from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     any_locale_word_tokenize,
     english_word_tokenize,
+    french_text_preprocessing,
 )
 
 
@@ -119,4 +120,58 @@ class TestTokenizerUtils:
         )
 
         output = any_locale_word_tokenize(input_text)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_any_locale_word_tokenize_fr(self):
+        input_text = "pomme banane poire"
+        expected_output = self._create_expected_output(["pomme", " ", "banane", " ", "poire"])
+
+        output = any_locale_word_tokenize(input_text)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_any_locale_word_tokenize_with_accents_fr(self):
+        input_text = "L’hétérogénéité entre les langues est étonnante."
+        expected_output = self._create_expected_output(
+            ["L", "’", "hétérogénéité", " ", "entre", " ", "les", " ", "langues", " ", "est", " ", "étonnante", "."]
+        )
+
+        output = any_locale_word_tokenize(input_text)
+        assert output == expected_output
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_any_locale_word_tokenize_with_numbers(self):
+        input_text = r"Trois fois× quatorze^ et dix ÷ divisé par [films] sur \slash."
+        expected_output = self._create_expected_output(
+            [
+                "Trois",
+                " ",
+                "fois",
+                "× ",
+                "quatorze",
+                "^ ",
+                "et",
+                " ",
+                "dix",
+                " ÷ ",
+                "divisé",
+                " ",
+                "par",
+                " [",
+                "films",
+                "] ",
+                "sur",
+                " \\",
+                "slash",
+                ".",
+            ]
+        )
+
+        output = any_locale_word_tokenize(input_text)
+        print(output)
+        print(expected_output)
         assert output == expected_output

@@ -35,6 +35,10 @@ def pretrained_model(request, get_language_id_from_pretrained_model_name):
     return model, language_id
 
 
+# This test can only pass when nemo_text_process<=0.1.8rc0. If >0.1.8rc0, the normalized outputs are unexpected for Chinese.
+# Will remove the marker `pleasefixme` once next-text-processing new release fixes the bug.
+# Tracking bugfix in https://github.com/NVIDIA/NeMo-text-processing/issues/109.
+@pytest.mark.pleasefixme
 @pytest.mark.nightly
 @pytest.mark.run_only_on('GPU')
 def test_inference(pretrained_model, language_specific_text_example):

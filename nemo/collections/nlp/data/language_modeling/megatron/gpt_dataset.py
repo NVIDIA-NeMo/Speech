@@ -94,7 +94,7 @@ def build_train_valid_test_datasets(
 ):
     if data_impl in ['mock']:
         logging.info('Initializing mock GPT dataset for train, validate, and test')
-        if len(data_prefix) != 0:
+        if data_prefix is not None and len(data_prefix) != 0:
             # Mock data will be generated instead of loading files.
             logging.warning(f"Requested data_impl={data_impl}, so ignoring data_prefix setting: {data_prefix}")
         if tokenizer is None:

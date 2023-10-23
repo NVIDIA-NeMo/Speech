@@ -240,6 +240,28 @@ class TestEncDecHybridRNNTCTCModel:
         assert hybrid_asr_model.ctc_decoding.preserve_alignments is True
         assert hybrid_asr_model.ctc_decoding.compute_timestamps is True
 
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    def test_decoding_type_change(self, hybrid_asr_model):
+        assert isinstance(hybrid_asr_model.decoding.decoding, greedy_decode.GreedyBatchedRNNTInfer)
+
+        new_strategy = DictConfig({})
+        new_strategy.strategy = 'greedy'
+        new_strategy.greedy = DictConfig({'max_symbols': 10})
+        hybrid_asr_model.change_decoding_strategy(decoding_cfg=new_strategy, decoder_type='rnnt')
+        assert isinstance(hybrid_asr_model.decoding.decoding, greedy_decode.GreedyRNNTInfer)
+        assert hybrid_asr_model.cur_decoder == 'rnnt'
+
+        hybrid_asr_model.change_decoding_strategy(decoding_cfg=new_strategy, decoder_type='ctc')
+        assert isinstance(hybrid_asr_model.ctc_decoding, CTCDecoding)
+        assert hybrid_asr_model.cur_decoder == 'ctc'
+
+        hybrid_asr_model.change_decoding_strategy(decoding_cfg=new_strategy, decoder_type='rnnt')
+        assert isinstance(hybrid_asr_model.decoding.decoding, greedy_decode.GreedyRNNTInfer)
+        assert hybrid_asr_model.cur_decoder == 'rnnt'
+
     @pytest.mark.unit
     def test_GreedyRNNTInferConfig(self):
         IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']

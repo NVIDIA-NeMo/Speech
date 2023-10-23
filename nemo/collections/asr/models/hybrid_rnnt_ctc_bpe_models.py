@@ -421,7 +421,9 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
             with open_dict(self.cfg.decoding):
                 self.cfg.decoding = decoding_cfg
 
+            self.cur_decoder = "rnnt"
             logging.info(f"Changed decoding strategy of the RNNT decoder to \n{OmegaConf.to_yaml(self.cfg.decoding)}")
+
         elif decoder_type == 'ctc':
             if not hasattr(self, 'ctc_decoding'):
                 raise ValueError("The model does not have the ctc_decoding module and does not support ctc decoding.")

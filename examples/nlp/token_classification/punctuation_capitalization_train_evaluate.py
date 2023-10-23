@@ -103,6 +103,10 @@ Set `do_training` to `false` and `do_testing` to `true` to perform evaluation wi
 
 @hydra_runner(config_path="conf", config_name="punctuation_capitalization_config")
 def main(cfg: DictConfig) -> None:
+    # PTL 2.0 has find_unused_parameters as False by default, so its required to set it to True
+    # when there are unused parameters like here
+    if cfg.trainer.strategy == 'ddp':
+        cfg.trainer.strategy = "ddp_find_unused_parameters_true"
     torch.manual_seed(42)
     cfg = OmegaConf.merge(OmegaConf.structured(PunctuationCapitalizationConfig()), cfg)
     trainer = pl.Trainer(**cfg.trainer)

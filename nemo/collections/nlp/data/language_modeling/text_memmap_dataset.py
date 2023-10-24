@@ -525,7 +525,8 @@ def build_index_files(
     logging.info(f"Processing {len(dataset_paths)} data files using {workers} workers")
     # load all files into memmap
     start_time = time.time()
-    with mp.Pool(workers) as p:
+    ctx = mp.get_context("fork")
+    with ctx.Pool(workers) as p:
         build_status = p.map(
             partial(_build_memmap_index_files, newline_int, build_index_fn, index_mapping_dir=index_mapping_dir,),
             dataset_paths,

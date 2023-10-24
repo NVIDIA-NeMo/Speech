@@ -54,7 +54,7 @@ class TrainerConfig:
     limit_test_batches: Any = 1.0
     val_check_interval: Any = 1.0
     log_every_n_steps: int = 50
-    accelerator: Optional[str] = None
+    accelerator: Optional[str] = 'auto'
     sync_batchnorm: bool = False
     precision: Any = 32
     num_sanity_val_steps: int = 2
@@ -68,8 +68,8 @@ class TrainerConfig:
     gradient_clip_algorithm: str = 'norm'
     max_time: Optional[Any] = None  # can be one of Union[str, timedelta, Dict[str, int], None]
     reload_dataloaders_every_n_epochs: int = 0
-    devices: Any = None
-    strategy: Any = None
+    devices: Any = 'auto'
+    strategy: Any = 'auto'
     enable_checkpointing: bool = False
     enable_model_summary: bool = True
     inference_mode: bool = True

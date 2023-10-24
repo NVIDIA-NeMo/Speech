@@ -116,6 +116,18 @@ Alternatively, you can change the attention model after loading a checkpoint:
         att_context_size=[128, 128]
     )
 
+Sometimes, the downsampling module at the earliest stage of the model can take more memory than the actual forward pass since it directly operates on the audio sequence which may not be able to fit in memory for very long audio files. In order to reduce the memory consumption of the subsampling module, you can ask the model to perform auto-chunking of the input sequence and process it piece by piece, taking more time but avoiding an OutOfMemoryError.
+
+.. code-block:: python
+
+    asr_model = ASRModel.from_pretrained('stt_en_fastconformer_ctc_large')
+    # Speedup conv subsampling factor to speed up the subsampling module.
+    asr_model.change_subsampling_conv_chunking_factor(1)  # 1 = auto select
+
+.. note::
+
+    Only certain models which use depthwise separable convolutions in the downsampling layer support this operation. Please try it out on your model and see if it is supported.
+
 
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

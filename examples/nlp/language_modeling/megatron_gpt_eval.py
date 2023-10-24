@@ -219,6 +219,7 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_granularity = None
             pretrained_cfg.activations_checkpoint_method = None
             pretrained_cfg.precision = trainer.precision
+            pretrained_cfg["use_flash_attention"] = cfg.inference.get("use_flash_attention", False)
             if pretrained_cfg.get('mcore_gpt', False):
                 # with dist checkpointing we can use the model parallel config specified by the user
                 pretrained_cfg.tensor_model_parallel_size = cfg.tensor_model_parallel_size

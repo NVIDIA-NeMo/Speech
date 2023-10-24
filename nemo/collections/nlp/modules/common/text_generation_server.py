@@ -45,6 +45,7 @@ API_ALLOWED_KEYS = set(
         "repetition_penalty",
         "min_tokens_to_generate",
         "end_strings",
+        "compute_logprob",
     ]
 )
 
@@ -165,6 +166,12 @@ class MegatronGenerate(Resource):
             if neighbors < 0:
                 return "num of neighbors must be an integer no less than 0"
 
+        compute_logprob = False
+        if "compute_logprob" in request.get_json():
+            compute_logprob = request.get_json()["compute_logprob"]
+            if not isinstance(compute_logprob, bool):
+                return "compute_logprob must be a boolean value"
+
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
             extra = {}
@@ -192,6 +199,7 @@ class MegatronGenerate(Resource):
                 repetition_penalty,
                 end_strings=end_strings,
                 min_tokens_to_generate=min_tokens_to_generate,
+                compute_logprob=compute_logprob,
                 **extra,
             )
             for k in output:

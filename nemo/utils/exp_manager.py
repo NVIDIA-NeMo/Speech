@@ -46,6 +46,7 @@ from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
 from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerParams, MLFlowParams
+from nemo.utils.mcore_logger import add_handlers_to_mcore_logger
 from nemo.utils.model_utils import uninject_model_parallel_rank
 
 
@@ -510,6 +511,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         # sleep other ranks so rank 0 can finish
         # doing the initialization such as moving files
         time.sleep(cfg.seconds_to_sleep)
+
+    add_handlers_to_mcore_logger()
 
     return log_dir
 

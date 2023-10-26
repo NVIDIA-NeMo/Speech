@@ -1,4 +1,2 @@
 ctc_segmentation==1.7.1
-# pynini does not currently support aarch, disable nemo_text_processing for now
-nemo_text_processing==0.1.6rc0; 'arm' not in platform_machine and 'aarch' not in platform_machine
 num2words

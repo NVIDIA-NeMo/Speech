@@ -21,6 +21,7 @@ $ python <nemo_root_path>/scripts/dataset_processing/tts/compute_features.py \
     --manifest_path=<data_root_path>/manifest.json \
     --audio_dir=<data_root_path>/audio \
     --feature_dir=<data_root_path>/features \
+    --overwrite \
     --num_workers=1
 """
 
@@ -52,8 +53,17 @@ def get_args():
         "--feature_dir", required=True, type=Path, help="Path to directory where feature data will be stored.",
     )
     parser.add_argument(
+        "--dedupe_files",
+        action=argparse.BooleanOptionalAction,
+        help="If given, will only process the first manifest entry found for each audio file.",
+    )
+    parser.add_argument(
+        "--overwrite", action=argparse.BooleanOptionalAction, help="Whether to overwrite existing feature files.",
+    )
+    parser.add_argument(
         "--num_workers", default=1, type=int, help="Number of parallel threads to use. If -1 all CPUs are used."
     )
+
     args = parser.parse_args()
     return args
 
@@ -64,6 +74,8 @@ def main():
     manifest_path = args.manifest_path
     audio_dir = args.audio_dir
     feature_dir = args.feature_dir
+    dedupe_files = args.dedupe_files
+    overwrite = args.overwrite
     num_workers = args.num_workers
 
     if not manifest_path.exists():
@@ -78,10 +90,23 @@ def main():
 
     entries = read_manifest(manifest_path)
 
+    if dedupe_files:
+        final_entries = []
+        audio_filepath_set = set()
+        for entry in entries:
+            audio_filepath = entry["audio_filepath"]
+            if audio_filepath in audio_filepath_set:
+                continue
+            final_entries.append(entry)
+            audio_filepath_set.add(audio_filepath)
+        entries = final_entries
+
     for feature_name, featurizer in featurizers.items():
         print(f"Computing: {feature_name}")
         Parallel(n_jobs=num_workers)(
-            delayed(featurizer.save)(manifest_entry=entry, audio_dir=audio_dir, feature_dir=feature_dir,)
+            delayed(featurizer.save)(
+                manifest_entry=entry, audio_dir=audio_dir, feature_dir=feature_dir, overwrite=overwrite
+            )
             for entry in tqdm(entries)
         )
 

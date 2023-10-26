@@ -14,6 +14,7 @@
 
 from pathlib import Path
 
+import librosa
 import numpy as np
 import pytest
 import torch
@@ -22,6 +23,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     filter_dataset_by_duration,
     get_abs_rel_paths,
     get_audio_filepaths,
+    load_audio,
     normalize_volume,
     stack_tensors,
 )
@@ -61,6 +63,36 @@ class TestTTSDatasetUtils:
 
         assert abs_path == Path("/home/audio/examples/example.wav")
         assert rel_path == audio_rel_path
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_load_audio(self, test_data_dir):
+        sample_rate = 22050
+        test_data_dir = Path(test_data_dir)
+        audio_filepath_rel = Path("tts/mini_ljspeech/wavs/LJ003-0182.wav")
+        audio_filepath = test_data_dir / audio_filepath_rel
+        manifest_entry = {"audio_filepath": str(audio_filepath_rel)}
+
+        expected_audio, _ = librosa.load(path=audio_filepath, sr=sample_rate)
+        audio, _, _ = load_audio(manifest_entry=manifest_entry, audio_dir=test_data_dir, sample_rate=sample_rate)
+
+        np.testing.assert_array_almost_equal(audio, expected_audio)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_load_audio_with_offset(self, test_data_dir):
+        sample_rate = 22050
+        offset = 1.0
+        duration = 2.0
+        test_data_dir = Path(test_data_dir)
+        audio_filepath_rel = Path("tts/mini_ljspeech/wavs/LJ003-0182.wav")
+        audio_filepath = test_data_dir / audio_filepath_rel
+        manifest_entry = {"audio_filepath": str(audio_filepath_rel), "offset": offset, "duration": duration}
+
+        expected_audio, _ = librosa.load(path=audio_filepath, offset=offset, duration=duration, sr=sample_rate)
+        audio, _, _ = load_audio(manifest_entry=manifest_entry, audio_dir=test_data_dir, sample_rate=sample_rate)
+
+        np.testing.assert_array_almost_equal(audio, expected_audio)
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit

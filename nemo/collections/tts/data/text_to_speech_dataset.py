@@ -27,8 +27,8 @@ from nemo.collections.tts.parts.preprocessing.features import Featurizer
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     beta_binomial_prior_distribution,
     filter_dataset_by_duration,
-    get_abs_rel_paths,
     get_weighted_sampler,
+    load_audio,
     stack_tensors,
 )
 from nemo.core.classes import Dataset
@@ -79,6 +79,7 @@ class TextToSpeechDataset(Dataset):
             will be ignored.
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
+        volume_norm: Whether to apply volume normalization to loaded audio.
     """
 
     def __init__(
@@ -93,6 +94,7 @@ class TextToSpeechDataset(Dataset):
         align_prior_hop_length: Optional[int] = None,
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
+        volume_norm: bool = True,
     ):
         super().__init__()
 
@@ -101,6 +103,7 @@ class TextToSpeechDataset(Dataset):
         self.weighted_sampling_steps_per_epoch = weighted_sampling_steps_per_epoch
         self.align_prior_hop_length = align_prior_hop_length
         self.include_align_prior = self.align_prior_hop_length is not None
+        self.volume_norm = volume_norm
 
         if speaker_path:
             self.include_speaker = True
@@ -200,17 +203,26 @@ class TextToSpeechDataset(Dataset):
     def __getitem__(self, index):
         data = self.data_samples[index]
 
-        audio_filepath = Path(data.manifest_entry["audio_filepath"])
-        audio_filepath_abs, audio_filepath_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=data.audio_dir)
+        audio_array, _, audio_filepath_rel = load_audio(
+            manifest_entry=data.manifest_entry,
+            audio_dir=data.audio_dir,
+            sample_rate=self.sample_rate,
+            volume_norm=self.volume_norm,
+        )
+        audio = torch.tensor(audio_array, dtype=torch.float32)
+        audio_len = audio.shape[0]
 
-        audio, _ = librosa.load(audio_filepath_abs, sr=self.sample_rate)
         tokens = self.text_tokenizer(data.text)
+        tokens = torch.tensor(tokens, dtype=torch.int32)
+        text_len = tokens.shape[0]
 
         example = {
             "dataset_name": data.dataset_name,
             "audio_filepath": audio_filepath_rel,
             "audio": audio,
+            "audio_len": audio_len,
             "tokens": tokens,
+            "text_len": text_len,
         }
 
         if data.speaker is not None:
@@ -218,8 +230,7 @@ class TextToSpeechDataset(Dataset):
             example["speaker_index"] = data.speaker_index
 
         if self.include_align_prior:
-            text_len = len(tokens)
-            spec_len = 1 + librosa.core.samples_to_frames(audio.shape[0], hop_length=self.align_prior_hop_length)
+            spec_len = 1 + librosa.core.samples_to_frames(audio_len, hop_length=self.align_prior_hop_length)
             align_prior = beta_binomial_prior_distribution(phoneme_count=text_len, mel_count=spec_len)
             align_prior = torch.tensor(align_prior, dtype=torch.float32)
             example["align_prior"] = align_prior
@@ -249,13 +260,11 @@ class TextToSpeechDataset(Dataset):
             dataset_name_list.append(example["dataset_name"])
             audio_filepath_list.append(example["audio_filepath"])
 
-            audio_tensor = torch.tensor(example["audio"], dtype=torch.float32)
-            audio_list.append(audio_tensor)
-            audio_len_list.append(audio_tensor.shape[0])
+            audio_list.append(example["audio"])
+            audio_len_list.append(example["audio_len"])
 
-            token_tensor = torch.tensor(example["tokens"], dtype=torch.int32)
-            token_list.append(token_tensor)
-            token_len_list.append(token_tensor.shape[0])
+            token_list.append(example["tokens"])
+            token_len_list.append(example["text_len"])
 
             if self.include_speaker:
                 speaker_list.append(example["speaker_index"])

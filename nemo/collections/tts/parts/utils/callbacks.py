@@ -531,7 +531,7 @@ class FastPitchArtifactGenerator(ArtifactGenerator):
                 id=f"audio_gt_{audio_id}",
                 data=audio_gt_i,
                 filepath=audio_gt_path,
-                sample_rate=self.vocoder.sample_rate,
+                sample_rate=model.preprocessor._sample_rate,
             )
             audio_artifacts.append(audio_artifact)
 

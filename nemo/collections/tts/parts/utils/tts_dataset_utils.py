@@ -14,14 +14,19 @@
 
 import functools
 import os
+import random
+import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import librosa
 import numpy as np
 import torch
 from einops import rearrange
 from scipy import ndimage
 from torch.special import gammaln
+
+from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 
 
 def get_abs_rel_paths(input_path: Path, base_path: Path) -> Tuple[Path, Path]:
@@ -61,7 +66,7 @@ def get_audio_filepaths(manifest_entry: Dict[str, Any], audio_dir: Path) -> Tupl
     return audio_filepath_abs, audio_filepath_rel
 
 
-def normalize_volume(audio: np.array, volume_level: float) -> np.array:
+def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
     """Apply peak normalization to the input audio.
     """
     if not (0.0 <= volume_level <= 1.0):
@@ -230,3 +235,121 @@ def get_weighted_sampler(
     num_samples = batch_size * num_steps
     sampler = torch.utils.data.WeightedRandomSampler(weights=weights, num_samples=num_samples)
     return sampler
+
+
+def _read_audio(
+    audio_filepath: Path, sample_rate: int, offset: float, duration: float, n_retries: int = 5
+) -> AudioSegment:
+    # File seeking sometimes fails when reading flac files with libsndfile < 1.0.30.
+    # Read audio as int32 to minimize issues, and retry read on a different segment in case of failure.
+    # https://github.com/bastibe/python-soundfile/issues/274
+    for _ in range(n_retries):
+        try:
+            return AudioSegment.from_file(
+                audio_filepath, target_sr=sample_rate, offset=offset, duration=duration, int_values=True
+            )
+        except Exception:
+            traceback.print_exc()
+
+    raise ValueError(f"Failed to read audio {audio_filepath}")
+
+
+def _segment_audio(
+    audio_filepath: Path,
+    sample_rate: int,
+    offset: float,
+    n_samples: int,
+    max_offset: Optional[float] = None,
+    n_retries: int = 5,
+) -> AudioSegment:
+    for _ in range(n_retries):
+        try:
+            if max_offset:
+                offset = random.uniform(offset, max_offset)
+            return AudioSegment.segment_from_file(
+                audio_filepath, target_sr=sample_rate, n_segments=n_samples, offset=offset, dtype="int32"
+            )
+        except Exception:
+            traceback.print_exc()
+
+    raise ValueError(f"Failed to segment audio {audio_filepath}")
+
+
+def load_audio(
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    sample_rate: int,
+    max_duration: Optional[float] = None,
+    volume_norm: bool = False,
+) -> Tuple[np.ndarray, Path, Path]:
+    """
+    Load audio file from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+        sample_rate: Sample rate to load audio as.
+        max_duration: Optional float, maximum amount of audio to read, in seconds.
+        volume_norm: Whether to apply volume normalization to the loaded audio.
+
+    Returns:
+        Audio array, and absolute and relative paths to audio file.
+    """
+    audio_filepath_abs, audio_filepath_rel = get_audio_filepaths(manifest_entry=manifest_entry, audio_dir=audio_dir)
+    offset = manifest_entry.get("offset", 0.0)
+    duration = manifest_entry.get("duration", 0.0)
+
+    if max_duration is not None:
+        duration = min(duration, max_duration)
+
+    audio_segment = _read_audio(
+        audio_filepath=audio_filepath_abs, sample_rate=sample_rate, offset=offset, duration=duration
+    )
+    audio = audio_segment.samples
+
+    if volume_norm:
+        audio = normalize_volume(audio)
+
+    return audio, audio_filepath_abs, audio_filepath_rel
+
+
+def sample_audio(
+    manifest_entry: Dict[str, Any], audio_dir: Path, sample_rate: int, n_samples: int, volume_norm: bool = False,
+) -> Tuple[np.ndarray, Path, Path]:
+    """
+    Randomly sample an audio segment from a manifest entry.
+
+    Args:
+        manifest_entry: Manifest entry dictionary.
+        audio_dir: base directory where audio is stored.
+        sample_rate: Sample rate to load audio as.
+        n_samples: Size of audio segment to sample.
+        volume_norm: Whether to apply volume normalization to the sampled audio.
+
+    Returns:
+        Audio array, and absolute and relative paths to audio file.
+    """
+    audio_filepath_abs, audio_filepath_rel = get_audio_filepaths(manifest_entry=manifest_entry, audio_dir=audio_dir)
+    offset = manifest_entry.get("offset", None)
+    duration = manifest_entry.get("duration", 0.0)
+
+    if offset is not None:
+        audio_dur = librosa.get_duration(filename=audio_filepath_abs)
+        max_end_sec = min(offset + duration, audio_dur - 0.1)
+        max_offset = max(offset, max_end_sec - (n_samples / sample_rate))
+    else:
+        max_offset = None
+
+    audio_segment = _segment_audio(
+        audio_filepath=audio_filepath_abs,
+        sample_rate=sample_rate,
+        offset=offset,
+        max_offset=max_offset,
+        n_samples=n_samples,
+    )
+    audio = audio_segment.samples
+
+    if volume_norm:
+        audio = normalize_volume(audio)
+
+    return audio, audio_filepath_abs, audio_filepath_rel

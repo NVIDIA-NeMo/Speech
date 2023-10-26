@@ -12,21 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-import librosa
 import torch.utils.data
 
-from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest
 from nemo.collections.tts.parts.preprocessing.feature_processors import FeatureProcessor
 from nemo.collections.tts.parts.utils.tts_dataset_utils import (
     filter_dataset_by_duration,
-    get_abs_rel_paths,
     get_weighted_sampler,
+    load_audio,
+    sample_audio,
     stack_tensors,
 )
 from nemo.core.classes import Dataset
@@ -67,8 +65,7 @@ class VocoderDataset(Dataset):
         max_duration: Optional float, if provided audio files in the training manifest longer than 'max_duration'
             will be ignored.
         trunc_duration: Optional int, if provided audio will be truncated to at most 'trunc_duration' seconds.
-        num_audio_retries: Number of read attempts to make when sampling audio file, to avoid training failing
-            from sporadic IO errors.
+        volume_norm: Whether to apply volume normalization to loaded audio.
     """
 
     def __init__(
@@ -81,20 +78,16 @@ class VocoderDataset(Dataset):
         min_duration: Optional[float] = None,
         max_duration: Optional[float] = None,
         trunc_duration: Optional[float] = None,
-        num_audio_retries: int = 5,
+        volume_norm: bool = False,
     ):
         super().__init__()
 
         self.sample_rate = sample_rate
         self.n_samples = n_samples
+        self.trunc_duration = trunc_duration
+        self.volume_norm = volume_norm
         self.weighted_sampling_steps_per_epoch = weighted_sampling_steps_per_epoch
-        self.num_audio_retries = num_audio_retries
         self.load_precomputed_mel = False
-
-        if trunc_duration:
-            self.trunc_samples = int(trunc_duration * self.sample_rate)
-        else:
-            self.trunc_samples = None
 
         if feature_processors:
             logging.info(f"Found feature processors {feature_processors.keys()}")
@@ -120,35 +113,6 @@ class VocoderDataset(Dataset):
             sample_weights=self.sample_weights, batch_size=batch_size, num_steps=self.weighted_sampling_steps_per_epoch
         )
         return sampler
-
-    def _segment_audio(self, audio_filepath: Path) -> AudioSegment:
-        # File seeking sometimes fails when reading flac files with libsndfile < 1.0.30.
-        # Read audio as int32 to minimize issues, and retry read on a different segment in case of failure.
-        # https://github.com/bastibe/python-soundfile/issues/274
-        for _ in range(self.num_audio_retries):
-            try:
-                audio_segment = AudioSegment.segment_from_file(
-                    audio_filepath, target_sr=self.sample_rate, n_segments=self.n_samples, dtype="int32"
-                )
-                return audio_segment
-            except Exception:
-                traceback.print_exc()
-
-        raise ValueError(f"Failed to read audio {audio_filepath}")
-
-    def _sample_audio(self, audio_filepath: Path) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not self.n_samples:
-            audio_array, _ = librosa.load(audio_filepath, sr=self.sample_rate)
-        else:
-            audio_segment = self._segment_audio(audio_filepath)
-            audio_array = audio_segment.samples
-
-        if self.trunc_samples:
-            audio_array = audio_array[: self.trunc_samples]
-
-        audio = torch.tensor(audio_array)
-        audio_len = torch.tensor(audio.shape[0])
-        return audio, audio_len
 
     @staticmethod
     def _preprocess_manifest(
@@ -180,10 +144,24 @@ class VocoderDataset(Dataset):
     def __getitem__(self, index):
         data = self.data_samples[index]
 
-        audio_filepath = Path(data.manifest_entry["audio_filepath"])
-        audio_filepath_abs, audio_filepath_rel = get_abs_rel_paths(input_path=audio_filepath, base_path=data.audio_dir)
-
-        audio, audio_len = self._sample_audio(audio_filepath_abs)
+        if self.n_samples:
+            audio_array, _, audio_filepath_rel = sample_audio(
+                manifest_entry=data.manifest_entry,
+                audio_dir=data.audio_dir,
+                sample_rate=self.sample_rate,
+                n_samples=self.n_samples,
+                volume_norm=self.volume_norm,
+            )
+        else:
+            audio_array, _, audio_filepath_rel = load_audio(
+                manifest_entry=data.manifest_entry,
+                audio_dir=data.audio_dir,
+                sample_rate=self.sample_rate,
+                max_duration=self.trunc_duration,
+                volume_norm=self.volume_norm,
+            )
+        audio = torch.tensor(audio_array, dtype=torch.float32)
+        audio_len = audio.shape[0]
 
         example = {
             "dataset_name": data.dataset_name,

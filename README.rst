@@ -340,13 +340,13 @@ NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separa
 
 Docker containers:
 ~~~~~~~~~~~~~~~~~~
-We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.20.0`` comes with container ``nemo:23.06``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
+We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.21.0`` comes with container ``nemo:23.08``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
 
 To use built container, please run
 
 .. code-block:: bash
 
-    docker pull nvcr.io/nvidia/nemo:23.06
+    docker pull nvcr.io/nvidia/nemo:23.08
 
 To build a nemo container with Dockerfile from a branch, please run
 
@@ -355,13 +355,13 @@ To build a nemo container with Dockerfile from a branch, please run
     DOCKER_BUILDKIT=1 docker build -f Dockerfile -t nemo:latest .
 
 
-If you choose to work with the main branch, we recommend using NVIDIA's PyTorch container version 23.06-py3 and then installing from GitHub.
+If you choose to work with the main branch, we recommend using NVIDIA's PyTorch container version 23.08-py3 and then installing from GitHub.
 
 .. code-block:: bash
 
     docker run --gpus all -it --rm -v <nemo_github_folder>:/NeMo --shm-size=8g \
     -p 8888:8888 -p 6006:6006 --ulimit memlock=-1 --ulimit \
-    stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:23.06-py3
+    stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:23.08-py3
 
 Examples
 --------

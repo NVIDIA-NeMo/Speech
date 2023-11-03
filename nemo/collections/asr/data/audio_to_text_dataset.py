@@ -25,6 +25,10 @@ from pytorch_lightning.callbacks import BasePredictionWriter
 from torch.utils.data import ChainDataset
 
 from nemo.collections.asr.data import audio_to_text, audio_to_text_dali
+from nemo.collections.asr.data.huggingface.hf_audio_to_text_dataset import (
+    get_hf_audio_to_text_bpe_dataset,
+    get_hf_audio_to_text_char_dataset,
+)
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.common.data.dataset import CodeSwitchedDataset, ConcatDataset
 from nemo.utils import logging
@@ -598,6 +602,11 @@ def get_audio_to_text_char_dataset_from_config(
     else:
         augmentor = None
 
+    if 'hf_data_cfg' in config:
+        return get_hf_audio_to_text_char_dataset(
+            config=config, global_rank=global_rank, world_size=world_size, augmentor=augmentor
+        )
+
     is_concat = config.get('is_concat', False)
     if is_concat:
         if 'concat_sampling_technique' in config and config['concat_sampling_technique'] is None:
@@ -721,6 +730,11 @@ def get_audio_to_text_bpe_dataset_from_config(
         augmentor = process_augmentations(config['augmentor'], global_rank=global_rank, world_size=world_size)
     else:
         augmentor = None
+
+    if 'hf_data_cfg' in config:
+        return get_hf_audio_to_text_bpe_dataset(
+            config=config, global_rank=global_rank, world_size=world_size, tokenizer=tokenizer, augmentor=augmentor
+        )
 
     is_concat = config.get('is_concat', False)
     if is_concat:

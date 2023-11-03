@@ -1065,6 +1065,18 @@ The same script can be used to finetune CTC, RNNT or Hybrid models as well.
         trainer.max_epochs=50 \
         +init_from_nemo_model="<path to .nemo model file>" (or +init_from_pretrained_model="<name of pretrained checkpoint>")
 
+
+Refer to <NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_finetune.yaml for more details.
+
+Finetune ASR Models using HuggingFace Datasets
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Users can utilize HuggingFace Datasets for finetuning NeMo ASR models. The following config file can be used for this purpose:
+`<NeMo_repo>/examples/asr/conf/asr_finetune/speech_to_text_hf_finetune.yaml`
+
+As mentioned earlier, users can update the tokenizer or use an existing one based on their requirements. If users want to create a new tokenizer 
+from HuggingFace Datasets, they can use the following script:
+`<NeMo_repo>/scripts/tokenizers/get_hf_text_data.py`
+
 Fine-tuning by changing model architecture and tokenizer
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

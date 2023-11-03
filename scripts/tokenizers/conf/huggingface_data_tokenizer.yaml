@@ -1,0 +1,34 @@
+
+# num workers to use for extracting text from datasets.
+num_workers: 8
+
+# simple text cleaning, by default converts all chars to lower-case and only keeps alpha-numeric chars.
+normalize_text: false
+symbols_to_keep: ["'"]  # a list of symbols to keep during text cleaning.
+
+# the key for groundtruth transcription, e.g., MCV usually uses "sentence" while some others use "text"
+text_key:  "text"  # the key for groundtruth transcription, e.g., MCV usually uses "sentence" while some others use "text"
+num_proc: 4  # num processes to use for downloading HF datasets
+
+data_path: "librispeech_asr"
+data_name: null
+streaming: true
+
+hf_data_cfg:  # hf_data_cfg can be a ListConfig or DictConfig. Params for each data are passed into huggingface load_dataset(). Add more params if needed
+  - path: ${data_path}
+    name: ${data_name}
+    split: 'train.clean.360'
+    streaming: ${streaming}
+    num_proc: ${num_proc}
+  - path: ${data_path}
+    name: ${data_name}
+    split: 'train.clean.100'
+    streaming: ${streaming}
+    num_proc: ${num_proc}
+  - path: ${data_path}
+    name: ${data_name}
+    split: 'train.other.500'
+    streaming: ${streaming}
+    num_proc: ${num_proc}
+
+output_file: "librispeech_asr_train960.txt"

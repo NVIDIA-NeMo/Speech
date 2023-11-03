@@ -185,7 +185,7 @@ def setup_dataloaders(asr_model, cfg):
     return asr_model
 
 
-@hydra_runner(config_path="conf", config_name="speech_to_text_finetune")
+@hydra_runner(config_path="conf/asr_finetune", config_name="speech_to_text_finetune")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 

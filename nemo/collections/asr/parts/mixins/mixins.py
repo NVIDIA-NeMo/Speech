@@ -307,7 +307,7 @@ class ASRBPEMixin(ABC):
 
             hf_tokenizer_kwargs = tokenizer_cfg.get('hf_kwargs', {})
             tokenizer = tokenizers.AutoTokenizer(
-                pretrained_model_name='bert-base-cased',
+                pretrained_model_name=hf_tokenizer_kwargs.get('pretrained_model_name', 'bert-base-cased'),
                 vocab_file=vocab_path,
                 mask_token=hf_tokenizer_kwargs.get('mask_token', None),
                 bos_token=hf_tokenizer_kwargs.get('bos_token', None),

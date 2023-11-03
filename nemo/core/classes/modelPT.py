@@ -779,7 +779,7 @@ class ModelPT(LightningModule, Model):
                     raise ValueError(f"{group} not found in model.")
                 elif hasattr(module, "parameters"):
                     known_groups.append(group)
-                    new_group = {"params": module.parameters()}
+                    new_group = {"params": list(module.parameters())}
                     for k, v in group_cfg.items():
                         new_group[k] = v
                     param_groups.append(new_group)
@@ -798,7 +798,7 @@ class ModelPT(LightningModule, Model):
             if len(other_params):
                 param_groups = [{"params": other_params}] + param_groups
         else:
-            param_groups = [{"params": self.parameters()}]
+            param_groups = [{"params": list(self.parameters())}]
 
         self._optimizer_param_groups = param_groups
 

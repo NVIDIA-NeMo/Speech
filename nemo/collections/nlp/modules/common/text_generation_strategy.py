@@ -13,10 +13,14 @@
 # limitations under the License.
 
 import abc
+import copy
+import os
+import re
 import warnings
 from typing import List, Set, Tuple
 
 import torch
+from transformers import CLIPImageProcessor
 
 from nemo.collections.nlp.modules.common.lm_utils import pad_batch
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
@@ -317,6 +321,206 @@ class GPTModelTextGenerationStrategy(TextGenerationStrategy):
         len_array = torch.tensor([maxlen] * micro_batch_size, device=torch.cuda.current_device())
 
         batch = [tokens2use, attention_mask_repeat, positions2use, setkey_value_array, len_array]
+        tensor_shape = [tokens2use.shape[1], micro_batch_size, self.model.cfg.hidden_size]
+        return batch, tensor_shape
+
+
+class NevaModelTextGenerationStrategy(TextGenerationStrategy):
+    def __init__(self, model):
+        super().__init__(model)
+        self.forward_model = self.model.model
+        self.num_media_latents = model.cfg.data.get("image_token_len", 576)
+        self.tokenizer = self.model.tokenizer
+        self.image_paths = []
+        self.cfg = self.model.cfg
+        self.data_cfg = self.model.cfg.data
+
+        if self.cfg.mm_cfg.vision_encoder.from_hf:
+            self.processor = CLIPImageProcessor.from_pretrained(
+                self.cfg.mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
+            )
+        else:
+            self.processor = CLIPImageProcessor.from_pretrained(
+                "openai/clip-vit-large-patch14", torch_dtype=torch.bfloat16
+            )
+
+        add_extra_token = 0
+        self.multimodal_cfg = dict(
+            is_multimodal=self.data_cfg.is_multimodal,
+            sep_image_conv_front=self.data_cfg.sep_image_conv_front,
+            conv_template=self.data_cfg.get("conv_template", "nvgpt"),
+            image_token_len=self.data_cfg.image_token_len,
+            image_folder=self.data_cfg.image_folder,
+            image_aspect_ratio=self.data_cfg.image_aspect_ratio,
+            use_im_start_end=getattr(self.cfg.mm_cfg, 'use_im_start_end', False),
+            image_processor=self.processor,
+            add_extra_token=add_extra_token,
+            context_length=self.cfg.encoder_seq_length,
+        )
+
+    def clip_max_len(self, maxlen: int) -> int:
+        """ clip the max len based on the LM model max sequence length"""
+        if maxlen > self.model.cfg.encoder_seq_length + 1:
+            maxlen = self.model.cfg.encoder_seq_length + 1
+        return maxlen
+
+    def init_batch(self, context_tokens: torch.Tensor, context_length: int, compute_attention_mask: bool):
+        """initialize the batch data before the inference steps."""
+        # Move to GPU.
+        tokenizer = self.model.tokenizer
+        tokens = context_tokens.contiguous().cuda()
+        # Get the attention mask and postition ids.
+        self.attention_mask, _, self.position_ids = get_ltor_masks_and_position_ids(
+            tokens,
+            eod_token=tokenizer.eos_id,
+            eod_mask_loss=False,
+            reset_attention_mask=False,
+            reset_position_ids=False,
+            compute_attention_mask=compute_attention_mask,
+        )
+
+    def process_prompts(self, prompt):
+        from nemo.collections.multimodal.data.neva.neva_dataset import (
+            DEFAULT_IMAGE_TOKEN,
+            preprocess_llama_2,
+            preprocess_multimodal,
+            preprocess_nvgpt,
+        )
+
+        list_data_dict = []
+        if self.multimodal_cfg["conv_template"] == "nvgpt":
+            record = {
+                'system': 'A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user\'s questions.\n\n',
+                'conversations': [
+                    {'from': 'User', 'value': prompt,},
+                    {
+                        'from': 'Assistant',
+                        'value': '',
+                        'label': 'quality:6,toxicity:0,humor:0,creativity:0,violence:0,helpfulness:6,not_appropriate:0',
+                    },
+                ],
+            }
+
+            for turn in record['conversations']:  #
+                if turn.get('value') is not None:
+                    turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
+            list_data_dict.append(record)
+
+            sources = preprocess_multimodal(
+                copy.deepcopy(list_data_dict), self.multimodal_cfg, self.num_media_latents
+            )  # HARDCODED FOR NOW
+            data_dict = preprocess_nvgpt(sources, self.tokenizer, self.multimodal_cfg)
+
+        elif self.multimodal_cfg["conv_template"] == "llama_2":
+            record = {
+                'conversations': [{'from': 'human', 'value': prompt,}, {'from': 'gpt', 'value': '',},],
+            }
+
+            for turn in record['conversations']:  #
+                if turn.get('value') is not None:
+                    turn['value'] = re.sub('<image>', f'{DEFAULT_IMAGE_TOKEN}\n', turn['value'])
+            list_data_dict.append(record)
+
+            sources = preprocess_multimodal(
+                copy.deepcopy(list_data_dict), self.multimodal_cfg, self.num_media_latents
+            )  # HARDCODED FOR NOW
+            data_dict = preprocess_llama_2(sources, self.tokenizer, self.multimodal_cfg)
+        else:
+            raise ValueError(f"Conversation template `{self.conv_template}` is not supported in Neva now.")
+        return data_dict['tokens'].tolist()
+
+    def tokenize_batch(self, prompt, max_len, add_BOS):
+        context_tokens = self.process_prompts(prompt)
+        context_tokens, context_lengths = pad_batch(context_tokens, self.tokenizer.eos_id, max_len)
+        context_tokens_tensor = torch.cuda.LongTensor(context_tokens)
+        context_length_tensor = torch.cuda.LongTensor(context_lengths)
+        return context_tokens_tensor, context_length_tensor
+
+    def get_media_tensor(self, image_path):
+        from PIL import Image
+
+        image = Image.open(image_path).convert('RGB')
+
+        if self.data_cfg.image_aspect_ratio == 'keep':
+            max_hw, min_hw = max(image.size), min(image.size)
+            aspect_ratio = max_hw / min_hw
+            max_len, min_len = 448, 224
+            shortest_edge = int(min(max_len / aspect_ratio, min_len))
+            image = self.processor.preprocess(
+                image, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
+            )['pixel_values'][0]
+        elif self.data_cfg.image_aspect_ratio == 'pad':
+
+            def expand2square(pil_img, background_color):
+                width, height = pil_img.size
+                if width == height:
+                    return pil_img
+                elif width > height:
+                    result = Image.new(pil_img.mode, (width, width), background_color)
+                    result.paste(pil_img, (0, (width - height) // 2))
+                    return result
+                else:
+                    result = Image.new(pil_img.mode, (height, height), background_color)
+                    result.paste(pil_img, ((height - width) // 2, 0))
+                    return result
+
+            image = expand2square(image, tuple(int(x * 255) for x in self.processor.image_mean))
+            image = self.processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+        else:
+            image = self.processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+
+        model_cfg = self.model.cfg
+
+        if model_cfg.precision in [16, '16', '16-mixed']:
+            media = image.type(torch.float16)
+        elif model_cfg.precision in [32, '32', '32-true']:
+            media = image.type(torch.float32)
+        else:
+            media = image.type(torch.bfloat16)
+
+        return media.unsqueeze(dim=0).unsqueeze(dim=0).unsqueeze(dim=0)
+
+    def prepare_batch_at_step(
+        self,
+        tokens: torch.Tensor,
+        maxlen: int,
+        micro_batch_size: int,
+        step: int,
+        context_length: int,
+        compute_attention_mask: bool = True,
+        media=None,
+    ) -> Tuple[List[torch.Tensor], List[int]]:
+        """
+        generate the batch used in inference for each of the steps
+        """
+        # types2use = None
+        if step == 0:
+            # Allocate memory for the entire context.
+            set_inference_key_value_memory = True
+            tokens2use = tokens[:, :context_length]
+            positions2use = self.position_ids[:, :context_length]
+            # not using type2use. uncomment it if it is used
+            # if type_ids is not None:
+            #     types2use = type_ids[:, :context_length]
+        else:
+            # Set this to false so the memory is not reallocated.
+            set_inference_key_value_memory = False
+            tokens2use = tokens[:, context_length - 1].view(micro_batch_size, -1)
+            positions2use = self.position_ids[:, context_length - 1].view(micro_batch_size, -1)
+            # not using type2use. uncomment it if it is used
+            # if type_ids is not None:
+            #     types2use = type_ids[:, context_length - 1].view(batch_size, -1)
+
+        """Prepare batch for each of the inference steps"""
+        attention_mask_repeat = None
+        if compute_attention_mask:
+            attention_mask_repeat = torch.concat([self.attention_mask for _ in range(micro_batch_size)])
+
+        setkey_value_array = torch.tensor(
+            [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
+        )
+        len_array = torch.tensor([maxlen] * micro_batch_size, device=torch.cuda.current_device())
+        batch = [tokens2use, attention_mask_repeat, positions2use, media, setkey_value_array, len_array]
         tensor_shape = [tokens2use.shape[1], micro_batch_size, self.model.cfg.hidden_size]
         return batch, tensor_shape
 

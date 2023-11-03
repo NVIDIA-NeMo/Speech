@@ -39,8 +39,6 @@ class BaseMegatronSampler:
         # Sanity checks.
         if total_samples <= 0:
             raise RuntimeError("no sample to consume: {}".format(total_samples))
-        if consumed_samples >= total_samples:
-            raise RuntimeError("no samples left to consume: {}, {}".format(consumed_samples, total_samples))
         if micro_batch_size <= 0:
             raise RuntimeError(f"micro_batch_size size must be greater than 0, but {micro_batch_size}")
         if data_parallel_size <= 0:
@@ -69,6 +67,7 @@ class BaseMegatronSampler:
         self.consumed_samples = consumed_samples
         self.micro_batch_size = micro_batch_size
         self.data_parallel_rank = data_parallel_rank
+        self.data_parallel_size = data_parallel_size
         self.micro_batch_times_data_parallel_size = self.micro_batch_size * data_parallel_size
         self.drop_last = drop_last
         self.global_batch_size = global_batch_size
@@ -150,6 +149,19 @@ class MegatronPretrainingRandomSampler(BaseMegatronSampler):
             pad_samples_to_global_batch_size == False
         ), "`MegatronPretrainingRandomSampler` does not support sample padding"
         self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
+
+    def __len__(self):
+        num_available_samples: int = self.total_samples
+        if self.global_batch_size is not None:
+            if self.drop_last:
+                return num_available_samples // self.global_batch_size
+            else:
+                return (num_available_samples + self.global_batch_size - 1) // self.global_batch_size
+        else:
+            if self.drop_last:
+                return num_available_samples // self.micro_batch_times_data_parallel_size
+            else:
+                return (num_available_samples - 1) // self.micro_batch_times_data_parallel_size
 
     def __iter__(self):
         active_total_samples = self.total_samples - self.last_batch_size

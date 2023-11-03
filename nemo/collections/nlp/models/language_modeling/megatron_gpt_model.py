@@ -211,7 +211,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # TODO: add type hint once pip package is out
         self.transformer_config = self.build_transformer_config()
 
-        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+        self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
 
         self.mcore_gpt = cfg.get('mcore_gpt', False)
 
@@ -221,7 +221,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.if_first_step = 0
             self.prev_global_batch_size = None
 
-        if not self.megatron_amp_o2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
+        if not self.megatron_amp_O2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
 
         # build_model returns a list of modules which are used for interleaved pipeline parallelism
@@ -243,7 +243,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if self.cfg.get('virtual_pipeline_model_parallel_size', None) is None:
             self.model = self.model[0]
 
-        if self.megatron_amp_o2:
+        if self.megatron_amp_O2:
 
             if not self.with_distributed_adam:
                 # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
@@ -256,7 +256,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self._wrap_model_for_O2()
 
         self.enable_autocast = (
-            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+            True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
         self.transformer_engine = cfg.get('transformer_engine', False)
@@ -418,7 +418,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                             if self.mcore_gpt
                             else module.word_embeddings_weight()
                         )
-                        param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
                         param._disable_overlap_grad_sync = True
                 if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
                     if len(modules) > 1:
@@ -431,14 +431,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                             if self.mcore_gpt
                             else module.word_embeddings_weight()
                         )
-                        param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
                         param._disable_overlap_grad_sync = True
 
             # Disable overlapped grad sync for layer norm grads when
             # sequence parallelism is enabled
             for param in self.parameters():
                 if getattr(param, 'sequence_parallel', False):
-                    param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                    param._disable_greedy_grad_copy = not self.megatron_amp_O2
                     param._disable_overlap_grad_sync = True
 
             # Initialize parameter buckets for overlapped grad and param syncs
@@ -490,7 +490,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         grad_sync_func = None
         param_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_o2,)
+            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
             grad_sync_func = self.reduce_overlap_gradients
             param_sync_func = self.sync_overlap_parameters
 
@@ -614,7 +614,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # note: not necessary, but reduces performance degradation
             # from multiple simultaneous NCCL calls
             self._optimizer._finish_bucket_grad_sync()
-        elif self.megatron_amp_o2:
+        elif self.megatron_amp_O2:
             # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1 or self.cfg.get('sequence_parallel', False):
                 # main grads are stored in the MainParamsOptimizer wrapper
@@ -703,7 +703,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # perform all_reduce when grad is None.
             # grad can be None when performing PeFT training.
             if sequence_parallel_param and param.requires_grad:
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     grad = param.main_grad
                 else:
                     grad = param.grad
@@ -753,7 +753,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # (@adithyare) adapter training now extends MegatronGPTModel so we have to add this check here to ensure we do not perform all_reduce when grad is None.
                 # grad can be None when performing PeFT training.
                 if word_embeddings_weight.requires_grad:
-                    if self.megatron_amp_o2:
+                    if self.megatron_amp_O2:
                         # O2 recipe stores a "main" copy of weights and grads
                         grad = word_embeddings_weight.main_grad
                     else:

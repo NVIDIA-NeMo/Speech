@@ -391,6 +391,9 @@ class SaveRestoreConnector:
                 )
             else:
                 # artifact is optional and we simply return None
+                logging.warning(
+                    f"src path does not exist or it is not a path in nemo file. src value I got was: {src}. Absolute: {os.path.abspath(src)}"
+                )
                 return None
 
         assert os.path.exists(return_path)

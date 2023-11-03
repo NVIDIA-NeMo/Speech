@@ -14,7 +14,9 @@
 
 """Utilities for generating text."""
 
+import os
 import pickle
+import re
 from collections.abc import Iterable
 from functools import partial
 from typing import Callable, Tuple
@@ -51,6 +53,7 @@ __all__ = [
     "get_default_sampling_params",
     "get_default_length_params",
     "megatron_gpt_generate",
+    "megatron_neva_generate",
     "get_computeprob_response",
     "generate",
     "sample_token_greedy",
@@ -138,6 +141,60 @@ def megatron_gpt_generate(model, inputs, tokenizer, length_params, sampling_para
             raise NotImplementedError("unknown type is not implemented")
     else:
         raise NotImplementedError("unknown type is not implemented")
+
+
+def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_params, inference_config, **strategy_args):
+
+    conv_template = model.cfg.data.get("conv_template", "nvgpt")
+    final_response = []
+    for idx, prompt_dict in enumerate(prompt_dict_list):
+        img = os.path.join(inference_config.inference.images_base_path, prompt_dict['image'])
+        response = generate(
+            model,
+            inputs=prompt_dict.get("prompt") or prompt_dict.get("text"),
+            tokens_to_generate=length_params['max_length'],
+            all_probs=sampling_params['all_probs'],
+            temperature=sampling_params['temperature'],
+            add_BOS=sampling_params['add_BOS'],
+            top_k=sampling_params['top_k'],
+            top_p=sampling_params['top_p'],
+            greedy=sampling_params['use_greedy'],
+            repetition_penalty=sampling_params['repetition_penalty'],
+            end_strings=sampling_params['end_strings'],
+            min_tokens_to_generate=length_params['min_length'],
+            image_list=img,
+            **strategy_args,
+        )
+
+        # Regular expression pattern to match the sequence
+        pattern = re.compile(r'<extra_id_4>( ⁇ )+<extra_id_5>')
+        clean_text = re.sub(pattern, '<image>', response['sentences'][0])
+
+        clean_response = clean_text
+        for string in sampling_params['end_strings']:
+            clean_response = clean_response.rstrip(string)
+        if conv_template == "nvgpt":
+            labels_str_regexp = re.compile(f"<extra_id_2>quality:.*\n")
+            last_match_end_position = None
+            for match in re.finditer(labels_str_regexp, clean_response):
+                last_match_end_position = match.end()
+            if last_match_end_position is not None:
+                clean_response = clean_response[last_match_end_position:]
+        elif conv_template == "llama_2":
+            clean_response = clean_response.rsplit("[/INST] ", 1)[-1]
+        clean_response.strip()
+        response["clean_text"] = clean_text
+        response["clean_response"] = clean_response
+        final_response.append(response)
+
+        if torch.cuda.current_device() == 0:
+            print(f"------------- PROMPT {idx} of {len(prompt_dict_list)} ------------ ")
+            print(clean_text)
+            print()
+            print(f"CLEAN RESPONSE: {clean_response}")
+            print("---------------------------------------------\n")
+
+    return final_response
 
 
 def get_computeprob_response(tokenizer, response, inputs):
@@ -393,6 +450,7 @@ def synced_generate(
     repetition_penalty=1.2,
     end_strings=[],
     min_tokens_to_generate=0,
+    image_list=None,
 ):
     context_length = context_length_tensor.min().item()
     tokenizer = model.tokenizer
@@ -419,6 +477,7 @@ def synced_generate(
             compute_logprob=compute_logprob,
             temperature=temperature,
             end_strings=end_strings,
+            image_list=image_list,
             extra={
                 "top_p": top_p,
                 "top_k": top_k,
@@ -450,7 +509,7 @@ def synced_generate(
                 precision = model._trainer.precision
                 if precision in [16, "16"]:
                     dtype = torch.float16
-                elif precision == "bf16":
+                elif precision in ['bf16', 'bf16-mixed']:
                     dtype = torch.bfloat16
                 else:
                     dtype = torch.float32
@@ -488,6 +547,7 @@ def generate(
     compute_logprob=False,
     repetition_penalty=1.0,
     end_strings=['<|endoftext|>'],
+    image_list=None,
     min_tokens_to_generate=0,
     **strategy_args,
 ) -> OutputType:
@@ -574,6 +634,7 @@ def generate(
         repetition_penalty=repetition_penalty,
         end_strings=end_strings,
         min_tokens_to_generate=min_tokens_to_generate,
+        image_list=image_list,
     )
     special_tokens = set()
     if hasattr(tokenizer, 'pad_token') and tokenizer.pad_token is not None:
@@ -657,6 +718,7 @@ def sample_sequence_batch(
     type_ids=None,
     temperature=None,
     end_strings=['<|endoftext|>'],
+    image_list=None,
     extra={},
 ):
     # Importing here to avoid circular import errors
@@ -701,10 +763,20 @@ def sample_sequence_batch(
         maxlen = inference_strategy.clip_max_len(maxlen)
 
         lengths = torch.ones([batch_size]).long().cuda() * maxlen
+
+        media_tensor = None
+        if image_list is not None:
+            media_tensor = inference_strategy.get_media_tensor(image_list)
+
         while context_length < maxlen:
-            batch, tensor_shape = inference_strategy.prepare_batch_at_step(
-                tokens, maxlen, micro_batch_size, counter, context_length, compute_attention_mask
-            )
+            if media_tensor is not None:
+                batch, tensor_shape = inference_strategy.prepare_batch_at_step(
+                    tokens, maxlen, micro_batch_size, counter, context_length, compute_attention_mask, media_tensor
+                )
+            else:
+                batch, tensor_shape = inference_strategy.prepare_batch_at_step(
+                    tokens, maxlen, micro_batch_size, counter, context_length, compute_attention_mask
+                )
             output = inference_strategy.forward_step(batch, tensor_shape)
 
             if parallel_state.is_pipeline_last_stage():

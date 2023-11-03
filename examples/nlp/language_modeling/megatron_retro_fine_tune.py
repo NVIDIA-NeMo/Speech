@@ -74,10 +74,10 @@ def main(cfg) -> None:
     # import torch.multiprocessing as mp
     # mp.set_start_method("spawn", force=True)
     #####################################################
-    megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
+    megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
     plugins = []
     strategy = NLPDDPStrategy(
-        no_ddp_communication_hook=True if megatron_amp_o2 else False,
+        no_ddp_communication_hook=True if megatron_amp_O2 else False,
         gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
         find_unused_parameters=False,
         timeout=datetime.timedelta(seconds=18000),
@@ -95,7 +95,7 @@ def main(cfg) -> None:
             plugin_precision = '16-mixed'
         else:
             plugin_precision = 'bf16-mixed'
-        if megatron_amp_o2:
+        if megatron_amp_O2:
             plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
         else:
             plugins.append(MixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))

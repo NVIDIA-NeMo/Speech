@@ -79,10 +79,10 @@ class MegatronBertModel(MegatronBaseModel):
             raise ImportError(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
-        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+        self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
         self.cfg = cfg
 
-        if not self.megatron_amp_o2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
+        if not self.megatron_amp_O2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
 
         super().__init__(cfg, trainer=trainer, no_lm_init=False)
@@ -90,7 +90,7 @@ class MegatronBertModel(MegatronBaseModel):
         self._validate_trainer()
 
         self.enable_autocast = (
-            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+            True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
         # used in NVIDIA NGC PyTorch containers
@@ -109,7 +109,7 @@ class MegatronBertModel(MegatronBaseModel):
         if self.cfg.get('virtual_pipeline_model_parallel_size', None) is None:
             self.model = self.model[0]
 
-        if self.megatron_amp_o2:
+        if self.megatron_amp_O2:
 
             if not self.with_distributed_adam:
                 # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
@@ -343,7 +343,7 @@ class MegatronBertModel(MegatronBaseModel):
             # note: not necessary, but reduces performance degradation
             # from multiple simultaneous NCCL calls
             self._optimizer._finish_bucket_grad_sync()
-        elif self.megatron_amp_o2:
+        elif self.megatron_amp_O2:
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1 or self.cfg.get('sequence_parallel', False):
                 # when using pipeline parallelism grads must be all-reduced after the pipeline (not asynchronously)
                 self._optimizer.allreduce_main_grads()
@@ -401,7 +401,7 @@ class MegatronBertModel(MegatronBaseModel):
                     module = self.model
             if module.share_token_embeddings:
                 word_embeddings_weight = module.word_embeddings_weight()
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     # O2 recipe stores a "main" copy of weights and grads
                     grad = word_embeddings_weight.main_grad
                 else:
@@ -648,7 +648,7 @@ class MegatronBertModel(MegatronBaseModel):
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
             if sequence_parallel_param:
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     grad = param.main_grad
                 else:
                     grad = param.grad
@@ -857,7 +857,7 @@ class MegatronBertModel(MegatronBaseModel):
                         module = self.model
                     if module.share_token_embeddings:
                         param = module.word_embeddings_weight()
-                        param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
                         param._disable_overlap_grad_sync = True
                 if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
                     if isinstance(self.model, list):
@@ -866,20 +866,20 @@ class MegatronBertModel(MegatronBaseModel):
                         module = self.model
                     if module.share_token_embeddings:
                         param = module.word_embeddings_weight()
-                        param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
                         param._disable_overlap_grad_sync = True
 
             # Disable overlapped grad sync for layer norm grads when
             # sequence parallelism is enabled
             for param in self.parameters():
                 if getattr(param, 'sequence_parallel', False):
-                    param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                    param._disable_greedy_grad_copy = not self.megatron_amp_O2
                     param._disable_overlap_grad_sync = True
 
             # sequence parallelism is enabled
             for param in self.parameters():
                 if getattr(param, 'sequence_parallel', False):
-                    param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                    param._disable_greedy_grad_copy = not self.megatron_amp_O2
                     param._disable_overlap_grad_sync = True
 
             # Initialize parameter buckets for overlapped grad and param syncs

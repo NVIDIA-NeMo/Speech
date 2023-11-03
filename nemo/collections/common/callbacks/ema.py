@@ -227,7 +227,7 @@ class EMAOptimizer(torch.optim.Optimizer):
     def all_parameters(self) -> Iterable[torch.Tensor]:
         return (param for group in self.param_groups for param in group['params'])
 
-    def step(self, closure=None, **kwargs):
+    def step(self, closure=None, grad_scaler=None, **kwargs):
         self.join()
 
         if self.first_iteration:
@@ -244,7 +244,10 @@ class EMAOptimizer(torch.optim.Optimizer):
             )
             self.rebuild_ema_params = False
 
-        loss = self.optimizer.step(closure)
+        if getattr(self.optimizer, "_step_supports_amp_scaling", False) and grad_scaler is not None:
+            loss = self.optimizer.step(closure=closure, grad_scaler=grad_scaler)
+        else:
+            loss = self.optimizer.step(closure)
 
         if self._should_update_at_step():
             self.update()

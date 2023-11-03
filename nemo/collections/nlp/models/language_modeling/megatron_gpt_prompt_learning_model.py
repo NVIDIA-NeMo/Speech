@@ -138,7 +138,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
                 override_config_path=frozen_model_cfg,
             ).to(dtype=self.autocast_dtype)
 
-        self.megatron_amp_o2 = self.cfg.get('megatron_amp_O2', False)
+        self.megatron_amp_O2 = self.cfg.get('megatron_amp_O2', False)
         self.pipeline_parallel = self.cfg.get('pipeline_model_parallel_size', 1) > 1
         self.tokenizer = self.frozen_model.tokenizer
         self.hidden_size = self.frozen_model.cfg.hidden_size
@@ -153,7 +153,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         self.model_type = ModelType.encoder_or_decoder
 
         self.enable_autocast = (
-            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+            True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
         if self.pipeline_parallel:

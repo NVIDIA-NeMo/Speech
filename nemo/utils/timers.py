@@ -126,6 +126,12 @@ class NamedTimer(object):
 
         self.timers[name] = timer_data
 
+    def is_active(self, name=""):
+        timer_data = self.timers.get(name, {})
+        if "start" in timer_data:
+            return True
+        return False
+
     def active_timers(self):
         """
         Return list of all active named timers

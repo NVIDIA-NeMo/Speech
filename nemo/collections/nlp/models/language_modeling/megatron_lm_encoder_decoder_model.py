@@ -115,9 +115,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         # We don't need to call it explicitly? Since it is a pytorch lightning hook function
         # self.setup_optimizer_param_groups()
 
-        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+        self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
 
-        if self.megatron_amp_o2:
+        if self.megatron_amp_O2:
 
             if not self.with_distributed_adam:
                 # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
@@ -129,7 +129,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             )
 
         self.enable_autocast = (
-            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+            True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
         self.enc_dec_model.model_type = ModelType.encoder_and_decoder
@@ -185,7 +185,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             # Disable async grad reductions for params that are
             # synchronized for pipeline parallelism
             for param in model_parallel_params:
-                param._disable_greedy_grad_copy = not self.megatron_amp_o2
+                param._disable_greedy_grad_copy = not self.megatron_amp_O2
                 param._disable_overlap_grad_sync = True
 
         return super().configure_optimizers()
@@ -373,7 +373,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             # note: not necessary, but reduces performance degradation
             # from multiple simultaneous NCCL calls
             self._optimizer._finish_bucket_grad_sync()
-        elif self.megatron_amp_o2:
+        elif self.megatron_amp_O2:
             # when using pipeline parallelism grads must be reduced after the pipeline (not asynchronously)
             if self.cfg.get('pipeline_model_parallel_size', 1) > 1:
                 # main grads are stored in the MainParamsOptimizer wrapper
@@ -475,7 +475,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 'share_decoder_tokens_head_embeddings', True
             ):
                 word_embeddings_weight = self.enc_dec_model.word_embeddings_weight()
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     # O2 recipe stores a "main" copy of weights and grads
                     grad = word_embeddings_weight.main_grad
                 else:
@@ -496,7 +496,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         ):
             if self.cfg.get('share_token_embeddings', True):
                 position_embeddings_weight = self.enc_dec_model.position_embeddings_weight()
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     grad = position_embeddings_weight.main_grad
                 else:
                     grad = position_embeddings_weight.grad
@@ -515,7 +515,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 and parallel_state.get_pipeline_model_parallel_split_rank() > 1
             ):
                 position_embeddings_weight = self.enc_dec_model.encoder_relative_position_embeddings_weight()
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     grad = position_embeddings_weight.main_grad
                 else:
                     grad = position_embeddings_weight.grad
@@ -529,7 +529,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 and parallel_state.is_rank_in_decoder_relative_position_embedding_group()
             ):
                 position_embeddings_weight = self.enc_dec_model.decoder_relative_position_embeddings_weight()
-                if self.megatron_amp_o2:
+                if self.megatron_amp_O2:
                     grad = position_embeddings_weight.main_grad
                 else:
                     grad = position_embeddings_weight.grad
@@ -542,7 +542,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                     position_embeddings_weight = (
                         self.enc_dec_model.decoder_cross_attention_relative_position_embeddings_weight()
                     )
-                    if self.megatron_amp_o2:
+                    if self.megatron_amp_O2:
                         grad = position_embeddings_weight.main_grad
                     else:
                         grad = position_embeddings_weight.grad
@@ -630,7 +630,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         Computed on first call, and then cached.
         """
         # build mapping of kwargs to arg index at first run
-        module = self.enc_dec_model.forward if not self.megatron_amp_o2 else self.enc_dec_model.module.forward
+        module = self.enc_dec_model.forward if not self.megatron_amp_O2 else self.enc_dec_model.module.forward
         args_name = inspect.getfullargspec(module)[0][1:]
         kwargs_to_arg_idx = {k: v for k, v in zip(args_name, range(len(args_name)))}
 

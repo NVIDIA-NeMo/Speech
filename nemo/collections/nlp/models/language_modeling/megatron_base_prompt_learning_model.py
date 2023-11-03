@@ -141,7 +141,7 @@ class MegatronBasePromptLearningModel(MegatronBaseModel, TextGeneration):
         self.prompt_encoder = None
 
         self.enable_autocast = (
-            True if (not self.megatron_amp_o2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
+            True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
         # define validation metric

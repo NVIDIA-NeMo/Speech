@@ -14,6 +14,7 @@
 
 import itertools
 import os
+import re
 import shutil
 import tempfile
 from collections import OrderedDict, defaultdict
@@ -136,7 +137,7 @@ class NLPDDPStrategy(DDPStrategy):
             Sets find_unused_parameters to False to use activation-checkpoint-recomputation.
         """
 
-        if (hasattr(self.model, 'megatron_amp_o2') and self.model.megatron_amp_o2) or (
+        if (hasattr(self.model, 'megatron_amp_O2') and self.model.megatron_amp_O2) or (
             hasattr(self.model, 'with_distributed_adam') and self.model.with_distributed_adam
         ):
             # do not use DDP if using megatron amp O2 or distributed optimizer
@@ -586,6 +587,63 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
             for key in state_dict.keys():
                 new_key = key.replace('model.', 'model.module.', 1)
                 new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+
+        # compatibility for inductor in inference
+        if not conf.get('inductor', False):
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key.replace('._orig_mod', '', 1)
+                new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+
+        # Modify state key for Dreambooth inference
+        if (
+            conf.get('target')
+            == 'nemo.collections.multimodal.models.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion'
+        ):
+            new_state_dict = {}
+            for key in state_dict.keys():
+                new_key = key.replace('unet', 'model.diffusion_model')
+                new_key = new_key.replace('vae', 'first_stage_model')
+                new_key = new_key.replace('text_encoder', 'cond_stage_model')
+                new_key = new_key.replace('.noise_scheduler', '')
+                new_state_dict[new_key] = state_dict[key]
+            state_dict = new_state_dict
+
+        loaded_keys = state_dict.keys()
+        if 'model.model.diffusion_model.input_blocks.1.0.in_layers.2.weight' in loaded_keys:
+            new_state_dict = {}
+            # GroupNormOpt fuses activation function to one layer, thus the indexing of weights are shifted for following
+            def should_process(key):
+                base_str = "model.model.diffusion_model."
+                blocks = ["input_blocks", "middle_block", "output_blocks"]
+                for block in blocks:
+                    for layer_type in ["in_layers", "out_layers"]:
+                        for index in [2, 3]:  # The layers index.
+                            for param in ["weight", "bias"]:
+                                if block == 'middle_block':
+                                    for num in [0, 2]:
+                                        template = f"{base_str}{block}.{num}.{layer_type}.{index}.{param}"
+                                        if key == template:
+                                            return True
+                                else:
+                                    for num in range(12):  # 12 blocks, adjust as needed.
+                                        template = f"{base_str}{block}.{num}.0.{layer_type}.{index}.{param}"
+                                        if key == template:
+                                            return True
+                return False
+
+            for key_ in state_dict.keys():
+                if key_ == "model.cond_stage_model.transformer.text_model.embeddings.position_ids":
+                    continue
+                if should_process(key_):
+                    s = key_.split('.')
+                    idx = int(s[-2])
+                    new_key_ = ".".join(s[:-2] + [str(int(idx - 1))] + [s[-1]])
+                    new_state_dict[new_key_] = state_dict[key_]
+                else:
+                    new_state_dict[key_] = state_dict[key_]
             state_dict = new_state_dict
 
         return state_dict

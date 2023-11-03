@@ -25,6 +25,7 @@ from torch.optim.optimizer import Optimizer
 
 from nemo.core.config import OptimizerParams, get_optimizer_config, register_optimizer_params
 from nemo.core.optim.adafactor import Adafactor
+from nemo.core.optim.adan import Adan
 from nemo.core.optim.novograd import Novograd
 from nemo.utils import logging
 from nemo.utils.model_utils import maybe_update_config_version
@@ -40,6 +41,7 @@ AVAILABLE_OPTIMIZERS = {
     'rprop': rprop.Rprop,
     'novograd': Novograd,
     'adafactor': Adafactor,
+    'adan': Adan,
 }
 
 try:
@@ -63,6 +65,14 @@ if HAVE_APEX:
         AVAILABLE_OPTIMIZERS['distributed_fused_adam'] = MegatronDistributedFusedAdam
     except (ImportError, ModuleNotFoundError):
         HAVE_APEX_DISTRIBUTED_ADAM = False
+
+    try:
+        # Try importing wrapper for Apex FusedAdam optimizer
+        from nemo.core.optim.megatron_fused_adam import MegatronFusedAdam
+
+        AVAILABLE_OPTIMIZERS['megatron_fused_adam'] = MegatronFusedAdam
+    except (ImportError, ModuleNotFoundError):
+        pass
 
 __all__ = ['get_optimizer', 'register_optimizer', 'parse_optimizer_args']
 

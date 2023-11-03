@@ -151,7 +151,7 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
-    megatron_amp_o2 = cfg.model.get('megatron_amp_O2', False)
+    megatron_amp_O2 = cfg.model.get('megatron_amp_O2', False)
     plugins = []
     strategy = NLPDDPStrategy(
         no_ddp_communication_hook=True,
@@ -170,7 +170,7 @@ def main(cfg) -> None:
             plugin_precision = '16-mixed'
         else:
             plugin_precision = 'bf16-mixed'
-        if megatron_amp_o2:
+        if megatron_amp_O2:
             plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
         else:
             plugins.append(PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))

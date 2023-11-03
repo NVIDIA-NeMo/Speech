@@ -34,7 +34,7 @@ def main(cfg) -> None:
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
     trainer = None
-    if cfg.trainer.precision == 16:
+    if cfg.trainer.precision in [16, '16', '16-mixed']:
         trainer = Trainer(
             plugins=[
                 NLPMixedPrecisionPlugin(
@@ -45,7 +45,7 @@ def main(cfg) -> None:
             strategy=NLPDDPStrategy(),
             **cfg.trainer,
         )
-    elif cfg.trainer.precision == 'bf16':
+    elif cfg.trainer.precision in ['bf16', 'bf16-mixed']:
         trainer = Trainer(plugins=[NLPNativeBfloat16PrecisionPlugin(),], strategy=NLPDDPStrategy(), **cfg.trainer,)
     else:
         trainer = Trainer(plugins=[NLPPrecisionPlugin()], strategy=NLPDDPStrategy(), **cfg.trainer)

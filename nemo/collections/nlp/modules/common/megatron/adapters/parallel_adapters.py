@@ -66,6 +66,7 @@ class AdapterName(str, enum.Enum):
     LORA_KQV_ADAPTER = "lora_kqv_adapter"
     LORA_KV_ADAPTER = "lora_kv_adapter"
     LORA_Q_ADAPTER = "lora_q_adapter"
+    MM_LINEAR_ADAPTER = "mm_linear_adapter"
 
 
 class InfusedAdapter(nn.Module, AdapterModuleUtil):
@@ -568,3 +569,20 @@ class LoraKQVAdapterWeightTying(ParallelLinearAdapterWeightTying):
 @dataclass
 class LoraKQVAdapterWeightTyingConfig(ParallelLinearAdapterWeightTyingConfig):
     _target_: str = "{0}.{1}".format(LoraKQVAdapterWeightTying.__module__, LoraKQVAdapterWeightTying.__name__)
+
+
+class MultiModalLinearAdapter(nn.Module, AdapterModuleUtil):
+    def __init__(self, in_features: int, out_features: int, bias: bool, **kwargs) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(in_features, out_features, bias,)
+
+    def forward(self, x):
+        return self.linear(x)
+
+
+@dataclass
+class MultiModalLinearAdapterConfig:
+    in_features: int
+    out_features: int
+    bias: bool
+    _target_: str = "{0}.{1}".format(MultiModalLinearAdapter.__module__, MultiModalLinearAdapter.__name__)

@@ -190,6 +190,13 @@ class TimingCallback(Callback):
         if self.timer.buffer_size <= 0:
             self.timer.reset(name)
 
+        if self.timer.is_active(name):
+            logging.warning(
+                f"Timer `{name}` was not correctly stopped, suggesting a "
+                "possible issue. The timer will be reset for now."
+            )
+            self.timer.reset(name)
+
         self.timer.start(name)
 
     def _on_batch_end(self, name, pl_module):

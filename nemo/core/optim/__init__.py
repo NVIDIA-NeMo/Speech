@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from nemo.core.optim.adafactor import Adafactor
+from nemo.core.optim.adan import Adan
 from nemo.core.optim.lr_scheduler import (
     CosineAnnealing,
     InverseSquareRootAnnealing,

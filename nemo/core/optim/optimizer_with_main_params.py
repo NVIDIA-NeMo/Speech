@@ -254,6 +254,7 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
             fp32_from_float16_params_this_group = []
             # For all the parameters in this group:
             for j, param in enumerate(param_group['params']):
+                main_param = None
                 if param.requires_grad:
                     # float16 params:
                     if param.type() in ['torch.cuda.HalfTensor', 'torch.cuda.BFloat16Tensor']:
@@ -297,7 +298,7 @@ class MainParamsOptimizerWrapper(torch.optim.Optimizer):
                         )
 
                 # Add gradient accumulation hook for fp32 grad accumulation
-                if self._fp32_grad_accum and param.requires_grad:
+                if main_param is not None and self._fp32_grad_accum and param.requires_grad:
                     # Expand so we get access to grad_fn
                     param_tmp = param.expand_as(param)
                     # Get the gradient accumulator function.

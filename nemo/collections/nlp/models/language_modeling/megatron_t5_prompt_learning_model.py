@@ -147,7 +147,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
         return output, encoder_input
 
     def load_frozen_model(self, cfg, trainer):
-        self.megatron_amp_o2 = cfg.get('megatron_amp_O2', False)
+        self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
 
         # TODO: Fix this once apex patches FusedScaledMaskedSoftmax.
         # This is a workaround for the fact that `masked_softmax_fusion` has issues with certain input sizes that may be present while finetuning.
@@ -159,7 +159,7 @@ class MegatronT5PromptLearningModel(MegatronBasePromptLearningModel):
                 t5_cfg.decoder.masked_softmax_fusion = False
             else:
                 t5_cfg.masked_softmax_fusion = False
-            t5_cfg.megatron_amp_O2 = self.megatron_amp_o2
+            t5_cfg.megatron_amp_O2 = self.megatron_amp_O2
             # hack to make the _GLOBAL_NUM_MICROBATCHES_CALCULATOR initialize
             t5_cfg.micro_batch_size = cfg.get('micro_batch_size', 4)
             t5_cfg.global_batch_size = cfg.get('global_batch_size', 4)

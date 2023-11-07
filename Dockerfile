@@ -43,12 +43,6 @@ RUN apt-get update && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/
-# install megatron core, this can be removed once 0.3 pip package is released
-RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
-  cd Megatron-LM && \
-  git checkout ab0336a5c8eab77aa74ae604ba1e73decbf6d560 && \
-  pip install -e .
-
 # Install megatron core, this can be removed once 0.3 pip package is released
 # We leave it here in case we need to work off of a specific commit in main
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \

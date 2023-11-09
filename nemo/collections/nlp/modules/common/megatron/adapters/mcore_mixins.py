@@ -13,14 +13,20 @@
 # limitations under the License.
 
 import torch
+import torch.nn.functional as F
+from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
+from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.models.gpt.gpt_embedding import GPTEmbedding
 from megatron.core.transformer.attention import SelfAttention
+from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.utils import make_viewless_tensor
 
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
     AdapterName,
+    InfusedAdapterConfig,
     LoraKQVAdapterConfig,
+    MLPInfusedAdapterConfig,
     ParallelLinearAdapterConfig,
     PromptEncoderAdapterConfig,
 )
@@ -47,9 +53,9 @@ class MCoreAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
 class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
     def mcore_register_adapters(self):
         """
-        Setup NeMo LoRA adapter to this MCore layer.
+        Setup NeMo LoRA or IA3 adapter to this MCore layer.
         """
-        self.set_accepted_adapter_types([LoraKQVAdapterConfig._target_])  # only self attn (packed qkv) for now
+        self.set_accepted_adapter_types([LoraKQVAdapterConfig._target_, InfusedAdapterConfig._target_])
         self.linear_qkv.return_layernorm_output = True  # need layernorm output for lora mlp
 
     def get_query_key_value_tensors(self, hidden_states, key_value_states=None):
@@ -93,7 +99,48 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         # [sq, b, ng, np/ng * hn] -> [sq, b, np, hn]
         query = query.reshape(query.size(0), query.size(1), -1, self.hidden_size_per_attention_head)
 
+        if self.is_adapter_available():
+            key_infused_adapter = self.get_adapter_module(AdapterName.KEY_INFUSED)
+            value_infused_adapter = self.get_adapter_module(AdapterName.VALUE_INFUSED)
+            if key_infused_adapter:
+                assert value_infused_adapter is not None, "Expected value_infused_adapter not found!"
+                kls = key.shape
+                key = key_infused_adapter(key.reshape(kls[0], kls[1], -1)).reshape(kls).to(query.dtype)
+            if value_infused_adapter:
+                assert key_infused_adapter is not None, "Expected key_infused_adapter not found!"
+                vls = value.shape
+                value = value_infused_adapter(value.reshape(vls[0], vls[1], -1)).reshape(vls).to(query.dtype)
+
         return query, key, value
+
+
+class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
+    def mcore_register_adapters(self):
+        """
+        Setup NeMo IA3 adapter to this MCore layer.
+        """
+        self.set_accepted_adapter_types([MLPInfusedAdapterConfig._target_])  # only self attn (packed qkv) for now
+
+    def forward(self, hidden_states):
+        # [s, b, 4 * h/p]
+        intermediate_parallel, bias_parallel = self.linear_fc1(hidden_states)
+
+        if self.config.bias_gelu_fusion:
+            assert self.config.add_bias_linear is True
+            assert self.activation_func == F.gelu
+            intermediate_parallel = bias_gelu_impl(intermediate_parallel, bias_parallel)
+        else:
+            if bias_parallel is not None:
+                intermediate_parallel = intermediate_parallel + bias_parallel
+            intermediate_parallel = self.activation_func(intermediate_parallel)
+
+        infused_adapter = self.get_adapter_module(AdapterName.MLP_INFUSED)
+        if infused_adapter:
+            intermediate_parallel = infused_adapter(intermediate_parallel)
+
+        # [s, b, h]
+        output, output_bias = self.linear_fc2(intermediate_parallel)
+        return output, output_bias
 
 
 class MCoreGPTEmbeddingMixin(GPTEmbedding, MCoreAdapterModuleMixin):
@@ -121,6 +168,9 @@ class MCoreGPTEmbeddingMixin(GPTEmbedding, MCoreAdapterModuleMixin):
 
 class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
     def mcore_register_adapters(self):
+        """
+        Setup NeMo (canonical) Adapter to this MCore layer.
+        """
         self.set_accepted_adapter_types([ParallelLinearAdapterConfig._target_])
 
     def forward(
@@ -157,11 +207,11 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
         else:
             residual = hidden_states
 
+        bias_dropout_add_func = get_bias_dropout_add(self.training, self.config.bias_dropout_fusion)
+
         # bias_dropout_add fusion returning fp32 instead of bf16
         with self.bias_dropout_add_exec_handler():
-            layernorm_input = self.bias_dropout_add_func(
-                attention_output_with_bias, residual, self.config.hidden_dropout
-            )
+            layernorm_input = bias_dropout_add_func(attention_output_with_bias, residual, self.config.hidden_dropout)
 
         # Layer norm post the self attention.
         layernorm_output = self.post_self_attn_layernorm(layernorm_input)
@@ -184,7 +234,7 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
             residual = layernorm_input
 
         with self.bias_dropout_add_exec_handler():
-            output = self.bias_dropout_add_func(mlp_output_with_bias, residual, self.config.hidden_dropout)
+            output = bias_dropout_add_func(mlp_output_with_bias, residual, self.config.hidden_dropout)
 
         # Jit compiled function creates 'view' tensor. This tensor
         # potentially gets saved in the MPU checkpoint function context,

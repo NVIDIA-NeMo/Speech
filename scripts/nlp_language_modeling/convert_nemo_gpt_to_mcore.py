@@ -27,6 +27,8 @@ from nemo.utils import AppState, logging
 r"""
 Script to convert a legacy (non-mcore path) nemo checkpoint into mcore-path checkpoint for GPT models.
 
+Please use a container later than 23.10 or the current github main branch
+
 *Important* Before running this script, please first
 1) convert your legacy checkpoint to TP1 PP1 format:
     python examples/nlp/language_modeling/megatron_change_num_partitions.py \
@@ -176,7 +178,7 @@ def restore_model(nemo_file, cpu_only=False):
 
     # To copy weights in the original precision, we have to turn on O2.
     orig_megatron_amp_O2_value = model_config.megatron_amp_O2
-    if model_config.target.endswith("MegatronGPTSFTModel"):
+    if "target" in model_config and model_config.target.endswith("MegatronGPTSFTModel"):
         logging.warning(
             "⚠️ Model target is `MegatronGPTSFTModel` which may not work with this conversion script. "
             "This is a known issue. For now, please modify the config yaml file to use `MegatronGPTModel`."

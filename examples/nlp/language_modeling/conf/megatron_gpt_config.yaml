@@ -169,11 +169,11 @@ model:
   transformer_engine: False
   fp8: False # enables fp8 in TransformerLayer forward
   fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3 
-  fp8_hybrid: False # sets fp8_format = recipe.Format.HYBRID
+  fp8_hybrid: True # sets fp8_format = recipe.Format.HYBRID
   fp8_margin: 0 # scaling margin 
   fp8_interval: 1 # scaling update interval
-  fp8_amax_history_len: 1 # Number of steps for which amax history is recorded per tensor
-  fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
+  fp8_amax_history_len: 1024 # Number of steps for which amax history is recorded per tensor
+  fp8_amax_compute_algo: max # 'most_recent' or 'max'. Algorithm for computing amax from history
   reduce_amax: True # Perform reduction to sync amax tensors across GPUs after every iteration
   use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
   ub_tp_comm_overlap: False

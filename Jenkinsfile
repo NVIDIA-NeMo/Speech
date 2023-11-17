@@ -9,6 +9,9 @@ pipeline {
     timeout(time: 8, unit: 'HOURS')
     disableConcurrentBuilds(abortPrevious: true)
   }
+  environment {
+    NVTE_APPLY_QK_LAYER_SCALING = 1
+  }
 
   stages {
 
@@ -57,18 +60,25 @@ pipeline {
       }
     }
 
-    // megatron-core 0.3 has been pinned in the requirements, this should not be needed on r1.21.0
-    // stage('Megatron Core installation') {
-    //   steps {
-    //     // pinned MCore https://github.com/NVIDIA/Megatron-LM/commit/ab0336a5c8eab77aa74ae604ba1e73decbf6d560
-    //     // ToT for 23.08 branch
-    //     sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
-    //         cd Megatron-LM && \
-    //         git checkout ab0336a5c8eab77aa74ae604ba1e73decbf6d560 && \
-    //         pip install -e .'
-    //   }
-    // }
+    stage('Transformer Engine installation') {
+      steps {
+         sh 'git clone https://github.com/NVIDIA/TransformerEngine.git && \
+             cd TransformerEngine && \
+             git fetch origin 8eae4ce2b8fdfbbe525fc8bfecb0df5498cc9687 && \
+             git checkout FETCH_HEAD && \
+             git submodule init && git submodule update && \
+             NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .'
+      }
+    }
 
+    stage('Megatron Core installation') {
+      steps {
+         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
+             cd Megatron-LM && \
+             git checkout 4c7a0251ae7c234a4ca3f02327330235d8d35028 && \
+             pip install -e .'
+      }
+    }
 
     stage('PyTorch Lightning version') {
       steps {
@@ -3151,50 +3161,50 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
     }
     stage('L2: Megatron GPT with Rope Pretraining and Resume Training TP=2') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      failFast true
-      steps {
-        sh "python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-        trainer.devices=2 \
-        trainer.accelerator=gpu \
-        trainer.log_every_n_steps=1 \
-        trainer.val_check_interval=2 \
-        trainer.limit_val_batches=2 \
-        trainer.accumulate_grad_batches=1 \
-        trainer.max_steps=3 \
-        trainer.precision=16 \
-        trainer.gradient_clip_val=1.0 \
-        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-        model.tensor_model_parallel_size=2 \
-        model.optim.name=fused_adam \
-        model.optim.lr=2e-4 \
-        model.optim.sched.warmup_steps=1 \
-        model.optim.sched.constant_steps=1 \
-        model.optim.sched.min_lr=8e-5 \
-        model.max_position_embeddings=128 \
-        model.encoder_seq_length=128 \
-        model.data.seq_length=128 \
-        model.position_embedding_type=rope \
-        model.rotary_percentage=0.5 \
-        model.normalization=rmsnorm \
-        model.bias=False \
-        model.bias_activation_fusion=False \
-        model.bias_dropout_add_fusion=False \
-        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-        model.num_layers=8 \
-        model.hidden_size=256 \
-        model.num_attention_heads=8 \
-        model.activations_checkpoint_method='block' \
-        model.activations_checkpoint_granularity='full' \
-        model.activations_checkpoint_num_layers=1 \
-        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
+     when {
+       anyOf {
+         branch 'main'
+         changeRequest target: 'main'
+       }
+     }
+     failFast true
+     steps {
+       sh "python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+       trainer.devices=2 \
+       trainer.accelerator=gpu \
+       trainer.log_every_n_steps=1 \
+       trainer.val_check_interval=2 \
+       trainer.limit_val_batches=2 \
+       trainer.accumulate_grad_batches=1 \
+       trainer.max_steps=3 \
+       trainer.precision=16 \
+       trainer.gradient_clip_val=1.0 \
+       exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+       model.tensor_model_parallel_size=2 \
+       model.optim.name=fused_adam \
+       model.optim.lr=2e-4 \
+       model.optim.sched.warmup_steps=1 \
+       model.optim.sched.constant_steps=1 \
+       model.optim.sched.min_lr=8e-5 \
+       model.max_position_embeddings=128 \
+       model.encoder_seq_length=128 \
+       model.data.seq_length=128 \
+       model.position_embedding_type=rope \
+       model.rotary_percentage=0.5 \
+       model.normalization=rmsnorm \
+       model.bias=False \
+       model.bias_activation_fusion=False \
+       model.bias_dropout_add_fusion=False \
+       model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+       model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+       model.num_layers=8 \
+       model.hidden_size=256 \
+       model.num_attention_heads=8 \
+       model.activations_checkpoint_method='block' \
+       model.activations_checkpoint_granularity='full' \
+       model.activations_checkpoint_num_layers=1 \
+       model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+       model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
         // commented out to save time on github ci @adithyare
         //sh "python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
         //trainer.devices=2 \
@@ -3233,9 +3243,9 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         //model.activations_checkpoint_num_layers=1 \
         //model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
         //model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
-        sh "rm -rf examples/nlp/language_modeling/gpt_pretrain_results"
-        sh "rm -rf examples/nlp/language_modeling/gpt_index_mappings"
-       }
+       sh "rm -rf examples/nlp/language_modeling/gpt_pretrain_results"
+       sh "rm -rf examples/nlp/language_modeling/gpt_index_mappings"
+      }
      }
 
     // This test requires Ampere but some of the test GPUs are Volta

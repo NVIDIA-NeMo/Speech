@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 import torch.nn.functional as F
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
-from megatron.core.models.gpt.gpt_embedding import GPTEmbedding
+from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.transformer_layer import TransformerLayer
@@ -143,7 +142,7 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
         return output, output_bias
 
 
-class MCoreGPTEmbeddingMixin(GPTEmbedding, MCoreAdapterModuleMixin):
+class MCoreGPTEmbeddingMixin(LanguageModelEmbedding, MCoreAdapterModuleMixin):
     def mcore_register_adapters(self):
         """
         Setup NeMo ptuning adapter to this MCore layer.

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import itertools
+from math import ceil
 from pathlib import Path
 from typing import List, Tuple
 
@@ -20,7 +21,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 
 from nemo.collections.tts.losses.audio_codec_loss import (
@@ -48,6 +49,9 @@ class AudioCodecModel(ModelPT):
         # Convert to Hydra 1.0 compatible DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
+        self.world_size = 1
+        if trainer is not None:
+            self.world_size = trainer.num_nodes * trainer.num_devices
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -490,23 +494,57 @@ class AudioCodecModel(ModelPT):
         }
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
-    @staticmethod
-    def _setup_train_dataloader(cfg):
+    def get_dataset(self, cfg):
+        with open_dict(cfg):
+            is_sharded = cfg.dataset.pop('is_sharded', False)
+
+        if is_sharded:
+            with open_dict(cfg):
+                cfg.dataset.global_rank = self.global_rank
+                cfg.dataset.world_size = self.world_size
+                cfg.dataset._target_ = 'nemo.collections.tts.data.vocoder_dataset.TarredVocoderDataset'
+
         dataset = instantiate(cfg.dataset)
+
         sampler = dataset.get_sampler(cfg.dataloader_params.batch_size)
+        return dataset, sampler
+
+    def _setup_train_dataloader(self, cfg):
+        dataset, sampler = self.get_dataset(cfg)
         data_loader = torch.utils.data.DataLoader(
             dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
         )
         return data_loader
 
-    @staticmethod
-    def _setup_test_dataloader(cfg):
+    def _setup_test_dataloader(self, cfg):
         dataset = instantiate(cfg.dataset)
         data_loader = torch.utils.data.DataLoader(dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params)
         return data_loader
 
     def setup_training_data(self, cfg):
         self._train_dl = self._setup_train_dataloader(cfg)
+        batch_size = cfg['dataloader_params']['batch_size']
+        # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
+        # of samples rather than the number of batches, and this messes up the tqdm progress bar.
+        # So we set the number of steps manually (to the correct number) to fix this.
+        if (
+            self._train_dl is not None
+            and hasattr(self._train_dl, 'dataset')
+            and isinstance(self._train_dl.dataset, torch.utils.data.IterableDataset)
+        ):
+            # We also need to check if limit_train_batches is already set.
+            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
+            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
+            if self._trainer is not None and isinstance(self._trainer.limit_train_batches, float):
+                self._trainer.limit_train_batches = int(
+                    self._trainer.limit_train_batches
+                    * ceil((len(self._train_dl.dataset) / self.world_size) / batch_size)
+                )
+            elif self._trainer is None:
+                logging.warning(
+                    "Model Trainer was not set before constructing the dataset, incorrect number of "
+                    "training batches will be used. Please set the trainer and rebuild the dataset."
+                )
 
     def setup_validation_data(self, cfg):
         self._validation_dl = self._setup_test_dataloader(cfg)
@@ -524,7 +562,6 @@ class AudioCodecModel(ModelPT):
 
         if "steps_per_epoch" in self._cfg:
             return self._cfg.max_epochs * self._cfg.steps_per_epoch
-
         return compute_max_steps(
             max_epochs=self._cfg.max_epochs,
             accumulate_grad_batches=self.trainer.accumulate_grad_batches,

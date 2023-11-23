@@ -278,6 +278,16 @@ KAB
     
 --------------------
 
+NL
+^^
+
+.. csv-table::
+    :header-rows: 1
+    :align: left
+    :file: data/scores/nl/fastconformer_nl.csv
+    
+--------------------
+
 PL
 ^^
 
@@ -350,7 +360,6 @@ ZH
 --------------------
 
 
-
 Scores with Punctuation and Capitalization
 ------------------------------------------
 
@@ -414,6 +423,16 @@ IT with P&C
     
 --------------------
 
+NL with P&C
+^^^^^^^^^^^
+
+.. csv-table::
+    :header-rows: 1
+    :align: left
+    :file: data/scores_pc/nl/fastconformer_nl.csv
+    
+--------------------
+
 PL with P&C
 ^^^^^^^^^^^
 
@@ -433,4 +452,3 @@ UA with P&C
     :file: data/scores_pc/ua/fastconformer_ua.csv
     
 --------------------
-

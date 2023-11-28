@@ -14,6 +14,9 @@ Add a one line overview of what this PR aims to accomplish.
 # Add a code snippet demonstrating how to use this 
 ```
 
+# Jenkins CI
+To run Jenkins, a NeMo User with write access must comment `jenkins` on the PR.
+
 # Before your PR is "Ready for review"
 **Pre checks**:
 - [ ] Make sure you read and followed [Contributor guidelines](https://github.com/NVIDIA/NeMo/blob/main/CONTRIBUTING.md)

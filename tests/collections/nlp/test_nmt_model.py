@@ -110,7 +110,7 @@ class TestMTEncDecModel:
         eval_loss = model.eval_loss_fn(log_probs=log_probs, labels=tgt_ids)
         assert torch.allclose(train_loss, eval_loss)
 
-    @pytest.mark.skipif(not os.path.exists('/home/TestData/nlp'), reason='Not a Jenkins machine')
+    @pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_gpu_export_ts(self):

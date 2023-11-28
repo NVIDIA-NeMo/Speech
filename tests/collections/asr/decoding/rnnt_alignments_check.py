@@ -17,6 +17,7 @@
 #       these tests outside of the CI machines environment, where test data is
 #       stored
 
+import os
 import pytest
 from examples.asr.transcribe_speech import TranscriptionConfig
 from omegaconf import OmegaConf
@@ -68,6 +69,7 @@ def cleanup_local_folder():
 
 
 # TODO: add the same tests for multi-blank RNNT decoding
+@pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
 def test_rnnt_alignments():
     # using greedy as baseline and comparing all other configurations to it
     ref_transcriptions = get_rnnt_alignments("greedy")

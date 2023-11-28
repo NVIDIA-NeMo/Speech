@@ -76,6 +76,7 @@ def create_data_points(mask_user, turn_num, records, temp_file, t2v, label=True)
     return data_points
 
 
+@pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
 class TestGPTSFTChatDataset:
     @classmethod
     def setup_class(cls):

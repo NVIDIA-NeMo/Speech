@@ -62,7 +62,7 @@ class TestMegatron:
         out = model.forward(*inp)
         typecheck.set_typecheck_enabled(enabled=True)
 
-    @pytest.mark.skipif(not os.path.exists('/home/TestData/nlp'), reason='Not a Jenkins machine')
+    @pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

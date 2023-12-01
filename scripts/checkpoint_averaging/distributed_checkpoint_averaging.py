@@ -39,7 +39,8 @@ import argparse
 import logging
 import os
 import shutil
-
+import numpy as np
+import tensorstore  # need to import it for bf16 support
 import zarr
 
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +85,7 @@ def main():
     n = len(checkpoint_paths)
     # initialize dict, will be used to store the weights that need to be averaged
     avg_weights = {}
+    chunk_info = {}
 
     logging.info(f"Averaging {n} checkpoints ... {'at steps:' + str(args.steps) if args.steps is not None else ''}")
 
@@ -114,21 +116,22 @@ def main():
 
             if item not in avg_weights:
                 logging.info(f"Initialized average weights dict with: {item}")
-                avg_weights[item] = zarr.open(os.path.join(full_path, item), mode='r')
+                array = zarr.open(os.path.join(full_path, item), mode='r')
+                avg_weights[item] = array[:]
+                chunk_info[item] = array.chunks
             else:
                 logging.info(f"Updated average weights dict with weight: {item}")
                 array_z = zarr.open(os.path.join(full_path, item), mode='r')
-                sum_array = avg_weights[item][:] + array_z[:]
-                avg_weights[item] = zarr.array(sum_array, chunks=array_z.chunks, dtype=array_z.dtype)
+                sum_array = avg_weights[item] + array_z[:]
+                avg_weights[item] = sum_array
 
     for k in avg_weights:
         logging.info(f"Average weights dict key : {k}, dtype : {avg_weights[k].dtype}, shape : {avg_weights[k].shape}")
         if str(avg_weights[k].dtype).startswith("int"):
             raise ValueError("Int type not supported")
         else:
-            array_z = avg_weights[k][:]
-            array_z = array_z / n
-            avg_weights[k] = zarr.array(array_z, chunks=avg_weights[k].chunks, dtype=avg_weights[k].dtype)
+            array_z = avg_weights[k] / n
+            avg_weights[k] = array_z
 
     # Save model
     if args.steps is None:
@@ -140,7 +143,24 @@ def main():
     # save avg_weights
     for k in avg_weights:
         logging.info(f"Saving {k} to {ckpt_name}")
-        zarr.save(os.path.join(ckpt_name, k), avg_weights[k])
+        input_arr = avg_weights[k]
+        chunks = chunk_info[k]
+        # create the zarr array
+        output_array = zarr.create(
+            input_arr.shape,
+            dtype=input_arr.dtype,
+            store=os.path.join(ckpt_name, k),
+            chunks=chunks,
+            compressor=None,
+            fill_value=None,
+            write_empty_chunks=True,
+        )
+        if input_arr.dtype == np.dtype('bfloat16'):
+            arr = output_array
+            arr._dtype = input_arr.dtype
+            zarray = arr.store['.zarray']
+            arr.store['.zarray'] = zarray.replace(b'<V2', b'bfloat16')
+        output_array[:] = input_arr
 
     # copy other files
     for item in copy_items:

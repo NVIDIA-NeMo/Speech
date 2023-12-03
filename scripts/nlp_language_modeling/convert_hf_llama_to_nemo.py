@@ -116,6 +116,8 @@ def load_config(args, llama_config):
             nemo_config['seq_len_interpolation_factor'] = llama_config['rope_scaling']['factor']
         else:
             raise ValueError("Only linear rope scaling type is supported now")
+    if llama_config['rope_theta'] is not None:
+        nemo_config['rotary_base'] = llama_config['rope_theta']
 
     base = 128
     while llama_config['vocab_size'] % base != 0:

@@ -103,7 +103,7 @@ class MegatronBaseModel(NLPModel):
         self.tokenizer = None
 
         with open_dict(cfg):
-            if cfg.get('precision', None) is None and trainer is not None:
+            if cfg.get('precision', None) is None:
                 cfg.precision = trainer.precision
 
         super().__init__(cfg, trainer=trainer, no_lm_init=no_lm_init)
@@ -773,7 +773,6 @@ class MegatronBaseModel(NLPModel):
         cfg = OmegaConf.to_container(self.cfg, resolve=True)
 
         # map precision related configs
-        precision = cfg.get('precision', 32)  # PTL trainer precision
         megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
 
         # dtype used in p2p communication
@@ -791,7 +790,7 @@ class MegatronBaseModel(NLPModel):
             and not self.cfg.get('sequence_parallel', False),
             "pipeline_dtype": pipeline_dtype,
             "grad_scale_func": self.trainer.precision_plugin.scaler.scale
-            if self.torch_dtype == torch.float16
+            if self.trainer.precision in ["16", "16-mixed"]
             else None,
             "enable_autocast": not megatron_amp_O2 and self.torch_dtype in [torch.bfloat16, torch.float16],
             "autocast_dtype": self.autocast_dtype,

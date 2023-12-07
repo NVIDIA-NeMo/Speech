@@ -148,7 +148,6 @@ if __name__ == '__main__':
         'precision': 'bf16',
         'logger': False,  # logger provided by exp_manager
         'enable_checkpointing': False,
-        'replace_sampler_ddp': False,
         'max_epochs': -1,  # PTL default. In practice, max_steps will be reached first.
         'max_steps': 100000,  # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
         'log_every_n_steps': 10,

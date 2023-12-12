@@ -221,7 +221,7 @@ Flashlight (``flashlight``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Flashlight is a C++ library for ASR decoding provided at `https://github.com/flashlight/flashlight <https://github.com/flashlight/flashlight>`_. It is a CPU and CUDA-based beam search engine that is quite efficient and supports
-char and subword models. It an ARPA KenLM file.
+char and subword models. It requires an ARPA KenLM file.
 
 It supports several advanced features such as lexicon based / lexicon free decoding, beam pruning threshold, and more.
 

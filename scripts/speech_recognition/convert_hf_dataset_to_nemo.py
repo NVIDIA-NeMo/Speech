@@ -361,7 +361,7 @@ def main(cfg: HFDatasetConversionConfig):
             split=cfg.split,
             cache_dir=None,
             streaming=cfg.streaming,
-            use_auth_token=cfg.use_auth_token,
+            token=cfg.use_auth_token,
         )
 
     except Exception as e:

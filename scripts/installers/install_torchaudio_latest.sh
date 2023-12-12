@@ -17,6 +17,29 @@
 # Torch and torchaudio versions must match. Othervise, there will be no CUDA support.
 # See https://github.com/pytorch/audio/blob/f0bc00c980012badea8db011f84a0e9ef33ba6c1/README.md?plain=1#L66
 
+DEPENDENCIES_INSTALL_CMD="apt update && apt install -y ffmpeg sox libavdevice-dev"
+
+read -r -d '' INFO_MESSAGE << EOM
+INFO: This script is supposed to be used when building a docker container using Dockerfile in NeMo.
+Use the script only for compiling torchaudio from scratch with a Non-Standard PyTorch version (e.g., 2.1.0a0+32f93b1)
+For the release PyTorch version (e.g., 2.1.0), use 'pip install torchaudio' instead.
+If running stand-alone, install dependencies first: '${DEPENDENCIES_INSTALL_CMD}'
+EOM
+
+echo "$INFO_MESSAGE"
+
+for lib in libavdevice sox; do
+  if ! grep -q ${lib} <<< "$(ldconfig -p)"; then
+    echo "ERROR: ${lib} not found. Install dependencies before running the script: '${DEPENDENCIES_INSTALL_CMD}'"
+    exit 1
+  fi
+done
+
+if ! command -v ffmpeg &> /dev/null; then
+  echo "ERROR: ffmpeg not found. Install dependencies before running the script: '${DEPENDENCIES_INSTALL_CMD}'"
+  exit 1
+fi
+
 TORCHAUDIO_REPO=https://github.com/pytorch/audio
 # expected LATEST_RELEASE=release/*.**
 LATEST_RELEASE=$(git -c 'versionsort.suffix=-' \

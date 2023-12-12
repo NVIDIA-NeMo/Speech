@@ -64,6 +64,11 @@ def get_args():
         action="store_true",
         help="Run conversion again and overwrite output file when the output file already exists",
     )
+    parser.add_argument(
+        "--ignore-if-missing",
+        default="rotary_pos_emb.inv_freq",
+        help="comma-separated list of state_dict keys that are known to be missing in mcore and can be safely ignored",
+    )
     args = parser.parse_args()
     return args
 
@@ -150,7 +155,7 @@ def build_key_mapping(nemo_cfg):
     return mcore_to_nemo_mapping
 
 
-def load_model(model, state_dict):
+def load_model(model, state_dict, ignore_if_missing=tuple()):
     # try:
     for name, module in model.named_parameters():
         if name in state_dict:
@@ -162,7 +167,12 @@ def load_model(model, state_dict):
         if name in state_dict:
             buffer.data = state_dict.pop(name)
 
-    if len(state_dict.keys()) != 0:
+    # Some previous buffers are known to be removed in new mcore models => it is ok to ignore them.
+    for key in list(state_dict):
+        if any(key.endswith(suffix) for suffix in ignore_if_missing):
+            state_dict.pop(key)
+
+    if state_dict:
         raise RuntimeError(f"Additional keys: {state_dict.keys()} in state_dict but not in model.")
 
     return model
@@ -196,7 +206,7 @@ def restore_model(nemo_file, cpu_only=False):
     return model
 
 
-def convert(input_nemo_file, output_nemo_file, skip_if_output_exists=True, cpu_only=False):
+def convert(input_nemo_file, output_nemo_file, skip_if_output_exists=True, cpu_only=False, ignore_if_missing=tuple()):
     if skip_if_output_exists and os.path.exists(output_nemo_file):
         logging.info(f"Output file already exists ({output_nemo_file}), skipping conversion...")
         logging.info("If you want to overwrite the output file, please run with --overwrite flag")
@@ -220,7 +230,7 @@ def convert(input_nemo_file, output_nemo_file, skip_if_output_exists=True, cpu_o
             mcore_state_dict[mcore_param] = nemo_state_dict[nemo_param]
 
     mcore_model = get_mcore_model_from_nemo_file(input_nemo_file, cpu_only=cpu_only)
-    mcore_model = load_model(mcore_model, mcore_state_dict)
+    mcore_model = load_model(mcore_model, mcore_state_dict, ignore_if_missing=ignore_if_missing)
 
     if nemo_model.cfg.tokenizer.model is not None:
         logging.info("registering artifact: tokenizer.model = " + nemo_tokenizer_model)
@@ -233,7 +243,7 @@ def convert(input_nemo_file, output_nemo_file, skip_if_output_exists=True, cpu_o
     del nemo_model
 
 
-def run_sanity_checks(nemo_file, mcore_file, cpu_only=False):
+def run_sanity_checks(nemo_file, mcore_file, cpu_only=False, ignore_if_missing=tuple()):
 
     nemo_model = restore_model(nemo_file, cpu_only=cpu_only).eval()
     mcore_model = restore_model(mcore_file, cpu_only=cpu_only).eval()
@@ -270,7 +280,9 @@ def run_sanity_checks(nemo_file, mcore_file, cpu_only=False):
         except KeyError:
             buffers = [k for k, v in mcore_model.named_buffers()]
             assert (
-                mcore_param in buffers or mcore_param.replace('model.', 'model.module.', 1) in buffers
+                mcore_param in buffers
+                or mcore_param.replace('model.', 'model.module.', 1) in buffers
+                or any(mcore_param.endswith(suffix) for suffix in ignore_if_missing)
             ), f"❌ parameter {mcore_param} is not found in the state dict or named_buffers()"
             nemo_state_dict.pop(nemo_param)
 
@@ -291,17 +303,24 @@ if __name__ == '__main__':
     output_nemo_file = args.out_file
     cpu_only = args.cpu_only
     overwrite = args.overwrite
+    ignore_if_missing = {key.strip() for key in args.ignore_if_missing.split(",")}
 
     os.makedirs(os.path.dirname(output_nemo_file), exist_ok=True)
     try:
-        convert(input_nemo_file, output_nemo_file, skip_if_output_exists=not overwrite, cpu_only=cpu_only)
+        convert(
+            input_nemo_file,
+            output_nemo_file,
+            skip_if_output_exists=not overwrite,
+            cpu_only=cpu_only,
+            ignore_if_missing=ignore_if_missing,
+        )
     except torch.cuda.OutOfMemoryError:
         logging.error("Could not convert due to torch.cuda.OutOfMemoryError.")
         logging.error("Please run the script with --cpu-only flag")
         exit(1)
     torch.cuda.empty_cache()
     try:
-        run_sanity_checks(input_nemo_file, output_nemo_file, cpu_only=cpu_only)
+        run_sanity_checks(input_nemo_file, output_nemo_file, cpu_only=cpu_only, ignore_if_missing=ignore_if_missing)
     except torch.cuda.OutOfMemoryError:
         logging.info("✅ Conversion was successful, but could not run sanity check due to torch.cuda.OutOfMemoryError.")
         logging.info("Please run the script with the same command again to run sanity check.")

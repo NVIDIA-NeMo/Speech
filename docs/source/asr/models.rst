@@ -160,7 +160,7 @@ Cache-aware Streaming Conformer
 -------------------------------
 
 Buffered streaming uses overlapping chunks to make an offline ASR model to be used for streaming with reasonable accuracy. However, it uses significant amount of duplication in computations due to the overlapping chunks.
-Also there is a accuracy gep between the offline model and the streaming one as there is inconsistency between how we train the model and how we perform inference for streaming.
+Also there is a accuracy gap between the offline model and the streaming one as there is inconsistency between how we train the model and how we perform inference for streaming.
 The Cache-aware Streaming Conformer models would tackle and address these disadvantages. These streaming Conformers are trained with limited right context that it would make it possible to match how the model is being used in both the training and inference.
 They also uses caching to store intermediate activations to avoid any duplication in compute.
 The cache-aware approach is supported for both the Conformer-CTC and Conformer-Transducer and enables the model to be used very efficiently for streaming.

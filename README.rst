@@ -274,6 +274,36 @@ To install NeMo on Mac with Apple M-Series GPU:
     cd NeMo
     ./reinstall.sh
 
+
+Windows Computers
+~~~~~~~~~~~~~~~~~
+
+One of the options is using Windows Subsystem for Linux (WSL).
+
+To install WSL:
+
+- In PowerShell, run the following code:
+
+.. code-block:: shell
+
+    wsl --install
+    # [note] If you run wsl --install and see the WSL help text, it means WSL is already installed.
+
+Learn more about installing WSL at `Microsoft's official documentation <https://learn.microsoft.com/en-us/windows/wsl/install>`_.
+
+After Installing your Linux distribution with WSL:
+  - **Option 1:** Open the distribution (Ubuntu by default) from the Start menu and follow the instructions.
+  - **Option 2:** Launch the Terminal application. Download it from `Microsoft's Windows Terminal page <https://learn.microsoft.com/en-us/windows/terminal>`_ if not installed.
+
+Next, follow the instructions for Linux systems, as provided above. For example:
+
+.. code-block:: bash
+
+    apt-get update && apt-get install -y libsndfile1 ffmpeg
+    git clone https://github.com/NVIDIA/NeMo
+    cd NeMo
+    ./reinstall.sh
+
 RNNT
 ~~~~
 Note that RNNT requires numba to be installed from conda.

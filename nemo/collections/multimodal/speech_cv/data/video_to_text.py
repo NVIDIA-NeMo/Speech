@@ -15,7 +15,6 @@
 import os
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
-import braceexpand
 import torch
 import webdataset as wd
 
@@ -27,7 +26,6 @@ from nemo.collections.multimodal.speech_cv.parts.preprocessing.features import V
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import *
 from nemo.utils import logging
-from nemo.utils.data_utils import datastore_path_to_webdataset_url, is_datastore_path
 
 
 def _video_speech_collate_fn(batch, pad_id):

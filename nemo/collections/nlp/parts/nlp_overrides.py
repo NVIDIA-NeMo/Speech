@@ -591,6 +591,16 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                 new_state_dict[new_key] = state_dict[key]
             state_dict = new_state_dict
 
+        new_state_dict = {}
+        for key in state_dict.keys():
+            new_key = key.replace(
+                'word_embeddings.adapter_layer.mm_linear_adapter.linear',
+                'word_embeddings.adapter_layer.mm_projector_adapter.mm_projector',
+                1,
+            )
+            new_state_dict[new_key] = state_dict[key]
+        state_dict = new_state_dict
+
         # compatibility for inductor in inference
         if not conf.get('inductor', False):
             new_state_dict = {}

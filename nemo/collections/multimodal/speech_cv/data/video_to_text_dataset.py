@@ -12,14 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import random
 from math import isclose
 from typing import Optional
 
-import torch
 from omegaconf import DictConfig
-from omegaconf.listconfig import ListConfig
-from torch.utils.data import ChainDataset
 
 from nemo.collections.asr.data.audio_to_text_dataset import convert_to_config_list, get_chain_dataset
 from nemo.collections.multimodal.speech_cv.data import video_to_text

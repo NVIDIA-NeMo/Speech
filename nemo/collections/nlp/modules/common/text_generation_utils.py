@@ -154,6 +154,7 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
             inputs=prompt_dict.get("prompt") or prompt_dict.get("text"),
             tokens_to_generate=length_params['max_length'],
             all_probs=sampling_params['all_probs'],
+            compute_logprob=sampling_params['compute_logprob'],
             temperature=sampling_params['temperature'],
             add_BOS=sampling_params['add_BOS'],
             top_k=sampling_params['top_k'],
@@ -162,6 +163,7 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
             repetition_penalty=sampling_params['repetition_penalty'],
             end_strings=sampling_params['end_strings'],
             min_tokens_to_generate=length_params['min_length'],
+            compute_attention_mask=sampling_params.get("compute_attention_mask", True),
             image_list=img,
             **strategy_args,
         )

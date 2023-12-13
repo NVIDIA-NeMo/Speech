@@ -19,6 +19,7 @@ from typing import List, Optional, Union
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 
+from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
 from nemo.collections.nlp.parts.peft_config import (
     PEFT_CONFIG_MAP,
@@ -57,8 +58,7 @@ class MultimodalAdapterModelMixin(NLPAdapterModelMixin):
         if not isinstance(peft_cfgs, List):
             peft_cfgs = [peft_cfgs]
 
-        self.base_keys = self._get_all_keys()
-        self.freeze()
+        self.base_keys = getattr(self, "base_keys", self._get_all_keys())
         logging.info(f"Before adding PEFT params:\n{self.summarize()}")
 
         self.use_ptuning_only = len(peft_cfgs) == 1 and isinstance(peft_cfgs[0], PtuningPEFTConfig)
@@ -74,11 +74,69 @@ class MultimodalAdapterModelMixin(NLPAdapterModelMixin):
 
         logging.info(f"After adding PEFT params:\n{self.summarize()}")
         self.adapter_keys = self._get_all_keys() - self.base_keys
+        if self.megatron_amp_O2:
+            self.adapter_keys = set(key.replace("model.module.", "model.", 1) for key in self.adapter_keys)
 
         for cfg in peft_cfgs:
             if cfg.weight_tying:
                 self.tie_weights(cfg)
         self.use_peft = True
+
+    def load_adapters(
+        self, filepath: str, peft_cfgs: Optional[Union[PEFTConfig, List[PEFTConfig]]] = None, map_location: str = None,
+    ):
+        """
+        Utility method that restores only the adapter module(s), and not the entire model itself.
+        This allows the sharing of adapters which are often just a fraction of the size of the full model,
+        enabling easier deliver.
+
+        .. note::
+
+            During restoration, assumes that the model does not currently already have one or more adapter modules.
+
+        Args:
+            filepath: Filepath of the .ckpt or .nemo file.
+            peft_cfgs: One or more PEFTConfig objects that specify the PEFT method configuration.
+                If none, will infer from the .nemo checkpoint
+            map_location: Pytorch flag, where to place the adapter(s) state dict(s).
+        """
+
+        # Determine device
+        if map_location is None:
+            if torch.cuda.is_available():
+                map_location = 'cuda'
+            else:
+                map_location = 'cpu'
+
+        if filepath.endswith('.nemo'):
+            conf, state_dict = self._get_config_and_state_dict_from_nemo(filepath, map_location)
+        elif filepath.endswith('.ckpt'):
+            state_dict = torch.load(filepath, map_location)['state_dict']
+        else:
+            raise RuntimeError(f"{filepath} is not nemo file or ckpt file")
+        if not peft_cfgs:
+            assert filepath.endswith(
+                '.nemo'
+            ), "Inferring peft scheme is only supported for .nemo checkpoints. Please supply the `peft_cfgs` argument."
+            peft_cfgs = [PEFT_CONFIG_MAP[conf.peft.peft_scheme](conf)]
+        self.add_adapter(peft_cfgs)
+        assert set(state_dict.keys()) == self.adapter_keys
+
+        if self.megatron_amp_O2:
+            state_dict = {k.replace("model.", "model.module.", 1): v for k, v in state_dict.items()}
+
+        missing_keys, unexpected_keys = NLPModel.load_state_dict(self, state_dict, strict=False)
+
+        if len(missing_keys) > 0:
+            logging.warning('Missing keys were detected during the load. Please double check.')
+            if len(missing_keys) > 10:
+                logging.warning(f'Missing keys: {missing_keys[:10]} and {len(missing_keys) - 10} more.')
+            else:
+                logging.warning(f'Missing keys: {missing_keys}')
+        if len(unexpected_keys) > 0:
+            logging.critical('Unexpected keys were detected during the load. Please double check.')
+            logging.critical(f'Unexpected keys: \n{unexpected_keys}')
+            raise ValueError('Unexpected keys were detected during the load. Please double check.')
 
     def _check_and_add_adapter(
         self, name, module, peft_name, peft_cfg, name_key_to_mcore_mixins=None, autocast_dtype=None

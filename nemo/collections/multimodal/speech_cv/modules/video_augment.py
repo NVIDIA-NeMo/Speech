@@ -21,7 +21,6 @@ from torch import nn
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import NeuralType, VideoSignal
 
-
 try:
     import torchvision
 

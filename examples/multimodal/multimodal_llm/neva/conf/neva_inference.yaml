@@ -1,0 +1,53 @@
+inference:
+  greedy: False # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 0.2 # sampling temperature
+  add_BOS: False # add the bos token at the begining of the prompt
+  tokens_to_generate: 256 # The minimum length of the sequence to be generated.
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  end_strings: ["<extra_id_1>","<extra_id_7>",]  # generation will stop when one of these tokens is generated
+  images_base_path: /pwd/images
+
+trainer:
+  devices: 8
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: bf16 # 16, 32, or bf16
+
+cluster_type: BCP
+tensor_model_parallel_size: 8
+pipeline_model_parallel_size: 1
+pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model (0 for others)
+neva_model_file: /pwd/nemo_experiments/nemo_llava.nemo #neva_22b_tp8_finetuned_v1.nemo neva_8b_tp4_finetuned_v1.nemo
+llm_model_file: null
+checkpoint_dir: null #/pwd/nemo_multimodal/nemo_experiments/nemo_llava_finetune/checkpoints # checkpoint file dir. This is used to load the PTL checkpoint generated during the Kosmos training
+checkpoint_name: null #megatron_clip--val_loss=0.41-step=13499-consumed_samples=431904.0.ckpt # PTL checkpoint file name, only used for PTL checkpoint loading
+hparams_file: null #/pwd/nemo_multimodal/nemo_experiments/nemo_llava_finetune/version_0/hparams.yaml # model configuration file, only used for PTL checkpoint loading
+quality: 9
+toxicity: 0
+humor: 6
+creativity: 6
+violence: 0
+helpfulness: 6
+not_appropriate: 0
+
+# MORE THAN ONE INFERENCE IS NOT RUNNING PROPERLY NEED TO CHECK WHY SECOND IS OUTPUTING JUNK N
+prompt_file: /pwd/nemo_experiments/input_prompts.jsonl
+output_file: /pwd/nemo_experiments/results.jsonl
+
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+web_port: 9889 # the port number of the web server
+
+quantization:
+  algorithm: awq # int8_sq, fp8, int8, awq
+  enable: False

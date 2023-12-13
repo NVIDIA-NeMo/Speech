@@ -1,0 +1,17 @@
+trainer:
+  devices: 8
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: bf16 # 16, 32, or bf16
+
+model:
+  restore_from_path: null  # Path to a trained ViT .nemo file
+  precision: ${trainer.precision}
+  micro_batch_size: 1000
+  global_batch_size: 8000
+
+  data:
+    num_workers: 2
+    imagenet_val: ??? # path to imagenet val folder
+

@@ -600,7 +600,7 @@ class FastPitchModel(SpectrogramGenerator, Exportable, FastPitchAdapterModelMixi
         with phon_mode:
             dataset = instantiate(cfg.dataset, text_tokenizer=self.vocab,)
 
-        sampler = dataset.get_sampler(cfg.dataloader_params.batch_size)
+        sampler = dataset.get_sampler(cfg.dataloader_params.batch_size, world_size=self.trainer.world_size)
         return torch.utils.data.DataLoader(
             dataset, collate_fn=dataset.collate_fn, sampler=sampler, **cfg.dataloader_params
         )

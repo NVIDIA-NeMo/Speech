@@ -166,12 +166,15 @@ class VocoderDataset(Dataset):
             self.data_samples += samples
             self.sample_weights += weights
 
-    def get_sampler(self, batch_size: int) -> Optional[torch.utils.data.Sampler]:
+    def get_sampler(self, batch_size: int, world_size: int) -> Optional[torch.utils.data.Sampler]:
         if not self.weighted_sampling_steps_per_epoch:
             return None
 
         sampler = get_weighted_sampler(
-            sample_weights=self.sample_weights, batch_size=batch_size, num_steps=self.weighted_sampling_steps_per_epoch
+            sample_weights=self.sample_weights,
+            batch_size=batch_size,
+            world_size=world_size,
+            num_steps=self.weighted_sampling_steps_per_epoch,
         )
         return sampler
 
@@ -410,7 +413,7 @@ class TarredVocoderDataset(IterableDataset):
 
         return example
 
-    def get_sampler(self, batch_size: int = 16):
+    def get_sampler(self, batch_size: int, world_size: int):
         """
         Currently sampler is not supported for tarred dataset.
         """

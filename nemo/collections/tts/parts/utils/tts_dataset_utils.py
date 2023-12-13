@@ -218,7 +218,7 @@ def filter_dataset_by_duration(entries: List[Dict[str, Any]], min_duration: floa
 
 
 def get_weighted_sampler(
-    sample_weights: List[float], batch_size: int, num_steps: int
+    sample_weights: List[float], batch_size: int, world_size: int, num_steps: int
 ) -> torch.utils.data.WeightedRandomSampler:
     """
     Create pytorch sampler for doing weighted random sampling.
@@ -226,13 +226,14 @@ def get_weighted_sampler(
     Args:
         sample_weights: List of sampling weights for all elements in the dataset.
         batch_size: Batch size to sample.
+        world_size: Number of devices being used.
         num_steps: Number of steps to be considered an epoch.
 
     Returns:
         Pytorch sampler
     """
     weights = torch.tensor(sample_weights, dtype=torch.float64)
-    num_samples = batch_size * num_steps
+    num_samples = batch_size * world_size * num_steps
     sampler = torch.utils.data.WeightedRandomSampler(weights=weights, num_samples=num_samples)
     return sampler
 

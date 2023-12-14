@@ -20,7 +20,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path, is_tarred_dataset
 from nemo.collections.common.parts.utils import flatten
 
 
@@ -123,6 +123,30 @@ class TestPreprocessingUtils:
             # - all files in a list
             assert get_full_path(audio_files_relative_path, manifest_file=manifest_file) == audio_files_absolute_path
             assert get_full_path(audio_files_relative_path, data_dir=data_dir) == audio_files_absolute_path
+
+        # 5) Test with relative paths and existing files, and the filepaths start with './'.
+        # In this case, we expect to return the same relative path.
+        curr_dir = os.path.dirname(os.path.abspath(__file__))
+        audio_files_relative_path_curr = [f'./file_{n}.test' for n in range(num_files)]
+        with create_files(audio_files_relative_path_curr):
+            # - single file
+            for n in range(num_files):
+                assert os.path.isfile(audio_files_relative_path_curr[n]) == True
+                assert (
+                    get_full_path(audio_files_relative_path_curr[n], manifest_file=manifest_file)
+                    == audio_files_relative_path_curr[n]
+                )
+                assert (
+                    get_full_path(audio_files_relative_path_curr[n], data_dir=curr_dir)
+                    == audio_files_relative_path_curr[n]
+                )
+
+            # - all files in a list
+            assert (
+                get_full_path(audio_files_relative_path_curr, manifest_file=manifest_file)
+                == audio_files_relative_path_curr
+            )
+            assert get_full_path(audio_files_relative_path_curr, data_dir=curr_dir) == audio_files_relative_path_curr
 
     @pytest.mark.unit
     def test_get_full_path_ais(self, tmpdir):
@@ -237,3 +261,22 @@ class TestPreprocessingUtils:
         with pytest.raises(ValueError, match="Parameters manifest_file and data_dir cannot be used simultaneously."):
             # Using a relative path without both manifest_file or data_dir is not allowed
             get_full_path('relative/path', manifest_file='/manifest_dir/file.json', data_dir='/data/dir')
+
+    @pytest.mark.unit
+    def test_is_tarred_dataset(self):
+        # 1) is tarred dataset
+        assert is_tarred_dataset("_file_1.wav", "tarred_audio_manifest.json")
+        assert is_tarred_dataset("_file_1.wav", "./sharded_manifests/manifest_1.json")
+
+        # 2) is not tarred dataset
+        assert not is_tarred_dataset("./file_1.wav", "audio_manifest.json")
+        assert not is_tarred_dataset("./file_1.wav", "./sharded_manifests/manifest_test.json")
+        assert not is_tarred_dataset("file_1.wav", "audio_manifest.json")
+        assert not is_tarred_dataset("file_1.wav", "./sharded_manifests/manifest_test.json")
+        assert not is_tarred_dataset("/data/file_1.wav", "audio_manifest.json")
+        assert not is_tarred_dataset("/data/file_1.wav", "./sharded_manifests/manifest_test.json")
+        assert not is_tarred_dataset("_file_1.wav", "audio_manifest.json")
+        assert not is_tarred_dataset("_file_1.wav", "./sharded_manifests/manifest_test.json")
+
+        # 3) no manifest file, treated as non-tarred dataset
+        assert not is_tarred_dataset("_file_1.wav", None)

@@ -70,10 +70,10 @@ pipeline {
 
     stage('Megatron Core installation') {
       steps {
-         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
-             cd Megatron-LM && \
-             git checkout 973330e9c3681604703bf1eb6b5a265d1b9b9b38 && \
-             pip install .'
+        sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
+            cd Megatron-LM && \
+            git checkout 38879f8b3f0edc4ed4f50ac2f3271010b12c549f && \
+            pip install -e .'
       }
     }
 
@@ -2902,6 +2902,79 @@ pipeline {
         sh "rm -rf examples/nlp/language_modeling/bert_index_mappings"
       }
     }
+    stage('L2: Megatron Core Bert Pretraining and Resume Training') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=10 \
+        trainer.precision=32 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        model.mcore_bert=True \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.sequence_parallel=True \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method='block' \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings"
+        sh "python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=20 \
+        trainer.precision=32 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.mcore_bert=True \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method='block' \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings"
+        sh "rm -rf examples/nlp/language_modeling/bert_pretrain_results"
+        sh "rm -rf examples/nlp/language_modeling/bert_index_mappings"
+      }
+    }    
     stage('L2: Megatron RETRO Pretraining and Resume Training') {
       when {
         anyOf {

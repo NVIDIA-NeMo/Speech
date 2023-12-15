@@ -41,6 +41,7 @@ exp_manager:
 
 model:
   # model parallelism 
+  mcore_bert: False
   micro_batch_size: 4
   global_batch_size: 8
   tensor_model_parallel_size: 1

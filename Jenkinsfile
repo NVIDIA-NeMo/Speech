@@ -143,6 +143,15 @@ pipeline {
             sh 'rm -f /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/megatron_starcoder_tp1_pp1.nemo'
           }
         }
+        stage('Falcon') {
+          steps {
+            sh 'python scripts/nlp_language_modeling/convert_hf_falcon_to_nemo.py \
+            --config examples/nlp/language_modeling/conf/megatron_falcon_config.yaml \
+            --input /home/TestData/nlp/megatron_gpt/falcon-ci-hf \
+            --output /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo'
+            sh 'rm -f /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo'
+          }
+        }
       }
     }
 

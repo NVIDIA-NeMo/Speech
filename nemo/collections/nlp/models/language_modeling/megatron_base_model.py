@@ -34,10 +34,12 @@ from nemo.collections.nlp.modules.common.megatron.clip_grads import (
     clip_grad_norm_fp32,
 )
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.nlp.parts import utils_funcs
 from nemo.collections.nlp.parts.nlp_overrides import NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, GradScaler
+from nemo.collections.nlp.parts.utils_funcs import activation_to_func
 from nemo.core.optim import MainParamsOptimizerWrapper, prepare_lr_scheduler
 from nemo.utils import AppState, logging
 from nemo.utils.get_rank import is_global_rank_zero
@@ -54,6 +56,9 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core import ModelParallelConfig, parallel_state
+    from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
+    from megatron.core.transformer.transformer_config import TransformerConfig
+    from megatron.core.utils import init_method_normal, scaled_init_method_normal
 
     HAVE_MEGATRON_CORE = True
 
@@ -208,6 +213,33 @@ class MegatronBaseModel(NLPModel):
             gc.disable()
             self.validation_global_step = 1
 
+    def setup_transformer_engine_tp_groups(self):
+        """ This should be called after model parallel groups have been initialized
+            and only needs to be called when using Transformer Engine.
+        """
+        for module in self.get_model_module_list():
+            """Set TP group
+               Copied from: https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/transformer.py#L398
+            """
+            # Deep iterate but skip self to avoid infinite recursion.
+            for index, child in enumerate(module.modules()):
+                if index == 0:
+                    continue
+                if hasattr(child, "set_tensor_parallel_group"):
+                    tp_group = parallel_state.get_tensor_model_parallel_group()
+                    child.set_tensor_parallel_group(tp_group)
+
+    def get_model_module_list(self):
+        if isinstance(self.model, list):
+            return [
+                model.module if isinstance(model, (Float16Module, MCoreFloat16Module)) else model
+                for model in self.model
+            ]
+        elif isinstance(self.model, (Float16Module, MCoreFloat16Module)):
+            return [self.model.module]
+        else:
+            return [self.model]
+
     def _reconfigure_val_batches(self):
         """
         Reconfigure trainer.limit_val_batches for pretraining
@@ -292,6 +324,110 @@ class MegatronBaseModel(NLPModel):
         super().on_validation_end()
         if self.gc_interval > 0 and self.gc_in_validation:
             gc.collect()
+
+    def build_transformer_config(self) -> TransformerConfig:
+        """ Builds the megatron core transformer config for the model.
+            For attributes in the nemo model config that are the same
+            as the megatron core TransformerConfig, we will use the value from the nemo model config.
+            For attributes in TransformerConfig that are not in the nemo model config, we add custom logic.
+        """
+
+        # create a dictionary copy of the model config
+        cfg = OmegaConf.to_container(self.cfg, resolve=True)
+
+        # create a dict to store the transformer config arguments
+        transformer_config_dict = {}
+
+        # get model parallel configs from the base class
+        model_parallel_config = self.build_model_parallel_config()
+
+        add_bias_linear = self.cfg.get('bias', True)
+
+        activation = self.cfg.get('activation', 'gelu')
+        # TODO: need to check which activation functions are supported in mcore
+        activation_func = activation_to_func(activation)
+
+        normalization = self.cfg.get('normalization', 'LayerNorm')
+
+        init_method_std = self.cfg.get('init_method_std', 0.02)
+        # default used in mcore
+        init_method = init_method_normal(init_method_std)
+
+        output_layer_init_method = init_method
+        num_layers = self.cfg.get('num_layers', 1)
+        use_scaled_init_method = self.cfg.get('use_scaled_init_method', True)
+        if use_scaled_init_method:
+            output_layer_init_method = scaled_init_method_normal(init_method_std, num_layers=num_layers)
+
+        attention_softmax_in_fp32 = False  # not currently used in NeMo unless apply_query_key_layer_scaling is True
+        apply_query_key_layer_scaling = self.cfg.get('apply_query_key_layer_scaling', False)
+
+        fp16_enabled = self.trainer.precision in [16, '16', '16-mixed']
+        if apply_query_key_layer_scaling:
+            if fp16_enabled:
+                os.environ["NVTE_APPLY_QK_LAYER_SCALING"] = "1"
+            else:
+                logging.warning(
+                    "apply_query_key_layer_scaling is only enabled when using FP16, setting it to False "
+                    "and setting NVTE_APPLY_QK_LAYER_SCALING=0"
+                )
+                os.environ["NVTE_APPLY_QK_LAYER_SCALING"] = "0"
+                apply_query_key_layer_scaling = False
+
+        if apply_query_key_layer_scaling:
+            attention_softmax_in_fp32 = True
+
+        bias_activation_fusion = self.cfg.get('bias_activation_fusion', True)
+        bias_gelu_fusion = True if bias_activation_fusion else False
+
+        bias_dropout_fusion = self.cfg.get('bias_dropout_add_fusion', True)
+
+        # TODO: need to check if recompute APIs are matching up properly
+        recompute_granularity = self.cfg.get('activations_checkpoint_granularity', None)
+        recompute_method = self.cfg.get('activations_checkpoint_method', None)
+        recompute_num_layers = self.cfg.get('activations_checkpoint_num_layers', None)
+
+        # any configs that are not in the nemo model config will be added here
+        config_mapping = {
+            'apply_query_key_layer_scaling': apply_query_key_layer_scaling,
+            'apply_residual_connection_post_layernorm': False,  # we don't use this in NeMo
+            'layernorm_zero_centered_gamma': False,
+            'add_bias_linear': add_bias_linear,
+            'gated_linear_unit': False,
+            'activation_func': activation_func,
+            'normalization': normalization,
+            'init_method': init_method,
+            'output_layer_init_method': output_layer_init_method,
+            'attention_softmax_in_fp32': attention_softmax_in_fp32,
+            'bias_gelu_fusion': bias_gelu_fusion,
+            'bias_dropout_fusion': bias_dropout_fusion,
+            'recompute_granularity': recompute_granularity,
+            'recompute_method': recompute_method,
+            'recompute_num_layers': recompute_num_layers,
+            'distribute_saved_activations': False,  # not currently used in NeMo
+            'fp8': None,
+        }
+
+        # populate the transformer config dict
+        for field in fields(TransformerConfig):
+            # config mapping has second highest priority
+            if field.name in config_mapping:
+                transformer_config_dict[field.name] = config_mapping[field.name]
+            # then config
+            elif field.name in cfg:
+                transformer_config_dict[field.name] = cfg[field.name]
+            # then model parallel config
+            elif field in fields(model_parallel_config):
+                transformer_config_dict[field.name] = getattr(model_parallel_config, field.name)
+            else:
+                logging.warning(
+                    f"The model: {self} does not have field.name: {field.name} in its cfg. "
+                    f"Add this key to cfg or config_mapping to make to make it configurable."
+                )
+
+        transformer_config = TransformerConfig(**transformer_config_dict)
+
+        return transformer_config
 
     def _build_vocab(self):
         """

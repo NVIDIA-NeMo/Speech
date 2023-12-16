@@ -84,7 +84,6 @@ def get_language_model(
     pre_process=True,
     post_process=True,
     init_method_std=0.02,
-    megatron_amp_O2=False,
     hidden_dropout=0.1,
     attention_dropout=0.1,
     ffn_dropout=0.0,
@@ -162,7 +161,6 @@ def get_language_model(
         add_pooler=add_pooler,
         pre_process=pre_process,
         post_process=post_process,
-        megatron_amp_O2=megatron_amp_O2,
         hidden_dropout=hidden_dropout,
         attention_dropout=attention_dropout,
         ffn_dropout=ffn_dropout,
@@ -267,7 +265,6 @@ class Embedding(MegatronModule):
         embedding_dropout_prob,
         init_method,
         num_tokentypes=0,
-        dtype=torch.float32,
         fp32_residual_connection=False,
         position_embedding_type='learned_absolute',
         transpose_batch_sequence=True,
@@ -279,7 +276,6 @@ class Embedding(MegatronModule):
         self.num_tokentypes = num_tokentypes
         self.position_embedding_type = position_embedding_type
         self.transpose_batch_sequence = transpose_batch_sequence
-
         # Word embeddings (parallel).
         self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
             vocab_size, self.hidden_size, init_method=self.init_method, config=config,
@@ -288,7 +284,9 @@ class Embedding(MegatronModule):
 
         if self.position_embedding_type == 'learned_absolute':
             # Position embedding (serial).
-            self.position_embeddings = torch.nn.Embedding(max_sequence_length, self.hidden_size, dtype=dtype)
+            self.position_embeddings = torch.nn.Embedding(
+                max_sequence_length, self.hidden_size, dtype=config.params_dtype
+            )
             self._position_embeddings_key = 'position_embeddings'
             # Initialize the position embeddings.
             self.init_method(self.position_embeddings.weight)
@@ -306,7 +304,9 @@ class Embedding(MegatronModule):
         # token types and add them as needed.
         self._tokentype_embeddings_key = 'tokentype_embeddings'
         if self.num_tokentypes > 0:
-            self.tokentype_embeddings = torch.nn.Embedding(self.num_tokentypes, self.hidden_size, dtype=dtype)
+            self.tokentype_embeddings = torch.nn.Embedding(
+                self.num_tokentypes, self.hidden_size, dtype=config.params_dtype
+            )
             # Initialize the token-type embeddings.
             self.init_method(self.tokentype_embeddings.weight)
         else:
@@ -472,7 +472,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
         add_pooler=False,
         pre_process=True,
         post_process=True,
-        megatron_amp_O2=False,
         hidden_dropout=0.1,
         attention_dropout=0.1,
         ffn_dropout=0.0,
@@ -536,7 +535,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
         self.position_embedding_type = position_embedding_type
         self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
         self.sequence_parallel = config.sequence_parallel
-        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
         if kv_channels is None:
 
             assert (
@@ -556,7 +554,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
                 embedding_dropout_prob=self.hidden_dropout,
                 position_embedding_type=position_embedding_type,
                 fp32_residual_connection=fp32_residual_connection,
-                dtype=self.dtype,
             )
             self._embedding_key = 'embedding'
 
@@ -629,7 +626,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
             ffn_dropout=ffn_dropout,
-            megatron_amp_O2=megatron_amp_O2,
             persist_layer_norm=persist_layer_norm,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
@@ -685,7 +681,6 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
                 layernorm_epsilon=layernorm_epsilon,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
-                megatron_amp_O2=megatron_amp_O2,
                 bias_activation_fusion=bias_activation_fusion,
                 bias_dropout_add_fusion=bias_dropout_add_fusion,
                 masked_softmax_fusion=masked_softmax_fusion,

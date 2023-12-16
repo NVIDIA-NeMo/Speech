@@ -68,7 +68,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         kv_channels=None,
         pre_process=True,
         post_process=True,
-        megatron_amp_O2=False,
         encoder_attn_mask_type=AttnMaskType.padding,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -139,7 +138,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
         self.ffn_dropout = ffn_dropout
         self.normalize_attention_scores = normalize_attention_scores
         self.megatron_legacy = megatron_legacy
-        self.megatron_amp_O2 = megatron_amp_O2
 
         assert self.num_self_attention_per_cross_attention >= 1
         assert self.hidden_steps >= 1
@@ -182,7 +180,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
             ffn_dropout=self.ffn_dropout,
-            megatron_amp_O2=self.megatron_amp_O2,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_add_fusion=self.bias_dropout_add_fusion,
             masked_softmax_fusion=self.masked_softmax_fusion,
@@ -223,7 +220,6 @@ class MegatronPerceiverEncoderModule(MegatronModule):
             hidden_dropout=self.hidden_dropout,
             attention_dropout=self.attention_dropout,
             ffn_dropout=self.ffn_dropout,
-            megatron_amp_O2=self.megatron_amp_O2,
             bias_activation_fusion=self.bias_activation_fusion,
             bias_dropout_add_fusion=self.bias_dropout_add_fusion,
             masked_softmax_fusion=self.masked_softmax_fusion,

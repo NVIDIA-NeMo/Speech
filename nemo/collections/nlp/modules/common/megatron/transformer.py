@@ -150,7 +150,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         layernorm_epsilon=1e-5,
         hidden_dropout=0.1,
         persist_layer_norm=False,
-        megatron_amp_O2=False,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
@@ -187,7 +186,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         self.bias = bias
         self.transformer_block_type = transformer_block_type
         self.position_embedding_type = position_embedding_type
-        self.param_dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
 
         self.set_accepted_adapter_types(
             [
@@ -252,7 +250,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 precision=precision,
                 apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                 kv_channels=kv_channels,
-                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 multi_query_attention=multi_query_attention,
@@ -328,7 +325,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                 kv_channels=kv_channels,
                 multi_query_attention=multi_query_attention,
-                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 megatron_legacy=megatron_legacy,
@@ -374,7 +370,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 precision=precision,
                 apply_query_key_layer_scaling=apply_query_key_layer_scaling,
                 kv_channels=kv_channels,
-                megatron_amp_O2=megatron_amp_O2,
                 masked_softmax_fusion=masked_softmax_fusion,
                 attention_dropout=attention_dropout,
                 megatron_legacy=megatron_legacy,
@@ -416,7 +411,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 output_layer_init_method=output_layer_init_method,
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
-                dtype=self.param_dtype,
                 bias_activation_fusion=bias_activation_fusion,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
@@ -435,7 +429,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
                 output_layer_init_method=output_layer_init_method,
                 hidden_size=hidden_size,
                 ffn_hidden_size=ffn_hidden_size,
-                dtype=self.param_dtype,
                 bias_activation_fusion=bias_activation_fusion,
                 openai_gelu=openai_gelu,
                 onnx_safe=onnx_safe,
@@ -663,7 +656,6 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
         hidden_dropout=0.1,
         bias_dropout_add_fusion=True,
         persist_layer_norm=False,
-        megatron_amp_O2=False,
         bias_activation_fusion=True,
         openai_gelu=False,
         onnx_safe=False,
@@ -704,7 +696,6 @@ class ParallelTransformerLayer(ParallelTransformerLayer_):
             hidden_dropout=hidden_dropout,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
             persist_layer_norm=persist_layer_norm,
-            megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             openai_gelu=openai_gelu,
             onnx_safe=onnx_safe,
@@ -808,6 +799,7 @@ class AutocastTransformerLayer(TransformerLayer):
         ub_tp_comm_overlap: bool = False,
         autocast_dtype: Any = 16,
         zero_centered_gamma: bool = False,
+        device: str = 'cuda',
     ) -> None:
         super().__init__(
             hidden_size=hidden_size,
@@ -837,6 +829,7 @@ class AutocastTransformerLayer(TransformerLayer):
             fuse_qkv_params=True,
             zero_centered_gamma=zero_centered_gamma,
             ub_tp_comm_overlap=ub_tp_comm_overlap,
+            device=device,
         )
         # use_emha=use_emha,
 
@@ -901,7 +894,6 @@ class ParallelTransformer(MegatronModule):
         hidden_dropout=0.1,
         attention_dropout=0.1,
         ffn_dropout=0.0,
-        megatron_amp_O2=False,
         bias_activation_fusion=True,
         bias_dropout_add_fusion=True,
         masked_softmax_fusion=True,
@@ -1075,7 +1067,7 @@ class ParallelTransformer(MegatronModule):
                     kv_channels=kv_channels,
                     self_attn_mask_type=self_attn_mask_type.name,
                     tp_size=parallel_state.get_tensor_model_parallel_world_size(),
-                    params_dtype=torch.float32,  # dtype params are initialized in
+                    params_dtype=config.params_dtype,
                     get_rng_state_tracker=tensor_parallel.random.get_cuda_rng_tracker,
                     fuse_wgrad_accumulation=config.gradient_accumulation_fusion,
                     seq_length=None,  # used for jit warmup
@@ -1086,6 +1078,7 @@ class ParallelTransformer(MegatronModule):
                     use_emha=use_emha,
                     ub_tp_comm_overlap=ub_tp_comm_overlap,
                     zero_centered_gamma=normalization == 'layernorm1p',
+                    device='cpu' if config.use_cpu_initialization else 'cuda',
                 )
             else:
                 return ParallelTransformerLayer(
@@ -1106,7 +1099,6 @@ class ParallelTransformer(MegatronModule):
                     hidden_dropout=hidden_dropout,
                     attention_dropout=attention_dropout,
                     ffn_dropout=ffn_dropout,
-                    megatron_amp_O2=megatron_amp_O2,
                     bias_activation_fusion=bias_activation_fusion,
                     bias_dropout_add_fusion=bias_dropout_add_fusion,
                     masked_softmax_fusion=masked_softmax_fusion,

@@ -852,6 +852,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 required_keys.update(batch.keys())
             else:
                 required_keys.add('attention_mask')
+                if 'cu_seqlens' in batch:
+                    required_keys.add('cu_seqlens')
                 if parallel_state.is_pipeline_first_stage():
                     required_keys.update(('tokens', 'position_ids'))
                 if parallel_state.is_pipeline_last_stage():
@@ -876,6 +878,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             else:
                 # TODO: @eharper can we add this to mcore?
                 forward_args.pop('loss_mask')
+
+                if 'cu_seqlens' in batch:  # packed sequence from GPTSFTPackedDataset
+                    # these args are passed eventually into TEDotProductAttention.forward()
+                    cu_seqlens = batch['cu_seqlens'].squeeze()  # remove batch size dimension (mbs=1)
+                    cu_seqlens = cu_seqlens[: torch.argmin(cu_seqlens)]  # remove -1 "paddings" added in collate_fn
+                    forward_args['cu_seqlens_q'] = cu_seqlens
+                    forward_args['cu_seqlens_kv'] = cu_seqlens
+                    forward_args['qkv_format'] = 'thd'
+
             output_tensor = model(**forward_args)
 
             def loss_func(output_tensor):

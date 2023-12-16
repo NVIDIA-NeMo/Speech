@@ -213,6 +213,8 @@ class MegatronBaseModel(NLPModel):
             gc.disable()
             self.validation_global_step = 1
 
+        self.use_fsdp = cfg.get('fsdp', False)
+
     def setup_transformer_engine_tp_groups(self):
         """ This should be called after model parallel groups have been initialized
             and only needs to be called when using Transformer Engine.
@@ -494,7 +496,7 @@ class MegatronBaseModel(NLPModel):
                 parameters = self._optimizer.get_parameters_with_grad()
             else:
                 parameters = self.get_parameters_with_grad()
-            grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val)
+            grad_norm = clip_grad_norm_fp32(parameters=parameters, max_norm=clip_val, use_fsdp=self.use_fsdp,)
 
         self.log('grad_norm', grad_norm, rank_zero_only=True, batch_size=1)
 
@@ -767,11 +769,14 @@ class MegatronBaseModel(NLPModel):
                 )
                 with open_dict(self.cfg):
                     self.cfg.gradient_accumulation_fusion = False
-
-        if self.cfg.get('gradient_accumulation_fusion', False) and not self.cfg.get('megatron_amp_O2', False):
-            logging.info("Gradient accumulation fusion can only be used with megatron amp O2 mixed precision.")
-            with open_dict(self.cfg):
-                self.cfg.gradient_accumulation_fusion = False
+            if self.cfg.get('fsdp', False):
+                logging.info("When using FSDP, gradient accumulation cannot be fused to gradient computation.")
+                with open_dict(self.cfg):
+                    self.cfg.gradient_accumulation_fusion = False
+            if not self.cfg.get('megatron_amp_O2', False):
+                logging.info("Gradient accumulation fusion can only be used with megatron amp O2 mixed precision.")
+                with open_dict(self.cfg):
+                    self.cfg.gradient_accumulation_fusion = False
 
         if self.cfg.get('use_emha', False):
             raise ValueError('use_emha is not yet supported please set to False')
@@ -793,6 +798,16 @@ class MegatronBaseModel(NLPModel):
                 )
                 with open_dict(self.cfg):
                     self.cfg.ub_tp_comm_overlap = False
+            if self.cfg.get('fsdp', False):
+                logging.info(
+                    "Userbuffer tensor-parallel communication overlap is not available with FSDP."
+                    "Setting `ub_tp_comm_overlap` to False."
+                )
+                with open_dict(self.cfg):
+                    self.cfg.ub_tp_comm_overlap = False
+
+        if self.cfg.get('fsdp', False) and self.cfg.get('fp8', False):
+            raise ValueError('Torch FSDP does not support FP8.')
 
     def is_data_parallel_rank_zero(self):
         if is_global_rank_zero():
@@ -980,3 +995,15 @@ class MegatronBaseModel(NLPModel):
             return iterator, True
         # reinsert the element back to the iterator
         return itertools.chain([element], iterator), False
+
+    def configure_sharded_model(self):
+        if self.use_fsdp:
+            """ Top-evel FSDP model sharding """
+            # Shard the top-level model hierarchically. We shard the strategy-unwrapped model not
+            # to lose the structure of non-FSDP wrapped parameters (e.g, embedding)
+            # TODO: Currently the main parameter data type is kept in fp32 (when O2=False). This needs to be
+            # extended to support lower precision main parameters.
+            self.model = self.trainer.strategy._setup_model(self.model)
+            # Move the CPU-initialized model (with `use_cpu_initialization=True`) to GPU, which is to avoid
+            # out-of-memory carash before sharding. In case of GPU-initialized model, this is no-op.
+            self.model = self.model.cuda(torch.cuda.current_device())

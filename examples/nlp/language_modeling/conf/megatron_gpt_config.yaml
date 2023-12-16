@@ -133,6 +133,12 @@ model:
   sync_batch_comm: False # Enable stream synchronization after each p2p communication between pipeline stages
   nccl_communicator_config_path: null # Path to the yaml file with NCCL communicator options (min_ctas, max_ctas, and cga_cluster_size)
 
+  # FSDP
+  fsdp: False # Enable training with torch FSDP.
+  fsdp_sharding_strategy: 'full' # Method to shard model states. Available options are 'full', 'hybrid', and 'grad'.
+  fsdp_grad_reduce_dtype: 'fp32' # Gradient reduction data type.
+  fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
+
   ## Activation Checkpointing
   # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
   # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).

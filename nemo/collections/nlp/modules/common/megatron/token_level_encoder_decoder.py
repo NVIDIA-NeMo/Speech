@@ -41,7 +41,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     scaled_init_method_normal,
 )
 from nemo.collections.nlp.modules.common.megatron.vocab_parallel_cross_entropy import vocab_parallel_cross_entropy
-from nemo.collections.nlp.parts import utils_funcs
 from nemo.core.classes.mixins import adapter_mixins
 
 try:
@@ -122,7 +121,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
         pre_process=True,
         post_process=True,
         fp16_cross_entropy=False,
-        megatron_amp_O2=False,
         precision=16,
         embedding_init_method_std=0.02,
         embedding_dropout=0.1,
@@ -153,8 +151,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
 
         encoder_kv_channels, decoder_kv_channels = self._validate_config()
 
-        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
-
         encoder, decoder = None, None
         if add_encoder:
             if pre_process:
@@ -165,7 +161,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                     max_sequence_length=max_position_embeddings,
                     init_method=init_method_normal(embedding_init_method_std),
                     num_tokentypes=num_tokentypes,
-                    dtype=self.dtype,
                     embedding_dropout_prob=embedding_dropout,
                     position_embedding_type=encoder_cfg.get('position_embedding_type', 'learned_absolute'),
                 )
@@ -227,7 +222,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                 pre_process=pre_process,
                 post_process=post_process,
                 init_method_std=encoder_cfg.get('init_method_std', 0.02),
-                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=encoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=encoder_cfg.get('attention_dropout', 0.1),
                 ffn_dropout=encoder_cfg.get('ffn_dropout', 0.0),
@@ -275,7 +269,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                         max_sequence_length=max_position_embeddings,
                         init_method=init_method_normal(embedding_init_method_std),
                         num_tokentypes=num_tokentypes,
-                        dtype=self.dtype,
                         embedding_dropout_prob=embedding_dropout,
                         position_embedding_type=decoder_cfg.get('position_embedding_type', 'learned_absolute'),
                     )
@@ -366,7 +359,6 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                 pre_process=pre_process,
                 post_process=post_process,
                 init_method_std=decoder_cfg.get('init_method_std', 0.02),
-                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=decoder_cfg.get('hidden_dropout', 0.1),
                 attention_dropout=decoder_cfg.get('attention_dropout', 0.1),
                 ffn_dropout=decoder_cfg.get('ffn_dropout', 0.0),

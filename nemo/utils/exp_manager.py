@@ -625,7 +625,7 @@ def check_resume(
                     f"Found {end_checkpoints[0]} indicating that the last training run has already completed."
                 )
         elif len(last_checkpoints) > 1:
-            if 'mp_rank' in str(last_checkpoints[0]) or 'tp_rank' in str(last_checkpoints[0]):
+            if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
                 checkpoint = last_checkpoints[0]
                 checkpoint = uninject_model_parallel_rank(checkpoint)
             else:

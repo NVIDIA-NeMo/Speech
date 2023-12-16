@@ -26,7 +26,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
     init_method_normal,
     scaled_init_method_normal,
 )
-from nemo.collections.nlp.parts import utils_funcs
 
 try:
     from apex.transformer.enums import ModelType
@@ -126,8 +125,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
         self.num_chunked_cross_attention = len(dec_cross_attention)
         self.megatron_lm_compatible = megatron_lm_compatible
 
-        self.dtype = utils_funcs.torch_dtype_from_precision(precision, megatron_amp_O2)
-
         if kv_channels is None:
             assert (
                 hidden_size % num_attention_heads == 0
@@ -145,7 +142,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 embedding_dropout_prob=hidden_dropout,
                 position_embedding_type='learned_absolute' if add_position_embedding else '',
                 transpose_batch_sequence=False,
-                dtype=self.dtype,
             )
             self._embedding_key = "embedding"
 
@@ -180,7 +176,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 if megatron_lm_compatible
                 else post_process,  # megatron lm model has no final layer_norm
                 init_method_std=init_method_std,
-                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,
@@ -245,7 +240,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=pre_process,
                 post_process=False,  # no need for post process
                 init_method_std=init_method_std,
-                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,
@@ -290,7 +284,6 @@ class MegatronRetrievalTokenLevelEncoderDecoderModule(MegatronModule):
                 pre_process=False,  # directly take the pre_decoder output, skip preprocess
                 post_process=post_process,
                 init_method_std=init_method_std,
-                megatron_amp_O2=megatron_amp_O2,
                 hidden_dropout=hidden_dropout,
                 attention_dropout=attention_dropout,
                 precision=precision,

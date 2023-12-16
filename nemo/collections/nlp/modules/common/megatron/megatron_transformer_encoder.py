@@ -13,7 +13,6 @@
 # limitations under the License.
 
 """Transformer based language model."""
-
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.megatron_encoder_module import MegatronEncoderModule
 from nemo.collections.nlp.modules.common.megatron.module import MegatronModule
@@ -65,7 +64,6 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
         kv_channels=None,
         pre_process=True,
         post_process=True,
-        megatron_amp_O2=False,
         encoder_attn_mask_type=AttnMaskType.padding,
         hidden_dropout=0.1,
         attention_dropout=0.1,
@@ -142,7 +140,6 @@ class MegatronTransformerEncoderModule(MegatronModule, Exportable, MegatronEncod
             hidden_dropout=hidden_dropout,
             attention_dropout=attention_dropout,
             ffn_dropout=ffn_dropout,
-            megatron_amp_O2=megatron_amp_O2,
             bias_activation_fusion=bias_activation_fusion,
             bias_dropout_add_fusion=bias_dropout_add_fusion,
             masked_softmax_fusion=masked_softmax_fusion,

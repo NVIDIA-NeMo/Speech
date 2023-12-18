@@ -731,9 +731,6 @@ def sample_sequence_batch(
         data_parallel_size=1,
     )
     assert (
-        model.cfg.get('sequence_parallel', False) == False
-    ), 'sequence_parallel should be False during inference. Disable it in the model config if restoring from nemo or in hparams.yaml if restoring from PTL checkpoint'
-    assert (
         model.cfg.get('activations_checkpoint_granularity', None) is None
     ), 'activations_checkpoint_granularity should be None during inference. Disable it in the model config if restoring from nemo or in hparams.yaml if restoring from PTL checkpoint'
     assert (

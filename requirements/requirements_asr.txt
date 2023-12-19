@@ -12,6 +12,7 @@ packaging
 pyannote.core
 pyannote.metrics
 pydub
+resampy
 ruamel.yaml
 scipy>=0.14
 soundfile

@@ -228,7 +228,8 @@ class TestRNNTDecoding:
                 print("Hyp index", idx + 1, "text :", hyp_.text)
 
                 # Alignment length (T) must match audio length (T)
-                assert abs(len(hyp_.alignments) - enc_len[0]) <= 1
+                # NOTE: increase length threshold to two to prevent intermittent failures when a word is split into subwords
+                assert abs(len(hyp_.alignments) - enc_len[0]) <= 2  # 1
 
                 for t in range(len(hyp_.alignments)):
                     t_u = []

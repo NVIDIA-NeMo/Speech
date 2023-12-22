@@ -68,7 +68,7 @@ Dataset Conversion
 ------------------
 
 To convert an `IOB format <https://en.wikipedia.org/wiki/Inside%E2%80%93outside%E2%80%93beginning_(tagging)>`__ (short for inside, outside, beginning) data to the format required for training, use
-`examples/nlp/token_classification/data/import_from_iob_format.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/token_classification/data/import_from_iob_format.py)>`_.
+`examples/nlp/token_classification/data/import_from_iob_format.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/token_classification/data/import_from_iob_format.py>`_.
 
 .. code::
 

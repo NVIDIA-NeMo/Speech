@@ -440,8 +440,7 @@ works in lexicon decoding mode, it does not work in lexicon-free mode. Word boos
 such that you can manually increase or decrease the probability of emitting certain words. This can be very helpful if you have certain
 uncommon or industry-specific words which you want to ensure transcribe correctly.
 
-For more information on word boosting, see `here <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/asr/asr-customizing.html#word-boosting>`__
-and `here <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/asr/asr-customizing.html#word-boosting>`__
+For more information on word boosting, `here <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/asr/asr-customizing.html#word-boosting>`__
 
 In order to use word boosting in Nemo, you need to create a simple tab-separated text file which contains each word to be boosted, followed by
 tab, and then the boosted score for that word.

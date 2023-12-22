@@ -233,7 +233,7 @@ Model Evaluation and Inference
 There is no separate script for the evaluation and inference of this model in NeMo, however, inside of the example file `examples/nlp/intent_slot_classification/intent_slot_classification.py` 
 after the training part is finished, you can see the code that evaluates the trained model on an evaluation test set and then an example of doing inference using a list of given queries.
 
-For the deployment in the production environment, refer to `NVIDIA Riva <https://developer.nvidia.com/nvidia-riva-getting-started>`__ and `NVIDIA TLT documentation <https://docs.nvidia.com/metropolis/TLT/tlt-user-guide/text/nlp/index.html>`__.
+For the deployment in the production environment, refer to `NVIDIA Riva <https://docs.nvidia.com/deeplearning/riva/user-guide/docs/quick-start-guide.html>`__ and `NVIDIA TLT documentation <https://docs.nvidia.com/metropolis/TLT/tlt-user-guide/text/nlp/index.html>`__.
 
 References
 ----------

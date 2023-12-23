@@ -10,7 +10,7 @@ ijson
 jieba
 markdown2
 matplotlib>=3.3.2
-megatron_core==0.3.0
+megatron_core==0.4.0
 nltk>=3.6.5
 opencc<1.1.7
 pangu

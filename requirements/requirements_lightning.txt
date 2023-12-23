@@ -2,6 +2,6 @@ hydra-core>1.3,<=1.3.2
 omegaconf<=2.3
 pytorch-lightning>=2.0,<=2.0.7
 torchmetrics>=0.11.0
-transformers>=4.0.1,<=4.33.3
+transformers>=4.36.0
 wandb
 webdataset>=0.1.48,<=0.1.62

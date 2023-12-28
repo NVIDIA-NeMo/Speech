@@ -191,7 +191,7 @@ class SpellcheckingAsrCustomizationModel(NLPModel):
         return {'loss': loss, 'lr': lr}
 
     # Validation and Testing
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, split="val"):
         """
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
@@ -271,15 +271,25 @@ class SpellcheckingAsrCustomizationModel(NLPModel):
                 torch.tensor(span_predictions).to(self.device), torch.tensor(span_labels).to(self.device)
             )
 
-        val_loss = self.loss_fn(logits=logits, labels=labels, loss_mask=labels_mask)
-        return {'val_loss': val_loss}
+        loss = self.loss_fn(logits=logits, labels=labels, loss_mask=labels_mask)
 
-    def validation_epoch_end(self, outputs):
+        if split == 'val':
+            self.validation_step_outputs.append({f'{split}_loss': loss})
+        elif split == 'test':
+            self.test_step_outputs.append({f'{split}_loss': loss})
+
+        return {f'{split}_loss': loss}
+
+    def on_validation_epoch_end(self):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        split = "test" if self.trainer.testing else "val"
+        if split == 'val':
+            avg_loss = torch.stack([x[f'{split}_loss'] for x in self.validation_step_outputs]).mean()
+        else:
+            avg_loss = torch.stack([x[f'{split}_loss'] for x in self.test_step_outputs]).mean()
 
         # Calculate metrics and classification report
         # Note that in our task recall = accuracy, and the recall column is the per class accuracy
@@ -288,8 +298,8 @@ class SpellcheckingAsrCustomizationModel(NLPModel):
         logging.info("Total tag accuracy: " + str(tag_accuracy))
         logging.info(tag_report)
 
-        self.log('val_loss', avg_loss, prog_bar=True)
-        self.log('tag accuracy', tag_accuracy)
+        self.log(f"{split}_loss", avg_loss, prog_bar=True)
+        self.log(f"{split}_tag_accuracy", tag_accuracy)
 
         self.tag_classification_report.reset()
 
@@ -298,14 +308,14 @@ class SpellcheckingAsrCustomizationModel(NLPModel):
         Lightning calls this inside the test loop with the data from the test dataloader
         passed in as `batch`.
         """
-        return self.validation_step(batch, batch_idx)
+        return self.validation_step(batch, batch_idx, split="test")
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
         :param outputs: list of individual outputs of each test step.
         """
-        return self.validation_epoch_end(outputs)
+        return self.on_validation_epoch_end()
 
     # Functions for inference
 

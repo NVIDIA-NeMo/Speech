@@ -30,10 +30,10 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
+from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.common.losses import SmoothedCrossEntropyLoss
 from nemo.collections.common.metrics import GlobalAverageLossMetric
 from nemo.collections.common.parts import transformer_weights_init
-
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import (
     AudioSignal,
@@ -49,6 +49,7 @@ from nemo.utils import logging
 
 try:
     from sacrebleu import corpus_bleu
+
     from nemo.collections.nlp.modules.common import TokenClassifier
     from nemo.collections.nlp.modules.common.lm_utils import get_transformer
     from nemo.collections.nlp.modules.common.transformer import BeamSearchSequenceGenerator, TransformerEncoder
@@ -188,6 +189,10 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
         batch_size: int = 4,
         logprobs: bool = False,
         return_hypotheses: bool = False,
+        num_workers: int = 0,
+        channel_selector: Optional[ChannelSelectorType] = None,
+        augmentor: DictConfig = None,
+        verbose: bool = True,
     ) -> List[str]:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -200,6 +205,10 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
             logprobs: (bool) pass True to get log probabilities instead of transcripts.
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
+            num_workers: (int) number of workers for DataLoader
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
+            augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
+            verbose: (bool) whether to display tqdm progress bar
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
         """
@@ -211,6 +220,9 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
                 "Either `return_hypotheses` or `logprobs` can be True at any given time."
                 "Returned hypotheses will contain the logprobs."
             )
+
+        if num_workers is None:
+            num_workers = min(batch_size, os.cpu_count() - 1)
 
         # We will store transcriptions here
         hypotheses = []
@@ -238,10 +250,19 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
                         entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': 'nothing'}
                         fp.write(json.dumps(entry) + '\n')
 
-                config = {'paths2audio_files': paths2audio_files, 'batch_size': batch_size, 'temp_dir': tmpdir}
+                config = {
+                    'paths2audio_files': paths2audio_files,
+                    'batch_size': batch_size,
+                    'temp_dir': tmpdir,
+                    'num_workers': num_workers,
+                    'channel_selector': channel_selector,
+                }
+
+                if augmentor:
+                    config['augmentor'] = augmentor
 
                 temporary_datalayer = self._setup_transcribe_dataloader(config)
-                for test_batch in tqdm(temporary_datalayer, desc="Transcribing"):
+                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
                     log_probs, encoded_len, enc_states, enc_mask = self.forward(
                         input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
                     )
@@ -254,12 +275,14 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin):
                         .cpu()
                         .numpy()
                     )
+
                     beam_hypotheses = [self.tokenizer.ids_to_text(hyp) for hyp in beam_hypotheses]
 
-                    if return_hypotheses:
-                        # dump log probs per file
-                        for idx in range(logits.shape[0]):
-                            current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
+                    # TODO: add support for return_hypotheses=True @AlexGrinch
+                    # if return_hypotheses:
+                    #     # dump log probs per file
+                    #     for idx in range(logits.shape[0]):
+                    #         current_hypotheses[idx].y_sequence = logits[idx][: logits_len[idx]]
 
                     hypotheses += beam_hypotheses
 

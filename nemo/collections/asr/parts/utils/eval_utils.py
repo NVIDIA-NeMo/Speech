@@ -15,9 +15,17 @@
 import json
 from typing import Optional, Tuple, Union
 
+from torchmetrics.text import SacreBLEUScore
+from torchmetrics.text.rouge import ROUGEScore
+
 from nemo.collections.asr.metrics.wer import word_error_rate_detail
 from nemo.utils import logging
 from nemo.utils.nemo_logging import LogMode
+
+TEXT_METRICS_MAPPING = {
+    'bleu': SacreBLEUScore,
+    'rouge': ROUGEScore,
+}
 
 
 def remove_punctuations(text: str, punctuations: Optional[Union[list, str]] = None) -> str:
@@ -177,3 +185,70 @@ def cal_write_wer(
         "sub_rate": total_sub_rate,
     }
     return output_manifest_w_wer, total_res, eval_metric
+
+
+def cal_write_text_metric(
+    pred_manifest: str = None,
+    gt_text_attr_name: str = "text",
+    pred_text_attr_name: str = "pred_text",
+    output_filename: str = None,
+    ignore_capitalization: bool = False,
+    ignore_punctuation: bool = False,
+    punctuations: Optional[list] = None,
+    metric: str = 'bleu',
+    metric_args: Optional[dict] = None,
+):
+    samples = []
+    hyps = []
+    refs = []
+
+    if metric not in TEXT_METRICS_MAPPING:
+        raise ValueError(f"metric {metric} is not supported! Please choose from {TEXT_METRICS_MAPPING.keys()}")
+
+    metric_calculator = TEXT_METRICS_MAPPING[metric](**metric_args) if metric_args else TEXT_METRICS_MAPPING[metric]()
+    with open(pred_manifest, 'r') as fp:
+        for line in fp:
+            sample = json.loads(line)
+
+            if gt_text_attr_name not in sample:
+                logging.info(
+                    f"ground-truth text attribute {pred_text_attr_name} is not present in manifest! Cannot calculate {metric}. Returning!"
+                )
+                return None, None, metric
+
+            hyp = sample[pred_text_attr_name]
+            ref = sample['text']
+
+            if ignore_punctuation:
+                ref = remove_punctuations(ref, punctuations=punctuations)
+                hyp = remove_punctuations(hyp, punctuations=punctuations)
+
+            if ignore_capitalization:
+                ref = ref.lower()
+                hyp = hyp.lower()
+
+            score = metric_calculator(hyp, ref).item()
+            sample[metric] = score  # evaluatin metric, could be word error rate of character error rate
+
+            samples.append(sample)
+            hyps.append(hyp)
+            refs.append(ref)
+
+    total_score = metric_calculator(hyps, refs).item()
+
+    if not output_filename:
+        output_manifest_w_wer = pred_manifest
+    else:
+        output_manifest_w_wer = output_filename
+
+    with open(output_manifest_w_wer, 'w') as fout:
+        for sample in samples:
+            json.dump(sample, fout)
+            fout.write('\n')
+            fout.flush()
+
+    total_res = {
+        "samples": len(samples),
+        metric: total_score,
+    }
+    return output_manifest_w_wer, total_res, metric

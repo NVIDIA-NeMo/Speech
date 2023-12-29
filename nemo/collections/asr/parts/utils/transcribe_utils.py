@@ -199,7 +199,7 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
         )  # type: ASRModel
         model_name = cfg.pretrained_name
 
-    if hasattr(cfg, "model_change"):
+    if hasattr(cfg, "model_change") and hasattr(asr_model, "change_attention_model"):
         asr_model.change_attention_model(
             self_attention_model=cfg.model_change.conformer.get("self_attention_model", None),
             att_context_size=cfg.model_change.conformer.get("att_context_size", None),

@@ -17,7 +17,7 @@ import git
 from omegaconf import OmegaConf, open_dict
 from utils import cal_target_metadata_wer, run_asr_inference
 
-from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
+from nemo.collections.asr.parts.utils.eval_utils import cal_write_text_metric, cal_write_wer
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -63,16 +63,30 @@ def main(cfg):
             cfg.engine.output_filename = cfg.analyst.metric_calculator.exist_pred_manifest
 
     ## Analyst
-    output_manifest_w_wer, total_res, eval_metric = cal_write_wer(
-        pred_manifest=cfg.engine.output_filename,
-        clean_groundtruth_text=cfg.analyst.metric_calculator.clean_groundtruth_text,
-        langid=cfg.analyst.metric_calculator.langid,
-        use_cer=cfg.analyst.metric_calculator.use_cer,
-        output_filename=cfg.analyst.metric_calculator.output_filename,
-        ignore_capitalization=cfg.analyst.metric_calculator.get("ignore_capitalization", False),
-        ignore_punctuation=cfg.analyst.metric_calculator.get("ignore_punctuation", False),
-        punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
-    )
+    if cfg.analyst.metric_calculator.get("metric", "wer") == "wer":
+        output_manifest_w_wer, total_res, eval_metric = cal_write_wer(
+            pred_manifest=cfg.engine.output_filename,
+            clean_groundtruth_text=cfg.analyst.metric_calculator.clean_groundtruth_text,
+            langid=cfg.analyst.metric_calculator.langid,
+            use_cer=cfg.analyst.metric_calculator.use_cer,
+            output_filename=cfg.analyst.metric_calculator.output_filename,
+            ignore_capitalization=cfg.analyst.metric_calculator.get("ignore_capitalization", False),
+            ignore_punctuation=cfg.analyst.metric_calculator.get("ignore_punctuation", False),
+            punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
+        )
+    else:
+        output_manifest_w_wer, total_res, eval_metric = cal_write_text_metric(
+            pred_manifest=cfg.engine.output_filename,
+            gt_text_attr_name=cfg.analyst.metric_calculator.get("gt_text_attr_name", "text"),
+            pred_text_attr_name=cfg.analyst.metric_calculator.get("pred_text_attr_name", "pred_text"),
+            output_filename=cfg.analyst.metric_calculator.output_filename,
+            ignore_capitalization=cfg.analyst.metric_calculator.get("ignore_capitalization", False),
+            ignore_punctuation=cfg.analyst.metric_calculator.get("ignore_punctuation", False),
+            punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
+            metric=cfg.analyst.metric_calculator.get("metric", "bleu"),
+            metric_args=cfg.analyst.metric_calculator.get("metric_args", None),
+        )
+
     with open_dict(cfg):
         cfg.analyst.metric_calculator.output_filename = output_manifest_w_wer
 

@@ -194,6 +194,9 @@ model:
   ## Flash Attention
   use_flash_attention: False # Use flash attention in self-attention module, this config does nothing when transformer_engine=True
 
+  ## Network
+  sharp: False # Enable the use of SHARP for NCCL data-parallel communications. This is going to be ignored if the network doesn't support SHARP.
+  
   data:
    # Path to data must be specified by the user.
     # Supports List, String and Dictionary

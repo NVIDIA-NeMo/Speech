@@ -640,16 +640,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # it should be casted to other pipeline stages for logging.
             # we can avoid this broadcast by updating the PTL log function to accept specific ranks
             if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-                if self.loss_broadcast_src_rank is None:
-                    dp_size = parallel_state.get_data_parallel_world_size()
-                    tp_size = parallel_state.get_tensor_model_parallel_world_size()
-                    pp_size = parallel_state.get_pipeline_model_parallel_world_size()
-                    rank_in_dp_tp_group = torch.distributed.get_rank() % (dp_size * tp_size)
-                    last_pipeline_stage_offset = (tp_size * dp_size) * (pp_size - 1)
-                    self.loss_broadcast_src_rank = last_pipeline_stage_offset + rank_in_dp_tp_group
-                torch.distributed.broadcast(
-                    loss_mean, self.loss_broadcast_src_rank, group=parallel_state.get_pipeline_model_parallel_group(),
-                )
+                if torch.distributed.get_rank() == get_last_rank():
+                    torch.distributed.send(loss_mean, 0)
+                elif torch.distributed.get_rank() == 0:
+                    torch.distributed.recv(loss_mean, get_last_rank())
             self.log('reduced_train_loss', loss_mean, prog_bar=True, rank_zero_only=True, batch_size=1)
 
             # (@adithyare) we need to check for the _scaler attribute to enable pp>1 for adapter training

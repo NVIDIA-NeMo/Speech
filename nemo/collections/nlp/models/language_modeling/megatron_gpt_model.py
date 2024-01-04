@@ -1554,36 +1554,3 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             setattr(transformer_config, key, value)
 
         return transformer_config
-
-    def _wrap_model_for_O2(self):
-        """ Wraps self.model in a float16 wrapper if the model is using megatron amp O2.
-            Args:
-                model: The model to wrap. Can be a list of modules or a single module.
-            Returns:
-                The wrapped model. Returns a list of wrapped modules or a single wrapped module.
-        """
-        Float16Wrapper = MCoreFloat16Module if self.mcore_gpt else Float16Module
-
-        nemo_args = {
-            'config': self.model_parallel_config,
-            'precision': self.cfg.precision,
-            'share_token_embeddings': self.cfg.get('share_embeddings_and_output_weights', True),
-        }
-        mcore_args = {
-            'config': self.transformer_config,
-        }
-
-        args = mcore_args if self.mcore_gpt else nemo_args
-
-        # Model wrapper to convert both model and inputs to half precision
-        if isinstance(self.model, list):
-            converted_model = []
-            for module in self.model:
-                args['module'] = module
-                converted_model.append(Float16Wrapper(**args))
-            self.model = converted_model
-        else:
-            args['module'] = self.model
-            self.model = Float16Wrapper(**args)
-
-        args.pop('module')

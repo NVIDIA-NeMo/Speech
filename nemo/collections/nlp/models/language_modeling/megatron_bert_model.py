@@ -136,40 +136,6 @@ class MegatronBertModel(MegatronBaseModel):
             self._nsys_profile_start_step *= grad_accum_steps
             self._nsys_profile_end_step *= grad_accum_steps
 
-    def _wrap_model_for_O2(self):
-        """ Wraps self.model in a float16 wrapper if the model is using megatron amp O2.
-            Args:
-                model: The model to wrap. Can be a list of modules or a single module.
-            Returns:
-                The wrapped model. Returns a list of wrapped modules or a single wrapped module.
-        """
-        Float16Wrapper = MCoreFloat16Module if self.mcore_bert else Float16Module
-
-        nemo_args = {
-            'config': self.model_parallel_config,
-            'precision': self.cfg.precision,
-        }
-        mcore_args = {
-            'config': self.transformer_config,
-        }
-
-        args = mcore_args if self.mcore_bert else nemo_args
-
-        # Model wrapper to convert both model and inputs to half precision
-        if isinstance(self.model, list):
-            converted_model = []
-            for module in self.model:
-                if not self.mcore_bert:
-                    args['module'] = module
-                converted_model.append(Float16Wrapper(**args))
-            self.model = converted_model
-        else:
-            if not self.mcore_bert:
-                args['module'] = self.model
-            self.model = Float16Wrapper(**args)
-
-        args.pop('module')
-
     def model_provider_func(self, pre_process, post_process):
         cfg = self.cfg
         num_tokentypes = 2 if cfg.bert_binary_head else 0
@@ -990,7 +956,7 @@ class MegatronBertModel(MegatronBaseModel):
                     if isinstance(module, (Float16Module, MCoreFloat16Module)):
                         module = module.module
                     stage_bucket = []
-                    layers = module.transformer.layers if self.mcore_bert else module.language_model.encoder.layers
+                    layers = module.encoder.layers if self.mcore_bert else module.language_model.encoder.layers
                     for layer in layers:
                         stage_bucket.extend(
                             p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)
@@ -1002,7 +968,7 @@ class MegatronBertModel(MegatronBaseModel):
                 for module in modules:
                     if isinstance(module, (Float16Module, MCoreFloat16Module)):
                         module = module.module
-                    layers = module.transformer.layers if self.mcore_bert else module.language_model.encoder.layers
+                    layers = module.encoder.layers if self.mcore_bert else module.language_model.encoder.layers
                     for layer in layers:
                         buckets.append(
                             [p for p in layer.parameters() if not getattr(p, '_disable_overlap_grad_sync', False)]

@@ -161,6 +161,8 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
                 config=model_parallel_config,
                 bias=False,
                 init_method=self._get_init_fn(row_init_method),
+                input_is_parallel=False,
+                skip_bias_add=True,
             )
         else:
             # (@adithyare) we use this option to mirror the behavior a column parallel layer with two low-rank column parallel layers

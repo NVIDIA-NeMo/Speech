@@ -227,7 +227,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             if is_global_rank_zero():
                 try:
                     dist_ckpt = ckpt_to_dir(filepath)
-                    shutil.rmtree(dist_ckpt)
+                    shutil.rmtree(dist_ckpt, ignore_errors=True)
                     logging.info(f"Removed distributed checkpoint: {dist_ckpt}")
                 except:
                     logging.info(f"Tried to remove distributed checkpoint: {dist_ckpt} but failed.")

@@ -426,7 +426,7 @@ class NLPDDPStrategy(DDPStrategy):
             and self.lightning_module.sharded_state_dict() is not None
         ):
             if self.is_global_zero:
-                shutil.rmtree(ckpt_to_dir(filepath))
+                shutil.rmtree(ckpt_to_dir(filepath), ignore_errors=True)
 
         # legacy checkpoint logic, does not use megatron core
         else:

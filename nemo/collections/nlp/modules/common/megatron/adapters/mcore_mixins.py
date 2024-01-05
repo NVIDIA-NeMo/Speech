@@ -200,18 +200,25 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
         self,
         hidden_states,
         attention_mask,
-        encoder_output=None,
-        enc_dec_attn_mask=None,
-        inference_params=None,
+        context=None,
+        context_mask=None,
         rotary_pos_emb=None,
+        inference_params=None,
     ):
         # hidden_states: [s, b, h]
 
-        # Layer norm at the beginning of the transformer layer.
-        layernorm_output = self.input_layernorm(hidden_states)
+        # Residual connection.
+        residual = hidden_states
+
+        # Optional Input Layer norm
+        input_layernorm_output = self.input_layernorm(hidden_states)
+
         # Self attention.
         attention_output_with_bias = self.self_attention(
-            layernorm_output, attention_mask, inference_params=inference_params, rotary_pos_emb=rotary_pos_emb,
+            input_layernorm_output,
+            attention_mask=attention_mask,
+            inference_params=inference_params,
+            rotary_pos_emb=rotary_pos_emb,
         )
 
         # adapter logic
@@ -224,23 +231,45 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
                 )  # simple adapter call with residual connection
                 attention_output_with_bias = (attention_output, bias)
 
-        # Residual connection.
-        if self.config.apply_residual_connection_post_layernorm:
-            residual = layernorm_output
-        else:
-            residual = hidden_states
-
-        bias_dropout_add_func = get_bias_dropout_add(self.training, self.config.bias_dropout_fusion)
-
-        # bias_dropout_add fusion returning fp32 instead of bf16
+        # TODO: could we move `bias_dropout_add_exec_handler` itself
+        # inside the module provided in the `bias_dropout_add_spec` module?
         with self.bias_dropout_add_exec_handler():
-            layernorm_input = bias_dropout_add_func(attention_output_with_bias, residual, self.config.hidden_dropout)
+            hidden_states = self.self_attn_bda(self.training, self.config.bias_dropout_fusion)(
+                attention_output_with_bias, residual, self.hidden_dropout
+            )
 
-        # Layer norm post the self attention.
-        layernorm_output = self.post_self_attn_layernorm(layernorm_input)
+        # Residual connection.
+        residual = hidden_states
+
+        # Optional Layer norm after self-attention
+        pre_cross_attn_layernorm_output = self.pre_cross_attn_layernorm(hidden_states)
+
+        # Cross attention.
+        attention_output_with_bias = self.cross_attention(
+            pre_cross_attn_layernorm_output,
+            attention_mask=context_mask,
+            key_value_states=context,
+            inference_params=inference_params,
+        )
+
+        if isinstance(attention_output_with_bias, dict) and "context" in attention_output_with_bias:
+            context = attention_output_with_bias["context"]
+
+        # TODO: could we move `bias_dropout_add_exec_handler` itself
+        # inside the module provided in the `bias_dropout_add_spec` module?
+        with self.bias_dropout_add_exec_handler():
+            hidden_states = self.cross_attn_bda(self.training, self.config.bias_dropout_fusion)(
+                attention_output_with_bias, residual, self.hidden_dropout
+            )
+
+        # Residual connection.
+        residual = hidden_states
+
+        # Optional Layer norm post the cross-attention.
+        pre_mlp_layernorm_output = self.pre_mlp_layernorm(hidden_states)
 
         # MLP.
-        mlp_output_with_bias = self.mlp(layernorm_output)
+        mlp_output_with_bias = self.mlp(pre_mlp_layernorm_output)
 
         # adapter logic
         if self.is_adapter_available():
@@ -250,14 +279,12 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
                 mlp_output = adapter_2(mlp_output) + mlp_output  # simple adapter call with residual connection
                 mlp_output_with_bias = (mlp_output, bias)
 
-        # Second residual connection.
-        if self.config.apply_residual_connection_post_layernorm:
-            residual = layernorm_output
-        else:
-            residual = layernorm_input
-
+        # TODO: could we move `bias_dropout_add_exec_handler` itself
+        # inside the module provided in the `bias_dropout_add_spec` module?
         with self.bias_dropout_add_exec_handler():
-            output = bias_dropout_add_func(mlp_output_with_bias, residual, self.config.hidden_dropout)
+            hidden_states = self.mlp_bda(self.training, self.config.bias_dropout_fusion)(
+                mlp_output_with_bias, residual, self.hidden_dropout
+            )
 
         # Jit compiled function creates 'view' tensor. This tensor
         # potentially gets saved in the MPU checkpoint function context,
@@ -265,6 +292,6 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
         # won't result in memory savings (like the data loader, or
         # p2p_communication), it serves to document the origin of this
         # 'view' tensor.
-        output = make_viewless_tensor(inp=output, requires_grad=output.requires_grad, keep_graph=True)
+        output = make_viewless_tensor(inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True)
 
-        return output
+        return output, context

@@ -25,7 +25,13 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_ctm, write_manifest, write_text
+from nemo.collections.asr.parts.utils.manifest_utils import (
+    get_ctm_line,
+    read_manifest,
+    write_ctm,
+    write_manifest,
+    write_text,
+)
 from nemo.collections.asr.parts.utils.speaker_utils import labels_to_rttmfile
 from nemo.utils import logging
 
@@ -774,7 +780,16 @@ class DataAnnotator(object):
                 prev_align = 0 if i == 0 else alignments[i - 1]
                 align1 = round(float(prev_align + start), self._params.data_simulator.outputs.output_precision)
                 align2 = round(float(alignments[i] - prev_align), self._params.data_simulator.outputs.output_precision)
-                text = f"{session_name} {speaker_id} {align1} {align2} {word} 0\n"
+                text = get_ctm_line(
+                    source=session_name,
+                    channel=1,
+                    start_time=align1,
+                    duration=align2,
+                    token=word,
+                    conf=None,
+                    type_of_token='lex',
+                    speaker=speaker_id,
+                )
                 arr.append((align1, text))
         return arr
 

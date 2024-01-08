@@ -16,12 +16,41 @@ import argparse
 import os
 import shutil
 from pathlib import Path
+from typing import List
 
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_ctm, write_manifest
+from nemo.collections.asr.parts.utils.manifest_utils import get_ctm_line, read_manifest, write_ctm, write_manifest
 from nemo.utils import logging
 
 
-def get_unaligned_files(unaligned_path):
+def get_seg_info_from_ctm_line(
+    ctm_list: List[str],
+    output_precision: int,
+    speaker_index: int = 7,
+    start_time_index: int = 2,
+    duration_index: int = 3,
+):
+    """
+    Get time stamp information and speaker labels from CTM lines.
+    This is following CTM format appeared in `Rich Transcription Meeting Eval Plan: RT09` document.
+    
+    Args:
+        ctm_list (list): List containing CTM items. e.g.: ['sw02001-A', '1', '0.000', '0.200', 'hello', '0.98', 'lex', 'speaker3']
+        output_precision (int): Precision for CTM outputs in integer.
+
+    Returns:
+        start (float): Start time of the segment.
+        end (float): End time of the segment.
+        speaker_id (str): Speaker ID of the segment.
+    """
+    speaker_id = ctm_list[speaker_index]
+    start = float(ctm_list[start_time_index])
+    end = float(ctm_list[start_time_index]) + float(ctm_list[duration_index])
+    start = round(start, output_precision)
+    end = round(end, output_precision)
+    return start, end, speaker_id
+
+
+def get_unaligned_files(unaligned_path: str) -> List[str]:
     """
     Get files without alignments in order to filter them out (as they cannot be used for data simulation).
     In the unaligned file, each line contains the file name and the reason for the unalignment, if necessary to specify.
@@ -71,7 +100,17 @@ def create_new_ctm_entry(session_name, speaker_id, wordlist, alignments, output_
             # note that using the current alignments the first word is always empty, so there is no error from indexing the array with i-1
             align1 = float(round(alignments[i - 1], output_precision))
             align2 = float(round(alignments[i] - alignments[i - 1], output_precision,))
-            text = f"{session_name} {speaker_id} {align1} {align2} {word} 0\n"
+            text = get_ctm_line(
+                source=session_name,
+                channel=speaker_id,
+                start_time=align1,
+                duration=align2,
+                token=word,
+                conf=0,
+                type_of_token='lex',
+                speaker=speaker_id,
+                output_precision=output_precision,
+            )
             arr.append((align1, text))
     return arr
 
@@ -206,11 +245,7 @@ def create_manifest_with_alignments(
         prev_end = 0
         for i in range(len(lines)):
             ctm = lines[i].split(' ')
-            speaker_id = ctm[1]
-            start = float(ctm[2])
-            end = float(ctm[2]) + float(ctm[3])
-            start = round(start, output_precision)
-            end = round(end, output_precision)
+            speaker_id, start, end = get_seg_info_from_ctm_line(ctm_list=ctm, output_precision=output_precision)
             interval = start - prev_end
 
             if (i == 0 and interval > 0) or (i > 0 and interval > silence_dur_threshold):
@@ -231,13 +266,16 @@ def create_manifest_with_alignments(
             end_times.append(f['duration'])
 
         # build target manifest entry
-        target_manifest.append({})
-        target_manifest[tgt_i]['audio_filepath'] = f['audio_filepath']
-        target_manifest[tgt_i]['duration'] = f['duration']
-        target_manifest[tgt_i]['text'] = f['text']
-        target_manifest[tgt_i]['words'] = words
-        target_manifest[tgt_i]['alignments'] = end_times
-        target_manifest[tgt_i]['speaker_id'] = speaker_id
+        target_manifest.append(
+            {
+                'audio_filepath': f['audio_filepath'],
+                'duration': f['duration'],
+                'text': f['text'],
+                'words': words,
+                'alignments': end_times,
+                'speaker_id': speaker_id,
+            }
+        )
 
         src_i += 1
         tgt_i += 1

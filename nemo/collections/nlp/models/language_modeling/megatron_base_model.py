@@ -852,12 +852,14 @@ class MegatronBaseModel(NLPModel):
                 ) % vp_size == 0, 'Make sure the number of model chunks is the same across all pipeline stages.'
 
         if self.cfg.get('ub_tp_comm_overlap', False):
-            if not self.cfg.get('transformer_engine', False) or not self.cfg.get('sequence_parallel', False):
+            if not self.cfg.get('sequence_parallel', False):
                 logging.info(
-                    "Userbuffer tensor-parallel communication overlap is available with both Transformer Engine and sequence-parallelism."
+                    "Pipelined tensor-parallel communication overlap is available with sequence-parallelism."
+                    "Setting `ub_tp_comm_overlap` to False."
                 )
                 with open_dict(self.cfg):
                     self.cfg.ub_tp_comm_overlap = False
+
             if self.cfg.get('fsdp', False):
                 logging.info(
                     "Userbuffer tensor-parallel communication overlap is not available with FSDP."

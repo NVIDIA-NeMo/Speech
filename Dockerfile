@@ -31,7 +31,7 @@ ARG REQUIRE_AIS_CLI=false
 
 # Ensure apt-get won't prompt for selecting options
 ENV DEBIAN_FRONTEND=noninteractive
-# libavdevice-dev rerquired for latest torchaudio
+# libavdevice-dev required for latest torchaudio
 RUN apt-get update && \
   apt-get upgrade -y && \
   apt-get install -y \
@@ -40,6 +40,25 @@ RUN apt-get update && \
   swig \
   ffmpeg \
   libavdevice-dev && \
+  rm -rf /var/lib/apt/lists/*
+
+# libtool, ... , libgts-dev are required for graphviz
+# graphviz is required for k2 and pynini visualization
+RUN apt-get update && \
+  apt-get install -y \
+  libtool \
+  libltdl-dev \
+  automake \
+  autoconf \
+  bison \
+  flex \
+  tcl \
+  ghostscript \
+  libgd-dev \
+  fontconfig \
+  libcairo2-dev \
+  libpango1.0-dev \
+  libgts-dev && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/
@@ -89,6 +108,17 @@ RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-chec
 RUN pip install flash-attn
 # install numba for latest containers
 RUN pip install numba>=0.57.1
+
+COPY scripts /tmp/nemo/scripts/
+# install correct graphviz version (k2 and pynini visualization tool), skip if installation fails
+RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_graphviz.sh --docker); INSTALL_CODE=$?; \
+  echo ${INSTALL_MSG}; \
+  if [ ${INSTALL_CODE} -ne 0 ]; then \
+  echo "graphviz installation failed";  \
+  if [ "${REQUIRE_K2}" = true ]; then \
+  exit ${INSTALL_CODE};  \
+  else echo "Skipping failed graphviz installation"; fi \
+  else echo "graphviz installed successfully"; fi
 
 # install k2, skip if installation fails
 COPY scripts /tmp/nemo/scripts/

@@ -66,6 +66,8 @@ def main(cfg):
     if cfg.analyst.metric_calculator.get("metric", "wer") == "wer":
         output_manifest_w_wer, total_res, eval_metric = cal_write_wer(
             pred_manifest=cfg.engine.output_filename,
+            gt_text_attr_name=cfg.analyst.metric_calculator.get("gt_text_attr_name", "text"),
+            pred_text_attr_name=cfg.analyst.metric_calculator.get("pred_text_attr_name", "pred_text"),
             clean_groundtruth_text=cfg.analyst.metric_calculator.clean_groundtruth_text,
             langid=cfg.analyst.metric_calculator.langid,
             use_cer=cfg.analyst.metric_calculator.use_cer,

@@ -106,6 +106,7 @@ def convert_num_to_words(_str: str, langid: str = "en") -> str:
 
 def cal_write_wer(
     pred_manifest: str = None,
+    gt_text_attr_name: str = "text",
     pred_text_attr_name: str = "pred_text",
     clean_groundtruth_text: bool = False,
     langid: str = 'en',
@@ -128,14 +129,17 @@ def cal_write_wer(
         for line in fp:
             sample = json.loads(line)
 
-            if 'text' not in sample:
-                logging.info(
-                    "ground-truth text is not present in manifest! Cannot calculate Word Error Rate. Returning!"
-                )
+            if gt_text_attr_name not in sample:
+                if "text" in sample:
+                    gt_text_attr_name = "text"
+                else:
+                    logging.info(
+                        f"ground-truth text attribute {gt_text_attr_name} is not present in manifest! Cannot calculate WER. Returning!"
+                    )
                 return None, None, eval_metric
 
-            hyp = sample[pred_text_attr_name]
-            ref = sample['text']
+            hyp = sample[pred_text_attr_name].strip()
+            ref = sample[gt_text_attr_name].strip()
 
             if clean_groundtruth_text:
                 ref = clean_label(ref, langid=langid)
@@ -211,13 +215,16 @@ def cal_write_text_metric(
             sample = json.loads(line)
 
             if gt_text_attr_name not in sample:
-                logging.info(
-                    f"ground-truth text attribute {pred_text_attr_name} is not present in manifest! Cannot calculate {metric}. Returning!"
-                )
+                if "text" in sample:
+                    gt_text_attr_name = "text"
+                else:
+                    logging.info(
+                        f"ground-truth text attribute {gt_text_attr_name} is not present in manifest! Cannot calculate {metric}. Returning!"
+                    )
                 return None, None, metric
 
-            hyp = sample[pred_text_attr_name]
-            ref = sample['text']
+            hyp = sample[pred_text_attr_name].strip()
+            ref = sample[gt_text_attr_name].strip()
 
             if ignore_punctuation:
                 ref = remove_punctuations(ref, punctuations=punctuations)
@@ -227,13 +234,18 @@ def cal_write_text_metric(
                 ref = ref.lower()
                 hyp = hyp.lower()
 
-            score = metric_calculator(hyp, ref).item()
+            if metric == 'bleu':
+                score = metric_calculator([hyp], [[ref]]).item()
+            else:
+                score = metric_calculator(hyp, ref).item()
             sample[metric] = score  # evaluatin metric, could be word error rate of character error rate
 
             samples.append(sample)
             hyps.append(hyp)
             refs.append(ref)
 
+    if metric == 'bleu':
+        refs = [[ref] for ref in refs]
     total_score = metric_calculator(hyps, refs).item()
 
     if not output_filename:

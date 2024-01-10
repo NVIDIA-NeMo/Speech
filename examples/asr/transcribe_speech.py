@@ -175,6 +175,9 @@ class TranscriptionConfig:
     # Set to False to return text instead of hypotheses from the transcribe function, so as to save memory
     return_hypotheses: bool = True
 
+    # key for groundtruth text in manifest
+    gt_text_attr_name: str = "text"
+
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
 def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis]]:
@@ -370,6 +373,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     if cfg.calculate_wer:
         output_manifest_w_wer, total_res, _ = cal_write_wer(
             pred_manifest=output_filename,
+            gt_text_attr_name=cfg.gt_text_attr_name,
             pred_text_attr_name=pred_text_attr_name,
             clean_groundtruth_text=cfg.clean_groundtruth_text,
             langid=cfg.langid,

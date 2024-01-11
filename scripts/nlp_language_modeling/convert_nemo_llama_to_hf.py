@@ -87,13 +87,14 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
     Convert NeMo weights to HF weights
     """
     dummy_trainer = Trainer(devices=1, accelerator='cpu', strategy=NLPDDPStrategy())
+    model_config = MegatronGPTModel.restore_from(input_nemo_file, trainer=dummy_trainer, return_config=True)
+    model_config.tensor_model_parallel_size = 1
+    model_config.pipeline_model_parallel_size = 1
     if cpu_only:
         map_location = torch.device('cpu')
-        model_config = MegatronGPTModel.restore_from(input_nemo_file, trainer=dummy_trainer, return_config=True)
         model_config.use_cpu_initialization = True
-        model_config.tensor_model_parallel_size = 1
     else:
-        map_location, model_config = None, None
+        map_location = None
 
     if cpu_only:
         logging.info("******** Loading model on CPU. This will take a significant amount of time.")

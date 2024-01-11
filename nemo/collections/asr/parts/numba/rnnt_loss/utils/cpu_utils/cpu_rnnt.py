@@ -203,10 +203,13 @@ class CPURNNT:
         self.num_threads_ = num_threads
         self.batch_first = batch_first
 
+        _torch_num_threads = torch.get_num_threads()
         if num_threads > 0:
             numba.set_num_threads(min(multiprocessing.cpu_count(), num_threads))
+            self.num_threads_ = numba.get_num_threads()
         else:
             self.num_threads_ = numba.get_num_threads()
+        torch.set_num_threads(_torch_num_threads)
 
     def cost_and_grad_kernel(
         self,

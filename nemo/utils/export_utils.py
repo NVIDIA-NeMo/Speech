@@ -35,8 +35,8 @@ except (ImportError, ModuleNotFoundError):
 class ExportFormat(Enum):
     """Which format to use when exporting a Neural Module for deployment"""
 
-    ONNX = (1,)
-    TORCHSCRIPT = (2,)
+    ONNX = 1
+    TORCHSCRIPT = 2
 
 
 _EXT_DICT = {

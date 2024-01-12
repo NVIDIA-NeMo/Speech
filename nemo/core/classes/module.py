@@ -14,6 +14,7 @@
 
 from contextlib import contextmanager
 
+import torch
 from torch.nn import Module
 
 from nemo.core.classes.common import FileIO, Serialization, Typing
@@ -31,6 +32,10 @@ class NeuralModule(Module, Typing, Serialization, FileIO):
         """
         Utility property that returns the total number of parameters of NeuralModule.
         """
+        return self._num_weights()
+
+    @torch.jit.ignore
+    def _num_weights(self):
         num: int = 0
         for p in self.parameters():
             if p.requires_grad:

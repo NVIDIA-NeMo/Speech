@@ -241,10 +241,10 @@ class BertPretrainingDataset(Dataset):
 
         input_ids, output_mask = self.mask_ids(output_ids)
 
-        input_mask = np.zeros(self.max_seq_length, dtype=np.long)
+        input_mask = np.zeros(self.max_seq_length, dtype=np.longlong)
         input_mask[: len(input_ids)] = 1
 
-        input_type_ids = np.zeros(self.max_seq_length, dtype=np.int)
+        input_type_ids = np.zeros(self.max_seq_length, dtype=np.int64)
         input_type_ids[len(a_document) + 2 : len(output_ids) + 1] = 1
 
         padding_length = max(0, self.max_seq_length - len(input_ids))
@@ -257,7 +257,7 @@ class BertPretrainingDataset(Dataset):
         return (
             np.array(input_ids),
             input_type_ids,
-            np.array(input_mask, dtype=np.long),
+            np.array(input_mask, dtype=np.longlong),
             np.array(output_ids),
             np.array(output_mask, dtype=np.float32),
             is_next,

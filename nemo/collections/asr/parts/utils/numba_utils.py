@@ -28,7 +28,7 @@ def phase_vocoder(D: np.ndarray, rate: float, phi_advance: np.ndarray, scale_buf
     Returns:
         Complex64 ndarray of shape [d, t / rate, complex=2]
     """
-    time_steps = np.arange(0, D.shape[1], rate, dtype=np.float)
+    time_steps = np.arange(0, D.shape[1], rate, dtype=np.float64)
 
     # Create an empty output array
     d_stretch = np.zeros((D.shape[0], len(time_steps)), D.dtype, order='F')

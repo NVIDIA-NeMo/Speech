@@ -88,7 +88,7 @@ Following is the retro memory map index data format:
      - chunk id address in byte (int64 array)
      -
 
-:sup:`1` 1: np.uint8, 2: np.int8, 3: np.int16, 4: np.int32, 5: np.int64, 6: np.float, 7: np.double, 8: np.uint16
+:sup:`1` 1: np.uint8, 2: np.int8, 3: np.int16, 4: np.int32, 5: np.int64, 6: np.float64, 7: np.double, 8: np.uint16
 
 :sup:`2` When building the indexed dataset, we pad each sentence to be a multiple of ``chunk_size`` with ``pad_id`` from the tokenizer. 
 The number of tokens for each sentence includes the padded token ids. For retrieval data, there is an extra ``chunk_size`` padding at 

@@ -1,6 +1,6 @@
 huggingface_hub
 numba
-numpy>=1.22,<1.24
+numpy>=1.22
 onnx>=1.7.0
 python-dateutil
 ruamel.yaml

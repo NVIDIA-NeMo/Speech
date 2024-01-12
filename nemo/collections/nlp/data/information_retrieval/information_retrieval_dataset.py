@@ -131,7 +131,7 @@ class BaseInformationRetrievalDataset(Dataset):
         num_nonpad_tokens = len(bert_input)
 
         input_ids[:num_nonpad_tokens] = bert_input
-        input_ids = np.array(input_ids, dtype=np.long)
+        input_ids = np.array(input_ids, dtype=np.longlong)
         input_mask = input_ids != self.tokenizer.pad_id
         input_type_ids = np.ones_like(input_ids)
         input_type_ids[:sentence1_length] = 0

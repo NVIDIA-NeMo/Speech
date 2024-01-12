@@ -155,7 +155,7 @@ class DialogueSGDBERTDataset(DialogueDataset):
             np.array(ex.example_id_num[-1]),  # service_id
             np.array(ex.utterance_ids),
             np.array(ex.utterance_segment),
-            np.array(ex.utterance_mask, dtype=np.long),
+            np.array(ex.utterance_mask, dtype=np.longlong),
             np.array(ex.intent_status, dtype=np.float32),
             np.array(ex.requested_slot_status, dtype=np.float32),
             np.array(ex.categorical_slot_status),

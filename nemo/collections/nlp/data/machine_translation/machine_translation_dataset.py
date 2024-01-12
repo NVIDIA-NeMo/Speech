@@ -164,8 +164,8 @@ class TranslationDataset(Dataset):
         for batch_idx, b in enumerate(batch_indices):
             src_len = max([len(src_ids[i]) for i in b])
             tgt_len = max([len(tgt_ids[i]) for i in b])
-            src_ids_ = self.src_pad_id * np.ones((len(b), src_len), dtype=np.int)
-            tgt_ids_ = self.tgt_pad_id * np.ones((len(b), tgt_len), dtype=np.int)
+            src_ids_ = self.src_pad_id * np.ones((len(b), src_len), dtype=np.int64)
+            tgt_ids_ = self.tgt_pad_id * np.ones((len(b), tgt_len), dtype=np.int64)
             for i, sentence_idx in enumerate(b):
                 src_ids_[i][: len(src_ids[sentence_idx])] = src_ids[sentence_idx]
                 tgt_ids_[i][: len(tgt_ids[sentence_idx])] = tgt_ids[sentence_idx]

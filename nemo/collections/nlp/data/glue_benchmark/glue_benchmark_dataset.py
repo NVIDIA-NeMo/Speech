@@ -183,7 +183,7 @@ class GLUEDataset(Dataset):
         return (
             np.array(feature.input_ids),
             np.array(feature.segment_ids),
-            np.array(feature.input_mask, dtype=np.long),
+            np.array(feature.input_mask, dtype=np.longlong),
             np.array(feature.label_id),
         )
 

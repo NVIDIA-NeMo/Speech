@@ -234,7 +234,7 @@ class IntentSlotClassificationDataset(Dataset):
         return (
             np.array(self.all_input_ids[idx]),
             np.array(self.all_segment_ids[idx]),
-            np.array(self.all_input_mask[idx], dtype=np.long),
+            np.array(self.all_input_mask[idx], dtype=np.longlong),
             np.array(self.all_loss_mask[idx]),
             np.array(self.all_subtokens_mask[idx]),
             self.all_intents[idx],
@@ -291,7 +291,7 @@ class IntentSlotInferenceDataset(Dataset):
         return (
             np.array(self.all_input_ids[idx]),
             np.array(self.all_segment_ids[idx]),
-            np.array(self.all_input_mask[idx], dtype=np.long),
+            np.array(self.all_input_mask[idx], dtype=np.longlong),
             np.array(self.all_loss_mask[idx]),
             np.array(self.all_subtokens_mask[idx]),
         )

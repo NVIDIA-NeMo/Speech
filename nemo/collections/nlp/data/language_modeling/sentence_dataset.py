@@ -68,7 +68,7 @@ class SentenceDataset(Dataset):
 
         batches = []
         for batch_elem_len, batch_sent_ids in zip(self.batch_elem_lengths, self.batch_sent_ids):
-            batch = self.tokenizer.pad_id * np.ones((len(batch_sent_ids), batch_elem_len), dtype=np.int)
+            batch = self.tokenizer.pad_id * np.ones((len(batch_sent_ids), batch_elem_len), dtype=np.int64)
             for i, sentence_idx in enumerate(batch_sent_ids):
                 batch[i][: len(ids[sentence_idx])] = ids[sentence_idx]
             batches.append(batch)

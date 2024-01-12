@@ -460,6 +460,6 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
             self.all_query_ids[idx],
             self.all_is_first[idx],
             self.all_is_last[idx],
-            np.array(self.all_audio_queries[idx], dtype=np.float),
+            np.array(self.all_audio_queries[idx], dtype=np.float64),
             self.all_audio_lengths[idx],
         )

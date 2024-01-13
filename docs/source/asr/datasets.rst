@@ -507,6 +507,129 @@ An example using an AIS cluster at ``hostname:port`` with a tarred dataset for t
 
 .. _Hybrid-ASR-TTS_model__Text-Only-Data:
 
+
+Lhotse Dataloading
+------------------
+
+NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading option. The key features of Lhotse used in NeMo are:
+
+* Dynamic batch sizes
+    Lhotse samples mini-batches to satisfy the constraint of total speech duration in a mini-batch (``batch_duration``),
+    rather than a specific number of examples (i.e., batch size).
+* Dynamic bucketing
+    Instead of statically pre-bucketing the data, Lhotse allocates training examples to buckets dynamically.
+    This allows more rapid experimentation with bucketing settings (number of buckets, specific placement of bucket duration bins)
+    to minimize the amount of padding and accelerate training.
+* Quadratic duration penalty
+    Adding a quadratic penalty to an utterance's duration allows to sample mini-batches so that the
+    GPU utilization is more consistent across big batches of short utterances and small batches of long utterances when using
+    models with quadratic time/memory complexity (such as transformer).
+* Dynamic weighted data source multiplexing
+    An approach to combining diverse data sources (e.g. multiple domains, languages, tasks)
+    where each data source is treated as a separate stream with its own sampling probability. The resulting data stream is a
+    multiplexer that samples from each sub-stream. This approach ensures that the distribution of different sources is approximately
+    constant in time (i.e., stationary); in fact, each mini-batch will have roughly the same ratio of data coming from each source.
+    Since the multiplexing is done dynamically, it is very easy to tune the sampling weights.
+
+Lhotse dataloading supports the following types of inputs:
+
+* NeMo manifests
+    Regular NeMo JSON manifests.
+* NeMo tarred data
+    Tarred NeMo JSON manifests + audio tar files; we also support combination of multiple NeMo
+    tarred data sources (e.g., multiple buckets of NeMo data or multiple datasets) via dynamic multiplexing.
+* Lhotse CutSet manifests
+    Regular Lhotse CutSet manifests (typically gzipped JSONL).
+    See `Lhotse Cuts documentation`_ to learn more about Lhotse data formats.
+* Lhotse Shar data
+    Lhotse Shar is a data format that also uses tar files for sequential data loading,
+    but is designed to be modular (i.e., easily extensible with new data sources and with new feature fields).
+    More details can be found here: |tutorial_shar|
+
+.. caution:: As of now, Lhotse is mainly supported in most ASR model configurations. We aim to gradually extend this support to other speech tasks.
+
+.. _Lhotse: https://github.com/lhotse-speech/lhotse
+.. _Lhotse Cuts documentation: https://lhotse.readthedocs.io/en/latest/cuts.html
+.. |tutorial_shar| image:: https://colab.research.google.com/assets/colab-badge.svg
+    :target: https://colab.research.google.com/github/lhotse-speech/lhotse/blob/master/examples/04-lhotse-shar.ipynb
+
+Enabling Lhotse via configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. note:: Using Lhotse with tarred datasets will make the dataloader infinite, ditching the notion of an "epoch". "Epoch" may still be logged in W&B/TensorBoard, but it will correspond to the number of executed training loops between validation loops.
+
+Start with an existing NeMo experiment YAML configuration. Typically, you'll only need to add a few options to enable Lhotse.
+These options are::
+
+    # NeMo generic dataloading arguments
+    model.train_ds.manifest_filepath=...
+    model.train_ds.tarred_audio_filepaths=...   # for tarred datasets only
+    model.train_ds.num_workers=4
+    model.train_ds.min_duration=0.3             # optional
+    model.train_ds.max_duration=30.0            # optional
+    model.train_ds.shuffle=true                 # optional
+
+    # Lhotse dataloading related arguments
+    ++model.train_ds.use_lhotse=True
+    ++model.train_ds.batch_duration=1100
+    ++model.train_ds.quadratic_duration=30
+    ++model.train_ds.num_buckets=30
+    ++model.train_ds.num_cuts_for_bins_estimate=10000
+    ++model.train_ds.bucket_buffer_size=10000
+    ++model.train_ds.shuffle_buffer_size=10000
+
+    # PyTorch Lightning related arguments
+    ++trainer.use_distributed_sampler=false
+    ++trainer.limit_train_batches=1000
+    trainer.val_check_interval=1000
+    trainer.max_steps=300000
+
+.. note:: The default values above are a reasonable starting point for a hybrid RNN-T + CTC ASR model on a 32GB GPU with a data distribution dominated by 15s long utterances.
+
+Let's briefly go over each of the Lhotse dataloading arguments:
+
+* ``use_lhotse`` enables Lhotse dataloading
+* ``batch_duration`` is the total max duration of utterances in a mini-batch and controls the batch size; the more shorter utterances, the bigger the batch size, and vice versa.
+* ``quadratic_duration`` adds a quadratically growing penalty for long utterances; useful in bucketing and transformer type of models. The value set here means utterances this long will count as if with a doubled duration.
+* ``num_buckets`` is the number of buckets in the bucketing sampler. Bigger value means less padding but also less randomization.
+* ``num_cuts_for_bins_estimate`` is the number of utterance we will sample before the start of the training to estimate the duration bins for buckets. Larger number results in a more accurate estimatation but also a bigger lag before starting the training.
+* ``bucket_buffer_size`` is the number of utterances (data and metadata) we will hold in memory to be distributed between buckets. With bigger ``batch_duration``, this number may need to be increased for dynamic bucketing sampler to work properly (typically it will emit a warning if this is too low).
+* ``shuffle_buffer_size`` is an extra number of utterances we will hold in memory to perform approximate shuffling (via reservoir-like sampling). Bigger number means more memory usage but also better randomness.
+
+The PyTorch Lightning ``trainer`` related arguments:
+
+* ``use_distributed_sampler=false`` is required because Lhotse has its own handling of distributed sampling.
+* ``val_check_interval``/``limit_train_batches``
+    These are required for dataloaders with tarred/Shar datasets
+    because Lhotse makes the dataloader infinite, so we'd never go past epoch 0. This approach guarantees
+    we will never hang the training because the dataloader in some node has less mini-batches than the others
+    in some epochs. The value provided here will be the effective length of each "pseudo-epoch" after which we'll
+    trigger the validation loop.
+* ``max_steps`` is the total number of steps we expect to be training for. It is required for the same reason as ``limit_train_batches``; since we'd never go past epoch 0, the training would have never finished.
+
+Some other Lhotse related arguments we support:
+
+* ``cuts_path`` can be provided to read data from a Lhotse CutSet manifest instead of a NeMo manifest.
+    Specifying this option will result in ``manifest_filepaths`` and ``tarred_audio_filepaths`` being ignored.
+* ``shar_path``
+    Can be provided to read data from a Lhotse Shar manifest instead of a NeMo manifest.
+    This argument can be a string (single Shar directory), a list of strings (Shar directories),
+    or a list of 2-item lists, where the first item is a Shar directory path, and the other is a sampling weight.
+    Specifying this option will result in ``manifest_filepaths`` and ``tarred_audio_filepaths`` being ignored.
+* ``bucket_duration_bins``
+    Duration bins are a list of float values (seconds) that when provided, will skip the initial bucket bin estimation
+    and save some time. It has to have a length of ``num_buckets - 1``. An optimal value can be obtained by running CLI:
+    ``lhotse cut estimate-bucket-bins -b $num_buckets my-cuts.jsonl.gz``
+* ``use_bucketing`` is a boolean which indicates if we want to enable/disable dynamic bucketing. By defalt it's enabled.
+* ``text_field`` is the name of the key in the JSON (NeMo) manifest from which we should be reading text (default="text").
+* ``lang_field`` is the name of the key in the JSON (NeMo) manifest from which we should be reading language tag (default="lang"). This is useful when working e.g. with ``AggregateTokenizer``.
+* ``batch_size``
+    Limits the number of examples in a mini-batch to this number, when combined with ``batch_duration``.
+    When ``batch_duration`` is not set, it acts as a static batch size.
+* ``seed`` sets a random seed for the shuffle buffer.
+
+The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
+
 Preparing Text-Only Data for Hybrid ASR-TTS Models
 --------------------------------------------------
 

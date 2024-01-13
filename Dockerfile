@@ -102,6 +102,7 @@ RUN INSTALL_MSG=$(/bin/bash /tmp/torchaudio_build/scripts/installers/install_tor
 
 # install nemo dependencies
 WORKDIR /tmp/nemo
+ENV LHOTSE_REQUIRE_TORCHAUDIO=0
 COPY requirements .
 RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
 

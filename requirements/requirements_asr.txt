@@ -5,6 +5,7 @@ ipywidgets
 jiwer
 kaldi-python-io
 kaldiio
+lhotse>=1.19.2
 librosa>=0.10.0
 marshmallow
 matplotlib
@@ -12,6 +13,7 @@ packaging
 pyannote.core
 pyannote.metrics
 pydub
+pyloudnorm
 resampy
 ruamel.yaml
 scipy>=0.14

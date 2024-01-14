@@ -335,10 +335,19 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
 
     def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
         batch = next(dataloader_iter)
+
+        log_token_counts = self.cfg.get('log_token_counts', False)
+        if log_token_counts:
+            token_count_avg = sum(batch['token_count']) / len(batch['token_count'])
+
         # Pass only torch.Tensor to prevent errors when process get_iterator_k_split()
         batch = {k: v for k, v in batch.items() if isinstance(v, torch.Tensor)}
         _, seq_length = batch['tokens'].shape
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
+
+        if log_token_counts:
+            self.log('seq_length_padded', seq_length, prog_bar=True, batch_size=1)
+            self.log('tokens_avg', token_count_avg, prog_bar=True, sync_dist=True, batch_size=1)
 
         # handle asynchronous grad reduction
         no_sync_func = None

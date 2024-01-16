@@ -138,9 +138,9 @@ class HATJoint(rnnt.RNNTJoint):
     def return_hat_ilm(self, hat_subtract_ilm):
         self._return_hat_ilm = hat_subtract_ilm
 
-    def joint(self, f: torch.Tensor, g: torch.Tensor) -> Union[torch.Tensor, HATJointOutput]:
+    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> Union[torch.Tensor, HATJointOutput]:
         """
-        Compute the joint step of the network.
+        Compute the joint step of the network after Encoder/Decoder projection.
 
         Here,
         B = Batch size
@@ -169,14 +169,8 @@ class HATJoint(rnnt.RNNTJoint):
             Log softmaxed tensor of shape (B, T, U, V + 1).
             Internal LM probability (B, 1, U, V) -- in case of return_ilm==True.
         """
-        # f = [B, T, H1]
-        f = self.enc(f)
-        f.unsqueeze_(dim=2)  # (B, T, 1, H)
-
-        # g = [B, U, H2]
-        g = self.pred(g)
-        g.unsqueeze_(dim=1)  # (B, 1, U, H)
-
+        f = f.unsqueeze(dim=2)  # (B, T, 1, H)
+        g = g.unsqueeze(dim=1)  # (B, 1, U, H)
         inp = f + g  # [B, T, U, H]
 
         del f

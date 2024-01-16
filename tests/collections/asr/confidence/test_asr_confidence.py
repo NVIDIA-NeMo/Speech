@@ -26,7 +26,7 @@ from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE, EncDecRNNTB
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.ctc_greedy_decoding import GreedyCTCInferConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
-from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyRNNTInferConfig
+from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInferConfig
 from nemo.collections.asr.parts.utils.asr_confidence_benchmarking_utils import run_confidence_benchmark
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConfig
 
@@ -125,7 +125,7 @@ class TestASRConfidenceBenchmark:
             RNNTDecodingConfig(
                 fused_batch_size=-1,
                 strategy="greedy",
-                greedy=GreedyRNNTInferConfig(preserve_frame_confidence=True, **test_args_greedy),
+                greedy=GreedyBatchedRNNTInferConfig(preserve_frame_confidence=True, **test_args_greedy),
             )
             if model_name == "rnnt"
             else CTCDecodingConfig(greedy=GreedyCTCInferConfig(preserve_frame_confidence=True, **test_args_greedy))

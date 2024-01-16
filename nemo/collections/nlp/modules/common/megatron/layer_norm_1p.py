@@ -40,7 +40,7 @@ if HAVE_APEX:
             torch.nn.init.zeros_(self.bias)
 
         def forward(self, x):
-            return _fast_layer_norm(x, self.weight + 1, self.bias, self.epsilon)
+            return _fast_layer_norm(x, self.weight + 1, self.bias, self.epsilon, memory_efficient=False)
 
 
 else:

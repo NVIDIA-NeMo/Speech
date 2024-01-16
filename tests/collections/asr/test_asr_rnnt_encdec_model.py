@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.models import EncDecRNNTModel
@@ -41,40 +42,67 @@ def max_symbols_setup():
         def predict(
             self,
             y: Optional[torch.Tensor] = None,
-            state: Optional[torch.Tensor] = None,
+            state: Optional[List[torch.Tensor]] = None,
             add_sos: bool = False,
             batch_size: Optional[int] = None,
         ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
             if batch_size is None:
                 batch_size = 1
             if y is not None:
-                y = y + torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32).repeat(y.size())
+                assert len(y.shape) == 2
+                assert list(y.shape) == [batch_size, 1]
+            if state is not None:
+                assert len(state) == 1
+                assert len(state[0].shape) == 3
+                assert list(state[0].shape) == [1, batch_size, self.vocab_size + 1]
+            if y is not None:
+                # boost blank
+                output = F.one_hot(y, num_classes=self.vocab_size + 1) + torch.tensor(
+                    [0] * self.vocab_size + [1], dtype=torch.float32
+                )[None, None, :].expand([batch_size, 1, -1])
             if y is not None and state is not None:
-                return (y + state) / 2, y * state
+                return (output + state[0].transpose(0, 1)) / 2, [output.transpose(0, 1) * state[0]]
             elif state is not None:
-                return torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32).repeat(state.size()), state
+                return (
+                    torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].expand(
+                        [batch_size, 1, -1]
+                    ),
+                    state,
+                )
             elif y is not None:
-                return y, torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32).repeat(y.size())
+                return (
+                    output,
+                    [
+                        torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].exand(
+                            [1, batch_size, -1]
+                        )
+                    ],
+                )
+            # y, state - None (initial call)
             return (
-                torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32).repeat([1, batch_size, 1]),
-                torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32).repeat([1, batch_size, 1]),
+                torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].expand(
+                    [batch_size, 1, -1]
+                ),
+                [
+                    torch.tensor([0] * self.vocab_size + [1], dtype=torch.float32)[None, None, :].expand(
+                        [1, batch_size, -1]
+                    )
+                ],
             )
 
-        def initialize_state(self, y: torch.Tensor) -> List[torch.Tensor]:
-            return [torch.tensor()]
+        def initialize_state(self, y: torch.Tensor) -> Optional[List[torch.Tensor]]:
+            return None
 
         def score_hypothesis(
             self, hypothesis: Hypothesis, cache: Dict[Tuple[int], Any]
         ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
             return torch.tensor(), [torch.tensor()], torch.tensor()
 
-        def batch_select_state(self, batch_states: List[torch.Tensor], idx: int) -> List[List[torch.Tensor]]:
+        def batch_select_state(
+            self, batch_states: Optional[List[torch.Tensor]], idx: int
+        ) -> Optional[List[List[torch.Tensor]]]:
             if batch_states is not None:
-                try:
-                    states = batch_states[0][idx]
-                    states = states.long()
-                except Exception as e:
-                    raise Exception(batch_states, idx)
+                states = [batch_states[0][:, idx]]
                 return [states]
             else:
                 return None
@@ -87,18 +115,39 @@ def max_symbols_setup():
             value: Optional[float] = None,
         ) -> List[torch.Tensor]:
             if value is None:
-                old_states[0][ids, :] = new_states[0][ids, :]
+                old_states[0][:, ids] = new_states[0][:, ids]
 
             return old_states
 
+        def mask_select_states(
+            self, states: Optional[torch.Tensor], mask: torch.Tensor
+        ) -> Optional[List[torch.Tensor]]:
+            if states is None:
+                return None
+            return [states[0][:, mask]]
+
     class DummyRNNTJoint(AbstractRNNTJoint):
-        def joint(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        def __init__(self, num_outputs: int):
+            super().__init__()
+            self.num_outputs = num_outputs
+
+        @property
+        def num_classes_with_blank(self):
+            return self.num_outputs
+
+        def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
+            return encoder_output
+
+        def project_prednet(self, prednet_output: torch.Tensor) -> torch.Tensor:
+            return prednet_output
+
+        def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
             return f.unsqueeze(dim=2) + g.unsqueeze(dim=1)
 
     setup = {}
     setup["decoder"] = DummyRNNTDecoder(vocab_size=2, blank_idx=2, blank_as_pad=True)
     setup["decoder_masked"] = DummyRNNTDecoder(vocab_size=2, blank_idx=2, blank_as_pad=False)
-    setup["joint"] = DummyRNNTJoint()
+    setup["joint"] = DummyRNNTJoint(num_outputs=3)
     # expected timesteps for max_symbols_per_step=5 are [[0, 0, 0, 0, 0, 1, 1], [1, 1, 1, 1, 1]],
     # so we have both looped and regular iteration on the second frame
     setup["encoder_output"] = torch.tensor(
@@ -760,8 +809,11 @@ class TestEncDecRNNTModel:
                     confidence_len = len(hyp.frame_confidence[t])
                     assert confidence_len <= max_symbols_per_step
                     if t in timestep_count:  # non-blank
+                        # if timestep_count[t] less than max_symbols_per_step,
+                        # blank emission and corresponding confidence expected
+                        # if timestep_count[t] == max_symbols_per_step, "forced blank" is not added => no confidence
                         assert confidence_len == timestep_count[t] + (
-                            1 if confidence_len < max_symbols_per_step else 0
+                            1 if timestep_count[t] < max_symbols_per_step else 0
                         )
                     else:  # blank
                         assert confidence_len == 1
@@ -777,7 +829,7 @@ class TestEncDecRNNTModel:
     @pytest.mark.parametrize(
         "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
     )
-    @pytest.mark.parametrize("max_symbols_per_step", [0, 1, 5])
+    @pytest.mark.parametrize("max_symbols_per_step", [1, 5])
     def test_greedy_decoding_max_symbols_alignment(self, max_symbols_setup, greedy_class, max_symbols_per_step):
         decoders = [max_symbols_setup["decoder"]]
         if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:
@@ -819,7 +871,32 @@ class TestEncDecRNNTModel:
     @pytest.mark.parametrize(
         "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
     )
-    @pytest.mark.parametrize("max_symbols_per_step", [0, 1, 5])
+    @pytest.mark.parametrize("max_symbols_per_step", [-1, 0])
+    def test_greedy_decoding_max_symbols_confidence(self, max_symbols_setup, greedy_class, max_symbols_per_step):
+        """Test ValueError for max_symbols_per_step <= 0"""
+        decoders = [max_symbols_setup["decoder"]]
+        if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:
+            decoders.append(max_symbols_setup["decoder_masked"])
+        joint = max_symbols_setup["joint"]
+
+        for decoder in decoders:
+            with pytest.raises(ValueError):
+                _ = greedy_class(
+                    decoder_model=decoder,
+                    joint_model=joint,
+                    blank_index=decoder.blank_idx,
+                    max_symbols_per_step=max_symbols_per_step,
+                    preserve_frame_confidence=True,
+                )
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "greedy_class", [greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyBatchedRNNTInfer],
+    )
+    @pytest.mark.parametrize("max_symbols_per_step", [1, 5])
     def test_greedy_decoding_max_symbols_confidence(self, max_symbols_setup, greedy_class, max_symbols_per_step):
         decoders = [max_symbols_setup["decoder"]]
         if greedy_class is greedy_decode.GreedyBatchedRNNTInfer:

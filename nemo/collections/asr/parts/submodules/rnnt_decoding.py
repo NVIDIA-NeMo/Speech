@@ -316,6 +316,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
+                        loop_labels=self.cfg.greedy.get('loop_labels', True),
                     )
                 else:
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
@@ -1495,8 +1496,8 @@ class RNNTDecodingConfig:
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both
 
     # greedy decoding config
-    greedy: rnnt_greedy_decoding.GreedyRNNTInferConfig = field(
-        default_factory=lambda: rnnt_greedy_decoding.GreedyRNNTInferConfig()
+    greedy: rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig = field(
+        default_factory=rnnt_greedy_decoding.GreedyBatchedRNNTInferConfig
     )
 
     # beam decoding config

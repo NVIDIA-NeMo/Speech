@@ -398,6 +398,22 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         return old_states
 
+    def mask_select_states(
+        self, states: Optional[List[torch.Tensor]], mask: torch.Tensor
+    ) -> Optional[List[torch.Tensor]]:
+        """
+        Return states by mask selection
+        Args:
+            states: states for the batch
+            mask: boolean mask for selecting states; batch dimension should be the same as for states
+
+        Returns:
+            states filtered by mask
+        """
+        if states is None:
+            return None
+        return [states[0][mask]]
+
     def batch_score_hypothesis(
         self, hypotheses: List[rnnt_utils.Hypothesis], cache: Dict[Tuple[int], Any], batch_states: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor]:
@@ -1047,6 +1063,21 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
 
         return old_states
 
+    def mask_select_states(
+        self, states: Tuple[torch.Tensor, torch.Tensor], mask: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Return states by mask selection
+        Args:
+            states: states for the batch
+            mask: boolean mask for selecting states; batch dimension should be the same as for states
+
+        Returns:
+            states filtered by mask
+        """
+        # LSTM in PyTorch returns a tuple of 2 tensors as a state
+        return states[0][:, mask], states[1][:, mask]
+
     # Adapter method overrides
     def add_adapter(self, name: str, cfg: DictConfig):
         # Update the config with correct input dim
@@ -1382,9 +1413,33 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
             return losses, wer, wer_num, wer_denom
 
-    def joint(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+    def project_encoder(self, encoder_output: torch.Tensor) -> torch.Tensor:
         """
-        Compute the joint step of the network.
+        Project the encoder output to the joint hidden dimension.
+
+        Args:
+            encoder_output: A torch.Tensor of shape [B, T, D]
+
+        Returns:
+            A torch.Tensor of shape [B, T, H]
+        """
+        return self.enc(encoder_output)
+
+    def project_prednet(self, prednet_output: torch.Tensor) -> torch.Tensor:
+        """
+        Project the Prediction Network (Decoder) output to the joint hidden dimension.
+
+        Args:
+            prednet_output: A torch.Tensor of shape [B, U, D]
+
+        Returns:
+            A torch.Tensor of shape [B, U, H]
+        """
+        return self.pred(prednet_output)
+
+    def joint_after_projection(self, f: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the joint step of the network after projection.
 
         Here,
         B = Batch size
@@ -1412,14 +1467,8 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         Returns:
             Logits / log softmaxed tensor of shape (B, T, U, V + 1).
         """
-        # f = [B, T, H1]
-        f = self.enc(f)
-        f.unsqueeze_(dim=2)  # (B, T, 1, H)
-
-        # g = [B, U, H2]
-        g = self.pred(g)
-        g.unsqueeze_(dim=1)  # (B, 1, U, H)
-
+        f = f.unsqueeze(dim=2)  # (B, T, 1, H)
+        g = g.unsqueeze(dim=1)  # (B, 1, U, H)
         inp = f + g  # [B, T, U, H]
 
         del f, g
@@ -1536,7 +1585,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
     @property
     def fused_batch_size(self):
-        return self._fuse_loss_wer
+        return self._fused_batch_size
 
     def set_fused_batch_size(self, fused_batch_size):
         self._fused_batch_size = fused_batch_size

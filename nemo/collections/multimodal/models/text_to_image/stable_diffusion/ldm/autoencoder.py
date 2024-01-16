@@ -16,7 +16,11 @@ from contextlib import contextmanager
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
+
+try:
+    from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
+except ImportError:
+    from taming.modules.vqvae.quantize import VectorQuantizer
 
 from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.model import Decoder, Encoder
 from nemo.collections.multimodal.modules.stable_diffusion.distributions.distributions import (

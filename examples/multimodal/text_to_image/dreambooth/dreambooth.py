@@ -16,7 +16,7 @@ import os
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.multimodal.models.text_to_image.dreambooth import MegatronDreamBooth
+from nemo.collections.multimodal.models.text_to_image.dreambooth.dreambooth import MegatronDreamBooth
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm import MegatronLatentDiffusion
 from nemo.collections.multimodal.parts.stable_diffusion.pipeline import pipeline
 from nemo.collections.multimodal.parts.utils import setup_trainer_and_model_for_inference

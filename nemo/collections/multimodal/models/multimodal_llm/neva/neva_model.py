@@ -540,7 +540,6 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
                 init_method_std=self.cfg.get('init_method_std', 0.02),
                 use_scaled_init_method=self.cfg.get('use_scaled_init_method', True),
                 fp16_lm_cross_entropy=self.cfg.get('fp16_lm_cross_entropy', False),
-                megatron_amp_O2=self.cfg.get('megatron_amp_O2', False),
                 hidden_dropout=self.cfg.get('hidden_dropout', 0.1),
                 attention_dropout=self.cfg.get('attention_dropout', 0.1),
                 ffn_dropout=self.cfg.get('ffn_dropout', 0.0),

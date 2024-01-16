@@ -47,7 +47,7 @@ NVIDIA NeMo User Guide
    nlp/api
    nlp/megatron_onnx_export
    nlp/models
-   
+
 
 .. toctree::
    :maxdepth: 1
@@ -71,6 +71,23 @@ NVIDIA NeMo User Guide
    text_processing/g2p/g2p
    common/intro
 
+.. toctree::
+   :maxdepth: 3
+   :caption: Multimodal (MM)
+   :name: Multimodal
+
+   multimodal/mllm/intro
+   multimodal/vlm/intro
+   multimodal/text2img/intro
+   multimodal/nerf/intro
+   multimodal/api
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Vision
+   :name: vision
+
+   vision/intro
 
 .. toctree::
    :maxdepth: 3

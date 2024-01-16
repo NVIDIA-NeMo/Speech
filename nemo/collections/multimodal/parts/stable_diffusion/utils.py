@@ -46,7 +46,7 @@ def log_txt_as_img(wh, xc, size=10):
         try:
             draw.text((0, 0), lines, fill="black")
         except UnicodeEncodeError:
-            logging("Cant encode string for logging. Skipping.")
+            logging.info("Cant encode string for logging. Skipping.")
 
         txt = np.array(txt).transpose(2, 0, 1) / 127.5 - 1.0
         txts.append(txt)
@@ -88,7 +88,7 @@ def mean_flat(tensor):
 def count_params(model, verbose=False):
     total_params = sum(p.numel() for p in model.parameters())
     if verbose:
-        logging(f"{model.__class__.__name__} has {total_params * 1.e-6:.2f} M params.")
+        logging.info(f"{model.__class__.__name__} has {total_params * 1.e-6:.2f} M params.")
     return total_params
 
 
@@ -104,7 +104,7 @@ def instantiate_from_config(config):
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
-    logging(f'Getting module=<{module}>, cls=<{cls}>')
+    logging.info(f'Getting module=<{module}>, cls=<{cls}>')
     if reload:
         module_imp = importlib.import_module(module)
         importlib.reload(module_imp)
@@ -130,7 +130,7 @@ def parallel_data_prefetch(
         raise ValueError("list expected but function got ndarray.")
     elif isinstance(data, abc.Iterable):
         if isinstance(data, dict):
-            logging(
+            logging.info(
                 f'WARNING:"data" argument passed to parallel_data_prefetch is a dict: Using only its values and disregarding keys.'
             )
             data = list(data.values())
@@ -164,7 +164,7 @@ def parallel_data_prefetch(
         processes += [p]
 
     # start processes
-    logging(f"Start prefetching...")
+    logging.info(f"Start prefetching...")
     import time
 
     start = time.time()
@@ -183,7 +183,7 @@ def parallel_data_prefetch(
                 gather_res[res[0]] = res[1]
 
     except Exception as e:
-        logging("Exception: ", e)
+        logging.info("Exception: ", e)
         for p in processes:
             p.terminate()
 
@@ -191,7 +191,7 @@ def parallel_data_prefetch(
     finally:
         for p in processes:
             p.join()
-        logging(f"Prefetching complete. [{time.time() - start} sec.]")
+        logging.info(f"Prefetching complete. [{time.time() - start} sec.]")
 
     if target_data_type == 'ndarray':
         if not isinstance(gather_res[0], np.ndarray):

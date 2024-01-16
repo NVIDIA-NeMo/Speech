@@ -16,7 +16,6 @@ from typing import Optional, Tuple
 
 import mcubes
 import numpy as np
-import pymeshlab
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -304,7 +303,7 @@ class NeRFBase(nn.Module):
     @torch.no_grad()
     def mesh(
         self, resolution: Optional[int] = 128, batch_size: int = 128, density_thresh: Optional[float] = None
-    ) -> pymeshlab.Mesh:
+    ) -> trimesh.base.Trimesh:
         """
         Generate a mesh from the nerf.
 
@@ -314,7 +313,7 @@ class NeRFBase(nn.Module):
             density_thresh (Optional[float]): Density threshold for the mesh generation. Default is None, will be calculated from mean density.
 
         Returns:
-            pymeshlab.Mesh: Mesh object.
+            trimesh.base.Trimesh: Mesh object.
         """
         # Generate a grid of 3D points
         x = np.linspace(-self.bound, self.bound, resolution)
@@ -343,31 +342,21 @@ class NeRFBase(nn.Module):
         vertices, triangles = mcubes.marching_cubes(density, density_thresh)
 
         # Create a new Mesh
-        ms = pymeshlab.MeshSet()
+        mesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
 
-        # Create Mesh using vertices and faces
-        m = pymeshlab.Mesh(vertices.copy(), triangles.copy())
+        # Basic mesh cleaning and optimization
+        mesh.remove_unreferenced_vertices()
+        mesh.remove_infinite_values()
+        mesh.remove_duplicate_faces()
 
-        # Add mesh to the MeshSet
-        ms.add_mesh(m, "generated_mesh")
+        # Scale vertices back to [-self.bound, self.bound]
+        scaled_vertices = -self.bound + (mesh.vertices / resolution) * 2 * self.bound
+        mesh.vertices = scaled_vertices
 
-        # Filters
-        ms.meshing_remove_unreferenced_vertices()
-        ms.meshing_remove_duplicate_faces()
-        ms.meshing_remove_null_faces()
-        ms.meshing_repair_non_manifold_edges(method=0)
-        ms.meshing_repair_non_manifold_vertices(vertdispratio=0)
-
-        m = ms.current_mesh()
-        vertices = m.vertex_matrix()
-        faces = m.face_matrix()
-
-        scaled_vertice = (
-            -self.bound + (vertices / resolution) * 2 * self.bound
-        )  # scale vertices back to [-self.bound, self.bound]
-        scaled_vertices_torch = torch.tensor(scaled_vertice, dtype=torch.float32).to(device="cuda")
+        # Assigning color to vertices
+        scaled_vertices_torch = torch.tensor(scaled_vertices, dtype=torch.float32).to(device="cuda")
         color = batch_process(fn=self.forward_features, input=scaled_vertices_torch, batch_size=batch_size)
+        color = (color * 255).astype(np.uint8)
+        mesh.visual.vertex_colors = color
 
-        # Create the final mesh from cleaned vertices and faces and with color
-        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, vertex_colors=color)
         return mesh

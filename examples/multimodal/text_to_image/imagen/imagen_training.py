@@ -18,7 +18,7 @@ from omegaconf.omegaconf import OmegaConf, open_dict
 from torch._dynamo import disable
 from torch._inductor import config as inductor_config
 
-from nemo.collections.multimodal.models.text_to_image.imagen import MegatronImagen
+from nemo.collections.multimodal.models.text_to_image.imagen.imagen import MegatronImagen
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
 from nemo.core.config import hydra_runner
 from nemo.utils import logging

@@ -30,6 +30,7 @@ from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util 
     timestep_embedding,
     zero_module,
 )
+from nemo.utils import logging
 
 
 def convert_module_to_dtype(module, dtype):
@@ -302,6 +303,23 @@ class ResBlock(TimestepBlock):
             h = h + emb_out
             h = self.out_layers(h)
         return self.skip_connection(x) + h
+
+
+class AttentionBlock(nn.Module):
+    """
+    An attention block that allows spatial positions to attend to each other.
+    Originally ported from here, but adapted to the N-d case.
+    https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/models/unet.py#L66.
+    """
+
+    def __init__(
+        self, channels, num_heads=1, num_head_channels=-1, use_checkpoint=False, use_new_attention_order=False,
+    ):
+        super().__init__()
+        logging.info(
+            "This option is deprecated, please set use_spatial_transformer=True in unet_config to build attention blocks"
+        )
+        raise NotImplementedError
 
 
 def count_flops_attn(model, _x, y):

@@ -484,9 +484,6 @@ def test_dataloader_from_tarred_nemo_manifest_concat(nemo_tarred_manifest_path: 
 
     batches = [batch for batch in dl]
 
-    print(batches)
-    print(batches[0])
-
     assert len(batches) == 4
 
     # the first element has been concatenated: 2x16000 speech (2x1s) + 1600 gap (0.1s)

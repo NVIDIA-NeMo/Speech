@@ -200,7 +200,6 @@ class LazyNeMoTarredIterator(ImitatesDict):
             tar_path = self.shard_id_to_tar_path[sid]
             with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
                 for data, tar_info in zip(shard_manifest, tar):
-                    print(f"{data=}, {tar_info=}")
                     assert (
                         data["audio_filepath"] == tar_info.name
                     ), f"Mismatched JSON manifest and tar file. {data['audio_filepath']=} != {tar_info.name=}"

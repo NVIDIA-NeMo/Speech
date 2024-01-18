@@ -554,6 +554,12 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         loss_mask = self._collate_item(loss_mask, max_length=max_length, pad_id=0)
         position_ids = self._collate_item(position_ids, max_length=max_length, pad_id=0)
 
+        # Pre-generate `cu_seqlens_argmin` and `max_seqlen` as CPU tensor to avoid device-to-host copies.
+        cu_seqlens = torch.IntTensor(cu_seqlens)
+        cu_seqlens_argmin = torch.argmin(cu_seqlens, dim=1, keepdim=True)
+        seqlens = cu_seqlens[:, 1:] - cu_seqlens[:, :-1]
+        max_seqlen, _ = seqlens.max(dim=1, keepdim=True)
+
         processed_batch = {
             'tokens': torch.LongTensor(input_ids),
             'labels': torch.LongTensor(labels),
@@ -562,6 +568,8 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             'position_ids': torch.LongTensor(position_ids),
             'cu_seqlens': torch.IntTensor(cu_seqlens),  # cu_seqlens_q must be in dtype torch.int32
             'token_count': token_count,
+            'cu_seqlens_argmin': cu_seqlens_argmin,
+            'max_seqlen': max_seqlen,
         }
 
         return processed_batch

@@ -870,12 +870,17 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
             # Transfer needed data to GPU
             required_keys = set()
+            max_seqlen, cu_seqlens_argmin = None, None
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 required_keys.update(batch.keys())
             else:
                 required_keys.add('attention_mask')
                 if 'cu_seqlens' in batch:
                     required_keys.add('cu_seqlens')
+                    if 'max_seqlen' in batch:
+                        max_seqlen = batch['max_seqlen'].squeeze()
+                    if 'cu_seqlens_argmin' in batch:
+                        cu_seqlens_argmin = batch['cu_seqlens_argmin']
                 if parallel_state.is_pipeline_first_stage():
                     required_keys.update(('tokens', 'position_ids'))
                 if parallel_state.is_pipeline_last_stage():
@@ -906,9 +911,16 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 if 'cu_seqlens' in batch:  # packed sequence from GPTSFTPackedDataset
                     # these args are passed eventually into TEDotProductAttention.forward()
                     cu_seqlens = batch['cu_seqlens'].squeeze()  # remove batch size dimension (mbs=1)
-                    cu_seqlens = cu_seqlens[: torch.argmin(cu_seqlens)]  # remove -1 "paddings" added in collate_fn
+                    # remove -1 "paddings" added in collate_fn
+                    if cu_seqlens_argmin is not None:
+                        cu_seqlens = cu_seqlens[: cu_seqlens_argmin.item()]
+                    else:
+                        cu_seqlens = cu_seqlens[: torch.argmin(cu_seqlens)]
                     forward_args['cu_seqlens_q'] = cu_seqlens
                     forward_args['cu_seqlens_kv'] = cu_seqlens
+                    if max_seqlen is not None:
+                        forward_args['max_seqlen_q'] = max_seqlen
+                        forward_args['max_seqlen_kv'] = max_seqlen
                     forward_args['qkv_format'] = 'thd'
 
             output_tensor = model(**forward_args)

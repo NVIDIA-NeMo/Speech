@@ -655,6 +655,12 @@ class MegatronBaseModel(NLPModel):
     def setup_optimization(
         self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
     ):
+        # Ensure `max_steps` is set correctly
+        optim_config = self._optim_config_copy(optim_config)
+        if optim_config is not None and 'sched' in optim_config and optim_config.sched.get('max_steps') is None:
+            with open_dict(optim_config):
+                optim_config.sched.max_steps = self._get_max_steps()
+
         optim_kwargs = {} if optim_kwargs is None else optim_kwargs.copy()
 
         def get_config_arg(key: str, default_value: Optional[Any] = None) -> Any:
@@ -753,13 +759,18 @@ class MegatronBaseModel(NLPModel):
                 grad_allreduce_chunk_size_mb=self.cfg.get('grad_allreduce_chunk_size_mb', 125),
             )
 
-            assert self._trainer.max_steps is not None, "'max_steps' is missing in trainer config."
             if hasattr(self._cfg.optim, 'sched'):
                 sched_config = self._cfg.optim.sched
-                sched_config['max_steps'] = self._trainer.max_steps
                 self._scheduler = prepare_lr_scheduler(
                     optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
                 )
+
+        if getattr(self._cfg.optim, 'sched', None) is not None and self._scheduler is None:
+            # The error below refers in particular to logs from `prepare_lr_scheduler()` (when it retunrs `None`).
+            raise AssertionError(
+                "A scheduler config exists but no scheduler was instantiated! Previous logs may help identify the "
+                "root cause of this issue."
+            )
 
         # Configure distributed optimizer
         if self.with_distributed_adam:
@@ -1082,6 +1093,48 @@ class MegatronBaseModel(NLPModel):
             return iterator, True
         # reinsert the element back to the iterator
         return itertools.chain([element], iterator), False
+
+    def _get_max_steps(self):
+        """
+        Compute the maximum number of training steps (-1 if it cannot be computed).
+        """
+        if getattr(self, "_trainer", None) is None:
+            logging.warning("Cannot compute `max_steps` as no trainer is set")
+            return -1
+
+        if self._trainer.max_steps >= 0:
+            # Note that when `trainer.max_steps` is defined, we ignore `max_epochs` (even if training may end
+            # before `max_steps` is reached due to `max_epochs`). This is for backward compatibility with older
+            # versions of NeMo.
+            if self._trainer.max_epochs is not None and self._trainer.max_epochs >= 0:
+                logging.warning(
+                    "Ignoring `trainer.max_epochs` when computing `max_steps` because `trainer.max_steps` is already "
+                    f"set to {self._trainer.max_steps}."
+                )
+            return self._trainer.max_steps
+
+        if self._trainer.max_epochs is None or self._trainer.max_epochs < 0:
+            logging.warning(
+                "Cannot compute `max_steps` if neither `trainer.max_steps` nor `trainer.max_epochs` is set"
+            )
+            return -1
+
+        if getattr(self, "_train_dl", None) is None:
+            logging.warning("Cannot compute `max_steps` from the number of epochs as the train dataloader is not set")
+            return -1
+
+        # The number of training step per epoch is typically the number of global batches in the training set...
+        num_global_batches = len(self._train_dl)
+        steps_per_epoch = num_global_batches
+
+        # ... unless it is constrained by the `limit_train_batches` option.
+        limit_batches = self._trainer.limit_train_batches
+        if limit_batches is not None:
+            if isinstance(limit_batches, float):
+                limit_batches = int(limit_batches * num_global_batches)
+            steps_per_epoch = min(num_global_batches, limit_batches)
+
+        return steps_per_epoch * self._trainer.max_epochs
 
     def configure_sharded_model(self):
         if self.use_fsdp:

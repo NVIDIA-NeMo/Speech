@@ -36,24 +36,25 @@ class LazyNeMoIterator(ImitatesDict):
     Currently, it requires the following keys in NeMo manifests:
     - "audio_filepath"
     - "duration"
-    - "text" (overridable with text_field argument)
+    - "text" (overridable with ``text_field`` argument)
+
+    Specially supported keys are:
+    - "offset" for partial recording reads
+    - "lang" is mapped to Lhotse superivsion's language (overridable with ``lang_field`` argument)
 
     Every other key found in the manifest will be attached to Lhotse Cut and accessible via ``cut.custom[key]``.
 
-    .. caution:: If sampling rate is not specified, we will perform some I/O (as much as required by soundfile.info)
-        to discover the sampling rate of the audio file. Otherwise, if sampling rate is provided, we assume every
-        audio file has the same sampling rate.
+    .. caution:: We will perform some I/O (as much as required by soundfile.info) to discover the sampling rate
+        of the audio file. If this is not acceptable, convert the manifest to Lhotse format which contains
+        sampling rate info.
 
     Example::
 
-        >>> cuts = lhotse.CutSet(LazyNeMoIterator("nemo_manifests/train.json", sampling_rate=16000))
+        >>> cuts = lhotse.CutSet(LazyNeMoIterator("nemo_manifests/train.json"))
     """
 
-    def __init__(
-        self, path: str | Path, sampling_rate: int | None = None, text_field: str = "text", lang_field: str = "lang"
-    ) -> None:
+    def __init__(self, path: str | Path, text_field: str = "text", lang_field: str = "lang") -> None:
         self.source = LazyJsonlIterator(path)
-        self.sampling_rate = sampling_rate
         self.text_field = text_field
         self.lang_field = lang_field
 
@@ -65,17 +66,14 @@ class LazyNeMoIterator(ImitatesDict):
         for data in self.source:
             audio_path = data.pop("audio_filepath")
             duration = data.pop("duration")
-            if self.sampling_rate is None:
-                recording = Recording.from_file(audio_path)
-            else:
-                recording = Recording(
-                    id=Path(audio_path).name,
-                    sources=[AudioSource(type="file", channels=[0], source=audio_path)],
-                    sampling_rate=self.sampling_rate,
-                    duration=duration,
-                    num_samples=compute_num_samples(duration, self.sampling_rate),
-                )
+            offset = data.pop("offset", None)
+            recording = Recording.from_file(audio_path)
             cut = recording.to_cut()
+            if offset is not None:
+                cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+                cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+            # Note that start=0 and not start=offset because supervision's start if relative to the
+            # start of the cut; and cut.start is already set to offset
             cut.supervisions.append(
                 SupervisionSegment(
                     id=cut.id,
@@ -106,6 +104,9 @@ class LazyNeMoTarredIterator(ImitatesDict):
     - "duration"
     - "text" (overridable with text_field argument)
     - "shard_id"
+
+    Specially supported keys are:
+    - "lang" is mapped to Lhotse superivsion's language (overridable with ``lang_field`` argument)
 
     Every other key found in the manifest will be attached to Lhotse Cut and accessible via ``cut.custom[key]``.
 

@@ -668,3 +668,51 @@ def test_dataloader_from_nemo_manifest_with_lang_field(nemo_manifest_path: Path,
     dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=LangDataset())
     b = next(iter(dl))
     assert b == [lang_value] * 2
+
+
+def test_lazy_nemo_iterator_with_offset_field(tmp_path: Path):
+    import numpy as np
+    import soundfile as sf
+
+    from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator
+
+    # Have to generate as INT16 to avoid quantization error after saving to 16-bit WAV
+    INT16MAX = 2 ** 15
+    expected_audio = np.random.randint(low=-INT16MAX - 1, high=INT16MAX, size=(16000,)).astype(np.float32) / INT16MAX
+    audio_path = str(tmp_path / "dummy.wav")
+    sf.write(audio_path, expected_audio, 16000)
+
+    manifest_path = str(tmp_path / "manifest.json")
+    lhotse.serialization.save_to_jsonl(
+        [
+            {"audio_filepath": audio_path, "offset": 0.0, "duration": 0.5, "text": "irrelevant"},
+            {"audio_filepath": audio_path, "offset": 0.5, "duration": 0.5, "text": "irrelevant"},
+        ],
+        manifest_path,
+    )
+
+    cuts = lhotse.CutSet(LazyNeMoIterator(manifest_path))
+
+    cut = cuts[0]
+    assert isinstance(cut, lhotse.MonoCut)
+    assert cut.start == 0.0
+    assert cut.duration == 0.5
+    assert cut.sampling_rate == 16000
+    assert cut.num_samples == 8000
+    assert cut.supervisions[0].text == "irrelevant"
+    audio = cut.load_audio()
+    assert audio.shape == (1, 8000)
+    np.testing.assert_equal(audio[0], expected_audio[:8000])
+
+    cut = cuts[1]
+    assert isinstance(cut, lhotse.MonoCut)
+    assert cut.start == 0.5
+    assert cut.duration == 0.5
+    assert cut.sampling_rate == 16000
+    assert cut.num_samples == 8000
+    assert cut.supervisions[0].text == "irrelevant"
+    audio = cut.load_audio()
+    assert audio.shape == (1, 8000)
+    np.testing.assert_equal(audio[0], expected_audio[8000:])
+
+    assert cuts[0].id != cuts[1].id

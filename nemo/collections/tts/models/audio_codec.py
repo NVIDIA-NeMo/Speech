@@ -25,6 +25,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 
 from nemo.collections.tts.losses.audio_codec_loss import (
+    FeatureMatchingLoss,
     MultiResolutionMelLoss,
     MultiResolutionSTFTLoss,
     RelativeFeatureMatchingLoss,
@@ -130,7 +131,14 @@ class AudioCodecModel(ModelPT):
         self.feature_loss_scale = cfg.get("feature_loss_scale", 1.0)
         self.gen_loss_fn = instantiate(cfg.generator_loss)
         self.disc_loss_fn = instantiate(cfg.discriminator_loss)
-        self.feature_loss_fn = RelativeFeatureMatchingLoss()
+
+        feature_loss_type = cfg.get("feature_loss_type", "relative")
+        if feature_loss_type == "relative":
+            self.feature_loss_fn = RelativeFeatureMatchingLoss()
+        elif feature_loss_type == "absolute":
+            self.feature_loss_fn = FeatureMatchingLoss()
+        else:
+            raise ValueError(f'Unknown feature loss type {feature_loss_type}.')
 
         # Codebook loss setup
         if self.vector_quantizer:

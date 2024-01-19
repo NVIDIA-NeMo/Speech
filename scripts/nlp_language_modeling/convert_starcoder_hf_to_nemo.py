@@ -61,6 +61,7 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
+from nemo.collections.nlp.parts.utils_funcs import load_state_dict_helper
 from nemo.utils import logging
 
 
@@ -185,10 +186,6 @@ if __name__ == "__main__":
 
     trainer = pl.Trainer(**trainer_dict)
 
-    logging.info("Creating Megatron model...")
-    model = MegatronGPTModel(omega_cfg, trainer)
-    logging.info(f"Created model:\n{model}")
-
     logging.info("Loading HuggingFace model...")
     model_hf = AutoModelForCausalLM.from_pretrained(args.input)
     logging.info(f"Loaded model:\n{model_hf}")
@@ -196,19 +193,9 @@ if __name__ == "__main__":
     state_dict_hf = model_hf.state_dict()
     convert_dict = convert_state_dict(state_dict_hf, amp=omega_cfg.megatron_amp_O2)
 
-    logging.info("Loading state dict...")
-    missing_keys, unexpected_keys = model.load_state_dict(convert_dict, strict=False)
-
-    if missing_keys:
-        # Keys ending with '_extra_state' are related to Transformer Engine internals
-        missing_keys_non_extra = [key for key in missing_keys if not key.endswith("_extra_state")]
-        if missing_keys_non_extra:
-            logging.critical("Missing keys were detected during the load, something has gone wrong. Aborting.")
-            raise RuntimeError(f"Missing keys: \n{missing_keys_non_extra}")
-
-    if unexpected_keys:
-        logging.critical("Unexpected keys were detected which should not happen. Aborting.")
-        raise RuntimeError(f"Unexpected keys: \n{unexpected_keys}")
+    logging.info("Creating Megatron model...")
+    model = load_state_dict_helper(MegatronGPTModel, omega_cfg, trainer, convert_dict)
+    logging.info(f"Created model:\n{model}")
 
     logging.info("Saving model...")
     # We make sure that the tokenizer can be instantiated later regardless of args.input

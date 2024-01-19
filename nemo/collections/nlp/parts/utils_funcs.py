@@ -18,6 +18,7 @@ __all__ = [
     'tensor2list',
     'plot_confusion_matrix',
     'get_classification_report',
+    'load_state_dict_helper',
 ]
 
 import os
@@ -28,6 +29,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from matplotlib import pyplot as plt
+from omegaconf.dictconfig import DictConfig
+from pytorch_lightning.trainer.trainer import Trainer
 from sklearn.metrics import classification_report, confusion_matrix
 from torch import Tensor
 
@@ -207,3 +210,22 @@ def activation_to_func(activation: str, openai_gelu: bool = False, onnx_safe: bo
         activation_func = squared_relu
 
     return activation_func
+
+
+def load_state_dict_helper(cls, cfg: DictConfig, trainer: Trainer, state_dict: Dict[str, torch.Tensor]):
+    """Load state_dict for converted community, for example, HuggingFace models."""
+    model = cls(cfg, trainer)
+
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys:
+        # Keys ending with '_extra_state' are related to Transformer Engine internals
+        missing_keys_non_extra = [key for key in missing_keys if not key.endswith("_extra_state")]
+        if missing_keys_non_extra:
+            logging.critical("Missing keys were detected during the load, something has gone wrong. Aborting.")
+            raise RuntimeError(f"Missing keys: \n{missing_keys_non_extra}")
+
+    if unexpected_keys:
+        logging.critical("Unexpected keys were detected which should not happen. Aborting.")
+        raise RuntimeError(f"Unexpected keys: \n{unexpected_keys}")
+
+    return model

@@ -331,7 +331,58 @@ class SISDRLoss(Loss):
         return loss
 
 
+class FeatureMatchingLoss(Loss):
+    """
+    Standard feature matching loss measuring the difference in the internal discriminator layer outputs
+    (usually leaky relu activations) between real and generated audio, scaled down by the total number of
+    discriminators and layers.
+    """
+
+    def __init__(self):
+        super(FeatureMatchingLoss, self).__init__()
+
+    @property
+    def input_types(self):
+        return {
+            "fmaps_real": [[NeuralType(elements_type=VoidType())]],
+            "fmaps_gen": [[NeuralType(elements_type=VoidType())]],
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "loss": NeuralType(elements_type=LossType()),
+        }
+
+    @typecheck()
+    def forward(self, fmaps_real, fmaps_gen):
+        loss = 0.0
+        for fmap_real, fmap_gen in zip(fmaps_real, fmaps_gen):
+            # [B, ..., time]
+            for feat_real, feat_gen in zip(fmap_real, fmap_gen):
+                # [B, ...]
+                diff = torch.abs(feat_real - feat_gen)
+                feat_loss = torch.mean(diff) / len(fmap_real)
+                loss += feat_loss
+
+        loss /= len(fmaps_real)
+
+        return loss
+
+
 class RelativeFeatureMatchingLoss(Loss):
+    """
+    Relative feature matching loss as described in https://arxiv.org/pdf/2210.13438.pdf.
+
+    This is similar to standard feature matching loss, but it scales the loss by the absolute value of
+    each feature averaged across time. This might be slightly different from the paper which says the
+    "mean is computed over all dimensions", which could imply taking the average across both time and
+    features.
+
+    Args:
+        div_guard: Value to add when dividing by mean to avoid large/NaN values.
+    """
+
     def __init__(self, div_guard=1e-3):
         super(RelativeFeatureMatchingLoss, self).__init__()
         self.div_guard = div_guard

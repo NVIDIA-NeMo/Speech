@@ -69,6 +69,7 @@ class MegatronTrainerBuilder:
                 sharded_checkpoint=sharded_checkpoint,
                 precision=self.cfg.trainer.precision,
                 nccl_communicator_config_path=self.cfg.model.get('nccl_communicator_config_path', None),
+                sharp=self.cfg.model.get('sharp', False),
             )
 
         return NLPDDPStrategy(

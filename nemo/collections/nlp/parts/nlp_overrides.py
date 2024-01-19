@@ -517,6 +517,7 @@ class NLPFSDPStrategy(FSDPStrategy):
         sharded_checkpoint: bool = False,
         precision: Union[int, str] = 'bf16-mixed',
         nccl_communicator_config_path: Optional[str] = None,
+        sharp: bool = False,
         **kwargs: Union[Any, Dict[str, Any]],
     ) -> None:
         if not HAVE_APEX:
@@ -561,6 +562,7 @@ class NLPFSDPStrategy(FSDPStrategy):
         )
 
         self.nccl_communicator_config_path = nccl_communicator_config_path
+        self.sharp = sharp
         super().__init__(**kwargs)
 
     def _set_mixed_precision_recipe(

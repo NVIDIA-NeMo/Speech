@@ -396,12 +396,16 @@ def preprocess_nvgpt(sources: dict, tokenizer, cfg,) -> Dict:
     for source in sources:
         conv.messages = []
         conv.system = source.get('system', conv.system)
-        if len(source['conversations']) >= 2:
-            conv.roles = (source['conversations'][0]['from'], source['conversations'][1]['from'])
 
         strip_end_for_inference = False
-        for turn in source['conversations']:
-            if 'label' in turn:
+        for i, turn in enumerate(source['conversations']):
+
+            if i % 2 == 0:
+                turn['from'] = conv.roles[0]
+                if 'label' not in turn:
+                    turn[
+                        'label'
+                    ] = "quality:6,toxicity:0,humor:0,creativity:0,violence:0,helpfulness:6,not_appropriate:0"
                 value = DEFAULT_LABELS_TOKEN + turn['label'] + '\n' + turn['value']
                 conv.append_message(turn['from'], value)
                 if not turn["value"]:
@@ -409,6 +413,7 @@ def preprocess_nvgpt(sources: dict, tokenizer, cfg,) -> Dict:
                         True  # in inference, current turn is empty, thus end tokens need to striped.
                     )
             else:
+                turn['from'] = conv.roles[1]
                 conv.append_message(turn['from'], turn['value'])
         context = conv.get_prompt()
         if strip_end_for_inference:

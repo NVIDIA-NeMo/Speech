@@ -219,7 +219,7 @@ def compute_tp_splits(
         split = torch.split(partitions[0][idx].data, param.shape[-1], dim=-1)
     else:
         # For T5-converted weights, the splitting needs to be strided such that q,k,v weights are bunched together on each tensor-parallel rank.
-        if 'query_key_value.weight' in param_name and megatron_legacy:
+        if '.query_key_value.' in param_name and megatron_legacy:  # weight or bias
             split_dim = partitions[0][idx].data.shape[0]
             if split_dim % (tp_size * 3) != 0:
                 raise ValueError(
@@ -230,7 +230,7 @@ def compute_tp_splits(
             for i in range(tp_size):
                 tp_qkv = torch.cat([tp_qkv_splits[item] for item in range(i, tp_size * 3, tp_size)])
                 split.append(tp_qkv)
-        elif 'key_value.weight' in param_name and megatron_legacy:
+        elif '.key_value.' in param_name and megatron_legacy:  # weight or bias
             split_dim = partitions[0][idx].data.shape[0]
             if split_dim % (tp_size * 2) != 0:
                 raise ValueError(

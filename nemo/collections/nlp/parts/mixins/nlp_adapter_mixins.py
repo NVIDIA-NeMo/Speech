@@ -70,7 +70,7 @@ class NLPAdapterModelMixin:
         if hasattr(self, "enc_dec_model"):
             self.model_prefix = "enc_dec_model.module." if self.cfg.megatron_amp_O2 else "enc_dec_model."  # for T5
         else:
-            self.model_prefix = "model.module." if self.cfg.megatron_amp_O2 else "model."
+            self.model_prefix = "model.module." if self.cfg.get('megatron_amp_O2', False) else "model."
 
         self.use_mcore_gpt = hasattr(self, 'mcore_gpt') and self.mcore_gpt
         if self.use_mcore_gpt:
@@ -221,7 +221,6 @@ class NLPAdapterModelMixin:
                 model_weights = os.path.join(tmpdir, model_weights_ckpt)
                 model_weights = inject_model_parallel_rank(model_weights)
                 state_dict = torch.load(model_weights, map_location=map_location)
-
                 return conf, state_dict
             finally:
                 os.chdir(cwd)

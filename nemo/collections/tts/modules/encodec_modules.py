@@ -49,6 +49,7 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     Conv1dNorm,
     Conv2dNorm,
     ConvTranspose1dNorm,
+    VectorQuantizerBase,
     get_down_sample_padding,
 )
 from nemo.collections.tts.parts.utils.distributed import broadcast_tensors
@@ -690,7 +691,7 @@ class EuclideanCodebook(NeuralModule):
         return dequantized
 
 
-class ResidualVectorQuantizer(NeuralModule):
+class ResidualVectorQuantizer(VectorQuantizerBase):
     """
     Residual vector quantization (RVQ) algorithm as described in https://arxiv.org/pdf/2107.03312.pdf.
 
@@ -732,13 +733,7 @@ class ResidualVectorQuantizer(NeuralModule):
             ]
         )
 
-    @property
-    def input_types(self):
-        return {
-            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "input_len": NeuralType(tuple('B'), LengthsType()),
-        }
-
+    # Override output types, since this quantizer returns commit_loss
     @property
     def output_types(self):
         return {
@@ -818,7 +813,7 @@ class ResidualVectorQuantizer(NeuralModule):
         return dequantized
 
 
-class GroupResidualVectorQuantizer(NeuralModule):
+class GroupResidualVectorQuantizer(VectorQuantizerBase):
     """Split the input vector into groups and apply RVQ on each group separately.
 
     Args:
@@ -875,13 +870,7 @@ class GroupResidualVectorQuantizer(NeuralModule):
 
         return self.codebook_dim // self.num_groups
 
-    @property
-    def input_types(self):
-        return {
-            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "input_len": NeuralType(tuple('B'), LengthsType()),
-        }
-
+    # Override output types, since this quantizer returns commit_loss
     @property
     def output_types(self):
         return {

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from abc import ABC, abstractmethod
 from typing import Iterable, List, Optional, Tuple
 
 import torch
@@ -340,7 +341,50 @@ class Discriminator(NeuralModule):
         return scores_real, scores_gen, fmaps_real, fmaps_gen
 
 
-class FiniteScalarQuantizer(NeuralModule):
+class VectorQuantizerBase(NeuralModule, ABC):
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
+        }
+
+    @typecheck()
+    @abstractmethod
+    def forward(self, inputs: torch.Tensor, input_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        pass
+
+    @typecheck(
+        input_types={
+            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
+    )
+    @abstractmethod
+    def encode(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @typecheck(
+        input_types={
+            "indices": NeuralType(('D', 'B', 'T'), Index()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+    )
+    @abstractmethod
+    def decode(self, indices: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
+        pass
+
+
+class FiniteScalarQuantizer(VectorQuantizerBase):
     """This quantizer is based on the Finite Scalar Quantization (FSQ) method.
     It quantizes each element of the input vector independently into a number of levels.
 
@@ -478,21 +522,7 @@ class FiniteScalarQuantizer(NeuralModule):
         indices = torch.sum(indices * self.dim_base_index, dim=1)
         return indices.to(torch.int32)
 
-    # API of the RVQ
-    @property
-    def input_types(self):
-        return {
-            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "input_len": NeuralType(tuple('B'), LengthsType(), optional=True),
-        }
-
-    @property
-    def output_types(self):
-        return {
-            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
-        }
-
+    # Implementation of VectorQuantiserBase API
     @typecheck()
     def forward(
         self, inputs: torch.Tensor, input_len: Optional[torch.Tensor] = None
@@ -556,7 +586,7 @@ class FiniteScalarQuantizer(NeuralModule):
         return dequantized
 
 
-class GroupFiniteScalarQuantizer(NeuralModule):
+class GroupFiniteScalarQuantizer(VectorQuantizerBase):
     """Split the input vector into groups and apply FSQ on each group separately.
     This class is for convenience. Since FSQ is applied on each group separately,
     groups can be defined arbitrarily by splitting the input vector. However, this
@@ -603,20 +633,6 @@ class GroupFiniteScalarQuantizer(NeuralModule):
     def codebook_size(self):
         """Returns the size of the implicit codebook."""
         return self.codebook_size_per_group ** self.num_groups
-
-    @property
-    def input_types(self):
-        return {
-            "inputs": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "input_len": NeuralType(tuple('B'), LengthsType()),
-        }
-
-    @property
-    def output_types(self):
-        return {
-            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
-            "indices": NeuralType(('D', 'B', 'T'), Index()),
-        }
 
     @typecheck()
     def forward(self, inputs, input_len):

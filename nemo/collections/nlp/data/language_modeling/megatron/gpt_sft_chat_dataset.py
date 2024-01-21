@@ -344,6 +344,8 @@ class GPTSFTChatDataset(GPTSFTDataset):
         # store metadata in dataset, in case user may have keys required in the prediction json files
         metadata = {k: v for k, v in example.items() if k not in ['conversations']}
         result['metadata'] = metadata
+        if self.output_original_text:
+            result['metadata']['conversations'] = example['conversations']
 
         return result
 

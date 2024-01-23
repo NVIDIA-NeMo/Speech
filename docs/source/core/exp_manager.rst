@@ -73,7 +73,7 @@ via YAML or CLI:
 Experiment Loggers
 ------------------
 
-Alongside Tensorboard, NeMo also supports Weights and Biases, MLFlow and DLLogger. To use these loggers, simply set the following
+Alongside Tensorboard, NeMo also supports Weights and Biases, MLFlow, DLLogger, ClearML and NeptuneLogger. To use these loggers, simply set the following
 via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
 
 
@@ -152,6 +152,26 @@ ClearML
             log_model: False  # log model to clearml server
             log_cfg: False  # log config to clearml server
             log_metrics: False  # log metrics to clearml server
+
+Neptune
+~~~~~~~
+
+.. _exp_manager_neptune-label:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_checkpoint_callback: True
+        create_neptune_logger: false
+        neptune_logger_kwargs:
+            project: ${project}
+            name: ${name}
+            prefix: train
+            log_model_checkpoints: false # set to True if checkpoints need to be pushed to Neptune
+            tags: null # can specify as an array of strings in yaml array format
+            description: null
+            <Add any other arguments supported by Neptune logger here>
 
 Exponential Moving Average
 --------------------------

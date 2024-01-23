@@ -32,7 +32,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning.callbacks import Callback, ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.callbacks.timer import Interval, Timer
-from pytorch_lightning.loggers import MLFlowLogger, TensorBoardLogger, WandbLogger
+from pytorch_lightning.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
 from pytorch_lightning.loops import _TrainingEpochLoop
 from pytorch_lightning.strategies.ddp import DDPStrategy
 
@@ -152,6 +152,8 @@ class ExpManagerConfig:
     dllogger_logger_kwargs: Optional[DLLoggerParams] = field(default_factory=lambda: DLLoggerParams())
     create_clearml_logger: Optional[bool] = False
     clearml_logger_kwargs: Optional[ClearMLParams] = field(default_factory=lambda: ClearMLParams())
+    create_neptune_logger: Optional[bool] = False
+    neptune_logger_kwargs: Optional[Dict[Any, Any]] = None
     # Checkpointing parameters
     create_checkpoint_callback: Optional[bool] = True
     checkpoint_callback_params: Optional[CallbackParams] = field(default_factory=lambda: CallbackParams())
@@ -422,6 +424,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         or cfg.create_mlflow_logger
         or cfg.create_dllogger_logger
         or cfg.create_clearml_logger
+        or cfg.create_neptune_logger
     ):
         configure_loggers(
             trainer,
@@ -440,6 +443,8 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             cfg.dllogger_logger_kwargs,
             cfg.create_clearml_logger,
             cfg.clearml_logger_kwargs,
+            cfg.create_neptune_logger,
+            cfg.neptune_logger_kwargs,
         )
 
     # add loggers timing callbacks
@@ -815,6 +820,8 @@ def configure_loggers(
     dllogger_kwargs: dict,
     create_clearml_logger: bool,
     clearml_kwargs: dict,
+    create_neptune_logger: bool,
+    neptune_kwargs: dict,
 ):
     """
     Creates TensorboardLogger and/or WandBLogger / MLFlowLogger / DLlogger / ClearMLLogger and attach them to trainer.
@@ -871,6 +878,20 @@ def configure_loggers(
 
         logger_list.append(clearml_logger)
         logging.info("ClearMLLogger has been set up")
+
+    if create_neptune_logger:
+        if neptune_kwargs is None:
+            neptune_kwargs = {}
+        if "name" not in neptune_kwargs and "project" not in neptune_kwargs:
+            raise ValueError("name and project are required for neptune_logger")
+        if "api_key" not in neptune_kwargs and not os.getenv("NEPTUNE_API_TOKEN", None):
+            raise ValueError(
+                "either api_key should be set in neptune_kwargs or NEPTUNE_API_TOKEN should be set in environment variable for neptune_logger"
+            )
+        neptune_logger = NeptuneLogger(**neptune_kwargs)
+
+        logger_list.append(neptune_logger)
+        logging.info("NeptuneLogger has been set up")
 
     trainer._logger_connector.configure_logger(logger_list)
 

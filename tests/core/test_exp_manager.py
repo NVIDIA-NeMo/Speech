@@ -196,6 +196,36 @@ class TestExpManager:
         assert isinstance(test_trainer.logger, pl.loggers.WandbLogger)
 
     @pytest.mark.unit
+    def test_trainer_neptune_logger(self, tmp_path):
+        pytest.importorskip("neptune", reason="could not import `neptune`, use `pip install neptune` to run this test")
+
+        test_trainer = pl.Trainer(accelerator='cpu', logger=False)
+        # Check that a create_neptune_logger=True errors out unless neptune_logger_kwargs is passed.
+        with pytest.raises(ValueError):
+            _ = exp_manager(
+                test_trainer,
+                {
+                    "create_tensorboard_logger": False,
+                    "create_checkpoint_callback": False,
+                    "exp_dir": str(tmp_path),
+                    "create_neptune_logger": True,
+                },
+            )
+        # Check that a NeptuneLogger is attached to logger if create_neptune_logger=True and neptune_logger_kwargs has name
+        # and project
+        _ = exp_manager(
+            test_trainer,
+            {
+                "create_tensorboard_logger": False,
+                "create_checkpoint_callback": False,
+                "exp_dir": str(tmp_path),
+                "create_neptune_logger": True,
+                "neptune_logger_kwargs": {"name": "", "project": "", "api_key": ""},
+            },
+        )
+        assert isinstance(test_trainer.logger, pl.loggers.NeptuneLogger)
+
+    @pytest.mark.unit
     def test_checkpoint_configurations(self):
         """ Test that trainer creating modelcheckpoint and asking exp_manager to do it too results in errors, but
         is error free if only one is asked to do so.

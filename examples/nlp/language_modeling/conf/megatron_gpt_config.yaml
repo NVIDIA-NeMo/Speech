@@ -32,6 +32,14 @@ exp_manager:
   wandb_logger_kwargs:
     project: null
     name: null
+  create_neptune_logger: false
+  neptune_logger_kwargs:
+    project: null
+    name: null
+    prefix: train
+    log_model_checkpoints: false
+    tags: null # can specify as an array of strings in yaml array format
+    description: null
   resume_if_exists: True
   resume_ignore_no_checkpoint: True
   resume_from_checkpoint: ${model.resume_from_checkpoint}

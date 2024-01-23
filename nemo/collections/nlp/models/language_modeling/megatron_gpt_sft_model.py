@@ -89,9 +89,6 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
             if hasattr(self.cfg.data.test_ds, "metric"):
                 self.test_metric_label_key = self.cfg.data.test_ds.metric.get('label_key', 'labels')
 
-        if self.use_peft and self.cfg.get('virtual_pipeline_model_parallel_size', None):
-            raise ValueError('Virtual pipeline model parallel is not supported when using PEFT')
-
         # Set the profile start and end steps in the unit of global batach
         if hasattr(self, '_nsys_profile_enabled'):
             self._nsys_profile_start_step = self.cfg.nsys_profile.get('start_step', 0)

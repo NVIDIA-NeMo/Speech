@@ -1615,7 +1615,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'layernorm_zero_centered_gamma': layernorm_zero_centered_gamma,
             'normalization': normalization,
             'fp8': fp8,
-            'ub_tp_comm_overlap': ub_tp_comm_overlap,
+            'tp_comm_overlap': ub_tp_comm_overlap,
         }
 
         transformer_config = super().build_transformer_config()

@@ -81,14 +81,14 @@ pipeline {
 
     // pip package should be working with main, if not we can update the commit here
     // until the pip package is updated
-    // stage('Megatron Core installation') {
-    //   steps {
-    //      sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
-    //          cd Megatron-LM && \
-    //          git checkout 973330e9c3681604703bf1eb6b5a265d1b9b9b38 && \
-    //          pip install .'
-    //   }
-    // }
+    stage('Megatron Core installation') {
+      steps {
+         sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
+             cd Megatron-LM && \
+             git checkout bed60a881f4b238b1c14b6c6a64997cc636e77b6 && \
+             pip install .'
+      }
+    }
 
     stage('PyTorch Lightning version') {
       steps {

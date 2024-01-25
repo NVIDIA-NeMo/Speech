@@ -39,6 +39,7 @@ class GPTSFTDataset(Dataset):
         tokenizer: TokenizerSpec,
         max_seq_length: int = 1024,
         min_seq_length: int = 1,
+        pad_seq_length_to_mult: int = 16,
         add_bos: bool = False,
         add_eos: bool = True,
         add_sep: bool = False,
@@ -88,6 +89,7 @@ class GPTSFTDataset(Dataset):
         self.file_path = file_path
         self.max_seq_length = max_seq_length
         self.min_seq_length = min_seq_length
+        self.pad_seq_length_to_mult = pad_seq_length_to_mult
         self.add_bos = add_bos
         self.add_eos = add_eos
         self.add_sep = add_sep
@@ -440,7 +442,7 @@ class GPTSFTDataset(Dataset):
         if self.pad_to_max_length:
             max_length = self.max_seq_length
         else:
-            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
+            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, self.pad_seq_length_to_mult))
         assert max_length <= self.max_seq_length
 
         attention_mask = [self._create_attention_mask(max_length) for _ in batch]
@@ -534,7 +536,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
             # for many datasets in practice, all packed sequence lengths are very close to the
             # target length (2048, 4096, 8192), so there is very minimal padding
             max_length = max(len(l) for l in input_ids)
-            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
+            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, self.pad_seq_length_to_mult))
         assert max_length <= self.max_seq_length
 
         position_ids: List[List[int]] = []

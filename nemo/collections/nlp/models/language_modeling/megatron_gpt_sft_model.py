@@ -252,6 +252,12 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
             )
             data_cfg.max_seq_length = self.cfg.max_position_embeddings
 
+        # TE requires that the first input dim is divisible by 8 and the second by 16 for fp8
+        # When using sequence parallel, sequence will further be split by TP size
+        pad_seq_length_to_mult = (
+            8 * self.cfg.get('tensor_model_parallel_size', 1) if self.cfg.get('sequence_parallel', False) else 16
+        )
+
         for file_path, num_samples in zip(data_cfg.file_names, num_train_samples_per_dataset):
             if self.cfg.data.get("chat", False):
                 dataset_cls = GPTSFTChatDataset
@@ -265,6 +271,7 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
                 tokenizer=self.tokenizer,
                 max_seq_length=data_cfg.max_seq_length,
                 min_seq_length=data_cfg.min_seq_length,
+                pad_seq_length_to_mult=pad_seq_length_to_mult,
                 add_bos=data_cfg.get('add_bos', False),
                 add_eos=data_cfg.get('add_eos', True),
                 add_sep=data_cfg.get('add_sep', False),

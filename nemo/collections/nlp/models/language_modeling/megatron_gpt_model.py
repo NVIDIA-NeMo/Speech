@@ -1596,7 +1596,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             For attributes in TransformerConfig that are not in the nemo model config, we add custom logic.
         """
 
-        normalization = self.cfg.get('normalization', 'layernorm')
+        normalization = self.cfg.get('normalization', 'layernorm').lower()
         layernorm_zero_centered_gamma = self.cfg.get('normalization', 'layernorm') == 'layernorm1p'
         if normalization == 'layernorm':
             normalization = 'LayerNorm'

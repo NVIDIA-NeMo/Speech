@@ -46,6 +46,7 @@ API_ALLOWED_KEYS = set(
         "min_tokens_to_generate",
         "end_strings",
         "compute_logprob",
+        "random_seed",
     ]
 )
 
@@ -172,6 +173,14 @@ class MegatronGenerate(Resource):
             if not isinstance(compute_logprob, bool):
                 return "compute_logprob must be a boolean value"
 
+        random_seed = None
+        if "random_seed" in request.get_json():
+            random_seed = request.get_json()["random_seed"]
+            if random_seed is not None and not isinstance(random_seed, int):
+                return "random_seed must be a positive integer number or None"
+            if random_seed is not None and random_seed < 0:
+                return "random_seed must be a positive integer number or None"
+
         with lock:  # Need to get lock to keep multiple threads from hitting code
             MegatronGenerate.send_do_generate()  # Tell other ranks we're doing generate
             extra = {}
@@ -200,6 +209,7 @@ class MegatronGenerate(Resource):
                 end_strings=end_strings,
                 min_tokens_to_generate=min_tokens_to_generate,
                 compute_logprob=compute_logprob,
+                random_seed=random_seed,
                 **extra,
             )
             for k in output:

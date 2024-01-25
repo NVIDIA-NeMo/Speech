@@ -33,7 +33,11 @@ from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
     MegatronPretrainingRandomSampler,
     MegatronPretrainingSampler,
 )
-from nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset import build_train_valid_test_datasets
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_fim_dataset import (
+    GPTFIMDataset,
+    GPTFIMDatasetConfig,
+    is_dataset_built_on_rank,
+)
 from nemo.collections.nlp.models.language_modeling.megatron.falcon.falcon_spec import get_falcon_layer_spec
 from nemo.collections.nlp.models.language_modeling.megatron.gpt_model import GPTModel
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
@@ -78,7 +82,9 @@ except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
 try:
-    from megatron.core import InferenceParams, parallel_state
+    from megatron.core import InferenceParams, parallel_state, tensor_parallel
+    from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
+    from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
     from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
@@ -235,6 +241,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.prev_consumed_samples = 0
             self.if_first_step = 0
             self.prev_global_batch_size = None
+
+        if cfg.get('data', None) is not None:
+            self.reset_position_ids = cfg.data.get('reset_position_ids', False)
+            self.reset_attention_mask = cfg.data.get('reset_attention_mask', False)
+            self.eod_mask_loss = cfg.data.get('eod_mask_loss', False)
 
         if not self.megatron_amp_O2 and self.cfg.get('virtual_pipeline_model_parallel_size', None):
             raise ValueError('Virtual pipeline model parallel is only supported when using megatron_amp_O2')
@@ -856,6 +867,100 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # TODO @tmoon: Use once available in Megatron-LM
         # return DataIteratorList(iters)
 
+    def get_ltor_masks_and_position_ids(
+        self, data, eod_token, reset_position_ids, reset_attention_mask, eod_mask_loss
+    ):
+        """Build masks and position id for left to right model."""
+
+        # Extract batch size and sequence length.
+        micro_batch_size, seq_length = data.size()
+
+        # Attention mask (lower triangular).
+        if reset_attention_mask:
+            att_mask_batch = micro_batch_size
+        else:
+            att_mask_batch = 1
+        attention_mask = torch.tril(torch.ones((att_mask_batch, seq_length, seq_length), device=data.device)).view(
+            att_mask_batch, 1, seq_length, seq_length
+        )
+
+        # Loss mask.
+        loss_mask = torch.ones(data.size(), dtype=torch.float, device=data.device)
+        if eod_mask_loss:
+            loss_mask[data == eod_token] = 0.0
+
+        # Position ids.
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=data.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(data)
+        # We need to clone as the ids will be modifed based on batch index.
+        if reset_position_ids:
+            position_ids = position_ids.clone()
+
+        if reset_position_ids or reset_attention_mask:
+            # Loop through the batches:
+            for b in range(micro_batch_size):
+
+                # Find indecies where EOD token is.
+                eod_index = position_ids[b, data[b] == eod_token]
+                # Detach indecies from positions if going to modify positions.
+                if reset_position_ids:
+                    eod_index = eod_index.clone()
+
+                # Loop through EOD indecies:
+                prev_index = 0
+                for j in range(eod_index.size()[0]):
+                    i = eod_index[j]
+                    # Mask attention loss.
+                    if reset_attention_mask:
+                        attention_mask[b, 0, (i + 1) :, : (i + 1)] = 0
+                    # Reset positions.
+                    if reset_position_ids:
+                        position_ids[b, (i + 1) :] -= i + 1 - prev_index
+                        prev_index = i + 1
+
+        # Convert attention mask to binary:
+        attention_mask = attention_mask < 0.5
+
+        return attention_mask, loss_mask, position_ids
+
+    def get_batch(self, data_iterator, tuning):
+        """Generate a batch."""
+
+        # return batch for GPT SFT
+        if tuning:
+            return next(data_iterator)
+
+        # Items and their type.
+        keys = ['text']
+        datatype = torch.int64
+
+        # Broadcast data.
+        if data_iterator is not None:
+            data = next(data_iterator)
+        else:
+            data = None
+        data_b = tensor_parallel.broadcast_data(keys, data, datatype)
+
+        # Unpack.
+        tokens_ = data_b['text'].long()
+        labels = tokens_[:, 1:].contiguous()
+        tokens = tokens_[:, :-1].contiguous()
+
+        # Get the masks and postition ids.
+        attention_mask, loss_mask, position_ids = self.get_ltor_masks_and_position_ids(
+            tokens, self.tokenizer.eos_id, self.reset_position_ids, self.reset_attention_mask, self.eod_mask_loss
+        )
+
+        batch = {
+            'tokens': tokens,
+            'labels': labels,
+            'loss_mask': loss_mask,
+            'attention_mask': attention_mask,
+            'position_ids': position_ids,
+        }
+
+        return batch
+
     def get_batch_on_this_context_parallel_rank(self, batch):
         cp_size = self.cfg.get('context_parallel_size', 1)
         num_valid_tokens_in_ub = None
@@ -882,11 +987,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         return batch
 
-    def get_forward_output_and_loss_func(self, validation_step=False):
+    def get_forward_output_and_loss_func(self, validation_step=False, tuning=False):
         def fwd_output_and_loss_func(dataloader_iter, model, checkpoint_activations_all_layers=None):
 
             # Get data batch
-            batch = next(dataloader_iter)
+            batch = self.get_batch(dataloader_iter, tuning)
 
             # Transfer needed data to GPU
             required_keys = set()
@@ -906,6 +1011,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 required_keys.remove('attention_mask')
             batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in batch.items()}
 
+            # slice batch along sequence dimension for context parallelism
             batch = self.get_batch_on_this_context_parallel_rank(batch)
 
             # Model forward pass
@@ -1129,6 +1235,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         eval_iters = (max_train_steps // self.trainer.val_check_interval + 1) * self.trainer.limit_val_batches
         test_iters = self.trainer.limit_test_batches
 
+        # Add extra FIM tokens to tokenizer
+        if self.cfg.data.get('add_fim', False) and self.cfg.tokenizer.library == 'megatron':
+            fim_tokens = self.cfg.data.fim.extra_tokens
+            fim_tokens = [fim_tokens.prefix, fim_tokens.middle, fim_tokens.suffix, fim_tokens.pad, fim_tokens.eod]
+            self.tokenizer.add_special_tokens({'additional_special_tokens': fim_tokens})
+
         train_valid_test_num_samples = [
             max_train_steps * global_batch_size,
             eval_iters * global_batch_size,
@@ -1140,18 +1252,28 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 1
             ] = 1  # This is to make sure we only have one epoch on every validation iteration
 
-        self._train_ds, self._validation_ds, self._test_ds = build_train_valid_test_datasets(
-            cfg=self.cfg,
-            trainer=self.trainer,
-            data_prefix=self.cfg.data.data_prefix,
-            data_impl=self.cfg.data.data_impl,
-            splits_string=self.cfg.data.splits_string,
-            train_valid_test_num_samples=train_valid_test_num_samples,
-            seq_length=self.cfg.data.seq_length,
-            seed=self.cfg.seed,
-            skip_warmup=self.cfg.data.get('skip_warmup', True),
-            tokenizer=self.tokenizer,
-        )
+        kwargs = {
+            "is_built_on_rank": is_dataset_built_on_rank,
+            "random_seed": self.cfg.seed,
+            "sequence_length": self.cfg.data.seq_length,
+            "blend": self.cfg.data.data_prefix,
+            "split": self.cfg.data.splits_string,
+            "path_to_cache": self.cfg.data.index_mapping_dir,
+        }
+
+        if self.cfg.data.get('add_fim', False):
+            dataset_config = GPTFIMDatasetConfig(self.tokenizer, self.cfg.data.fim, **kwargs)
+
+            self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
+                GPTFIMDataset, train_valid_test_num_samples, dataset_config,
+            ).build()
+        else:
+            dataset_config = GPTDatasetConfig(**kwargs)
+
+            self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
+                GPTDataset, train_valid_test_num_samples, dataset_config,
+            ).build()
+
         if self._train_ds is not None:
             logging.info(f'Length of train dataset: {len(self._train_ds)}')
         if self._validation_ds is not None:

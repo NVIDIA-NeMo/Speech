@@ -35,7 +35,7 @@ pipeline {
 
     stage('Install test requirements') {
       steps {
-        sh 'apt-get update && apt-get install -y bc && pip install -r requirements/requirements_test.txt'
+        sh 'apt-get update && apt-get install -y bc && pip install -r requirements/requirements_test.txt && pip install -r requirements/requirements_lightning.txt'
       }
     }
 

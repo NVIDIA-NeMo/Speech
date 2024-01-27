@@ -18,7 +18,7 @@ import queue
 import warnings
 from contextlib import nullcontext
 from dataclasses import fields
-from functools import partial
+from functools import cache, partial
 from importlib.metadata import version
 from typing import Any, Dict, Iterator, List, Optional, Union
 
@@ -113,11 +113,30 @@ except (ImportError, ModuleNotFoundError):
     HAVE_TE = False
 
 
-def get_specs(spec_name):
-    name_spec_dict = {"": get_gpt_layer_with_transformer_engine_spec(), "megatron_falcon_gpt": get_falcon_layer_spec()}
-    if spec_name not in name_spec_dict:
+@cache
+def mcore_supports_moe() -> bool:
+    global HAVE_MEGATRON_CORE
+    if not HAVE_MEGATRON_CORE:
+        return False
+    try:
+        from megatron.core.transformer.moe.router import TopKRouter
+
+        return True
+    except ImportError:
+        return False
+
+
+def get_specs(spec_name, num_experts=None):
+    if spec_name == '':
+        if num_experts is not None:
+            assert mcore_supports_moe(), "Megatron-core >= v0.5.0 is required for MoE"
+            return get_gpt_layer_with_transformer_engine_spec(num_experts)
+        else:
+            return get_gpt_layer_with_transformer_engine_spec()
+    elif spec_name == 'megatron_falcon_gpt':
+        return get_falcon_layer_spec()
+    else:
         raise ValueError(f"Spec name '{spec_name}' is not recognized.")
-    return name_spec_dict[spec_name]
 
 
 class MegatronGPTExportableModel(torch.nn.Module, Exportable):
@@ -328,7 +347,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if self.mcore_gpt:
             model = MCoreGPTModel(
                 config=self.transformer_config,
-                transformer_layer_spec=get_specs(self.spec_name),
+                transformer_layer_spec=get_specs(self.spec_name, self.transformer_config.num_moe_experts),
                 vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),
                 max_sequence_length=self.cfg.get('encoder_seq_length', 512),
                 pre_process=pre_process,
@@ -1683,7 +1702,26 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'normalization': normalization,
             'fp8': fp8,
             'tp_comm_overlap': ub_tp_comm_overlap,
+            # MoE related
+            'num_experts': self.cfg.get('num_experts', None),
+            'moe_router_load_balancing_type': self.cfg.get('moe_router_load_balancing_type', 'aux_loss'),
+            'moe_router_topk': self.cfg.get('moe_router_topk', 2),
+            'moe_grouped_gemm': self.cfg.get('moe_grouped_gemm', False),
+            'moe_aux_loss_coeff': self.cfg.get(
+                'moe_aux_loss_coeff', 0
+            ),  # 1e-2 would be a good start value for load balance loss.
+            'moe_z_loss_coeff': self.cfg.get('moe_z_loss_coeff', None),  # 1e-3 would be a good start value for z-loss
+            'moe_input_jitter_eps': self.cfg.get('moe_input_jitter_eps', None),
+            'moe_token_dropping': self.cfg.get('moe_token_dropping', False),  # TODO: Support token dropping.
         }
+        if model_specific_configs['num_experts'] is not None:
+            assert mcore_supports_moe(), 'Megatron-core >= v0.5.0 is required for MoE'
+        elif not mcore_supports_moe():
+            if 'num_experts' in model_specific_configs:
+                del model_specific_configs['num_experts']
+            moe_keys = list(filter(lambda x: x.startswith('moe_'), model_specific_configs.keys()))
+            for k in moe_keys:
+                del model_specific_configs[k]
 
         transformer_config = super().build_transformer_config()
 

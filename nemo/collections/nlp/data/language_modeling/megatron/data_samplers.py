@@ -134,6 +134,7 @@ class MegatronPretrainingRandomSampler(BaseMegatronSampler):
         drop_last: bool = True,
         global_batch_size: Optional[int] = None,
         pad_samples_to_global_batch_size: Optional[bool] = False,
+        seed: int = 0,
     ) -> None:
         super().__init__(
             total_samples=total_samples,
@@ -146,12 +147,19 @@ class MegatronPretrainingRandomSampler(BaseMegatronSampler):
             pad_samples_to_global_batch_size=pad_samples_to_global_batch_size,
         )
         assert (
-            pad_samples_to_global_batch_size == False
+            not pad_samples_to_global_batch_size
         ), "`MegatronPretrainingRandomSampler` does not support sample padding"
+        if (not drop_last) and self.micro_batch_times_data_parallel_size > 1:
+            raise RuntimeError(
+                "`MegatronPretrainingRandomSampler` does not support drop_last=False when micro_batch_size * data_parallel_size > 1. \
+                  please reduce your MBS and data parallelism to 1 if you want to use drop_last=False, or switch to drop_last=True to avoid this error"
+            )
         self.last_batch_size = self.total_samples % self.micro_batch_times_data_parallel_size
+        self.seed = seed
 
     def __len__(self):
-        num_available_samples: int = self.total_samples
+        active_total_samples = self.total_samples - (self.last_batch_size if self.drop_last else 0)
+        num_available_samples = active_total_samples - self.consumed_samples % active_total_samples
         if self.global_batch_size is not None:
             if self.drop_last:
                 return num_available_samples // self.global_batch_size
@@ -175,7 +183,7 @@ class MegatronPretrainingRandomSampler(BaseMegatronSampler):
         start_idx = self.data_parallel_rank * bucket_size
 
         g = torch.Generator()
-        g.manual_seed(self.epoch)
+        g.manual_seed(self.seed + self.epoch)
         random_idx = torch.randperm(bucket_size, generator=g).tolist()
         idx_range = [start_idx + x for x in random_idx[bucket_offset:]]
 

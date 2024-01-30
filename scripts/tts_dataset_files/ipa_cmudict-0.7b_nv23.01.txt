@@ -2105,6 +2105,7 @@ AHSAHKA  ɑˈsɑkə
 AHUJA  ɑˈhujə
 AHUMADA  ɑjuˈmɑdə
 AHWAHNEE  əˈwɑni
+AI  ˈeɪˈaɪ
 AICHELE  ˈaɪkəl
 AICHER  ˈaɪkɚ
 AICHI  ɑˈitʃi
@@ -55996,6 +55997,8 @@ HOLOGRAM  ˈhɔloʊˌɡɹæm
 HOLOGRAMS  ˈhɔloʊˌɡɹæmz
 HOLOGRAPHIC  ˌhɔloʊˈɡɹæfɪk
 HOLOHAN  ˈhɔləhæn
+HOLOHUB  ˈhɑloʊhəb
+HOLOSCAN  ˈhɑloʊskæn
 HOLQUIN  ˈhoʊlkwɪn
 HOLROYD  ˈhoʊlˌɹɔɪd
 HOLSAPPLE  ˈhoʊlsəpəl
@@ -58186,6 +58189,7 @@ IGUANA  ˌɪˈɡwɑnə
 IGUANAS  ˌɪˈɡwɑnəz
 IGUCHI  iˈɡuˌtʃi
 IGUSHI  ɪˈɡuˌʃi
+IGX  aɪdʒiˈɛks
 IHASZ  ˈaɪhæs
 IHDE  ˈɪd
 IHLE  ˈaɪhəl
@@ -62114,6 +62118,7 @@ JETHRO  ˈdʒɛθɹoʊ
 JETLINER  ˈdʒɛtˌlaɪnɚ
 JETLINER'S  ˈdʒɛtˌlaɪnɚz
 JETLINERS  ˈdʒɛtˌlaɪnɚz
+JETPACK  ˈdʒɛtˈpæk
 JETRO  ˈdʒɛtɹoʊ
 JETS  ˈdʒɛts
 JETS'  ˈdʒɛts
@@ -124295,7 +124300,7 @@ UBBEN  ˈʌbən
 UBER  ˈubɚ
 UBIQUITOUS  juˈbɪkwɪtəs
 UBIQUITY  juˈbɪkwɪti
-UBUNTU  ˌuˈbuˌtu
+UBUNTU  uˈbʊntu
 UCCEL  ˈutʃəl
 UCCEL'S  ˈutʃəlz
 UCCI  ˈutʃi
@@ -134637,6 +134642,7 @@ GCP  ˈdʒiˈsiˈpi
 GE  dʒiˈi
 GEFORCE  ˈdʒiˈfɔɹs
 GI  ˈdʒiˈeɪ
+GIGABIT  ˈɡɪɡəbɪt
 GIGAHERTZ  ˈɡɪɡəˌhɛɹts
 GMAIL  ˈdʒiˈmeɪl
 GPU  ˈdʒiˈpiˈju

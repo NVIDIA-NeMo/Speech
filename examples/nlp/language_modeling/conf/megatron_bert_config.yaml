@@ -2,7 +2,7 @@ name: megatron_bert
 restore_from_path: null # used when starting from a .nemo file
 
 trainer:
-  devices: 2
+  devices: 1
   num_nodes: 1
   accelerator: gpu
   precision: 16
@@ -56,15 +56,19 @@ model:
   hidden_size: 768
   ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
   num_attention_heads: 12
+  skip_head: False
+  transformer_block_type: post_ln
   init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
   hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
   kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
   apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
+  normalization: layernorm
   layernorm_epsilon: 1e-5
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
   pre_process: True # add embedding
   post_process: True # add pooler
   bert_binary_head: True # BERT binary head
+  megatron_legacy: False
 
   tokenizer:
     library: 'megatron'
@@ -128,7 +132,7 @@ model:
     #   - /raid/data/pile/my-gpt3_00_text_document
     #   - .5
     #   - /raid/data/pile/my-gpt3_01_text_document
-    data_prefix: ???
+    data_prefix: [1.0, /path/to/data]
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap
     splits_string: 900,50,50

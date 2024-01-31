@@ -184,10 +184,13 @@ class MegatronBertModel(MegatronBaseModel):
                 ),
                 layernorm_epsilon=cfg.get('layernorm_epsilon', 1e-5),
                 masked_softmax_fusion=cfg.get('masked_softmax_fusion', True),
+                normalization=cfg.get('normalization', 'layernorm'),
+                transformer_block_type=cfg.get('transformer_block_type', 'pre_ln'),
                 bias_gelu_fusion=cfg.get('bias_gelu_fusion', True),
                 bias_dropout_add_fusion=cfg.get("bias_dropout_add_fusion", True),
                 onnx_safe=cfg.get('onnx_safe', False),
                 add_binary_head=cfg.bert_binary_head,
+                skip_head=cfg.get('skip_head', False),
                 megatron_legacy=cfg.get('megatron_legacy', False),
                 position_embedding_type=self.cfg.get("position_embedding_type", "learned_absolute"),
             )
@@ -1034,5 +1037,65 @@ class MegatronBertModel(MegatronBaseModel):
         """
         activation = self.cfg.get('activation', 'gelu')
         assert activation == 'gelu', "Only gelu activation is support for BERT at the moment."
+
+        normalization = self.cfg.get('normalization', 'layernorm')
+
+        layernorm_zero_centered_gamma = self.cfg.get('normalization', 'layernorm') == 'layernorm1p'
+        if normalization == 'layernorm':
+            normalization = 'LayerNorm'
+        elif normalization == 'rmsnorm':
+            normalization = 'RMSNorm'
+        elif normalization == 'layernorm1p':
+            normalization = 'LayerNorm'
+            layernorm_zero_centered_gamma = True
+        else:
+            logging.warning(
+                f"The normalization type: {normalization} might not be supported in megatron core."
+                f"Supported types are LayerNorm and RMSNorm."
+            )
+
+        # any configs that are not in the nemo model config will be added here
+        model_specific_configs = {
+            'layernorm_zero_centered_gamma': layernorm_zero_centered_gamma,
+            'normalization': normalization,
+        }
+
         transformer_config = super().build_transformer_config()
+
+        for key, value in model_specific_configs.items():
+            setattr(transformer_config, key, value)
+
+        # pass mcore customization configs directly to mcore
+        mcore_customization_config_dict = self.cfg.get('mcore_customization_config', {})
+        for key, value in mcore_customization_config_dict.items():
+            setattr(transformer_config, key, value)
+
         return transformer_config
+
+
+class MegatronBertTextEmbeddingModel(MegatronBertModel):
+    """
+    Megatron Bert Text Embedding.
+    Model returns [batch, hidden] shape
+    """
+
+    def average_pool(self, last_hidden_states, attention_mask):
+        last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        token_type_ids,
+        lm_labels=None,
+        checkpoint_activations_all_layers=None,
+        model=None,
+    ):
+        outputs = super().forward(
+            input_ids, attention_mask, token_type_ids, lm_labels, checkpoint_activations_all_layers, model
+        )
+        embeddings = self.average_pool(outputs[0], attention_mask)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        return embeddings

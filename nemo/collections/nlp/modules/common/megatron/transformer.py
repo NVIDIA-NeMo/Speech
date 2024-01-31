@@ -625,7 +625,6 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         )
 
         output = bias_dropout_add_func(mlp_output, mlp_bias, residual, self.hidden_dropout)
-        # print(f"Layer: {self.layer_number} MLP + Dropout + Residual checksum {output.sum()}")
 
         if self.transformer_block_type == 'post_ln':
             output = self.post_attention_layernorm(output)
@@ -1158,6 +1157,27 @@ class ParallelTransformer(MegatronModule):
                 offset = parallel_state.get_pipeline_model_parallel_rank() * self.num_layers
 
         self.layers = torch.nn.ModuleList([build_layer(i + 1 + offset) for i in range(self.num_layers)])
+        if self.pre_process and self.transformer_block_type == 'post_ln':
+            # Final layer norm before output.
+            if normalization == 'layernorm':
+                self.initial_layernorm = get_layer_norm(
+                    hidden_size, layernorm_epsilon, persist_layer_norm, sequence_parallel=config.sequence_parallel
+                )
+
+            elif normalization == 'layernorm1p':
+                self.initial_layernorm = LayerNorm1P(
+                    hidden_size, layernorm_epsilon, sequence_parallel_enabled=config.sequence_parallel
+                )
+            elif normalization == 'low_precision_layernorm':
+                self.initial_layernorm = LPLayerNorm(hidden_size, layernorm_epsilon)
+            else:
+                self.initial_layernorm = MixedFusedRMSNorm(hidden_size, layernorm_epsilon)
+            # for architectures such as MPT, there is no bias term even on the layernorms
+            # this code allows us to remove the bias terms from the layernorm module
+            # so that we can support MPT. However, certain apex-based LNs don't support
+            # removing bias, so we also have to check for that
+            if not bias and normalization not in ['layernorm', 'layernorm1p']:
+                remove_bias_from_layernorm(self.initial_layernorm)
 
         if self.post_process and self.transformer_block_type != 'post_ln':
             # Final layer norm before output.
@@ -1435,7 +1455,10 @@ class ParallelTransformer(MegatronModule):
                 'get_key_value does not work with ' 'activation checkpointing'
             )
 
-        if not self.pre_process:
+        if self.pre_process:
+            if self.transformer_block_type == 'post_ln':
+                hidden_states = self.initial_layernorm(hidden_states)
+        else:
             # See set_input_tensor()
             hidden_states = self.input_tensor
 

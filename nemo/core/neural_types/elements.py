@@ -96,6 +96,10 @@ class ElementType(ABC):
         return None
 
     def compare(self, second) -> NeuralTypeComparisonResult:
+        if torch.jit.is_scripting():
+            # Neural types for TorchScript are suppressed
+            # This is a stub to make TorchScript happy
+            return NeuralTypeComparisonResult.SAME
         # First, check general compatibility
         first_t = type(self)
         second_t = type(second)

@@ -786,6 +786,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if att_context_size is not None:
             self.att_context_size = att_context_size
 
+        self.setup_streaming_params()
+
     def setup_streaming_params(
         self,
         chunk_size: int = None,

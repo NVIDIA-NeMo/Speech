@@ -21,9 +21,10 @@ import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 
-from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel
+from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel, EncDecMultiTaskModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
+from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
@@ -154,6 +155,9 @@ class TranscriptionConfig:
     # Decoding strategy for RNNT models
     rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(fused_batch_size=-1)
 
+    # Decoding strategy for AED models
+    multitask_decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()
+
     # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Hybrid RNNT/CTC models
     decoder_type: Optional[str] = None
     # att_context_size can be set for cache-aware streaming models with multiple look-aheads
@@ -177,6 +181,11 @@ class TranscriptionConfig:
 
     # key for groundtruth text in manifest
     gt_text_attr_name: str = "text"
+
+    # Use model's transcribe() function instead of transcribe_partial_audio() by default
+    # Only use transcribe_partial_audio() when the audio is too long to fit in memory
+    # Your manifest input should have `offset` field to use transcribe_partial_audio()
+    allow_partial_transcribe: bool = False
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
@@ -257,7 +266,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     # Setup decoding strategy
     if hasattr(asr_model, 'change_decoding_strategy'):
-        if cfg.decoder_type is not None:
+        if isinstance(asr_model.decoding, MultiTaskDecoding):
+            cfg.multitask_decoding.compute_langs = cfg.compute_langs
+            cfg.multitask_decoding.preserve_alignments = cfg.preserve_alignment
+            asr_model.change_decoding_strategy(cfg.multitask_decoding)
+        elif cfg.decoder_type is not None:
             # TODO: Support compute_langs in CTC eventually
             if cfg.compute_langs and cfg.decoder_type == 'ctc':
                 raise ValueError("CTC models do not support `compute_langs` at the moment")
@@ -298,8 +311,18 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         else:
             cfg.decoding = cfg.rnnt_decoding
 
-    # prepare audio filepaths and decide wether it's partial audio
-    filepaths, partial_audio = prepare_audio_data(cfg)
+    if isinstance(asr_model, EncDecMultiTaskModel):
+        # Special case for EncDecMultiTaskModel, where the input manifest is directly passed into the model's transcribe() function
+        partial_audio = False
+        filepaths = cfg.dataset_manifest
+        assert cfg.dataset_manifest is not None
+    else:
+        # prepare audio filepaths and decide wether it's partial audio
+        filepaths, partial_audio = prepare_audio_data(cfg)
+
+    if not cfg.allow_partial_transcribe:
+        # by defatul, use model's transcribe() function, unless partial audio is required
+        partial_audio = False
 
     # setup AMP (optional)
     if cfg.amp and torch.cuda.is_available() and hasattr(torch.cuda, 'amp') and hasattr(torch.cuda.amp, 'autocast'):

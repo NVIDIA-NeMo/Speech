@@ -18,17 +18,18 @@ import secrets
 import tarfile
 from io import BytesIO
 from pathlib import Path
-from typing import Iterable, List
+from typing import Generator, Iterable, List
 
 import soundfile
 from cytoolz import groupby
 from lhotse import AudioSource, Recording, SupervisionSegment
-from lhotse.lazy import ImitatesDict, LazyIteratorChain, LazyJsonlIterator
+from lhotse.cut import Cut
+from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
 from lhotse.serialization import open_best
 from lhotse.utils import compute_num_samples
 
 
-class LazyNeMoIterator(ImitatesDict):
+class LazyNeMoIterator:
     """
     ``LazyNeMoIterator`` reads a NeMo (non-tarred) JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
     It's used to create a ``lhotse.CutSet``.
@@ -62,7 +63,7 @@ class LazyNeMoIterator(ImitatesDict):
     def path(self) -> str | Path:
         return self.source.path
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Cut, None, None]:
         for data in self.source:
             audio_path = data.pop("audio_filepath")
             duration = data.pop("duration")
@@ -94,7 +95,7 @@ class LazyNeMoIterator(ImitatesDict):
         return LazyIteratorChain(self, other)
 
 
-class LazyNeMoTarredIterator(ImitatesDict):
+class LazyNeMoTarredIterator:
     """
     ``LazyNeMoTarredIterator`` reads a NeMo tarred JSON manifest and converts it on the fly to an ``Iterable[Cut]``.
     It's used to create a ``lhotse.CutSet``.
@@ -189,7 +190,7 @@ class LazyNeMoTarredIterator(ImitatesDict):
     def shard_ids(self) -> List[int]:
         return sorted(self.shard_id_to_manifest.keys())
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Cut, None, None]:
         shard_ids = self.shard_ids
 
         if self.shuffle_shards:

@@ -75,6 +75,7 @@ def main(cfg):
             ignore_capitalization=cfg.analyst.metric_calculator.get("ignore_capitalization", False),
             ignore_punctuation=cfg.analyst.metric_calculator.get("ignore_punctuation", False),
             punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
+            strip_punc_space=cfg.analyst.metric_calculator.get("strip_punc_space", False),
         )
     else:
         output_manifest_w_wer, total_res, eval_metric = cal_write_text_metric(
@@ -87,6 +88,7 @@ def main(cfg):
             punctuations=cfg.analyst.metric_calculator.get("punctuations", None),
             metric=cfg.analyst.metric_calculator.get("metric", "bleu"),
             metric_args=cfg.analyst.metric_calculator.get("metric_args", None),
+            strip_punc_space=cfg.analyst.metric_calculator.get("strip_punc_space", False),
         )
 
     with open_dict(cfg):

@@ -37,7 +37,12 @@ engine:
             max_snr_db: 15
             rng: *random_seed
 
-  
+    transcribe_params:
+        # Put additional overrides for params in TranscriptionConfig used by transcribe_speech.py here
+        # Don't put the following fields here: 'calculate_wer', 'model_path', 'pretrained_name', 'dataset_manifest', 
+        # 'output_filename', 'batch_size', 'num_workers', 'random_seed', 'eval_config_yaml', 'decoder_type'
+        allow_partial_transcribe: False  # only set True if your audio is too long and have 'offset' in manifest
+
 analyst:
     metric_calculator:
         exist_pred_manifest: null # specify the previously generated manifest will skip engine
@@ -48,6 +53,7 @@ analyst:
         ignore_capitalization: False
         ignore_punctuation: False
         punctuations: null  # a string of punctuations to remove when ignore_punctuation=True. if not set, default to '!"#$%&()*+,-./:;<=>?@[\\]^_`{|}~'
+        strip_punc_space: False # strip spaces before punctuations. e.g., "I do ." -> "I do."
 
     metadata:
         duration: 

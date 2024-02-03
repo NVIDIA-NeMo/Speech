@@ -42,6 +42,10 @@ from nemo.utils.get_rank import get_rank, is_global_rank_zero
 __all__ = ['ModelPT']
 
 
+# multiple interpolated values in the config
+OmegaConf.register_new_resolver("multiply", lambda x, y: x * y, replace=True)
+
+
 class ModelPT(LightningModule, Model):
     """
     Interface for Pytorch-lightning based NeMo models

@@ -301,7 +301,7 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         scores, prefixes = scores.view(-1, 1), prefixes.view(-1, 1)
 
         # repeat init target prefixes and cached memory states beam_size times
-        prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, 1), prefixes), dim=1)
+        prefixes = torch.cat((tgt.repeat(1, self.beam_size).view(-1, tgt.shape[1]), prefixes), dim=1)
         for j in range(len(decoder_mems_list)):
             decoder_mems_list[j] = decoder_mems_list[j].repeat(self.beam_size, 1, 1)
 

@@ -1,59 +1,92 @@
-# It contains the default values for training an autoregressive FastConformer-Transformer ST model with sub-word encoding.
+# It contains the default values for training an autoregressive FastConformer-Transformer AED model with sub-word encoding.
 
 # Architecture and training config:
 # Default learning parameters in this config are set for effective batch size of 2K. To train it with smaller effective
 # batch sizes, you may need to re-tune the learning parameters or use higher accumulate_grad_batches.
 # Here are the recommended configs for different variants of FastConformer-Transformer, other parameters are the same as in this config file.
 # One extra (linear projection) layer is added between FastConformer encoder and Transformer decoder if they have different hidden sizes
-# It is recommended to initialize FastConformer with ASR pre-trained encoder for better accuracy and faster convergence
+# It is recommended to initialize FastConformer with ASR/SSL pre-trained encoder for better accuracy and faster convergence
 
-name: "FastConformer-Transformer-BPE-st"
+name: "FastConformer-Transformer-MultiTask"
 
-# Initialize model encoder with pre-trained ASR FastConformer encoder for faster convergence and improved accuracy
-init_from_nemo_model:
-  model0:
-    path: ???
-    include: ["preprocessor", "encoder"]
+# Note: for larger models (1B+ params) initializing from a pretrained encoder
+#  may help (or even be required to) stabilize the training.
+init_from_nemo_model: null
 
 model:
+  _target_: nemo.collections.asr.models.EncDecMultiTaskModel
   sample_rate: 16000
   label_smoothing: 0.0
+  context_len_for_AR_decoding: 5 # Length of input prompt tokens. For example, in Canary models, we use [BOS,src_lang,task,tgt_lang,pnc] and thus the length is 5
   log_prediction: true # enables logging sample predictions in the output during training
 
+  # Important ! Set the prompt format to the class you need
+  prompt_format: ???   # Options supported: ["canary"]
+
+  model_defaults:
+    asr_enc_hidden: 1024
+    lm_enc_hidden: 512
+    lm_dec_hidden: 1024
+
   train_ds:
-    is_tarred: true
-    tarred_audio_filepaths: ???
+    use_lhotse: true
+    tarred_audio_filepaths: null
     manifest_filepath: ???
-    sample_rate: 16000
-    shuffle: false
-    trim_silence: false
-    batch_size: 4
+    sample_rate: ${model.sample_rate}
+    shuffle: true
     num_workers: 8
+    # To understand the settings below, please refer to Lhotse Dataloading documentation:
+    # https://github.com/NVIDIA/NeMo/blob/main/docs/source/asr/datasets.rst#lhotse-dataloading
+    # You can also check the following configuration dataclass:
+    # https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/common/data/lhotse/dataloader.py#L36
+    batch_size: None
+    batch_duration: 360
+    quadratic_duration: 15
+    use_bucketing: True
+    num_buckets: 20
+    bucket_buffer_size: 20000
+    shuffle_buffer_size: 10000
 
   validation_ds:
+    use_lhotse: true
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
-    batch_size: 16 # you may increase batch_size if your memory allows
+    batch_size: 8 # you may increase batch_size if your memory allows
     shuffle: false
     num_workers: 4
     pin_memory: true
     use_start_end_token: true
+    use_bucketing: false
 
   test_ds:
+    use_lhotse: true
     manifest_filepath: ???
     sample_rate: ${model.sample_rate}
-    batch_size: 16 # you may increase batch_size if your memory allows
+    batch_size: 8 # you may increase batch_size if your memory allows
     shuffle: false
     num_workers: 4
     pin_memory: true
     use_start_end_token: true
+    use_bucketing: false
 
   # recommend small vocab size of 128 or 256 when using 4x sub-sampling
   # you may find more detail on how to train a tokenizer at: /scripts/tokenizers/process_asr_text_tokenizer.py
   tokenizer:
-    dir: ???  # path to directory which contains either tokenizer.model (bpe) or vocab.txt (wpe)
-    type: bpe  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer)
+    dir: null  # Null for aggregate tokenizers
+    type: agg  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer) or `agg` for aggregate tokenizers
+    langs:
+      spl_tokens: # special tokens model
+        dir: ???
+        type: bpe
+      en: # English tokenizer (example, replace with whichever language you would like or add tokenizers to add tokenizer for additional languages) 
+        dir: ???
+        type: bpe
 
+    custom_tokenizer:
+      _target_: nemo.collections.common.tokenizers.canary_tokenizer.CanaryTokenizer  # Can be replaced with other tokenizer for different prompt formats
+      tokenizers: null  # Filled at runtime by all the tokenizers inside the aggregate tokenizer
+
+  # Audio Preprocessor
   preprocessor:
     _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
     sample_rate: ${model.sample_rate}
@@ -69,6 +102,7 @@ model:
     pad_to: 0
     pad_value: 0.0
 
+  # SpecAugment is applied either in the model or in the data layer
   spec_augment:
     _target_: nemo.collections.asr.modules.SpectrogramAugmentation
     freq_masks: 2 # set to zero to disable it
@@ -77,12 +111,13 @@ model:
     freq_width: 27
     time_width: 0.05
 
+  # FastConformer Encoder
   encoder:
     _target_: nemo.collections.asr.modules.ConformerEncoder
     feat_in: ${model.preprocessor.features}
     feat_out: -1 # you may set it if you need different output size other than the default d_model
-    n_layers: 17
-    d_model: 512
+    n_layers: 24
+    d_model: ${model.model_defaults.asr_enc_hidden}
 
     # Sub-sampling params
     subsampling: dw_striding # vggnet or striding, vggnet may give better results but needs more memory
@@ -101,7 +136,7 @@ model:
     n_heads: 8 # may need to be lower for smaller d_models
     # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
     att_context_size: [-1, -1] # -1 means unlimited context
-    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    xscaling: false # scales up the input embeddings by sqrt(d_model)
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
 
@@ -116,70 +151,94 @@ model:
     dropout_emb: 0.0 # The dropout used for embeddings
     dropout_att: 0.1 # The dropout for multi-headed attention modules
 
+  # Optional Transformer Encoder sandwitched between ASR Encoder and Transformer Ddcoder.
+  # Only used if num_layers > 0
   transf_encoder:
+    _target_: nemo.collections.asr.modules.transformer.transformer_encoders.TransformerEncoder
     num_layers: 0
-    hidden_size: 512
-    inner_size: 2048
+    hidden_size: ${model.model_defaults.lm_enc_hidden}
+    inner_size: ${multiply:${model.model_defaults.lm_enc_hidden}, 4}
     num_attention_heads: 8
     ffn_dropout: 0.1
     attn_score_dropout: 0.1
     attn_layer_dropout: 0.1
+    mask_future: False
+    pre_ln: True
+    pre_ln_final_layer_norm: True
 
   transf_decoder:
-    library: nemo
+    _target_: nemo.collections.asr.modules.transformer.get_nemo_transformer
     model_name: null
     pretrained: false
-    max_sequence_length: 512
-    num_token_types: 0
-    embedding_dropout: 0.1
-    learn_positional_encodings: false
-    hidden_size: 512
-    inner_size: 2048
-    num_layers: 6
-    num_attention_heads: 4
-    ffn_dropout: 0.1
-    attn_score_dropout: 0.1
-    attn_layer_dropout: 0.1
-    hidden_act: relu
-    pre_ln: true
+    encoder: null
     pre_ln_final_layer_norm: true
 
+    config_dict:
+      max_sequence_length: 512
+      num_token_types: 0
+      embedding_dropout: 0.1
+      learn_positional_encodings: false
+      hidden_size: ${model.model_defaults.lm_dec_hidden}
+      inner_size: ${multiply:${model.model_defaults.lm_dec_hidden}, 4}
+      num_layers: 24
+      num_attention_heads: 8
+      ffn_dropout: 0.1
+      attn_score_dropout: 0.1
+      attn_layer_dropout: 0.1
+      hidden_act: relu
+      pre_ln: true
+      vocab_size: None  # Will be set by the model at runtime
+
+  # Label Prediction Head (Token Classifier)
   head:
+    _target_: nemo.collections.asr.parts.submodules.token_classifier.TokenClassifier
     num_layers: 1
     activation: relu
     log_softmax: true
+    hidden_size: ${model.transf_decoder.config_dict.hidden_size}
+    num_classes: None  # Will be set by the model at runtime
     dropout: 0.0
     use_transformer_init: true
-    
-  beam_search:
-    beam_size: 4
-    len_pen: 0.0
-    max_generation_delta: 50
+
+  # Decoding Strategy
+  decoding:
+    strategy: beam
+    return_best_hypothesis: true  # Returns the most probably hypothesis after beam search
+
+    beam:
+      beam_size: 1
+      len_pen: 0.0
+      max_generation_delta: 50
+
+  # Loss Config
+  loss:
+    _target_: nemo.collections.common.losses.smoothed_cross_entropy.SmoothedCrossEntropyLoss
+    label_smoothing: ${model.label_smoothing}
+    pad_id: null
 
   optim:
-    name: adam
-    lr: 0.0001
+    name: adamw
+    lr: 3e-4
     # optimizer arguments
     betas: [0.9, 0.98]
     # less necessity for weight_decay as we already have large augmentations with SpecAug
     # you may need weight_decay for large models, stable AMP training, small datasets, or when lower augmentations are used
     # weight decay of 0.0 with lr of 2.0 also works fine
-    #weight_decay: 1e-3
+    weight_decay: 1e-3
 
     # scheduler setup
     sched:
       name: InverseSquareRootAnnealing
-      #d_model: ${model.encoder.d_model}
       # scheduler config override
-      warmup_steps: 1000
+      warmup_steps: 2500
       warmup_ratio: null
       min_lr: 1e-6
 
 trainer:
   devices: -1 # number of GPUs, -1 would use all available GPUs
   num_nodes: 1
-  max_epochs: 100
-  max_steps: -1 # computed at runtime if not set
+  max_epochs: -1
+  max_steps: 100000 # computed at runtime if not set
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   accelerator: auto
   strategy: ddp
@@ -188,7 +247,7 @@ trainer:
   precision: 16 # Should be set to 16 for O1 and O2 to enable the AMP.
   log_every_n_steps: 100  # Interval of logging.
   enable_progress_bar: True
-  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  num_sanity_val_steps: 2 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
   check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
   sync_batchnorm: true
   enable_checkpointing: False  # Provided by exp_manager
@@ -208,7 +267,7 @@ exp_manager:
 
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   # you need to set these two to True to continue the training
-  resume_if_exists: false
+  resume_if_exists: true
   resume_ignore_no_checkpoint: false
 
   # You may use this section to create a W&B logger

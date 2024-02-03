@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import re
 from typing import Optional, Tuple, Union
 
 from torchmetrics.text import SacreBLEUScore
@@ -26,6 +27,55 @@ TEXT_METRICS_MAPPING = {
     'bleu': SacreBLEUScore,
     'rouge': ROUGEScore,
 }
+
+from omegaconf import DictConfig
+
+
+def flatten_dict_config(config: DictConfig, parent_key='', sep='.', join='\n') -> str:
+    """
+    Flatten a DictConfig object into a string of parameter names and their values.
+
+    Args:
+        config (DictConfig): The input DictConfig object.
+        parent_key (str): The parent key for nested configurations.
+        sep (str): Separator between keys.
+
+    Returns:
+        str: Flattened string of parameter names and their values.
+    """
+    items = []
+    for k, v in config.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, DictConfig):
+            items.extend(flatten_dict_config(v, new_key, sep=sep, join=join).split(join))
+        else:
+            items.append(f"{new_key}={v}")
+    return join.join(items)
+
+
+def get_hydra_override_from_config(config: Optional[DictConfig] = None, exclude_keys: Optional[list] = None) -> str:
+    """
+    Flatten a DictConfig object into a string of hydra overrides for commandline, for example:
+    >>> config = OmegaConf.create({"foo": {"bar": 1, "baz": 2}})
+    >>> get_hydra_override_from_config(config)
+    "++foo.bar=1 ++foo.baz=2"
+    """
+    if not config:
+        return ""
+    join = '\n'
+    overrides = flatten_dict_config(config, join=join).split(join)
+    if exclude_keys:
+        overrides = [x for x in overrides if not any([y == x.split("=")[0] for y in exclude_keys])]
+    param_str = " ".join([f"++{x}" for x in overrides])
+    return param_str
+
+
+def strip_spaces_before_punctuations(text: str) -> str:
+    """
+    Remove spaces before punctuations, e.g. "hello , world" -> "hello, world"
+    """
+    result = re.sub(r'(\w)\s+([.,;!?])', r'\1\2', text)
+    return result
 
 
 def remove_punctuations(text: str, punctuations: Optional[Union[list, str]] = None) -> str:
@@ -115,6 +165,7 @@ def cal_write_wer(
     ignore_capitalization: bool = False,
     ignore_punctuation: bool = False,
     punctuations: Optional[list] = None,
+    strip_punc_space: bool = False,
 ) -> Tuple[str, dict, str]:
     """ 
     Calculate wer, inserion, deletion and substitution rate based on groundtruth text and pred_text_attr_name (pred_text) 
@@ -147,6 +198,9 @@ def cal_write_wer(
             if ignore_punctuation:
                 ref = remove_punctuations(ref, punctuations=punctuations)
                 hyp = remove_punctuations(hyp, punctuations=punctuations)
+            elif strip_punc_space:
+                ref = strip_spaces_before_punctuations(ref)
+                hyp = strip_spaces_before_punctuations(hyp)
 
             if ignore_capitalization:
                 ref = ref.lower()
@@ -201,6 +255,7 @@ def cal_write_text_metric(
     punctuations: Optional[list] = None,
     metric: str = 'bleu',
     metric_args: Optional[dict] = None,
+    strip_punc_space: bool = False,
 ):
     samples = []
     hyps = []
@@ -229,6 +284,9 @@ def cal_write_text_metric(
             if ignore_punctuation:
                 ref = remove_punctuations(ref, punctuations=punctuations)
                 hyp = remove_punctuations(hyp, punctuations=punctuations)
+            elif strip_punc_space:
+                ref = strip_spaces_before_punctuations(ref)
+                hyp = strip_spaces_before_punctuations(hyp)
 
             if ignore_capitalization:
                 ref = ref.lower()

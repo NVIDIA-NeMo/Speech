@@ -20,6 +20,8 @@ from omegaconf.dictconfig import DictConfig
 from nemo.collections.asr.modules.transformer.transformer import TransformerDecoderNM, TransformerEncoderNM
 from nemo.collections.asr.modules.transformer.transformer_bottleneck import TransformerBottleneckEncoderNM
 
+__all__ = ['get_nemo_transformer']
+
 
 def get_nemo_transformer(
     model_name: Optional[str] = None,
@@ -130,45 +132,3 @@ def get_nemo_transformer(
         )
 
     return model
-
-
-# def get_huggingface_transformer(
-#     model_name: Optional[str] = None,
-#     pretrained: bool = False,
-#     config_dict: Optional[Union[dict, DictConfig]] = None,
-#     encoder: bool = True,
-# ) -> Union[HuggingFaceEncoderModule, HuggingFaceDecoderModule]:
-
-#     if encoder:
-#         model = HuggingFaceEncoderModule(model_name, pretrained, config_dict)
-#     else:
-#         model = HuggingFaceDecoderModule(model_name, pretrained, config_dict)
-
-#     return model
-
-
-def get_megatron_transformer(
-    model_name: Optional[str] = None,
-    pretrained: bool = True,
-    config_dict: Optional[Union[dict, DictConfig]] = None,
-    encoder: bool = True,
-    checkpoint_file: str = None,
-) -> None:
-
-    raise ValueError(
-        "megatron-lm bert encoders are deprecated in NeMo 1.5.0. Please use NeMo 1.4.0 until megatron bert support is added again."
-    )
-
-    # vocab_file = config_dict.pop('vocab_file', None)
-    # if encoder:
-    #     model = MegatronEncoderModule(
-    #         model_name=model_name,
-    #         pretrained=pretrained,
-    #         config_dict=config_dict,
-    #         checkpoint_file=checkpoint_file,
-    #         vocab_file=vocab_file,
-    #     )
-    # else:
-    #     raise ValueError('Megatron decoders are not currently supported.')
-
-    # return model

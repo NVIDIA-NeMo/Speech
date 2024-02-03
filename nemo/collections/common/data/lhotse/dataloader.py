@@ -16,10 +16,12 @@ import logging
 import random
 import warnings
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Callable, Optional
 
 import torch
 from lhotse import CutSet
+from lhotse.cut import Cut
 from lhotse.dataset import (
     CutConcatenate,
     DynamicBucketingSampler,
@@ -62,8 +64,8 @@ class LhotseDataLoadingConfig:
     bucket_duration_bins: list[float] | None = None
     bucket_buffer_size: int = 10000
     #   d. Other Lhotse sampling options.
-    shuffle_buffer_size: int = 10000
-    drop_last: bool = True
+    shuffle_buffer_size: int | None = 10000
+    drop_last: bool = False
     shard_seed: int | str = "trng"
     max_open_streams: int | None = None
 
@@ -72,7 +74,7 @@ class LhotseDataLoadingConfig:
     sample_rate: int = 16000
     min_duration: float | None = -1
     max_duration: float | None = float("inf")
-    seed: int = 0
+    seed: int | str = "randomized"  # int | "randomized" | "trng"; the latter two are lazily resolved by Lhotse in dloading worker processes
     num_workers: int = 0
     pin_memory: bool = False
 
@@ -123,12 +125,7 @@ def get_lhotse_dataloader_from_config(
     cuts = cuts.resample(config.sample_rate)
 
     # Duration filtering, same as native NeMo dataloaders.
-    min_dur, max_dur = config.min_duration, config.max_duration
-    cuts = cuts.filter(lambda c: min_dur <= c.duration <= max_dur)
-
-    # Safeguard against utterances with identical IDs across different datasets
-    # that would make Lhotse complain otherwise.
-    cuts = cuts.modify_ids(create_id_randomizer(config.seed))
+    cuts = cuts.filter(DurationFilter(config.min_duration, config.max_duration))
 
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
@@ -204,9 +201,9 @@ def get_lhotse_dataloader_from_config(
             CutConcatenate(gap=config.concatenate_gap_seconds, duration_factor=config.concatenate_duration_factor,)
         )
         if config.db_norm is not None:
-            sampler = sampler.map(lambda cuts: cuts.normalize_loudness(config.db_norm, mix_first=False))
+            sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
         if config.concatenate_merge_supervisions:
-            sampler = sampler.map(lambda cuts: cuts.merge_supervisions())
+            sampler = sampler.map(_merge_supervisions)
 
     # 4. Creating dataloader.
     if is_tarred:
@@ -234,16 +231,6 @@ def get_lhotse_dataloader_from_config(
     return dloader
 
 
-def create_id_randomizer(seed: int = 0) -> Callable[[str], str]:
-    rng = random.Random(seed)
-    max_sfx = 2 ** 20 - 1
-
-    def add_random_suffix(cut_id: str) -> str:
-        return f"{cut_id}-rnd{rng.randint(0, max_sfx):07d}"
-
-    return add_random_suffix
-
-
 def make_structured_with_schema_warnings(config: DictConfig) -> DictConfig:
     """
     Checks the schema and fills missing default option values.
@@ -264,3 +251,28 @@ def make_structured_with_schema_warnings(config: DictConfig) -> DictConfig:
     config = OmegaConf.masked_copy(config, list(supported_keys))
 
     return OmegaConf.merge(default, config)
+
+
+# The helper callables below exist to avoid passing lambdas into lhotse CutSet map/filter methods.
+# Lambdas are not serializable across processes by pickle.
+# Note: lhotse offers LHOTSE_DILL_ENABLED=1 and ``lhotse.lazy.set_dill_enabled(True)``
+# to support pickling lambdas if its ever truly necessary.
+
+
+class DurationFilter:
+    """Callable, returns ``True`` if a cut's duration is in range [d_min, d_max] and ``False`` otherwise."""
+
+    def __init__(self, d_min: float, d_max: float) -> None:
+        self.d_min = d_min
+        self.d_max = d_max
+
+    def __call__(self, cut: Cut) -> bool:
+        return self.d_min <= cut.duration <= self.d_max
+
+
+def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
+    return cuts.normalize_loudness(target=db_norm, mix_first=False)
+
+
+def _merge_supervisions(cuts: CutSet) -> CutSet:
+    return cuts.merge_supervisions()

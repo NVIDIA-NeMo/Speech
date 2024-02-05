@@ -25,7 +25,7 @@ from datasets import load_dataset
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import get_samples_mapping
-from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import JSONLMemMapDataset
+from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import JSONLMemMapDataset, OnlineSampleMapping
 from nemo.core.classes import Dataset
 from nemo.utils import logging
 
@@ -160,6 +160,7 @@ class GPTSFTDataset(Dataset):
 
     def _build_samples_mapping(self):
         if self.max_num_samples is not None:
+            osm = OnlineSampleMapping(dataset_size=len(self.indexed_dataset), num_samples=self.max_num_samples)
             self.samples_mapping = get_samples_mapping(
                 indexed_dataset=self.indexed_dataset,
                 data_prefix=self.file_path,
@@ -171,6 +172,7 @@ class GPTSFTDataset(Dataset):
                 name=self.file_path.split('/')[-1],
                 binary_head=False,
                 index_mapping_dir=self.index_mapping_dir,
+                samples_mapping=osm,
             )
         else:
             self.samples_mapping = None

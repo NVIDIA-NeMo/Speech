@@ -136,7 +136,9 @@ if __name__ == "__main__":
             logging.debug(f"len(signal): {len(signal)}, sr: {sample_rate}")
             logging.debug(f"Duration: {original_duration}s, file_name: {path_audio}")
 
-            log_probs = asr_model.transcribe(paths2audio_files=[str(path_audio)], batch_size=1, logprobs=True)[0]
+            log_probs = asr_model.transcribe(audio=[str(path_audio)], batch_size=1, return_hypotheses=True)[
+                0
+            ].alignments
             # move blank values to the first column (ctc-package compatibility)
             blank_col = log_probs[:, -1].reshape((log_probs.shape[0], 1))
             log_probs = np.concatenate((blank_col, log_probs[:, :-1]), axis=1)

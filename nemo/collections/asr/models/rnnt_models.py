@@ -17,7 +17,7 @@ import json
 import os
 import tempfile
 from math import ceil
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -31,7 +31,12 @@ from nemo.collections.asr.losses.rnnt import RNNTLoss, resolve_rnnt_default_loss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
-from nemo.collections.asr.parts.mixins import ASRModuleMixin
+from nemo.collections.asr.parts.mixins import (
+    ASRModuleMixin,
+    ASRTranscriptionMixin,
+    TranscribeConfig,
+    TranscriptionReturnType,
+)
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
@@ -42,7 +47,7 @@ from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, L
 from nemo.utils import logging
 
 
-class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
+class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin):
     """Base class for encoder decoder RNNT-based models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -221,7 +226,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
     @torch.no_grad()
     def transcribe(
         self,
-        paths2audio_files: List[str],
+        audio: List[str],
         batch_size: int = 4,
         return_hypotheses: bool = False,
         partial_hypothesis: Optional[List['Hypothesis']] = None,
@@ -229,105 +234,47 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
-    ) -> Tuple[List[str], Optional[List['Hypothesis']]]:
+        override_config: Optional[TranscribeConfig] = None,
+    ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
 
         Args:
-
-            paths2audio_files: (a list) of paths to audio files. \
-        Recommended length per file is between 5 and 25 seconds. \
-        But it is possible to pass a few hours long file if enough GPU memory is available.
+            audio: (a list) of paths to audio files. \
+                Recommended length per file is between 5 and 25 seconds. \
+                But it is possible to pass a few hours long file if enough GPU memory is available.
             batch_size: (int) batch size to use during inference. \
-        Bigger will result in better throughput performance but would use more memory.
+                Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
-        With hypotheses can do some postprocessing like getting timestamp or rescoring
+                With hypotheses can do some postprocessing like getting timestamp or rescoring
+            partial_hypothesis: Optional[List['Hypothesis']] - A list of partial hypotheses to be used during rnnt
+                decoding. This is useful for streaming rnnt decoding. If this is not None, then the length of this
+                list should be equal to the length of the audio list.
             num_workers: (int) number of workers for DataLoader
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
             verbose: (bool) whether to display tqdm progress bar
+            override_config: (Optional[TranscribeConfig]) override transcription config pre-defined by the user.
+                **Note**: All other arguments in the function will be ignored if override_config is passed.
+                You should call this argument as `model.transcribe(audio, override_config=TranscribeConfig(...))`.
+
         Returns:
             Returns a tuple of 2 items -
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
-            return {}
-
-        # We will store transcriptions here
-        hypotheses = []
-        all_hypotheses = []
-        # Model's mode and device
-        mode = self.training
-        device = next(self.parameters()).device
-        dither_value = self.preprocessor.featurizer.dither
-        pad_to_value = self.preprocessor.featurizer.pad_to
-
-        if num_workers is None:
-            num_workers = min(batch_size, os.cpu_count() - 1)
-
-        try:
-            self.preprocessor.featurizer.dither = 0.0
-            self.preprocessor.featurizer.pad_to = 0
-
-            # Switch model to evaluation mode
-            self.eval()
-            # Freeze the encoder and decoder modules
-            self.encoder.freeze()
-            self.decoder.freeze()
-            self.joint.freeze()
-            logging_level = logging.get_verbosity()
-            logging.set_verbosity(logging.WARNING)
-            # Work in tmp directory - will store manifest file there
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with open(os.path.join(tmpdir, 'manifest.json'), 'w', encoding='utf-8') as fp:
-                    for audio_file in paths2audio_files:
-                        entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': ''}
-                        fp.write(json.dumps(entry) + '\n')
-
-                config = {
-                    'paths2audio_files': paths2audio_files,
-                    'batch_size': batch_size,
-                    'temp_dir': tmpdir,
-                    'num_workers': num_workers,
-                    'channel_selector': channel_selector,
-                }
-
-                if augmentor:
-                    config['augmentor'] = augmentor
-
-                temporary_datalayer = self._setup_transcribe_dataloader(config)
-                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=(not verbose)):
-                    encoded, encoded_len = self.forward(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
-                    )
-                    best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
-                        encoded,
-                        encoded_len,
-                        return_hypotheses=return_hypotheses,
-                        partial_hypotheses=partial_hypothesis,
-                    )
-
-                    hypotheses += best_hyp
-                    if all_hyp is not None:
-                        all_hypotheses += all_hyp
-                    else:
-                        all_hypotheses += best_hyp
-
-                    del encoded
-                    del test_batch
-        finally:
-            # set mode back to its original value
-            self.train(mode=mode)
-            self.preprocessor.featurizer.dither = dither_value
-            self.preprocessor.featurizer.pad_to = pad_to_value
-
-            logging.set_verbosity(logging_level)
-            if mode is True:
-                self.encoder.unfreeze()
-                self.decoder.unfreeze()
-                self.joint.unfreeze()
-        return hypotheses, all_hypotheses
+        return super().transcribe(
+            audio=audio,
+            batch_size=batch_size,
+            return_hypotheses=return_hypotheses,
+            num_workers=num_workers,
+            channel_selector=channel_selector,
+            augmentor=augmentor,
+            verbose=verbose,
+            override_config=override_config,
+            # Additional arguments
+            partial_hypothesis=partial_hypothesis,
+        )
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
@@ -906,6 +853,40 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel):
         wer_denom = torch.stack([x['test_wer_denom'] for x in outputs]).sum()
         tensorboard_logs = {**test_loss_log, 'test_wer': wer_num.float() / wer_denom}
         return {**test_loss_log, 'log': tensorboard_logs}
+
+    """ Transcription related methods """
+
+    def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
+        encoded, encoded_len = self.forward(input_signal=batch[0], input_signal_length=batch[1])
+        output = dict(encoded=encoded, encoded_len=encoded_len)
+        return output
+
+    def _transcribe_output_processing(
+        self, outputs, trcfg: TranscribeConfig
+    ) -> Tuple[List['Hypothesis'], List['Hypothesis']]:
+        encoded = outputs.pop('encoded')
+        encoded_len = outputs.pop('encoded_len')
+
+        best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+            encoded,
+            encoded_len,
+            return_hypotheses=trcfg.return_hypotheses,
+            partial_hypotheses=trcfg.partial_hypothesis,
+        )
+
+        # cleanup memory
+        del encoded, encoded_len
+
+        hypotheses = []
+        all_hypotheses = []
+
+        hypotheses += best_hyp
+        if all_hyp is not None:
+            all_hypotheses += all_hyp
+        else:
+            all_hypotheses += best_hyp
+
+        return (hypotheses, all_hypotheses)
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """

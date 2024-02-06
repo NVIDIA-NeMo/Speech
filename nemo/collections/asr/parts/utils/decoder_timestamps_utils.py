@@ -435,10 +435,12 @@ class ASRDecoderTimeStamps:
         )
 
         with torch.cuda.amp.autocast():
-            transcript_logits_list = asr_model.transcribe(
-                self.audio_file_list, batch_size=self.asr_batch_size, logprobs=True
-            )
+            transcript_hyps_list = asr_model.transcribe(
+                self.audio_file_list, batch_size=self.asr_batch_size, return_hypotheses=True
+            )  # type: List[nemo_asr.parts.Hypothesis]
+            transcript_logits_list = [hyp.alignments for hyp in transcript_hyps_list]
             for idx, logit_np in enumerate(transcript_logits_list):
+                logit_np = logit_np.cpu().numpy()
                 uniq_id = get_uniqname_from_filepath(self.audio_file_list[idx])
                 if self.beam_search_decoder:
                     logging.info(
@@ -561,10 +563,12 @@ class ASRDecoderTimeStamps:
         )
 
         with torch.cuda.amp.autocast():
-            transcript_logits_list = asr_model.transcribe(
-                self.audio_file_list, batch_size=self.asr_batch_size, logprobs=True
-            )
+            transcript_hyps_list = asr_model.transcribe(
+                self.audio_file_list, batch_size=self.asr_batch_size, return_hypotheses=True
+            )  # type: List[nemo_asr.parts.Hypothesis]
+            transcript_logits_list = [hyp.alignments for hyp in transcript_hyps_list]
             for idx, logit_np in enumerate(transcript_logits_list):
+                log_prob = logit_np.cpu().numpy()
                 uniq_id = get_uniqname_from_filepath(self.audio_file_list[idx])
                 if self.beam_search_decoder:
                     logging.info(

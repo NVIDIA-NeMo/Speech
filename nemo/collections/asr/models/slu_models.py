@@ -17,7 +17,7 @@ import json
 import os
 import tempfile
 from math import ceil
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -27,7 +27,13 @@ from nemo.collections.asr.data import audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
-from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRModuleMixin
+from nemo.collections.asr.parts.mixins import (
+    ASRBPEMixin,
+    ASRModuleMixin,
+    ASRTranscriptionMixin,
+    TranscribeConfig,
+    TranscriptionReturnType,
+)
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.asr.parts.utils.slu_utils import SequenceGenerator, SequenceGeneratorConfig, get_seq_mask
@@ -39,7 +45,7 @@ from nemo.utils import logging, model_utils
 __all__ = ["SLUIntentSlotBPEModel"]
 
 
-class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASRBPEMixin):
+class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASRBPEMixin, ASRTranscriptionMixin):
     """Model for end-to-end speech intent classification and slot filling, which is formulated as a speech-to-sequence task"""
 
     def __init__(self, cfg: DictConfig, trainer=None):
@@ -554,24 +560,22 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
     @torch.no_grad()
     def transcribe(
         self,
-        paths2audio_files: List[str],
+        audio: List[str],
         batch_size: int = 4,
-        logprobs: bool = False,
         return_hypotheses: bool = False,
         num_workers: int = 0,
         verbose: bool = True,
-    ) -> List[str]:
+    ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files into SLU semantics. 
         Use this method for debugging and prototyping.
 
         Args:
-            paths2audio_files: (a list) of paths to audio files. \
+            audio: (a list) of paths to audio files. \
                 Recommended length per file is between 5 and 25 seconds. \
                 But it is possible to pass a few hours long file if enough GPU memory is available.
             batch_size: (int) batch size to use during inference.
                 Bigger will result in better throughput performance but would use more memory.
-            logprobs: (bool) pass True to get log probabilities instead of transcripts.
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
@@ -580,66 +584,23 @@ class SLUIntentSlotBPEModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, ASR
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
         """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
-            return {}
+        return super().transcribe(
+            audio=audio,
+            batch_size=batch_size,
+            return_hypotheses=return_hypotheses,
+            num_workers=num_workers,
+            verbose=verbose,
+        )
 
-        if return_hypotheses and logprobs:
-            raise ValueError(
-                "Either `return_hypotheses` or `logprobs` can be True at any given time."
-                "Returned hypotheses will contain the logprobs."
-            )
+    """ Transcription related methods """
 
-        if num_workers is None:
-            num_workers = min(batch_size, os.cpu_count() - 1)
+    def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
+        predictions = self.predict(input_signal=batch[0], input_signal_length=batch[1])
+        output = {'predictions': predictions}
+        return output
 
-        # We will store transcriptions here
-        hypotheses = []
-
-        # Model's mode and device
-        mode = self.training
-        device = next(self.parameters()).device
-        dither_value = self.preprocessor.featurizer.dither
-        pad_to_value = self.preprocessor.featurizer.pad_to
-
-        try:
-            self.preprocessor.featurizer.dither = 0.0
-            self.preprocessor.featurizer.pad_to = 0
-            # Switch model to evaluation mode
-            self.eval()
-
-            logging_level = logging.get_verbosity()
-            logging.set_verbosity(logging.WARNING)
-            # Work in tmp directory - will store manifest file there
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with open(os.path.join(tmpdir, 'manifest.json'), 'w', encoding='utf-8') as fp:
-                    for audio_file in paths2audio_files:
-                        entry = {'audio_filepath': audio_file, 'duration': 100000, 'text': ''}
-                        fp.write(json.dumps(entry) + '\n')
-
-                config = {
-                    'paths2audio_files': paths2audio_files,
-                    'batch_size': batch_size,
-                    'temp_dir': tmpdir,
-                    'num_workers': num_workers,
-                }
-
-                temporary_datalayer = self._setup_transcribe_dataloader(config)
-                for test_batch in tqdm(temporary_datalayer, desc="Transcribing", disable=not verbose):
-                    predictions = self.predict(
-                        input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
-                    )
-
-                    hypotheses += predictions
-
-                    del predictions
-                    del test_batch
-        finally:
-            # set mode back to its original value
-            self.train(mode=mode)
-            self.preprocessor.featurizer.dither = dither_value
-            self.preprocessor.featurizer.pad_to = pad_to_value
-            logging.set_verbosity(logging_level)
-
+    def _transcribe_output_processing(self, outputs, trcfg: TranscribeConfig) -> List[str]:
+        hypotheses = outputs.pop('predictions')
         return hypotheses
 
     @classmethod

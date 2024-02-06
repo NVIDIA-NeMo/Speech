@@ -42,7 +42,7 @@ def get_rnnt_alignments(strategy: str, loop_labels: bool = True, location="cuda"
     model.change_decoding_strategy(cfg.rnnt_decoding)
 
     transcriptions = model.transcribe(
-        paths2audio_files=filepaths,
+        audio=filepaths,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         return_hypotheses=True,

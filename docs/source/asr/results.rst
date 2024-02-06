@@ -77,10 +77,66 @@ To perform inference and transcribe a sample of speech after loading the model, 
 
 .. code-block:: python
 
-    model.transcribe(paths2audio_files=[list of audio files], batch_size=BATCH_SIZE, logprobs=False)
+    model.transcribe(audio=[list of audio files], batch_size=BATCH_SIZE)
 
-Setting the argument ``logprobs`` to ``True`` returns the log probabilities instead of transcriptions. For more information, see `nemo.collections.asr.modules <./api.html#modules>`__.
-The audio files should be 16KHz mono-channel wav files.
+``audio`` can be a string path to a file, a list of string paths to multiple files, a numpy or PyTorch tensor that is an audio file loaded via ``soundfile`` or some other library or even a list of such tensors. This expanded support for inputs to transcription should help users to easily integrate NeMo into their pipelines.
+
+-----
+
+You can do inference on a numpy array that represents an audio signal as follows. Note that it is your responsibility to process the audio to be monochannel and 16KHz sample rate before passing it to the model.
+
+.. code-block:: python
+
+    import torch
+    import soundfile as sf
+
+    from nemo.collections.asr.models import ASRModel
+    model = ASRModel.from_pretrained(<Model Name>)
+    model.eval()
+
+    # Load audio files
+    audio_file = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an46-mmap-b.wav")
+    audio, sr = sf.read(audio_file, dtype='float32')
+
+    audio_file_2 = os.path.join(test_data_dir, "asr", "train", "an4", "wav", "an104-mrcb-b.wav")
+    audio_2, sr = sf.read(audio_file_2, dtype='float32')
+
+    # Mix one numpy array audio segment with torch audio tensor
+    audio_2 = torch.from_numpy(audio_2)
+
+    # Numpy array + torch tensor mixed tensor input (for batched inference)
+    outputs = model.transcribe([audio, audio_2], batch_size=2)
+
+-----
+
+In order to obtain alignments from CTC or RNNT models (previously called ``logprobs``), you can use the following code:
+
+.. code-block:: python
+
+    hyps = model.transcribe(audio=[list of audio files], batch_size=BATCH_SIZE, return_hypotheses=True)
+    logprobs = hyps[0].alignments  # or hyps[0][0].alignments for RNNT
+
+-----
+
+Often times, we want to transcribe a large number of files at once (maybe from a manifest for example). In this case, using ``transcribe()`` directly may be incorrect because it will delay the return of the result until every single sample in the input is processed. One work around is to call transcribe() multiple times, each time using a small subset of the data. This workflow is now supported via a :meth:`~nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin.transcribe_generator`.
+
+.. code-block:: python
+
+    import nemo.collections.asr as nemo_asr
+    model = nemo_asr.models.ASRModel.from_pretrained(<Model Name>)
+
+    config = model.get_transcribe_config()
+    config.batch_size = 32
+    generator = model.transcribe_generator(audio, config)
+
+    for processed_outputs in generator:
+        # process a batch of 32 results (or less if last batch does not contain 32 elements)
+        ....
+
+
+-----
+
+For more information, see `nemo.collections.asr.modules <./api.html#modules>`__. For more information on the general ``Transcription API``, please take a look at :class:`~nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin`. The audio files should be 16KHz mono-channel wav files.
 
 Inference on long audio
 ^^^^^^^^^^^^^^^^^^^^^^

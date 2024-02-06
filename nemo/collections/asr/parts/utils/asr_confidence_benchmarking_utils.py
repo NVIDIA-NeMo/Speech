@@ -92,7 +92,7 @@ def run_confidence_benchmark(
     with autocast():
         with torch.no_grad():
             transcriptions = model.transcribe(
-                paths2audio_files=filepaths, batch_size=batch_size, return_hypotheses=True, num_workers=num_workers
+                audio=filepaths, batch_size=batch_size, return_hypotheses=True, num_workers=num_workers
             )
     if is_rnnt:
         transcriptions = transcriptions[0]

@@ -364,7 +364,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                 )
             else:
                 transcriptions = asr_model.transcribe(
-                    paths2audio_files=filepaths,
+                    audio=filepaths,
                     batch_size=cfg.batch_size,
                     num_workers=cfg.num_workers,
                     return_hypotheses=cfg.return_hypotheses,

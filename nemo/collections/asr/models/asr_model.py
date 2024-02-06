@@ -29,19 +29,6 @@ __all__ = ['ASRModel']
 
 
 class ASRModel(ModelPT, ABC):
-    @abstractmethod
-    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4, verbose: bool = True) -> List[str]:
-        """
-        Takes paths to audio files and returns text transcription
-        Args:
-            paths2audio_files: paths to audio fragment to be transcribed
-            verbose: (bool) whether to display tqdm progress bar
-
-        Returns:
-            transcription texts
-        """
-        pass
-
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
         val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
         wer_num = torch.stack([x['val_wer_num'] for x in outputs]).sum()

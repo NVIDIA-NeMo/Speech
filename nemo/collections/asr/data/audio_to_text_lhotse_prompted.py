@@ -126,56 +126,84 @@ def canary(cuts: CutSet, tokenizer: TokenizerWrapper) -> Sequence[Sequence[int]]
             cut = cut._first_non_padding_cut
         assert isinstance(cut, MonoCut), "Expected MonoCut."
 
+        # first, validate the utterance
+        missing_keys = [k for k in ("source_lang", "target_lang", "taskname", "pnc") if k not in cut.custom]
+        if missing_keys:
+            raise RuntimeError(
+                f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"
+                f"Please ensure that every utterance in the input manifests contains these keys."
+            )
+
         # Actual tokenization. If a cut has multiple supervisions, we'll stitch their tokenized texts together.
-        tokens = sum((tokenizer.text_to_ids(sup.text, sup.language) for sup in cut.supervisions), start=[])
+        texts = [sup.text for sup in cut.supervisions]
+        langs = [sup.language for sup in cut.supervisions]
+        taskname = cut.custom['taskname']
+        pnc = cut.custom['pnc']
+        source_lang = cut.custom['source_lang']
+        target_lang = cut.custom['target_lang']
 
-        # bos
-        prompted_tokens = [tokenizer.bos_id]
-
-        if len(tokens) == 0:
-            # no speech token
-            prompted_tokens.append(tokenizer.nospeech_id)
-        else:
-            # first, validate the utterance
-            missing_keys = [k for k in ("source_lang", "target_lang", "taskname", "pnc") if k not in cut.custom]
-            if missing_keys:
-                raise RuntimeError(
-                    f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"
-                    f"Please ensure that every utterance in the input manifests contains these keys."
-                )
-
-            # src_lang_id/no_speech
-            src_lang_id = tokenizer.to_language_id(cut.custom['source_lang'])
-            prompted_tokens.append(src_lang_id)
-
-            # task
-            task = cut.custom['taskname']
-            if task == 'asr':
-                prompted_tokens.append(tokenizer.transcribe_id)
-            elif task == 's2t_translation':
-                prompted_tokens.append(tokenizer.translate_id)
-            else:
-                raise ValueError(f"Unknown task: {task} for cut ID: {cut.id}")
-
-            # tgt_lang_id
-            tgt_lang_id = tokenizer.to_language_id(cut.custom['target_lang'])
-            prompted_tokens.append(tgt_lang_id)
-
-            # PnC
-            pnc = f"{cut.custom['pnc']}".lower().strip()  # to account for bool or str
-            if pnc in {'yes', 'true'}:
-                prompted_tokens.append(tokenizer.pnc_id)
-            elif pnc in {'no', 'false'}:
-                prompted_tokens.append(tokenizer.nopnc_id)
-            else:
-                raise ValueError(f"Unknown value for key 'pnc': {pnc} for cut ID: {cut.id}")
-
-            # text
-            prompted_tokens.extend(tokens)
-
-        # eos
-        prompted_tokens.append(tokenizer.eos_id)
+        prompted_tokens = canary_prompt(tokenizer, texts, langs, source_lang, target_lang, taskname, pnc)
 
         canary_tokens.append(prompted_tokens)
 
     return canary_tokens
+
+
+def canary_prompt(tokenizer: CanaryTokenizer, text, language, source_language, target_language, taskname, pnc):
+    if isinstance(text, str):
+        text = [text]
+    if isinstance(language, str):
+        language = [language]
+
+    tokens = sum((tokenizer.text_to_ids(text_, lang_) for text_, lang_ in zip(text, language)), start=[])
+
+    # bos
+    prompted_tokens = [tokenizer.bos_id]
+
+    if len(tokens) == 0:
+        # no speech token
+        prompted_tokens.append(tokenizer.nospeech_id)
+    else:
+        # first, validate the utterance
+        if source_language is None or target_language is None or taskname is None or pnc is None:
+            raise RuntimeError(
+                f"Missing keys provided to prompt: "
+                f"source_langauge={source_language},\n"
+                f"target_language={target_language},\n"
+                f"taskname={taskname},\n"
+                f"pnc={pnc}\n"
+                f"Please ensure that every utterance in the input manifests contains these keys."
+            )
+
+        # src_lang_id/no_speech
+        src_lang_id = tokenizer.to_language_id(source_language)
+        prompted_tokens.append(src_lang_id)
+
+        # task
+        task = taskname
+        if task == 'asr':
+            prompted_tokens.append(tokenizer.transcribe_id)
+        elif task == 's2t_translation' or task == 'ast':
+            prompted_tokens.append(tokenizer.translate_id)
+        else:
+            raise ValueError(f"Unknown task: {task}")
+
+        # tgt_lang_id
+        tgt_lang_id = tokenizer.to_language_id(target_language)
+        prompted_tokens.append(tgt_lang_id)
+
+        # PnC
+        pnc = f"{pnc}".lower().strip()  # to account for bool or str
+        if pnc in {'yes', 'true'}:
+            prompted_tokens.append(tokenizer.pnc_id)
+        elif pnc in {'no', 'false'}:
+            prompted_tokens.append(tokenizer.nopnc_id)
+        else:
+            raise ValueError(f"Unknown value for key 'pnc': {pnc}")
+
+        # text
+        prompted_tokens.extend(tokens)
+
+    # eos
+    prompted_tokens.append(tokenizer.eos_id)
+    return prompted_tokens

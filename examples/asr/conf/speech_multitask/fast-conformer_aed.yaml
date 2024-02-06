@@ -14,7 +14,6 @@ name: "FastConformer-Transformer-MultiTask"
 init_from_nemo_model: null
 
 model:
-  _target_: nemo.collections.asr.models.EncDecMultiTaskModel
   sample_rate: 16000
   label_smoothing: 0.0
   context_len_for_AR_decoding: 5 # Length of input prompt tokens. For example, in Canary models, we use [BOS,src_lang,task,tgt_lang,pnc] and thus the length is 5

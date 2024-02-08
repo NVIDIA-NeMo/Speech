@@ -486,7 +486,7 @@ class MultiTaskDecodingConfig:
     # )
 
     # beam decoding config
-    beam: AEDBeamInferConfig = field(default_factory=lambda: AEDBeamInferConfig(beam_size=4))
+    beam: AEDBeamInferConfig = field(default_factory=lambda: AEDBeamInferConfig(beam_size=1))
 
     # can be used to change temperature for decoding
     temperature: float = 1.0

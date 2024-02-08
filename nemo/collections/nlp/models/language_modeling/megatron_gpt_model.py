@@ -70,6 +70,7 @@ from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, NeuralType
 from nemo.utils import logging
+from nemo.utils.te_utils import is_float8tensor
 
 try:
     import apex.transformer.pipeline_parallel.utils
@@ -483,8 +484,18 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     param._disable_overlap_grad_sync = True
 
             # Initialize parameter buckets for overlapped grad and param syncs
-            # Note: Params with disabled overlapping are put in the
-            # last param bucket
+            # Note: Params with disabled overlapping and params in the
+            # first layer are put together in a bucket. If FP8 tensors
+            # are detected, those are also put in the first layer's
+            # bucket.
+            def make_parameter_bucket(module: torch.nn.Module) -> List[torch.nn.Parameter]:
+                bucket = [
+                    param for param in module.parameters() if not getattr(param, '_disable_overlap_grad_sync', False)
+                ]
+                if any(is_float8tensor(param) for param in bucket):
+                    bucket = list(filter(is_float8tensor, bucket))
+                return bucket
+
             buckets = []
             if self.cfg.get('virtual_pipeline_model_parallel_size', None) is not None:
                 # Initialize a bucket for each virtual pipeline stage
@@ -493,13 +504,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                         module = module.module
                     stage_bucket = []
                     layers = module.decoder.layers if self.mcore_gpt else module.language_model.encoder.layers
-                    for layer in layers:
-                        stage_bucket.extend(
-                            p
-                            for p in layer.parameters()
-                            if not getattr(p, '_disable_overlap_grad_sync', False) and p.requires_grad
-                        )
-                    buckets.append(stage_bucket)
+                    buckets.extend(make_parameter_bucket(layer) for layer in layers)
             else:
                 # Initialize a bucket for each Transformer layer
                 modules = self.model if isinstance(self.model, list) else [self.model]
@@ -507,21 +512,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     if isinstance(module, (Float16Module, MCoreFloat16Module)):
                         module = module.module
                     layers = module.decoder.layers if self.mcore_gpt else module.language_model.encoder.layers
-                    for layer in layers:
-                        buckets.append(
-                            [
-                                p
-                                for p in layer.parameters()
-                                if not getattr(p, '_disable_overlap_grad_sync', False) and p.requires_grad
-                            ]
-                        )
+                    buckets.extend(make_parameter_bucket(layer) for layer in layers)
             buckets.reverse()
-            used_params = set()
-            for bucket in buckets:
-                used_params.update(bucket)
-            remaining_params = [p for p in self.parameters() if p not in used_params and p.requires_grad]
-            if remaining_params:
-                buckets.append(remaining_params)
+            used_params = set(itertools.chain.from_iterable(buckets))
+            buckets[-1].extend(p for p in self.parameters() if p not in used_params)
             self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()

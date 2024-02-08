@@ -27,6 +27,7 @@ from pytorch_lightning.loops import _TrainingEpochLoop
 
 from nemo.constants import NEMO_ENV_VARNAME_VERSION
 from nemo.core.classes import ModelPT
+from nemo.utils.callbacks import NeMoModelCheckpoint
 from nemo.utils.exp_manager import (
     CheckpointMisconfigurationError,
     LoggerMisconfigurationError,
@@ -628,3 +629,325 @@ class TestExpManager:
         trainer.fit_loop.epoch_loop = loop
         with pytest.warns(UserWarning, match="Detected custom epoch loop"):
             exp_manager(trainer, {"explicit_log_dir": str(tmp_path)})
+
+    def _write_fake_checkpoint(self, path, isdir, add_unfinished_marker):
+        path = Path(path)
+        if isdir:
+            # fake distributed checkpoint
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "dummy.txt").touch()
+        else:
+            # fake checkpoint file
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        if add_unfinished_marker:
+            NeMoModelCheckpoint.set_checkpoint_unfinished_marker(path)
+
+    @pytest.mark.unit
+    def test_skipped_unfinished_checkpoints_when_restoring(self, tmp_path):
+        """
+        Check if unfinished checkpoints are skipped during last checkpoint lookup.
+        Logic of the test:
+        - write multiple last checkpoints, some of them incomplete
+        - ensure that the last complete checkpoint is found
+        """
+
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=900-consumed_samples=1000.0.ckpt",
+            isdir=False,
+            add_unfinished_marker=False,
+        )  # not last
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=900-consumed_samples=1000.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=True,
+        )  # incomplete
+        self._write_fake_checkpoint(
+            checkpoints_dir
+            / "mp_rank_00"
+            / "megatron_gpt--val_loss=5.01-step=1100-consumed_samples=17600.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=True,
+        )  # incomplete
+        self._write_fake_checkpoint(
+            checkpoints_dir
+            / "mp_rank_01"
+            / "megatron_gpt--val_loss=5.01-step=1100-consumed_samples=17600.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=True,
+        )  # incomplete
+        self._write_fake_checkpoint(
+            checkpoints_dir
+            / "mp_rank_00"
+            / "megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=False,
+        )  # ok
+        self._write_fake_checkpoint(
+            checkpoints_dir
+            / "mp_rank_01"
+            / "megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=False,
+        )  # ok
+
+        restored_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        exp_manager(
+            restored_trainer, {"resume_if_exists": True, "explicit_log_dir": str(test_dir)},
+        )
+
+        # Check that last complete (w/o unifinished marker) checkpoint was found
+        assert (
+            Path(restored_trainer.ckpt_path).name
+            == 'megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0-last.ckpt'
+        )
+
+    @pytest.mark.unit
+    def test_skipped_unfinished_dist_checkpoints_when_restoring(self, tmp_path):
+        """
+        Check if unfinished distributed checkpoints are skipped during last checkpoint lookup.
+        Logic of the test:
+        - write multiple last checkpoints, some of them incomplete
+        - ensure that the last complete checkpoint is found
+        """
+
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0",
+            isdir=True,
+            add_unfinished_marker=False,
+        )
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0-last",
+            isdir=True,
+            add_unfinished_marker=False,
+        )
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=1100-consumed_samples=17600.0",
+            isdir=True,
+            add_unfinished_marker=False,
+        )
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=1100-consumed_samples=17600.0-last",
+            isdir=True,
+            add_unfinished_marker=True,
+        )
+
+        restored_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+        exp_manager(
+            restored_trainer, {"resume_if_exists": True, "explicit_log_dir": str(test_dir)},
+        )
+
+        # Check that last complete (w/o unifinished marker) checkpoint was found
+        assert (
+            Path(restored_trainer.ckpt_path).name
+            == 'megatron_gpt--val_loss=5.01-step=1000-consumed_samples=16000.0-last'
+        )
+
+    @pytest.mark.unit
+    def test_incomplete_checkpoints_cleanup(self, tmp_path):
+        """
+        Check if unfinished checkpoints are cleaned up when training starts
+        Complete checkpoints should be left intact.
+        """
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        complete_ckpts = {
+            checkpoints_dir / "step=1-epoch=0.ckpt",
+            checkpoints_dir / "step=2-epoch=0-last.ckpt",
+            checkpoints_dir / "mp_rank_00" / "step=3-epoch=0-last.ckpt",
+            checkpoints_dir / "tp_rank_00_pp_rank_000" / "step=4-epoch=0-last.ckpt",
+            checkpoints_dir / "tp_rank_00_pp_rank_001" / "step=4-epoch=0-last.ckpt",
+        }
+        for ckpt_filepath in complete_ckpts:
+            self._write_fake_checkpoint(ckpt_filepath, isdir=False, add_unfinished_marker=False)
+
+        incomplete_ckpts = {
+            checkpoints_dir / "step=11-epoch=1.ckpt",
+            checkpoints_dir / "step=12-epoch=1-last.ckpt",
+            checkpoints_dir / "mp_rank_00" / "step=13-epoch=1-last.ckpt",
+            checkpoints_dir / "tp_rank_00_pp_rank_000" / "step=14-epoch=1-last.ckpt",
+            checkpoints_dir / "tp_rank_00_pp_rank_001" / "step=14-epoch=1-last.ckpt",
+        }
+        for ckpt_filepath in incomplete_ckpts:
+            self._write_fake_checkpoint(ckpt_filepath, isdir=False, add_unfinished_marker=True)
+
+        # sanity check
+        remaining_ckpts = {f for f in (test_dir / "checkpoints").rglob("*.ckpt") if f.is_file()}
+        assert remaining_ckpts == (complete_ckpts | incomplete_ckpts)
+
+        # marker without corresponding checkpoint should be removed during cleanup in exp_manager
+        (checkpoints_dir / f"orphan-marker001-{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}").touch()
+
+        # unfinished checkpoint with EMA part, both parts should be removed
+        self._write_fake_checkpoint(
+            checkpoints_dir / "incomplete01-EMA.ckpt", isdir=False, add_unfinished_marker=False,
+        )
+        self._write_fake_checkpoint(checkpoints_dir / "incomplete01.ckpt", isdir=False, add_unfinished_marker=True)
+
+        # just EMA part - should be removed. NOTE marker path is the same for base part and for EMA part
+        self._write_fake_checkpoint(
+            checkpoints_dir / "incomplete02-EMA.ckpt", isdir=False, add_unfinished_marker=False,
+        )
+        (checkpoints_dir / f"incomplete02{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}").touch()
+
+        test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+
+        exp_manager(
+            test_trainer,
+            {"checkpoint_callback_params": {"save_top_k": 0, "save_last": False}, "explicit_log_dir": str(test_dir),},
+        )
+
+        model = ExampleModel()
+        test_trainer.fit(model)
+
+        remaining_ckpts = {f for f in (test_dir / "checkpoints").rglob("*.ckpt") if f.is_file()}
+        assert remaining_ckpts == complete_ckpts
+        remaining_markers = list(checkpoints_dir.rglob(f"*{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}"))
+        assert remaining_markers == []
+
+    @pytest.mark.unit
+    def test_incomplete_dist_checkpoints_cleanup(self, tmp_path):
+        """
+        Check if unfinished distributed checkpoints are cleaned up when training starts.
+        Complete distributed checkpoints should be left intact.
+        """
+
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        complete_dist_ckpts = {
+            checkpoints_dir / "step=5-epoch=0",
+            checkpoints_dir / "step=6-epoch=0-last",
+        }
+        for ckpt_dirpath in complete_dist_ckpts:
+            self._write_fake_checkpoint(ckpt_dirpath, isdir=True, add_unfinished_marker=False)
+
+        incomplete_dist_ckpts = {
+            checkpoints_dir / "step=15-epoch=1",
+            checkpoints_dir / "step=16-epoch=1-last",
+        }
+        for ckpt_dirpath in incomplete_dist_ckpts:
+            self._write_fake_checkpoint(ckpt_dirpath, isdir=True, add_unfinished_marker=True)
+
+        # marker without corresponding checkpoint should be removed during cleanup in exp_manager
+        (checkpoints_dir / f"orphan-marker001-{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}").touch()
+
+        remaining_dist_ckpts = {f for f in (test_dir / "checkpoints").glob("*") if f.is_dir()}
+        assert remaining_dist_ckpts == (complete_dist_ckpts | incomplete_dist_ckpts)
+
+        test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=1)
+
+        exp_manager(
+            test_trainer,
+            {"checkpoint_callback_params": {"save_top_k": 0, "save_last": False}, "explicit_log_dir": str(test_dir),},
+        )
+
+        model = ExampleModel()
+        test_trainer.fit(model)
+
+        remaining_dist_ckpts = {f for f in (test_dir / "checkpoints").glob("*") if f.is_dir()}
+        assert remaining_dist_ckpts == complete_dist_ckpts
+        remaining_markers = list(checkpoints_dir.rglob(f"*{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}"))
+        assert remaining_markers == []
+
+    _chkpt_path_and_marker_path_pairs = [
+        ('a=1_b=1.c.d.e', f'a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+        ('a=1_b=1.c.d.e-last', f'a=1_b=1.c.d.e-last{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+        ('.ckpt/a=1_b=1.c.d.e.ckpt', f'.ckpt/a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+        ('.ckpt/a=1_b=1.c.d.e-EMA.ckpt', f'.ckpt/a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+        (
+            '.ckpt/a=1_b=1.c.d.e-last.ckpt',
+            f'.ckpt/a=1_b=1.c.d.e-last{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}',
+        ),
+        (
+            '/tmp/mp_rank_00/a=1_b=1.c.d.e.ckpt',
+            f'/tmp/a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}',
+        ),
+        (
+            '/tmp/tp_rank_00_pp_rank_000/a=1_b=1.c.d.e.ckpt',
+            f'/tmp/a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}',
+        ),
+        ('nemo/a=1_b=1.c.d.e.nemo', f'nemo/a=1_b=1.c.d.e{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+        ('nemo/a=1_b=1.c.d.e-last.nemo', f'nemo/a=1_b=1.c.d.e-last{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}'),
+    ]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("chkpt_path, expected_marker_path", _chkpt_path_and_marker_path_pairs)
+    def test_incomplete_checkpoints_marker_path(self, chkpt_path, expected_marker_path):
+        """
+        Ensure that unfinished checkpoint marker path is correctly formed.
+        """
+        marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(chkpt_path)
+        assert str(marker_path) == str(expected_marker_path)
+
+    @pytest.mark.unit
+    def test_invalid_checkpoints_removed_from_topk(self, tmp_path):
+        """
+        Ensure that invalid (unfinished, deleted) checkpoints are removed from topk when resuming.
+        - Do few training steps and save checkpoints
+        - Delete some checkpoints, mark some as unfinished
+        - Resume training and verify that topk checkpoints are correct
+        """
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=7)
+        exp_manager(
+            test_trainer,
+            {
+                "checkpoint_callback_params": {
+                    "save_top_k": 3,
+                    "save_last": True,
+                    "mode": 'max',
+                    "monitor": 'epoch',
+                    "filename": f"{{epoch}}",
+                },
+                "explicit_log_dir": str(tmp_path / "test"),
+            },
+        )
+        model = ExampleModel()
+        test_trainer.fit(model)
+
+        ckpt_filenames = {f.name for f in checkpoints_dir.rglob("*.ckpt") if f.is_file()}
+        assert len(ckpt_filenames) == 4  # 3 top + 1 last
+        assert 'epoch=7-last.ckpt' in ckpt_filenames
+        assert 'epoch=6.ckpt' in ckpt_filenames
+        assert 'epoch=5.ckpt' in ckpt_filenames
+        assert 'epoch=4.ckpt' in ckpt_filenames
+
+        # Mark 6th epoch checkpoint as unfinished and remove 5th epoch checkpoint,
+        # so last valid candidate for topk is 4th epoch checkpoint
+        NeMoModelCheckpoint.set_checkpoint_unfinished_marker(checkpoints_dir / 'epoch=6.ckpt')
+        (checkpoints_dir / 'epoch=5.ckpt').unlink()
+
+        test_trainer2 = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False, max_epochs=9)
+        exp_manager(
+            test_trainer2,
+            {
+                "resume_if_exists": True,
+                "checkpoint_callback_params": {
+                    "save_top_k": 3,
+                    "save_last": True,
+                    "mode": 'max',
+                    "monitor": 'epoch',
+                    "filename": f"{{epoch}}",
+                },
+                "explicit_log_dir": str(tmp_path / "test"),
+            },
+        )
+        model = ExampleModel()
+        test_trainer2.fit(model)
+
+        ckpt_filenames = {f.name for f in checkpoints_dir.rglob("*.ckpt") if f.is_file()}
+        assert len(ckpt_filenames) == 4  # 3 top + 1 last
+        assert 'epoch=9-last.ckpt' in ckpt_filenames
+        assert 'epoch=8.ckpt' in ckpt_filenames
+        assert 'epoch=7.ckpt' in ckpt_filenames
+        assert 'epoch=4.ckpt' in ckpt_filenames

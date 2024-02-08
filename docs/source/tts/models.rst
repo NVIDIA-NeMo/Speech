@@ -134,6 +134,22 @@ Spectrogram Enhancer
 GAN-based model to add details to blurry spectrograms from TTS models like Tacotron or FastPitch.
 
 
+Codecs
+------
+
+Audio Codec
+~~~~~~~~~~~
+
+The NeMo Audio Codec model is a non-autoregressive convolutional encoder-quantizer-decoder model for coding or tokenization of raw audio signals.
+The NeMo Audio Codec model supports residual vector quantizer (RVQ) :cite:`tts-models-zeghidour2022soundstream` and finite scalar quantizer (FSQ) :cite:`tts-models-mentzer2023finite` for quantization of the encoder output.
+This model is trained end-to-end using generative loss, discriminative loss, and reconstruction loss, similar to other neural audio codecs such as SoundStream :cite:`tts-models-zeghidour2022soundstream` and EnCodec :cite:`tts-models-defossez2022encodec`.
+
+    .. image:: images/audiocodec_model.png
+        :align: center
+        :alt: audiocodec model
+        :scale: 35%
+
+
 References
 ----------
 

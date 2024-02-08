@@ -192,8 +192,7 @@ class AudioCodecModel(ModelPT):
         },
     )
     def decode_audio(self, inputs: torch.Tensor, input_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Apply decoder on the input encoded representation. Note that the input is a
-        non-quantized or dequantized representation.
+        """Apply decoder on the input. Note that the input is a non-quantized encoder output or a dequantized representation.
 
         Args:
             inputs: encoded signal
@@ -241,7 +240,7 @@ class AudioCodecModel(ModelPT):
         output_types={"dequantized": NeuralType(('B', 'D', 'T_encoded'), EncodedRepresentation()),},
     )
     def dequantize(self, tokens: torch.Tensor, tokens_len: torch.Tensor) -> torch.Tensor:
-        """Convert the discrete input tokens into a continuous encoded representation.
+        """Convert the discrete tokens into a continuous encoded representation.
 
         Args:
             tokens: discrete tokens for each codebook for each time frame
@@ -272,12 +271,12 @@ class AudioCodecModel(ModelPT):
         """Convert input time-domain audio signal into a discrete representation (tokens).
 
         Args:
-            audio: input time-domain signal, shape (batch, number of samples)
-            audio_len: valid length for each example in the batch, shape (batch size,)
+            audio: input time-domain signal, shape `(batch, number of samples)`
+            audio_len: valid length for each example in the batch, shape `(batch size,)`
 
         Returns:
-            Tokens for each codebook for each frame, shape (batch, number of codebooks, number of frames),
-            and the corresponding valid lengths, shape (batch,)
+            Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
+            and the corresponding valid lengths, shape `(batch,)`
         """
         # Apply encoder to obtain a continuous vector for each frame
         encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len)
@@ -296,11 +295,11 @@ class AudioCodecModel(ModelPT):
         },
     )
     def decode(self, tokens: torch.Tensor, tokens_len: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Convert discrete input tokens into a continuous time-domain signal.
+        """Convert discrete tokens into a continuous time-domain signal.
 
         Args:
-            tokens: discrete tokens for each codebook for each time frame, shape (batch, number of codebooks, number of frames)
-            tokens_len: valid lengths, shape (batch,)
+            tokens: discrete tokens for each codebook for each time frame, shape `(batch, number of codebooks, number of frames)`
+            tokens_len: valid lengths, shape `(batch,)`
 
         Returns:
             Decoded output `audio` in the time domain and its length in number of samples `audio_len`.

@@ -75,7 +75,8 @@ class AbstractMultiTaskDecoding(ABC):
 
                 length_penalty: float, length penalty for beam search decoding. Must be >= 0.0.
 
-                max_generation_delta: int, maximum number of additional target tokens to generate
+                max_generation_delta: int,in case of encoder-decoder generation (e.g. NMT),
+                    forbids generated sequences to be longer than the length of source sequences plus max_generation_delta
 
                 return_best_hypothesis: optional bool, whether to return just the best hypothesis or all of the
                     hypotheses after beam search has concluded. This flag is set by default.

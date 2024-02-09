@@ -14,18 +14,20 @@
 
 import copy
 import os
+from typing import Optional
 
 import numpy as np
 import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
+from nemo.collections.asr.data.audio_to_text_lhotse_prompted import canary_prompt
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
 from nemo.collections.asr.parts.utils.audio_utils import get_samples
 from nemo.core.classes import IterableDataset
-from nemo.core.neural_types import LengthsType, NeuralType
+from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 
 # Minimum number of tokens required to assign a LCS merge step, otherwise ignore and
 # select all i-1 and ith buffer tokens to merge.
@@ -700,7 +702,7 @@ class FrameBatchASR:
         )
 
         self.asr_model = asr_model
-        self.decoder = asr_model.decoder
+        self.decoder = getattr(asr_model, "decoder", None)
 
         self.batch_size = batch_size
         self.all_logits = []
@@ -708,7 +710,9 @@ class FrameBatchASR:
 
         self.unmerged = []
 
-        if hasattr(asr_model.decoder, "vocabulary"):
+        if self.decoder is None:
+            self.blank_id = len(asr_model.tokenizer.vocabulary)
+        elif hasattr(asr_model.decoder, "vocabulary"):
             self.blank_id = len(asr_model.decoder.vocabulary)
         else:
             self.blank_id = len(asr_model.joint.vocabulary)
@@ -790,7 +794,7 @@ class FrameBatchASR:
             del encoded_len
             del predictions
 
-    def transcribe(self, tokens_per_chunk: int, delay: int, keep_logits=False):
+    def transcribe(self, tokens_per_chunk: int, delay: int, keep_logits: bool = False):
         self.infer_logits(keep_logits)
         self.unmerged = []
         for pred in self.all_preds:
@@ -1554,3 +1558,59 @@ class CacheAwareStreamingAudioBuffer:
                 normalize_type=self.model_normalize_type,
             )
         return processed_signal, self.streams_length
+
+
+class FrameBatchMultiTaskAED(FrameBatchASR):
+    def get_input_tokens(self, sample: dict):
+        if self.asr_model.prompt_format == "canary":
+            missing_keys = [k for k in ("source_lang", "target_lang", "taskname", "pnc") if k not in sample]
+            if missing_keys:
+                raise RuntimeError(
+                    f"We found sample that is missing the following keys: {missing_keys}"
+                    f"Please ensure that every utterance in the input manifests contains these keys. Sample: {sample}"
+                )
+            tokens = canary_prompt(
+                tokenizer=self.asr_model.tokenizer,
+                text="none",
+                language=sample['target_lang'],
+                source_language=sample['source_lang'],
+                target_language=sample['target_lang'],
+                taskname=sample['taskname'],
+                pnc=sample['pnc'],
+            )
+        else:
+            raise ValueError(f"Unknown prompt format: {self.asr_model.prompt_format}")
+        return torch.tensor(tokens, dtype=torch.long, device=self.asr_model.device).unsqueeze(0)  # [1, T]
+
+    def read_audio_file(self, audio_filepath: str, delay, model_stride_in_secs, meta_data):
+        self.input_tokens = self.get_input_tokens(meta_data)
+        super().read_audio_file(audio_filepath, delay, model_stride_in_secs)
+
+    @torch.no_grad()
+    def _get_batch_preds(self, keep_logits=False):
+        device = self.asr_model.device
+        for batch in iter(self.data_loader):
+            feat_signal, feat_signal_len = batch
+            feat_signal, feat_signal_len = feat_signal.to(device), feat_signal_len.to(device)
+            tokens = self.input_tokens.to(device).repeat(feat_signal.size(0), 1)
+            tokens_len = torch.tensor([tokens.size(1)] * tokens.size(0), device=device).long()
+
+            batch_input = (feat_signal, feat_signal_len, tokens, tokens_len)
+            predictions = self.asr_model.predict_step(batch_input, has_processed_signal=True)
+            self.all_preds.extend(predictions)
+            del predictions
+
+    def transcribe(
+        self, tokens_per_chunk: Optional[int] = None, delay: Optional[int] = None, keep_logits: bool = False
+    ):
+        """
+        unsued params are for keeping the same signature as the parent class
+        """
+        self.infer_logits(keep_logits)
+
+        hypothesis = " ".join(self.all_preds)
+        if not keep_logits:
+            return hypothesis
+
+        print("keep_logits=True is not supported for MultiTaskAEDFrameBatchInfer. Returning empty logits.")
+        return hypothesis, []

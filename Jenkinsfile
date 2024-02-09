@@ -605,6 +605,48 @@ pipeline {
 
     }
 
+    stage('L2: Speech to Text AED') {
+      when {
+        anyOf {
+          branch 'r1.23.0'
+          changeRequest target: 'r1.23.0'
+        }
+      }
+      steps {
+        sh 'python examples/asr/speech_multitask/speech_to_text_aed.py \
+        model.prompt_format=canary \
+        model.model_defaults.asr_enc_hidden=256 \
+        model.model_defaults.lm_dec_hidden=256 \
+        model.encoder.n_layers=12 \
+        model.transf_encoder.num_layers=0 \
+        model.transf_decoder.config_dict.num_layers=12 \
+        model.train_ds.manifest_filepath=/home/TestData/asr/manifests/canary/an4_canary_train.json \
+        ++model.train_ds.is_tarred=false \
+        model.train_ds.batch_duration=60 \
+        +model.train_ds.text_field="answer" \
+        +model.train_ds.lang_field="target_lang" \
+        model.validation_ds.manifest_filepath=/home/TestData/asr/manifests/canary/an4_canary_val.json \
+        +model.validation_ds.text_field="answer" \
+        +model.validation_ds.lang_field="target_lang" \
+        model.test_ds.manifest_filepath=/home/TestData/asr/manifests/canary/an4_canary_val.json \
+        +model.test_ds.text_field="answer" \
+        +model.test_ds.lang_field="target_lang" \
+        model.tokenizer.langs.spl_tokens.dir=/home/TestData/asr_tokenizers/canary/canary_spl_tokenizer_v32 \
+        model.tokenizer.langs.spl_tokens.type="bpe" \
+        model.tokenizer.langs.en.dir=/home/TestData/asr_tokenizers/canary/en/tokenizer_spe_bpe_v1024_max_4 \
+        model.tokenizer.langs.en.type=bpe \
+        ++model.tokenizer.langs.es.dir=/home/TestData/asr_tokenizers/canary/es/tokenizer_spe_bpe_v1024_max_4 \
+        ++model.tokenizer.langs.es.type=bpe \
+        trainer.devices=[0] \
+        trainer.accelerator="gpu" \
+        +trainer.use_distributed_sampler=false \
+        +trainer.fast_dev_run=True \
+        exp_manager.exp_dir=examples/asr/speech_to_text_aed_results'
+        sh 'rm -rf examples/asr/speech_to_text_results'
+      }
+
+    }
+
     stage('L2: Speaker dev run') {
       when {
         anyOf {

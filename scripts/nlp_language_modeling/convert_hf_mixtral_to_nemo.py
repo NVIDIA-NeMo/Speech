@@ -81,6 +81,9 @@ def load_model(cls, checkpoint, strict, **kwargs):
 
             # register the artifacts
             cfg = checkpoint[cls.CHECKPOINT_HYPER_PARAMS_KEY]
+            assert os.path.exists(
+                cfg.tokenizer.model
+            ), f"Expected cfg.tokenizer.model {cfg.tokenizer.model} to be present"
             if cfg.tokenizer.model is not None:
                 model.register_artifact("tokenizer.tokenizer_model", cfg.tokenizer.model)
             if cfg.tokenizer.vocab_file is not None:
@@ -110,8 +113,8 @@ def load_config(mixtral_config, tokenizer_path):
     if 'num_key_value_heads' in mixtral_config:
         nemo_config.num_query_groups = mixtral_config['num_key_value_heads']
 
-    nemo_config.num_experts = int(mixtral_config['num_local_experts'])
-    assert nemo_config.num_experts > 0, "num_experts must be greater than zero."
+    nemo_config.num_moe_experts = int(mixtral_config['num_local_experts'])
+    assert nemo_config.num_moe_experts > 0, "num_experts must be greater than zero."
     nemo_config.moe_router_topk = int(mixtral_config['num_experts_per_tok'])
     assert nemo_config.moe_router_topk > 0, "moe_router_topk must be greater than zero."
     nemo_config.use_cpu_initialization = True
@@ -266,7 +269,7 @@ def convert(args):
             raise Exception("not implemented")
         checkpoint['state_dict'][moe_gate_name] = param_to_weights(moe_gate)
         # Handle experts
-        for i in range(nemo_config.num_experts):
+        for i in range(nemo_config.num_moe_experts):
             gate_proj = ckpt[f'model.layers.{l}.block_sparse_moe.experts.{i}.w1.weight']
             up_proj = ckpt[f'model.layers.{l}.block_sparse_moe.experts.{i}.w3.weight']
             if mcore_gpt:

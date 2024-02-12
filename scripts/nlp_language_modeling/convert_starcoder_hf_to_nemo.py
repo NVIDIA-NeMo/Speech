@@ -194,6 +194,7 @@ if __name__ == "__main__":
     convert_dict = convert_state_dict(state_dict_hf, amp=omega_cfg.megatron_amp_O2)
 
     logging.info("Creating Megatron model...")
+    omega_cfg.cpu_offloading_num_layers = 0
     model = load_state_dict_helper(MegatronGPTModel, omega_cfg, trainer, convert_dict)
     logging.info(f"Created model:\n{model}")
 

@@ -1701,7 +1701,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'fp8': fp8,
             'tp_comm_overlap': ub_tp_comm_overlap,
             # MoE related
-            'num_experts': self.cfg.get('num_experts', None),
+            'num_moe_experts': self.cfg.get('num_moe_experts', None),
             'moe_router_load_balancing_type': self.cfg.get('moe_router_load_balancing_type', 'aux_loss'),
             'moe_router_topk': self.cfg.get('moe_router_topk', 2),
             'moe_grouped_gemm': self.cfg.get('moe_grouped_gemm', False),
@@ -1712,11 +1712,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'moe_input_jitter_eps': self.cfg.get('moe_input_jitter_eps', None),
             'moe_token_dropping': self.cfg.get('moe_token_dropping', False),  # TODO: Support token dropping.
         }
-        if model_specific_configs['num_experts'] is not None:
+        if model_specific_configs['num_moe_experts'] is not None:
             assert mcore_supports_moe(), 'Megatron-core >= v0.5.0 is required for MoE'
         elif not mcore_supports_moe():
-            if 'num_experts' in model_specific_configs:
-                del model_specific_configs['num_experts']
+            if 'num_moe_experts' in model_specific_configs:
+                del model_specific_configs['num_moe_experts']
             moe_keys = list(filter(lambda x: x.startswith('moe_'), model_specific_configs.keys()))
             for k in moe_keys:
                 del model_specific_configs[k]

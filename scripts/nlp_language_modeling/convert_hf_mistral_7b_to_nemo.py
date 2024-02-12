@@ -32,7 +32,7 @@ import torch.nn
 from omegaconf import OmegaConf
 from pytorch_lightning.core.saving import _load_state as ptl_load_state
 from pytorch_lightning.trainer.trainer import Trainer
-from sentencepiece import SentencePieceProcessor
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -127,23 +127,17 @@ def load_config(mistral_config, tokenizer_path):
     return nemo_config
 
 
-def load_mistral_ckpt(dir):
-    params_file = os.path.join(dir, 'config.json')
+def load_mistral_ckpt(in_dir):
+    params_file = os.path.join(in_dir, 'config.json')
     assert os.path.exists(params_file)
     with open(params_file, 'r') as fp:
         model_args = json.load(fp)
 
-    ckpt = OrderedDict()
-    ckpt['state_dict'] = OrderedDict()
-    for i in range(2):
-        ckpt_file = f'pytorch_model-0000{i+1}-of-00002.bin'
-        ckpt_path = os.path.join(dir, ckpt_file)
-        assert os.path.exists(ckpt_path)
-        ckpt.update(torch.load(ckpt_path))
-    tokenizer_file = os.path.join(dir, 'tokenizer.model')
-    assert os.path.exists(tokenizer_file)
-    tokenizer = SentencePieceProcessor(model_file=tokenizer_file)
-    assert tokenizer.get_piece_size() == model_args['vocab_size']
+    model = AutoModelForCausalLM.from_pretrained(in_dir)
+    ckpt = model.state_dict()
+
+    tokenizer = AutoTokenizer.from_pretrained(in_dir)
+    assert tokenizer.vocab_size == model_args['vocab_size']
     return model_args, ckpt, tokenizer
 
 

@@ -40,6 +40,7 @@ class LazyNeMoIterator:
     - "text" (overridable with ``text_field`` argument)
 
     Specially supported keys are:
+    - [recommended] "sampling_rate" allows us to provide a valid Lhotse ``Recording`` object without checking the audio file
     - "offset" for partial recording reads
     - "lang" is mapped to Lhotse superivsion's language (overridable with ``lang_field`` argument)
 
@@ -47,17 +48,25 @@ class LazyNeMoIterator:
 
     .. caution:: We will perform some I/O (as much as required by soundfile.info) to discover the sampling rate
         of the audio file. If this is not acceptable, convert the manifest to Lhotse format which contains
-        sampling rate info.
+        sampling rate info. For pure metadata iteration purposes we also provide a ``missing_sampling_rate_ok`` flag that
+        will create only partially valid Lhotse objects (with metadata related to sampling rate / num samples missing).
 
     Example::
 
         >>> cuts = lhotse.CutSet(LazyNeMoIterator("nemo_manifests/train.json"))
     """
 
-    def __init__(self, path: str | Path, text_field: str = "text", lang_field: str = "lang") -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        text_field: str = "text",
+        lang_field: str = "lang",
+        missing_sampling_rate_ok: bool = False,
+    ) -> None:
         self.source = LazyJsonlIterator(path)
         self.text_field = text_field
         self.lang_field = lang_field
+        self.missing_sampling_rate_ok = missing_sampling_rate_ok
 
     @property
     def path(self) -> str | Path:
@@ -68,7 +77,7 @@ class LazyNeMoIterator:
             audio_path = data.pop("audio_filepath")
             duration = data.pop("duration")
             offset = data.pop("offset", None)
-            recording = Recording.from_file(audio_path)
+            recording = self._create_recording(audio_path, duration, data.pop("sampling_rate", None))
             cut = recording.to_cut()
             if offset is not None:
                 cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
@@ -93,6 +102,29 @@ class LazyNeMoIterator:
 
     def __add__(self, other):
         return LazyIteratorChain(self, other)
+
+    def _create_recording(self, audio_path: str, duration: float, sampling_rate: int | None = None,) -> Recording:
+        if sampling_rate is not None:
+            # TODO(pzelasko): It will only work with single-channel audio in the current shape.
+            return Recording(
+                id=audio_path,
+                sources=[AudioSource(type="file", channels=[0], source=audio_path)],
+                sampling_rate=sampling_rate,
+                num_samples=compute_num_samples(duration, sampling_rate),
+                duration=duration,
+                channel_ids=[0],
+            )
+        elif self.missing_sampling_rate_ok:
+            return Recording(
+                id=audio_path,
+                sources=[AudioSource(type="file", channels=[0], source=audio_path)],
+                sampling_rate=-1,
+                num_samples=-1,
+                duration=duration,
+                channel_ids=[0],
+            )
+        else:
+            return Recording.from_file(audio_path)
 
 
 class LazyNeMoTarredIterator:

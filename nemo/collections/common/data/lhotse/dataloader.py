@@ -95,6 +95,9 @@ class LhotseDataLoadingConfig:
     # 5. Other Lhotse options.
     text_field: str = "text"  # key to read the transcript from
     lang_field: str = "lang"  # key to read the language tag from
+    # Enables iteration of NeMo non-tarred manifests that don't have a "sampling_rate" key without performing any I/O.
+    # Note that this will not allow actual dataloading; it's only for manifest iteration as Lhotse objects.
+    missing_sampling_rate_ok: bool = False
 
 
 def get_lhotse_dataloader_from_config(

@@ -633,6 +633,28 @@ Some other Lhotse related arguments we support:
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
+Pre-computing bucket duration bins
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We recommend to pre-compute the bucket duration bins in order to accelerate the start of the training -- otherwise, the dynamic bucketing sampler will have to spend some time estimating them before the training starts.
+The following script may be used::
+
+    $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 manifest.json
+
+    Use the following options in your config:
+            num_buckets=30
+            bucket_duration_bins=[1.78,2.34,2.69,...
+    <other diagnostic information about the dataset>
+
+For multi-dataset setups, one may provide multiple manifests and even their weights::
+
+    $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 [[manifest.json,0.7],[other.json,0.3]]
+
+    Use the following options in your config:
+            num_buckets=30
+            bucket_duration_bins=[1.91,3.02,3.56,...
+    <other diagnostic information about the dataset>
+
 Preparing Text-Only Data for Hybrid ASR-TTS Models
 --------------------------------------------------
 

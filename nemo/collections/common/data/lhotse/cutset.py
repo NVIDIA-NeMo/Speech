@@ -14,6 +14,7 @@
 
 import logging
 import warnings
+from itertools import repeat
 from pathlib import Path
 from typing import Sequence, Tuple
 
@@ -47,7 +48,6 @@ def read_cutset_from_config(config) -> Tuple[CutSet, bool]:
 
 
 def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
-
     if is_tarred:
         # Lhotse Shar is the equivalent of NeMo's native "tarred" dataset.
         # The combination of shuffle_shards, and repeat causes this to
@@ -95,7 +95,7 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs.repeat())
                 weights.append(weight)
-            cuts = CutSet.mux(*cutsets, weights=weights)
+            cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams)
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         cuts = CutSet.from_file(config.cuts_path)
@@ -107,11 +107,13 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
         "text_field": config.text_field,
         "lang_field": config.lang_field,
     }
-    if is_tarred:
-        if isinstance(config.manifest_filepath, (str, Path)):
-            logging.info(
-                f"Initializing Lhotse CutSet from a single NeMo manifest (tarred): '{config.manifest_filepath}'"
-            )
+    # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
+    # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse.
+    # This is useful for utility scripts that iterate metadata and estimate optimal batching settings.
+    notar_kwargs = {"missing_sampling_rate_ok": config.missing_sampling_rate_ok}
+    if isinstance(config.manifest_filepath, (str, Path)):
+        logging.info(f"Initializing Lhotse CutSet from a single NeMo manifest (tarred): '{config.manifest_filepath}'")
+        if is_tarred:
             cuts = CutSet(
                 LazyNeMoTarredIterator(
                     config.manifest_filepath,
@@ -121,61 +123,75 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
                 )
             )
         else:
-            # Format option 1:
-            #   Assume it's [[path1], [path2], ...] (same for tarred_audio_filepaths).
-            #   This is the format for multiple NeMo buckets.
-            #   Note: we set "weights" here to be proportional to the number of utterances in each data source.
-            #         this ensures that we distribute the data from each source uniformly throughout each epoch.
-            #         Setting equal weights would exhaust the shorter data sources closer the towards the beginning
-            #         of an epoch (or over-sample it in the case of infinite CutSet iteration with .repeat()).
-            # Format option 1:
-            #   Assume it's [[path1, weight1], [path2, weight2], ...] (while tarred_audio_filepaths remain unchanged).
-            #   Note: this option allows to manually set the weights for multiple datasets.
-            logging.info(
-                f"Initializing Lhotse CutSet from multiple tarred NeMo manifest sources with a weighted multiplexer. "
-                f"We found the following sources and weights: "
-            )
-            cutsets = []
-            weights = []
-            for manifest_info, (tar_path,) in zip(config.manifest_filepath, config.tarred_audio_filepaths):
-                if len(manifest_info) == 1:
-                    (manifest_path,) = manifest_info
-                    nemo_iter = LazyNeMoTarredIterator(
-                        manifest_path=manifest_path, tar_paths=tar_path, shuffle_shards=config.shuffle, **common_kwargs
-                    )
-                    weight = len(nemo_iter)
-                else:
-                    assert (
-                        isinstance(manifest_info, Sequence)
-                        and len(manifest_info) == 2
-                        and isinstance(manifest_info[1], (int, float))
-                    ), (
-                        "Supported inputs types for config.manifest_filepath are: "
-                        "str | list[list[str]] | list[tuple[str, number]] "
-                        "where str is a path and number is a mixing weight (it may exceed 1.0). "
-                        f"We got: '{manifest_info}'"
-                    )
-                    manifest_path, weight = manifest_info
-                    nemo_iter = LazyNeMoTarredIterator(
-                        manifest_path=manifest_path, tar_paths=tar_path, shuffle_shards=config.shuffle, **common_kwargs
-                    )
-                logging.info(f"- {manifest_path=} {weight=}")
-                if config.max_open_streams is not None:
-                    for subiter in nemo_iter.to_shards():
-                        cutsets.append(CutSet(subiter))
-                        weights.append(weight)
-                else:
-                    cutsets.append(CutSet(nemo_iter))
-                    weights.append(weight)
-            if config.max_open_streams is not None:
-                cuts = CutSet.infinite_mux(
-                    *cutsets, weights=weights, seed="trng", max_open_streams=config.max_open_streams
+            cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **notar_kwargs, **common_kwargs))
+    else:
+        # Format option 1:
+        #   Assume it's [[path1], [path2], ...] (same for tarred_audio_filepaths).
+        #   This is the format for multiple NeMo buckets.
+        #   Note: we set "weights" here to be proportional to the number of utterances in each data source.
+        #         this ensures that we distribute the data from each source uniformly throughout each epoch.
+        #         Setting equal weights would exhaust the shorter data sources closer the towards the beginning
+        #         of an epoch (or over-sample it in the case of infinite CutSet iteration with .repeat()).
+        # Format option 1:
+        #   Assume it's [[path1, weight1], [path2, weight2], ...] (while tarred_audio_filepaths remain unchanged).
+        #   Note: this option allows to manually set the weights for multiple datasets.
+        logging.info(
+            f"Initializing Lhotse CutSet from multiple tarred NeMo manifest sources with a weighted multiplexer. "
+            f"We found the following sources and weights: "
+        )
+        cutsets = []
+        weights = []
+        tar_paths = config.tarred_audio_filepaths if is_tarred else repeat((None,))
+        # Create a stream for each dataset.
+        for manifest_info, (tar_path,) in zip(config.manifest_filepath, tar_paths):
+            # First, convert manifest_path[+tar_path] to an iterator.
+            manifest_path = manifest_info[0]
+            if is_tarred:
+                nemo_iter = LazyNeMoTarredIterator(
+                    manifest_path=manifest_path, tar_paths=tar_path, shuffle_shards=config.shuffle, **common_kwargs
                 )
             else:
-                cuts = CutSet.mux(*[cs.repeat() for cs in cutsets], weights=weights, seed="trng")
+                nemo_iter = LazyNeMoIterator(manifest_path, **notar_kwargs, **common_kwargs)
+            # Then, determine the weight or use one provided
+            if len(manifest_info) == 1:
+                weight = len(nemo_iter)
+            else:
+                assert (
+                    isinstance(manifest_info, Sequence)
+                    and len(manifest_info) == 2
+                    and isinstance(manifest_info[1], (int, float))
+                ), (
+                    "Supported inputs types for config.manifest_filepath are: "
+                    "str | list[list[str]] | list[tuple[str, number]] "
+                    "where str is a path and number is a mixing weight (it may exceed 1.0). "
+                    f"We got: '{manifest_info}'"
+                )
+                weight = manifest_info[1]
+            logging.info(f"- {manifest_path=} {weight=}")
+            # [optional] When we have a limit on the number of open streams,
+            #   split the manifest to individual shards if applicable.
+            #   This helps the multiplexing achieve closer data distribution
+            #   to the one desired in spite of the limit.
+            if config.max_open_streams is not None:
+                for subiter in nemo_iter.to_shards():
+                    cutsets.append(CutSet(subiter))
+                    weights.append(weight)
+            else:
+                cutsets.append(CutSet(nemo_iter))
+                weights.append(weight)
+        # Finally, we multiplex the dataset streams to mix the data.
+        cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams)
+    return cuts
+
+
+def mux(*cutsets: CutSet, weights: list[int | float], max_open_streams: int | None = None) -> CutSet:
+    """
+    Helper function to call the right multiplexing method flavour in lhotse.
+    The result is always an infinitely iterable ``CutSet``, but depending on whether ``max_open_streams`` is set,
+    it will select a more appropriate multiplexing strategy.
+    """
+    if max_open_streams is not None:
+        cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed="trng", max_open_streams=max_open_streams)
     else:
-        logging.info(
-            f"Initializing Lhotse CutSet from a single NeMo manifest (non-tarred): '{config.manifest_filepath}'"
-        )
-        cuts = CutSet(LazyNeMoIterator(config.manifest_filepath, **common_kwargs))
+        cuts = CutSet.mux(*[cs.repeat() for cs in cutsets], weights=weights, seed="trng")
     return cuts

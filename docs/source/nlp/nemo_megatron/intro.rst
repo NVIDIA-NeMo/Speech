@@ -28,6 +28,7 @@ team at NVIDIA. NeMo Megatron supports several types of models:
    peft/landing_page
    flash_attention
    positional_embeddings
+   mcore_customization
 
 
 References

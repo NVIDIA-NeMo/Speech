@@ -745,23 +745,30 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         del log_probs, encoded_len
 
-        beam_hypotheses = self.decoding.decode_predictions_tensor(
+        best_hypotheses, all_hypotheses = self.decoding.decode_predictions_tensor(
             encoder_hidden_states=enc_states,
             encoder_input_mask=enc_mask,
             decoder_input_ids=decoder_input_ids if self.context_len_for_AR_decoding > 0 else None,
             return_hypotheses=trcfg.return_hypotheses,
-        )[
-            0
-        ]  # type: List[str] | List[Hypothesis]
+        )
 
         if trcfg.return_hypotheses:
-            for hyp in beam_hypotheses:
+            for hyp in best_hypotheses:
                 hyp.text = self.decoding.strip_special_tokens(hyp.text)
+            if all_hypotheses is not None:
+                for i in range(len(all_hypotheses)):
+                    for j in range(len(all_hypotheses[i])):
+                        all_hypotheses[i][j].text = self.decoding.strip_special_tokens(all_hypotheses[i][j].text)
         else:
-            beam_hypotheses = [self.decoding.strip_special_tokens(text) for text in beam_hypotheses]
+            best_hypotheses = [self.decoding.strip_special_tokens(text) for text in best_hypotheses]
+            if all_hypotheses is not None:
+                for i in range(len(all_hypotheses)):
+                    all_hypotheses[i] = [self.decoding.strip_special_tokens(text) for text in all_hypotheses[i]]
 
         del enc_states, enc_mask, decoder_input_ids
-        return beam_hypotheses
+        if all_hypotheses is None:
+            return best_hypotheses
+        return best_hypotheses, all_hypotheses
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """

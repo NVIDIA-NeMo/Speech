@@ -42,8 +42,6 @@ class AbstractMultiTaskDecoding(ABC):
                 -   greedy, greedy_batch (for greedy decoding).
                 -   beam, tsd, alsd (for beam search decoding).
 
-            return_scores: bool flag which determines whether to return the scores of the hypotheses.
-
             compute_langs: a bool flag, which allows to compute language id (LID) information per token,
                 word, and the entire sample (most likely language id). The LIDS will be available
                 in the returned Hypothesis object as a dictionary
@@ -104,7 +102,6 @@ class AbstractMultiTaskDecoding(ABC):
 
         self.preserve_alignments = self.cfg.get('preserve_alignments', None)
         self.compute_langs = self.cfg.get('compute_langs', False)
-        self.return_scores = self.cfg.get('return_scores', False)
         self.compute_hypothesis_token_set = self.cfg.get('compute_hypothesis_token_set', False)
 
         possible_strategies = ['greedy', 'greedy_batch', 'beam']
@@ -181,7 +178,6 @@ class AbstractMultiTaskDecoding(ABC):
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
-                return_scores=self.return_scores,
                 partial_hypotheses=partial_hypotheses,
             )  # type: [List[Hypothesis]]
 
@@ -321,8 +317,6 @@ class MultiTaskDecoding(AbstractMultiTaskDecoding):
                 Possible values are :
                 -   greedy, greedy_batch (for greedy decoding).
                 -   beam, tsd, alsd (for beam search decoding).
-
-            return_scores: bool flag which determines whether to return the scores of the hypotheses.
 
             compute_langs: a bool flag, which allows to compute language id (LID) information per token,
                 word, and the entire sample (most likely language id). The LIDS will be available

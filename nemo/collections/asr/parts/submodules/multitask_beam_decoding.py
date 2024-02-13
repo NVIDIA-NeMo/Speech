@@ -19,7 +19,7 @@ from typing import List, Optional
 import torch
 
 from nemo.collections.asr.modules.transformer import BeamSearchSequenceGenerator
-from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core import Typing, typecheck
 from nemo.core.neural_types import ChannelType, HypothesisType, LabelsType, MaskType, NeuralType
@@ -85,7 +85,6 @@ class AEDBeamInfer(ABC):
         encoder_hidden_states: torch.Tensor,
         encoder_input_mask: torch.Tensor,
         decoder_input_ids: Optional[torch.Tensor] = None,
-        return_scores: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
     ):
         raise NotImplementedError()
@@ -112,7 +111,6 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             "encoder_hidden_states": NeuralType(tuple(('B', 'T', 'D')), ChannelType()),
             "encoder_input_mask": NeuralType(tuple(('B', 'T')), MaskType()),
             "decoder_input_ids": NeuralType(('B', 'T'), LabelsType()),
-            "return_scores": NeuralType(optional=True),
             "partial_hypotheses": NeuralType(optional=True),
         }
 
@@ -142,7 +140,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             return_best_hypothesis=return_best_hypothesis,
             preserve_alignments=preserve_alignments,
         )
-
+        self.beam_size = beam_size
         self.beam_search = BeamSearchSequenceGenerator(
             embedding=transformer_decoder.embedding,
             decoder=transformer_decoder.decoder,
@@ -170,7 +168,6 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         encoder_hidden_states: torch.Tensor,
         encoder_input_mask: torch.Tensor,
         decoder_input_ids: Optional[torch.Tensor] = None,
-        return_scores: bool = False,
         partial_hypotheses: Optional[List[Hypothesis]] = None,
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
@@ -185,25 +182,31 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
             packed list containing batch number of sentences (Hypotheses).
         """
         with torch.inference_mode():
-            hypotheses = [
-                Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
-            ]
-            beam_hypotheses = self.beam_search(
+            topk_hypotheses, beam_scores, best_hypo = self.beam_search(
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_input_mask=encoder_input_mask,
                 decoder_input_ids=decoder_input_ids,
-                return_beam_scores=return_scores,
+                return_beam_scores=True,
             )
 
-            if return_scores:
-                _, beam_scores, beam_hypotheses = beam_hypotheses
-                beam_scores = beam_scores.detach().cpu()
+            if not self.return_best_hypothesis:
+                topk_hypotheses = [x.detach().cpu() for x in topk_hypotheses]  # each item is [beam, seq_len]
+                beam_scores = [x.detach().cpu() for x in beam_scores]  # each item is [beam,]
+                packed_result = []
+                for i in range(len(topk_hypotheses)):
+                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.beam_size)]
+                    # Pack results into Hypotheses
+                    packed_result.append(
+                        NBestHypotheses(pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i]))
+                    )
             else:
-                beam_scores = [None for _ in range(len(beam_hypotheses))]
-                beam_hypotheses = beam_hypotheses.detach().cpu()
-
-            # Pack results into Hypotheses
-            packed_result = pack_hypotheses(hypotheses, beam_hypotheses, beam_scores)
+                beam_scores = [None for _ in range(len(best_hypo))]
+                best_hypo = best_hypo.detach().cpu()
+                hypotheses = [
+                    Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
+                ]
+                # Pack results into Hypotheses
+                packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores)
 
         return (packed_result,)
 

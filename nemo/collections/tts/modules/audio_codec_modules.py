@@ -15,16 +15,25 @@
 from abc import ABC, abstractmethod
 from typing import Iterable, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
 from nemo.collections.asr.parts.utils.activations import Snake
 from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
-from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, Index, LengthsType, VoidType
+from nemo.core.neural_types.elements import (
+    AudioSignal,
+    EncodedRepresentation,
+    Index,
+    LengthsType,
+    MelSpectrogramType,
+    VoidType,
+)
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
 
@@ -50,16 +59,22 @@ def get_up_sample_padding(kernel_size: int, stride: int) -> Tuple[int, int]:
 
 class CodecActivation(nn.Module):
     """
-    Choose between snake or Elu activation based on the input parameter.
+    Choose between activation based on the input parameter.
+
+    Args:
+        activation: Name of activation to use. Valid options are "elu" (default), "lrelu", and "snake".
+        channels: Input dimension.
     """
 
     def __init__(self, activation: str = "elu", channels: int = 1):
         super().__init__()
         activation = activation.lower()
-        if activation == "snake":
-            self.activation = Snake(channels)
-        elif activation == "elu":
+        if activation == "elu":
             self.activation = nn.ELU()
+        elif activation == "lrelu":
+            self.activation = torch.nn.LeakyReLU()
+        elif activation == "snake":
+            self.activation = Snake(channels)
         else:
             raise ValueError(f"Unknown activation {activation}")
 
@@ -69,17 +84,24 @@ class CodecActivation(nn.Module):
 
 class Conv1dNorm(NeuralModule):
     def __init__(
-        self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1, padding: Optional[int] = None,
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        dilation: int = 1,
+        padding: Optional[int] = None,
     ):
         super().__init__()
         if not padding:
-            padding = get_padding(kernel_size)
+            padding = get_padding(kernel_size=kernel_size, dilation=dilation)
         conv = nn.Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
+            dilation=dilation,
             padding_mode="reflect",
         )
         self.conv = nn.utils.weight_norm(conv)
@@ -698,3 +720,490 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         dequantized = torch.cat(dequantized, dim=1)
 
         return dequantized
+
+
+class ResidualBlock(NeuralModule):
+    """
+    The residual block structure defined by the HiFi-GAN V1 and V2 configurations.
+
+    Args:
+        channels: Input dimension.
+        filters: Number of channels in the residual convolutions.
+        kernel_size: Kernel size of the residual convolutions.
+        dilation: Dilation of the residual convolutions.
+        dropout_rate: Dropout to apply to residuals.
+        activation: Activation to apply in between residual convolutions.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        filters: int,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        dropout_rate: float = 0.0,
+        activation: str = "lrelu",
+    ):
+        super(ResidualBlock, self).__init__()
+
+        self.input_activation = CodecActivation(activation=activation, channels=channels)
+        self.skip_activation = CodecActivation(activation=activation, channels=filters)
+        self.dropout = torch.nn.Dropout(dropout_rate)
+        self.input_conv = Conv1dNorm(
+            in_channels=channels, out_channels=filters, kernel_size=kernel_size, dilation=dilation
+        )
+        self.skip_conv = Conv1dNorm(in_channels=filters, out_channels=channels, kernel_size=kernel_size)
+
+    def remove_weight_norm(self):
+        self.input_conv.remove_weight_norm()
+        self.skip_conv.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {"inputs": NeuralType(('B', 'C', 'T'), VoidType()), "input_len": NeuralType(tuple('B'), LengthsType())}
+
+    @property
+    def output_types(self):
+        return {"out": NeuralType(('B', 'C', 'T'), EncodedRepresentation())}
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        conv_input = self.input_activation(inputs)
+        skip_input = self.input_conv(inputs=conv_input, input_len=input_len)
+        skip_input = self.skip_activation(skip_input)
+        res = self.skip_conv(inputs=skip_input, input_len=input_len)
+        res = self.dropout(res)
+        out = inputs + res
+        return out
+
+
+class HiFiGANResBlock(NeuralModule):
+    """
+    Residual block wrapper for HiFi-GAN which creates a block for multiple dilations.
+
+    Args:
+        channels: Input dimension.
+        kernel_size: Kernel size of the residual blocks.
+        dilations: List of dilations. One residual block will be created for each dilation in the list.
+        activation: Activation for the residual blocks.
+    """
+
+    def __init__(self, channels: int, kernel_size: int, dilations: Iterable[int], activation: str):
+        super().__init__()
+
+        self.res_blocks = nn.ModuleList(
+            [
+                ResidualBlock(
+                    channels=channels,
+                    filters=channels,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    activation=activation,
+                )
+                for dilation in dilations
+            ]
+        )
+
+    def remove_weight_norm(self):
+        for res_block in self.res_blocks:
+            res_block.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'C', 'T'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {"out": NeuralType(('B', 'C', 'T'), VoidType())}
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        out = inputs
+        for res_block in self.res_blocks:
+            out = res_block(inputs=out, input_len=input_len)
+        return out
+
+
+class HiFiGANResLayer(NeuralModule):
+    """
+    Residual block wrapper for HiFi-GAN which creates a block for multiple kernel sizes and dilations.
+    One residual block is created for each combination of kernel size and dilation.
+
+    Args:
+        channels: Input dimension.
+        kernel_sizes: List of kernel sizes.
+        dilations: List of dilations.
+        activation: Activation for the residual layers.
+
+    """
+
+    def __init__(self, channels: int, kernel_sizes: Iterable[int], dilations: Iterable[int], activation: str):
+        super().__init__()
+
+        self.res_blocks = nn.ModuleList(
+            [
+                HiFiGANResBlock(channels=channels, kernel_size=kernel_size, dilations=dilations, activation=activation)
+                for kernel_size in kernel_sizes
+            ]
+        )
+
+    def remove_weight_norm(self):
+        for res_block in self.res_blocks:
+            res_block.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {"out": NeuralType(('B', 'D', 'T'), VoidType())}
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        residuals = [res_block(inputs=inputs, input_len=input_len) for res_block in self.res_blocks]
+        out = sum(residuals) / len(residuals)
+        return out
+
+
+class HiFiGANDecoder(NeuralModule):
+    """
+    Codec decoder using the HiFi-GAN generator architecture.
+
+    Default parameters match the HiFi-GAN V1 configuration for 22.05khz.
+
+    Args:
+        input_dim: Input dimension.
+        up_sample_rates: Rate to upsample for each decoder block. The product of the upsample rates will
+            determine the output frame rate. For example 8 * 8 * 2 * 2 = 256 samples per token.
+        base_channels: Number of filters in the first convolution. The number of channels will be cut in
+            half after each upsample layer.
+        in_kernel_size: Kernel size of the input convolution.
+        out_kernel_size: Kernel size of the output convolution.
+        resblock_kernel_sizes: List of kernel sizes to use in each residual block.
+        resblock_dilation_sizes: List of dilations to use in each residual block.
+        activation: Activation to use in residual and upsample layers, defaults to leaky relu.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        up_sample_rates: Iterable[int] = (8, 8, 2, 2),
+        base_channels: int = 512,
+        in_kernel_size: int = 7,
+        out_kernel_size: int = 3,
+        resblock_kernel_sizes: Iterable[int] = (3, 7, 11),
+        resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
+        activation: str = "lrelu",
+    ):
+        assert in_kernel_size > 0
+        assert out_kernel_size > 0
+
+        super().__init__()
+
+        self.up_sample_rates = up_sample_rates
+        self.pre_conv = Conv1dNorm(in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size)
+
+        in_channels = base_channels
+        self.activations = nn.ModuleList([])
+        self.up_sample_conv_layers = nn.ModuleList([])
+        self.res_layers = nn.ModuleList([])
+        for i, up_sample_rate in enumerate(self.up_sample_rates):
+            out_channels = in_channels // 2
+            kernel_size = 2 * up_sample_rate
+
+            act = CodecActivation(activation, channels=in_channels)
+            self.activations.append(act)
+
+            up_sample_conv = ConvTranspose1dNorm(
+                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=up_sample_rate
+            )
+            in_channels = out_channels
+            self.up_sample_conv_layers.append(up_sample_conv)
+
+            res_layer = HiFiGANResLayer(
+                channels=in_channels,
+                kernel_sizes=resblock_kernel_sizes,
+                dilations=resblock_dilation_sizes,
+                activation=activation,
+            )
+            self.res_layers.append(res_layer)
+
+        self.post_activation = CodecActivation(activation, channels=in_channels)
+        self.post_conv = Conv1dNorm(in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size)
+        self.out_activation = nn.Tanh()
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T_encoded'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    def remove_weight_norm(self):
+        self.pre_conv.remove_weight_norm()
+        for up_sample_conv in self.up_sample_conv_layers:
+            up_sample_conv.remove_weight_norm()
+        for res_layer in self.res_layers:
+            res_layer.remove_weight_norm()
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        audio_len = input_len
+        # [B, C, T_encoded]
+        out = self.pre_conv(inputs=inputs, input_len=audio_len)
+        for act, res_layer, up_sample_conv, up_sample_rate in zip(
+            self.activations, self.res_layers, self.up_sample_conv_layers, self.up_sample_rates
+        ):
+            audio_len = audio_len * up_sample_rate
+            out = act(out)
+            # [B, C / 2, T * up_sample_rate]
+            out = up_sample_conv(inputs=out, input_len=audio_len)
+            out = res_layer(inputs=out, input_len=audio_len)
+
+        out = self.post_activation(out)
+        # [B, 1, T_audio]
+        out = self.post_conv(inputs=out, input_len=audio_len)
+        audio = self.out_activation(out)
+        audio = rearrange(audio, "B 1 T -> B T")
+        return audio, audio_len
+
+
+class MelSpectrogramProcessor(NeuralModule):
+    """
+    Wrapper interface for computing mel spectrogram for codec training.
+    """
+
+    def __init__(self, sample_rate: int, win_length: int, hop_length: int, mel_dim: int = 80, log_guard: float = 1.0):
+        super(MelSpectrogramProcessor, self).__init__()
+        self.mel_dim = mel_dim
+        self.hop_length = hop_length
+        self.preprocessor = AudioToMelSpectrogramPreprocessor(
+            sample_rate=sample_rate,
+            highfreq=None,
+            features=mel_dim,
+            pad_to=1,
+            exact_pad=True,
+            n_window_size=win_length,
+            n_window_stride=hop_length,
+            window_size=False,
+            window_stride=False,
+            n_fft=win_length,
+            mag_power=1.0,
+            log=True,
+            log_zero_guard_type="add",
+            log_zero_guard_value=log_guard,
+            mel_norm=None,
+            normalize=None,
+            preemph=None,
+            dither=0.0,
+        )
+
+    @property
+    def input_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "spec": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType()),
+            "spec_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @typecheck()
+    def forward(self, audio, audio_len):
+        spec, spec_len = self.preprocessor(input_signal=audio, length=audio_len)
+        return spec, spec_len
+
+
+class ResNetEncoder(NeuralModule):
+    """
+    Residual network which uses HiFi-GAN residual blocks to encode spectrogram features without changing
+    the time dimension.
+
+    Args:
+        in_channels: input dimension
+        out_channels: output dimension
+        num_layers: number of residual blocks to use
+        hidden_channels: encoder hidden dimension
+        filters: number of filters in residual block layers
+        kernel_size: kernel size in residual block convolutions
+        dropout_rate: Optional dropout rate to apply to residuals.
+        activation: Activation to use, defaults to leaky relu.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        num_layers: int = 6,
+        hidden_channels: int = 256,
+        filters: int = 768,
+        kernel_size: int = 3,
+        dropout_rate: float = 0.1,
+        activation: str = "lrelu",
+    ):
+        super(ResNetEncoder, self).__init__()
+
+        self.pre_conv = Conv1dNorm(in_channels=in_channels, out_channels=hidden_channels, kernel_size=kernel_size)
+        self.res_layers = nn.ModuleList(
+            [
+                ResidualBlock(
+                    channels=hidden_channels,
+                    filters=filters,
+                    kernel_size=kernel_size,
+                    dropout_rate=dropout_rate,
+                    activation=activation,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+        self.post_activation = CodecActivation(activation, channels=hidden_channels)
+        self.post_conv = Conv1dNorm(in_channels=hidden_channels, out_channels=out_channels, kernel_size=kernel_size)
+
+    def remove_weight_norm(self):
+        self.pre_conv.remove_weight_norm()
+        self.post_conv.remove_weight_norm()
+        for res_layer in self.res_layers:
+            res_layer.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {"encoded": NeuralType(('B', 'C', 'T'), EncodedRepresentation())}
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        encoded = self.pre_conv(inputs=inputs, input_len=input_len)
+        for res_layer in self.res_layers:
+            encoded = res_layer(inputs=encoded, input_len=input_len)
+        encoded = self.post_activation(encoded)
+        encoded = self.post_conv(inputs=encoded, input_len=input_len)
+        return encoded
+
+
+class FullBandMelEncoder(NeuralModule):
+    """
+    Encoder which encodes the entire mel spectrogram with a single encoder network.
+
+    Args:
+        mel_processor: MelSpectrogramProcessor or equivalent class instance for computing the mel spectrogram from
+            input audio.
+        encoder: ResNetEncoder or equivalent class for encoding the mel spectrogram.
+    """
+
+    def __init__(self, mel_processor: NeuralModule, encoder: NeuralModule):
+        super(FullBandMelEncoder, self).__init__()
+        self.mel_processor = mel_processor
+        self.encoder = encoder
+
+    def remove_weight_norm(self):
+        self.encoder.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "encoded": NeuralType(('B', 'C', 'T_encoded'), EncodedRepresentation()),
+            "encoded_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @typecheck()
+    def forward(self, audio, audio_len):
+        out, spec_len = self.mel_processor(audio=audio, audio_len=audio_len)
+        encoded = self.encoder(inputs=out, input_len=spec_len)
+        return encoded, spec_len
+
+
+class MultiBandMelEncoder(NeuralModule):
+    """
+    Encoder which splits mel spectrogram into bands and encodes each using separate residual networks.
+
+    Args:
+        mel_bands: List of mel spectrogram bands to encode.
+            Each list element is tuple of 2 elements with the start and end index of the mel features to use.
+        mel_processor: MelSpectrogramProcessor or equivalent class instance for computing the mel spectrogram from
+            input audio.
+        encoder_kwargs: Arguments for constructing encoder for each mel band.
+    """
+
+    def __init__(self, mel_bands: Iterable[Tuple[int, int]], mel_processor: NeuralModule, **encoder_kwargs):
+        super(MultiBandMelEncoder, self).__init__()
+        self.validate_mel_bands(mel_dim=mel_processor.mel_dim, mel_bands=mel_bands)
+        self.mel_bands = mel_bands
+        self.mel_processor = mel_processor
+        band_dims = [band[1] - band[0] for band in self.mel_bands]
+        self.encoders = nn.ModuleList(
+            [ResNetEncoder(in_channels=band_dim, **encoder_kwargs) for band_dim in band_dims]
+        )
+
+    @staticmethod
+    def validate_mel_bands(mel_dim: int, mel_bands: Iterable[Tuple[int, int]]):
+        mel_dims_used = np.zeros([mel_dim], dtype=bool)
+        for band in mel_bands:
+            mel_dims_used[band[0] : band[1]] = True
+
+        if not all(mel_dims_used):
+            missing_dims = np.where(~mel_dims_used)
+            raise ValueError(f"Mel bands must cover all {mel_dim} dimensions. Missing {missing_dims}.")
+
+        return
+
+    def remove_weight_norm(self):
+        for encoder in self.encoders:
+            encoder.remove_weight_norm()
+
+    @property
+    def input_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "encoded": NeuralType(('B', 'C', 'T_encoded'), EncodedRepresentation()),
+            "encoded_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @typecheck()
+    def forward(self, audio, audio_len):
+        spec, spec_len = self.mel_processor(audio=audio, audio_len=audio_len)
+        outputs = []
+        for (band_start, band_end), encoder in zip(self.mel_bands, self.encoders):
+            # [B, D_band, T]
+            spec_band = spec[:, band_start:band_end, :]
+            band_out = encoder(inputs=spec_band, input_len=spec_len)
+            outputs.append(band_out)
+        # [B, C, T]
+        encoded = torch.cat(outputs, dim=1)
+        return encoded, spec_len

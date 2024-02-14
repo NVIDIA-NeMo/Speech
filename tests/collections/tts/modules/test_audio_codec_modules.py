@@ -21,15 +21,22 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     ConvTranspose1dNorm,
     FiniteScalarQuantizer,
     GroupFiniteScalarQuantizer,
+    HiFiGANDecoder,
+    MelSpectrogramProcessor,
+    MultiBandMelEncoder,
+    ResidualBlock,
+    ResNetEncoder,
     get_down_sample_padding,
 )
 from nemo.collections.tts.modules.encodec_modules import GroupResidualVectorQuantizer, ResidualVectorQuantizer
+from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 class TestAudioCodecModules:
     def setup_class(self):
         self.in_channels = 8
         self.out_channels = 16
+        self.filters = 32
         self.batch_size = 2
         self.len1 = 4
         self.len2 = 8
@@ -93,6 +100,103 @@ class TestAudioCodecModules:
         out = conv(inputs=inputs, input_len=lengths)
 
         assert out.shape == (self.batch_size, self.out_channels, out_len)
+        assert torch.all(out[0, :, :out_len_1] != 0.0)
+        assert torch.all(out[0, :, out_len_1:] == 0.0)
+        assert torch.all(out[1, :, :out_len_2] != 0.0)
+        assert torch.all(out[1, :, out_len_2:] == 0.0)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_residual_block(self):
+        lengths = torch.tensor([self.len1, self.len2], dtype=torch.int32)
+        inputs = torch.rand([self.batch_size, self.in_channels, self.max_len])
+        inputs = mask_sequence_tensor(tensor=inputs, lengths=lengths)
+
+        res_block = ResidualBlock(channels=self.in_channels, filters=self.filters)
+        out = res_block(inputs=inputs, input_len=lengths)
+
+        assert out.shape == (self.batch_size, self.in_channels, self.max_len)
+        assert torch.all(out[0, :, : self.len1] != 0.0)
+        assert torch.all(out[0, :, self.len1 :] == 0.0)
+        assert torch.all(out[1, :, : self.len2] != 0.0)
+        assert torch.all(out[1, :, self.len2 :] == 0.0)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_hifigan_decoder(self):
+        up_sample_rates = [4, 4, 2, 2]
+        up_sample_total = 64
+        lengths = torch.tensor([self.len1, self.len2], dtype=torch.int32)
+        out_len_1 = self.len1 * up_sample_total
+        out_len_2 = self.len2 * up_sample_total
+        out_len_max = self.max_len * up_sample_total
+
+        inputs = torch.rand([self.batch_size, self.in_channels, self.max_len])
+        inputs = mask_sequence_tensor(tensor=inputs, lengths=lengths)
+
+        decoder = HiFiGANDecoder(
+            input_dim=self.in_channels, base_channels=self.filters, up_sample_rates=up_sample_rates
+        )
+        out, out_len = decoder(inputs=inputs, input_len=lengths)
+
+        assert out_len[0] == out_len_1
+        assert out_len[1] == out_len_2
+        assert out.shape == (self.batch_size, out_len_max)
+        assert torch.all(out[0, :out_len_1] != 0.0)
+        assert torch.all(out[0, out_len_1:] == 0.0)
+        assert torch.all(out[1, :out_len_2] != 0.0)
+        assert torch.all(out[1, out_len_2:] == 0.0)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_resnet_encoder(self):
+        lengths = torch.tensor([self.len1, self.len2], dtype=torch.int32)
+        inputs = torch.rand([self.batch_size, self.in_channels, self.max_len])
+        inputs = mask_sequence_tensor(tensor=inputs, lengths=lengths)
+
+        res_net = ResNetEncoder(in_channels=self.in_channels, out_channels=self.out_channels)
+        out = res_net(inputs=inputs, input_len=lengths)
+
+        assert out.shape == (self.batch_size, self.out_channels, self.max_len)
+        assert torch.all(out[0, :, : self.len1] != 0.0)
+        assert torch.all(out[0, :, self.len1 :] == 0.0)
+        assert torch.all(out[1, :, : self.len2] != 0.0)
+        assert torch.all(out[1, :, self.len2 :] == 0.0)
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
+    def test_multiband_mel_encoder(self):
+        mel_dim = 10
+        win_length = 16
+        hop_length = 10
+        mel_bands = [(0, 4), (4, 7), (7, 10)]
+        max_len = 100
+        len1 = 40
+        len2 = 80
+        out_dim = len(mel_bands) * self.out_channels
+        lengths = torch.tensor([len1, len2], dtype=torch.int32)
+        out_len_1 = len1 // hop_length
+        out_len_2 = len2 // hop_length
+        out_len_max = max_len // hop_length
+
+        audio = torch.rand([self.batch_size, max_len])
+        audio = mask_sequence_tensor(tensor=audio, lengths=lengths)
+
+        mel_processor = MelSpectrogramProcessor(
+            mel_dim=mel_dim, sample_rate=100, win_length=win_length, hop_length=hop_length
+        )
+        encoder = MultiBandMelEncoder(
+            mel_bands=mel_bands,
+            mel_processor=mel_processor,
+            out_channels=self.out_channels,
+            hidden_channels=self.filters,
+            filters=self.filters,
+        )
+        out, out_len = encoder(audio=audio, audio_len=lengths)
+
+        assert out_len[0] == out_len_1
+        assert out_len[1] == out_len_2
+        assert out.shape == (self.batch_size, out_dim, out_len_max)
         assert torch.all(out[0, :, :out_len_1] != 0.0)
         assert torch.all(out[0, :, out_len_1:] == 0.0)
         assert torch.all(out[1, :, :out_len_2] != 0.0)

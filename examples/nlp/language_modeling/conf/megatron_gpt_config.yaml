@@ -204,7 +204,7 @@ model:
 
   ##Offloading Activations/Weights to CPU
   cpu_offloading: False
-  cpu_offloading_num_layers: 11 #This value should be between [1,num_layers-1] as we don't want to offload the final layer's activations and expose any offloading duration for the final layer
+  cpu_offloading_num_layers: ${sum:${.num_layers},-1} #This value should be between [1,num_layers-1] as we don't want to offload the final layer's activations and expose any offloading duration for the final layer
   cpu_offloading_activations: True
   cpu_offloading_weights: True
 
@@ -247,6 +247,7 @@ model:
     pad_samples_to_global_batch_size: False # Set to True if you want to pad the last partial batch with -1's to equal global batch size
     shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
     exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem
+    mock_dataset: False # Set to True and data_prefix to None to use artificially generated mock dataset
 
   # Nsys profiling options
   nsys_profile:

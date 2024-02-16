@@ -1,10 +1,16 @@
 pipeline {
   agent {
         docker {
-          image 'nvcr.io/nvidia/pytorch:23.12-py3'
+          image 'nvcr.io/nvidia/pytorch:24.01-py3'
           args '--device=/dev/nvidia0 --gpus all --user 0:128 -v /home/TestData:/home/TestData -v $HOME/.cache:/root/.cache --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1'
         }
   }
+
+  environment {
+        NVTE_FUSED_ATTN = 0
+        NVTE_FLASH_ATTN = 0
+  }
+
   options {
     timeout(time: 8, unit: 'HOURS')
     disableConcurrentBuilds(abortPrevious: true)
@@ -62,7 +68,7 @@ pipeline {
       steps {
          sh 'git clone https://github.com/NVIDIA/TransformerEngine.git && \
              cd TransformerEngine && \
-             git fetch origin 4f9662fbe621671f5f905e772fc1138953af77f6 && \
+             git fetch origin da30634a6c9ccdbb6c587b6c93b1860e4b038204 && \
              git checkout FETCH_HEAD && \
              git submodule init && git submodule update && \
              NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .'
@@ -85,7 +91,7 @@ pipeline {
       steps {
          sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
              cd Megatron-LM && \
-             git checkout bed60a881f4b238b1c14b6c6a64997cc636e77b6 && \
+             git checkout 240a8ef7a21df201e47b5b2ae33cc5f4c5486849 && \
              pip install .'
       }
     }
@@ -3227,7 +3233,7 @@ pipeline {
       }
       failFast true
       steps {
-        sh "python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        sh "NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
         trainer.devices=2 \
         trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \
@@ -3257,7 +3263,7 @@ pipeline {
         model.activations_checkpoint_num_layers=1 \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
         model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings"
-        sh "python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        sh "NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
         trainer.devices=2 \
         trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \

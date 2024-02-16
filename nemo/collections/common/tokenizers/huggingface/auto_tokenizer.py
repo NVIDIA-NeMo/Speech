@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import OrderedDict
 from typing import Optional
 
 from transformers import AutoTokenizer as AUTOTOKENIZER
@@ -121,6 +122,9 @@ class AutoTokenizer(TokenizerSpec):
             if token is not None and token not in self.tokenizer.get_vocab():
                 new_tokens_in_vocab.append(token)
 
+        # value is required for megatron-core
+        self.unique_identifiers = OrderedDict()
+
         if len(new_tokens_in_vocab) > 0:
             """
             Special tokens that were not previously included in the tokenizer's vocabulary file will be added to 
@@ -225,6 +229,11 @@ class AutoTokenizer(TokenizerSpec):
 
     @property
     def eos_id(self):
+        return self.tokens_to_ids([getattr(self, 'eos_token')])[0]
+
+    @property
+    def eod(self):
+        """Returns EOS token id. Exact copy of the eos_id function. Required for megatron-core."""
         return self.tokens_to_ids([getattr(self, 'eos_token')])[0]
 
     @property

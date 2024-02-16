@@ -487,7 +487,7 @@ class MegatronDreamBooth(NLPAdapterModelMixin, MegatronBaseModel):
             global_batch_size=self.cfg.global_batch_size,
             data_parallel_rank=parallel_state.get_data_parallel_rank(),
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
-            drop_last=False,
+            drop_last=True,
         )
 
         self._train_dl = torch.utils.data.DataLoader(

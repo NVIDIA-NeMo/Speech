@@ -265,7 +265,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         asr_model.encoder.set_default_att_context_size(cfg.att_context_size)
 
     # Setup decoding strategy
-    if hasattr(asr_model, 'change_decoding_strategy'):
+    if hasattr(asr_model, 'change_decoding_strategy') and hasattr(asr_model, 'decoding'):
         if isinstance(asr_model.decoding, MultiTaskDecoding):
             cfg.multitask_decoding.compute_langs = cfg.compute_langs
             cfg.multitask_decoding.preserve_alignments = cfg.preserve_alignment

@@ -69,6 +69,13 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
 
+try:
+    from megatron.core import Timers
+
+    HAVE_MEGATRON_CORE_TIMERS = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_MEGATRON_CORE_TIMERS = False
+
 __all__ = ["MegatronBaseModel"]
 
 
@@ -123,6 +130,17 @@ class MegatronBaseModel(NLPModel):
             if self.torch_dtype in [torch.bfloat16, torch.float16] and self.cfg.get('megatron_amp_O2', False)
             else torch.float32
         )
+
+        self.megatron_timers = None
+        if self.cfg.get('enable_megatron_timers', False) and HAVE_MEGATRON_CORE_TIMERS:
+            self.megatron_timers_cfg = dict(self.cfg.get('megatron_timer_kwargs', dict()))
+            if 'log_every_n_steps' not in self.megatron_timers_cfg:
+                self.megatron_timers_cfg['log_every_n_steps'] = self.trainer.log_every_n_steps
+            if 'log_option' not in self.megatron_timers_cfg:
+                self.megatron_timers_cfg['log_option'] = 'minmax'  # minmax, max, all
+            if 'barrier' not in self.megatron_timers_cfg:
+                self.megatron_timers_cfg['barrier'] = False
+            self.megatron_timers = Timers(log_level=2, log_option=self.megatron_timers_cfg['log_option'])
 
         # set the megatron core model parallel config
         self.model_parallel_config: ModelParallelConfig = self.build_model_parallel_config()
@@ -615,6 +633,13 @@ class MegatronBaseModel(NLPModel):
     def on_train_batch_end(self, outputs, dataloader_iter: Any, batch_idx: int, unused: Optional[int] = 0) -> None:
         super().on_train_batch_end(outputs, dataloader_iter, batch_idx)
 
+        # Megatron Timers
+        if self.megatron_timers:
+            if self.global_step % self.megatron_timers_cfg["log_every_n_steps"] == 0:
+                logging.info(
+                    "\n " + self.megatron_timers.get_all_timers_string(barrier=self.megatron_timers_cfg["barrier"])
+                )
+
         # TODO: Replace with newer override for scheduler.step() instead of
         # search for plugins for fp16 GradScalar
         if self.trainer.precision_plugin is not None and isinstance(
@@ -1044,7 +1069,7 @@ class MegatronBaseModel(NLPModel):
             and megatron_amp_O2,  # NeMo does not currently support fp16 training with megatron amp O2, eval and inference is supported
             "bf16": self.torch_dtype == torch.bfloat16 and megatron_amp_O2,
             "params_dtype": self.params_dtype,
-            "timers": None,  # NeMo does not currently support megatron core timers
+            "timers": self.megatron_timers,
             "async_tensor_model_parallel_allreduce": self.cfg.get('tensor_model_parallel_world_size', 1) > 1
             and not self.cfg.get('sequence_parallel', False),
             "pipeline_dtype": pipeline_dtype,
@@ -1157,3 +1182,16 @@ class MegatronBaseModel(NLPModel):
             # Move the CPU-initialized model (with `use_cpu_initialization=True`) to GPU, which is to avoid
             # out-of-memory carash before sharding. In case of GPU-initialized model, this is no-op.
             self.model = self.model.cuda(torch.cuda.current_device())
+
+    def megatron_timer_start(self, name, log_level):
+        if self.megatron_timers:
+            self.megatron_timers(name, log_level).start(barrier=False)
+
+    def megatron_timer_stop(self, name):
+        if self.megatron_timers:
+            self.megatron_timers(name).stop()
+
+    def optimizer_step(self, *args, **kwargs):
+        self.megatron_timer_start('optimizer', log_level=1)
+        super().optimizer_step(*args, **kwargs)
+        self.megatron_timer_stop('optimizer')

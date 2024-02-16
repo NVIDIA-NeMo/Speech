@@ -654,8 +654,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
+            self.megatron_timer_start('allreduce_sequence_parallel_gradients', log_level=1)
             self.allreduce_sequence_parallel_gradients()
+            self.megatron_timer_stop('allreduce_sequence_parallel_gradients')
 
+        self.megatron_timer_start('gradient_allreduce', log_level=1)
         if self.use_fsdp:
             # Reduce the gradients omitted from FSDP-sharding
             self.allreduce_fsdp_sharding_omitted_gradients()
@@ -673,12 +676,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # async grad allreduce is not currently implemented for O1/autocasting mixed precision training
             # so we all-reduce gradients after the pipeline
             self.allreduce_gradients()  # @sangkug we think this is causing memory to blow up (hurts perf)
+        self.megatron_timer_stop('gradient_allreduce')
 
         if self.cfg.get('pipeline_model_parallel_size', 1) > 1 and self.cfg.get(
             'share_embeddings_and_output_weights', True
         ):
+            self.megatron_timer_start('allreduce_first_last_embeddings', log_level=1)
             # when using pipeline parallelism the first and last stage must keep embeddings in sync
             self.allreduce_first_last_embeddings()
+            self.megatron_timer_stop('allreduce_first_last_embeddings')
 
         ## logging
         if self.log_train_loss:

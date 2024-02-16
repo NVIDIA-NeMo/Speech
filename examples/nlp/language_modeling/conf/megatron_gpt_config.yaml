@@ -211,6 +211,13 @@ model:
   ## Network
   sharp: False # Enable the use of SHARP for NCCL data-parallel communications. This is going to be ignored if the network doesn't support SHARP.
   
+  ## Megatron timers
+  enable_megatron_timers: False
+  megatron_timer_kwargs:
+    log_every_n_steps: 10
+    log_mode: minmax
+    barrier: False
+
   data:
    # Path to data must be specified by the user.
     # Supports List, String and Dictionary

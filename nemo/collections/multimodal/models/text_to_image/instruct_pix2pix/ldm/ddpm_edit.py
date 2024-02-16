@@ -40,7 +40,9 @@ except (ImportError, ModuleNotFoundError):
 
 
 class LatentDiffusionEdit(LatentDiffusion):
-    def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
+    def init_from_ckpt(
+        self, path, ignore_keys=list(), only_model=False, load_vae=True, load_unet=True, load_encoder=True,
+    ):
         pl_sd = torch.load(path, map_location="cpu")
         if "state_dict" in list(pl_sd.keys()):
             pl_sd = pl_sd["state_dict"]

@@ -79,7 +79,7 @@ model:
     openai_gelu: False
     bias_activation_fusion: False
     megatron_legacy: True
-    activation: quick-gelu
+    activation: approx-gelu
 
 
 
@@ -144,7 +144,7 @@ model:
     fp8_amax_history_len: 1 # Number of steps for which amax history is recorded per tensor
     fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
     use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
-    activation: quick-gelu
+    activation: approx-gelu
 
   # Megatron O2-style half-precision
   megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters

@@ -117,7 +117,7 @@ model:
     openai_gelu: false
     bias_activation_fusion: false
     megatron_legacy: true
-    activation: quick-gelu
+    activation: approx-gelu
 
   text:
     precision: ${trainer.precision}
@@ -171,7 +171,7 @@ model:
     fp8_amax_history_len: 1
     fp8_amax_compute_algo: most_recent
     use_emha: false
-    activation: quick-gelu
+    activation: approx-gelu
 
   # Megatron O2-style half-precision
   megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters

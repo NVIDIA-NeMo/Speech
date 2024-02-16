@@ -557,9 +557,9 @@ class LatentDiffusion(DDPM, Serialization):
 
         self.restarted_from_ckpt = False
         if ckpt_path is not None:
-            load_vae = True if cfg.load_vae is None else cfg.load_vae
-            load_unet = True if cfg.load_unet is None else cfg.load_unet
-            load_encoder = True if cfg.load_encoder is None else cfg.load_encoder
+            load_vae = True if cfg.get("load_vae", None) is None else cfg.load_vae
+            load_unet = True if cfg.get("load_unet", None) is None else cfg.load_unet
+            load_encoder = True if cfg.get("load_encoder", None) is None else cfg.load_encoder
 
             self.init_from_ckpt(
                 ckpt_path, ignore_keys, load_vae=load_vae, load_unet=load_unet, load_encoder=load_encoder,

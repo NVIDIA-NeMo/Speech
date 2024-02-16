@@ -397,7 +397,7 @@ def preprocess_nvgpt(sources: dict, tokenizer, cfg,) -> Dict:
                 if 'label' not in turn:
                     turn[
                         'label'
-                    ] = "quality:6,toxicity:0,humor:0,creativity:0,violence:0,helpfulness:6,not_appropriate:0"
+                    ] = "quality:4,toxicity:0,humor:0,creativity:0,helpfulness:4,correctness:4,coherence:4,complexity:4,verbosity:4"
                 value = DEFAULT_LABELS_TOKEN + turn['label'] + '\n' + turn['value']
                 conv.append_message(turn['from'], value)
                 if not turn["value"]:

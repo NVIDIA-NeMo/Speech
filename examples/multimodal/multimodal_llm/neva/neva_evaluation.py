@@ -71,15 +71,16 @@ def main(cfg) -> None:
     with open(cfg.prompt_file, 'r') as f:
         lines = f.readlines()
 
+    insert_image_token = cfg.inference.get("insert_image_token", None)
     final_prompts = []
     for line in lines:
         prompt_dict = json.loads(line)
         assert 'prompt' in prompt_dict or 'text' in prompt_dict
         if 'prompt' not in prompt_dict:
             prompt_dict['prompt'] = prompt_dict['text']
-        if cfg.inference.insert_image_token == 'left':
+        if insert_image_token == 'left':
             prompt_dict['prompt'] = '<image>' + prompt_dict['prompt']
-        elif cfg.inference.insert_image_token == 'right':
+        elif insert_image_token == 'right':
             prompt_dict['prompt'] = prompt_dict['prompt'] + '<image>'
         if 'image' in prompt_dict:
             prompt_dict['image_path'] = prompt_dict['image']

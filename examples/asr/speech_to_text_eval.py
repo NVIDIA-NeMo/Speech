@@ -25,13 +25,13 @@ same directory during execution.
 for full list of arguments >>
 
     dataset_manifest: Required - path to dataset JSON manifest file (in NeMo format)
-    output_filename: Optional - output filename where the transcriptions will be written. (if scores_per_sample=True, 
+    output_filename: Optional - output filename where the transcriptions will be written. (if scores_per_sample=True,
     metrics per sample will be written there too)
 
     use_cer: Bool, whether to compute CER or WER
-    use_punct_er: Bool, compute dataset Punctuation Error Rate (set the punctuation marks for metrics computation with 
+    use_punct_er: Bool, compute dataset Punctuation Error Rate (set the punctuation marks for metrics computation with
     "text_processing.punctuation_marks")
-     
+
     tolerance: Float, minimum WER/CER required to pass some arbitrary tolerance.
 
     only_score_manifest: Bool, when set will skip audio transcription and just calculate WER of provided manifest.
@@ -141,13 +141,13 @@ def main(cfg: EvaluationConfig):
         for line in f:
             data = json.loads(line)
 
-            if 'pred_text' not in data:
+            if "pred_text" not in data:
                 invalid_manifest = True
                 break
 
-            ground_truth_text.append(data['text'])
+            ground_truth_text.append(data[cfg.gt_text_attr_name])
 
-            predicted_text.append(data['pred_text'])
+            predicted_text.append(data["pred_text"])
 
     pc = PunctuationCapitalization(cfg.text_processing.punctuation_marks)
     if cfg.text_processing.separate_punctuation:
@@ -183,7 +183,7 @@ def main(cfg: EvaluationConfig):
 
         samples_with_metrics = compute_metrics_per_sample(
             manifest_path=cfg.dataset_manifest,
-            reference_field="text",
+            reference_field=cfg.gt_text_attr_name,
             hypothesis_field="pred_text",
             metrics=metrics_to_compute,
             punctuation_marks=cfg.text_processing.punctuation_marks,
@@ -207,7 +207,7 @@ def main(cfg: EvaluationConfig):
 
         logging.info(f'Got {metric_name} of {metric_value}. Tolerance was {cfg.tolerance}')
 
-    logging.info(f'Dataset WER/CER ' + str(round(100 * wer, 2)) + "%/" + str(round(100 * cer, 2)) + "%")
+    logging.info(f"Dataset WER/CER {wer:.2%}/{cer:.2%}")
 
     if cfg.use_punct_er:
         dper_obj.print()

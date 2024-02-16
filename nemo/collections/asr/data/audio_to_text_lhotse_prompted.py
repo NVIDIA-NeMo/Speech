@@ -41,18 +41,22 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
     """
 
     def __init__(
-        self, tokenizer: TokenizerSpec, prompt_format_fn: Callable[[CutSet, TokenizerWrapper], Sequence[Sequence[int]]]
+        self,
+        tokenizer: TokenizerSpec,
+        prompt_format_fn: Callable[[CutSet, TokenizerWrapper, bool], Sequence[Sequence[int]]],
+        inference: bool = False,
     ):
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
         self.load_audio = AudioSamples(fault_tolerant=True)
         self.padding_value = self.tokenizer._tokenizer.pad_id
         self.prompt_format_fn = prompt_format_fn
+        self.inference = inference
 
     def __getitem__(self, cuts: CutSet) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         audio, audio_lens, cuts = self.load_audio(cuts)
 
-        tokens = self.prompt_format_fn(cuts, self.tokenizer)
+        tokens = self.prompt_format_fn(cuts, self.tokenizer, self.inference)
         tokens = [torch.as_tensor(t) for t in tokens]
         token_lens = torch.tensor([t.size(0) for t in tokens], dtype=torch.long)
         tokens = collate_vectors(tokens, padding_value=self.padding_value)
@@ -64,7 +68,7 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
 PROMPT_FORMAT_FNS = {}
 
 
-def registered_prompt_format_fn(prompt_fn: Callable[[CutSet, TokenizerWrapper], Sequence[Sequence[int]]]):
+def registered_prompt_format_fn(prompt_fn: Callable[[CutSet, TokenizerWrapper, bool], Sequence[Sequence[int]]]):
     """
     Decorator for registering prompt functions under a name.
 
@@ -82,7 +86,7 @@ def registered_prompt_format_fn(prompt_fn: Callable[[CutSet, TokenizerWrapper], 
     return prompt_fn
 
 
-def get_prompt_format_fn(name: str) -> Callable[[CutSet, TokenizerWrapper], Sequence[Sequence[int]]]:
+def get_prompt_format_fn(name: str) -> Callable[[CutSet, TokenizerWrapper, bool], Sequence[Sequence[int]]]:
     if name not in PROMPT_FORMAT_FNS:
         raise ValueError(
             f"Unknown prompt format function name: {name} " f"(must be one of: {list(PROMPT_FORMAT_FNS.keys())}"
@@ -91,7 +95,7 @@ def get_prompt_format_fn(name: str) -> Callable[[CutSet, TokenizerWrapper], Sequ
 
 
 @registered_prompt_format_fn
-def canary(cuts: CutSet, tokenizer: TokenizerWrapper) -> Sequence[Sequence[int]]:
+def canary(cuts: CutSet, tokenizer: TokenizerWrapper, inference: bool = False) -> Sequence[Sequence[int]]:
     """
     Prepend and append control tokens to the token sequence as per Canary format.
 
@@ -135,8 +139,11 @@ def canary(cuts: CutSet, tokenizer: TokenizerWrapper) -> Sequence[Sequence[int]]
             )
 
         # Actual tokenization. If a cut has multiple supervisions, we'll stitch their tokenized texts together.
-        texts = [sup.text for sup in cut.supervisions]
-        langs = [sup.language for sup in cut.supervisions]
+        if not inference:
+            texts = [sup.text for sup in cut.supervisions]
+            langs = [sup.language for sup in cut.supervisions]
+        else:
+            texts, langs = None, None
         taskname = cut.custom['taskname']
         pnc = cut.custom['pnc']
         source_lang = cut.custom['source_lang']
@@ -149,18 +156,29 @@ def canary(cuts: CutSet, tokenizer: TokenizerWrapper) -> Sequence[Sequence[int]]
     return canary_tokens
 
 
-def canary_prompt(tokenizer: CanaryTokenizer, text, language, source_language, target_language, taskname, pnc):
+def canary_prompt(
+    tokenizer: CanaryTokenizer,
+    text: str | list[str] | None,
+    language: str | list[str] | None,
+    source_language: str,
+    target_language: str,
+    taskname: str,
+    pnc: str,
+) -> list[int]:
     if isinstance(text, str):
         text = [text]
     if isinstance(language, str):
         language = [language]
 
-    tokens = sum((tokenizer.text_to_ids(text_, lang_) for text_, lang_ in zip(text, language)), start=[])
+    if text is not None:
+        tokens = sum((tokenizer.text_to_ids(text_, lang_) for text_, lang_ in zip(text, language)), start=[])
+    else:
+        tokens = None  # create prompt for inference
 
     # bos
     prompted_tokens = [tokenizer.bos_id]
 
-    if len(tokens) == 0:
+    if tokens is not None and len(tokens) == 0:
         # no speech token
         prompted_tokens.append(tokenizer.nospeech_id)
     else:
@@ -201,9 +219,11 @@ def canary_prompt(tokenizer: CanaryTokenizer, text, language, source_language, t
         else:
             raise ValueError(f"Unknown value for key 'pnc': {pnc}")
 
-        # text
-        prompted_tokens.extend(tokens)
+        # text (only in training)
+        if tokens is not None:
+            prompted_tokens.extend(tokens)
 
-    # eos
-    prompted_tokens.append(tokenizer.eos_id)
+    # eos (only in training)
+    if tokens is not None:
+        prompted_tokens.append(tokenizer.eos_id)
     return prompted_tokens

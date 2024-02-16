@@ -246,8 +246,9 @@ def test_dataloader_from_nemo_manifest(nemo_manifest_path: Path):
             "batch_duration": 4.0,  # seconds
             "quadratic_duration": 15.0,  # seconds
             "shuffle_buffer_size": 10,
-            "buffer_size": 100,
+            "bucket_buffer_size": 100,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -288,6 +289,7 @@ def test_dataloader_from_nemo_manifest_has_custom_fields(nemo_manifest_path: Pat
             "batch_duration": 4.0,  # seconds
             "shuffle_buffer_size": 10,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -322,6 +324,7 @@ def test_dataloader_from_tarred_nemo_manifest(nemo_tarred_manifest_path: tuple[s
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -368,6 +371,7 @@ def test_dataloader_from_tarred_nemo_manifest_weighted_combination(nemo_tarred_m
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -399,6 +403,7 @@ def test_dataloader_from_tarred_nemo_manifest_multi(nemo_tarred_manifest_path_mu
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -446,6 +451,7 @@ def test_dataloader_from_tarred_nemo_manifest_multi_max_open_streams(nemo_tarred
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -475,6 +481,7 @@ def test_dataloader_from_tarred_nemo_manifest_concat(nemo_tarred_manifest_path: 
             "drop_last": False,
             "shuffle_buffer_size": 10,
             "seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -534,7 +541,7 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_unweighted(
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
-            "shar_seed": 0,
+            "shard_seed": 0,
         }
     )
 
@@ -587,7 +594,7 @@ def test_dataloader_from_lhotse_shar_cuts_combine_datasets_weighted(
             "shuffle_buffer_size": 10,
             "bucket_buffer_size": 100,
             "seed": 0,
-            "shar_seed": 0,
+            "shard_seed": 0,
         }
     )
 

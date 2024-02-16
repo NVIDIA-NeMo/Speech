@@ -364,7 +364,7 @@ class ASRTarredDatasetBuilder:
                 new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
                 with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
                     for entry in manifest:
-                        json.dump(entry, m2)
+                        json.dump(entry, m2, ensure_ascii=False)
                         m2.write('\n')
 
         # Flatten the list of list of entries to a list of entries
@@ -377,7 +377,7 @@ class ASRTarredDatasetBuilder:
         new_manifest_path = os.path.join(target_dir, 'tarred_audio_manifest.json')
         with open(new_manifest_path, 'w', encoding='utf-8') as m2:
             for entry in new_entries:
-                json.dump(entry, m2)
+                json.dump(entry, m2, ensure_ascii=False)
                 m2.write('\n')
 
         # Write metadata (default metadata for new datasets)
@@ -555,7 +555,7 @@ class ASRTarredDatasetBuilder:
                 new_manifest_shard_path = os.path.join(sharded_manifests_dir, f'manifest_{shard_id}.json')
                 with open(new_manifest_shard_path, 'w', encoding='utf-8') as m2:
                     for entry in manifest:
-                        json.dump(entry, m2)
+                        json.dump(entry, m2, ensure_ascii=False)
                         m2.write('\n')
 
         # Flatten the list of list of entries to a list of entries
@@ -574,12 +574,12 @@ class ASRTarredDatasetBuilder:
         with open(new_manifest_path, 'w', encoding='utf-8') as m2:
             # First write all the entries of base manifest
             for entry in base_entries:
-                json.dump(entry, m2)
+                json.dump(entry, m2, ensure_ascii=False)
                 m2.write('\n')
 
             # Finally write the new entries
             for entry in new_entries:
-                json.dump(entry, m2)
+                json.dump(entry, m2, ensure_ascii=False)
                 m2.write('\n')
 
         # Preserve historical metadata
@@ -679,24 +679,12 @@ class ASRTarredDatasetBuilder:
                 to_write = base + "-sub" + str(count[squashed_filename]) + ext
                 count[squashed_filename] += 1
 
+            # Carry over every key in the entry, override audio_filepath and shard_id
             new_entry = {
+                **entry,
                 'audio_filepath': to_write,
-                'duration': entry['duration'],
                 'shard_id': shard_id,  # Keep shard ID for recordkeeping
             }
-
-            if 'label' in entry:
-                new_entry['label'] = entry['label']
-
-            if 'text' in entry:
-                new_entry['text'] = entry['text']
-
-            if 'offset' in entry:
-                new_entry['offset'] = entry['offset']
-
-            if 'lang' in entry:
-                new_entry['lang'] = entry['lang']
-
             new_entries.append(new_entry)
 
         tar.close()

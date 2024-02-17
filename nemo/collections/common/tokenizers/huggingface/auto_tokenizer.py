@@ -122,9 +122,6 @@ class AutoTokenizer(TokenizerSpec):
             if token is not None and token not in self.tokenizer.get_vocab():
                 new_tokens_in_vocab.append(token)
 
-        # value is required for megatron-core
-        self.unique_identifiers = OrderedDict()
-
         if len(new_tokens_in_vocab) > 0:
             """
             Special tokens that were not previously included in the tokenizer's vocabulary file will be added to 

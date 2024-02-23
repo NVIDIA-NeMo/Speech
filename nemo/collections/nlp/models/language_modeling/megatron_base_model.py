@@ -27,6 +27,7 @@ from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
 from pytorch_lightning.trainer.connectors.logger_connector.fx_validator import _FxValidator
 from pytorch_lightning.trainer.trainer import Trainer
+from pytorch_lightning.utilities.exceptions import MisconfigurationException
 
 from nemo.collections.nlp.models.nlp_model import NLPModel
 from nemo.collections.nlp.modules.common.megatron.attention import HAVE_FLASH_ATTENTION
@@ -322,9 +323,37 @@ class MegatronBaseModel(NLPModel):
         """
         Reconfigure trainer.limit_val_batches for pretraining
         """
+        # Override limit_val_batches to be a multiple of num microbatches and so there are limit_val_batches//num_micro_batches num of global batches
         if isinstance(self.trainer.limit_val_batches, int):
-            # Override limit_val_batches to be a multiple of num microbatches and so there are limit_val_batches//num_micro_batches num of global batches
             self.trainer.limit_val_batches *= get_num_microbatches()
+        else:
+            assert isinstance(self.trainer.limit_val_batches, float)
+            # Don't reconfigure if limit_val_batches is 0.0
+            if self.trainer.limit_val_batches == 0.0:
+                return
+            # len(self._validation_dl) returns len as num of microbatches
+            val_len_in_micro_batches = len(self._validation_dl)
+            if self._validation_ds is not None and len(self._validation_dl) != float("inf"):
+                if self.trainer.limit_val_batches == 1.0:
+                    self.trainer.limit_val_batches = val_len_in_micro_batches
+                else:
+                    limit_val_micro_batches = int(val_len_in_micro_batches * self.trainer.limit_val_batches)
+                    if limit_val_micro_batches == 0 and self.trainer.limit_val_batches > 0.0:
+                        min_percentage = 1.0 / len(self._validation_dl)
+                        raise MisconfigurationException(
+                            f"You requested to check {self.trainer.limit_val_batches} of the val_dataloader but"
+                            f" {self.trainer.limit_val_batches} * {len(self._validation_dl)} < 1. Please increase the"
+                            f" `limit_val_batches` argument. Try at least"
+                            f" `limit_val_batches={min_percentage}`"
+                        )
+                    # Make sure trainer.limit_val_batches is a multiple of num of microbatches
+                    if limit_val_micro_batches < get_num_microbatches():
+                        self.trainer.limit_val_batches = get_num_microbatches()
+                    else:
+                        self.trainer.limit_val_batches = (
+                            limit_val_micro_batches - limit_val_micro_batches % get_num_microbatches()
+                        )
+
         # Override num sanity steps to be a multiple of num of microbatches
         self.trainer.num_sanity_val_steps *= get_num_microbatches()
 

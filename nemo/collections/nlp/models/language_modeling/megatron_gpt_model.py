@@ -1176,15 +1176,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         return loss
 
     def build_train_valid_test_datasets(self):
-        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
-        self._reconfigure_val_batches()
-        logging.info('Building GPT datasets.')
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
+        logging.info('Building GPT datasets.')
         global_batch_size = self.cfg.global_batch_size
         max_train_steps = self.trainer.max_steps
-        eval_iters = (max_train_steps // self.trainer.val_check_interval + 1) * self.trainer.limit_val_batches
-        test_iters = self.trainer.limit_test_batches
 
         # Add extra FIM tokens to tokenizer
         if self.cfg.data.get('add_fim', False) and self.cfg.tokenizer.library == 'megatron':
@@ -1192,16 +1188,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             fim_tokens = [fim_tokens.prefix, fim_tokens.middle, fim_tokens.suffix, fim_tokens.pad, fim_tokens.eod]
             self.tokenizer.add_special_tokens({'additional_special_tokens': fim_tokens})
 
-        train_valid_test_num_samples = [
-            max_train_steps * global_batch_size,
-            eval_iters * global_batch_size,
-            test_iters * global_batch_size,
-        ]
-
-        if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
-            train_valid_test_num_samples[
-                1
-            ] = 1  # This is to make sure we only have one epoch on every validation iteration
+        # The line below exploits a quirk in mcore dataset construction, to make number of epochs for validation and test equal to 1
+        # The mcore dataset implementation uses the number N we provide via train_valid_test_num_samples to derive parameter E such that
+        # E = argmin_e e * N_d >= N, or equivalently E = ceildiv(N, N_d)
+        # Where N_d is the total number of samples in a dataset (files), and N is the requested number of samples (provided for every split in the list below).
+        # Setting N = 1 we force E to be 1 as well
+        train_valid_test_num_samples = [max_train_steps * global_batch_size, 1, 1]
 
         mock_dataset = self.cfg.data.get("mock_dataset", False)
         kwargs = {
@@ -1329,6 +1321,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.setup_training_data(self.cfg.data)
             self.setup_validation_data(self.cfg.data)
             self.setup_test_data(self.cfg.data)
+            # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+            self._reconfigure_val_batches()
 
         if stage == 'fit':
             self.initialize_last_rank_embeddings()

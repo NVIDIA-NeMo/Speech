@@ -16,6 +16,8 @@ from typing import Dict
 
 from omegaconf import DictConfig
 
+from nemo.utils import logging
+
 try:
     from nemo.collections.nlp.modules.common.megatron.adapters.mcore_mixins import (
         MCoreGPTEmbeddingMixin,
@@ -148,6 +150,12 @@ class LoraPEFTConfig(PEFTConfig):
                 )
                 name_key_to_cfg[AdapterName.LORA_4HtoH_ADAPTER] = adapter_cfg
                 name_key_to_mcore_mixins[AdapterName.LORA_4HtoH_ADAPTER] = [("mlp", MCoreMLPMixin)]
+            else:
+                logging.error(
+                    f"Unrecognized target_module string: {module}.\n"
+                    f"The possible options are: {list(PEFT_MODULE_MAP.values())}"
+                )
+                exit(1)
 
         self.name_key_to_mcore_mixins = name_key_to_mcore_mixins
         super().__init__(lora_cfg, name_key_to_cfg)

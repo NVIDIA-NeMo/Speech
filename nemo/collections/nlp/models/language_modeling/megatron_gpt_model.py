@@ -755,7 +755,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # (@adithyare) adapter training now extends MegatronGPTModel
             # so we have to add this check here to ensure we do not
             # perform all_reduce when grad is None.
-            # grad can be None when performing PeFT training.
+            # grad can be None when performing PEFT training.
             if sequence_parallel_param and param.requires_grad:
                 if self.megatron_amp_O2:
                     grad = param.main_grad
@@ -775,7 +775,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 self._append_sequence_parallel_module_grads(module, grads)
         else:
             self._append_sequence_parallel_module_grads(self.model, grads)
-
+        if not grads:
+            # may be empty for PEFT training
+            return
         coalesced = torch._utils._flatten_dense_tensors(grads)
         torch.distributed.all_reduce(coalesced, group=parallel_state.get_tensor_model_parallel_group())
         for buf, synced in zip(grads, torch._utils._unflatten_dense_tensors(coalesced, grads)):

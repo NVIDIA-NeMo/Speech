@@ -43,6 +43,10 @@ except (ImportError, ModuleNotFoundError):
 try:
     from megatron.core import ModelParallelConfig
     from megatron.core.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+    from megatron.core.tensor_parallel.mappings import (
+        gather_from_sequence_parallel_region,
+        scatter_to_sequence_parallel_region,
+    )
 
     HAVE_MEGATRON_CORE = True
 
@@ -147,11 +151,13 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         self.activation = activation_registry[activation]()
         self.norm_position = norm_position
         self.dim = dim
-
+        self.input_is_parallel = input_is_parallel
         # megatron_gpt_peft_models will provide this arg, but deprecated ones do not.
         # in case this arg is not provided, use the dummy default config.
         if model_parallel_config is None:
             model_parallel_config = ModelParallelConfig()
+        self._sequence_parallel = model_parallel_config.sequence_parallel
+        model_parallel_config.sequence_parallel = False  # SP is irrelevant for the lora linear layer
 
         if input_is_parallel:
             self.linear_in = RowParallelLinear(
@@ -219,6 +225,9 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         # Setup adapter strategy
         self.setup_adapter_strategy(adapter_mixin_strategies.ReturnResultAdapterStrategy())
 
+        # revert config change in case it is read elsewhere
+        model_parallel_config.sequence_parallel = self._sequence_parallel
+
     def _get_init_fn(self, init_method: str):
         if init_method == 'xavier':
             init_fn = init.xavier_normal_
@@ -240,10 +249,24 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
 
         if self.norm_position == 'pre':
             x = self.layer_norm(x)
+        if self._sequence_parallel and not self.input_is_parallel:
+            # for attention_qkv and linear_fc1
+            # layernorm before lora is impacted by sequence parallel,
+            # hence seq dim need to be gathered right before lora linear layers
+            # this function also handles the backward pass correctly
+            x = gather_from_sequence_parallel_region(x)
 
         x, _ = self.linear_in(x)  # (@adithyare) ColumnLinear returns output and bias, we are ignoring the bias term.
         x = self.activation(x)
         x, _ = self.linear_out(x)
+
+        if self._sequence_parallel and self.input_is_parallel:
+            # for attention_dense and linear_fc2
+            # layernorm after lora is impacted by sequence parallel,
+            # hence seq dim need to be scattered right after lora linear layers
+            # this function also handles the backward pass correctly
+            x = scatter_to_sequence_parallel_region(x)
+
         if self.norm_position == 'post':
             x = self.layer_norm(x)
 

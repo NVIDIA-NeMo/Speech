@@ -331,6 +331,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.get_attention_mask_from_fusion = self.cfg.get('get_attention_mask_from_fusion', True)
         self.initialize_ub = self.cfg.get('ub_tp_comm_overlap', False)
         self.log_train_loss = bool(int(os.getenv("NEMO_LOG_TRAIN_LOSS", 1)))
+        self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
         self.loss_broadcast_src_rank = None
 
         self.inference_params = None
@@ -689,6 +690,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # when using pipeline parallelism the first and last stage must keep embeddings in sync
             self.allreduce_first_last_embeddings()
             self.megatron_timer_stop('allreduce_first_last_embeddings')
+
+        if self.log_memory_usage:
+            mem_reserved = torch.cuda.max_memory_reserved()
+            self.log(
+                'peak_memory_usage', mem_reserved, prog_bar=True, rank_zero_only=True, batch_size=1,
+            )
 
         ## logging
         if self.log_train_loss:

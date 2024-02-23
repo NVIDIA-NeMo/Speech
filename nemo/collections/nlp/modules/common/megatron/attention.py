@@ -415,7 +415,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             mixed_x_layer, _ = self.query_key_value(hidden_states)
             if self.is_adapter_available():
                 lora_kqv_adapter = self.get_adapter_module(AdapterName.LORA_KQV_ADAPTER)
-                if lora_kqv_adapter:
+                if lora_kqv_adapter and self.adapter_cfg[AdapterName.LORA_KQV_ADAPTER]['enabled']:
                     lora_mixed_x_layer = lora_kqv_adapter(hidden_states)
                     mixed_x_layer = mixed_x_layer + lora_mixed_x_layer
 
@@ -437,7 +437,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             mixed_kv_layer, _ = self.key_value(encoder_output)
             if self.is_adapter_available():
                 lora_kv_adapter = self.get_adapter_module(AdapterName.LORA_KV_ADAPTER)
-                if lora_kv_adapter:
+                if lora_kv_adapter and self.adapter_cfg[AdapterName.LORA_KV_ADAPTER]['enabled']:
                     lora_mixed_kv_layer = lora_kv_adapter(encoder_output)
                     mixed_kv_layer = mixed_kv_layer + lora_mixed_kv_layer
 
@@ -459,7 +459,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             query_layer, _ = self.query(hidden_states)
             if self.is_adapter_available():
                 lora_q_adapter = self.get_adapter_module(AdapterName.LORA_Q_ADAPTER)
-                if lora_q_adapter:
+                if lora_q_adapter and self.adapter_cfg[AdapterName.LORA_Q_ADAPTER]['enabled']:
                     lora_q_layer = lora_q_adapter(hidden_states)
                     query_layer = query_layer + lora_q_layer
             # [sq, b, hp] --> [sq, b, np, hn]
@@ -472,11 +472,11 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         if self.is_adapter_available():
             key_infused_adapter = self.get_adapter_module(AdapterName.KEY_INFUSED)
             value_infused_adapter = self.get_adapter_module(AdapterName.VALUE_INFUSED)
-            if key_infused_adapter:
+            if key_infused_adapter and self.adapter_cfg[AdapterName.KEY_INFUSED]['enabled']:
                 assert value_infused_adapter is not None, "Expected value_infused_adapter not found!"
                 kls = key_layer.shape
                 key_layer = key_infused_adapter(key_layer.reshape(kls[0], kls[1], -1)).reshape(kls)
-            if value_infused_adapter:
+            if value_infused_adapter and self.adapter_cfg[AdapterName.VALUE_INFUSED]['enabled']:
                 assert key_infused_adapter is not None, "Expected key_infused_adapter not found!"
                 vls = value_layer.shape
                 value_layer = value_infused_adapter(value_layer.reshape(vls[0], vls[1], -1)).reshape(vls)
@@ -574,7 +574,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         output, bias = self.dense(context_layer)
         if self.is_adapter_available():
             lora_dense_adapter = self.get_adapter_module(AdapterName.LORA_DENSE_ATTENTION_ADAPTER)
-            if lora_dense_adapter:
+            if lora_dense_adapter and self.adapter_cfg[AdapterName.LORA_DENSE_ATTENTION_ADAPTER]['enabled']:
                 lora_dense_output = lora_dense_adapter(context_layer)
                 output = output + lora_dense_output
 

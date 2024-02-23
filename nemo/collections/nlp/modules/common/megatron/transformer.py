@@ -538,7 +538,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
 
             if self.is_adapter_available():
                 adapter_1 = self.get_adapter_module(AdapterName.PRE_ATTN_ADAPTER)
-                if adapter_1:
+                if adapter_1 and self.adapter_cfg[AdapterName.PRE_ATTN_ADAPTER]['enabled']:
                     attention_output = (
                         adapter_1(attention_output) + attention_output
                     )  # simple adapter call with residual connection
@@ -615,7 +615,7 @@ class ParallelTransformerLayer_(MegatronModule, adapter_mixins.AdapterModuleMixi
         if self.is_adapter_available():
             # TODO: (@adithyre) was able to move adapter_2 back to the end of the transformer after ptl 1.7 update.
             adapter_2 = self.get_adapter_module(AdapterName.POST_ATTN_ADAPTER)
-            if adapter_2:
+            if adapter_2 and self.adapter_cfg[AdapterName.POST_ATTN_ADAPTER]['enabled']:
                 mlp_output = adapter_2(mlp_output) + mlp_output  # simple adapter call with residual connection
 
         residual = layernorm_input

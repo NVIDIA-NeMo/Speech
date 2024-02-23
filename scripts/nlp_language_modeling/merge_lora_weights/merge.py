@@ -91,7 +91,8 @@ def load_lora(lora_nemo, tp):
 def fix_for_O2(state_dict):
     new_state_dict = {}
     for k, v in state_dict.items():
-        new_state_dict[k.replace('model.language_model', 'model.module.language_model')] = v
+        if "model.module." not in k:
+            new_state_dict[k.replace('model.', 'model.module.')] = v
     return new_state_dict
 
 
@@ -110,22 +111,61 @@ def merge(
         curr_rank: current tp rank of the base model which is being merged with Lora.
         mcore: whether the model uses megatron core.
     """
+    mcore_layer_to_lora = {}
+    mcore_layer_to_lora["attention_qkv"] = {
+        "base_model_layer": "self_attention.linear_qkv.weight",
+        "lora_in": "self_attention.adapter_layer.lora_kqv_adapter.linear_in.weight",
+        "lora_out": "self_attention.adapter_layer.lora_kqv_adapter.linear_out.weight",
+    }
+    mcore_layer_to_lora["attention_dense"] = {
+        "base_model_layer": "self_attention.linear_proj.weight",
+        "lora_in": "self_attention.adapter_layer.lora_dense_attention_adapter.linear_in.weight",
+        "lora_out": "self_attention.adapter_layer.lora_dense_attention_adapter.linear_out.weight",
+    }
+    mcore_layer_to_lora["mlp_fc1"] = {
+        "base_model_layer": "mlp.linear_fc1.weight",
+        "lora_in": "mlp.adapter_layer.lora_hto4h_adapter.linear_in.weight",
+        "lora_out": "mlp.adapter_layer.lora_hto4h_adapter.linear_out.weight",
+    }
+    mcore_layer_to_lora["mlp_fc2"] = {
+        "base_model_layer": "mlp.linear_fc2.weight",
+        "lora_in": "mlp.adapter_layer.lora_4htoh_adapter.linear_in.weight",
+        "lora_out": "mlp.adapter_layer.lora_4htoh_adapter.linear_out.weight",
+    }
 
-    for nl in range(num_layers):
-        if mcore:
-            key_self_attn_kqv = f'model.decoder.layers.{nl}.self_attention.linear_qkv.weight'
-            key_lora_in = f'model.decoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_in.weight'
-            key_lora_out = f'model.decoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_out.weight'
-        else:
+    if mcore:
+        for nl in range(num_layers):
+            for key in mcore_layer_to_lora.keys():
+                key_base = f'model.decoder.layers.{nl}.{mcore_layer_to_lora[key]["base_model_layer"]}'
+                key_lora_in = f'model.decoder.layers.{nl}.{mcore_layer_to_lora[key]["lora_in"]}'
+                key_lora_out = f'model.decoder.layers.{nl}.{mcore_layer_to_lora[key]["lora_out"]}'
+                if key_lora_in in lora_state_dict[0] and key_lora_out in lora_state_dict[0]:
+                    if key in ["attention_qkv", 'mlp_fc1']:
+                        wt_lora_in = torch.cat([lora_state_dict[_tp][key_lora_in] for _tp in range(tp)], dim=0).float()
+                    else:
+                        wt_lora_in = torch.cat([lora_state_dict[_tp][key_lora_in] for _tp in range(tp)], dim=1).float()
+
+                    wt_lora_out = torch.cat([lora_state_dict[_tp][key_lora_out] for _tp in range(tp)], dim=0).float()
+                    wt_base = base_model_state_dict[key_base]
+                    wt_lora = wt_lora_out @ wt_lora_in
+                    base_model_state_dict[key_base] = (wt_base.float() + wt_lora.to(wt_base.device)).type_as(wt_base)
+                    print(f'merging for weight {key_base}')
+    else:
+        logging.warning("Non-mcore model only supports merging lora weights for attention_qkv layers")
+        for nl in range(num_layers):
             key_self_attn_kqv = f'model.language_model.encoder.layers.{nl}.self_attention.query_key_value.weight'
             key_lora_in = f'model.language_model.encoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_in.weight'
             key_lora_out = f'model.language_model.encoder.layers.{nl}.self_attention.adapter_layer.lora_kqv_adapter.linear_out.weight'
-        wt_lora_in = torch.cat([lora_state_dict[_tp][key_lora_in] for _tp in range(tp)], dim=0)
-        wt_lora_out = torch.cat([lora_state_dict[_tp][key_lora_out] for _tp in range(tp)], dim=0)
-        wt_self_attn = base_model_state_dict[key_self_attn_kqv]
-        wt_lora = wt_lora_out @ wt_lora_in
-        base_model_state_dict[key_self_attn_kqv] = wt_self_attn + wt_lora.type_as(wt_self_attn)
-        print("merging for weight", key_self_attn_kqv)
+
+            wt_lora_in = torch.cat([lora_state_dict[_tp][key_lora_in] for _tp in range(tp)], dim=0).float()
+            wt_lora_out = torch.cat([lora_state_dict[_tp][key_lora_out] for _tp in range(tp)], dim=0).float()
+            wt_self_attn = base_model_state_dict[key_self_attn_kqv]
+            wt_lora = wt_lora_out @ wt_lora_in
+            base_model_state_dict[key_self_attn_kqv] = (
+                wt_self_attn.float() + wt_lora.to(wt_self_attn.device)
+            ).type_as(wt_self_attn)
+            print("merging for weight", key_self_attn_kqv)
+
     return base_model_state_dict
 
 
@@ -214,6 +254,9 @@ def main(cfg) -> None:
     # load the merged_weights back into the base model, for this current rank.
     if model.cfg.megatron_amp_O2:
         merged_weights = fix_for_O2(merged_weights)
+    model.cfg.use_cpu_initialization = (
+        False  # set it back to False otherwise the merged model won't be loaded properly for futher tuning
+    )
     model.load_state_dict(merged_weights)
 
     if cfg.trainer.accelerator != 'cpu' and model.global_rank == 0:

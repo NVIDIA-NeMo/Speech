@@ -222,7 +222,7 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         intermediate_parallel, bias_parallel = self.dense_h_to_4h(hidden_states)
         if self.is_adapter_available():
             lora_dense_h_to_4h_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
-            if lora_dense_h_to_4h_adapter:
+            if lora_dense_h_to_4h_adapter and self.adapter_cfg[AdapterName.LORA_Hto4H_ADAPTER]['enabled']:
                 lora_intermediate_parallel = lora_dense_h_to_4h_adapter(hidden_states)
                 intermediate_parallel = intermediate_parallel + lora_intermediate_parallel
 
@@ -270,7 +270,7 @@ class ParallelMLP(MegatronModule, adapter_mixins.AdapterModuleMixin):
         output, output_bias = self.dense_4h_to_h(intermediate_parallel)
         if self.is_adapter_available():
             lora_dense_4h_to_h_adapter = self.get_adapter_module(AdapterName.LORA_4HtoH_ADAPTER)
-            if lora_dense_4h_to_h_adapter:
+            if lora_dense_4h_to_h_adapter and self.adapter_cfg[AdapterName.LORA_4HtoH_ADAPTER]['enabled']:
                 lora_output = lora_dense_4h_to_h_adapter(intermediate_parallel)
                 output = output + lora_output
         return output, output_bias

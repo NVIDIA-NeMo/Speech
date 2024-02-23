@@ -551,7 +551,7 @@ class MegatronTokenLevelEncoderDecoderModule(MegatronModule, adapter_mixins.Adap
                     ptuning_adapter = self.get_adapter_module(AdapterName.PTUNING_ADAPTER)
                     v = ptuning_adapter.virtual_tokens
                     if (
-                        ptuning_adapter and _sq >= v
+                        ptuning_adapter and self.adapter_cfg[AdapterName.PTUNING_ADAPTER]['enabled'] and _sq >= v
                     ):  # The sequence should be longer the v to insert virtual embeddings.
                         virtual_embeddings = ptuning_adapter(_bs)
                         enc_input = enc_input[

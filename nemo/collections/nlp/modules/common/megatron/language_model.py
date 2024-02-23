@@ -764,7 +764,9 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
                 _sq, _bs, _hs = encoder_input.size()
                 ptuning_adapter = self.get_adapter_module(AdapterName.PTUNING_ADAPTER)
                 v = ptuning_adapter.virtual_tokens
-                if ptuning_adapter and _sq >= v:  # The sequence should be longer the v to insert virtual embeddings.
+                if (
+                    ptuning_adapter and self.adapter_cfg[AdapterName.PTUNING_ADAPTER]['enabled'] and _sq >= v
+                ):  # The sequence should be longer the v to insert virtual embeddings.
                     virtual_embeddings = ptuning_adapter(_bs)
                     encoder_input = encoder_input[
                         v:, :, :

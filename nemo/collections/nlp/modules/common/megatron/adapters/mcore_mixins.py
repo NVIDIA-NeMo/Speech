@@ -93,7 +93,7 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         # LoRA logic
         if self.is_adapter_available():
             lora_kqv_adapter = self.get_adapter_module(AdapterName.LORA_KQV_ADAPTER)
-            if lora_kqv_adapter:
+            if lora_kqv_adapter and self.adapter_cfg[AdapterName.LORA_KQV_ADAPTER]['enabled']:
                 if isinstance(self.linear_qkv, TELayerNormColumnParallelLinear):
                     lora_mixed_qkv = lora_kqv_adapter(layernorm_output)
                 elif isinstance(self.linear_qkv, TEColumnParallelLinear):
@@ -138,11 +138,11 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         if self.is_adapter_available():
             key_infused_adapter = self.get_adapter_module(AdapterName.KEY_INFUSED)
             value_infused_adapter = self.get_adapter_module(AdapterName.VALUE_INFUSED)
-            if key_infused_adapter:
+            if key_infused_adapter and self.adapter_cfg[AdapterName.KEY_INFUSED]['enabled']:
                 assert value_infused_adapter is not None, "Expected value_infused_adapter not found!"
                 kls = key.shape
                 key = key_infused_adapter(key.reshape(kls[0], kls[1], -1)).reshape(kls).to(query.dtype)
-            if value_infused_adapter:
+            if value_infused_adapter and self.adapter_cfg[AdapterName.VALUE_INFUSED]['enabled']:
                 assert key_infused_adapter is not None, "Expected key_infused_adapter not found!"
                 vls = value.shape
                 value = value_infused_adapter(value.reshape(vls[0], vls[1], -1)).reshape(vls).to(query.dtype)
@@ -229,7 +229,7 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         # LoRA logic
         if self.is_adapter_available():
             lora_linear_proj_adapter = self.get_adapter_module(AdapterName.LORA_DENSE_ATTENTION_ADAPTER)
-            if lora_linear_proj_adapter:
+            if lora_linear_proj_adapter and self.adapter_cfg[AdapterName.LORA_DENSE_ATTENTION_ADAPTER]['enabled']:
                 lora_output = lora_linear_proj_adapter(core_attn_out)
                 output = output + lora_output
 
@@ -252,7 +252,7 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
         # LoRA logic
         if self.is_adapter_available():
             lora_linear_fc1_adapter = self.get_adapter_module(AdapterName.LORA_Hto4H_ADAPTER)
-            if lora_linear_fc1_adapter:
+            if lora_linear_fc1_adapter and self.adapter_cfg[AdapterName.LORA_Hto4H_ADAPTER]['enabled']:
                 lora_output = lora_linear_fc1_adapter(hidden_states)
                 intermediate_parallel = intermediate_parallel + lora_output
 
@@ -283,7 +283,7 @@ class MCoreMLPMixin(MLP, MCoreAdapterModuleMixin):
         # LoRA logic
         if self.is_adapter_available():
             lora_linear_fc2_adapter = self.get_adapter_module(AdapterName.LORA_4HtoH_ADAPTER)
-            if lora_linear_fc2_adapter:
+            if lora_linear_fc2_adapter and self.adapter_cfg[AdapterName.LORA_4HtoH_ADAPTER]['enabled']:
                 lora_output = lora_linear_fc2_adapter(intermediate_parallel)
                 output = output + lora_output
         return output, output_bias
@@ -303,7 +303,9 @@ class MCoreGPTEmbeddingMixin(LanguageModelEmbedding, MCoreAdapterModuleMixin):
             _sq, _bs, _hs = encoder_input.size()
             ptuning_adapter = self.get_adapter_module(AdapterName.PTUNING_ADAPTER)
             v = ptuning_adapter.virtual_tokens
-            if ptuning_adapter and _sq >= v:  # The sequence should be longer the v to insert virtual embeddings.
+            if (
+                ptuning_adapter and self.adapter_cfg[AdapterName.PTUNING_ADAPTER]['enabled'] and _sq >= v
+            ):  # The sequence should be longer the v to insert virtual embeddings.
                 virtual_embeddings = ptuning_adapter(_bs)
                 encoder_input = encoder_input[
                     v:, :, :
@@ -349,7 +351,7 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
         # adapter logic
         if self.is_adapter_available():
             adapter_1 = self.get_adapter_module(AdapterName.PRE_ATTN_ADAPTER)
-            if adapter_1:
+            if adapter_1 and self.adapter_cfg[AdapterName.PRE_ATTN_ADAPTER]['enabled']:
                 attention_output, bias = attention_output_with_bias
                 attention_output = (
                     adapter_1(attention_output) + attention_output
@@ -399,7 +401,7 @@ class MCoreTransformerLayerMixin(TransformerLayer, MCoreAdapterModuleMixin):
         # adapter logic
         if self.is_adapter_available():
             adapter_2 = self.get_adapter_module(AdapterName.POST_ATTN_ADAPTER)
-            if adapter_2:
+            if adapter_2 and self.adapter_cfg[AdapterName.POST_ATTN_ADAPTER]['enabled']:
                 mlp_output, bias = mlp_output_with_bias
                 mlp_output = adapter_2(mlp_output) + mlp_output  # simple adapter call with residual connection
                 mlp_output_with_bias = (mlp_output, bias)

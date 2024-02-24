@@ -13,11 +13,10 @@
 # limitations under the License.
 
 import logging
-import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import torch
 from lhotse import CutSet
@@ -29,6 +28,8 @@ from lhotse.dataset import (
     IterableDatasetWrapper,
     make_worker_init_fn,
 )
+from lhotse.lazy import LazyFlattener
+from lhotse.utils import fastcopy
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
@@ -129,6 +130,9 @@ def get_lhotse_dataloader_from_config(
 
     # Duration filtering, same as native NeMo dataloaders.
     cuts = cuts.filter(DurationFilter(config.min_duration, config.max_duration))
+
+    # Expands cuts if multiple translations are provided.
+    cuts = CutSet(LazyFlattener(cuts.map(_flatten_alt_text)))
 
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
@@ -279,3 +283,19 @@ def _normalize_loudness(cuts: CutSet, db_norm: float) -> CutSet:
 
 def _merge_supervisions(cuts: CutSet) -> CutSet:
     return cuts.merge_supervisions()
+
+
+def _flatten_alt_text(cut) -> list:
+    ans = [cut]
+    if cut.custom is None or cut.custom.get("alt_text") is None:
+        return ans
+    cut = cut.move_to_memory(audio_format="wav")  # performs I/O once and holds audio in memory from now on
+    # Popping to ease eyesight on debug.
+    paired_text = cut.custom.pop("alt_text")
+    for data in paired_text.values():
+        # Copy to avoid lazy dataloading issues
+        data = data.copy()
+        text_instance = cut.map_supervisions(lambda s: fastcopy(s, text=data["text"], language=data["lang"]))
+        text_instance.custom = {"text": data.pop("text"), "lang": data.pop("lang"), **data}
+        ans.append(text_instance)
+    return ans

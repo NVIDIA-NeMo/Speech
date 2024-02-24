@@ -13,6 +13,14 @@ name: "FastConformer-Transformer-MultiTask"
 #  may help (or even be required to) stabilize the training.
 init_from_nemo_model: null
 
+# If using example training script, below will be used to instantiate spl_tokens tokenizer.
+# Similar can be done by calling CanaryTokenizer.build_special_tokenizer(tokens, output_dir).
+# If a tokenizer exists in dir, will skip building and use already built tokenizer.
+spl_tokens:
+  model_dir: ???
+  tokens: ["translate", "transcribe", "en", "es", "de", "fr"]
+  force_rebuild: False  # Set to True to build new tokenizer each time.
+
 model:
   sample_rate: 16000
   label_smoothing: 0.0
@@ -75,7 +83,7 @@ model:
     type: agg  # Can be either bpe (SentencePiece tokenizer) or wpe (WordPiece tokenizer) or `agg` for aggregate tokenizers
     langs:
       spl_tokens: # special tokens model
-        dir: ???
+        dir: null # Passed in training script
         type: bpe
       en: # English tokenizer (example, replace with whichever language you would like or add tokenizers to add tokenizer for additional languages) 
         dir: ???

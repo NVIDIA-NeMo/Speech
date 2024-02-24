@@ -22,6 +22,7 @@ from omegaconf import DictConfig
 from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
 from nemo.collections.asr.parts.submodules import multitask_beam_decoding as beam_decode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.common.tokenizers import CanaryTokenizer
 
 
 @pytest.fixture()
@@ -307,3 +308,22 @@ class TestEncDecMultiTaskModel:
             outputs = asr_model.transcribe(audio, batch_size=1)
         # assert len(outputs) == 1
         # assert isinstance(outputs[0], str)
+
+    @pytest.mark.unit
+    def test_build_tokenizer(self, asr_model, test_data_dir):
+        # Load audio file
+        task_tokens = ["ast", "asr"]
+        lang_tokens = ["en", "es", "de", "fr"]
+        tokens = task_tokens + lang_tokens
+        spl_tokenizer_from_build = CanaryTokenizer.build_special_tokenizer(tokens, test_data_dir)
+
+        tokenizer_cfg = {'dir': os.path.join(test_data_dir), 'type': 'bpe'}
+        spl_tokenizer_from_load = asr_model._make_tokenizer(tokenizer_cfg, "spl_tokens")[0]
+
+        tokens += ["<|nospeech|>", "<pad>", "<|endoftext|>", "<|startoftranscript|>", "<|pnc|>", "<|nopnc|>"]
+
+        ids1 = [spl_tokenizer_from_build.tokens_to_ids(t)[0] for t in tokens]
+        ids2 = [spl_tokenizer_from_load.tokens_to_ids(t)[0] for t in tokens]
+
+        for i, j in zip(ids1, ids2):
+            assert i == j

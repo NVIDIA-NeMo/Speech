@@ -19,15 +19,16 @@ import sentencepiece as spm
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.parts.mixins import ASRBPEMixin
-from nemo.collections.common.tokenizers.canary_tokenizer import SPECIAL_TOKENS, UNUSED_SPECIAL_TOKENS, CanaryTokenizer
+from nemo.collections.common.tokenizers.canary_tokenizer import DEFAULT_TOKENS, CanaryTokenizer
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.core import Serialization
 
 
 @pytest.fixture(scope="session")
 def special_tokenizer_path(tmp_path_factory) -> str:
+    tokens = ["asr", "ast", "en", "de", "fr", "es"]
     tmpdir = tmp_path_factory.mktemp("spl_tokens")
-    CanaryTokenizer.build_special_tokenizer(tmpdir)
+    CanaryTokenizer.build_special_tokenizer(tokens, tmpdir)
     return str(tmpdir)
 
 
@@ -41,11 +42,14 @@ def lang_tokenizer_path(tmp_path_factory) -> str:
 
 
 def test_canary_tokenizer_build_special_tokenizer(tmp_path):
-    tokenizer = CanaryTokenizer.build_special_tokenizer(tmp_path)
-    expected_tokens = ["<unk>"] + SPECIAL_TOKENS + UNUSED_SPECIAL_TOKENS + ["▁"]
+    tokens = ["asr", "ast", "en", "de", "fr", "es"]
+    tokenizer = CanaryTokenizer.build_special_tokenizer(tokens, tmp_path)
+    expected_tokens = DEFAULT_TOKENS + [f"<|{t}|>" for t in tokens] + ["▁", "<unk>"]
     tokens = []
     for i in range(tokenizer.tokenizer.vocab_size()):
         tokens.append(tokenizer.tokenizer.IdToPiece(i))
+    expected_tokens.sort(), tokens.sort()
+    print(expected_tokens, tokens)
     assert expected_tokens == tokens
 
 
@@ -74,10 +78,10 @@ def test_canary_tokenizer_init_from_cfg(special_tokenizer_path, lang_tokenizer_p
     assert set(tokenizer.tokenizers_dict.keys()) == {"spl_tokens", "en"}
 
     assert isinstance(tokenizer.tokenizers_dict["spl_tokens"], SentencePieceTokenizer)
-    assert tokenizer.tokenizers_dict["spl_tokens"].vocab_size == 32
+    assert tokenizer.tokenizers_dict["spl_tokens"].vocab_size == 14
 
     assert isinstance(tokenizer.tokenizers_dict["en"], SentencePieceTokenizer)
     assert tokenizer.tokenizers_dict["en"].vocab_size == 6
 
-    assert tokenizer.text_to_ids("<|startoftranscript|>", lang_id="spl_tokens") == [31, 3]  # "_" comes first
-    assert tokenizer.text_to_ids("a", lang_id="en") == [32 + 1, 32 + 2]
+    assert tokenizer.text_to_ids("<|startoftranscript|>", lang_id="spl_tokens") == [13, 4]  # "_" comes first
+    assert tokenizer.text_to_ids("a", lang_id="en") == [14 + 1, 14 + 2]

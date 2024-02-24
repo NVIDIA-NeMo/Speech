@@ -50,13 +50,12 @@ python speech_to_text_aed.py \
 
 
 """
-
 import pytorch_lightning as pl
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models import EncDecMultiTaskModel
 from nemo.core.config import hydra_runner
-from nemo.utils import logging
+from nemo.utils import logging, model_utils
 from nemo.utils.exp_manager import exp_manager
 
 
@@ -66,6 +65,17 @@ def main(cfg):
 
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
+
+    # Check for spl tokens to create spl_tokenizer.
+    if cfg.get("spl_tokens"):
+        logging.info("Detected spl_tokens config. Building tokenizer.")
+        spl_cfg = cfg["spl_tokens"]
+        spl_tokenizer_cls = model_utils.import_class_by_path(cfg.model.tokenizer.custom_tokenizer["_target_"])
+        spl_tokenizer_cls.build_special_tokenizer(
+            spl_cfg["tokens"], spl_cfg["model_dir"], force_rebuild=spl_cfg["force_rebuild"]
+        )
+        cfg.model.tokenizer.langs.spl_tokens.dir = spl_cfg["model_dir"]
+
     aed_model = EncDecMultiTaskModel(cfg=cfg.model, trainer=trainer)
 
     # Initialize the weights of the model from another model, if provided via config

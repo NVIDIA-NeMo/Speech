@@ -12,27 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-import itertools
 import os
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
-import editdistance
 import numpy as np
 import torch
-import torch.distributed as dist
-from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
-from torchmetrics.text import SacreBLEUScore
-from tqdm.auto import tqdm
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
     PromptedAudioToTextLhotseDataset,
     get_prompt_format_fn,
 )
+from nemo.collections.asr.metrics import BLEU, WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRTranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import (
@@ -72,6 +66,23 @@ def lens_to_mask(lens, max_length):
     return mask
 
 
+def _config_check(cfg):
+    if 'tokenizer' not in cfg:
+        raise ValueError("`cfg` must have `tokenizer` config to create a tokenizer !")
+    # Assert config has "prompt_format"
+    if "prompt_format" not in cfg:
+        raise ValueError("`cfg` must have `prompt_format` config to create a multi task model !")
+    # Assert config has `model_defaults`
+    if 'model_defaults' not in cfg:
+        raise ValueError("`cfg` must have `model_defaults` config to create a model !")
+    if "asr_enc_hidden" not in cfg.model_defaults:
+        raise ValueError("`cfg.model_defaults` must have `asr_enc_hidden` key !")
+    if "lm_enc_hidden" not in cfg.model_defaults:
+        raise ValueError("`cfg.model_defaults` must have `lm_enc_hidden` key !")
+    if "lm_dec_hidden" not in cfg.model_defaults:
+        raise ValueError("`cfg.model_defaults` must have `lm_dec_hidden` key !")
+
+
 @dataclass
 class MultiTaskTranscriptionInternalConfig(InternalTranscribeConfig):
     """
@@ -104,39 +115,18 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         # Convert to Hydra 1.0 compatible DictConfig
         cfg = model_utils.convert_model_config_to_dict_config(cfg)
         cfg = model_utils.maybe_update_config_version(cfg)
+        _config_check(cfg)
 
-        if 'tokenizer' not in cfg:
-            raise ValueError("`cfg` must have `tokenizer` config to create a tokenizer !")
-
-        # Setup the tokenizer
-        self._setup_tokenizer(cfg.tokenizer)
-
-        # Assert config has "prompt_format"
-        if "prompt_format" not in cfg:
-            raise ValueError("`cfg` must have `prompt_format` config to create a multi task model !")
         self.prompt_format = cfg.prompt_format
-
-        if "sample_rate" not in cfg:
-            raise ValueError("`cfg` must have `sample_rate` config to create a multi task model !")
         self.sample_rate = cfg.sample_rate
+        self._setup_tokenizer(cfg.tokenizer)
 
         super().__init__(cfg=cfg, trainer=trainer)
 
         # Setup audio preprocessor
         self.preprocessor = EncDecMultiTaskModel.from_config_dict(self.cfg.preprocessor)
-
         # Setup audio encoder
         self.encoder = EncDecMultiTaskModel.from_config_dict(self.cfg.encoder)
-
-        # Assert config has `model_defaults`
-        if 'model_defaults' not in self.cfg:
-            raise ValueError("`cfg` must have `model_defaults` config to create a model !")
-        if "asr_enc_hidden" not in self.cfg.model_defaults:
-            raise ValueError("`cfg.model_defaults` must have `asr_enc_hidden` key !")
-        if "lm_enc_hidden" not in self.cfg.model_defaults:
-            raise ValueError("`cfg.model_defaults` must have `lm_enc_hidden` key !")
-        if "lm_dec_hidden" not in self.cfg.model_defaults:
-            raise ValueError("`cfg.model_defaults` must have `lm_dec_hidden` key !")
 
         # Add projection layer if encoder and decoder differ in hidden size
         asr_enc_hidden_size = self.cfg.model_defaults.asr_enc_hidden
@@ -214,6 +204,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             self.spec_augmentation = None
 
         self.val_loss = GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True)
+
+        # TODO: PytorchMetrics lets you join two metrics together to save compute. But need to make wer and bleu have same outputs first
+        self.wer = WER(self.decoding, log_prediction=self.cfg.get("log_prediction"))
+        self.bleu = BLEU(
+            self.decoding, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=False
+        )  # Wer is handling logging
 
     def change_decoding_strategy(self, decoding_cfg: DictConfig):
         """
@@ -527,6 +523,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             "processed_signal_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "transcript": NeuralType(('B', 'T'), LabelsType(), optional=True),
             "transcript_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "prompt": NeuralType(('B', 'T'), LabelsType(), optional=True),
+            "prompt_length": NeuralType(tuple('B'), LengthsType(), optional=True),
             "sample_id": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
@@ -603,24 +601,14 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         return transf_log_probs, encoded_len, enc_states, enc_mask
 
-    def compute_loss(
-        self, batch: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | None
-    ) -> torch.Tensor:
-        """
-        Run forward pass through the model and compute the loss.
-
-        Args:
-            batch: a tuple of 4 tensors (signal, signal_len, tokens, tokens_len) as returned
-                by :class:`~nemo.collections.asr.data.audio_to_text_lhotse_prompted.PromptedAudioToTextLhotseDataset`.
-                When batch is ``None``, we'll return a zero tensor.
-        Returns:
-            The computed loss value as a single-element tensor.
-        """
+    # PTL-specific methods
+    def training_step(self, batch, batch_nb):
 
         if batch is None:
             return torch.tensor([0.0])
 
-        signal, signal_len, transcript, transcript_len = batch
+        # During training prompt and prompt_len are null, ignore.
+        signal, signal_len, transcript, transcript_len, prompt, prompt_len = batch
         input_ids, labels = transcript[:, :-1], transcript[:, 1:]
 
         transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
@@ -630,14 +618,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             transcript_length=transcript_len,
         )
 
-        transf_loss = self.loss(log_probs=transf_log_probs, labels=labels)
-
-        return transf_loss
-
-    # PTL-specific methods
-    def training_step(self, batch, batch_nb):
-
-        audio_loss = self.compute_loss(batch)
+        audio_loss = self.loss(log_probs=transf_log_probs, labels=labels)
 
         tensorboard_logs = {
             'train_loss': audio_loss,
@@ -646,8 +627,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         return {'loss': audio_loss, 'log': tensorboard_logs}
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0, eval_mode="val"):
-        signal, signal_len, transcript, transcript_len = batch
+    def validation_pass(self, batch, batch_idx, dataloader_idx=0, eval_mode="val"):
+        # During inference, dataloader passes pure prompt without transcript text.
+        signal, signal_len, transcript, transcript_len, prompt, prompt_len = batch
         input_ids, labels = transcript[:, :-1], transcript[:, 1:]
 
         transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
@@ -657,95 +639,53 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             transcript_length=transcript_len,
         )
 
-        beam_hypotheses = self.decoding.decode_predictions_tensor(
-            encoder_hidden_states=enc_states,
-            encoder_input_mask=enc_mask,
-            decoder_input_ids=input_ids,
-            return_hypotheses=False,
-        )[0]
-
         transf_loss = self.loss(log_probs=transf_log_probs, labels=labels)
-
-        ground_truths = [self.tokenizer.ids_to_text(sent) for sent in transcript.detach().cpu().tolist()]
-        translations = [hyp for hyp in beam_hypotheses]
-
         self.val_loss(loss=transf_loss, num_measurements=transf_log_probs.shape[0] * transf_log_probs.shape[1])
-
         output_dict = {
             f'{eval_mode}_loss': transf_loss,
-            'translations': [self.decoding.strip_special_tokens(t) for t in translations],
-            'ground_truths': [self.decoding.strip_special_tokens(g) for g in ground_truths],
         }
 
-        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
-            self.validation_step_outputs[dataloader_idx].append(output_dict)
-        else:
-            self.validation_step_outputs.append(output_dict)
+        self.wer.update(
+            predictions=enc_states,
+            predictions_lengths=encoded_len,
+            targets=transcript,
+            targets_lengths=transcript_len,
+            predictions_mask=enc_mask,
+            input_ids=prompt,
+        )
+        wer, wer_num, wer_denom = self.wer.compute()
+        output_dict.update({"val_wer": wer, "val_wer_num": wer_num, "val_wer_denom": wer_denom})
+        self.wer.reset()
+
+        self.bleu.update(
+            predictions=enc_states,
+            predictions_lengths=encoded_len,
+            targets=transcript,
+            targets_lengths=transcript_len,
+            predictions_mask=enc_mask,
+            input_ids=prompt,
+        )
+        bleu_metrics = self.bleu.compute(prefix=f"{eval_mode}_")
+        output_dict.update(bleu_metrics)
+        self.bleu.reset()
 
         return output_dict
 
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        metrics = self.validation_pass(batch, batch_idx, dataloader_idx, eval_mode="val")
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append(metrics)
+        else:
+            self.validation_step_outputs.append(metrics)
+        return metrics
+
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        return self.validation_step(batch, batch_idx, dataloader_idx, eval_mode="test")
-
-    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0, eval_mode: str = "val"):
-        """
-        Called at the end of validation to aggregate outputs.
-        :param outputs: list of individual outputs of each validation step.
-        """
-        if not outputs:
-            return
-
-        if isinstance(outputs[0], dict):
-            outputs = [outputs]
-
-        for output in outputs:
-            eval_loss = getattr(self, 'val_loss').compute()
-            translations = list(itertools.chain(*[x['translations'] for x in output]))
-            ground_truths = list(itertools.chain(*[x['ground_truths'] for x in output]))
-
-            # Gather translations and ground truths from all workers
-            tr_and_gt = [None for _ in range(self.world_size)]
-            # we also need to drop pairs where ground truth is an empty string
-            if self.world_size > 1:
-                dist.all_gather_object(
-                    tr_and_gt, [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
-                )
-            else:
-                tr_and_gt[0] = [(t, g) for (t, g) in zip(translations, ground_truths) if g.strip() != '']
-
-            if self.global_rank == 0:
-                _translations = []
-                _ground_truths = []
-                for rank in range(0, self.world_size):
-                    _translations += [t for (t, g) in tr_and_gt[rank]]
-                    _ground_truths += [g for (t, g) in tr_and_gt[rank]]
-
-                sacre_bleu = SacreBLEUScore()(_translations, [[x] for x in _ground_truths]).item()
-                sb_score = sacre_bleu * self.world_size
-
-                wer_scores, wer_words = 0, 0
-                for h, r in zip(_translations, _ground_truths):
-                    wer_words += len(r.split())
-                    wer_scores += editdistance.eval(h.split(), r.split())
-                wer_score = 1.0 * wer_scores * self.world_size / wer_words
-
-            else:
-                sb_score = 0.0
-                wer_score = 0.0
-
-            # logging here only.
-            dataloader_prefix = self.get_validation_dataloader_prefix(dataloader_idx)
-            self.log(f"{dataloader_prefix}{eval_mode}_loss", eval_loss, sync_dist=True)
-            self.log(f"{dataloader_prefix}{eval_mode}_sacreBLEU", sb_score, sync_dist=True)
-            self.log(f"{dataloader_prefix}{eval_mode}_WER", wer_score, sync_dist=True)
-
-            # in multi-validation case, anything after first one will become NaN
-            # as we are resetting the metric here.
-            # TODO: fix this, (not sure which hook will be ideal for this)
-            self.val_loss.reset()
-
-    def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
-        return self.multi_validation_epoch_end(outputs, dataloader_idx, eval_mode="test")
+        metrics = self.validation_pass(batch, batch_idx, dataloader_idx, eval_mode="test")
+        if type(self.trainer.val_dataloaders) == list and len(self.trainer.val_dataloaders) > 1:
+            self.validation_step_outputs[dataloader_idx].append(metrics)
+        else:
+            self.validation_step_outputs.append(metrics)
+        return metrics
 
     def test_dataloader(self):
         if self._test_dl is not None:
@@ -837,7 +777,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         log_probs, encoded_len, enc_states, enc_mask = self.forward(
             input_signal=batch[0], input_signal_length=batch[1]
         )
-        decoder_input_ids = batch[2].to(trcfg._internal.device)
+        decoder_input_ids = batch[-2].to(trcfg._internal.device)
         output = dict(
             log_probs=log_probs,
             encoded_lengths=encoded_len,
@@ -991,7 +931,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         return MultiTaskTranscriptionConfig()
 
     def predict_step(self, batch, batch_idx=0, dataloader_idx=0, has_processed_signal=False):
-        signal, signal_len, transcript, transcript_len = batch
+        signal, signal_len, _, _, prompt, prompt_len = batch
 
         processed_signal = None
         processed_signal_length = None
@@ -1006,14 +946,14 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             input_signal_length=signal_len,
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
-            transcript=transcript,
-            transcript_length=transcript_len,
+            transcript=prompt,
+            transcript_length=prompt_len,
         )
 
         text = self.decoding.decode_predictions_tensor(
             encoder_hidden_states=enc_states,
             encoder_input_mask=enc_mask,
-            decoder_input_ids=transcript,
+            decoder_input_ids=prompt,
             return_hypotheses=False,
         )[0]
 

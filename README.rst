@@ -57,10 +57,10 @@ such as FSDP, Mixture-of-Experts, and RLHF with TensorRT-LLM to provide speedups
 Introduction
 ------------
 
-NVIDIA NeMo Framework is a generative AI framework built for researchers and pytorch developers 
+NVIDIA NeMo Framework is a generative AI framework built for researchers and pytorch developers
 working on large language models (LLMs), multimodal models (MM), automatic speech recognition (ASR),
 and text-to-speech synthesis (TTS).
-The primary objective of NeMo is to provide a scalable framework for researchers and developers from industry and academia 
+The primary objective of NeMo is to provide a scalable framework for researchers and developers from industry and academia
 to more easily implement and design new generative AI models by being able to leverage existing code and pretrained models.
 
 For technical documentation, please see the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_.
@@ -68,8 +68,8 @@ For technical documentation, please see the `NeMo Framework User Guide <https://
 All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_ and
 training is automatically scalable to 1000s of GPUs.
 
-When applicable, NeMo models take advantage of the latest possible distributed training techniques, 
-including parallelism strategies such as 
+When applicable, NeMo models take advantage of the latest possible distributed training techniques,
+including parallelism strategies such as
 
 * data parallelism
 * tensor parallelism
@@ -84,7 +84,7 @@ and mixed precision training recipes with bfloat16 and FP8 training.
 NeMo's Transformer based LLM and Multimodal models leverage `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_ for FP8 training on NVIDIA Hopper GPUs
 and leverages `NVIDIA Megatron Core <https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core>`_ for scaling transformer model training.
 
-NeMo LLMs can be aligned with state of the art methods such as SteerLM, DPO and Reinforcement Learning from Human Feedback (RLHF), 
+NeMo LLMs can be aligned with state of the art methods such as SteerLM, DPO and Reinforcement Learning from Human Feedback (RLHF),
 see `NVIDIA NeMo Aligner <https://github.com/NVIDIA/NeMo-Aligner>`_ for more details.
 
 NeMo LLM and Multimodal models can be deployed and optimized with `NVIDIA Inference Microservices (Early Access) <https://developer.nvidia.com/nemo-microservices-early-access>`_.
@@ -93,7 +93,7 @@ NeMo ASR and TTS models can be optimized for inference and deployed for producti
 
 For scaling NeMo LLM and Multimodal training on Slurm clusters or public clouds, please see the `NVIDIA Framework Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_.
 The NeMo Framework launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and Multimodal models and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_
-which can be used to find the optimal model parallel configuration for training on a specific cluster. 
+which can be used to find the optimal model parallel configuration for training on a specific cluster.
 To get started quickly with the NeMo Framework Launcher, please see the `NeMo Framework Playbooks <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_
 The NeMo Framework Launcher does not currently support ASR and TTS training but will soon.
 

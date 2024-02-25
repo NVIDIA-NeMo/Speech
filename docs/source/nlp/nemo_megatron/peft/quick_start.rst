@@ -62,7 +62,7 @@ Base model classes
 PEFT in NeMo is built with a mix-in class that does not belong to any
 model in particular. This means that the same interface is available to
 different NeMo models. Currently, NeMo supports PEFT for GPT-style
-models such as GPT 3, NvGPT, LLaMa 1/2 (``MegatronGPTSFTModel``), as
+models such as GPT 3, Nemotron, LLaMa 1/2 (``MegatronGPTSFTModel``), as
 well as T5 (``MegatronT5SFTModel``).
 
 Full finetuning vs PEFT
@@ -78,11 +78,13 @@ PEFT.
    trainer = MegatronTrainerBuilder(config).create_trainer()
    model_cfg = MegatronGPTSFTModel.merge_cfg_with(config.model.restore_from_path, config)
 
+   ### Training API ###
    model = MegatronGPTSFTModel.restore_from(restore_path, model_cfg, trainer) # restore from pretrained ckpt
-   + peft_cfg = LoRAPEFTConfig(model_cfg)
+   + peft_cfg = LoraPEFTConfig(model_cfg)
    + model.add_adapter(peft_cfg) 
    trainer.fit(model)  # saves adapter weights only
 
+   ### Inference API ###
    # Restore from base then load adapter API 
    model = MegatronGPTSFTModel.restore_from(restore_path, trainer, model_cfg)
    + model.load_adapters(adapter_save_path, peft_cfg)

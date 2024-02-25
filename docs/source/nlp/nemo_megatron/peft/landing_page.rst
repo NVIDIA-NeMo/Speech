@@ -12,14 +12,14 @@ fraction of the computational and storage costs.
 NeMo supports four PEFT methods which can be used with various
 transformer-based models.
 
-==================== ===== ===== ========= ==
-\                    GPT 3 NvGPT LLaMa 1/2 T5
-==================== ===== ===== ========= ==
-Adapters (Canonical) ✅    ✅    ✅        ✅
-LoRA                 ✅    ✅    ✅        ✅
-IA3                  ✅    ✅    ✅        ✅
-P-Tuning             ✅    ✅    ✅        ✅
-==================== ===== ===== ========= ==
+==================== ===== ======== ========= ====== ==
+\                    GPT 3 Nemotron LLaMa 1/2 Falcon T5
+==================== ===== ======== ========= ====== ==
+LoRA                  ✅    ✅      ✅        ✅     ✅
+P-Tuning              ✅    ✅      ✅        ✅     ✅
+Adapters (Canonical)  ✅    ✅      ✅               ✅
+IA3                   ✅    ✅      ✅               ✅
+==================== ===== ======== ========= ====== ==
 
 Learn more about PEFT in NeMo with the :ref:`peftquickstart` which provides an overview on how PEFT works
 in NeMo. Read about the supported PEFT methods

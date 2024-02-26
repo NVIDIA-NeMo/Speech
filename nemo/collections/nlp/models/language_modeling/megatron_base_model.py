@@ -161,7 +161,11 @@ class MegatronBaseModel(NLPModel):
         # Overrides used when converting checkpoints
         if os.environ.get(NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, "false").lower() == "true":
             app_state = AppState()
-            init_world_size = app_state.tensor_model_parallel_size * app_state.pipeline_model_parallel_size
+            init_world_size = (
+                app_state.tensor_model_parallel_size
+                * app_state.pipeline_model_parallel_size
+                * (app_state.expert_model_parallel_size or 1)
+            )
             init_global_rank = app_state.global_rank
             init_local_rank = app_state.local_rank
         else:
@@ -186,6 +190,7 @@ class MegatronBaseModel(NLPModel):
             global_rank=init_global_rank,
             local_rank=init_local_rank,
             tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
+            expert_model_parallel_size=cfg.get('expert_model_parallel_size', 1),
             pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
             virtual_pipeline_model_parallel_size=vp_size,
             pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),

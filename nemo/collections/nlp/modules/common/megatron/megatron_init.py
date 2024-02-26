@@ -33,6 +33,8 @@ try:
     from megatron.core import tensor_parallel
     from megatron.core.parallel_state import (
         get_pipeline_model_parallel_rank,
+        set_expert_model_parallel_rank,
+        set_expert_model_parallel_world_size,
         set_pipeline_model_parallel_rank,
         set_pipeline_model_parallel_split_rank,
         set_pipeline_model_parallel_world_size,
@@ -60,6 +62,7 @@ def initialize_model_parallel_for_nemo(
     global_rank,
     local_rank,
     tensor_model_parallel_size=1,
+    expert_model_parallel_size=1,
     pipeline_model_parallel_size=1,
     virtual_pipeline_model_parallel_size=None,
     pipeline_model_parallel_split_rank=None,
@@ -81,6 +84,7 @@ def initialize_model_parallel_for_nemo(
     app_state.global_rank = global_rank
     app_state.world_size = world_size
     app_state.local_rank = local_rank
+    app_state.expert_model_parallel_size = expert_model_parallel_size
     app_state.tensor_model_parallel_size = tensor_model_parallel_size
     app_state.pipeline_model_parallel_size = pipeline_model_parallel_size
     app_state.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
@@ -90,6 +94,7 @@ def initialize_model_parallel_for_nemo(
     (
         app_state.tensor_model_parallel_rank,
         app_state.pipeline_model_parallel_rank,
+        app_state.expert_model_parallel_rank,
         app_state.model_parallel_size,
         app_state.data_parallel_size,
         app_state.pipeline_model_parallel_split_rank,
@@ -102,11 +107,15 @@ def initialize_model_parallel_for_nemo(
         virtual_pipeline_model_parallel_size_=virtual_pipeline_model_parallel_size,
         pipeline_model_parallel_split_rank_=pipeline_model_parallel_split_rank,
         context_parallel_size_=context_parallel_size,
+        expert_model_parallel_size_=expert_model_parallel_size,
     )
 
     # update apex.transformer globals
     set_tensor_model_parallel_world_size(app_state.tensor_model_parallel_size)
     set_tensor_model_parallel_rank(app_state.tensor_model_parallel_rank)
+
+    set_expert_model_parallel_world_size(app_state.expert_model_parallel_size)
+    set_expert_model_parallel_rank(app_state.expert_model_parallel_rank)
 
     set_pipeline_model_parallel_rank(app_state.pipeline_model_parallel_rank)
     if HAVE_INTERLEAVED:
@@ -179,6 +188,7 @@ def fake_initialize_model_parallel(
     pipeline_model_parallel_size_,
     pipeline_model_parallel_split_rank_=None,
     virtual_pipeline_model_parallel_size_=None,
+    expert_model_parallel_size_=1,
     context_parallel_size_=1,
 ):
     """
@@ -302,6 +312,21 @@ def fake_initialize_model_parallel(
     logging.info(f'All tensor model parallel group ranks: {all_tensor_model_parallel_group_ranks}')
     logging.info(f'Rank {rank} has tensor model parallel rank: {tensor_model_parallel_rank}')
 
+    # EP rank
+    expert_model_parallel_rank = 0
+    if expert_model_parallel_size_ is not None and expert_model_parallel_size_ > 1:
+        tensor_and_data_group_size: int = tensor_model_parallel_size * data_parallel_size
+        num_tensor_and_data_groups: int = world_size // tensor_and_data_group_size
+        tensor_and_expert_group_size: int = tensor_model_parallel_size * expert_model_parallel_size_
+        num_expert_groups: int = data_parallel_size // expert_model_parallel_size_
+        for i in range(num_tensor_and_data_groups):
+            for j in range(num_expert_groups):
+                start_rank = i * tensor_and_data_group_size + j * tensor_and_expert_group_size
+                end_rank = i * tensor_and_data_group_size + (j + 1) * tensor_and_expert_group_size
+                ranks = range(start_rank, end_rank)
+                if rank in ranks:
+                    expert_model_parallel_rank = list(ranks).index(rank)
+
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).
     all_pipeline_model_parallel_group_ranks = []
@@ -340,6 +365,7 @@ def fake_initialize_model_parallel(
     return (
         tensor_model_parallel_rank,
         pipeline_model_parallel_rank,
+        expert_model_parallel_rank,
         model_parallel_size,
         data_parallel_size,
         pipeline_model_parallel_split_rank_,

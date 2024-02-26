@@ -589,6 +589,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
         preserve_frame_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         loop_labels: bool = False,
+        use_cuda_graph_decoder: bool = False,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -600,11 +601,15 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
             confidence_method_cfg=confidence_method_cfg,
         )
 
+        self.use_cuda_graph_decoder = use_cuda_graph_decoder
+
         # Depending on availability of `blank_as_pad` support
         # switch between more efficient batch decoding technique
         self._decoding_computer = None
         if self.decoder.blank_as_pad:
-            if loop_labels:
+            if loop_labels and use_cuda_graph_decoder:
+                raise ValueError("loop_labels and use_cuda_graph_decoder is unsupported configuration")
+            elif loop_labels:
                 # default (faster) algo: loop over labels
                 self._greedy_decode = self._greedy_decode_blank_as_pad_loop_labels
                 self._decoding_computer = GreedyBatchedRNNTLoopLabelsComputer(
@@ -616,6 +621,12 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     preserve_frame_confidence=preserve_frame_confidence,
                     confidence_method_cfg=confidence_method_cfg,
                 )
+            elif use_cuda_graph_decoder:
+                from nemo.collections.asr.parts.submodules.cuda_graph_rnnt_greedy_decoding import (
+                    RNNTGreedyDecodeCudaGraph,
+                )
+
+                self._greedy_decode = RNNTGreedyDecodeCudaGraph(max_symbols_per_step, self)
             else:
                 # previous algo: loop over frames
                 self._greedy_decode = self._greedy_decode_blank_as_pad_loop_frames
@@ -654,6 +665,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
 
             with self.decoder.as_frozen(), self.joint.as_frozen():
                 inseq = encoder_output  # [B, T, D]
+
                 hypotheses = self._greedy_decode(
                     inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
                 )
@@ -2289,6 +2301,7 @@ class GreedyBatchedRNNTInferConfig:
     preserve_frame_confidence: bool = False
     confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
     loop_labels: bool = False
+    use_cuda_graph_decoder: bool = False
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed

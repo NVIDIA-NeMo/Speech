@@ -191,7 +191,7 @@ model:
       synthetic_data_length: 10000
       train:
           dataset_path:
-              - /datasets/coyo/test.pkl
+            - /datasets/coyo/test.pkl
           augmentations:
             resize_smallest_side: 512
             center_crop_h_w: 512, 512

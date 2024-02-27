@@ -207,6 +207,7 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_method = None
             pretrained_cfg.precision = trainer.precision
             pretrained_cfg.use_cpu_initialization = cfg.trainer.accelerator == 'cpu'
+            pretrained_cfg["apply_rope_fusion"] = False
         model = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file,
             trainer=trainer,

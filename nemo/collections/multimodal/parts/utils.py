@@ -54,15 +54,6 @@ def randn_like(x, generator=None):
     return torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
 
 
-def extend_instance(obj, mixin):
-    """Apply mixins to a class instance after creation"""
-    base_cls = obj.__class__
-    base_cls_name = obj.__class__.__name__
-    obj.__class__ = type(
-        base_cls_name, (mixin, base_cls), {}
-    )  # mixin needs to go first for our forward() logic to work
-
-
 def getattr_recursive(obj, att):
     """
     Return nested attribute of obj

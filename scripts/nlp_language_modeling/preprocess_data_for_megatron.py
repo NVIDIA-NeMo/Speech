@@ -309,7 +309,7 @@ def main():
             output_bin_files[key],
             impl=args.dataset_impl,
             chunk_size=args.chunk_size,
-            pad_id=tokenizer.pad_id if hasattr(tokenizer, "pad_id") else 0,
+            pad_id=tokenizer.pad_id if getattr(tokenizer, "pad_id", None) is not None else 0,
             retrieval_db=args.retrieval_db,
             vocab_size=tokenizer.vocab_size,
             stride=args.chunk_stride_size,

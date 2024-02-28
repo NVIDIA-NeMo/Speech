@@ -70,6 +70,7 @@ class MegatronTrainerBuilder:
                 precision=self.cfg.trainer.precision,
                 nccl_communicator_config_path=self.cfg.model.get('nccl_communicator_config_path', None),
                 sharp=self.cfg.model.get('sharp', False),
+                use_orig_params=self.cfg.model.get('fsdp_use_orig_params', False),
             )
 
         return NLPDDPStrategy(

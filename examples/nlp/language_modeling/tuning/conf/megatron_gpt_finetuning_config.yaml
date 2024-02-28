@@ -76,6 +76,13 @@ model:
   attention_dropout: 0.0
   ffn_dropout: 0.0
 
+  # FSDP
+  fsdp: False # Enable training with torch FSDP.
+  fsdp_sharding_strategy: 'full' # Method to shard model states. Available options are 'full', 'hybrid', and 'grad'.
+  fsdp_grad_reduce_dtype: 'fp32' # Gradient reduction data type.
+  fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
+  fsdp_use_orig_params: False # Set to True to use FSDP for specific peft scheme.
+
   peft:
     peft_scheme: "adapter"  # can be either adapter,ia3, or ptuning
     restore_from_path: null

@@ -127,6 +127,13 @@ def init_method_normal(sigma):
     return init_
 
 
+def init_method_kaiming_uniform(val):
+    def init_(tensor):
+        return torch.nn.init.kaiming_uniform_(tensor, a=val)
+
+    return init_
+
+
 def init_method_const(val):
     def init_(tensor):
         return torch.nn.init.constant_(tensor, val)

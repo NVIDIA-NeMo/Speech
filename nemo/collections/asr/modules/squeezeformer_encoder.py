@@ -363,7 +363,7 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
             audio_signal = layer(x=audio_signal, att_mask=att_mask, pos_emb=pos_emb, pad_mask=pad_mask)
 
             # saving tensors if required for interctc loss
-            if self.is_access_enabled():
+            if self.is_access_enabled(getattr(self, "model_guid", None)):
                 if self.interctc_capture_at_layers is None:
                     self.interctc_capture_at_layers = self.access_cfg.get('interctc', {}).get('capture_layers', [])
                 if lth in self.interctc_capture_at_layers:

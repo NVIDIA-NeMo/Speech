@@ -243,7 +243,7 @@ class ResidualAddAdapterStrategy(AbstractAdapterStrategy):
 
                 if compute_aux_loss:
                     # if l2 lambda is enabled, also enable AccessMixin
-                    adapter.set_access_enabled(access_enabled=True)
+                    adapter.set_access_enabled(access_enabled=True, guid=getattr(self, "model_guid", None))
 
                     l2_loss = self.l2_lambda * (input - output).square().reshape(input.size(0), -1).sum(dim=-1).mean()
                     adapter.register_accessible_tensor(name='adapter_loss', tensor=l2_loss)

@@ -108,7 +108,7 @@ class ASRModel(ModelPT, ABC):
             Loss tensor used for back propagation.
         """
         # Add adapter auxiliary losses, if registered
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(self.model_guid):
             registry = AccessMixin.get_module_registry(self)
             log_dict = {}
 

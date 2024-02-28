@@ -628,7 +628,7 @@ class TestASRAdapterMixin:
 
         with torch.no_grad():
             AccessMixin.reset_registry(model)
-            AccessMixin.update_access_cfg({'save_encoder_tensors': False})
+            AccessMixin.update_access_cfg({'save_encoder_tensors': False}, model.model_guid)
             _ = model(input_signal=x, input_signal_length=x_len)
 
             # extract losses

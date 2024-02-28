@@ -634,7 +634,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
         signal, signal_len, transcript, transcript_len = batch
@@ -668,7 +668,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             loss_value = self.add_auxiliary_losses(loss_value)
 
             # Reset access registry
-            if AccessMixin.is_access_enabled():
+            if AccessMixin.is_access_enabled(self.model_guid):
                 AccessMixin.reset_registry(self)
 
             tensorboard_logs = {
@@ -709,7 +709,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             loss_value = self.add_auxiliary_losses(loss_value)
 
             # Reset access registry
-            if AccessMixin.is_access_enabled():
+            if AccessMixin.is_access_enabled(self.model_guid):
                 AccessMixin.reset_registry(self)
 
             tensorboard_logs = {

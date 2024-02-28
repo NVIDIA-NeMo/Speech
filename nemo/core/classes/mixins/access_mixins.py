@@ -18,15 +18,20 @@ from typing import Optional
 import torch
 from omegaconf import DictConfig
 
-_ACCESS_CFG = DictConfig({"detach": False, "convert_to_cpu": False})
-_ACCESS_ENABLED = False
+_DEFAULT_ACCESS_GUID = "default"
+_ACCESS_CFG = DictConfig({_DEFAULT_ACCESS_GUID: {"detach": False, "convert_to_cpu": False}})
+_ACCESS_ENABLED = {_DEFAULT_ACCESS_GUID: False}
 
 
-def set_access_cfg(cfg: 'DictConfig'):
+def set_access_cfg(cfg: DictConfig, guid: Optional[str] = None):
     if cfg is None or not isinstance(cfg, DictConfig):
         raise TypeError(f"cfg must be a DictConfig")
     global _ACCESS_CFG
-    _ACCESS_CFG = cfg
+    global _DEFAULT_ACCESS_GUID
+    if guid is not None:
+        _ACCESS_CFG[guid] = cfg
+    else:
+        _ACCESS_CFG[_DEFAULT_ACCESS_GUID] = cfg
 
 
 class AccessMixin(ABC):
@@ -99,7 +104,7 @@ class AccessMixin(ABC):
                         )
 
         # Explicitly disable registry cache after reset
-        AccessMixin.set_access_enabled(access_enabled=False)
+        AccessMixin.set_access_enabled(access_enabled=False, guid=getattr(self, "model_guid", None))
 
     @property
     def access_cfg(self):
@@ -108,19 +113,34 @@ class AccessMixin(ABC):
             The global access config shared across all access mixin modules.
         """
         global _ACCESS_CFG
-        return _ACCESS_CFG
+        global _DEFAULT_ACCESS_GUID
+        guid = self.model_guid if getattr(self, "model_guid", None) else _DEFAULT_ACCESS_GUID
+        if hasattr(self, "propagate_model_guid"):
+            self.propagate_model_guid()
+        if guid not in _ACCESS_CFG:
+            _ACCESS_CFG[guid] = DictConfig({})
+        return _ACCESS_CFG[guid]
 
     @classmethod
-    def update_access_cfg(cls, cfg: dict):
+    def update_access_cfg(cls, cfg: dict, guid: Optional[str] = None):
         global _ACCESS_CFG
-        _ACCESS_CFG.update(cfg)
+        global _DEFAULT_ACCESS_GUID
+        guid = guid if guid is not None else _DEFAULT_ACCESS_GUID
+        if guid not in _ACCESS_CFG:
+            _ACCESS_CFG[guid] = cfg
+        else:
+            _ACCESS_CFG[guid].update(cfg)
 
     @classmethod
-    def is_access_enabled(cls):
+    def is_access_enabled(cls, guid: Optional[str] = None):
         global _ACCESS_ENABLED
-        return _ACCESS_ENABLED
+        global _DEFAULT_ACCESS_GUID
+        guid = guid if guid is not None else _DEFAULT_ACCESS_GUID
+        return _ACCESS_ENABLED.get(guid, False)
 
     @classmethod
-    def set_access_enabled(cls, access_enabled: bool):
+    def set_access_enabled(cls, access_enabled: bool, guid: Optional[str] = None):
         global _ACCESS_ENABLED
-        _ACCESS_ENABLED = access_enabled
+        global _DEFAULT_ACCESS_GUID
+        guid = guid if guid is not None else _DEFAULT_ACCESS_GUID
+        _ACCESS_ENABLED[guid] = access_enabled

@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 
 from nemo.core.classes.mixins import AccessMixin
+from nemo.utils import logging
 
 
 class InterCTCMixin:
@@ -61,7 +62,15 @@ class InterCTCMixin:
 
         # setting up config for AccessMixin that will be checked in encoders to
         # log the layers we need
-        AccessMixin.update_access_cfg({'interctc': {'capture_layers': apply_at_layers}})
+        AccessMixin.update_access_cfg(
+            {'interctc': {'capture_layers': apply_at_layers}}, guid=getattr(self, "model_guid", None)
+        )
+        if hasattr(self, "propagate_model_guid"):
+            self.propagate_model_guid()
+        else:
+            logging.warning(
+                f"Not able to propagate model_guid to the submodules. Make sure to call self.propagate_model_guid() in ModelPT class."
+            )
 
     def setup_interctc(self, decoder_name, loss_name, wer_name):
         """Sets up all interctc-specific parameters and checks config consistency.
@@ -237,7 +246,7 @@ class InterCTCMixin:
         Returns:
             tuple[Optional[torch.Tensor], Dict]: tuple of new loss tensor and dictionary with logged metrics.
         """
-        if not self.is_interctc_enabled() or not AccessMixin.is_access_enabled():
+        if not self.is_interctc_enabled() or not AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             return loss_value, {}
         metrics = {}
         if compute_loss:

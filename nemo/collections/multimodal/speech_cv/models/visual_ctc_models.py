@@ -520,11 +520,11 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         video_signal, video_signal_len, transcript, transcript_len = batch
         log_probs, encoded_len, predictions = self.forward(
@@ -548,7 +548,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
         )
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         tensorboard_logs.update(
@@ -587,7 +587,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         video_signal, video_signal_len, transcript, transcript_len = batch
         log_probs, encoded_len, predictions = self.forward(
@@ -611,7 +611,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         return metrics

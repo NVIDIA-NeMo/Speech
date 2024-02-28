@@ -204,7 +204,9 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             pack_ip = self.forward_enabled_adapters(pack_ip)
             x = pack_ip['x']
 
-        if self.is_access_enabled() and self.access_cfg.get('save_encoder_tensors', False):
+        if self.is_access_enabled(getattr(self, "model_guid", None)) and self.access_cfg.get(
+            'save_encoder_tensors', False
+        ):
             self.register_accessible_tensor(name='encoder', tensor=x)
         if cache_last_channel is None:
             return x

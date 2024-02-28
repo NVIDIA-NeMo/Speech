@@ -220,7 +220,7 @@ class TestInterCTCLoss:
         else:
             asr_model = model_class(cfg=model_config)
             asr_model.train()
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=asr_model.model_guid)
             logprobs, *_ = asr_model.forward(
                 processed_signal=processed_signal, processed_signal_length=processed_length
             )

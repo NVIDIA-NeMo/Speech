@@ -497,11 +497,11 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         signal, signal_len, transcript, transcript_len = batch
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
@@ -528,7 +528,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         )
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
         tensorboard_logs.update(
@@ -570,7 +570,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
     def validation_pass(self, batch, batch_idx, dataloader_idx=0):
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         signal, signal_len, transcript, transcript_len = batch
         if isinstance(batch, DALIOutputs) and batch.has_processed_signal:
@@ -597,7 +597,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(self.model_guid):
             AccessMixin.reset_registry(self)
 
         return metrics

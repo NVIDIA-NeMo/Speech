@@ -336,11 +336,11 @@ class VisualEncDecHybridRNNTCTCModel(VisualEncDecRNNTModel, ASRBPEMixin, InterCT
     # PTL-specific methods
     def training_step(self, batch, batch_nb):
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         signal, signal_len, transcript, transcript_len = batch
 
@@ -451,7 +451,7 @@ class VisualEncDecHybridRNNTCTCModel(VisualEncDecRNNTModel, ASRBPEMixin, InterCT
                 tensorboard_logs.update({'training_batch_wer_ctc': ctc_wer})
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         # Log items
@@ -480,7 +480,7 @@ class VisualEncDecHybridRNNTCTCModel(VisualEncDecRNNTModel, ASRBPEMixin, InterCT
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         if self.is_interctc_enabled():
-            AccessMixin.set_access_enabled(access_enabled=True)
+            AccessMixin.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         signal, signal_len, transcript, transcript_len = batch
 
@@ -570,7 +570,7 @@ class VisualEncDecHybridRNNTCTCModel(VisualEncDecRNNTModel, ASRBPEMixin, InterCT
         self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
 
         # Reset access registry
-        if AccessMixin.is_access_enabled():
+        if AccessMixin.is_access_enabled(getattr(self, "model_guid", None)):
             AccessMixin.reset_registry(self)
 
         return tensorboard_logs

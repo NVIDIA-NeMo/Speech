@@ -1046,7 +1046,7 @@ class JasperBlock(nn.Module, AdapterModuleMixin, AccessMixin):
 
                 out = out.transpose(1, 2)  # (B, C, T)
 
-        if self.is_access_enabled():
+        if self.is_access_enabled(getattr(self, "model_guid", None)):
             # for adapters
             if self.access_cfg.get('save_encoder_tensors', False):
                 self.register_accessible_tensor(name='encoder', tensor=out)

@@ -138,7 +138,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             self.feat_pen, self.pen_factor = None, None
 
         if "access" in self._cfg:
-            set_access_cfg(self._cfg.access)
+            set_access_cfg(self._cfg.access, self.model_guid)
 
         self.apply_masking = True
 
@@ -357,7 +357,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
             2) The lengths of the acoustic sequence after propagation through the encoder, of shape [B].
         """
         # Reset access registry
-        if self.is_access_enabled():
+        if self.is_access_enabled(self.model_guid):
             self.reset_registry()
 
         # Check for special flag for validation step
@@ -378,7 +378,7 @@ class SpeechEncDecSelfSupervisedModel(ModelPT, ASRModuleMixin, AccessMixin):
 
             if register_layer:
                 self.access_cfg['save_encoder_tensors'] = True
-                self.set_access_enabled(access_enabled=True)
+                self.set_access_enabled(access_enabled=True, guid=self.model_guid)
 
         has_input_signal = input_signal is not None and input_signal_length is not None
         has_processed_signal = processed_signal is not None and processed_signal_length is not None

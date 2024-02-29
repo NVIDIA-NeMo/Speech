@@ -3568,6 +3568,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
       }
     }
     // @chcui: model.cpu_offloading_num_layers=7 # temp workaround before m-lm !1124 is merged
+    // @athitten: Revert limit_val_batches to 2 until limit_val_batches 1.0 leading to no validation is fixed for non DictConfig data_prefix
     stage('L2: Megatron GPT Pretraining and Resume Training TP=2') {
       when {
         anyOf {
@@ -3582,7 +3583,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=2 \
-        trainer.limit_val_batches=1.0 \
+        trainer.limit_val_batches=2 \
         trainer.accumulate_grad_batches=1 \
         trainer.max_steps=3 \
         trainer.precision=16 \
@@ -3617,7 +3618,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=2 \
-        trainer.limit_val_batches=1.0 \
+        trainer.limit_val_batches=2 \
         trainer.accumulate_grad_batches=1 \
         trainer.max_steps=6 \
         trainer.precision=16 \

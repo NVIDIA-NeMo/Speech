@@ -643,4 +643,13 @@ class AudioCodecModel(ModelPT):
 
     @classmethod
     def list_available_models(cls) -> List[PretrainedModelInfo]:
-        return []
+        models = []
+
+        model = PretrainedModelInfo(
+            pretrained_model_name="audio_codec_16khz_small",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/audio_codec_16khz_small/versions/v1/files/audio_codec_16khz_small.nemo",
+            description="For details about this model please refer to the model card: https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/audio_codec_16khz_small",
+        )
+        models.append(model)
+
+        return models

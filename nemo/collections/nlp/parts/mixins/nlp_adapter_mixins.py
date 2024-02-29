@@ -67,10 +67,6 @@ class NLPAdapterModelMixin:
         self.setup_complete = False
         self.use_ptuning_only = False
         super().__init__(*args, **kwargs)
-        if hasattr(self, "enc_dec_model"):
-            self.model_prefix = "enc_dec_model.module." if self.cfg.megatron_amp_O2 else "enc_dec_model."  # for T5
-        else:
-            self.model_prefix = "model.module." if self.cfg.get('megatron_amp_O2', False) else "model."
 
         self.use_mcore_gpt = hasattr(self, 'mcore_gpt') and self.mcore_gpt
         if self.use_mcore_gpt:
@@ -349,12 +345,12 @@ class NLPAdapterModelMixin:
         """
         Gets the keys associated with the adapters only.
         """
-        state_dict = self.model.state_dict(prefix=self.model_prefix)
+        state_dict = super().state_dict()
         peft_state_dict = {}
         for k in self.adapter_keys.union(self.tunable_base_param_keys):
             # state_dict keys needs to be in non-O2 format and will be corrected in PEFTSaveRestoreConnector if O2=True
             new_k = k.replace("model.module.", "model.", 1)
-            peft_state_dict[new_k] = state_dict[k]
+            peft_state_dict[new_k] = state_dict[new_k]
         return peft_state_dict
 
     def state_dict(self, destination=None, prefix=None, keep_vars=False):
@@ -365,7 +361,7 @@ class NLPAdapterModelMixin:
             # we want all the params with the same keys as calling self.state_dict()
             # but we can't call self.state_dict() here as it would be a recursive call.
             # so we call self.model.state_dict(prefix="model.") which will return all the keys and params same as calling self.state_dict()
-            return self.model.state_dict(prefix=self.model_prefix)
+            return super().state_dict()
 
     def sharded_state_dict(self, prefix: str = ''):
         use_mcore_gpt = hasattr(self, 'mcore_gpt') and self.mcore_gpt
@@ -501,5 +497,5 @@ class NLPAdapterModelMixin:
         with open_dict(cfg):
             cfg.inference.add_BOS = peft_cfg.data.test_ds.add_bos
             cfg.inference.tokens_to_generate = peft_cfg.data.test_ds.tokens_to_generate
-
+        peft_cfg.megatron_amp_O2 = False  # always evaluate with O1
         return peft_cfg

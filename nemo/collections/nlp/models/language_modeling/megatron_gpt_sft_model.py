@@ -488,11 +488,9 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
             # we can only log on one rank if it is rank zero so we broadcast from last rank
             torch.distributed.broadcast(loss, get_last_rank())
 
-            self.log('val_loss', loss, prog_bar=True, rank_zero_only=True, batch_size=1)
+            if mode != 'test':
+                self.log('val_loss', loss, prog_bar=True, rank_zero_only=True, batch_size=1)
 
-            # Determine the key used to log the loss based on the user provided name of the dataset or the dataloader index.
-            loss_log_key = self._determine_log_key(data_cfg, dataloader_idx, "loss", mode)
-            self.log(loss_log_key, loss, batch_size=1)
             averaged_loss.append(loss)
 
             # Gather the outputs object from all data parallel ranks since we are using the DistributedSampler which splits data across DDP ranks.

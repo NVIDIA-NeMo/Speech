@@ -163,18 +163,23 @@ class TranscriptionMixin(ABC):
     filepaths.
 
     The following abstract classes must be implemented by the subclass:
-    - `_transcribe_input_manifest_processing()`: Process the provided input arguments (filepaths only) and return a
-        config dict for the dataloader. The data loader is should generally operate on NeMo manifests.
 
-    - `_setup_transcribe_dataloader()`: Setup the dataloader for transcription. Receives the output from
-        `_transcribe_input_manifest_processing()`.
+        - `_transcribe_input_manifest_processing()`:
+            Process the provided input arguments (filepaths only) and return a
+            config dict for the dataloader. The data loader is should generally operate on NeMo manifests.
 
-    - `_transcribe_forward()`: Implements the model's custom forward pass to return outputs that are processed by
-        `_transcribe_output_processing()`.
+        - `_setup_transcribe_dataloader()`:
+            Setup the dataloader for transcription. Receives the output from
+            `_transcribe_input_manifest_processing()`.
 
-    - `_transcribe_output_processing()`: Implements the post processing of the model's outputs to return the results to
-        the user. The result can be a list of objects, list of list of objects, tuple of objects, tuple of list of
-        objects, or a dict of list of objects.
+        - `_transcribe_forward()`:
+            Implements the model's custom forward pass to return outputs that are processed by
+            `_transcribe_output_processing()`.
+
+        - `_transcribe_output_processing()`:
+            Implements the post processing of the model's outputs to return the results to
+            the user. The result can be a list of objects, list of list of objects, tuple of objects, tuple of list of
+            objects, or a dict of list of objects.
 
     """
 
@@ -217,11 +222,16 @@ class TranscriptionMixin(ABC):
         Returns:
             Output is defined by the subclass implementation of `TranscriptionMixin._transcribe_output_processing()`.
             It can be:
-            - List[str/Hypothesis]
-            - List[List[str/Hypothesis]]
-            - Tuple[str/Hypothesis]
-            - Tuple[List[str/Hypothesis]]
-            - Dict[str, List[str/Hypothesis]]
+
+                - List[str/Hypothesis]
+
+                - List[List[str/Hypothesis]]
+
+                - Tuple[str/Hypothesis]
+
+                - Tuple[List[str/Hypothesis]]
+
+                - Dict[str, List[str/Hypothesis]]
         """
 
         if override_config is None:
@@ -674,10 +684,14 @@ class ASRTranscriptionMixin(TranscriptionMixin):
     implements the default implementation of common abstract methods among the speech recognition model classes.
 
     The following abstract classes must be implemented by the subclass:
-    - _transcribe_forward(): Implements the model's custom forward pass to return outputs that are processed by
-        `_transcribe_output_processing()`.
-    - _transcribe_output_processing(): Implements the post processing of the model's outputs to return the results to
-        the user. The result can be a list of objects, list of list of objects, tuple of objects, tuple of list of
+
+        - _transcribe_forward():
+            Implements the model's custom forward pass to return outputs that are processed by
+            `_transcribe_output_processing()`.
+
+        - _transcribe_output_processing():
+            Implements the post processing of the model's outputs to return the results to
+            the user. The result can be a list of objects, list of list of objects, tuple of objects, tuple of list of
     """
 
     def _transcribe_input_manifest_processing(

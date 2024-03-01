@@ -501,10 +501,17 @@ class ASRModuleMixin(ASRAdapterModelMixin):
 
         Args:
             self_attention_model (str): type of the attention layer and positional encoding
-                'rel_pos': relative positional embedding and Transformer-XL
-                'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
+
+                'rel_pos':
+                    relative positional embedding and Transformer-XL
+
+                'rel_pos_local_attn':
+                    relative positional embedding and Transformer-XL with local attention using
                     overlapping windows. Attention context is determined by att_context_size parameter.
-                'abs_pos': absolute positional embedding and Transformer
+
+                'abs_pos':
+                    absolute positional embedding and Transformer
+
                 If None is provided, the self_attention_model isn't changed. Defauts to None.
             att_context_size (List[int]): List of 2 ints corresponding to left and right attention context sizes,
                 or None to keep as it is. Defauts to None.
@@ -596,7 +603,6 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             cache_last_time_next: the updated tensor cache for last time layers to be used for next streaming step
             cache_last_channel_next_len: the updated lengths for cache_last_channel
             best_hyp: the best hypotheses for the Transducer models
-
             log_probs: the logits tensor of current streaming chunk, only returned when return_log_probs=True
             encoded_len: the length of the output log_probs + history chunk log_probs, only returned when return_log_probs=True
         """
@@ -819,7 +825,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
 
         Args:
             paths2audio_files: (a list) of paths to audio files.
-            batch_size: (int) batch size to use during inference. \
+            batch_size: (int) batch size to use during inference.
                 Bigger will result in better throughput performance but would use more memory.
             online_normalization: whether to do online normalization
         Returns:

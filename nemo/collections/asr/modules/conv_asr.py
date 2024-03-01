@@ -769,16 +769,16 @@ class SpeakerDecoder(NeuralModule, Exportable):
     """
     Speaker Decoder creates the final neural layers that maps from the outputs
     of Jasper Encoder to the embedding layer followed by speaker based softmax loss.
+
     Args:
         feat_in (int): Number of channels being input to this module
         num_classes (int): Number of unique speakers in dataset
         emb_sizes (list) : shapes of intermediate embedding layers (we consider speaker embbeddings from 1st of this layers)
-                Defaults to [1024,1024]
+            Defaults to [1024,1024]
         pool_mode (str) : Pooling strategy type. options are 'xvector','tap', 'attention'
-                Defaults to 'xvector (mean and variance)'
-                tap (temporal average pooling: just mean)
-                attention (attention based pooling)
-
+            Defaults to 'xvector (mean and variance)'
+            tap (temporal average pooling: just mean)
+            attention (attention based pooling)
         init_mode (str): Describes how neural network parameters are
             initialized. Options are ['xavier_uniform', 'xavier_normal',
             'kaiming_uniform','kaiming_normal'].

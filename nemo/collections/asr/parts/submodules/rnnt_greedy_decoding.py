@@ -569,14 +569,14 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer):
                     - 'exp' for using exponential mapping with linear shift.
         loop_labels: Switching between decoding algorithms. Both algorithms produce equivalent results.
             loop_labels=True algorithm is faster (especially for large batches) but can use a bit more memory
-                (negligible overhead compared to the amount of memory used by the encoder).
+            (negligible overhead compared to the amount of memory used by the encoder).
             loop_labels=False (default) is an implementation of a traditional decoding algorithm, which iterates over
-                frames (encoder output vectors), and in the inner loop, decodes labels for the current frame one by one,
-                stopping when <blank> is found.
+            frames (encoder output vectors), and in the inner loop, decodes labels for the current frame one by one,
+            stopping when <blank> is found.
             loop_labels=True iterates over labels, on each step finding the next non-blank label
-                (evaluating Joint multiple times in inner loop); It uses a minimal possible amount of calls
-                to prediction network (with maximum possible batch size),
-                which makes it especially useful for scaling the prediction network.
+            (evaluating Joint multiple times in inner loop); It uses a minimal possible amount of calls
+            to prediction network (with maximum possible batch size),
+            which makes it especially useful for scaling the prediction network.
     """
 
     def __init__(

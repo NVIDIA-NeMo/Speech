@@ -639,10 +639,8 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         Calculate F1 score and accuracy of the predicted sigmoid values.
 
         Returns:
-            f1_score (float):
-                F1 score of the estimated diarized speaker label sequences.
-            simple_acc (float):
-                Accuracy of predicted speaker labels: (total # of correct labels)/(total # of sigmoid values)
+            f1_score (float): F1 score of the estimated diarized speaker label sequences.
+            simple_acc (float): Accuracy of predicted speaker labels: (total # of correct labels)/(total # of sigmoid values)
         """
         f1_score = self._accuracy_test.compute()
         num_correct = torch.sum(self._accuracy_test.true.bool())

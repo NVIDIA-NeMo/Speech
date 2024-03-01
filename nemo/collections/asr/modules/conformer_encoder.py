@@ -82,10 +82,17 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         ff_expansion_factor (int): the expansion factor in feed forward layers
             Defaults to 4.
         self_attention_model (str): type of the attention layer and positional encoding
-            'rel_pos': relative positional embedding and Transformer-XL
-            'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
+
+            'rel_pos':
+                relative positional embedding and Transformer-XL
+
+            'rel_pos_local_attn':
+                relative positional embedding and Transformer-XL with local attention using
                 overlapping chunks. Attention context is determined by att_context_size parameter.
-            'abs_pos': absolute positional embedding and Transformer
+
+            'abs_pos':
+                absolute positional embedding and Transformer
+
             Default is rel_pos.
         pos_emb_max_len (int): the maximum length of positional embeddings
             Defaults to 5000
@@ -799,6 +806,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         """
             This function sets the needed values and parameters to perform streaming. The configuration would be stored in self.streaming_cfg.
             The streaming configuration is needed to simulate streaming inference.
+
             Args:
                 chunk_size (int): overrides the chunk size
                 shift_size (int): overrides the shift size for chunks
@@ -932,10 +940,17 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
         Args:
             self_attention_model (str): type of the attention layer and positional encoding
-                'rel_pos': relative positional embedding and Transformer-XL
-                'rel_pos_local_attn': relative positional embedding and Transformer-XL with local attention using
+
+                'rel_pos':
+                    relative positional embedding and Transformer-XL
+
+                'rel_pos_local_attn':
+                    relative positional embedding and Transformer-XL with local attention using
                     overlapping windows. Attention context is determined by att_context_size parameter.
-                'abs_pos': absolute positional embedding and Transformer
+
+                'abs_pos':
+                    absolute positional embedding and Transformer
+
                 If None is provided, the self_attention_model isn't changed. Defaults to None.
             att_context_size (List[int]): List of 2 ints corresponding to left and right attention context sizes,
                 or None to keep as it is. Defaults to None.

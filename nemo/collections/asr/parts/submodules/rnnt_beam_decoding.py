@@ -101,38 +101,39 @@ class BeamRNNTInfer(Typing):
             Must be one of ['beam', 'tsd', 'alsd']. 'nsc' is currently not supported.
 
             Algoritm used:
-            `beam` - basic beam search strategy. Larger beams generally result in better decoding,
-                however the time required for the search also grows steadily.
 
-            `tsd` - time synchronous decoding. Please refer to the paper:
-                [Alignment-Length Synchronous Decoding for RNN Transducer](https://ieeexplore.ieee.org/document/9053040)
-                for details on the algorithm implemented.
+                `beam` - basic beam search strategy. Larger beams generally result in better decoding,
+                    however the time required for the search also grows steadily.
 
-                Time synchronous decoding (TSD) execution time grows by the factor T * max_symmetric_expansions.
-                For longer sequences, T is greater, and can therefore take a long time for beams to obtain
-                good results. This also requires greater memory to execute.
+                `tsd` - time synchronous decoding. Please refer to the paper:
+                    [Alignment-Length Synchronous Decoding for RNN Transducer](https://ieeexplore.ieee.org/document/9053040)
+                    for details on the algorithm implemented.
 
-            `alsd` - alignment-length synchronous decoding. Please refer to the paper:
-                [Alignment-Length Synchronous Decoding for RNN Transducer](https://ieeexplore.ieee.org/document/9053040)
-                for details on the algorithm implemented.
+                    Time synchronous decoding (TSD) execution time grows by the factor T * max_symmetric_expansions.
+                    For longer sequences, T is greater, and can therefore take a long time for beams to obtain
+                    good results. This also requires greater memory to execute.
 
-                Alignment-length synchronous decoding (ALSD) execution time is faster than TSD, with growth
-                factor of T + U_max, where U_max is the maximum target length expected during execution.
+                `alsd` - alignment-length synchronous decoding. Please refer to the paper:
+                    [Alignment-Length Synchronous Decoding for RNN Transducer](https://ieeexplore.ieee.org/document/9053040)
+                    for details on the algorithm implemented.
 
-                Generally, T + U_max < T * max_symmetric_expansions. However, ALSD beams are non-unique,
-                therefore it is required to use larger beam sizes to achieve the same (or close to the same)
-                decoding accuracy as TSD.
+                    Alignment-length synchronous decoding (ALSD) execution time is faster than TSD, with growth
+                    factor of T + U_max, where U_max is the maximum target length expected during execution.
 
-                For a given decoding accuracy, it is possible to attain faster decoding via ALSD than TSD.
+                    Generally, T + U_max < T * max_symmetric_expansions. However, ALSD beams are non-unique,
+                    therefore it is required to use larger beam sizes to achieve the same (or close to the same)
+                    decoding accuracy as TSD.
 
-            `maes` = modified adaptive expansion searcn. Please refer to the paper:
-                [Accelerating RNN Transducer Inference via Adaptive Expansion Search](https://ieeexplore.ieee.org/document/9250505)
+                    For a given decoding accuracy, it is possible to attain faster decoding via ALSD than TSD.
 
-                Modified Adaptive Synchronous Decoding (mAES) execution time is adaptive w.r.t the
-                number of expansions (for tokens) required per timestep. The number of expansions can usually
-                be constrained to 1 or 2, and in most cases 2 is sufficient.
+                `maes` = modified adaptive expansion searcn. Please refer to the paper:
+                    [Accelerating RNN Transducer Inference via Adaptive Expansion Search](https://ieeexplore.ieee.org/document/9250505)
 
-                This beam search technique can possibly obtain superior WER while sacrificing some evaluation time.
+                    Modified Adaptive Synchronous Decoding (mAES) execution time is adaptive w.r.t the
+                    number of expansions (for tokens) required per timestep. The number of expansions can usually
+                    be constrained to 1 or 2, and in most cases 2 is sufficient.
+
+                    This beam search technique can possibly obtain superior WER while sacrificing some evaluation time.
 
         score_norm: bool, whether to normalize the scores of the log probabilities.
 

@@ -52,8 +52,11 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
     Model class creates training, validation methods for setting up data
     performing model forward pass.
     Expects config dict for
+
         * preprocessor
+
         * Jasper/Quartznet Encoder
+
         * Speaker Decoder
     """
 

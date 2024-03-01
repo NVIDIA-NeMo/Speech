@@ -28,6 +28,7 @@ class ConcatDataset(IterableDataset):
     """
     A dataset that accepts as argument multiple datasets and then samples from them based on the specified 
     sampling technique.
+
     Args:
         datasets (list): A list of datasets to sample from.
         shuffle (bool): Whether to shuffle individual datasets. Only works with non-iterable datasets. 
@@ -201,6 +202,7 @@ class ConcatMapDataset(Dataset):
     """
     A dataset that accepts as argument multiple datasets and then samples from them based on the specified 
     sampling technique.
+
     Args:
         datasets (list): A list of datasets to sample from.
         sampling_technique (str): Sampling technique to choose which dataset to draw a sample from.
@@ -294,6 +296,7 @@ class CodeSwitchedDataset(IterableDataset):
     """
     A dataset that accepts as argument multiple sub-datasets (usually from different languages, but that's not required) and then
     samples from them in order to create synthetic code-switched samples of up to N different sub-datasets
+
     Args:
         datasets (list): A list of datasets
         lang_probs (list): A list of probabilities (which must sum to 1) corresponding to the sampling probability for each dataset
@@ -318,7 +321,7 @@ class CodeSwitchedDataset(IterableDataset):
         global_rank (int): Worker rank, used for partitioning map style datasets. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning map style datasets. Defaults to 1.
         pure_random (bool): If true, then always draw random sample from lang_probs. If false, you only draw from those datasets
-                            which you haven't sampled from yet for the composite sample
+            which you haven't sampled from yet for the composite sample
         force_monochannel (bool): If true, then all output audio will be mono-channel
         infinity_mode (bool): If true, then the dataset iterable will generate an infinite amount of samples
         sample_rate (int): the sample rate of all audio being sent to this Dataset

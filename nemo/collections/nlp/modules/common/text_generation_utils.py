@@ -587,8 +587,10 @@ def generate(
             the behavior of generation will depend on whether the seed was set earlier or not.
         strategy_args, the extra arguments are treated as inference strategy arguments
         end_strings, a list of strings to stop generation when they are encountered in the output.
+
     Returns:
         OutputType: It generates the output in a dictionary type. It has the following keys:
+
             sentences: List[str], output sentences
             tokens: List[List[str]], output sentences borken into tokens
             logprob: List[Tensor], log prob of generated tokens

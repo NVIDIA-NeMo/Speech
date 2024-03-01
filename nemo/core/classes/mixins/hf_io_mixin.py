@@ -65,7 +65,9 @@ class HuggingFaceFileIO(ABC):
 
         The following metadata can be passed via the `model_filter` for additional results.
         Metadata:
+
             resolve_card_info: Bool flag, if set, returns the model card metadata. Default: False.
+
             limit_results: Optional int, limits the number of results returned.
 
         .. code-block:: python

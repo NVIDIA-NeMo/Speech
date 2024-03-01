@@ -38,10 +38,14 @@ class MHAResidualAddAdapterStrategy(adapter_mixin_strategies.ResidualAddAdapterS
 
         Args:
             input: A dictionary of multiple input arguments for the adapter module.
+
                 `query`, `key`, `value`: Original output tensor of the module, or the output of the
                  previous adapter (if more than one adapters are enabled).
+
                  `mask`: Attention mask.
+
                  `pos_emb`: Optional positional embedding for relative encoding.
+
             adapter: The adapter module that is currently required to perform the forward pass.
             module: The calling module, in its entirety. It is a module that implements `AdapterModuleMixin`,
                 therefore the strategy can access all other adapters in this module via `module.adapter_layer`.
@@ -100,6 +104,7 @@ class MHAResidualAddAdapterStrategyConfig(adapter_mixin_strategies.ResidualAddAd
 
 class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterModuleUtil):
     """Multi-Head Attention layer of Transformer.
+
      Args:
          n_head (int): number of heads
          n_feat (int): size of the features
@@ -190,6 +195,7 @@ class MultiHeadAttentionAdapterConfig:
 class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, adapter_modules.AdapterModuleUtil):
     """Multi-Head Attention layer of Transformer-XL with support of relative positional encoding.
     Paper: https://arxiv.org/abs/1901.02860
+
     Args:
         n_head (int): number of heads
         n_feat (int): size of the features

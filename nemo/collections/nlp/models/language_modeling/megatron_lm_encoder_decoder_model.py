@@ -1003,12 +1003,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def encode(self, tokens_enc, enc_mask, encoder_input=None, batch_data=None, reconfigure_microbatch=True):
         """
-        tokens_enc - encoder input tokens
-        enc_mask - corresponding mask
-        encoder_input - encoder input (bypass tokens), if given tokens_enc can be None.
-        batch_data - passed directly to all hidden transformations and losses. 
-                     Can be used to pass additional data like class label.
-                     Format is not defined and should match the expected format of the used hiddens modules.
+        Args:
+            tokens_enc: encoder input tokens
+            enc_mask: corresponding mask
+            encoder_input: encoder input (bypass tokens), if given tokens_enc can be None.
+            batch_data: passed directly to all hidden transformations and losses.
+                Can be used to pass additional data like class label.
+                Format is not defined and should match the expected format of the used hiddens modules.
         """
         # Check whether the DDP is initialized. This is needed when running inference outside of training loop.
         if parallel_state.is_unitialized():
@@ -1131,27 +1132,29 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         sampling_kwargs: dict = {},
     ):
         """
-        tokens_enc - a tensor of shape [batch_size, seq_len] that contains the input tokens.
-        enc_mask - a tensor of shape [batch_size, seq_len] that contains the input tokens mask (1 for active, 0 for inactive).
-        num_tokens_to_generate - the max number of tokens to generate.
-        encoder_input - a tensor of shape [batch_size, seq_len, hidden_size] that contains the encoder hidden states (replaces tokens_enc if given).   
-        tokenizer - a tokenizer object.
-        enc_output - a tensor of shape [batch_size, seq_len, hidden_size] that contains the encoder hidden states (replaces tokens_enc and encoder_input if given).
-        enc_output_attn_mask - a tensor of shape [batch_size, seq_len] that contains the encoder attention mask (replaces enc_mask if given).
-        ignore_ids - a list of token ids to ignore when sampling.
-        bos_id - the id of the beginning of sentence token. If None, will use tokenizer.bos_id unless explicitly set to something else.
-        predicted_tokens_dec - a tensor of shape [batch_size, seq_len] that contains the tokens that have already been decoded.
-        sampling_method - a sampling method to use in the decoding iterations. Currently supported methods are
-                          "beam-search"/"greedy-search"/"topkp-sampling". The argument specifies the sampling function
-                          that takes in a tensor of logits [batch_size, vocab_size] and returns a tuple
-                          (tensor of log_probs [batch_size], tensor of sampled tokens_ids from logits [batch_size]).
-                          If the beam search is enabled, the sampling function returns tensors [batch_size, beam_size]
-        sampling_kwargs - dict with arguments to be passed to the sampling function. Please refer to the method
-                          get_sampling_token_fn to see which arguments are required for a chosen sampling_method.
-        return:
-                tuple of tensors [batch_size, seq_len +1], [batch_size, seq_len] for predicted tokens and their log probs.
-                If sampling_method == 'beam-size' and keep_only_best_tokens is False the shape of the tensors are
-                [batch_size, beam_size, seq_len + 1], [batch_size, beam_size, seq_len]
+        Args:
+            tokens_enc: a tensor of shape [batch_size, seq_len] that contains the input tokens.
+            enc_mask: a tensor of shape [batch_size, seq_len] that contains the input tokens mask (1 for active, 0 for inactive).
+            num_tokens_to_generate: the max number of tokens to generate.
+            encoder_input: a tensor of shape [batch_size, seq_len, hidden_size] that contains the encoder hidden states (replaces tokens_enc if given).
+            tokenizer: a tokenizer object.
+            enc_output: a tensor of shape [batch_size, seq_len, hidden_size] that contains the encoder hidden states (replaces tokens_enc and encoder_input if given).
+            enc_output_attn_mask: a tensor of shape [batch_size, seq_len] that contains the encoder attention mask (replaces enc_mask if given).
+            ignore_ids: a list of token ids to ignore when sampling.
+            bos_id: the id of the beginning of sentence token. If None, will use tokenizer.bos_id unless explicitly set to something else.
+            predicted_tokens_dec: a tensor of shape [batch_size, seq_len] that contains the tokens that have already been decoded.
+            sampling_method: a sampling method to use in the decoding iterations. Currently supported methods are
+                "beam-search"/"greedy-search"/"topkp-sampling". The argument specifies the sampling function
+                that takes in a tensor of logits [batch_size, vocab_size] and returns a tuple
+                (tensor of log_probs [batch_size], tensor of sampled tokens_ids from logits [batch_size]).
+                If the beam search is enabled, the sampling function returns tensors [batch_size, beam_size]
+            sampling_kwargs: dict with arguments to be passed to the sampling function. Please refer to the method
+                get_sampling_token_fn to see which arguments are required for a chosen sampling_method.
+
+        Returns:
+            tuple of tensors [batch_size, seq_len +1], [batch_size, seq_len] for predicted tokens and their log probs.
+            If sampling_method == 'beam-size' and keep_only_best_tokens is False the shape of the tensors are
+            [batch_size, beam_size, seq_len + 1], [batch_size, beam_size, seq_len]
         """
         # Setting up the sampling strategy
         sample_token_fn, sampling_kwargs = get_sampling_token_fn(sampling_method, sampling_kwargs)

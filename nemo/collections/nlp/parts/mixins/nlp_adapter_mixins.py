@@ -486,6 +486,13 @@ class NLPAdapterModelMixin:
         """
 
         peft_cfg = cls.restore_from(path, return_config=True)
+        if hasattr(peft_cfg, 'peft') and peft_cfg.peft.peft_scheme not in [None, 'none']:
+            # before PEFT migrates to distributed ckpt, eval must use same TP/PP as training
+            for p in ['tensor_model_parallel_size', 'pipeline_model_parallel_size']:
+                assert peft_cfg.get(p) == cfg.model.get(
+                    p
+                ), f"PEFT evaluation {p} ({cfg.model.get(p)}) must equal training {p} ({peft_cfg.get(p)})"
+
         with open_dict(peft_cfg):
             # update the model config of the trained model with params we want to set at inference time.
             peft_cfg.precision = cfg.trainer.precision

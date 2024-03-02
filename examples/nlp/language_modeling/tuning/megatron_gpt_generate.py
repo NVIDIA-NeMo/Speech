@@ -70,6 +70,16 @@ python examples/nlp/language_modeling/tuning/megatron_gpt_generate.py \
 	inference.greedy=True \
 	inference.outfile_path=\'<path_to_jsonl_output_file>'  
 
+[Advanced] If you want to evaluate a pretrained base model as if it was an SFT model, follow the command for 
+evaluating an SFT model, but set the following arguments with appropriate values for your finetuning dataset.
+An example is below.
+    ...
+    model.data.test_ds.label_key='output' \
+    model.data.test_ds.add_eos=True \
+    model.data.test_ds.add_sep=False \
+    model.data.test_ds.add_bos=False \
+    model.data.test_ds.truncation_field="input" \
+    model.data.test_ds.prompt_template="\{input\} \{output\}" \
 """
 
 

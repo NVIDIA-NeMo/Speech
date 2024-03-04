@@ -53,7 +53,7 @@ model:
       warmup_ratio: 0.1
 
   tokenizer:
-    tokenizer_name: yttm
+    tokenizer_name: sentencepiece
     tokenizer_model: ???
     vocab_file: null
     special_tokens: null

@@ -117,8 +117,8 @@ class MTEncDecModelConfig(EncDecNLPModelConfig):
 class AAYNBaseConfig(MTEncDecModelConfig):
 
     # Attention is All You Need Base Configuration
-    encoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='yttm'))
-    decoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='yttm'))
+    encoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='sentencepiece'))
+    decoder_tokenizer: TokenizerConfig = field(default_factory=lambda: TokenizerConfig(library='sentencepiece'))
 
     encoder: NeMoTransformerEncoderConfig = field(
         default_factory=lambda: NeMoTransformerEncoderConfig(

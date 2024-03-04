@@ -217,7 +217,7 @@ def get_args():
         '--tokenizer-library',
         type=str,
         required=True,
-        choices=['yttm', 'sentencepiece', 'megatron', 'huggingface', 'tabular'],
+        choices=['sentencepiece', 'megatron', 'huggingface', 'tabular'],
         help='What tokenizer library to use.',
     )
     group.add_argument(

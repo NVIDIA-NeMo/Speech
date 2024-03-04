@@ -155,7 +155,7 @@ model:
       warmup_ratio: 0.1
 
   encoder_tokenizer:
-    library: yttm
+    library: sentencepiece
     model: null
     vocab_size: null # vocab size for training bpe
     bpe_dropout: null
@@ -167,7 +167,7 @@ model:
     num_sentinel_tokens: 0
 
   decoder_tokenizer:
-    library: yttm
+    library: sentencepiece
     model: null
     vocab_size: null # vocab size for training bpe
     bpe_dropout: null

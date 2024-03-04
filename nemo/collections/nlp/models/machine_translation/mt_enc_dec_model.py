@@ -77,8 +77,8 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         self.multilingual_ids = []
         self.special_tokens = {}
 
-        self.encoder_tokenizer_library = cfg.encoder_tokenizer.get('library', 'yttm')
-        self.decoder_tokenizer_library = cfg.decoder_tokenizer.get('library', 'yttm')
+        self.encoder_tokenizer_library = cfg.encoder_tokenizer.get('library', 'sentencepiece')
+        self.decoder_tokenizer_library = cfg.decoder_tokenizer.get('library', 'sentencepiece')
 
         self.validate_input_ids = cfg.get("validate_input_ids", True)
         if self.multilingual:
@@ -568,7 +568,7 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         special_tokens={},
     ):
 
-        supported_tokenizers = ['yttm', 'huggingface', 'sentencepiece', 'megatron', 'byte-level']
+        supported_tokenizers = ['huggingface', 'sentencepiece', 'megatron', 'byte-level']
         if (
             encoder_tokenizer_library not in supported_tokenizers
             or decoder_tokenizer_library not in supported_tokenizers

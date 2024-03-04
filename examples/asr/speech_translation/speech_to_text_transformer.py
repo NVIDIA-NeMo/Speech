@@ -23,7 +23,7 @@ python speech_to_text_transformer.py \
     model.test_ds.manifest_filepath=<path to test manifest> \
     model.tokenizer.dir=<path to directory of tokenizer (not full path to the vocab file!)> \
     model.tokenizer.model_path=<path to speech tokenizer model> \
-    model.tokenizer.type=<either bpe, wpe, or yttm> \
+    model.tokenizer.type=<either bpe or wpe> \
     trainer.devices=-1 \
     trainer.accelerator="ddp" \
     trainer.max_epochs=100 \

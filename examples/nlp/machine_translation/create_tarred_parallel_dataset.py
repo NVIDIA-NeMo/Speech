@@ -35,8 +35,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '--encoder_tokenizer_name',
         type=str,
-        default='yttm',
-        help='Encoder BPE Tokenizer Name, Options: [yttm, sentencepiece]',
+        default='sentencepiece',
+        help='Encoder BPE Tokenizer Name, Options: [sentencepiece]',
     )
     parser.add_argument('--encoder_tokenizer_vocab_size', type=int, default=32000, help='Encoder Vocab size after BPE')
     parser.add_argument(
@@ -57,8 +57,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '--decoder_tokenizer_name',
         type=str,
-        default='yttm',
-        help='Encoder BPE Tokenizer Name, Options: [yttm, sentencepiece]',
+        default='sentencepiece',
+        help='Encoder BPE Tokenizer Name, Options: [sentencepiece]',
     )
     parser.add_argument('--decoder_tokenizer_vocab_size', type=int, default=32000, help='Encoder Vocab size after BPE')
     parser.add_argument(

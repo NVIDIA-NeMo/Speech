@@ -55,7 +55,7 @@ class TransformerLMModel(ModelPT):
         # Instantiates tokenizer and register to be saved with NeMo Model archive
         # After this call, ther will be self.tokenizer which can convert between tokens and token_ids.
         self.setup_tokenizer(
-            tokenizer_name=cfg.tokenizer.get("tokenizer_name", "yttm"),
+            tokenizer_name=cfg.tokenizer.get("tokenizer_name", "sentencepiece"),
             tokenizer_model=cfg.tokenizer.get("tokenizer_model", None),
             vocab_file=cfg.tokenizer.get("vocab_file", None),
             bpe_dropout=cfg.tokenizer.get("bpe_dropout", 0.0),
@@ -202,7 +202,7 @@ class TransformerLMModel(ModelPT):
         self, tokenizer_name=None, tokenizer_model=None, vocab_file=None, bpe_dropout=0.0, special_tokens=None,
     ):
 
-        supported_tokenizers = ['yttm', 'huggingface', 'sentencepiece', 'word']
+        supported_tokenizers = ['huggingface', 'sentencepiece', 'word']
         if tokenizer_name not in supported_tokenizers:
             raise NotImplementedError(f"Currently we only support tokenizers in {supported_tokenizers}.")
 

@@ -35,7 +35,7 @@ class T0Dataset(Dataset):
     ):
         """
         src_file_name: Path to a JSONL T0 dataset file.
-        tokenizer: Tokenizer for the dataset. Instance of a class that inherits TokenizerSpec (ex: YTTM, SentencePiece).
+        tokenizer: Tokenizer for the dataset. Instance of a class that inherits TokenizerSpec (ex: SentencePiece).
         max_src_seq_length: Maximum length of the source sequences. Lines above this length will be truncated.
         max_tgt_seq_length: Maximum length of the target sequences. Lines above this length will be truncated.
         replace_bos_with_pad: Whether the decoder starts with a pad token. This is needed for Google's T5 models that may be converted from HF.

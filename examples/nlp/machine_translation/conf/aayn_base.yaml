@@ -77,23 +77,21 @@ model:
       warmup_ratio: 0.1
 
   encoder_tokenizer:
-    library: yttm
+    library: sentencepiece
     tokenizer_model: null
     vocab_size: null # vocab size for training bpe
     bpe_dropout: null
     vocab_file: null
     special_tokens: null
-    training_sample_size: null # valid for sentencepiece tokenizer
     r2l: false
 
   decoder_tokenizer:
-    library: yttm
+    library: sentencepiece
     tokenizer_model: null
     vocab_size: null # vocab size for training bpe
     bpe_dropout: null
     vocab_file: null
     special_tokens: null
-    training_sample_size: null # valid for sentencepiece tokenizer
     r2l: false
 
   encoder:

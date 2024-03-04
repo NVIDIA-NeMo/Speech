@@ -23,7 +23,6 @@ from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTo
 from nemo.collections.common.tokenizers.regex_tokenizer import RegExTokenizer
 from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
 from nemo.collections.common.tokenizers.word_tokenizer import WordTokenizer
-from nemo.collections.common.tokenizers.youtokentome_tokenizer import YouTokenToMeTokenizer
 from nemo.collections.nlp.modules.common.huggingface.huggingface_utils import get_huggingface_pretrained_lm_models_list
 from nemo.collections.nlp.modules.common.lm_utils import get_pretrained_lm_models_list
 from nemo.collections.nlp.parts.nlp_overrides import HAVE_MEGATRON_CORE
@@ -86,11 +85,11 @@ def get_tokenizer(
             for example: bert-base-cased
             To see the list of all HuggingFace pretrained models, use:
             nemo_nlp.modules.common.get_huggingface_pretrained_lm_models_list()
-        tokenizer_model: tokenizer model file of sentencepiece or youtokentome
+        tokenizer_model: tokenizer model file of sentencepiece
         special_tokens: dict of special tokens
         vocab_file: path to vocab file
         use_fast: (only for HuggingFace AutoTokenizer) set to True to use fast HuggingFace tokenizer
-        bpe_dropout: (only supported by YTTM tokenizer) BPE dropout tries to corrupt the standard segmentation
+        bpe_dropout: (experimental) BPE dropout tries to corrupt the standard segmentation
             procedure of BPE to help
             model better learn word compositionality and become robust to segmentation errors. 
             It has emperically been shown to improve inference time BLEU scores.
@@ -118,8 +117,6 @@ def get_tokenizer(
         return nemo.collections.common.tokenizers.sentencepiece_tokenizer.SentencePieceTokenizer(
             model_path=tokenizer_model, special_tokens=special_tokens, legacy=True
         )
-    elif tokenizer_name == 'yttm':
-        return YouTokenToMeTokenizer(model_path=tokenizer_model, bpe_dropout=bpe_dropout)
     elif tokenizer_name == 'word':
         return WordTokenizer(vocab_file=vocab_file, **special_tokens_dict)
     elif tokenizer_name == 'char':
@@ -141,7 +138,7 @@ def get_tokenizer(
 
 
 def get_nmt_tokenizer(
-    library: str = 'yttm',
+    library: str = 'sentencepiece',
     model_name: Optional[str] = None,
     tokenizer_model: Optional[str] = None,
     vocab_file: Optional[str] = None,
@@ -156,11 +153,11 @@ def get_nmt_tokenizer(
     """
     Args:
         model_name: if using a pretrained model from NeMo, HuggingFace, or Megatron
-        tokenizer_model: tokenizer model file of sentencepiece or youtokentome
+        tokenizer_model: tokenizer model file of sentencepiece
         special_tokens: dict of special tokens
         vocab_file: path to vocab file
         use_fast: (only for HuggingFace AutoTokenizer) set to True to use fast HuggingFace tokenizer
-        bpe_dropout: (only supported by YTTM tokenizer) BPE dropout tries to corrupt the standard segmentation procedure
+        bpe_dropout: (experimental) BPE dropout tries to corrupt the standard segmentation procedure
             of BPE to help model better learn word compositionality and become robust to segmentation errors.
             It has empirically been shown to improve inference time BLEU scores.
         r2l: Whether to return subword IDs from right to left
@@ -175,10 +172,7 @@ def get_nmt_tokenizer(
     ):
         raise ValueError("No Tokenizer path provided or file does not exist!")
 
-    if library == 'yttm':
-        logging.info(f'Getting YouTokenToMeTokenizer with model: {tokenizer_model} with r2l: {r2l}.')
-        return YouTokenToMeTokenizer(model_path=tokenizer_model, bpe_dropout=bpe_dropout, r2l=r2l)
-    elif library == 'huggingface':
+    if library == 'huggingface':
         logging.info(f'Getting HuggingFace AutoTokenizer with pretrained_model_name: {model_name}')
         return AutoTokenizer(
             pretrained_model_name=model_name,
@@ -209,6 +203,6 @@ def get_nmt_tokenizer(
         return TabularTokenizer(vocab_file, delimiter=delimiter)
     else:
         raise NotImplementedError(
-            'Currently we only support "yttm", "huggingface", "sentencepiece", "megatron", and "byte-level" tokenizer'
+            'Currently we only support "huggingface", "sentencepiece", "megatron", and "byte-level" tokenizer'
             'libraries.'
         )

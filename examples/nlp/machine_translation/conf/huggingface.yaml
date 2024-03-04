@@ -79,7 +79,7 @@ model:
     vocab_size: null
 
   decoder_tokenizer:
-    library: yttm
+    library: huggingface
     tokenizer_model: null
     vocab_file: null
     special_tokens: null

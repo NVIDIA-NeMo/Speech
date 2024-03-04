@@ -15,7 +15,6 @@
 import pytest
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
-from nemo.collections.common.tokenizers.youtokentome_tokenizer import YouTokenToMeTokenizer
 
 MODEL_SPECIAL_TOKENS = {
     'unk_token': '[UNK]',
@@ -187,77 +186,6 @@ class TestSentencePieceTokenizer:
         tokenizer = SentencePieceTokenizer(test_data_dir + self.model_name)
 
         tokens = ["<cls>", "a", "b", "c", "<sep>", "e", "f", "<sep>", "g", "h", "i", "</s>"]
-        ids = tokenizer.tokens_to_ids(tokens)
-        result = tokenizer.ids_to_tokens(ids)
-
-        assert len(result) == len(tokens)
-
-        for i in range(len(result)):
-            assert result[i] == tokens[i]
-
-
-class TestYouTokenToMeTokenizer:
-    model_name = "/yttm.4096.en-de.model"
-
-    @pytest.mark.unit
-    def test_text_to_tokens(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        text = "<BOS> a b c e <UNK> f g h i <EOS>"
-        tokens = tokenizer.text_to_tokens(text)
-
-        assert tokens.count("<BOS>") == 0
-        assert tokens.count("<UNK>") == 0
-        assert tokens.count("<EOS>") == 0
-
-    @pytest.mark.unit
-    def test_tokens_to_text(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        text = "a b c e f g h i"
-        tokens = tokenizer.text_to_tokens(text)
-        result = tokenizer.tokens_to_text(tokens)
-
-        assert text == result
-
-    @pytest.mark.unit
-    def test_text_to_ids(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        text = "<BOS> a b c <UNK> e f g h i <EOS>"
-        tokens = tokenizer.text_to_ids(text)
-
-        assert tokens.count(tokenizer.bos_id) == 0
-        assert tokens.count(tokenizer.unk_id) == 0
-        assert tokens.count(tokenizer.eos_id) == 0
-
-    @pytest.mark.unit
-    def test_ids_to_text(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        text = "a b c e f g h i"
-        ids = tokenizer.text_to_ids(text)
-        result = tokenizer.ids_to_text(ids)
-
-        assert text == result
-
-    @pytest.mark.unit
-    def test_tokens_to_ids(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        tokens = ["<BOS>", "a", "b", "c", "<UNK>", "e", "f", "<UNK>", "g", "h", "i", "<EOS>"]
-        ids = tokenizer.tokens_to_ids(tokens)
-
-        assert len(ids) == len(tokens)
-        assert ids.count(tokenizer.bos_id) == 1
-        assert ids.count(tokenizer.eos_id) == 1
-        assert ids.count(tokenizer.unk_id) == 2
-
-    @pytest.mark.unit
-    def test_ids_to_tokens(self, test_data_dir):
-        tokenizer = YouTokenToMeTokenizer(test_data_dir + self.model_name)
-
-        tokens = ["<BOS>", "a", "b", "c", "<UNK>", "e", "f", "<UNK>", "g", "h", "i", "<EOS>"]
         ids = tokenizer.tokens_to_ids(tokens)
         result = tokenizer.ids_to_tokens(ids)
 

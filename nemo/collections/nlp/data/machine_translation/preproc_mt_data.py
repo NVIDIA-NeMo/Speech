@@ -20,7 +20,6 @@ import pickle
 import tarfile
 import tempfile
 
-import youtokentome as yttm
 from joblib import Parallel, delayed
 from omegaconf import ListConfig, OmegaConf
 from pytorch_lightning import Trainer
@@ -51,8 +50,6 @@ class MTDataPreproc:
             model.train_ds.tokens_in_batch=16000 
         Once a dataset has been constructed based on this configuration, MTDataPreproc will not process it again.
         If a previously trained tokenizer model or tarred dataset is found, MTDataPreproc will not preprocess the data.
-
-        Note: the only tokenizer currently supported is YouTokenToMe.
     """
 
     def __init__(self, cfg: MTEncDecModelConfig, trainer: Trainer = None) -> None:
@@ -64,9 +61,9 @@ class MTDataPreproc:
             self.world_size = trainer.num_nodes * trainer.num_devices
 
         if hasattr(cfg, 'train_ds'):
-            supported_tokenizers = ['yttm', 'huggingface', 'sentencepiece', 'megatron', 'byte-level']
+            supported_tokenizers = ['huggingface', 'sentencepiece', 'megatron', 'byte-level']
             supported_multilingual_tokenizers = ['sentencepiece', 'byte-level']
-            supported_train_tokenizers = ['yttm', 'sentencepiece']
+            supported_train_tokenizers = ['sentencepiece']
 
             if (
                 cfg.encoder_tokenizer.get('library') not in supported_tokenizers
@@ -93,7 +90,7 @@ class MTDataPreproc:
                 or cfg.decoder_tokenizer.get('library') in supported_train_tokenizers
             ):
 
-                # Train tokenizer models if using yttm or sentencepiece and they don't exist
+                # Train tokenizer models if using sentencepiece and they don't exist
                 if (
                     cfg.encoder_tokenizer.get('library') in supported_train_tokenizers
                     and cfg.encoder_tokenizer.get('tokenizer_model') is None
@@ -313,9 +310,6 @@ class MTDataPreproc:
         decoder_tokenizer_legacy=False,
     ):
 
-        # if encoder_tokenizer_name != 'yttm' or decoder_tokenizer_name != 'yttm':
-        #     raise NotImplementedError(f"Currently we only support yttm tokenizer.")
-
         if encoder_bpe_dropout is None:
             encoder_bpe_dropout = 0.0
 
@@ -345,13 +339,7 @@ class MTDataPreproc:
     def get_monolingual_tokenizer(
         tokenizer_name=None, tokenizer_model=None, bpe_dropout=0.0,
     ):
-        if tokenizer_name == 'yttm':
-            if bpe_dropout is None:
-                bpe_dropout = 0.0
-            tokenizer = get_tokenizer(
-                tokenizer_name=tokenizer_name, tokenizer_model=tokenizer_model, bpe_dropout=bpe_dropout,
-            )
-        elif tokenizer_name == 'sentencepiece':
+        if tokenizer_name == 'sentencepiece':
             tokenizer = SentencePieceTokenizer(model_path=tokenizer_model)
         else:
             try:
@@ -773,7 +761,7 @@ class MTDataPreproc:
         decoder_tokenizer_model = None
         os.makedirs(out_dir, exist_ok=True)
 
-        supported_train_tokenizers = ['yttm', 'sentencepiece']
+        supported_train_tokenizers = ['sentencepiece']
 
         if encoder_special_tokens:
             if isinstance(encoder_special_tokens, dict):
@@ -802,35 +790,26 @@ class MTDataPreproc:
                         with tempfile.TemporaryDirectory() as tmp:
                             concat_data_path = os.path.join(tmp, 'concat_dataset.txt')
                             os.system('cat %s %s > %s' % (src_fname, tgt_fname, concat_data_path))
-                            if encoder_tokenizer_name == "yttm":
-                                yttm.BPE.train(
-                                    data=concat_data_path,
-                                    vocab_size=encoder_tokenizer_vocab_size,
-                                    model=encoder_tokenizer_model,
-                                    coverage=encoder_tokenizer_coverage,
-                                    n_threads=-1,
-                                )
-                            else:
-                                create_spt_model(
-                                    data_file=concat_data_path,
-                                    vocab_size=encoder_tokenizer_vocab_size,
-                                    sample_size=encoder_training_sample_size,
-                                    do_lower_case=False,
-                                    tokenizer_type='bpe',
-                                    character_coverage=encoder_tokenizer_coverage,
-                                    output_dir=out_dir,
-                                    bos=True,
-                                    eos=True,
-                                    pad=True,
-                                    control_symbols=spt_symbols,
-                                    user_defined_symbols=encoder_special_tokens,
-                                    byte_fallback=byte_fallback,
-                                    split_digits=split_digits,
-                                    split_by_whitespace=split_by_whitespace,
-                                )
-                                os.rename(
-                                    os.path.join(out_dir, 'tokenizer.model'), encoder_tokenizer_model,
-                                )
+                            create_spt_model(
+                                data_file=concat_data_path,
+                                vocab_size=encoder_tokenizer_vocab_size,
+                                sample_size=encoder_training_sample_size,
+                                do_lower_case=False,
+                                tokenizer_type='bpe',
+                                character_coverage=encoder_tokenizer_coverage,
+                                output_dir=out_dir,
+                                bos=True,
+                                eos=True,
+                                pad=True,
+                                control_symbols=spt_symbols,
+                                user_defined_symbols=encoder_special_tokens,
+                                byte_fallback=byte_fallback,
+                                split_digits=split_digits,
+                                split_by_whitespace=split_by_whitespace,
+                            )
+                            os.rename(
+                                os.path.join(out_dir, 'tokenizer.model'), encoder_tokenizer_model,
+                            )
         else:
             if encoder_tokenizer_name in supported_train_tokenizers:
                 encoder_tokenizer_model = os.path.join(
@@ -845,34 +824,25 @@ class MTDataPreproc:
                         logging.info(
                             f'Encoder tokenizer model {encoder_tokenizer_model} not found. Training tokenizer model.'
                         )
-                        if encoder_tokenizer_name == "yttm":
-                            yttm.BPE.train(
-                                data=src_fname,
-                                vocab_size=encoder_tokenizer_vocab_size,
-                                model=encoder_tokenizer_model,
-                                coverage=encoder_tokenizer_coverage,
-                                n_threads=-1,
-                            )
-                        else:
-                            dir_name = os.path.dirname(encoder_tokenizer_model)
-                            create_spt_model(
-                                data_file=src_fname,
-                                vocab_size=encoder_tokenizer_vocab_size,
-                                sample_size=encoder_training_sample_size,
-                                do_lower_case=False,
-                                tokenizer_type='bpe',
-                                character_coverage=encoder_tokenizer_coverage,
-                                output_dir=dir_name,
-                                bos=True,
-                                eos=True,
-                                pad=True,
-                                control_symbols=spt_symbols,
-                                user_defined_symbols=encoder_special_tokens,
-                                byte_fallback=byte_fallback,
-                                split_digits=split_digits,
-                                split_by_whitespace=split_by_whitespace,
-                            )
-                            os.rename(os.path.join(dir_name, 'tokenizer.model'), encoder_tokenizer_model)
+                        dir_name = os.path.dirname(encoder_tokenizer_model)
+                        create_spt_model(
+                            data_file=src_fname,
+                            vocab_size=encoder_tokenizer_vocab_size,
+                            sample_size=encoder_training_sample_size,
+                            do_lower_case=False,
+                            tokenizer_type='bpe',
+                            character_coverage=encoder_tokenizer_coverage,
+                            output_dir=dir_name,
+                            bos=True,
+                            eos=True,
+                            pad=True,
+                            control_symbols=spt_symbols,
+                            user_defined_symbols=encoder_special_tokens,
+                            byte_fallback=byte_fallback,
+                            split_digits=split_digits,
+                            split_by_whitespace=split_by_whitespace,
+                        )
+                        os.rename(os.path.join(dir_name, 'tokenizer.model'), encoder_tokenizer_model)
 
             if decoder_tokenizer_name in supported_train_tokenizers:
                 decoder_tokenizer_model = os.path.join(
@@ -887,34 +857,25 @@ class MTDataPreproc:
                         logging.info(
                             f'Decoder tokenizer model {decoder_tokenizer_model} not found. Training tokenizer model.'
                         )
-                        if decoder_tokenizer_name == "yttm":
-                            yttm.BPE.train(
-                                data=tgt_fname,
-                                vocab_size=decoder_tokenizer_vocab_size,
-                                model=decoder_tokenizer_model,
-                                coverage=decoder_tokenizer_coverage,
-                                n_threads=-1,
-                            )
-                        else:
-                            dir_name = os.path.dirname(decoder_tokenizer_model)
-                            create_spt_model(
-                                data_file=tgt_fname,
-                                vocab_size=decoder_tokenizer_vocab_size,
-                                sample_size=decoder_training_sample_size,
-                                do_lower_case=False,
-                                tokenizer_type='bpe',
-                                character_coverage=decoder_tokenizer_coverage,
-                                output_dir=dir_name,
-                                bos=True,
-                                eos=True,
-                                pad=True,
-                                control_symbols=spt_symbols,
-                                user_defined_symbols=decoder_special_tokens,
-                                byte_fallback=byte_fallback,
-                                split_digits=split_digits,
-                                split_by_whitespace=split_by_whitespace,
-                            )
-                            os.rename(os.path.join(dir_name, 'tokenizer.model'), decoder_tokenizer_model)
+                        dir_name = os.path.dirname(decoder_tokenizer_model)
+                        create_spt_model(
+                            data_file=tgt_fname,
+                            vocab_size=decoder_tokenizer_vocab_size,
+                            sample_size=decoder_training_sample_size,
+                            do_lower_case=False,
+                            tokenizer_type='bpe',
+                            character_coverage=decoder_tokenizer_coverage,
+                            output_dir=dir_name,
+                            bos=True,
+                            eos=True,
+                            pad=True,
+                            control_symbols=spt_symbols,
+                            user_defined_symbols=decoder_special_tokens,
+                            byte_fallback=byte_fallback,
+                            split_digits=split_digits,
+                            split_by_whitespace=split_by_whitespace,
+                        )
+                        os.rename(os.path.join(dir_name, 'tokenizer.model'), decoder_tokenizer_model)
 
         return encoder_tokenizer_model, decoder_tokenizer_model
 

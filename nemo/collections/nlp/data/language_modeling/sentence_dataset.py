@@ -160,8 +160,8 @@ class TarredSentenceDataset(IterableDataset):
         text_tar_filepaths: Either a list of tokenized text tarball filepaths, or a
             string (can be brace-expandable).
         metadata_path (str): Path to the metadata manifest.
-        encoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
-        decoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
+        encoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as SentencePiece
+        decoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as SentencePiece
         shuffle_n (int): How many samples to look ahead and load to be shuffled.
             See WebDataset documentation for more details.
             Defaults to 0.

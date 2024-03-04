@@ -20,7 +20,7 @@ from nemo.collections.nlp.data.machine_translation.preproc_mt_data import MTData
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='NMT dataset pre-processing')
     parser.add_argument(
-        '--tokenizer_name', type=str, default='yttm', help='Supports yttm, sentencepiece and HuggingFace tokenizers',
+        '--tokenizer_name', type=str, default='sentencepiece', help='Supports entencepiece and HuggingFace tokenizers',
     )
     parser.add_argument('--tokenizer_model', type=str, default=None, help='Path to tokenizer model')
     parser.add_argument('--bpe_droput', type=float, default=0.0, help='BPE dropout to use')
@@ -47,7 +47,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if not os.path.exists(args.out_dir):
         os.mkdir(args.out_dir)
-    if args.tokenizer_name in ["yttm", "sentencepiece"] and not os.path.exists(args.tokenizer_model):
+    if (args.tokenizer_name == "sentencepiece") and not os.path.exists(args.tokenizer_model):
         assert FileNotFoundError("Could not find tokenizer model %s" % (args.tokenizer))
 
     tokenizer_model = MTDataPreproc.get_monolingual_tokenizer(

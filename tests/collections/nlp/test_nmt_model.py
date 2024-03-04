@@ -35,10 +35,10 @@ def export_test(model, suffix):
 
 def get_cfg():
     cfg = AAYNBaseConfig()
-    cfg.encoder_tokenizer.tokenizer_name = 'yttm'
-    cfg.encoder_tokenizer.tokenizer_model = 'tests/.data/yttm.4096.en-de.model'
-    cfg.decoder_tokenizer.tokenizer_name = 'yttm'
-    cfg.decoder_tokenizer.tokenizer_model = 'tests/.data/yttm.4096.en-de.model'
+    cfg.encoder_tokenizer.tokenizer_name = 'sentencepiece'
+    cfg.encoder_tokenizer.tokenizer_model = 'tests/.data/nlp/spm_tok_ende_4k/tokenizer.model'
+    cfg.decoder_tokenizer.tokenizer_name = 'sentencepiece'
+    cfg.decoder_tokenizer.tokenizer_model = 'tests/.data/nlp/spm_tok_ende_4k/tokenizer.model'
     cfg.train_ds = None
     cfg.validation_ds = None
     cfg.test_ds = None

@@ -80,7 +80,7 @@ model:
     model_name: null
 
   decoder_tokenizer:
-    library: yttm
+    library: sentencepiece
     tokenizer_model: null
     vocab_file: null
     special_tokens: null

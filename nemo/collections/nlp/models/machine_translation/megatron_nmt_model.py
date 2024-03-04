@@ -91,8 +91,8 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         # All of the lines below need to be set when the parent class calls self._build_tokenizer()
-        self.encoder_tokenizer_library = cfg.encoder_tokenizer.get('library', 'yttm')
-        self.decoder_tokenizer_library = cfg.decoder_tokenizer.get('library', 'yttm')
+        self.encoder_tokenizer_library = cfg.encoder_tokenizer.get('library', 'sentencepiece')
+        self.decoder_tokenizer_library = cfg.decoder_tokenizer.get('library', 'sentencepiece')
         self.multilingual_lang_tokens = {}
         self.src_language = cfg.get("src_language", None)
         self.tgt_language = cfg.get("tgt_language", None)

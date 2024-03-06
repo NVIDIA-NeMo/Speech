@@ -237,6 +237,16 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
 
         # revert config change in case it is read elsewhere
         model_parallel_config.sequence_parallel = self._sequence_parallel
+        if self._sequence_parallel:
+            from importlib.metadata import version
+
+            from pkg_resources import packaging
+
+            te_version = packaging.version.Version(version("transformer-engine"))
+            if te_version >= packaging.version.Version("1.5.0dev"):
+                # TE 1.5 introduces the option `return_layernorm_output_gathered`, so the all gather
+                # in the forward method is not needed, so set self._sequence_parallel to False
+                self._sequence_parallel = False
 
     def _get_init_fn(self, init_method: str):
         if init_method == 'xavier':

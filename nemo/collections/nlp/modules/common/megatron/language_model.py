@@ -726,7 +726,9 @@ class TransformerLanguageModel(MegatronModule, adapter_mixins.AdapterModuleMixin
     def get_position_embedding_on_this_context_parallel_rank(self, position_embedding, seq_dim):
         cp_size = parallel_state.get_context_parallel_world_size()
         cp_rank = parallel_state.get_context_parallel_rank()
-        cp_idx = torch.tensor([cp_rank, (2 * cp_size - cp_rank - 1)], device=position_embedding.device)
+        cp_idx = torch.tensor([cp_rank, (2 * cp_size - cp_rank - 1)], device="cpu", pin_memory=True).cuda(
+            non_blocking=True
+        )
         position_embedding = position_embedding.view(
             *position_embedding.shape[:seq_dim], 2 * cp_size, -1, *position_embedding.shape[(seq_dim + 1) :]
         )

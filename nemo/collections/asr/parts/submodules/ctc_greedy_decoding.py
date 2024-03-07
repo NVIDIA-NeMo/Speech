@@ -161,7 +161,25 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         with torch.inference_mode():
             hypotheses = []
             # Process each sequence independently
-            prediction_cpu_tensor = decoder_output.cpu()
+
+            if decoder_output.is_cuda:
+                # This two-liner is around twenty times faster than:
+                # `prediction_cpu_tensor = decoder_output.cpu()`
+                # cpu() does not use pinned memory, meaning that a slow pageable
+                # copy must be done instead.
+                prediction_cpu_tensor = torch.empty(
+                    decoder_output.shape, dtype=decoder_output.dtype, device=torch.device("cpu"), pin_memory=True
+                )
+                prediction_cpu_tensor.copy_(decoder_output, non_blocking=True)
+            else:
+                prediction_cpu_tensor = decoder_output
+
+            if decoder_lengths is not None and isinstance(decoder_lengths, torch.Tensor):
+                # Before this change, self._greedy_decode_labels would copy
+                # each scalar from GPU to CPU one at a time, in the line:
+                # prediction = prediction[:out_len]
+                # Doing one GPU to CPU copy ahead of time amortizes that overhead.
+                decoder_lengths = decoder_lengths.cpu()
 
             if prediction_cpu_tensor.ndim < 2 or prediction_cpu_tensor.ndim > 3:
                 raise ValueError(
@@ -192,7 +210,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
 
         # Initialize blank state and empty label set in Hypothesis
         hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-        prediction = x.detach().cpu()
+        prediction = x.cpu()
 
         if out_len is not None:
             prediction = prediction[:out_len]
@@ -200,7 +218,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         prediction_logprobs, prediction_labels = prediction.max(dim=-1)
 
         non_blank_ids = prediction_labels != self.blank_id
-        hypothesis.y_sequence = prediction_labels.numpy().tolist()
+        hypothesis.y_sequence = prediction_labels.tolist()
         hypothesis.score = (prediction_logprobs[non_blank_ids]).sum()
 
         if self.preserve_alignments:
@@ -208,7 +226,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
             hypothesis.alignments = (prediction.clone(), prediction_labels.clone())
 
         if self.compute_timestamps:
-            hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].numpy().tolist()
+            hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].tolist()
 
         if self.preserve_frame_confidence:
             hypothesis.frame_confidence = self._get_confidence(prediction)
@@ -222,20 +240,20 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
 
         # Initialize blank state and empty label set in Hypothesis
         hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None)
-        prediction_labels = x.detach().cpu()
+        prediction_labels = x.cpu()
 
         if out_len is not None:
             prediction_labels = prediction_labels[:out_len]
 
         non_blank_ids = prediction_labels != self.blank_id
-        hypothesis.y_sequence = prediction_labels.numpy().tolist()
+        hypothesis.y_sequence = prediction_labels.tolist()
         hypothesis.score = -1.0
 
         if self.preserve_alignments:
             raise ValueError("Requested for alignments, but predictions provided were labels, not log probabilities.")
 
         if self.compute_timestamps:
-            hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].numpy().tolist()
+            hypothesis.timestep = torch.nonzero(non_blank_ids, as_tuple=False)[:, 0].tolist()
 
         if self.preserve_frame_confidence:
             raise ValueError(

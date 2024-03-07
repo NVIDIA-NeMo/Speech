@@ -14,8 +14,10 @@
 
 import contextlib
 import glob
+import json
 import os
 from dataclasses import dataclass, is_dataclass
+from tempfile import NamedTemporaryFile
 from typing import List, Optional, Union
 
 import pytorch_lightning as pl
@@ -32,6 +34,8 @@ from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import (
     compute_output_filename,
     prepare_audio_data,
+    read_and_maybe_sort_manifest,
+    restore_transcription_order,
     setup_model,
     transcribe_partial_audio,
     write_transcription,
@@ -121,6 +125,7 @@ class TranscriptionConfig:
     ] = None  # Used to select a single channel from multichannel audio, or use average across channels
     audio_key: str = 'audio_filepath'  # Used to override the default audio key in dataset_manifest
     eval_config_yaml: Optional[str] = None  # Path to a yaml file of config of evaluation
+    presort_manifest: bool = True  # Significant inference speedup on short-form data due to padding reduction
 
     # General configs
     output_filename: Optional[str] = None
@@ -183,6 +188,7 @@ class TranscriptionConfig:
 
     # key for groundtruth text in manifest
     gt_text_attr_name: str = "text"
+    gt_lang_attr_name: str = "lang"
 
     # Use model's transcribe() function instead of transcribe_partial_audio() by default
     # Only use transcribe_partial_audio() when the audio is too long to fit in memory
@@ -314,14 +320,21 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         else:
             cfg.decoding = cfg.rnnt_decoding
 
+    remove_path_after_done = None
     if isinstance(asr_model, EncDecMultiTaskModel):
         # Special case for EncDecMultiTaskModel, where the input manifest is directly passed into the model's transcribe() function
         partial_audio = False
         if cfg.audio_dir is not None and not cfg.append_pred:
             filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))
         else:
-            filepaths = cfg.dataset_manifest
             assert cfg.dataset_manifest is not None
+            if cfg.presort_manifest:
+                with NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                    for item in read_and_maybe_sort_manifest(cfg.dataset_manifest, try_sort=True):
+                        print(json.dumps(item), file=f)
+                    cfg.dataset_manifest = f.name
+                    remove_path_after_done = f.name
+            filepaths = cfg.dataset_manifest
     else:
         # prepare audio filepaths and decide wether it's partial audio
         filepaths, partial_audio = prepare_audio_data(cfg)
@@ -369,17 +382,22 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                     decoder_type=cfg.decoder_type,
                 )
             else:
-                transcriptions = asr_model.transcribe(
-                    audio=filepaths,
-                    batch_size=cfg.batch_size,
-                    num_workers=cfg.num_workers,
-                    return_hypotheses=cfg.return_hypotheses,
-                    channel_selector=cfg.channel_selector,
-                    augmentor=augmentor,
-                )
+                override_cfg = asr_model.get_transcribe_config()
+                override_cfg.batch_size = cfg.batch_size
+                override_cfg.num_workers = cfg.num_workers
+                override_cfg.return_hypotheses = cfg.return_hypotheses
+                override_cfg.channel_selector = cfg.channel_selector
+                override_cfg.augmentor = augmentor
+                override_cfg.text_field = cfg.gt_text_attr_name
+                override_cfg.lang_field = cfg.gt_lang_attr_name
+                transcriptions = asr_model.transcribe(audio=filepaths, override_config=override_cfg,)
 
     if cfg.dataset_manifest is not None:
         logging.info(f"Finished transcribing from manifest file: {cfg.dataset_manifest}")
+        if cfg.presort_manifest:
+            transcriptions = restore_transcription_order(cfg.dataset_manifest, transcriptions)
+            if remove_path_after_done is not None:
+                os.unlink(remove_path_after_done)
     else:
         logging.info(f"Finished transcribing {len(filepaths)} files !")
     logging.info(f"Writing transcriptions into file: {cfg.output_filename}")

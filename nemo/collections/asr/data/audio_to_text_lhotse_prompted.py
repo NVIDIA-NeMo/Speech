@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from typing import Callable, Sequence
+
+import omegaconf
 import torch.utils.data
 from lhotse import CutSet
 from lhotse.cut import MixedCut, MonoCut
@@ -175,7 +177,16 @@ def canary_prompt(
         language = [language]
 
     if text is not None:
-        tokens = sum((tokenizer.text_to_ids(text_, lang_) for text_, lang_ in zip(text, language)), start=[])
+        try:
+            tokens = sum((tokenizer.text_to_ids(text_, lang_) for text_, lang_ in zip(text, language)), start=[])
+        except omegaconf.errors.KeyValidationError as e:
+            raise ProbablyIncorrectLanguageKeyError(
+                "We couldn't select the right tokenizer, which could be due to issues with reading "
+                "the language from the manifest. "
+                "If you're training, try setting lang_field='' to a different value (probably 'target_lang' or 'lang'). "
+                "If you're using model.transcribe() directly, please use override_config kwarg to set this. "
+                "If you're using transcribe_speech.py, use option gt_lang_attr_name='...' "
+            ) from e
     else:
         tokens = None  # create prompt for inference
 
@@ -231,3 +242,7 @@ def canary_prompt(
     if tokens is not None:
         prompted_tokens.append(tokenizer.eos_id)
     return prompted_tokens
+
+
+class ProbablyIncorrectLanguageKeyError(RuntimeError):
+    pass

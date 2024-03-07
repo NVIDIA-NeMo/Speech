@@ -282,21 +282,44 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
             logging.error(f"The input dataset_manifest {cfg.dataset_manifest} is empty. Exiting!")
             return None
 
-        with open(cfg.dataset_manifest, 'r', encoding='utf_8') as f:
-            has_two_fields = []
-            for line in f:
-                item = json.loads(line)
-                if "offset" in item and "duration" in item:
-                    has_two_fields.append(True)
-                else:
-                    has_two_fields.append(False)
-                audio_key = cfg.get('audio_key', 'audio_filepath')
-                audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
-                filepaths.append(audio_file)
-        partial_audio = all(has_two_fields)
+        all_entries_have_offset_and_duration = True
+        for item in read_and_maybe_sort_manifest(cfg.dataset_manifest, try_sort=cfg.presort_manifest):
+            if not ("offset" in item and "duration" in item):
+                all_entries_have_offset_and_duration = False
+            audio_key = cfg.get('audio_key', 'audio_filepath')
+            audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
+            filepaths.append(audio_file)
+        partial_audio = all_entries_have_offset_and_duration
     logging.info(f"\nTranscribing {len(filepaths)} files...\n")
 
     return filepaths, partial_audio
+
+
+def read_and_maybe_sort_manifest(path: str, try_sort: bool = False) -> list[dict]:
+    """Sorts the manifest if duration key is available for every utterance."""
+    with open(path) as f:
+        items = [json.loads(l) for l in f]
+    if try_sort and all("duration" in item for item in items):
+        items = sorted(items, reverse=True, key=lambda item: item["duration"])
+    return items
+
+
+def restore_transcription_order(manifest_path: str, transcriptions: list) -> list:
+    with open(manifest_path) as f:
+        items = [(idx, json.loads(l)) for idx, l in enumerate(f)]
+    if not all("duration" in item[1] for item in items):
+        return transcriptions
+    new2old = [item[0] for item in sorted(items, reverse=True, key=lambda it: it[1]["duration"])]
+    del items  # free up some memory
+    is_list = isinstance(transcriptions[0], list)
+    if is_list:
+        transcriptions = list(zip(*transcriptions))
+    reordered = [None] * len(transcriptions)
+    for new, old in enumerate(new2old):
+        reordered[old] = transcriptions[new]
+    if is_list:
+        reordered = tuple(map(list, zip(*reordered)))
+    return reordered
 
 
 def compute_output_filename(cfg: DictConfig, model_name: str) -> DictConfig:

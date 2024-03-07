@@ -103,6 +103,8 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
     pnc: Optional[bool] = None
     source_lang: Optional[str] = None
     target_lang: Optional[str] = None
+    text_field: str = "answer"
+    lang_field: str = "target_lang"
 
     _internal: Optional[MultiTaskTranscriptionInternalConfig] = None
 
@@ -860,8 +862,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             'use_lhotse': True,
             'use_bucketing': False,
             'drop_last': False,
-            'text_field': 'answer',
-            'lang_field': 'target_lang',
+            'text_field': config.get('text_field', 'answer'),
+            'lang_field': config.get('lang_field', 'target_lang'),
         }
 
         temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config), inference=True)

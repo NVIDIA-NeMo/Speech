@@ -203,6 +203,10 @@ pygments_style = "default"
 
 # html_logo = html_theme_options["logo_path"]
 
+# html_sidebars = {
+#     "**": ["navbar-logo.html", "search-field.html", "sbt-sidebar-nav.html"]
+# }
+
 # -- Options for HTMLHelp output ------------------------------------------
 
 # Output file base name for HTML help builder.
@@ -222,7 +226,7 @@ html_logo = os.path.join('nv_logo.png')
 html_title = 'NVIDIA NeMo'
 
 html_theme_options = {
-    'logo_only': True,
+    'logo_only': False,
     'display_version': True,
     # 'prev_next_buttons_location': 'bottom',
     # 'style_external_links': False,

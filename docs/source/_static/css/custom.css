@@ -1,3 +1,5 @@
+@import url("theme.css");
+
 body {
 	font-size: 100%;
 	font-family: 'NVIDIA Sans', sans-serif;
@@ -40,13 +42,17 @@ p {
 }
 
 /* Link Colors */
+/*
 a {
-	color: #76b900;
+    color: #76b900;
 }
+/*
 
+/*
 a:visited {
 	color: #218219;
 }
+*/
 
 .container-xl {
 	margin-right: unset;

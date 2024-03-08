@@ -1,5 +1,5 @@
-Migration guide to use lightning 2.0
-=====================================
+Upgrade guide to use lightning 2.0
+==================================
 
 .. # define a hard line break for html
 .. |br| raw:: html

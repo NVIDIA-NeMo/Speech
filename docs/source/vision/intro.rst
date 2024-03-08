@@ -1,5 +1,5 @@
-Foundation Vision Models in NeMo
-================================
+Vision Models
+=============
 
 NeMo has implemented foundational vision models, establishing a solid base for further exploration into multimodal applications. These foundational vision models can be leveraged in a variety of multimodal applications including multimodal language models and text to image generation tasks, among others. These foundation models not only lay the functional groundwork but also play a crucial role in achieving state-of-the-art performance on NVIDIA GPUs through our custom optimizations.
 

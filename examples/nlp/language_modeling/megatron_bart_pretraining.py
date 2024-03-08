@@ -60,6 +60,9 @@ def main(cfg) -> None:
             plugins.append(MegatronHalfPrecisionPlugin(plugin_precision, device='cuda', scaler=scaler))
         else:
             plugins.append(PipelineMixedPrecisionPlugin(plugin_precision, device='cuda', scaler=scaler))
+        # Set precision None after precision plugins are created as PTL >= 2.1 does not allow both
+        # precision plugins and precision to exist
+        cfg.trainer.precision = None
 
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())

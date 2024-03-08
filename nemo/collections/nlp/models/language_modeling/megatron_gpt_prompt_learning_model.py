@@ -309,7 +309,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
             The iterator of microbatches is then piped through the pipeline using Core's fwd/bwd functions.
         """
         # Get seq length of batch
-        batch = next(dataloader_iter)
+        batch, _, _ = next(dataloader_iter)
         _, seq_length = batch[0].shape
         data_iter = get_iterator_k_split(batch, get_num_microbatches())
 
@@ -337,10 +337,10 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 
         return loss_mean
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
-        batch = next(dataloader_iter)
+        batch, batch_idx, _ = next(dataloader_iter)
         loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=False)
         self.allreduce_gradients()
 
@@ -373,13 +373,9 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         """
         return
 
-    def validation_step(self, dataloader_iter, batch_idx):
-        # Check if iterator is exhausted
-        dataloader_iter, done = self._val_iterator_done(dataloader_iter)
-        if done:
-            return
+    def validation_step(self, dataloader_iter):
         mode = 'test' if self.trainer.testing else 'val'
-        batch = next(dataloader_iter)
+        batch, batch_idx, _ = next(dataloader_iter)
         gbs = self.cfg.get('validation_global_batch_size', self.cfg.global_batch_size)
         self._reconfigure_and_process_inference_batch(batch[0].size(0), gbs)
         loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=True)
@@ -503,8 +499,8 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         self._reconfigure_batch_sizes(gbs, mbs)
         self.validation_step_outputs.clear()  # free memory
 
-    def test_step(self, dataloader_iter, batch_idx):
-        return self.validation_step(dataloader_iter, batch_idx)
+    def test_step(self, dataloader_iter):
+        return self.validation_step(dataloader_iter)
 
     def on_test_epoch_end(self):
         averaged_loss = average_losses_across_data_parallel_group(self.test_step_outputs)
@@ -661,7 +657,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
 
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             batch = [x.cuda(non_blocking=True) for x in batch]
             input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids = batch
             output_tensor = model(input_ids, position_ids, attention_mask, taskname_ids, labels, inference=False)
@@ -684,7 +680,7 @@ class MegatronGPTPromptLearningModel(MegatronBasePromptLearningModel):
         """
 
         def fwd_output_only_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             extra_arg = {}
             (
                 tokens,

@@ -1034,10 +1034,10 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
     the training state before validation has run.
     """
 
-    def _should_check_val_fx(self) -> bool:
+    def _should_check_val_fx(self, data_fetcher) -> bool:
         if self.restarting and self.global_step % self.trainer.val_check_batch == 0:
             return False
-        return super()._should_check_val_fx()
+        return super()._should_check_val_fx(data_fetcher)
 
 
 def clean_exp_ckpt(exp_log_dir: Union[str, Path], remove_ckpt: bool = True, remove_nemo: bool = False):

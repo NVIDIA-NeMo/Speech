@@ -1716,7 +1716,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
             batch[self.cfg.first_stage_key] = batch[self.cfg.first_stage_key].cuda(non_blocking=True)
             self.model.on_train_batch_start(batch, batch_idx)
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
         tensor_shape = None  # Placeholder
 
         # handle asynchronous grad reduction
@@ -1780,7 +1780,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
         return loss_mean, loss_dict
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -1793,7 +1793,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
 
-        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, False)
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
@@ -1902,7 +1902,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
             return [x, *c_list]
 
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             batch = process_batch(batch)
             batch = [x.cuda(non_blocking=True) for x in batch]
             if len(self.conditioning_keys) == 0:
@@ -1928,8 +1928,8 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
 
         return fwd_output_only_func
 
-    def validation_step(self, dataloader_iter, batch_idx):
-        loss, val_loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
+    def validation_step(self, dataloader_iter):
+        loss, val_loss_dict = self.fwd_bwd_step(dataloader_iter, True)
 
         self.log_dict(val_loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True, batch_size=1)
 

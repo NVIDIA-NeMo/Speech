@@ -452,7 +452,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         output_tensor = self.model(image, text)
         return output_tensor
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
 
         # handle asynchronous grad reduction
         no_sync_func = None
@@ -523,7 +523,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         )
         self.initialize_ub = False
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -557,7 +557,7 @@ class MegatronCLIPModel(MegatronBaseModel):
                     for param in module.embedding.parameters():
                         param.data_ptr()
 
-        loss_mean = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_mean = self.fwd_bwd_step(dataloader_iter, False)
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
@@ -649,7 +649,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         loss_func = ClipLoss(local_loss=self.cfg.local_loss, gather_with_grad=self.cfg.gather_with_grad,)
 
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 images = batch["images"].cuda(non_blocking=True)
                 captions = batch["captions"].cuda(non_blocking=True)
@@ -739,7 +739,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         top5 = top5 / n
         return top1, top5
 
-    def validation_step(self, dataloader_iter, batch_idx):
+    def validation_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -749,7 +749,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         if self.initialize_ub:
             self.initialize_ub_func()
 
-        loss = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
+        loss = self.fwd_bwd_step(dataloader_iter, True)
         self.validation_step_outputs.append(loss)
 
         return loss
@@ -785,7 +785,7 @@ class MegatronCLIPModel(MegatronBaseModel):
         return averaged_loss
 
     def test_step(self, batch, batch_idx):
-        return self.validation_step(batch, batch_idx)
+        return self.validation_step(batch)
 
     def test_epoch_end(self, outputs):
         averaged_loss = average_losses_across_data_parallel_group(outputs)

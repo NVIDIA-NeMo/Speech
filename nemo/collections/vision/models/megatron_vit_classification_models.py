@@ -275,7 +275,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         output_tensor = self.model(tokens)
         return output_tensor
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
 
         # handle asynchronous grad reduction
         no_sync_func = None
@@ -351,7 +351,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         )
         self.initialize_ub = False
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -367,7 +367,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
 
-        loss_mean, _ = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_mean, _ = self.fwd_bwd_step(dataloader_iter, False)
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
@@ -477,7 +477,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
             return loss, {"loss": averaged_loss[0], "accuracy": averaged_loss[1]}
 
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 batch = [x.cuda(non_blocking=True) for x in batch]
                 tokens, labels = batch
@@ -506,7 +506,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
 
         return fwd_output_only_func
 
-    def validation_step(self, dataloader_iter, batch_idx):
+    def validation_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -519,7 +519,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         if self.initialize_ub:
             self.initialize_ub_func()
 
-        loss, accuracy = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
+        loss, accuracy = self.fwd_bwd_step(dataloader_iter, True)
 
         self.validation_step_outputs.append((loss, accuracy)) if mode == 'val' else self.test_step_outputs.append(
             (loss, accuracy)
@@ -554,7 +554,7 @@ class MegatronVitClassificationModel(MegatronBaseModel):
         return averaged_loss
 
     def test_step(self, batch, batch_idx):
-        return self.validation_step(batch, batch_idx)
+        return self.validation_step(batch)
 
     def on_test_epoch_end(self):
         pass

@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from omegaconf.dictconfig import DictConfig
 from omegaconf.listconfig import ListConfig
+from pytorch_lightning.loops.fetchers import _DataFetcherWrapper
 from pytorch_lightning.trainer.trainer import Trainer
 from sacrebleu import corpus_bleu
 
@@ -286,12 +287,18 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
             tensor_model_parallel_size=self._cfg.get('tensor_model_parallel_size', 1),
         )
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
         """
             Dataloader produces a global batch which is turned into a list of microbatches.
             The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
-        batch = next(dataloader_iter)
+        # Check if instance of PTL's _DataFetcherWrapper or not, since sometimes (batch, batch_idx, dataloader_idx) as a tuple
+        # from the dataloader_iter are already extracted in the child class or previous functions. In that case extact only the batch
+        # from the data_iterator
+        if isinstance(dataloader_iter, _DataFetcherWrapper):
+            batch, _, _ = next(dataloader_iter)
+        else:
+            batch = next(dataloader_iter)
         if isinstance(batch, dict):
             # convert to list if not already converted.
             batch = self._process_batch(batch)
@@ -310,13 +317,9 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
             decoder_seq_length=decoder_seq_length,
         )
 
-    def eval_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
-        # Check if iterator is exhausted
-        dataloader_iter, done = self._val_iterator_done(dataloader_iter)
-        if done:
-            return
+    def eval_step(self, dataloader_iter):
         # Need to squeze dim 0 for old NMT datasets since things are pre-batched and we ask the dataloader for batch size 1.
-        batch = next(dataloader_iter)
+        batch, _, dataloader_idx = next(dataloader_iter)
         batch = [x.squeeze(dim=0) if x.ndim == 3 else x for x in batch]
         batch = self.process_global_batch_for_text_translation_datasets(batch)
 
@@ -330,7 +333,7 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
             data_parallel_size=parallel_state.get_data_parallel_world_size(),
         )
         # This returns the averaged loss across data-parallel groups.
-        reduced_loss = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, True)
+        reduced_loss = self.fwd_bwd_step(itertools.chain([batch]), True)
 
         tokens_enc, labels, enc_mask = batch['text_enc'], batch['labels'], batch['enc_mask']
 
@@ -400,12 +403,12 @@ class MegatronNMTModel(MegatronLMEncoderDecoderModel, Exportable):
 
         return results
 
-    def validation_step(self, dataloader_iter, batch_idx, dataloader_idx=0):
+    def validation_step(self, dataloader_iter):
         """
         Lightning calls this inside the validation loop with the data from the validation dataloader
         passed in as `batch`.
         """
-        return self.eval_step(dataloader_iter, batch_idx, dataloader_idx)
+        return self.eval_step(dataloader_iter)
 
     def _setup_eval_dataloader_from_config(self, cfg: DictConfig, dataset):
         rank = parallel_state.get_data_parallel_rank()

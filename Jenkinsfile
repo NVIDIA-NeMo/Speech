@@ -126,17 +126,17 @@ pipeline {
       }
     }
 
-    stage('L0: Unit Tests CPU') {
-      when {
-        anyOf {
-          branch 'main'
-          changeRequest target: 'main'
-        }
-      }
-      steps {
-        sh 'CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat'
-      }
-    }
+   stage('L0: Unit Tests CPU') {
+     when {
+       anyOf {
+         branch 'main'
+         changeRequest target: 'main'
+       }
+     }
+     steps {
+       sh 'CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat'
+     }
+   }
 
     stage('L2: Multimodal Imagen Train') {
       when {
@@ -4082,7 +4082,6 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         sh "rm -rf examples/nlp/language_modeling/gpt_index_mappings"
       }
     }
-    // @athitten Remove /home/TestData/nlp/megatron_sft/trec.jsonl for validation and test file until we have support for multiple dataloaders in lightning 2.0
     stage('L2: Megatron GPT Finetuning PP=2') {
       when {
         anyOf {
@@ -4114,13 +4113,13 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.train_ds.num_workers=0 \
         model.data.test_ds.micro_batch_size=1 \
         model.data.test_ds.global_batch_size=1 \
-        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl,/home/TestData/nlp/megatron_sft/trec.jsonl] \
         model.data.test_ds.names=[quarel] \
         model.data.validation_ds.micro_batch_size=1 \
         model.data.validation_ds.global_batch_size=1 \
         model.data.validation_ds.num_workers=0 \
-        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-        model.data.validation_ds.names=[quarel]"
+        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl,/home/TestData/nlp/megatron_sft/trec.jsonl] \
+        model.data.validation_ds.names=[quarel,trec]"
         sh "python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -4143,13 +4142,13 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.train_ds.num_workers=0 \
         model.data.test_ds.micro_batch_size=1 \
         model.data.test_ds.global_batch_size=1 \
-        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl,/home/TestData/nlp/megatron_sft/trec.jsonl] \
         model.data.test_ds.names=[quarel] \
         model.data.validation_ds.micro_batch_size=1 \
         model.data.validation_ds.global_batch_size=1 \
         model.data.validation_ds.num_workers=0 \
-        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-        model.data.validation_ds.names=[quarel]"
+        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl,/home/TestData/nlp/megatron_sft/trec.jsonl] \
+        model.data.validation_ds.names=[quarel,trec]"
         sh "rm -rf examples/nlp/language_modeling/gpt_sft_results"
       }
     }

@@ -56,7 +56,12 @@ def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f'\n{OmegaConf.to_yaml(cfg)}')
 
+    # cfg.trainer.precision becomes None in TrainerBuilder if precision_plugins exist since both precision plugins and precision
+    # can't exist in PTL >= 2.1, hence storing precision value from cfg.trainer.precision as its used for future steps like in merge_cfg_with func.
+    precision = cfg.trainer.precision
     trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
+    # Restore the precision value after Trainer is built.
+    cfg.trainer.precision = precision
     exp_manager(trainer, cfg.exp_manager)
 
     model_cfg = MegatronGPTSFTModel.merge_cfg_with(cfg.model.restore_from_path, cfg)

@@ -325,7 +325,7 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
         if prefix == 'val':
             self.validation_step_outputs.append(reduced_loss)
         else:
-            self.test_step_outputs.apped(reduced_loss)
+            self.test_step_outputs.append(reduced_loss)
         return reduced_loss
 
     def on_validation_epoch_end(self):

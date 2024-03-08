@@ -678,7 +678,7 @@ class MegatronControlNet(MegatronBaseModel):
             batch[self.cfg.first_stage_key] = batch[self.cfg.first_stage_key].cuda(non_blocking=True)
             self.model.on_train_batch_start(batch, batch_idx)
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
         tensor_shape = None  # Placeholder
 
         # handle asynchronous grad reduction
@@ -726,7 +726,7 @@ class MegatronControlNet(MegatronBaseModel):
 
         return loss_mean, loss_dict
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -738,7 +738,7 @@ class MegatronControlNet(MegatronBaseModel):
         # we zero grads here because we also call backward in the apex fwd/bwd functions
         self._optimizer.zero_grad()
 
-        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, False)
 
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
             self.allreduce_sequence_parallel_gradients()
@@ -827,7 +827,7 @@ class MegatronControlNet(MegatronBaseModel):
             return [x, *c_list]
 
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             batch = process_batch(batch)
             batch = [x.cuda(non_blocking=True) for x in batch]
             if len(self.conditioning_keys) == 0:

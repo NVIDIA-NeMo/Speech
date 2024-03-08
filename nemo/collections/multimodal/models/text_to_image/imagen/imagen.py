@@ -248,7 +248,7 @@ class MegatronImagen(MegatronBaseModel):
             return [x_start, text_embed, text_mask, x_lowres]
 
         def fwd_output_and_loss_func(dataloader_iter, model):
-            batch = next(dataloader_iter)
+            batch, _, _ = next(dataloader_iter)
             batch = process_batch(batch)
             batch = [x.cuda(non_blocking=True) for x in batch]
             loss, loss_dict = model(*batch)
@@ -326,7 +326,7 @@ class MegatronImagen(MegatronBaseModel):
                 self._test_ds, batch_size=self._micro_batch_size, num_workers=cfg.num_workers, pin_memory=True,
             )
 
-    def fwd_bwd_step(self, dataloader_iter, batch_idx, forward_only):
+    def fwd_bwd_step(self, dataloader_iter, forward_only):
         tensor_shape = None
 
         # handle asynchronous grad reduction
@@ -377,7 +377,7 @@ class MegatronImagen(MegatronBaseModel):
 
         return loss_mean, loss_dict
 
-    def training_step(self, dataloader_iter, batch_idx):
+    def training_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
@@ -390,7 +390,7 @@ class MegatronImagen(MegatronBaseModel):
         # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
 
-        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, False)
+        loss_mean, loss_dict = self.fwd_bwd_step(dataloader_iter, False)
 
         torch.distributed.broadcast(loss_mean, get_last_rank())
 
@@ -458,14 +458,14 @@ class MegatronImagen(MegatronBaseModel):
                     grad = param.grad
                 grads.append(grad.data)
 
-    def validation_step(self, dataloader_iter, batch_idx):
+    def validation_step(self, dataloader_iter):
         """
             Our dataloaders produce a micro-batch and then we fetch
             a number of microbatches depending on the global batch size and model parallel size
             from the dataloader to produce a list of microbatches.
             The list of microbatches is then piped through the pipeline using megatron-core fwd/bwd functions.        """
 
-        loss, val_loss_dict = self.fwd_bwd_step(dataloader_iter, batch_idx, True)
+        loss, val_loss_dict = self.fwd_bwd_step(dataloader_iter, True)
 
         self.log_dict(val_loss_dict, prog_bar=False, logger=True, on_step=False, on_epoch=True, batch_size=1)
         return loss

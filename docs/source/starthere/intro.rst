@@ -98,14 +98,6 @@ See the two introductory videos below for a high level overview of NeMo.
         <iframe width="560" height="315" src="https://www.youtube.com/embed/wBgpMf_KQVw" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
     </div>
 
-**NVIDIA NeMo: Toolkit for Conversational AI at PyData Yerevan 2022**
-
-.. raw:: html
-
-    <div style="position: relative; padding-bottom: 3%; height: 0; overflow: hidden; max-width: 100%; height: auto;">
-        <iframe width="560" height="315" src="https://www.youtube.com/embed/J-P6Sczmas8?mute=0&start=14&autoplay=0" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-    </div>
-
 .. _installation:
 
 Installation

@@ -292,7 +292,9 @@ def run_sanity_checks(nemo_file, mcore_file, cpu_only=False, ignore_if_missing=t
     logging.info("✅ Weights match")
 
     # check for unexpected weights in state dict
-    assert len(nemo_state_dict) == 0, f"❌ unexpected items in nemo_state_dict: {nemo_state_dict}"
+    assert (
+        len([k for k in nemo_state_dict if not k.endswith('_extra_state')]) == 0
+    ), f"❌ unexpected items in nemo_state_dict: {nemo_state_dict}"
     assert (
         len([k for k in mcore_state_dict if not k.endswith('_extra_state')]) == 0
     ), f"❌ unexpected items in mcore_state_dict: {mcore_state_dict}"

@@ -142,6 +142,9 @@ def convert(local_rank, rank, world_size, args):
             hysteresis=cfg.model.get('hysteresis', 2),
         )
     plugins.append(PipelineMixedPrecisionPlugin(precision=cfg.trainer.precision, device='cuda', scaler=scaler))
+    # Set precision None after precision plugins are created as PTL >= 2.1 does not allow both
+    # precision plugins and precision to exist
+    cfg.trainer.precision = None
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
 
     app_state.pipeline_model_parallel_size = args.pipeline_model_parallel_size

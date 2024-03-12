@@ -40,6 +40,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
     transcribe_partial_audio,
     write_transcription,
 )
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -331,6 +332,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             if cfg.presort_manifest:
                 with NamedTemporaryFile("w", suffix=".json", delete=False) as f:
                     for item in read_and_maybe_sort_manifest(cfg.dataset_manifest, try_sort=True):
+                        item["audio_filepath"] = get_full_path(item["audio_filepath"], cfg.dataset_manifest)
                         print(json.dumps(item), file=f)
                     cfg.dataset_manifest = f.name
                     remove_path_after_done = f.name

@@ -29,13 +29,11 @@ class GPTFIMDatasetConfig(GPTDatasetConfig):
     """Configuration object for Megatron Core GPT FIM datasets
 
         Attributes:
-            tokenizer: model tokenizer
             fim: fill in the middle parameters config
     """
 
-    def __init__(self, tokenizer, fim, **kwargs):
+    def __init__(self, fim, **kwargs):
         super().__init__(**kwargs)
-        self.tokenizer = tokenizer
         self.fim = fim
 
 
@@ -58,12 +56,15 @@ class GPTFIMDataset(GPTDataset):
     def __init__(
         self,
         indexed_dataset: MMapIndexedDataset,
+        dataset_path: str,
         indexed_indices: np.ndarray,
         num_samples: int,
         index_split: Split,
         config: GPTFIMDatasetConfig,
     ) -> None:
-        super().__init__(indexed_dataset, indexed_indices, num_samples, index_split, config)
+        super().__init__(indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config)
+
+        self.indexed_dataset = indexed_dataset
 
     def _query_document_sample_shuffle_indices(self, idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """Get the text (token ids) and document ids for a given index

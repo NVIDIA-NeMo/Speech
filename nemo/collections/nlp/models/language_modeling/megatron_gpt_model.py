@@ -1286,7 +1286,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             kwargs["split"] = self.cfg.data.splits_string
 
         if self.cfg.data.get('add_fim', False):
-            dataset_config = GPTFIMDatasetConfig(self.tokenizer, self.cfg.data.fim, **kwargs)
+            dataset_config = GPTFIMDatasetConfig(self.cfg.data.fim, **kwargs)
 
             self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
                 GPTFIMDataset, train_valid_test_num_samples, dataset_config,

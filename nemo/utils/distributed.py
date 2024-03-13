@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import os
+import tempfile
 
 import torch
+import torch.distributed as dist
 
 from nemo.utils import logging
+from nemo.utils.get_rank import is_global_rank_zero
 
 try:
     from megatron.core import parallel_state
@@ -100,3 +104,22 @@ def gather_objects(partial_results_list, main_rank=None):
         results_list.extend(r)
 
     return results_list
+
+
+@contextlib.contextmanager
+def temporary_directory():
+    """Create a shared temporary directory across ranks in distributed setup.
+
+    This function assumes that the distributed setup has been already
+    correctly initialized. It is intended to be used only in single-node
+    setup so that all ranks can access the directory created."""
+
+    if is_global_rank_zero():
+        tmp_dir = [tempfile.TemporaryDirectory()]
+    else:
+        tmp_dir = [None]
+    dist.broadcast_object_list(tmp_dir)
+    yield tmp_dir[0].name
+    # We use barrier below to make sure that rank zero won't exit
+    # and delete tmp_dir while other ranks may still use it
+    dist.barrier()

@@ -91,8 +91,14 @@ pipeline {
       steps {
          sh 'git clone https://github.com/NVIDIA/Megatron-LM.git && \
              cd Megatron-LM && \
-             git checkout 5f9c870f9f24b482509699d206a9dbb00958f6fc && \
+             git checkout 36e9b6bf3d8034b10c9bbd9fc357c2df2bd1515c && \
              pip install .'
+      }
+    }
+
+    stage('AMMO installation') {
+      steps {
+         sh 'pip install nvidia-ammo~=0.7.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir'
       }
     }
 
@@ -390,6 +396,12 @@ pipeline {
       }
     }
 
+    stage('Setup test data and models') {
+      steps {
+        sh 'python -m tests.setup --save_dir /home/TestData/nlp'
+      }
+    }
+
     // TODO: this requires TE >= v0.11 which is not available in 23.06.
     //        please uncomment this test once mcore CI is ready.
     stage('L2: Community LLM Checkpoints tests') {
@@ -405,9 +417,8 @@ pipeline {
           steps {
             sh 'CUDA_VISIBLE_DEVICES=0 python scripts/nlp_language_modeling/convert_hf_llama_to_nemo.py \
             --in-file=/home/TestData/nlp/megatron_llama/llama-ci-hf \
-            --out-file=/home/TestData/nlp/megatron_llama/ci.nemo \
+            --out-file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
             --precision=16'
-            sh 'rm -f /home/TestData/nlp/megatron_llama/ci.nemo'
           }
         }
         stage('StarCoder') {
@@ -434,6 +445,54 @@ pipeline {
             --in-file=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base \
             --out-file=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo'
             sh 'rm -f /home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo'
+          }
+        }
+      }
+    }
+
+    stage('L2: Nemo PTQ') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      parallel {
+        stage('Llama2 - Export Only') {
+          steps {
+            sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            quantization.algorithm=null \
+            model_save=/home/TestData/nlp/megatron_llama/ci_baseline'
+            sh 'rm -rf /home/TestData/nlp/megatron_llama/ci_baseline'
+          }
+        }
+        stage('Llama2 - INT8 SQ') {
+          steps {
+            sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+            quantization.algorithm=int8_sq \
+            quantization.num_calib_size=8 \
+            inference.batch_size=2 \
+            model_save=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo'
+            sh 'rm -f /home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo'
+          }
+        }
+        stage('Llama2 - FP8') {
+          steps {
+            sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            tensor_model_parallel_size=2 \
+            trainer.devices=2 \
+            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+            quantization.algorithm=fp8 \
+            quantization.num_calib_size=8 \
+            inference.batch_size=2 \
+            export.inference_tensor_parallel=2 \
+            model_save=/home/TestData/nlp/megatron_llama/ci_fp8.qnemo'
+            sh 'rm -f /home/TestData/nlp/megatron_llama/ci_fp8.qnemo'
           }
         }
       }

@@ -1,0 +1,38 @@
+inference:
+  greedy: false # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  add_BOS: true # add the bos token at the begining of the prompt
+  tokens_to_generate: 30 # The minimum length of the sequence to be generated.
+  all_probs: false  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: false  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  batch_size: 64 # batch size for inference
+  max_context_length: 512 # max length of the context, input sequence will be truncated if it is longer than this
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: false # logger provided by exp_manager
+  precision: bf16 # 16, 32, or bf16
+  enable_checkpointing: false
+
+quantization:
+  quantize_bmm1: false
+  algorithm: fp8 # int8_sq, fp8, int8, int4_awq, null
+  calib_dataset: cnn_dailymail # pileval, wikitext, cnn_dailymail
+  num_calib_size: 512 # number of samples used for calibration
+
+export:
+  decoder_type: llama # gptnext, gpt2, llama
+  inference_tensor_parallel: 1 # Default using 1 TP for inference
+  dtype: 16 # Default precision data type
+  export_tensorrt_llm_config: true # export config to build TRT-LLM engine directly
+
+model_file: llama2-7b-fp16.nemo # Nemo file path
+model_save: llama2-7b-fp8.qnemo # Path where the quantized model will be saved
+tensor_model_parallel_size: 1
+pipeline_model_parallel_size: 1

@@ -69,22 +69,17 @@ model:
   # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
   activations_checkpoint_num_layers: null # not used with 'selective'
   activations_checkpoint_layers_per_pipeline: null
-  answer_only_loss: True
   gradient_as_bucket_view: False
 
   hidden_dropout: 0.0
   attention_dropout: 0.0
   ffn_dropout: 0.0
-
-  # FSDP
-  fsdp: False # Enable training with torch FSDP.
-  fsdp_sharding_strategy: 'full' # Method to shard model states. Available options are 'full', 'hybrid', and 'grad'.
-  fsdp_grad_reduce_dtype: 'fp32' # Gradient reduction data type.
-  fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
-  fsdp_use_orig_params: False # Set to True to use FSDP for specific peft scheme.
+  temperature: 0.8
+  num_soft_negatives: 0 # Number of soft negatives to use for contrastive loss,it should be max(batch_size - 1), 0 means use hard negatives only
+  use_all_possible_negatives: False # If True, use all possible negatives for contrastive loss, otherwise use num_soft_negatives, if num_soft_negatives is 0, use hard negatives only
 
   peft:
-    peft_scheme: "adapter"  # can be either adapter,ia3, or ptuning
+    peft_scheme: "lora"  # can be either adapter,ia3, or ptuning
     restore_from_path: null
 
     # Used for adapter peft training
@@ -101,9 +96,8 @@ model:
       position_embedding_strategy: null # used only when weight_tying is True
 
     lora_tuning:
-      target_modules: ['attention_qkv','attention_dense','mlp_fc1','mlp_fc2'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
+      target_modules: ['attention_qkv', 'attention_dense', 'mlp_fc1', 'mlp_fc2'] #
       adapter_dim: 32
-      alpha: ${model.peft.lora_tuning.adapter_dim} 
       adapter_dropout: 0.0
       column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
       row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
@@ -125,6 +119,7 @@ model:
       tunable_base_param_names: ["self_attention", "word_embeddings"]  # TODO: regex support @adithyre
 
   data:
+    return_output_tensors: True
     train_ds:
       # Example of how to specify paths to multiple datasets
       # file_names:
@@ -151,15 +146,13 @@ model:
       concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
       label_key: 'output'
       add_eos: True
-      add_sep: False
       add_bos: False
-      truncation_field: "input" # # Can be multiple keys separated with ',' Options: keys in prompt_template
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: "{input} {output}" # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right'] 
     validation_ds:
-      file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
-      names: null # Names of the corresponding datasets used to log metrics.
+      query_file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      doc_file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      names: ["queries", "doc"] # Names of the corresponding datasets used to log metrics.
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
       shuffle: False
@@ -171,14 +164,10 @@ model:
       drop_last: False
       label_key: ${model.data.train_ds.label_key}
       add_eos: ${model.data.train_ds.add_eos}
-      add_sep: ${model.data.train_ds.add_sep}
       add_bos: ${model.data.train_ds.add_bos}
-      write_predictions_to_file: False
-      output_file_path_prefix: null # Prefix of the file to write predictions to.
-      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
+      write_embeddings_to_file: False
+      output_file_path_prefix: "validation_embeddings" # Prefix of the file to write predictions to.
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
-      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
@@ -196,16 +185,11 @@ model:
       max_seq_length: 2048
       min_seq_length: 1
       drop_last: False
-      label_key: ${model.data.train_ds.label_key}
       add_eos: ${model.data.train_ds.add_eos}
-      add_sep: ${model.data.train_ds.add_sep}
       add_bos: ${model.data.train_ds.add_bos}
-      write_predictions_to_file: False
-      output_file_path_prefix: null # Prefix of the file to write predictions to.
-      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
+      write_predictions_to_file: True
+      output_file_path_prefix: "test_embeddings" # Prefix of the file to write predictions to.
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: ${model.data.train_ds.prompt_template}
-      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
       metric:
         name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']

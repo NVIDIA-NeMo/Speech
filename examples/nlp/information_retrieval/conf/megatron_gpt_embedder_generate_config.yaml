@@ -1,0 +1,216 @@
+name: megatron_gpt_peft_${model.peft.peft_scheme}_tuning
+
+trainer:
+  devices: 1
+  accelerator: gpu
+  num_nodes: 1
+  precision: 16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: 9999
+  max_steps: 20000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10 # frequency with which training steps are logged
+  val_check_interval: 200 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
+  gradient_clip_val: 1.0
+
+exp_manager:
+  explicit_log_dir: null
+  exp_dir: null
+  name: ${name}
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: validation_${model.data.test_ds.metric.name}
+    save_top_k: 1
+    mode: min
+    save_nemo_on_train_end: True
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{consumed_samples}'
+    model_parallel_size: ${model.tensor_model_parallel_size}
+    always_save_nemo: True
+    save_best_model: True
+
+model:
+  seed: 1234
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+
+  global_batch_size: 1
+  micro_batch_size: 1
+  restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  save_nemo_on_validation_end: True # Saves an inference ready .nemo file every time a checkpoint is saved during training.
+  sync_batch_comm: False
+  megatron_amp_O2: False
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Activation Checkpoint
+  activations_checkpoint_granularity: null # 'selective' or 'full'
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  activations_checkpoint_layers_per_pipeline: null
+  gradient_as_bucket_view: False
+
+  hidden_dropout: 0.0
+  attention_dropout: 0.0
+  ffn_dropout: 0.0
+  temperature: 0.8
+  num_soft_negatives: 0 # Number of soft negatives to use for contrastive loss,it should be max(batch_size - 1), 0 means use hard negatives only
+
+  peft:
+    peft_scheme: "lora"  # can be either adapter,ia3, or ptuning
+    restore_from_path: null
+    restore_from_ckpt:
+      checkpoint_dir: null
+      checkpoint_name: null
+
+    # Used for adapter peft training
+    adapter_tuning:
+      type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'
+      adapter_dim: 32
+      adapter_dropout: 0.0
+      norm_position: 'pre' # This can be set to 'pre', 'post' or null, 'pre' is normally what is used.
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
+      layer_selection: null  # selects in which layers to add adapters, e.g. [1,12] will add adapters to layer 1 (lowest) and 12. null will apply adapters to all layers
+      weight_tying: False
+      position_embedding_strategy: null # used only when weight_tying is True
+
+    lora_tuning:
+      target_modules: ['attention_qkv','attention_dense','mlp_fc1','mlp_fc2'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
+      adapter_dim: 32
+      alpha: ${peft.lora_tuning.adapter_dim} 
+      adapter_dropout: 0.0
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      layer_selection:  null  # selects in which layers to add lora adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
+      weight_tying: False
+      position_embedding_strategy: null # used only when weight_tying is True
+
+    # Used for p-tuning peft training
+    p_tuning:
+      virtual_tokens: 10  # The number of virtual tokens the prompt encoder should add at the start of the sequence
+      bottleneck_dim: 1024  # the size of the prompt encoder mlp bottleneck
+      embedding_dim: 1024  # the size of the prompt encoder embeddings
+      init_std: 0.023
+
+    ia3_tuning:
+      layer_selection:  null  # selects in which layers to add ia3 adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
+    
+    selective_tuning:
+      tunable_base_param_names: ["self_attention", "word_embeddings"]  # TODO: regex support @adithyre
+
+  data:
+    return_output_tensors: True
+    test_ds:
+      query_file_names: ??? # Path to a list of JSONL files corresponding to the query data. Data format is identical to validation_ds.
+      doc_file_names: ??? # Path to a list of JSONL files corresponding to the doc data. Data format is identical to validation_ds.
+      names: ["queries", "doc"] # Names of the corresponding datasets used to log metrics.
+      global_batch_size: 1
+      micro_batch_size: 1
+      shuffle: False
+      num_workers: 0
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      add_eos: True
+      add_bos: False
+      write_embeddings_to_file: True
+      output_file_path_prefix: "test_embeddings" # Prefix of the file to write predictions to.
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
+
+      metric:
+        name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null
+    
+inference:
+  greedy: True # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  outfile_path: output.txt
+  compute_attention_mask: True
+
+# server-related configs
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: True  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+web_port: 9889 # the port number of the web server 1058
+chat: False # use the chat interface
+chatbot_config:
+  value: False   # whether to inject the value attributes
+  attributes:
+    - name: Quality
+      min: 0
+      max: 4
+      key: quality
+      type: int
+      default: 4
+    - name: Toxicity
+      min: 0
+      max: 4
+      key: toxcity
+      type: int
+      default: 0
+    - name: Humor
+      min: 0
+      max: 4
+      key: humor
+      type: int
+      default: 0
+    - name: Creativity
+      min: 0
+      max: 4
+      key: creativity
+      type: int
+      default: 0
+    - name: Violence
+      min: 0
+      max: 4
+      key: violence
+      type: int
+      default: 0
+    - name: Helpfulness
+      min: 0
+      max: 4
+      key: helpfulness
+      type: int
+      default: 4
+    - name: Not_Appropriate
+      min: 0
+      max: 4
+      key: not_appropriate
+      type: int
+      default: 0
+    - name: Language
+      choices: ['ar', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'eo', 'es', 'eu', 'fa', 'fi', 'fr', 'gl', 'he', 'hu', 'id', 'it', 'ja', 'ko', 'nb', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'th', 'tr', 'uk', 'vi', 'zh']
+      key: lang
+      type: list
+      default: en
+   
+  user: User
+  assistant: Assistant
+  system: "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"

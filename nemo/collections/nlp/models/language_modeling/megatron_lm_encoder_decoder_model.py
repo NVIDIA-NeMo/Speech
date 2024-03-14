@@ -708,8 +708,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         return fwd_output_only_func
 
-    ##########
-
     def _test_validation_step(self, dataloader_iter):
         """
         Shared code for validation and test step

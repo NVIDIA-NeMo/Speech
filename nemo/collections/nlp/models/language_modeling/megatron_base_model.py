@@ -895,6 +895,8 @@ class MegatronBaseModel(NLPModel):
 
     def _compute_consumed_samples_after_training_step(self):
         # Add +1 to account for the current batch, which is not counted yet in `trainer.global_step`.
+        if not hasattr(self, 'init_global_step'):
+            self.init_global_step = 0  # in case this method is called before training starts.
         return self.compute_consumed_samples(self.trainer.global_step + 1 - self.init_global_step)
 
     def _extract_consumed_samples_from_ckpt(self, ckpt_path):

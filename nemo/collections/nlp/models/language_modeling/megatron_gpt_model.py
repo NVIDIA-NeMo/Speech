@@ -637,6 +637,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         )
         self.initialize_ub = False
 
+    def training_step_fwd_bwd_step_call(self, dataloader_iter, forward_only):
+        """
+        This method is called from the training_step method.
+        It is separated out to allow for overriding in the MegatronGPTEmbeddingModel
+        """
+        loss_mean = self.fwd_bwd_step(dataloader_iter, forward_only)
+        return loss_mean
+
     def training_step(self, dataloader_iter):
         """
             We pass the dataloader iterator function to the micro-batch scheduler.
@@ -676,7 +684,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     for param in module.embedding.parameters():
                         param.data_ptr()
 
-        loss_mean = self.fwd_bwd_step(dataloader_iter, False)
+        loss_mean = self.training_step_fwd_bwd_step_call(dataloader_iter, forward_only=False)
 
         if self.cfg.get('fp8', False):
             self.prev_step_training = self.training
@@ -1012,7 +1020,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 'input_ids': batch['tokens'],
                 'position_ids': batch['position_ids'],
                 'attention_mask': None if self.get_attention_mask_from_fusion else batch['attention_mask'],
-                'labels': batch['labels'],
+                'labels': batch['labels'] if 'labels' in batch else None,
                 'loss_mask': batch['loss_mask'],
             }
 
@@ -1056,8 +1064,27 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             def loss_func(output_tensor):
                 # Loss for a micro-batch (ub)
                 loss_for_ub = self.loss_func(batch['loss_mask'], batch['num_valid_tokens_in_ub'], output_tensor)
-                cp_size = parallel_state.get_context_parallel_world_size()
-                if validation_step and not self.cfg.data.get('validation_drop_last', True):
+                cp_size = self.cfg.get('context_parallel_size', 1)
+                if self.cfg.data.get(
+                    "return_output_tensors", False
+                ):  # TODO: need a better way to check if loss_func is returning more stuff than just loss... (@adithyare)
+                    loss_for_ub, q_hs, d_hs, pos_cs, neg_cs, diff_cs = loss_for_ub
+                    reduced_loss = average_losses_across_data_parallel_group([loss_for_ub])
+                    pos_cs = average_losses_across_data_parallel_group([pos_cs])
+                    neg_cs = average_losses_across_data_parallel_group([neg_cs])
+                    diff_cs = average_losses_across_data_parallel_group([diff_cs])
+                    return (
+                        loss_for_ub * cp_size,
+                        {
+                            'avg': reduced_loss,
+                            'query_hs': q_hs,
+                            'doc_hs': d_hs,
+                            'avg_pos_cs': pos_cs,
+                            'avg_neg_cs': neg_cs,
+                            'diff_cs': diff_cs,
+                        },
+                    )
+                elif validation_step and not self.cfg.data.get('validation_drop_last', True):
                     num_valid_tokens_in_ub = batch['num_valid_tokens_in_ub']
                     if loss_for_ub.isnan():
                         assert batch['loss_mask'].count_nonzero() == 0, 'Got NaN loss with non-empty input'

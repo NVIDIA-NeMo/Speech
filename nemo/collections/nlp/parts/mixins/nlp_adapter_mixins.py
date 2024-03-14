@@ -503,6 +503,7 @@ class NLPAdapterModelMixin:
 
         with open_dict(cfg):
             cfg.inference.add_BOS = peft_cfg.data.test_ds.add_bos
-            cfg.inference.tokens_to_generate = peft_cfg.data.test_ds.tokens_to_generate
+            cfg.inference.tokens_to_generate = peft_cfg.data.test_ds.get("tokens_to_generate", 1)
+
         peft_cfg.megatron_amp_O2 = False  # always evaluate with O1
         return peft_cfg

@@ -30,6 +30,7 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     segments_manifest_to_subsegments_manifest,
     write_rttm2manifest,
 )
+from nemo.utils import logging
 from nemo.utils.data_utils import DataStoreObject
 
 
@@ -476,10 +477,24 @@ def read_manifest(manifest: Union[Path, str]) -> List[dict]:
         f = open(manifest.get(), 'r', encoding='utf-8')
     except:
         raise Exception(f"Manifest file could not be opened: {manifest}")
-    for line in f:
-        item = json.loads(line)
+
+    errors = []
+    for line in f.readlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            errors.append(line)
+            continue
         data.append(item)
     f.close()
+    if errors:
+        logging.error(f"{len(errors)} Errors encountered while reading manifest file: {manifest}")
+        for error in errors:
+            logging.error(f"-- Failed to parse line: `{error}`")
+        raise RuntimeError(f"Errors encountered while reading manifest file: {manifest}")
     return data
 
 

@@ -13,6 +13,38 @@ Pretrained checkpoints for all of these models, as well as instructions on how t
 section. You can use the available checkpoints for immediate inference, or fine-tune them on your own datasets. The checkpoints section
 also contains benchmark results for the available ASR models.
 
+
+Spotlight Models
+----------------
+
+Canary
+~~~~~~
+
+Canary-1B is the latest ASR model from NVIDIA NeMo. It sits at the top of the `HuggingFace OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__ at time of publishing.
+
+You can `download the checkpoint <https://huggingface.co/nvidia/canary-1b>`__  or try out Canary in action in this `HuggingFace Space <https://huggingface.co/spaces/nvidia/canary-1b>`__.
+
+Canary-1B is an encoder-decoder model with a :ref:`FastConformer Encoder <Fast-Conformer>` and Transformer Decoder :cite:`asr-models-vaswani2017attention`.
+
+It is a multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 4 languages (English, German, French, Spanish) as well as translation between English and the 3 other supported languages.
+
+
+Parakeet
+~~~~~~~~
+
+Parakeet is the name of a family of ASR models with a :ref:`FastConformer Encoder <Fast-Conformer>` and a CTC, RNN-T, or TDT decoder.
+
+Model checkpoints:
+
+* `Parakeet-CTC-0.6B <https://huggingface.co/nvidia/parakeet-ctc-0.6b>`__ and `Parakeet-CTC-1.1B <https://huggingface.co/nvidia/parakeet-ctc-1.1b>`__ model cards
+* `Parakeet-RNNT-0.6B <https://huggingface.co/nvidia/parakeet-rnnt-0.6b>`__ and `Parakeet-RNNT-1.1B <https://huggingface.co/nvidia/parakeet-rnnt-1.1b>`__ model cards
+* `Parakeet-TDT-1.1B <https://huggingface.co/nvidia/parakeet-tdt-1.1b>`__ model card
+
+HuggingFace Spaces to try out Parakeet models in your browser:
+
+* `Parakeet-RNNT-1.1B <https://huggingface.co/spaces/nvidia/parakeet-rnnt-1.1b>`__ space
+* `Parakeet-TDT-1.1B <https://huggingface.co/spaces/nvidia/parakeet-tdt-1.1b>`__ space
+
 .. _Conformer_model:
 Conformer
 ---------
@@ -91,6 +123,8 @@ with sub-word encoding at ``<NeMo_git_root>/examples/asr/conf/conformer/hat/conf
 By default, the decoding for HAT model works in the same way as for Conformer-Transducer.
 In the case of external ngram LM fusion you can use ``<NeMo_git_root>/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_transducer.py``.
 To enable HAT internal LM subtraction set ``hat_subtract_ilm=True`` and find more appropriate couple of ``beam_alpha`` and ``hat_ilm_weight`` values in terms of the best recognition accuracy.
+
+.. _Fast-Conformer:
 
 Fast-Conformer
 --------------

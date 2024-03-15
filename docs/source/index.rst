@@ -40,12 +40,7 @@ For more information, browse the developer docs for your area of interest in the
    :name: core
    :titlesonly:
 
-   core/core
-   core/exp_manager
-   core/neural_types
-   core/export
-   core/adapters/intro
-   core/api
+   core/core_index
 
 
 .. toctree::

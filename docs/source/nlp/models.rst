@@ -1,7 +1,7 @@
 .. _nlp_models:
 
-Tasks
-=====
+NLP Tasks
+=========
 
 NeMo's NLP collection supports provides the following task-specific models:
 

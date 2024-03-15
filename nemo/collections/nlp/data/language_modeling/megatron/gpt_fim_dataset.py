@@ -16,7 +16,7 @@ from typing import Tuple
 
 import numpy as np
 from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig
-from megatron.core.datasets.indexed_dataset import MMapIndexedDataset
+from megatron.core.datasets.indexed_dataset import IndexedDataset
 from megatron.core.datasets.utils import Split
 
 
@@ -41,7 +41,7 @@ class GPTFIMDataset(GPTDataset):
     """The base GPT dataset
 
     Args:
-        indexed_dataset (MMapIndexedDataset): The MMapIndexedDataset around which to build the
+        indexed_dataset (IndexedDataset): The IndexedDataset around which to build the
         MegatronDataset
 
         indexed_indices (np.ndarray): The set of the documents indices to expose
@@ -55,7 +55,7 @@ class GPTFIMDataset(GPTDataset):
 
     def __init__(
         self,
-        indexed_dataset: MMapIndexedDataset,
+        indexed_dataset: IndexedDataset,
         dataset_path: str,
         indexed_indices: np.ndarray,
         num_samples: int,

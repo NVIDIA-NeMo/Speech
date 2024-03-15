@@ -235,6 +235,7 @@ model:
     data_prefix: ???
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap
+    mmap_bin_files: True
     splits_string: 900,50,50
     seq_length: ${model.encoder_seq_length}
     skip_warmup: True
@@ -247,8 +248,7 @@ model:
     no_seqlen_plus_one_input_tokens: False # Set to True to disable fetching (sequence length + 1) input tokens, instead get (sequence length) input tokens and mask the last token
     pad_samples_to_global_batch_size: False # Set to True if you want to pad the last partial batch with -1's to equal global batch size
     shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
-    exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem
-    mock_dataset: False # Set to True and data_prefix to None to use artificially generated mock dataset
+    exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem 
 
   # Nsys profiling options
   nsys_profile:

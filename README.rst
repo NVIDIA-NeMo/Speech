@@ -158,10 +158,12 @@ Installation
 The NeMo Framework can be installed in a variety of ways, depending on your needs. Depending on the domain, you may find one of the following installation methods more suitable.
 
 * Conda / Pip - Refer to the `Conda <#conda>`_ and `Pip <#pip>`_ sections for installation instructions.
+
   * This is recommended for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
   * When using a Nvidia PyTorch container as the base, this is the recommended installation method for all domains.
 
-* Docker - Refer to the `Docker containers <#Docker-containers>`_ section for installation instructions.
+* Docker - Refer to the `Docker containers <#docker-containers>`_ section for installation instructions.
+
   * This is recommended for Large Language Models (LLM), Multimodal and Vision domains.
   * NeMo LLM & Multimodal Container - `nvcr.io/nvidia/nemo:24.01.01.framework`
   * NeMo Speech Container - `nvcr.io/nvidia/nemo:24.01.speech`

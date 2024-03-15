@@ -78,6 +78,11 @@ def get_args():
         help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
     )
     parser.add_argument("--nemo_file_path", type=str, default=None, required=True, help="Path to output .nemo file.")
+    parser.add_argument(
+        "--no_pack_nemo_file",
+        action="store_true",
+        help="If passed, output will be written under nemo_file_path as a directory instead of packed as a tarred .nemo file.",
+    )
     parser.add_argument("--gpus_per_node", type=int, required=True, default=None)
     parser.add_argument("--tensor_model_parallel_size", type=int, required=True, default=None)
     parser.add_argument("--pipeline_model_parallel_size", type=int, required=True, default=None)
@@ -215,11 +220,17 @@ def convert(local_rank, rank, world_size, args):
             checkpoint_path, hparams_file=args.hparams_file, trainer=trainer
         )
     model._save_restore_connector = NLPSaveRestoreConnector()
+    save_file_path = args.nemo_file_path
+    if args.no_pack_nemo_file:
+        # With --no_pack_nemo_file, nemo_file_path is expected to be a directory.
+        # Adding a dummy model filename here conforms with SaveRestoreConnector's convention.
+        model._save_restore_connector.pack_nemo_file = False
+        save_file_path = os.path.join(save_file_path, 'model.nemo')
 
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
 
-    model.save_to(args.nemo_file_path)
+    model.save_to(save_file_path)
 
     logging.info(f'NeMo model saved to: {args.nemo_file_path}')
 

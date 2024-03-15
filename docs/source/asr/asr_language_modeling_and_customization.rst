@@ -1,5 +1,5 @@
 #####################
-ASR Language Modeling
+ASR Language Modeling and Customization
 #####################
 
 Language models have shown to help the accuracy of ASR models. NeMo supports the following two approaches to incorporate language models into the ASR models:
@@ -472,6 +472,7 @@ You can then pass this file to your flashlight config object during decoding:
            decoding.beam.flashlight_cfg.beam_size_token = 32 \
            decoding.beam.flashlight_cfg.beam_threshold = 25.0
 
+
 Combine N-gram Language Models
 ==============================
 
@@ -526,22 +527,100 @@ The following is the list of the arguments for the opengrm script:
 | kenlm_bin_path       | str    | Required         | The path to the bin folder of KenLM library. It is a folder named `bin` under where KenLM is installed.         |
 +----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
 | ngram_bin_path       | str    | Required         | The path to the bin folder of OpenGrm Ngram. It is a folder named `bin` under where OpenGrm Ngram is installed. |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| arpa_a               | str    | Required         | Path to the ARPA N-gram model file A                                                                            |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| alpha                | float  | Required         | Weight of N-gram model A                                                                                        |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| arpa_b               | int    | Required         | Path to the ARPA N-gram model file B                                                                            |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| beta                 | float  | Required         | Weight of N-gram model B                                                                                        |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| out_path             | str    | Required         | Path for writing temporary and resulting files.                                                                 |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| test_file            | str    | None             | Path to test file to count perplexity if provided.                                                              |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| symbols              | str    | None             | Path to symbols (.syms) file. Could be calculated if it is not provided.                                        |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| nemo_model_file      | str    | None             | The path to '.nemo' file of the ASR model, or name of a pretrained NeMo model.                                  |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
-| force                | bool   | ``False``        | Whether to recompile and rewrite all files                                                                      |
-+----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| arpa_a               | str    | Required         | Path to the ARPA N-gram model file A                                    |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| alpha                | float  | Required         | Weight of N-gram model A                                                |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| arpa_b               | int    | Required         | Path to the ARPA N-gram model file B                                    |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| beta                 | float  | Required         | Weight of N-gram model B                                                |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| out_path             | str    | Required         | Path for writing temporary and resulting files.                         |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| test_file            | str    | None             | Path to test file to count perplexity if provided.                      |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| symbols              | str    | None             | Path to symbols (.syms) file. Could be calculated if it is not provided.|
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| nemo_model_file      | str    | None             | The path to '.nemo' file of the ASR model, or name of a pretrained NeMo model.  |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+| force                | bool   | ``False``        | Whether to recompile and rewrite all files                              |
++----------------------+--------+------------------+-------------------------------------------------------------------------+
+
+
+******************
+Context-biasing (word boosting) without external LM
+******************
+
+NeMo toolkit supports a fast context-biasing method for CTC and Transducer (RNN-T) ASR models with CTC-based Word Spotter.
+The method involves decoding CTC log probabilities with a context graph built for words and phrases from the context-biasing list.
+The spotted context-biasing candidates (with their scores and time intervals) are compared by scores with words from the greedy CTC decoding results to improve recognition accuracy and pretend false accepts of context-biasing.
+
+A Hybrid Transducer-CTC model (a shared encoder trained together with CTC and Transducer output heads) enables the use of the CTC-WS method for the Transducer model.
+Context-biasing candidates obtained by CTC-WS are also filtered by the scores with greedy CTC predictions and then merged with greedy Transducer results.
+
+Scheme of the CTC-WS method:
+
+.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_1.png
+    :align: center
+    :alt: CTC-WS scheme
+    :scale: 40%
+
+High-level overview of the context-biasing words replacement with CTC-WS method:
+
+.. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.22.0/asset-post-v1.22.0-ctcws_scheme_2.png
+    :align: center
+    :alt: CTC-WS high level overview
+    :scale: 40%
+
+More details about CTC-WS context-biasing can be found in the `tutorial <https://github.com/NVIDIA/NeMo/tree/main/tutorials/asr/ASR_Context_Biasing.ipynb>`__.
+
+To use CTC-WS context-biasing, you need to create a context-biasing text file that contains words/phrases to be boosted, with its transcriptions (spellings) separated by underscore.
+Multiple transcriptions can be useful for abbreviations ("gpu" -> "g p u"), compound words ("nvlink" -> "nv link"), 
+or words with common mistakes in the case of our ASR model ("nvidia" -> "n video").
+
+Example of the context-biasing file:
+
+.. code-block::
+
+    nvidia_nvidia
+    omniverse_omniverse
+    gpu_gpu_g p u
+    dgx_dgx_d g x_d gx
+    nvlink_nvlink_nv link
+    ray tracing_ray tracing
+
+The main script for CTC-WS context-biasing in NeMo is: 
+
+.. code-block::
+
+    {NEMO_DIR_PATH}/scripts/asr_context_biasing/eval_greedy_decoding_with_context_biasing.py
+
+Context-biasing is managed by ``apply_context_biasing`` parameter [true or false].
+Other important context-biasing parameters are:
+
+*  ``beam_threshold`` - threshold for CTC-WS beam pruning
+*  ``context_score`` - per token weight for context biasing
+*  ``ctc_ali_token_weight`` - per token weight for CTC alignment (prevents false acceptances of context-biasing words)
+
+All the context-biasing parameters are selected according to the default values in the script.
+You can tune them according to your data and ASR model (list all the values in the [] separated by commas)
+for example: ``beam_threshold=[7.0,8.0,9.0]``, ``context_score=[3.0,4.0,5.0]``, ``ctc_ali_token_weight=[0.5,0.6,0.7]``.
+The script will run the recognition with all the combinations of the parameters and will select the best one based on WER value.
+
+.. code-block::
+
+    # Context-biasing with the CTC-WS method for CTC ASR model 
+    python {NEMO_DIR_PATH}/scripts/asr_context_biasing/eval_greedy_decoding_with_context_biasing.py \
+            nemo_model_file={ctc_model_name} \
+            input_manifest={test_nemo_manifest} \
+            preds_output_folder={exp_dir} \
+            decoder_type="ctc" \
+            acoustic_batch_size=64 \
+            apply_context_biasing=true \
+            context_file={cb_list_file_modified} \
+            beam_threshold=[7.0] \
+            context_score=[3.0] \
+            ctc_ali_token_weight=[0.5]
+
+To use Transducer head of the Hybrid Transducer-CTC model, you need to set ``decoder_type=rnnt``.

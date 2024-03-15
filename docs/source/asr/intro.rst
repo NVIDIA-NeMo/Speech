@@ -156,7 +156,7 @@ Canary-1B is a multi-lingual, multi-task model, supporting automatic speech-to-t
 
 .. raw:: html
 
-    <iframe src="https://hf.space/embed/smajumdar/nemo_multilingual_language_id/+"
+    <iframe src="https://hf.space/embed/nvidia/canary-1b/+"
     width="100%" class="gradio-asr" allow="microphone *"></iframe>
 
     <script type="text/javascript" language="javascript">

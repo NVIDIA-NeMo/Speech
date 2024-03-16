@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
@@ -106,7 +106,9 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
     text_field: str = "answer"
     lang_field: str = "target_lang"
 
-    _internal: Optional[MultiTaskTranscriptionInternalConfig] = None
+    _internal: Optional[MultiTaskTranscriptionInternalConfig] = field(
+        default_factory=lambda: MultiTaskTranscriptionInternalConfig()
+    )
 
 
 class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTranscriptionMixin):

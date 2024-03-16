@@ -17,7 +17,7 @@ import json
 import os
 import tempfile
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil, floor
 from typing import Any, Dict, List, Optional, Union
 
@@ -48,7 +48,7 @@ class ClassificationInferConfig:
     batch_size: int = 4
     logprobs: bool = False
 
-    _internal: InternalTranscribeConfig = InternalTranscribeConfig()
+    _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 
 
 @dataclass
@@ -56,7 +56,7 @@ class RegressionInferConfig:
     batch_size: int = 4
     logprobs: bool = True
 
-    _internal: InternalTranscribeConfig = InternalTranscribeConfig()
+    _internal: InternalTranscribeConfig = field(default_factory=lambda: InternalTranscribeConfig())
 
 
 class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):

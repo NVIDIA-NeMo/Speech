@@ -65,6 +65,7 @@ model:
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
   virtual_pipeline_model_parallel_size: null # interleaved pipeline
+  expert_model_parallel_size: 1 # expert model parallelism
 
   # model architecture
   encoder_seq_length: 512

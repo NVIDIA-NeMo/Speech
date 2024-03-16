@@ -359,23 +359,24 @@ def get_params_for_weight_decay_optimization(
     Layernorms and biases will have no weight decay but the rest will.
     """
     modules = listify_model(model)
-    weight_decay_params = {'params': []}
-    no_weight_decay_params = {'params': [], 'weight_decay': 0.0}
+    weight_decay_params = {'params': [], 'is_expert': False}
+    weight_decay_expert_params = {'params': [], 'is_expert': True}
+    no_weight_decay_params = {'params': [], 'weight_decay': 0.0, 'is_expert': False}
+    # EP params have the 'allreduce' attr set.
+    is_expert = lambda param: not getattr(param, 'allreduce', True)
+    # Do the actual param classification
     for module in modules:
-        for module_ in module.modules():
-            if isinstance(module_, (FusedLayerNorm, FastLayerNorm, MixedFusedRMSNorm)):
-                no_weight_decay_params['params'].extend(
-                    [p for p in list(module_._parameters.values()) if p is not None]
-                )
+        for name, param in module.named_parameters():
+            if param is None:
+                continue
+            if name.endswith('.bias'):
+                no_weight_decay_params['params'].extend([param])
             else:
-                weight_decay_params['params'].extend(
-                    [p for n, p in list(module_._parameters.items()) if p is not None and n != 'bias']
-                )
-                no_weight_decay_params['params'].extend(
-                    [p for n, p in list(module_._parameters.items()) if p is not None and n == 'bias']
-                )
-
-    return weight_decay_params, no_weight_decay_params
+                if is_expert(param):
+                    weight_decay_expert_params['params'].extend([param])
+                else:
+                    weight_decay_params['params'].extend([param])
+    return weight_decay_params, weight_decay_expert_params, no_weight_decay_params
 
 
 def get_all_params_for_weight_decay_optimization(
@@ -384,11 +385,15 @@ def get_all_params_for_weight_decay_optimization(
     """Use all params for weight decay."""
     modules = listify_model(model)
 
-    weight_decay_params = [
-        p for module in modules for module_ in module.modules() for p in module_._parameters.values() if p is not None
-    ]
+    weight_decay_params = {'params': [], 'is_expert': False}
+    weight_decay_expert_params = {'params': [], 'is_expert': True}
 
-    return ({'params': weight_decay_params},)
+    # populate with params
+    is_expert = lambda param: not getattr(param, 'allreduce', True)
+    weight_decay_params['params'] = list(filter(lambda x: not is_expert(x), model.parameters()))
+    weight_decay_expert_params['params'] = list(filter(is_expert, model.parameters()))
+
+    return weight_decay_params, weight_decay_expert_params
 
 
 def get_iterator_k_split(batch: List[torch.Tensor], num_microbatches: int) -> Iterator:

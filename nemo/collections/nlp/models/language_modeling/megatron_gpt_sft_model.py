@@ -265,6 +265,11 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
                 assert data_cfg.micro_batch_size == 1, "Micro batch size must be 1 if using packed sequence"
             else:
                 dataset_cls = GPTSFTDataset
+
+            # TODO(akoumparouli): MCore assumes/requires equal length input sequences.
+            if not data_cfg.get('pad_to_max_length', False) and self.cfg.get('expert_model_parallel_size', 1) > 1:
+                raise ValueError('Expert parallelism requires pad_to_max_length')
+
             dataset = dataset_cls(
                 file_path=file_path,
                 tokenizer=self.tokenizer,

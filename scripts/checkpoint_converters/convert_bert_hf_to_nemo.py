@@ -203,7 +203,6 @@ def adjust_tensor_shapes(model, nemo_state_dict):
 
 
 def adjust_nemo_config(model_config, ref_config):
-    model_config.tokenizer["type"] = "intfloat/e5-large-unsupervised"  # ref_config["_input_name_or_path"]
     model_config["num_layers"] = ref_config["num_hidden_layers"]
     model_config["hidden_size"] = ref_config["hidden_size"]
     model_config["ffn_hidden_size"] = ref_config["intermediate_size"]
@@ -220,6 +219,7 @@ def adjust_nemo_config(model_config, ref_config):
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--input_name_or_path", type=str, default="thenlper/gte-large")
+    parser.add_argument("--vocab_file", type=str, default=None)
     parser.add_argument(
         "--hparams_file",
         type=str,
@@ -242,6 +242,7 @@ def convert(args):
     hf_model = AutoModel.from_pretrained(args.input_name_or_path)
 
     nemo_config = OmegaConf.load(args.hparams_file)
+    nemo_config.model.tokenizer["vocab_file"] = args.vocab_file
     nemo_config.model = adjust_nemo_config(nemo_config.model, hf_model.config.to_dict())
 
     nemo_config.trainer["precision"] = args.precision

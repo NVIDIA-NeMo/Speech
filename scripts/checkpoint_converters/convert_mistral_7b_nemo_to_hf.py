@@ -13,18 +13,16 @@
 # limitations under the License.
 
 r"""
-Conversion script to convert NeMo Mixtral checkpoints into HuggingFace checkpoint.
+Conversion script to convert NeMo Mistral-7B checkpoints into HuggingFace checkpoint.
   Example to run this conversion script:
-    python3 convert_nemo_mixtral_to_hf.py \
-     --in-file <path_to_nemo_checkpoints_folder> \
-     --out-file <path_to_output_hf_file> \
-     [--fast-swiglu\
+    python3 convert_mistral_7b_nemo_to_hf.py \
+     --input_name_or_path <path_to_nemo_checkpoints_folder> \
+     --output_path <path_to_output_hf_file>
 """
 
 from argparse import ArgumentParser
 from collections import OrderedDict
 
-import megatron.core.parallel_state as parallel_state
 import torch
 import torch.nn
 from pytorch_lightning.trainer.trainer import Trainer
@@ -37,11 +35,11 @@ from nemo.utils import logging
 
 def get_args():
     parser = ArgumentParser()
-    parser.add_argument("--in-file", type=str, default=None, required=True, help="Path to NeMo Mixtral checkpoint")
-    parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to output HF checkpoint.")
     parser.add_argument(
-        '--hf-model-name', type=str, default="mistralai/Mixtral-8x7B-v0.1", help="Name of HF checkpoint"
+        "--input_name_or_path", type=str, default=None, required=True, help="Path to NeMo Mistral-7B checkpoint"
     )
+    parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to output HF checkpoint.")
+    parser.add_argument('--hf_model_name', type=str, default="mistralai/Mistral-7B-v0.1", help="Name of HF checkpoint")
     parser.add_argument("--precision", type=str, default="32", help="Model precision")
     args = parser.parse_args()
     return args
@@ -49,6 +47,8 @@ def get_args():
 
 def load_config(hf_model_name, nemo_config):
     hf_config = AutoConfig.from_pretrained(hf_model_name)
+    # SWA; nemo_config.window_size is list [left-bound, right-bound]
+    hf_config.sliding_window = nemo_config.window_size[0]
     hf_config.max_position_embeddings = nemo_config.encoder_seq_length
     hf_config.num_hidden_layers = nemo_config.num_layers
     hf_config.hidden_size = nemo_config.hidden_size
@@ -58,10 +58,6 @@ def load_config(hf_model_name, nemo_config):
     hf_config.initializer_range = nemo_config.init_method_std
     hf_config.rms_norm_eps = nemo_config.layernorm_epsilon
     hf_config.num_key_value_heads = nemo_config.num_query_groups
-    hf_config.num_local_experts = nemo_config.num_moe_experts
-    assert hf_config.num_local_experts > 0, "num_experts must be greater than zero."
-    hf_config.num_experts_per_tok = nemo_config.num_experts_per_token
-    assert hf_config.num_experts_per_tok > 0, "num_experts_per_token must be greater than zero."
     if nemo_config.activation == 'fast-swiglu':
         hf_config.activation = 'silu'
     else:
@@ -71,7 +67,7 @@ def load_config(hf_model_name, nemo_config):
     return hf_config
 
 
-def convert(in_file, precision=None) -> None:
+def convert(in_file, precision=None, cpu_only=True) -> None:
     """
     Convert NeMo checkpoint to HF checkpoint
     """
@@ -82,7 +78,6 @@ def convert(in_file, precision=None) -> None:
     model_config = MegatronGPTModel.restore_from(in_file, trainer=dummy_trainer, return_config=True)
     model_config.tensor_model_parallel_size = 1
     model_config.pipeline_model_parallel_size = 1
-    cpu_only = True
     if cpu_only:
         map_location = torch.device('cpu')
         model_config.use_cpu_initialization = True
@@ -121,6 +116,7 @@ def convert(in_file, precision=None) -> None:
         embed_weights_base_name = f'model.language_model.embedding.word_embeddings.weight'
     state_dict[hf_embed_weight_name] = param_to_weights(ckpt[embed_weights_base_name])
 
+    head_num = model.cfg.num_attention_heads
     if nemo_config.num_query_groups is None or nemo_config.num_query_groups == head_num:
         num_query_groups = head_num
     else:
@@ -130,7 +126,6 @@ def convert(in_file, precision=None) -> None:
         assert nemo_config.activation.startswith('fast-'), 'mcore only supports fast version of gated linear unit.'
 
     hidden_size = model.cfg.hidden_size
-    head_num = model.cfg.num_attention_heads
     num_layers = model.cfg.num_layers
     num_query_groups = model.cfg.get("num_query_groups", head_num)  # different num_query_groups for 70B
 
@@ -171,31 +166,22 @@ def convert(in_file, precision=None) -> None:
         state_dict[hf_o_weight_name] = param_to_weights(ckpt[o_weight_base_name])
 
         # # MLP
-        # Handle gate
-        hf_moe_gate_name = f'model.layers.{l}.block_sparse_moe.gate.weight'
         if mcore_gpt:
-            moe_gate_name = f'model.decoder.layers.{l}.mlp.router.weight'
+            mlp_down_base_name = f'model.decoder.layers.{l}.mlp.linear_fc1.weight'
         else:
             raise Exception("not implemented")
-        state_dict[hf_moe_gate_name] = param_to_weights(ckpt[moe_gate_name])
-        # Handle experts
-        for i in range(nemo_config.num_moe_experts):
-            if mcore_gpt:
-                mlp_down_base_name = f'model.decoder.layers.{l}.mlp.experts.local_experts.{i}.linear_fc1.weight'
-            else:
-                raise Exception("not implemented")
-            gate_proj_weight, up_proj_weight = torch.chunk(ckpt[mlp_down_base_name], 2, dim=0)
-            hf_gate_proj_name = f'model.layers.{l}.block_sparse_moe.experts.{i}.w1.weight'
-            hf_up_proj_name = f'model.layers.{l}.block_sparse_moe.experts.{i}.w3.weight'
-            state_dict[hf_gate_proj_name] = param_to_weights(gate_proj_weight)
-            state_dict[hf_up_proj_name] = param_to_weights(up_proj_weight)
+        gate_proj_weight, up_proj_weight = torch.chunk(ckpt[mlp_down_base_name], 2, dim=0)
+        hf_gate_proj_name = f'model.layers.{l}.mlp.gate_proj.weight'
+        hf_up_proj_name = f'model.layers.{l}.mlp.up_proj.weight'
+        state_dict[hf_gate_proj_name] = param_to_weights(gate_proj_weight)
+        state_dict[hf_up_proj_name] = param_to_weights(up_proj_weight)
 
-            hf_mlp_up_weight_name = f'model.layers.{l}.block_sparse_moe.experts.{i}.w2.weight'
-            if mcore_gpt:
-                mlp_up_base_name = f'model.decoder.layers.{l}.mlp.experts.local_experts.{i}.linear_fc2.weight'
-            else:
-                raise Exception("not implemented")
-            state_dict[hf_mlp_up_weight_name] = param_to_weights(ckpt[mlp_up_base_name])
+        hf_mlp_up_weight_name = f'model.layers.{l}.mlp.down_proj.weight'
+        if mcore_gpt:
+            mlp_up_base_name = f'model.decoder.layers.{l}.mlp.linear_fc2.weight'
+        else:
+            raise Exception("not implemented")
+        state_dict[hf_mlp_up_weight_name] = param_to_weights(ckpt[mlp_up_base_name])
 
         # LayerNorm
         hf_input_ln_weight_name = f'model.layers.{l}.input_layernorm.weight'
@@ -207,9 +193,7 @@ def convert(in_file, precision=None) -> None:
 
         hf_post_attn_ln_weight_name = f'model.layers.{l}.post_attention_layernorm.weight'
         if mcore_gpt:
-            # @akoumparouli: switch to the following once TE supports MoE.
-            # post_attn_ln_base_name = f'model.decoder.layers.{l}.mlp.linear_fc1.layer_norm_weight'
-            post_attn_ln_base_name = f'model.decoder.layers.{l}.pre_mlp_layernorm.weight'
+            post_attn_ln_base_name = f'model.decoder.layers.{l}.mlp.linear_fc1.layer_norm_weight'
         else:
             post_attn_ln_base_name = f'model.language_model.encoder.layers.{l}.post_attention_layernorm.weight'
         state_dict[hf_post_attn_ln_weight_name] = param_to_weights(ckpt[post_attn_ln_base_name])
@@ -232,13 +216,12 @@ def convert(in_file, precision=None) -> None:
 
 if __name__ == '__main__':
     args = get_args()
-    parallel_state.set_cpu_expert_model_parallel_world_size(1)
-    hf_state_dict, nemo_config = convert(args.in_file, args.precision)
+    hf_state_dict, nemo_config = convert(args.input_name_or_path, args.precision)
 
     config = load_config(args.hf_model_name, nemo_config)
     model = AutoModelForCausalLM.from_config(config)
     model.load_state_dict(hf_state_dict)
-    model.save_pretrained(args.out_file)
+    model.save_pretrained(args.output_path)
     hf_tokenizer = AutoTokenizer.from_pretrained(args.hf_model_name)
-    hf_tokenizer.save_pretrained(args.out_file)
-    logging.info(f'HF checkpoint saved to: {args.out_file}')
+    hf_tokenizer.save_pretrained(args.output_path)
+    logging.info(f'HF checkpoint saved to: {args.output_path}')

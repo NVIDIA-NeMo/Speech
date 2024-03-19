@@ -15,9 +15,9 @@
 r"""
 Conversion script to convert Huggingface Baichuan2 checkpoints into nemo checkpoint.
   Example to run this conversion script:
-    python convert_hf_baichuan2_to_nemo.py \
-     --in-file <path_to_hf_checkpoints_folder> \
-     --out-file <path_to_output_nemo_file>
+    python convert_baichuan2_hf_to_nemo.py \
+     --input_name_or_path <path_to_hf_checkpoints_folder> \
+     --output_path <path_to_output_nemo_file>
 """
 
 import os
@@ -26,9 +26,9 @@ from collections import OrderedDict
 
 import torch
 from omegaconf import OmegaConf
+from pytorch_lightning.core.saving import _load_state as ptl_load_state
 from pytorch_lightning.trainer.trainer import Trainer
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -45,9 +45,22 @@ from nemo.utils import logging
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--in-file", type=str, default=None, required=True, help="Path to Huggingface baichuan2 checkpoints",
+        "--input_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to Huggingface baichuan2 checkpoints",
     )
-    parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to output .nemo file.")
+    parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to output .nemo file.")
+    parser.add_argument(
+        "--hparams_file",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_baichuan2_config.yaml'
+        ),
+        required=False,
+        help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
+    )
     parser.add_argument("--precision", type=str, default="32", help="Model precision")
     args = parser.parse_args()
     return args
@@ -90,11 +103,7 @@ def load_model(cls, checkpoint, strict, **kwargs):
 
 
 def load_config(args, baichuan2_config):
-    nemo_config = OmegaConf.load(
-        os.path.join(
-            os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_baichuan2_config.yaml'
-        )
-    ).model
+    nemo_config = OmegaConf.load(args.hparams_file).model
     if 'max_position_embeddings' in baichuan2_config:
         nemo_config.encoder_seq_length = baichuan2_config['max_position_embeddings']
     nemo_config.num_layers = baichuan2_config['num_hidden_layers']
@@ -121,9 +130,9 @@ def load_config(args, baichuan2_config):
 
 
 def convert(args):
-    logging.info(f"loading checkpoint {args.in_file}")
-    model = AutoModelForCausalLM.from_pretrained(args.in_file, trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(args.in_file, trust_remote_code=True)
+    logging.info(f"loading checkpoint {args.input_name_or_path}")
+    model = AutoModelForCausalLM.from_pretrained(args.input_name_or_path, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(args.input_name_or_path, trust_remote_code=True)
     hf_config = vars(model.config)
     hf_config['tokenizer_model'] = str(tokenizer.vocab_file)
     print(f"hf_config: {hf_config}")
@@ -307,8 +316,8 @@ def convert(args):
     model = model.to(dtype=dtype)
     model.cfg.use_cpu_initialization = False
 
-    model.save_to(args.out_file)
-    logging.info(f'NeMo model saved to: {args.out_file}')
+    model.save_to(args.output_path)
+    logging.info(f'NeMo model saved to: {args.output_path}')
 
 
 if __name__ == '__main__':

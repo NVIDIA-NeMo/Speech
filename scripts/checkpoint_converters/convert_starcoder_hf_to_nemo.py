@@ -42,10 +42,9 @@ to correctly configure creating GPT-2 model in Megatron:
 
 Here is an example usage command:
 ```python
-python scripts/nlp_language_modeling/convert_starcoder_hf_to_nemo.py \
-    --config /path/to/megatron_gpt_config.yaml \
-    --input /path/to/starcoder \
-    --output /path/to/save
+python convert_starcoder_hf_to_nemo.py \
+    --input_name_or_path /path/to/starcoder \
+    --output_path /path/to/save.nemo
 ```
 """
 
@@ -98,23 +97,34 @@ def convert_state_dict(state_dict: Dict[str, torch.Tensor], amp: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to the megatron_gpt_config.yaml file")
     parser.add_argument(
-        "--input", type=str, required=True, help="StarCoder from HuggingFace hub or local dir with downloaded model"
+        "--input_name_or_path",
+        type=str,
+        required=True,
+        help="Path to Starcoder checkpoint from HuggingFace hub or local dir",
     )
-    parser.add_argument("--output", type=str, default=".", help="Path to dir where to store output .nemo file")
+    parser.add_argument("--output_path", type=str, required=True, help="Path to dir where to store output .nemo file")
+    parser.add_argument(
+        "--hparams_file",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_gpt_config.yaml'
+        ),
+        required=False,
+        help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
+    )
     parser.add_argument(
         "--precision", type=str, default="bf16", choices=["bf16", "32"], help="Precision for checkpoint weights saved"
     )
     parser.add_argument("--cuda", action="store_true", help="Put Nemo model onto GPU prior to saving")
     args = parser.parse_args()
 
-    if not os.path.isdir(args.output):
-        raise FileNotFoundError(f"Output directory '{args.output}' does not exist")
+    if not os.path.isdir(args.output_path):
+        raise FileNotFoundError(f"Output directory '{args.output_path}' does not exist")
 
-    hf_config = AutoConfig.from_pretrained(args.input)
+    hf_config = AutoConfig.from_pretrained(args.input_name_or_path)
 
-    with open(args.config, "r", encoding="utf_8") as f:
+    with open(args.hparams_file, "r", encoding="utf_8") as f:
         orig_cfg = yaml.safe_load(f)
 
     model_dict = orig_cfg["model"]
@@ -157,7 +167,7 @@ if __name__ == "__main__":
     }
     tokenizer_dict = {
         "library": "huggingface",
-        "type": args.input,
+        "type": args.input_name_or_path,
         "use_fast": True,
     }
     trainer_dict = {
@@ -188,7 +198,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(**trainer_dict)
 
     logging.info("Loading HuggingFace model...")
-    model_hf = AutoModelForCausalLM.from_pretrained(args.input)
+    model_hf = AutoModelForCausalLM.from_pretrained(args.input_name_or_path)
     logging.info(f"Loaded model:\n{model_hf}")
 
     state_dict_hf = model_hf.state_dict()
@@ -200,10 +210,10 @@ if __name__ == "__main__":
     logging.info(f"Created model:\n{model}")
 
     logging.info("Saving model...")
-    # We make sure that the tokenizer can be instantiated later regardless of args.input
+    # We make sure that the tokenizer can be instantiated later regardless of args.input_name_or_path
     model.cfg.tokenizer.update(type="bigcode/starcoder")
     dtype = torch.bfloat16 if args.precision == "bf16" else torch.float32
     model = model.to(dtype=dtype)
     model.cfg.update(use_cpu_initialization=False)
-    model.save_to(os.path.join(args.output, "megatron_starcoder_tp1_pp1.nemo"))
+    model.save_to(os.path.join(args.output_path, "megatron_starcoder_tp1_pp1.nemo"))
     logging.info("Done.")

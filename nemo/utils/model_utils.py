@@ -71,8 +71,10 @@ def load_config(model_file: str) -> DictConfig:
         with tempfile.TemporaryDirectory() as tmp, tarfile.open(model_file, "r:") as tar:
             tar.extract("./model_config.yaml", path=tmp)
             model_config = OmegaConf.load(os.path.join(tmp, "model_config.yaml"))
-    else:
+    elif os.path.isdir(model_file):
         model_config = OmegaConf.load(os.path.join(model_file, "model_config.yaml"))
+    else:
+        raise FileNotFoundError(model_file)
 
     return model_config
 

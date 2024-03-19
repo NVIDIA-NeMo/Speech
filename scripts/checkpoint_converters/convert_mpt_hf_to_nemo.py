@@ -46,7 +46,8 @@ file which is appropriate, but in the default case, we highly recommend you use 
 Here is an example usage command:
 
 ```python
-python scripts/nlp_language_modeling/convert_mpt_7b_hf_to_nemo.py -c /path/to/megatron_gpt_config.yaml -i /path/to/mpt_7b -o /path/to/save
+python convert_mpt_hf_to_nemo.py \
+ --input_name_or_path /path/to/mpt_7b --output_path /path/to/save.nemo
 ```
 
 """
@@ -67,27 +68,31 @@ from nemo.utils import logging
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-i', '--input', required=True, type=str, help='path to the two MPT-7B .bin weight files from HuggingFace'
+        "--input_name_or_path", type=str, default=None, required=True, help="Path to Huggingface MPT checkpoints",
     )
+    parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to output .nemo file.")
     parser.add_argument(
-        '-c', '--config', required=True, type=str, help='the path to the megatron_gpt_config.yaml file'
-    )
-    parser.add_argument(
-        '-o', '--output', required=False, default=None, type=str, help='path to dir where to store output .nemo file'
+        "--hparams_file",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_gpt_config.yaml'
+        ),
+        required=False,
+        help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
     )
     parser.add_argument('--cuda', action='store_true', help='put Nemo model onto GPU prior to savedown')
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.input):
-        logging.critical(f'Input directory [ {args.input} ] does not exist or cannot be found. Aborting.')
+    if not os.path.exists(args.input_name_or_path):
+        logging.critical(f'Input directory [ {args.input_name_or_path} ] does not exist or cannot be found. Aborting.')
         exit(255)
 
-    if not os.path.exists(args.config):
-        logging.critical(f'Path to config file [ {args.config} ] does not exist or cannot be found. Aborting.')
+    if not os.path.exists(args.hparams_file):
+        logging.critical(f'Path to config file [ {args.hparams_file} ] does not exist or cannot be found. Aborting.')
         exit(255)
 
-    with open(args.config, 'r', encoding='utf_8') as fr:
+    with open(args.hparams_file, 'r', encoding='utf_8') as fr:
         orig_cfg = yaml.safe_load(fr)
 
     model_dict = orig_cfg['model']
@@ -178,8 +183,8 @@ if __name__ == '__main__':
     if args.cuda:
         model = model.cuda()
 
-    mpt_1 = torch.load(os.path.join(args.input, 'pytorch_model-00001-of-00002.bin'), map_location="cpu")
-    mpt_2 = torch.load(os.path.join(args.input, 'pytorch_model-00002-of-00002.bin'), map_location="cpu")
+    mpt_1 = torch.load(os.path.join(args.input_name_or_path, 'pytorch_model-00001-of-00002.bin'), map_location="cpu")
+    mpt_2 = torch.load(os.path.join(args.input_name_or_path, 'pytorch_model-00002-of-00002.bin'), map_location="cpu")
     mpt_dict = {**mpt_1, **mpt_2}
     del mpt_1, mpt_2
 
@@ -227,7 +232,7 @@ if __name__ == '__main__':
         logging.warning('Unexpected keys were detected which should not happen. Please investigate.')
         logging.warning(f'Unexpected keys: \n{unexpected_keys}')
 
-    if args.output is None:
-        args.output = os.path.dirname(os.path.abspath(__file__))
+    if args.output_path is None:
+        args.output_path = os.path.dirname(os.path.abspath(__file__))
 
-    model.save_to(os.path.join(args.output, 'megatron_mpt_7b_base_tp1_pp1.nemo'))
+    model.save_to(os.path.join(args.output_path, 'megatron_mpt_7b_base_tp1_pp1.nemo'))

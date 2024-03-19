@@ -241,7 +241,7 @@ class MegatronGPTEmbeddingModel(MegatronGPTSFTModel):
         }
         return outputs
 
-    def gather_and_maybe_write_predictions(self, output, data_cfg, mode, dataloader_idx=0):
+    def gather_and_maybe_write_predictions(self, output, data_cfg, mode, averaged_metric, dataloader_idx=0):
         if not data_cfg.get("write_embeddings_to_file", False):
             return True
         gathered_output_batches = [None for _ in range(parallel_state.get_data_parallel_world_size())]

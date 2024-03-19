@@ -17,35 +17,32 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 
 import torch
-from omegaconf import open_dict
 from pytorch_lightning import Trainer
-from transformers import AutoModelForCausalLM, LlamaTokenizer, LlamaTokenizerFast, convert_slow_tokenizer
+from transformers import AutoModelForCausalLM
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.utils import logging
 
 """
-Script to convert a llama2 checkpoint in nemo (mcore path) into a HuggingFace checkpoint.
+Script to convert a baichuan2 checkpoint in nemo (mcore path) into a HuggingFace checkpoint.
 This script can be used to 1) generate only the HF weights, or 2) generate an entire HF model folder.
 
 1) Generate only HF weights from a nemo file:
 
-    python convert_nemo_llama_to_hf.py \
-    --in-file /path/to/file.nemo or /path/to/extracted_folder \
-    --out-file /path/to/pytorch_model.bin
+    python convert_baichuan2_nemo_to_hf.py \
+    --input_name_or_path /path/to/file.nemo or /path/to/extracted_folder \
+    --output_path /path/to/pytorch_model.bin
     
 2) Generate the full HF model folder
 
-    python convert_nemo_llama_to_hf.py \
-    --in-file /path/to/file.nemo or /path/to/extracted_folder \
-    --out-file /path/to/pytorch_model.bin \
-    --hf-in-path /path/to/input_hf_folder \
-    --hf-out-path /path/to/output_hf_folder \
-    --in-tokenizer /path/to/tokenizer \
-    --hf-out-tokenizer /path/to/output_tokenizer \
+    python convert_baichuan2_nemo_to_hf.py \
+    --input_name_or_path /path/to/file.nemo or /path/to/extracted_folder \
+    --output_path /path/to/pytorch_model.bin \
+    --hf_input_path /path/to/input_hf_folder \
+    --hf_output_path /path/to/output_hf_folder
 
-    Use the --cpu-only flag if the model cannot fit in the GPU (e.g. Llama2 70b). 
+    Use the --cpu-only flag if the model cannot fit in the GPU. 
     However this option makes the conversion script significantly slower.
 """
 
@@ -53,29 +50,21 @@ This script can be used to 1) generate only the HF weights, or 2) generate an en
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--in-file", type=str, default=None, required=True, help="Path to .nemo file or extracted folder",
+        "--input_name_or_path", type=str, default=None, required=True, help="Path to .nemo file",
     )
-    parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to HF .bin file")
+    parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to HF .bin file")
     parser.add_argument(
-        "--hf-in-path",
+        "--hf_input_path",
         type=str,
         default=None,
-        help="A HF model path, " "e.g. a folder containing https://huggingface.co/meta-llama/Llama-2-7b-hf/tree/main",
+        help="A HF model path, "
+        "e.g. a folder containing https://huggingface.co/baichuan-inc/Baichuan2-7B-Base/tree/main",
     )
     parser.add_argument(
-        "--hf-out-path",
+        "--hf_output_path",
         type=str,
         default=None,
         help="Output HF model path, " "with the same format as above but user's own weights",
-    )
-    parser.add_argument(
-        "--in-tokenizer",
-        type=str,
-        default=None,
-        help="Path to tokenizer used for the input nemo model. (need to extract the .nemo file first)",
-    )
-    parser.add_argument(
-        "--hf-out-tokenizer", type=str, default=None, help="Path to save the tokenizer used for the output HF model.",
     )
     parser.add_argument(
         "--precision",
@@ -98,15 +87,15 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
     """
     Convert NeMo weights to HF weights
     """
+
     dummy_trainer = Trainer(devices=1, accelerator='cpu', strategy=NLPDDPStrategy())
-    model_config = MegatronGPTModel.restore_from(input_nemo_file, trainer=dummy_trainer, return_config=True)
-    model_config.tensor_model_parallel_size = 1
-    model_config.pipeline_model_parallel_size = 1
     if cpu_only:
         map_location = torch.device('cpu')
+        model_config = MegatronGPTModel.restore_from(input_nemo_file, trainer=dummy_trainer, return_config=True)
         model_config.use_cpu_initialization = True
+        model_config.tensor_model_parallel_size = 1
     else:
-        map_location = None
+        map_location, model_config = None, None
 
     if cpu_only:
         logging.info("******** Loading model on CPU. This will take a significant amount of time.")
@@ -124,7 +113,6 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
     else:
         logging.warning(f"Precision string {precision} is not recognized, falling back to fp32")
         dtype = torch.float32  # fallback
-    logging.info(f"Using precision {dtype}")
 
     param_to_weights = lambda param: param.to(dtype)
     checkpoint = OrderedDict()
@@ -158,23 +146,17 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
         )
         k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
         v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-        ## Example of slices
-        ## 7b: num_query_groups = head_num = 32,
-        ## q_slice = [0, 3, 6, 9 , ... 90, 93]
-        ## k_slice = [1, 4, 7, 10, ... 91, 94]
-        ## v_slice = [2, 5, 8, 11, ... 92, 95]
-        ## 70b (with GQA): num_query_groups = 8, head_num = 64
-        ## q_slice = [0, 1, .. 6, 7, 10, 11, .. 16, 17, 20, 21, .. 67, 70, ... 76, 77]
-        ## k_slice = [8, 18, 28, ... 68, 78]
-        ## v_slice = [9, 19, 29, ... 69, 79]
 
-        q_weights_base_name = f'model.layers.{l}.self_attn.q_proj.weight'
-        k_weights_base_name = f'model.layers.{l}.self_attn.k_proj.weight'
-        v_weights_base_name = f'model.layers.{l}.self_attn.v_proj.weight'
-
-        checkpoint[q_weights_base_name] = param_to_weights(qkv_weights[q_slice].reshape(-1, hidden_size))
-        checkpoint[k_weights_base_name] = param_to_weights(qkv_weights[k_slice].reshape(-1, hidden_size))
-        checkpoint[v_weights_base_name] = param_to_weights(qkv_weights[v_slice].reshape(-1, hidden_size))
+        qkv_weights_base_name = f'model.layers.{l}.self_attn.W_pack.weight'
+        checkpoint[qkv_weights_base_name] = param_to_weights(
+            torch.cat(
+                [
+                    qkv_weights[q_slice].reshape(-1, hidden_size),
+                    qkv_weights[k_slice].reshape(-1, hidden_size),
+                    qkv_weights[v_slice].reshape(-1, hidden_size),
+                ]
+            )
+        )
 
         # attention dense
         o_weight = model.state_dict()[f'model.decoder.layers.{l}.self_attention.linear_proj.weight']
@@ -219,43 +201,21 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
     torch.save(checkpoint, output_hf_file)
     logging.info(f"Weights saved to {output_hf_file}")
 
-    return dtype
 
-
-def replace_hf_weights_and_tokenizer(
-    weights_file, dtype, input_hf_path, output_hf_path, tokenizer_path, output_hf_tokenizer,
-):
-    model = AutoModelForCausalLM.from_pretrained(input_hf_path, local_files_only=True, torch_dtype=dtype,)
+def replace_hf_weights(weights_file, input_hf_path, output_hf_path):
+    model = AutoModelForCausalLM.from_pretrained(input_hf_path, local_files_only=True, trust_remote_code=True)
     nemo_exported = torch.load(weights_file)
-
-    if tokenizer_path:
-        tokenizer = LlamaTokenizer.from_pretrained(tokenizer_path, local_files_only=True, legacy=False,)
-        tmp_tokenizer = convert_slow_tokenizer.convert_slow_tokenizer(tokenizer)
-        fast_tokenizer = LlamaTokenizerFast(tokenizer_object=tmp_tokenizer)
-        tokenizer_length = len(fast_tokenizer)
-        model.resize_token_embeddings(tokenizer_length)
 
     model.load_state_dict(nemo_exported)
     model.save_pretrained(output_hf_path)
     logging.info(f"Full HF model saved to {output_hf_path}")
 
-    if tokenizer_path:
-        fast_tokenizer.save_pretrained(output_hf_tokenizer)
-        tokenizer.save_pretrained(output_hf_tokenizer)
-        logging.info(f"Tokenizer saved to {output_hf_tokenizer}")
-
 
 if __name__ == '__main__':
     args = get_args()
-    if not args.hf_out_tokenizer and args.hf_out_path:
-        args.hf_out_tokenizer = args.hf_out_path
-
-    dtype = convert(args.in_file, args.out_file, precision=args.precision, cpu_only=args.cpu_only)
-
-    if args.hf_in_path and args.hf_out_path:
-        replace_hf_weights_and_tokenizer(
-            args.out_file, dtype, args.hf_in_path, args.hf_out_path, args.in_tokenizer, args.hf_out_tokenizer,
-        )
+    convert(args.input_name_or_path, args.output_path, precision=args.precision, cpu_only=args.cpu_only)
+    if args.hf_input_path and args.hf_output_path:
+        replace_hf_weights(args.output_path, args.hf_input_path, args.hf_output_path)
     else:
-        logging.info("`hf-in-path` and/or `hf-out-path` not provided, not generating full HF model.")
-        logging.info(f".bin file is saved to {args.out_file}")
+        logging.info("`hf_input_path` and/or `hf_output_path` not provided, not generating full HF model.")
+        logging.info(f".bin file is saved to {args.output_path}")

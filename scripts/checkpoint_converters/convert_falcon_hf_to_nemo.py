@@ -20,15 +20,15 @@ user to run additional script to set the TP/PP values manually.
     
 Example to run this conversion script:
 ```
-    python convert_hf_falcon_to_nemo.py \
-     --config /path/to/megatron_falcon_config.yaml \
-     --input /path/to/hf/checkpoints/folder \
-     --output /path/to/output/nemo/file \
+    python convert_falcon_hf_to_nemo.py \
+     --input_name_or_path /path/to/hf/checkpoints/folder \
+     --output_path /path/to/output/nemo/file \
      --precision <precision of converted nemo model>
 ```
 """
 
 import argparse
+import os
 import time
 from typing import Dict
 
@@ -89,7 +89,7 @@ def load_falcon_config(args) -> FalconConfig:
     `transformers.FalconModel`. need to manually set the config values
     and force to `falcon` model type. 
     """
-    config = FalconConfig.from_pretrained(args.input)
+    config = FalconConfig.from_pretrained(args.input_name_or_path)
     if config.model_type == 'RefinedWeb':
         mappings = {
             "num_hidden_layers": config.n_layer,
@@ -116,14 +116,22 @@ def load_falcon_config(args) -> FalconConfig:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to the megatron_gpt_config.yaml file")
     parser.add_argument(
-        "--input",
+        "--input_name_or_path",
         type=str,
         required=True,
         help="Path to Falcon variants checkpoint from HuggingFace hub or local dir",
     )
-    parser.add_argument("--output", type=str, required=True, help="Path to dir where to store output .nemo file")
+    parser.add_argument("--output_path", type=str, required=True, help="Path to dir where to store output .nemo file")
+    parser.add_argument(
+        "--hparams_file",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_falcon_config.yaml'
+        ),
+        required=False,
+        help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
+    )
     parser.add_argument(
         "--precision", type=str, default="bf16", choices=["bf16", "32"], help="Precision for checkpoint weights saved"
     )
@@ -132,7 +140,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     falcon_config = load_falcon_config(args)
-    with open(args.config, "r", encoding="utf_8") as f:
+    with open(args.hparams_file, "r", encoding="utf_8") as f:
         orig_cfg = yaml.safe_load(f)
 
     model_dict = orig_cfg["model"]
@@ -184,7 +192,7 @@ if __name__ == "__main__":
 
     tokenizer_dict = {
         "library": "huggingface",
-        "type": args.input,
+        "type": args.input_name_or_path,
         "use_fast": True,
     }
     trainer_dict = {
@@ -250,7 +258,7 @@ if __name__ == "__main__":
     model = MegatronGPTModel(omega_cfg, trainer)
 
     logging.info("Loading HuggingFace model...")
-    model_hf = AutoModelForCausalLM.from_pretrained(args.input)
+    model_hf = AutoModelForCausalLM.from_pretrained(args.input_name_or_path)
 
     state_dict_hf = model_hf.state_dict()
     convert_dict = convert_state_dict(state_dict_hf, amp=omega_cfg.megatron_amp_O2)
@@ -271,7 +279,7 @@ if __name__ == "__main__":
 
     logging.info("Saving model...")
 
-    # We make sure that the tokenizer can be instantiated later regardless of args.input
+    # We make sure that the tokenizer can be instantiated later regardless of args.input_name_or_path
     if falcon_config.new_decoder_architecture:
         model.cfg.tokenizer.update(type="tiiuae/falcon-40b")
     elif falcon_config.multi_query:
@@ -284,8 +292,8 @@ if __name__ == "__main__":
     dtype = torch.bfloat16 if args.precision == "bf16" else torch.float32
     model = model.to(dtype=dtype)
     model.cfg.update(use_cpu_initialization=False)
-    model.save_to(args.output)
-    logging.info(f'Done. NeMo model saved to: {args.output}')
+    model.save_to(args.output_path)
+    logging.info(f'Done. NeMo model saved to: {args.output_path}')
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))
     logging.info(f'nemo model created and saved. Total time: {t}')

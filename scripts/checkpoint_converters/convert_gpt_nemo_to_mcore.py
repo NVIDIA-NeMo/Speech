@@ -39,19 +39,27 @@ Please use a container later than 23.10 or the current github main branch
     tar -xvf filename.nemo
 
 Then, run this conversion script:
-python convert_nemo_gpt_to_mcore.py \
- --in-folder <path to extracted, TP1 PP1 legacy checkpoint folder> \
- --out-file <path to output nemo file>
+python convert_gpt_nemo_to_mcore.py \
+ --input_name_or_path <path to extracted, TP1 PP1 legacy checkpoint folder> \
+ --output_path <path to output nemo file>
 """
 
 
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--in-folder", type=str, default=None, required=True, help="Path to extracted, TP1 PP1 NeMo GPT checkpoint.",
+        "--input_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to extracted, TP1 PP1 NeMo GPT checkpoint.",
     )
     parser.add_argument(
-        "--out-file", type=str, default=None, required=True, help="Path to output mcore weights file (ends in .nemo)."
+        "--output_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to output mcore weights file (ends in .nemo).",
     )
     parser.add_argument(
         "--cpu-only",
@@ -304,8 +312,8 @@ def run_sanity_checks(nemo_file, mcore_file, cpu_only=False, ignore_if_missing=t
 if __name__ == '__main__':
     args = get_args()
 
-    input_nemo_file = args.in_folder
-    output_nemo_file = args.out_file
+    input_nemo_file = args.input_name_or_path
+    output_nemo_file = args.output_path
     cpu_only = args.cpu_only
     overwrite = args.overwrite
     ignore_if_missing = {key.strip() for key in args.ignore_if_missing.split(",")}

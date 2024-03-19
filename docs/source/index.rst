@@ -42,6 +42,13 @@ For more information, browse the developer docs for your area of interest in the
 
    core/core_index
 
+.. toctree::
+   :maxdepth: 2
+   :caption: Community Model Converters
+   :name: CheckpointConverters
+
+   ckpt_converters/user_guide
+   ckpt_converters/dev_guide
 
 .. toctree::
    :maxdepth: 1

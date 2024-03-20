@@ -41,10 +41,7 @@ python examples/nlp/language_modeling/megatron_llama_quantization.py \
 
 
 def get_calib_dataloader(data="cnn_dailymail", batch_size=64, calib_size=512, max_sequence_length=512):
-    if data == "pileval":
-        dataset = load_dataset("json", data_files="https://the-eye.eu/public/AI/pile/val.jsonl.zst", split="train")
-        text_column = "text"
-    elif data == "wikitext":
+    if data == "wikitext":
         dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
         text_column = "text"
     elif data == "cnn_dailymail":

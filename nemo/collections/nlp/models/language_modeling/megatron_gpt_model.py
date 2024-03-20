@@ -1151,7 +1151,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     extra_arg['inference_max_sequence_len'] = inference_max_sequence_len[0].item()
             # Currently for all MCore transformer layer specs causal attention mask
             # is used so we can delegate creating it to MCore/TE and pass None below
-            if isinstance(model, MCoreGPTModel):
+            if (
+                isinstance(model, MCoreGPTModel)
+                or hasattr(model, "module")
+                and isinstance(model.module, MCoreGPTModel)
+            ):
                 attention_mask = None
             output_tensor = model(tokens, position_ids, attention_mask, **extra_arg)
 

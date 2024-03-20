@@ -154,10 +154,12 @@ class Quantizer:
         with open_dict(model_cfg):
             model_cfg.activations_checkpoint_method = None
             model_cfg.activations_checkpoint_granularity = None
+            model_cfg.sequence_parallel = False
             if tensor_model_parallel_size is not None:
                 model_cfg.tensor_model_parallel_size = tensor_model_parallel_size
             if pipeline_model_parallel_size is not None:
                 model_cfg.pipeline_model_parallel_size = pipeline_model_parallel_size
+            model_cfg.megatron_amp_O2 = False  # Support for `megatron_amp_O2 = true` will be enabled in AMMO > 0.7
             # Only custom AMMO spec is supported for PTQ: this custom spec is largely based on local Megatron-LM
             # layer definitions to avoid Transformer Engine implementations that are currently not supported.
             model_cfg.name = "ammo"

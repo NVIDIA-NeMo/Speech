@@ -426,8 +426,7 @@ pipeline {
           steps {
             sh 'CUDA_VISIBLE_DEVICES=0 python scripts/checkpoint_converters/convert_llama_hf_to_nemo.py \
             --input_name_or_path=/home/TestData/nlp/megatron_llama/llama-ci-hf \
-            --output_path=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
-            --precision=16'
+            --output_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo'
           }
         }
         stage('StarCoder') {
@@ -469,7 +468,7 @@ pipeline {
         stage('Llama2 - Export Only') {
           steps {
             sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
-            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
             quantization.algorithm=null \
             model_save=/home/TestData/nlp/megatron_llama/ci_baseline'
             sh 'rm -rf /home/TestData/nlp/megatron_llama/ci_baseline'
@@ -478,7 +477,7 @@ pipeline {
         stage('Llama2 - INT8 SQ') {
           steps {
             sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
-            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci_megatron_amp_O2_hf_tokenizer.nemo \
             quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
             quantization.algorithm=int8_sq \
             quantization.num_calib_size=8 \
@@ -490,7 +489,7 @@ pipeline {
         stage('Llama2 - FP8') {
           steps {
             sh 'python examples/nlp/language_modeling/megatron_llama_quantization.py \
-            model_file=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
             tensor_model_parallel_size=2 \
             trainer.devices=2 \
             quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \

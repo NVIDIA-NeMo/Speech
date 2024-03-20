@@ -661,6 +661,10 @@ def save_artifacts(model, output_dir: str, use_abspath: bool = False) -> None:
     app_state = AppState()
     model_file = app_state.model_restore_path
     model_cfg = copy.deepcopy(model.cfg)
+    if not hasattr(model, "artifacts"):
+        if hasattr(model_cfg, "tokenizer"):
+            OmegaConf.save(model_cfg.tokenizer, os.path.join(output_dir, "tokenizer_config.yaml"))
+        return
 
     # Setup model file handling context: directory or tarball
     if os.path.isfile(model_file):
@@ -686,4 +690,6 @@ def save_artifacts(model, output_dir: str, use_abspath: bool = False) -> None:
             # that in this case output directory should be permanent for correct artifact recovery later
             arti_path = os.path.abspath(arti_path) if use_abspath else os.path.basename(arti_path)
             OmegaConf.update(model_cfg, arti_name, arti_path)
-    OmegaConf.save(model_cfg.tokenizer, os.path.join(output_dir, "tokenizer_config.yaml"))
+
+    if hasattr(model_cfg, "tokenizer"):
+        OmegaConf.save(model_cfg.tokenizer, os.path.join(output_dir, "tokenizer_config.yaml"))

@@ -167,11 +167,13 @@ def remove_padded_prompts(response, nb_paddings):
 @hydra_runner(config_path="conf", config_name="megatron_gpt_inference")
 def main(cfg) -> None:
 
+    callbacks = []
+    # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False, CustomProgressBar is not appended to callbacks
+    if 'enable_progress_bar' not in cfg.trainer or cfg.trainer.enable_progress_bar:
+        callbacks.append(CustomProgressBar())
     # trainer required for restoring model parallel models
     trainer = Trainer(
-        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)),
-        **cfg.trainer,
-        callbacks=[CustomProgressBar()],
+        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)), **cfg.trainer, callbacks=callbacks,
     )
 
     if cfg.gpt_model_file is not None:

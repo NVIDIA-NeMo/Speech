@@ -80,6 +80,7 @@ class MegatronTrainerBuilder:
             find_unused_parameters=False,
             nccl_communicator_config_path=self.cfg.model.get('nccl_communicator_config_path', None),
             sharp=self.cfg.model.get('sharp', False),
+            torch_dist_ckpt=self.cfg.model.get('torch_distributed_checkpoint', False),
         )
 
     def _grad_scaler(self) -> GradScaler:

@@ -165,6 +165,7 @@ class NLPDDPStrategy(DDPStrategy):
         no_ddp_communication_hook: bool = False,
         nccl_communicator_config_path: Optional[str] = None,
         sharp: bool = False,
+        torch_dist_ckpt: bool = False,
         **kwargs: Union[Any, Dict[str, Any]],
     ) -> None:
         if not HAVE_APEX:
@@ -181,6 +182,7 @@ class NLPDDPStrategy(DDPStrategy):
         self.no_ddp_communication_hook = no_ddp_communication_hook
         self.nccl_communicator_config_path = nccl_communicator_config_path
         self.sharp = sharp
+        self.torch_dist_ckpt = torch_dist_ckpt
 
     def setup(self, trainer: "pl.Trainer") -> None:
         """
@@ -353,7 +355,10 @@ class NLPDDPStrategy(DDPStrategy):
             # remove device state_dict
             checkpoint['state_dict'] = OrderedDict([])
 
-            dist_checkpointing.save(sharded_state_dict=checkpoint, checkpoint_dir=checkpoint_dir)
+            sharded_strategy = ('torch_dist', 1) if self.torch_dist_ckpt else ('zarr', 1)
+            dist_checkpointing.save(
+                sharded_state_dict=checkpoint, checkpoint_dir=checkpoint_dir, sharded_strategy=sharded_strategy
+            )
         else:
             # PTL override to accomodate model parallel checkpoints
             filepath = inject_model_parallel_rank(filepath)
@@ -850,7 +855,14 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                         if model.trainer.strategy.launcher is not None:
                             model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
                         model.trainer.strategy.setup_environment()
-                    dist_checkpointing.save(sharded_state_dict=sharded_state_dict, checkpoint_dir=dist_ckpt_dir)
+                    sharded_strategy = (
+                        ('torch_dist', 1) if model.cfg.get("torch_distributed_checkpoint", False) else ('zarr', 1)
+                    )
+                    dist_checkpointing.save(
+                        sharded_state_dict=sharded_state_dict,
+                        checkpoint_dir=dist_ckpt_dir,
+                        sharded_strategy=sharded_strategy,
+                    )
 
             else:
 

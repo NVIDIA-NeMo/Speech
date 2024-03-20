@@ -939,10 +939,7 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
             keys_to_keep += llm_keys
         if not self.cfg.mm_cfg.vision_encoder.freeze:
             keys_to_keep += vision_encoder_keys
-        if self.megatron_amp_O2:
-            new_state_dict = {k: original_state_dict[k.replace("model.", "model.module.", 1)] for k in keys_to_keep}
-        else:
-            new_state_dict = {k: original_state_dict[k] for k in keys_to_keep}
+        new_state_dict = {k: original_state_dict[k] for k in keys_to_keep}
         return new_state_dict
 
     def load_state_dict(self, state_dict, strict=False):

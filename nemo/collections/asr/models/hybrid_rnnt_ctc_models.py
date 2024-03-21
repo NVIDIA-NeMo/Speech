@@ -28,6 +28,7 @@ from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models.rnnt_models import EncDecRNNTModel
 from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin, TranscribeConfig
+from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.core.classes.common import PretrainedModelInfo
@@ -103,8 +104,8 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
-        # logprobs: bool = False, DEPRECATED?
-    ) -> (List[str], Optional[List['Hypothesis']]):
+        override_config: Optional[TranscribeConfig] = None,
+    ) -> TranscriptionReturnType:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
 
@@ -142,12 +143,8 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             channel_selector=channel_selector,
             augmentor=augmentor,
             verbose=verbose,
+            override_config=override_config,
         )
-
-        # if logprobs:
-        #     return logits_list
-        # else:
-        #     return hypotheses, all_hypotheses
 
     def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
         super()._transcribe_on_begin(audio, trcfg)

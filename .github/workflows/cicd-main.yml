@@ -26,6 +26,14 @@ jobs:
         whoami
         nvidia-smi
 
+  cicd-cluster-clean:
+    runs-on: self-hosted-azure
+    steps:
+    - name: Clean server from old files
+      run: |
+        docker container prune --filter "until=24h" --force
+        docker image prune -a --filter "until=24h" --force
+
   checkout-repository:
     runs-on: self-hosted-azure
     container:

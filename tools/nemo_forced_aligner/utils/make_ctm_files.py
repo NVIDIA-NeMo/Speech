@@ -95,7 +95,7 @@ def make_ctm(
                     # make the predicted duration of the token/word/segment longer, growing it outwards equal
                     # amounts from the predicted center of the token/word/segment
                     token_mid_point = (start_time + end_time) / 2
-                    start_time = max(token_mid_point - ctm_file_config.minimum_timestamp_duration / 2, 0)
+                    start_time = max(token_mid_point - ctm_file_config.minimum_timestamp_duration / 2, 0.0)
                     end_time = min(
                         token_mid_point + ctm_file_config.minimum_timestamp_duration / 2, audio_file_duration
                     )

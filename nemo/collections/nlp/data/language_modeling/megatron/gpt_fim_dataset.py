@@ -15,9 +15,22 @@
 from typing import Tuple
 
 import numpy as np
-from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig
-from megatron.core.datasets.indexed_dataset import IndexedDataset
-from megatron.core.datasets.utils import Split
+
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+try:
+    from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig
+    from megatron.core.datasets.indexed_dataset import IndexedDataset
+    from megatron.core.datasets.utils import Split
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError) as e:
+
+    GPTDataset = GPTDatasetConfig = IndexedDataset = Split = ApexGuardDefaults
+
+    HAVE_MEGATRON_CORE = False
+    IMPORT_ERROR = e
 
 
 # is_dataset_built_on_rank function is needed for mcore GPTDatasetConfig
@@ -33,6 +46,9 @@ class GPTFIMDatasetConfig(GPTDatasetConfig):
     """
 
     def __init__(self, fim, **kwargs):
+        if not HAVE_MEGATRON_CORE:
+            raise ImportError(IMPORT_ERROR)
+
         super().__init__(**kwargs)
         self.fim = fim
 
@@ -62,6 +78,9 @@ class GPTFIMDataset(GPTDataset):
         index_split: Split,
         config: GPTFIMDatasetConfig,
     ) -> None:
+        if not HAVE_MEGATRON_CORE:
+            raise ImportError(IMPORT_ERROR)
+
         super().__init__(indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config)
 
         self.indexed_dataset = indexed_dataset

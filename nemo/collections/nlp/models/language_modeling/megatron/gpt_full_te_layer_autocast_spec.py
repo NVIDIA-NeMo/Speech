@@ -15,13 +15,36 @@
 from typing import Any, Callable, Optional
 
 import torch
-from megatron.core import parallel_state, tensor_parallel
-from megatron.core.transformer.spec_utils import ModuleSpec
-from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
-from transformer_engine.pytorch import TransformerLayer
-
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.parts import utils_funcs
+
+try:
+    from transformer_engine.pytorch import TransformerLayer
+
+    HAVE_TE = True
+
+except (ImportError, ModuleNotFoundError) as e:
+
+    TransformerLayer = ApexGuardDefaults
+
+    HAVE_TE = False
+    IMPORT_ERROR = e
+
+try:
+    from megatron.core import parallel_state, tensor_parallel
+    from megatron.core.transformer.spec_utils import ModuleSpec
+    from megatron.core.transformer.transformer_layer import BaseTransformerLayer
+    from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError) as e:
+
+    ModuleSpec = BaseTransformerLayer = ApexGuardDefaults
+
+    HAVE_MEGATRON_CORE = False
+    IMPORT_ERROR = e
 
 
 # Copied from nemo/collections/nlp/modules/common/megatron/transformer.py
@@ -64,6 +87,9 @@ class AutocastTransformerLayer(TransformerLayer):
         zero_centered_gamma: bool = False,
         device: str = 'cuda',
     ) -> None:
+        if not HAVE_MEGATRON_CORE or not HAVE_TE:
+            raise ImportError(IMPORT_ERROR)
+
         super().__init__(
             hidden_size=hidden_size,
             ffn_hidden_size=ffn_hidden_size,
@@ -137,11 +163,11 @@ class AutocastTransformerLayer(TransformerLayer):
             )
 
 
-from megatron.core.transformer.transformer_layer import BaseTransformerLayer
-
-
 class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer):
     def __init__(self, config, layer_number=1, hidden_dropout=None):
+        if not HAVE_MEGATRON_CORE or not HAVE_TE:
+            raise ImportError(IMPORT_ERROR)
+
         self.config = config
         self.is_first_microbatch = True
         precision = 'bf16' if config.bf16 else 16
@@ -260,4 +286,7 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
 
 # Use this spec to use the full Transformer layer from Transformer Engine
 def get_gpt_full_te_layer_autocast_spec() -> ModuleSpec:
+    if not HAVE_MEGATRON_CORE or not HAVE_TE:
+        raise ImportError(IMPORT_ERROR)
+
     return ModuleSpec(module=TETransformerLayerAutocast)

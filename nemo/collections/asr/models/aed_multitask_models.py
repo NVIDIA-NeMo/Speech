@@ -757,7 +757,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         manifest_filepath = None
         if len(audio_files) == 1 and isinstance(audio_files[0], str):
             # Check if manifest file is provided
-            if hasattr(trcfg._internal, 'manifest_filepath'):
+            if (
+                hasattr(trcfg._internal, 'manifest_filepath')
+                and getattr(trcfg._internal, 'manifest_filepath') is not None
+            ):
                 manifest_filepath = trcfg._internal.manifest_filepath
 
             elif audio_files[0].endswith('.json') or audio_files[0].endswith('.jsonl'):

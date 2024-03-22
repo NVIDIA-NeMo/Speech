@@ -332,14 +332,15 @@ class BeamSearchSequenceGenerator(GreedySequenceGenerator):
         # length penalty correction
         prefixes_len = torch.zeros_like(scores).fill_(prefixes.size(1) + 1)
 
-        for i in range(max_generation_length):
+        tgt_len = tgt.size(-1)
+        for i in range(tgt_len, max_generation_length + tgt_len):
 
             # mask all finished hypotheses to exclude them from beam
             pad_mask = pad_profile.repeat(1, self.beam_size)
 
             # generate and score candidates for prefixes continuation
             log_probs, decoder_mems_list = self._one_step_forward(
-                prefixes[:, -1:], encoder_hidden_states, encoder_input_mask, decoder_mems_list, i + 1
+                prefixes[:, -1:], encoder_hidden_states, encoder_input_mask, decoder_mems_list, i
             )
             scores_i, prefixes_i = torch.topk(log_probs[:, -1, :], self.beam_size, dim=-1)
 

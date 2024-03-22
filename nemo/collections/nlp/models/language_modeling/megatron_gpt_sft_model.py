@@ -195,6 +195,7 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
 
         if self.cfg.get('transformer_engine', False) or self.cfg.get('mcore_gpt', False):
             self.setup_transformer_engine_tp_groups()
+            self.setup_transformer_engine_cp_groups()
         self.setup_complete = True
 
     def _build_dataset(self, data_cfg, is_train=True):

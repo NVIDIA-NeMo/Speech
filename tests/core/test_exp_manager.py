@@ -946,9 +946,8 @@ class TestExpManager:
         test_trainer2.fit(model)
 
         ckpt_filenames = {f.name for f in checkpoints_dir.rglob("*.ckpt") if f.is_file()}
-        # 3 top + 1 last + 1 resume ckpt since PTL >= 2.1 ensures to never delete the resume ckpt
-        # (https://github.com/Lightning-AI/pytorch-lightning/pull/18750)
-        assert len(ckpt_filenames) == 5
+        # 3 top + 1 last
+        assert len(ckpt_filenames) == 4
         assert 'epoch=9-last.ckpt' in ckpt_filenames
         assert 'epoch=8.ckpt' in ckpt_filenames
         assert 'epoch=7.ckpt' in ckpt_filenames

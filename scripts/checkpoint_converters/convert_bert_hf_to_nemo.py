@@ -18,6 +18,7 @@ Example to run this conversion script:
     python convert_bert_hf_to_nemo.py \
      --input_name_or_path "thenlper/gte-large" \
      --output_path /path/to/output/nemo/file.nemo \
+     --mcore True \
      --precision 32
 ```
 """
@@ -26,183 +27,15 @@ import os
 from argparse import ArgumentParser
 
 import torch
-import torch.nn.functional as F
 from omegaconf import OmegaConf
-from transformers import AutoModel, AutoTokenizer
-
+from transformers import AutoModel
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
 from nemo.utils import logging
 
 
-def average_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
-    return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-
-
-def create_rename_keys(num_hidden_layers):
-    rename_keys = []
-    for i in range(num_hidden_layers):
-        # encoder layers: attention mechanism, 2 feedforward neural networks, and 2 layernorms
-        rename_keys.extend(
-            [
-                (
-                    f"encoder.layer.{i}.attention.self.query.weight",
-                    f"model.language_model.encoder.layers.{i}.self_attention.query.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.self.query.bias",
-                    f"model.language_model.encoder.layers.{i}.self_attention.query.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.self.key.weight",
-                    f"model.language_model.encoder.layers.{i}.self_attention.key.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.self.key.bias",
-                    f"model.language_model.encoder.layers.{i}.self_attention.key.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.self.value.weight",
-                    f"model.language_model.encoder.layers.{i}.self_attention.value.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.self.value.bias",
-                    f"model.language_model.encoder.layers.{i}.self_attention.value.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.output.dense.weight",
-                    f"model.language_model.encoder.layers.{i}.self_attention.dense.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.output.dense.bias",
-                    f"model.language_model.encoder.layers.{i}.self_attention.dense.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.output.LayerNorm.weight",
-                    f"model.language_model.encoder.layers.{i}.input_layernorm.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.attention.output.LayerNorm.bias",
-                    f"model.language_model.encoder.layers.{i}.input_layernorm.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.intermediate.dense.weight",
-                    f"model.language_model.encoder.layers.{i}.mlp.dense_h_to_4h.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.intermediate.dense.bias",
-                    f"model.language_model.encoder.layers.{i}.mlp.dense_h_to_4h.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.output.dense.weight",
-                    f"model.language_model.encoder.layers.{i}.mlp.dense_4h_to_h.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.output.dense.bias",
-                    f"model.language_model.encoder.layers.{i}.mlp.dense_4h_to_h.bias",
-                ),
-                (
-                    f"encoder.layer.{i}.output.LayerNorm.weight",
-                    f"model.language_model.encoder.layers.{i}.post_attention_layernorm.weight",
-                ),
-                (
-                    f"encoder.layer.{i}.output.LayerNorm.bias",
-                    f"model.language_model.encoder.layers.{i}.post_attention_layernorm.bias",
-                ),
-            ]
-        )
-
-    # Non-layer dependent keys
-    rename_keys.extend(
-        [
-            ("embeddings.word_embeddings.weight", "model.language_model.embedding.word_embeddings.weight"),
-            ("embeddings.position_embeddings.weight", "model.language_model.embedding.position_embeddings.weight"),
-            ("embeddings.token_type_embeddings.weight", "model.language_model.embedding.tokentype_embeddings.weight"),
-            ("embeddings.LayerNorm.weight", "model.language_model.encoder.initial_layernorm.weight"),
-            ("embeddings.LayerNorm.bias", "model.language_model.encoder.initial_layernorm.bias"),
-            ("pooler.dense.weight", "model.language_model.pooler.dense.weight"),
-            ("pooler.dense.bias", "model.language_model.pooler.dense.bias"),
-        ]
-    )
-
-    return rename_keys
-
-
-def rename_model_keys(model_state_dict, rename_keys):
-    """
-    Rename keys in the model's state dictionary based on the provided mappings.
-
-    Parameters:
-    model_state_dict (dict): The state dictionary of the model.
-    rename_keys (list): A list of tuples with the mapping (old_key, new_key).
-
-    Returns:
-    dict: A new state dictionary with updated key names.
-    """
-
-    # Create a new state dictionary with updated key names
-    new_state_dict = {}
-
-    # Track keys from the original state dict to ensure all are processed
-    remaining_keys = set(model_state_dict.keys())
-
-    # Iterate over the rename mappings
-    for old_key, new_key in rename_keys:
-        if old_key in model_state_dict:
-            # Rename the key and remove it from the tracking set
-            new_state_dict[new_key] = model_state_dict[old_key]
-            remaining_keys.remove(old_key)
-        else:
-            print(f"Warning: Key '{old_key}' not found in the model state dictionary.")
-
-    # Check if any keys were not converted from old to new
-    for old_key in remaining_keys:
-        print(f"Warning: Key '{old_key}' was not converted.")
-
-    return new_state_dict
-
-
-def adjust_tensor_shapes(model, nemo_state_dict):
-    """
-    Adapt tensor shapes in the state dictionary to ensure compatibility with a different model structure.
-
-    Parameters:
-    nemo_state_dict (dict): The state dictionary of the model.
-
-    Returns:
-    dict: The updated state dictionary with modified tensor shapes for compatibility.
-    """
-
-    # Note: For 'key' and 'value' weights and biases, NeMo uses a consolidated tensor 'query_key_value'.
-    for key_ in list(nemo_state_dict.keys()):
-        if "self_attention.query" in key_:
-            key_q = key_
-            key_k = key_.replace('self_attention.query', 'self_attention.key')
-            key_v = key_.replace('self_attention.query', 'self_attention.value')
-            key_new = key_.replace('self_attention.query', 'self_attention.query_key_value')
-            value_new = torch.concat((nemo_state_dict[key_q], nemo_state_dict[key_k], nemo_state_dict[key_v]), dim=0)
-            nemo_state_dict[key_new] = value_new
-            del nemo_state_dict[key_q], nemo_state_dict[key_k], nemo_state_dict[key_v]
-
-    # Padding to new vocab size
-    original_embedding = nemo_state_dict['model.language_model.embedding.word_embeddings.weight']
-    vocab_size = original_embedding.size(0)
-    if model.padded_vocab_size > vocab_size:
-        zeros_to_add = torch.zeros(
-            model.padded_vocab_size - vocab_size,
-            original_embedding.size(1),
-            dtype=original_embedding.dtype,
-            device=original_embedding.device,
-        )
-        # Concatenate the two tensors along rows
-        padded_embedding = torch.cat([original_embedding, zeros_to_add], dim=0)
-        nemo_state_dict['model.language_model.embedding.word_embeddings.weight'] = padded_embedding
-
-    return nemo_state_dict
-
-
-def adjust_nemo_config(model_config, ref_config):
+def adjust_nemo_config(model_config, ref_config, mcore_bert=True):
+    model_config.tokenizer["type"] = "intfloat/e5-large-unsupervised"  # ref_config["_input_name_or_path"]
     model_config["num_layers"] = ref_config["num_hidden_layers"]
     model_config["hidden_size"] = ref_config["hidden_size"]
     model_config["ffn_hidden_size"] = ref_config["intermediate_size"]
@@ -211,15 +44,15 @@ def adjust_nemo_config(model_config, ref_config):
     model_config["normalization"] = "layernorm"
     model_config["transformer_block_type"] = "post_ln"
     model_config["apply_query_key_layer_scaling"] = False
-    model_config["skip_head"] = True
-    model_config["megatron_legacy"] = True
+    model_config["megatron_legacy"] = False
+    model_config["mcore_bert"] = mcore_bert
     return model_config
 
 
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--input_name_or_path", type=str, default="thenlper/gte-large")
-    parser.add_argument("--vocab_file", type=str, default=None)
+    parser.add_argument("--mcore", type=bool, default=True)
     parser.add_argument(
         "--hparams_file",
         type=str,
@@ -238,49 +71,173 @@ def get_args():
 
 def convert(args):
     logging.info(f"Loading checkpoint from HF: `{args.input_name_or_path}`")
-    hf_tokenizer = AutoTokenizer.from_pretrained(args.input_name_or_path)
     hf_model = AutoModel.from_pretrained(args.input_name_or_path)
 
     nemo_config = OmegaConf.load(args.hparams_file)
-    nemo_config.model.tokenizer["vocab_file"] = args.vocab_file
-    nemo_config.model = adjust_nemo_config(nemo_config.model, hf_model.config.to_dict())
+    nemo_config.model = adjust_nemo_config(nemo_config.model, hf_model.config.to_dict(), mcore_bert=args.mcore)
 
     nemo_config.trainer["precision"] = args.precision
     trainer = MegatronTrainerBuilder(nemo_config).create_trainer()
     model = MegatronBertModel(nemo_config.model, trainer)
 
-    old_state_dict = hf_model.state_dict()
-    rename_keys = create_rename_keys(nemo_config.model.num_layers)
-    new_state_dict = rename_model_keys(model_state_dict=old_state_dict, rename_keys=rename_keys)
-    nemo_state_dict = adjust_tensor_shapes(model, new_state_dict)
+    nemo_state_dict = {}
+    hf_config = hf_model.config.to_dict()
+    hidden_size = hf_config["hidden_size"]
+    head_num = hf_config["num_attention_heads"]
+    head_size = hidden_size // head_num
+    num_layers = hf_config["num_hidden_layers"]
+
+    param_to_weights = lambda param: param.float()
+    for l in range(num_layers):
+        print(f"converting layer {l}")
+        old_tensor_shape = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.query.weight'].size()
+        new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
+        new_q_tensor_shape_bias = (head_num, head_size)
+
+        q = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.query.weight'].view(*new_q_tensor_shape)
+        k = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.key.weight'].view(*new_q_tensor_shape)
+        v = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.value.weight'].view(*new_q_tensor_shape)
+        bias_q = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.query.bias'].view(*new_q_tensor_shape_bias)
+        bias_k = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.key.bias'].view(*new_q_tensor_shape_bias)
+        bias_v = hf_model.state_dict()[f'encoder.layer.{l}.attention.self.value.bias'].view(*new_q_tensor_shape_bias)
+
+        qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:])
+        qkv_biases = torch.empty((0, head_size))
+        for i in range(head_num):
+            qkv_weights = torch.cat((qkv_weights, q[i : i + 1, :, :]))
+            qkv_weights = torch.cat((qkv_weights, k[i : i + 1, :, :]))
+            qkv_weights = torch.cat((qkv_weights, v[i : i + 1, :, :]))
+            qkv_biases = torch.cat((qkv_biases, bias_q[i : i + 1]))
+            qkv_biases = torch.cat((qkv_biases, bias_k[i : i + 1]))
+            qkv_biases = torch.cat((qkv_biases, bias_v[i : i + 1]))
+
+        qkv_weights = qkv_weights.reshape([head_size * (3 * head_num), hidden_size])
+        qkv_biases = qkv_biases.reshape([head_size * (3 * head_num)])
+
+        if args.mcore:
+            qkv_weights_base_name = f'model.encoder.layers.{l}.self_attention.linear_qkv.weight'
+            qkv_biases_base_name = f'model.encoder.layers.{l}.self_attention.linear_qkv.bias'
+        else:
+            qkv_weights_base_name = f'model.language_model.encoder.layers.{l}.self_attention.query_key_value.weight'
+            qkv_biases_base_name = f'model.language_model.encoder.layers.{l}.self_attention.query_key_value.bias'
+        nemo_state_dict[qkv_weights_base_name] = param_to_weights(qkv_weights)
+        nemo_state_dict[qkv_biases_base_name] = param_to_weights(qkv_biases)
+
+        # attention dense
+        dense_weight = hf_model.state_dict()[f'encoder.layer.{l}.attention.output.dense.weight']
+        dense_bias = hf_model.state_dict()[f'encoder.layer.{l}.attention.output.dense.bias']
+        if args.mcore:
+            dense_weight_base_name = f'model.encoder.layers.{l}.self_attention.linear_proj.weight'
+            dense_bias_base_name = f'model.encoder.layers.{l}.self_attention.linear_proj.bias'
+        else:
+            dense_weight_base_name = f'model.language_model.encoder.layers.{l}.self_attention.dense.weight'
+            dense_bias_base_name = f'model.language_model.encoder.layers.{l}.self_attention.dense.bias'
+        nemo_state_dict[dense_weight_base_name] = param_to_weights(dense_weight)
+        nemo_state_dict[dense_bias_base_name] = param_to_weights(dense_bias)
+
+        # LayerNorm1
+        LayerNorm1_weight = hf_model.state_dict()[f'encoder.layer.{l}.attention.output.LayerNorm.weight']
+        LayerNorm1_bias = hf_model.state_dict()[f'encoder.layer.{l}.attention.output.LayerNorm.bias']
+        if args.mcore:
+            LayerNorm1_weight_base_name = f'model.encoder.layers.{l}.post_att_layernorm.weight'
+            LayerNorm1_bias_base_name = f'model.encoder.layers.{l}.post_att_layernorm.bias'
+        else:
+            LayerNorm1_weight_base_name = f'model.language_model.encoder.layers.{l}.input_layernorm.weight'
+            LayerNorm1_bias_base_name = f'model.language_model.encoder.layers.{l}.input_layernorm.bias'
+        nemo_state_dict[LayerNorm1_weight_base_name] = param_to_weights(LayerNorm1_weight)
+        nemo_state_dict[LayerNorm1_bias_base_name] = param_to_weights(LayerNorm1_bias)
+
+        # MLP 1
+        MLP1_weight = hf_model.state_dict()[f'encoder.layer.{l}.intermediate.dense.weight']
+        MLP1_bias = hf_model.state_dict()[f'encoder.layer.{l}.intermediate.dense.bias']
+        if args.mcore:
+            MLP1_weight_base_name = f'model.encoder.layers.{l}.mlp.linear_fc1.weight'
+            MLP1_bias_base_name = f'model.encoder.layers.{l}.mlp.linear_fc1.bias'
+        else:
+            MLP1_weight_base_name = f'model.language_model.encoder.layers.{l}.mlp.dense_h_to_4h.weight'
+            MLP1_bias_base_name = f'model.language_model.encoder.layers.{l}.mlp.dense_h_to_4h.bias'
+        nemo_state_dict[MLP1_weight_base_name] = param_to_weights(MLP1_weight)
+        nemo_state_dict[MLP1_bias_base_name] = param_to_weights(MLP1_bias)
+
+        # MLP 2
+        MLP2_weight = hf_model.state_dict()[f'encoder.layer.{l}.output.dense.weight']
+        MLP2_bias = hf_model.state_dict()[f'encoder.layer.{l}.output.dense.bias']
+        if args.mcore:
+            MLP2_weight_base_name = f'model.encoder.layers.{l}.mlp.linear_fc2.weight'
+            MLP2_bias_base_name = f'model.encoder.layers.{l}.mlp.linear_fc2.bias'
+        else:
+            MLP2_weight_base_name = f'model.language_model.encoder.layers.{l}.mlp.dense_4h_to_h.weight'
+            MLP2_bias_base_name = f'model.language_model.encoder.layers.{l}.mlp.dense_4h_to_h.bias'
+        nemo_state_dict[MLP2_weight_base_name] = param_to_weights(MLP2_weight)
+        nemo_state_dict[MLP2_bias_base_name] = param_to_weights(MLP2_bias)
+
+        # LayerNorm2
+        LayerNorm2_weight = hf_model.state_dict()[f'encoder.layer.{l}.output.LayerNorm.weight']
+        LayerNorm2_bias = hf_model.state_dict()[f'encoder.layer.{l}.output.LayerNorm.bias']
+        if args.mcore:
+            LayerNorm2_weight_base_name = f'model.encoder.layers.{l}.post_mlp_layernorm.weight'
+            LayerNorm2_bias_base_name = f'model.encoder.layers.{l}.post_mlp_layernorm.bias'
+        else:
+            LayerNorm2_weight_base_name = f'model.language_model.encoder.layers.{l}.post_attention_layernorm.weight'
+            LayerNorm2_bias_base_name = f'model.language_model.encoder.layers.{l}.post_attention_layernorm.bias'
+        nemo_state_dict[LayerNorm2_weight_base_name] = param_to_weights(LayerNorm2_weight)
+        nemo_state_dict[LayerNorm2_bias_base_name] = param_to_weights(LayerNorm2_bias)
+
+    # Non-layer dependent keys
+    word_embeddings_weight = hf_model.state_dict()['embeddings.word_embeddings.weight']
+    position_embeddings_weight = hf_model.state_dict()['embeddings.position_embeddings.weight']
+    token_type_embeddings_weight = hf_model.state_dict()['embeddings.token_type_embeddings.weight']
+    LayerNorm_weight = hf_model.state_dict()['embeddings.LayerNorm.weight']
+    LayerNorm_bias = hf_model.state_dict()['embeddings.LayerNorm.bias']
+    pooler_dense = hf_model.state_dict()['pooler.dense.weight']
+    pooler_bias = hf_model.state_dict()['pooler.dense.bias']
+
+    if args.mcore:
+        word_embeddings_weight_base_name = "model.embedding.word_embeddings.weight"
+        position_embeddings_weight_base_name = "model.embedding.position_embeddings.weight"
+        token_type_embeddings_weight_base_name = "model.embedding.tokentype_embeddings.weight"
+        LayerNorm_weight_base_name = "model.encoder.initial_layernorm.weight"
+        LayerNorm_bias_base_name = "model.encoder.initial_layernorm.bias"
+        pooler_dense_base_name = "model.pooler.dense.weight"
+        pooler_bias_base_name = "model.pooler.dense.bias"
+    else:
+        word_embeddings_weight_base_name = "model.language_model.embedding.word_embeddings.weight"
+        position_embeddings_weight_base_name = "model.language_model.embedding.position_embeddings.weight"
+        token_type_embeddings_weight_base_name = "model.language_model.embedding.tokentype_embeddings.weight"
+        LayerNorm_weight_base_name = "model.language_model.encoder.initial_layernorm.weight"
+        LayerNorm_bias_base_name = "model.language_model.encoder.initial_layernorm.bias"
+        pooler_dense_base_name = "model.language_model.pooler.dense.weight"
+        pooler_bias_base_name = "model.language_model.pooler.dense.bias"
+
+    nemo_state_dict[word_embeddings_weight_base_name] = param_to_weights(word_embeddings_weight)
+    nemo_state_dict[position_embeddings_weight_base_name] = param_to_weights(position_embeddings_weight)
+    nemo_state_dict[token_type_embeddings_weight_base_name] = param_to_weights(token_type_embeddings_weight)
+    nemo_state_dict[LayerNorm_weight_base_name] = param_to_weights(LayerNorm_weight)
+    nemo_state_dict[LayerNorm_bias_base_name] = param_to_weights(LayerNorm_bias)
+    nemo_state_dict[pooler_dense_base_name] = param_to_weights(pooler_dense)
+    nemo_state_dict[pooler_bias_base_name] = param_to_weights(pooler_bias)
+
+    # Padding to new vocab size
+    if args.mcore:
+        original_embedding = nemo_state_dict['model.embedding.word_embeddings.weight']
+    else:
+        original_embedding = nemo_state_dict['model.language_model.embedding.word_embeddings.weight']
+    vocab_size = original_embedding.size(0)
+    if model.padded_vocab_size > vocab_size:
+        zeros_to_add = torch.zeros(
+            model.padded_vocab_size - vocab_size,
+            original_embedding.size(1),
+            dtype=original_embedding.dtype,
+            device=original_embedding.device,
+        )
+        # Concatenate the two tensors along rows
+        padded_embedding = torch.cat([original_embedding, zeros_to_add], dim=0)
+        if args.mcore:
+            nemo_state_dict['model.embedding.word_embeddings.weight'] = padded_embedding
+        else:
+            nemo_state_dict['model.language_model.embedding.word_embeddings.weight'] = padded_embedding
+
     model.load_state_dict(nemo_state_dict, strict=True)
-
-    logging.info(f'=' * 50)
-    # Verifications
-    input_texts = [
-        'query: how much protein should a female eat',
-        'query: summit define',
-        "passage: As a general guideline, the CDC's average requirement of protein for women ages 19 to 70 is 46 grams per day. But, as you can see from this chart, you'll need to increase that if you're expecting or training for a marathon. Check out the chart below to see how much protein you should be eating each day.",
-        "passage: Definition of summit for English Language Learners. : 1  the highest point of a mountain : the top of a mountain. : 2  the highest level. : 3  a meeting or series of meetings between the leaders of two or more governments.",
-    ]
-
-    # Tokenize the input texts
-    batch_dict = hf_tokenizer(input_texts, max_length=512, padding=True, truncation=True, return_tensors='pt')
-    batch_dict_cuda = {k: v.cuda() for k, v in batch_dict.items()}
-    hf_model = hf_model.cuda().eval()
-    model = model.eval()
-    with torch.no_grad():
-        hf_outputs = hf_model(**batch_dict_cuda)
-        embeddings_hf = average_pool(hf_outputs.last_hidden_state, batch_dict_cuda['attention_mask'])
-        embeddings_hf = F.normalize(embeddings_hf, p=2, dim=1)
-
-        outputs = model(**batch_dict_cuda)
-        embeddings = average_pool(outputs[0], batch_dict_cuda['attention_mask'])
-        embeddings = F.normalize(embeddings, p=2, dim=1)
-    # Print difference between two embeddings
-    print("Difference between reference embedding and converted embedding results:")
-    print(embeddings - embeddings_hf)
-
     model.save_to(args.output_path)
     logging.info(f'NeMo model saved to: {args.output_path}')
 

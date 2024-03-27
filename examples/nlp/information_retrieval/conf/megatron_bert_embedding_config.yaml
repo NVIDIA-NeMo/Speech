@@ -41,7 +41,7 @@ exp_manager:
 
 model:
   # model parallelism 
-  mcore_bert: False
+  mcore_bert: True
   micro_batch_size: 4
   global_batch_size: 8
   tensor_model_parallel_size: 1
@@ -56,8 +56,9 @@ model:
   hidden_size: 1024
   ffn_hidden_size: 4096 # Transformer FFN hidden size. Usually 4 * hidden_size.
   num_attention_heads: 16
-  skip_head: True
   transformer_block_type: post_ln
+  add_pooler: True
+  add_lm_head: False
   init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
   hidden_dropout: 0.1 # Dropout probability for hidden state transformer.
   kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
@@ -68,8 +69,7 @@ model:
   pre_process: True # add embedding
   post_process: True # add pooler
   bert_binary_head: True # BERT binary head
-  megatron_legacy: True
-
+  megatron_legacy: False
   tokenizer:
     library: 'huggingface'
     type: 'intfloat/e5-large-unsupervised'
@@ -125,14 +125,9 @@ model:
   
   data:
     # Path to data must be specified by the user.
-    # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
-    # Or see example below: 
-    # data_prefix: 
-    #   - .5
-    #   - /raid/data/pile/my-gpt3_00_text_document
-    #   - .5
-    #   - /raid/data/pile/my-gpt3_01_text_document
-    data_prefix: [1.0, /path/to/data]
+    data_train: null
+    data_validation: null
+    hard_negatives_to_train: 4
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap
     splits_string: 900,50,50

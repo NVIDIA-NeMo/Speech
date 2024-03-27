@@ -3349,6 +3349,130 @@ pipeline {
         sh "rm -rf examples/nlp/language_modeling/bert_index_mappings"
       }
     }
+    stage('L2: NeMo Bert Embedding Finetuning and Resume') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "NVTE_FLASH_ATTN=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 NVTE_FUSED_ATTN=0 python examples/nlp/information_retrieval/megatron_bert_embedding_finetuning.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.max_steps=12 \
+        trainer.val_check_interval=4 \
+        trainer.max_epochs=1 \
+        +trainer.num_sanity_val_steps=0 \
+        restore_from_path=/home/TestData/nlp/bert_embedding/bert_embedding_nemo_tiny.nemo \
+        model.num_layers=2 \
+        model.hidden_size=64 \
+        model.ffn_hidden_size=256 \
+        model.num_attention_heads=2 \
+        model.megatron_legacy=False \
+        model.mcore_bert=False \
+        model.global_batch_size=2 \
+        model.micro_batch_size=1 \
+        model.optim.lr=0.0005 \
+        model.encoder_seq_length=512 \
+        model.tokenizer.library='huggingface' \
+        model.tokenizer.type='intfloat/e5-large-unsupervised' \
+        model.data.data_train=/home/TestData/nlp/bert_embedding/bert_embedding_toy_data.jsonl \
+        model.data.hard_negatives_to_train=4 \
+        exp_manager.explicit_log_dir=examples/nlp/information_retrieval/bert_embedding_results \
+        exp_manager.create_wandb_logger=False \
+        exp_manager.resume_if_exists=False"
+        sh "NVTE_FLASH_ATTN=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 NVTE_FUSED_ATTN=0 python examples/nlp/information_retrieval/megatron_bert_embedding_finetuning.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.max_steps=36 \
+        trainer.val_check_interval=4 \
+        trainer.max_epochs=1 \
+        +trainer.num_sanity_val_steps=0 \
+        restore_from_path=/home/TestData/nlp/bert_embedding/bert_embedding_nemo_tiny.nemo \
+        model.num_layers=2 \
+        model.hidden_size=64 \
+        model.ffn_hidden_size=256 \
+        model.num_attention_heads=2 \
+        model.megatron_legacy=False \
+        model.mcore_bert=False \
+        model.global_batch_size=2 \
+        model.micro_batch_size=1 \
+        model.optim.lr=0.0005 \
+        model.encoder_seq_length=512 \
+        model.tokenizer.library='huggingface' \
+        model.tokenizer.type='intfloat/e5-large-unsupervised' \
+        model.data.data_train=/home/TestData/nlp/bert_embedding/bert_embedding_toy_data.jsonl \
+        model.data.hard_negatives_to_train=4 \
+        exp_manager.explicit_log_dir=examples/nlp/information_retrieval/bert_embedding_results \
+        exp_manager.create_wandb_logger=False \
+        exp_manager.resume_if_exists=True"
+        sh "rm -rf examples/nlp/information_retrieval/bert_embedding_results"
+      }
+    }
+    stage('L2: Megatron Core Bert Embedding Finetuning and Resume') {
+      when {
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
+        }
+      }
+      failFast true
+      steps {
+        sh "NVTE_FLASH_ATTN=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 NVTE_FUSED_ATTN=0 python examples/nlp/information_retrieval/megatron_bert_embedding_finetuning.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.max_steps=12 \
+        trainer.val_check_interval=4 \
+        trainer.max_epochs=36 \
+        +trainer.num_sanity_val_steps=0 \
+        restore_from_path=/home/TestData/nlp/bert_embedding/bert_embedding_mcore_tiny.nemo \
+        model.num_layers=2 \
+        model.hidden_size=64 \
+        model.ffn_hidden_size=256 \
+        model.num_attention_heads=2 \
+        model.megatron_legacy=False \
+        model.mcore_bert=True \
+        model.global_batch_size=2 \
+        model.micro_batch_size=1 \
+        model.optim.lr=0.0005 \
+        model.encoder_seq_length=512 \
+        model.tokenizer.library='huggingface' \
+        model.tokenizer.type='intfloat/e5-large-unsupervised' \
+        model.data.data_train=/home/TestData/nlp/bert_embedding/bert_embedding_toy_data.jsonl \
+        model.data.hard_negatives_to_train=4 \
+        exp_manager.explicit_log_dir=examples/nlp/information_retrieval/bert_embedding_results \
+        exp_manager.create_wandb_logger=False \
+        exp_manager.resume_if_exists=False"
+        sh "NVTE_FLASH_ATTN=0 NVTE_ALLOW_NONDETERMINISTIC_ALGO=0 NVTE_FUSED_ATTN=0 python examples/nlp/information_retrieval/megatron_bert_embedding_finetuning.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.max_steps=16 \
+        trainer.val_check_interval=4 \
+        trainer.max_epochs=1 \
+        +trainer.num_sanity_val_steps=0 \
+        restore_from_path=/home/TestData/nlp/bert_embedding/bert_embedding_mcore_tiny.nemo \
+        model.num_layers=2 \
+        model.hidden_size=64 \
+        model.ffn_hidden_size=256 \
+        model.num_attention_heads=2 \
+        model.megatron_legacy=False \
+        model.mcore_bert=True \
+        model.global_batch_size=2 \
+        model.micro_batch_size=1 \
+        model.optim.lr=0.0005 \
+        model.encoder_seq_length=512 \
+        model.tokenizer.library='huggingface' \
+        model.tokenizer.type='intfloat/e5-large-unsupervised' \
+        model.data.data_train=/home/TestData/nlp/bert_embedding/bert_embedding_toy_data.jsonl \
+        model.data.hard_negatives_to_train=4 \
+        exp_manager.explicit_log_dir=examples/nlp/information_retrieval/bert_embedding_results \
+        exp_manager.create_wandb_logger=False \
+        exp_manager.resume_if_exists=True"
+        sh "rm -rf examples/nlp/information_retrieval/bert_embedding_results"
+      }
+    }
     stage('L2: Megatron RETRO Pretraining and Resume Training') {
       when {
         anyOf {

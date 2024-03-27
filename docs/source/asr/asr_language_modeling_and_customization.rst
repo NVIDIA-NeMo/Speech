@@ -1,6 +1,6 @@
-#####################
+#######################################
 ASR Language Modeling and Customization
-#####################
+#######################################
 
 Language models have shown to help the accuracy of ASR models. NeMo supports the following two approaches to incorporate language models into the ASR models:
 
@@ -548,9 +548,9 @@ The following is the list of the arguments for the opengrm script:
 +----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
 
 
-******************
+***************************************************
 Context-biasing (word boosting) without external LM
-******************
+***************************************************
 
 NeMo toolkit supports a fast context-biasing method for CTC and Transducer (RNN-T) ASR models with CTC-based Word Spotter.
 The method involves decoding CTC log probabilities with a context graph built for words and phrases from the context-biasing list.

@@ -138,11 +138,12 @@ For more information, see `nemo.collections.asr.modules <./api.html#modules>`__.
 -----
 
 Inference with Multi-task Models
-^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Multi-task models that use structured prompts require additionl task tokens as input, in which case it is recommended to use manifest as input. Below is an example of using the `nvidia/canary-1b` model:
 
 .. code-block:: python
+
     from nemo.collections.asr.models import EncDecMultiTaskModel
    
     # load model
@@ -162,6 +163,7 @@ Multi-task models that use structured prompts require additionl task tokens as i
 Here the manifest file should be a json file where each line has the following format:
 
 .. code-block:: bash
+
     {
        "audio_filepath": "/path/to/audio.wav",  # path to the audio file
        "duration": None,  # duration of the audio in seconds, set to `None` to use full audio
@@ -175,6 +177,7 @@ Here the manifest file should be a json file where each line has the following f
 Note that using manifest allows to specify the task configuration for each audio individually. If we want to use the same task configuration for all the audio files, it can be specified in `transcribe` method directly. 
 
 .. code-block:: python
+
     canary_model.transcribe(
             audio=[list of audio files],
             batch_size=4,  # batch size to run the inference with

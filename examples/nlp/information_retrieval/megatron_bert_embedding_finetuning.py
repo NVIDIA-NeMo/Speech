@@ -15,7 +15,7 @@
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 
-from nemo.collections.nlp.models.information_retrieval.megatron_sbert_model import MegatronSBertModel
+from nemo.collections.nlp.models.information_retrieval.megatron_bert_embedding_model import MegatronBertEmbeddingModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronBertTrainerBuilder
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
@@ -23,7 +23,7 @@ from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 
-@hydra_runner(config_path="conf", config_name="megatron_bert_config")
+@hydra_runner(config_path="conf", config_name="megatron_bert_embedding_config")
 def main(cfg) -> None:
     if cfg.model.data.dataloader_type != "LDDL":
         mp.set_start_method("spawn", force=True)
@@ -34,7 +34,7 @@ def main(cfg) -> None:
     trainer = MegatronBertTrainerBuilder(cfg).create_trainer()
     exp_manager(trainer, cfg.exp_manager)
 
-    model_cfg = MegatronSBertModel.merge_cfg_with(cfg.restore_from_path, cfg)
+    model_cfg = MegatronBertEmbeddingModel.merge_cfg_with(cfg.restore_from_path, cfg)
 
     assert (
         model_cfg.micro_batch_size * cfg.trainer.devices == model_cfg.global_batch_size
@@ -44,7 +44,8 @@ def main(cfg) -> None:
     with open_dict(model_cfg):
         model_cfg.precision = trainer.precision
 
-    model = MegatronSBertModel.restore_from(
+    logging.info(f"Loading model from {cfg.restore_from_path}")
+    model = MegatronBertEmbeddingModel.restore_from(
         restore_path=cfg.restore_from_path,
         trainer=trainer,
         save_restore_connector=NLPSaveRestoreConnector(),

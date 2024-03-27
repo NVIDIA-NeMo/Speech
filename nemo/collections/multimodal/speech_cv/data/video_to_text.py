@@ -16,7 +16,7 @@ import os
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
-import webdataset as wd
+import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_sharded_filepaths
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
@@ -26,6 +26,7 @@ from nemo.collections.multimodal.speech_cv.parts.preprocessing.features import V
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import *
 from nemo.utils import logging
+from nemo.utils.distributed import webdataset_split_by_workers
 
 
 def _video_speech_collate_fn(batch, pad_id):
@@ -597,20 +598,17 @@ class _TarredVideoToTextDataset(IterableDataset):
         )
 
         # Put together WebDataset
-        self._dataset = wd.WebDataset(urls=audio_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self._dataset = (
-            self._dataset.map(wd.autodecode.Decoder([wd.torch_video]))
-            .rename(video="mp4", key='__key__')
-            .to_tuple('video', 'key')
-            .pipe(self._filter)
-            .pipe(self._loop_offsets)
-            .map(f=self._build_sample)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(urls=audio_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.map(wds.autodecode.Decoder([wds.torch_video])),
+            wds.rename(video="mp4", key='__key__'),
+            wds.to_tuple('video', 'key'),
+            self._filter,
+            self._loop_offsets,
+            wds.map(self._build_sample),
         )
 
     def _filter(self, iterator):

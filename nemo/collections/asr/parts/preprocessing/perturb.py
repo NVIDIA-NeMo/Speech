@@ -54,7 +54,7 @@ from nemo.utils import logging
 # TODO @blisc: Perhaps refactor instead of import guarding
 HAVE_OMEGACONG_WEBDATASET = True
 try:
-    import webdataset as wd
+    import webdataset as wds
     from omegaconf import DictConfig, OmegaConf
 except ModuleNotFoundError:
     from nemo.utils.exceptions import LightningNotInstalledException
@@ -1274,17 +1274,13 @@ class AugmentationDataset(IterableDataset):
 
         if not HAVE_OMEGACONG_WEBDATASET:
             raise LightningNotInstalledException(self)
-        self.audio_dataset = wd.WebDataset(urls=tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self.audio_dataset = self.audio_dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self.audio_dataset = (
-            self.audio_dataset.rename(audio='wav;ogg;flac', key='__key__')
-            .to_tuple('audio', 'key')
-            .pipe(self._loop_offsets)
+        self.audio_dataset = wds.DataPipeline(
+            wds.SimpleShardList(urls=tar_filepaths),
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(audio='wav;ogg;flac', key='__key__'),
+            wds.to_tuple('audio', 'key'),
+            self._loop_offsets,
         )
 
     def __len__(self):

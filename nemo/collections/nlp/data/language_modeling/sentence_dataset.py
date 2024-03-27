@@ -22,11 +22,12 @@ from typing import Any
 
 import braceexpand
 import numpy as np
-import webdataset as wd
+import webdataset as wds
 from torch.utils.data import IterableDataset
 
 from nemo.collections.nlp.data.data_utils.data_preprocessing import dataset_to_ids
 from nemo.core import Dataset
+from nemo.utils.distributed import webdataset_split_by_workers
 
 __all__ = ['SentenceDataset', 'TarredSentenceDataset']
 
@@ -260,14 +261,15 @@ class TarredSentenceDataset(IterableDataset):
         self.tarpath = text_tar_filepaths
 
         # Put together WebDataset
-        self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self._dataset = self._dataset.rename(pkl='pkl', key='__key__').to_tuple('pkl', 'key').map(f=self._build_sample)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(text_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(pkl='pkl', key='__key__'),
+            wds.to_tuple('pkl', 'key'),
+            wds.map(self._build_sample),
+        )
 
     def _build_sample(self, fname):
         # Load file

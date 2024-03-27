@@ -4,4 +4,4 @@ pytorch-lightning>=2.2.1
 torchmetrics>=0.11.0
 transformers>=4.36.0
 wandb
-webdataset>=0.1.48,<=0.1.62
+webdataset>=0.2.86

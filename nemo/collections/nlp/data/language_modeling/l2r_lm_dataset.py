@@ -18,12 +18,13 @@ from typing import Optional
 
 import braceexpand
 import numpy as np
-import webdataset as wd
+import webdataset as wds
 from torch.utils.data import Dataset, IterableDataset
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.nlp.data.data_utils import dataset_to_ids
 from nemo.utils import logging
+from nemo.utils.distributed import webdataset_split_by_workers
 
 __all__ = ['L2RLanguageModelingDataset', 'TarredL2RLanguageModelingDataset']
 
@@ -200,14 +201,15 @@ class TarredL2RLanguageModelingDataset(IterableDataset):
         self.tarpath = text_tar_filepaths
 
         # Put together WebDataset
-        self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self._dataset = self._dataset.rename(npy='npy', key='__key__').to_tuple('npy', 'key').map(f=self._build_sample)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(text_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(npy='npy', key='__key__'),
+            wds.to_tuple('npy', 'key'),
+            wds.map(self._build_sample),
+        )
 
     def _build_sample(self, tup):
         # Load file

@@ -341,7 +341,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     elif not isinstance(cfg, DictConfig):
         raise ValueError(f"cfg was type: {type(cfg)}. Expected either a dict or a DictConfig")
     cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
-    cfg = OmegaConf.merge(schema, cfg)
+    cfg = OmegaConf.merge(schema, cfg)  # type: ExpManagerConfig
 
     error_checks(trainer, cfg)  # Ensures that trainer options are compliant with NeMo and exp_manager arguments
 

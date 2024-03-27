@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 import librosa
 import soundfile as sf
 import torch.utils.data
-import webdataset as wd
+import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
@@ -37,8 +37,9 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging
 from nemo.utils.decorators import experimental
+from nemo.utils.distributed import webdataset_split_by_workers
 
-VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac'] + [fmt.lower() for fmt in valid_sf_formats.keys()])
+VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac', 'opus'] + [fmt.lower() for fmt in valid_sf_formats.keys()])
 
 
 @dataclass
@@ -343,18 +344,15 @@ class TarredVocoderDataset(IterableDataset):
             shard_strategy=shard_strategy,
         )
 
-        self._dataset = wd.WebDataset(audio_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n, initial=shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle data. Consider setting shuffle_n > 0.")
-
-        self._dataset = (
-            self._dataset.rename(audio=VALID_FILE_FORMATS, key='__key__')
-            .to_tuple('audio', 'key')
-            .pipe(self._filter)
-            .map(f=self._build_sample)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(urls=audio_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(audio=VALID_FILE_FORMATS, key='__key__'),
+            wds.to_tuple('audio', 'key'),
+            self._filter,
+            wds.map(self._build_sample),
         )
 
     def _filter(self, iterator):

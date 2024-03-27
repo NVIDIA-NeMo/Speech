@@ -137,6 +137,29 @@ class TestASRDatasets:
         assert count == 32
 
     @pytest.mark.unit
+    def test_tarred_dataset_filter(self, test_data_dir):
+        """
+        Checks for 
+            1. file count when manifest len is less than tarred dataset
+            2. Ignoring files in manifest that are not in tarred balls
+
+        """
+        manifest_path = os.path.abspath(
+            os.path.join(test_data_dir, 'asr/tarred_an4/tarred_duplicate_audio_manifest.json')
+        )
+
+        # Test braceexpand loading
+        tarpath = os.path.abspath(os.path.join(test_data_dir, 'asr/tarred_an4/audio_{0..1}.tar'))
+        ds_braceexpand = TarredAudioToCharDataset(
+            audio_tar_filepaths=tarpath, manifest_filepath=manifest_path, labels=self.labels, sample_rate=16000
+        )
+        assert len(ds_braceexpand) == 6
+        count = 0
+        for _ in ds_braceexpand:
+            count += 1
+        assert count == 5  # file ending with sub is not part of tar ball
+
+    @pytest.mark.unit
     def test_mismatch_in_model_dataloader_config(self, caplog):
         logging._logger.propagate = True
         caplog.set_level(logging.WARNING)

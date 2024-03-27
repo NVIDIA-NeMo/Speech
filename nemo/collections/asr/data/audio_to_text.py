@@ -21,11 +21,12 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 import braceexpand
 import numpy as np
 import torch
-import webdataset as wd
+import webdataset as wds
 from torch.utils.data import ChainDataset
 from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
+from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
 from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
 from nemo.collections.common import tokenizers
 from nemo.collections.common.parts.preprocessing import collections, parsers
@@ -40,6 +41,7 @@ from nemo.utils.data_utils import (
     is_datastore_path,
     is_tarred_path,
 )
+from nemo.utils.distributed import webdataset_split_by_workers
 from nemo.utils.get_rank import is_global_rank_zero
 
 __all__ = [
@@ -48,6 +50,8 @@ __all__ = [
     'TarredAudioToCharDataset',
     'TarredAudioToBPEDataset',
 ]
+
+VALID_FILE_FORMATS = ';'.join(['wav', 'mp3', 'flac', 'opus'] + [fmt.lower() for fmt in valid_sf_formats.keys()])
 
 
 def _speech_collate_fn(batch, pad_id):
@@ -860,20 +864,17 @@ class _TarredAudioToTextDataset(IterableDataset):
             global_rank=global_rank,
         )
 
-        # Put together WebDataset
-        self._dataset = wd.WebDataset(urls=audio_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self._dataset = (
-            self._dataset.rename(audio='wav;ogg;flac', key='__key__')
-            .to_tuple('audio', 'key')
-            .pipe(self._filter)
-            .pipe(self._loop_offsets)
-            .map(f=self._build_sample)
+        # Put together WebDataset pipeline
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(urls=audio_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(audio=VALID_FILE_FORMATS, key='__key__'),
+            wds.to_tuple('audio', 'key'),
+            self._filter,
+            self._loop_offsets,
+            wds.map(self._build_sample),
         )
 
     def _filter(self, iterator):
@@ -942,6 +943,7 @@ class _TarredAudioToTextDataset(IterableDataset):
 
         # Grab manifest entry from self.manifest_preprocessor.collection
         file_id, _ = os.path.splitext(os.path.basename(audio_filename))
+
         manifest_idx = self.manifest_processor.collection.mapping[file_id][offset_id]
         manifest_entry = self.manifest_processor.collection[manifest_idx]
 

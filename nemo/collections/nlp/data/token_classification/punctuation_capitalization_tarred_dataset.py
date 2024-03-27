@@ -44,6 +44,7 @@ from nemo.collections.nlp.data.token_classification.punctuation_capitalization_d
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
 from nemo.core.neural_types import AudioSignal, ChannelType, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
+from nemo.utils.distributed import webdataset_split_by_workers
 
 NUMBER_RE = "(0|[1-9][0-9]*)"
 TAR_FRAGMENT_TMPL_IN_PROGRESS = "fragment{fragment_idx}.{file_idx}.tar"
@@ -608,10 +609,11 @@ def repack_tar_files_with_not_enough_batches(output_dir: Path, num_batches_per_t
                 fragment_idx=match.group(1), num_batches=num_batches_per_tarfile, file_idx=match.group(3)
             )
             new_file_sink = wds.TarWriter(str(new_file))
-            append_ds_to_rewrite = (
-                wds.WebDataset(urls=[str(append_file)], nodesplitter=None)
-                .decode(wds.handle_extension('.pyd', decode_pyd))
-                .to_tuple('__key__', 'batch.pyd')
+            append_ds_to_rewrite = wds.DataPipeline(
+                wds.SimpleShardList(urls=[str(append_file)]),
+                wds.tarfile_to_samples(),
+                wds.decode(wds.handle_extension('.pyd', decode_pyd)),
+                wds.to_tuple('__key__', 'batch.pyd'),
             )
             for key, batch in iter(append_ds_to_rewrite):
                 new_file_sink.write({"__key__": key, "batch.pyd": batch})
@@ -625,10 +627,11 @@ def repack_tar_files_with_not_enough_batches(output_dir: Path, num_batches_per_t
             append_file.unlink()
         if files_to_repack_with_matches and pop_file_ds is None:
             pop_file, _ = files_to_repack_with_matches.pop()
-            pop_file_ds = (
-                wds.WebDataset(urls=[str(pop_file)], nodesplitter=None)
-                .decode(wds.handle_extension('.pyd', decode_pyd))
-                .to_tuple('__key__', 'batch.pyd')
+            pop_file_ds = wds.DataPipeline(
+                wds.SimpleShardList([str(pop_file)]),
+                wds.tarfile_to_samples(),
+                wds.decode(wds.handle_extension('.pyd', decode_pyd)),
+                wds.to_tuple('__key__', 'batch.pyd'),
             )
             pop_file_ds = iter(pop_file_ds)
         if pop_file_ds is not None and new_file_sink is not None:
@@ -1050,14 +1053,15 @@ class BertPunctuationCapitalizationTarredDataset(IterableDataset):
         else:
             raise ValueError(f"Invalid shard strategy! Allowed values are: {valid_shard_strategies}")
 
-        self._dataset = wds.WebDataset(urls=self.tar_files, nodesplitter=None).decode(
-            wds.handle_extension('.pyd', decode_pyd)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(self.tar_files),
+            webdataset_split_by_workers,
+            wds.tarfile_to_samples(),
+            wds.decode(wds.handle_extension('.pyd', decode_pyd)),
+            wds.shuffle(shuffle_n),
+            wds.to_tuple('__key__', 'batch.pyd'),
+            wds.map(self._build_sample),
         )
-        if shuffle_n > 0:
-            self._dataset.shuffle(shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-        self._dataset = self._dataset.to_tuple('__key__', 'batch.pyd').map(f=self._build_sample)
 
         self.use_audio = use_audio
 

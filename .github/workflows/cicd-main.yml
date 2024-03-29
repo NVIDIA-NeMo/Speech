@@ -34,18 +34,21 @@ jobs:
         docker container prune --filter "until=24h" --force
         docker image prune -a --filter "until=24h" --force
 
-  checkout-repository:
-    runs-on: self-hosted-azure
-    container:
-      image: nvcr.io/nvidia/pytorch:24.01-py3
-      volumes:
-        - ${{ github.workspace }}:/workspace
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+#  checkout-repository:
+#    runs-on: self-hosted-azure
+#    container:
+#      image: nvcr.io/nvidia/pytorch:24.01-py3
+#      volumes:
+#        - ${{ github.workspace }}:/workspace
+#    steps:
+#    - name: Checkout repository
+#      uses: actions/checkout@v2
+#      with:
+#        path: ${{ github.run_id }}
+
 
   cicd-test-container-setup:
-    needs: [checkout-repository]
+    needs: [cicd-cluster-clean]
     runs-on: self-hosted-azure
     # uses: actions/cache@v2
     #container:
@@ -55,14 +58,26 @@ jobs:
 #        --device=/dev/nvidia0
 #        --gpus all
 #        --shm-size=8g 
-#        --env TRANSFORMERS_OFFLINE=0 
+#        --env TRANSFORMERS_OFFLINE=0
 #        --env HYDRA_FULL_ERROR=1
     steps:
+    - name: Log into ACR (Azure Container Registry)  # this login is for the pushing step after
+      uses: azure/docker-login@v1
+      with:
+        login-server: nemoci.azurecr.io
+        username: nemoci
+        password: ${{ secrets.ACR_PASSWORD }}
+
+    - name: Checkout repository
+      uses: actions/checkout@v2
+      with:
+        path: ${{ github.run_id }}
+
     - name: Container setup
       run: |
         # Pull base PyTorch container
         docker pull nvcr.io/nvidia/pytorch:24.01-py3
-        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume ${{ github.workspace }}:/workspace --volume /home/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.01-py3 /bin/bash -c '
+        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume ${{ github.workspace }}/${{ github.run_id }}:/workspace --volume /datadrive/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.01-py3 /bin/bash -c '
             set -x
 
             # PyTorch version
@@ -138,20 +153,20 @@ jobs:
         # Push container
         echo "Docker: List containers" && docker ps -a
         DOCKER_COMMIT=$(docker ps --latest --quiet)  # latest container
-        docker commit $DOCKER_COMMIT nemo_container
-        docker tag nemo_container localhost:5000/nemo_container_${{ github.run_id }}
-        docker push localhost:5000/nemo_container_${{ github.run_id }}
+        docker commit $DOCKER_COMMIT nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+        docker tag nemoci.azurecr.io/nemo_container_${{ github.run_id }} nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+        docker push nemoci.azurecr.io/nemo_container_${{ github.run_id }}
 
     # - name: Build and push to local registry
     #   uses: docker/build-push-action@v5
     #   with:
     #       context: .
     #       push: true
-    #       tags: localhost:5000/name/app:latest
+    #       tags: nemoci.azurecr.io/name/app:latest
 
     # - name: Inspect
     #   run: |
-    #     docker buildx imagetools inspect localhost:5000/name/app:latest 
+    #     docker buildx imagetools inspect nemoci.azurecr.io/name/app:latest
 
     #- name: Post-workflow execution
     #  uses: gacts/run-and-post-run@v1
@@ -164,22 +179,25 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
     - name: "L0: Unit Tests GPU"
       run: |
         NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --with_downloads
-    - uses: "./.github/actions/cancel-workflow"
+    - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
       if: "failure()"
       
 
@@ -187,22 +205,25 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
     - name: Checkout repository
       uses: actions/checkout@v2
     - name: "L0: Unit Tests CPU"
       run: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
-    - uses: "./.github/actions/cancel-workflow"
+    - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
       if: "failure()"
 
 
@@ -214,15 +235,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -232,22 +256,25 @@ jobs:
             --output_path=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
             --precision=16
             rm -f /home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Community_LLM_Checkpoints_tests_StarCoder:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -256,22 +283,25 @@ jobs:
             --input_name_or_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf \
             --output_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf
             rm -f /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/megatron_starcoder_tp1_pp1.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Community_LLM_Checkpoints_tests_Falcon:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -280,22 +310,25 @@ jobs:
             --input_name_or_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf \
             --output_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
             rm -f /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Community_LLM_Checkpoints_tests_Baichuan2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -304,7 +337,7 @@ jobs:
             --input_name_or_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base \
             --output_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
             rm -f /home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: ASR dev run
@@ -312,15 +345,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -333,22 +369,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_results
             rm -rf examples/asr/speech_to_text_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   ASR_dev_run_Speech_to_Text_WPE_-_CitriNet:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -364,22 +403,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_results
             rm -rf examples/asr/speech_to_text_wpe_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   ASR_dev_run_Speech_Pre-training_-_CitriNet:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -393,22 +435,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_pre_training_results
             rm -rf examples/asr/speech_pre_training_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   ASR_dev_run_Speech_To_Text_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -424,22 +469,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_finetuning_results
             rm -rf examples/asr/speech_finetuning_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   ASR_dev_run_Speech_To_Text_HF_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -471,22 +519,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_finetuning_results
             rm -rf examples/asr/speech_finetuning_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -504,7 +555,7 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_conformer_results
             rm -rf examples/asr/speech_to_text_wpe_conformer_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: ASR dev run - part two
@@ -512,15 +563,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -539,22 +593,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_squeezeformer_results
             rm -rf examples/asr/speech_to_text_wpe_squeezeformer_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speech_to_Text_EMA:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -568,14 +625,14 @@ jobs:
             +exp_manager.ema.enable=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_results
             rm -rf examples/asr/speech_to_text_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2_Speech_to_Text_AED:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container_${{ github.run_id }}
+  #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -583,7 +640,7 @@ jobs:
   #       --shm-size=8g 
   #       --env TRANSFORMERS_OFFLINE=0 
   #       --env HYDRA_FULL_ERROR=1
-  #       --volume /home/TestData:/home/TestData
+  #       --volume /datadrive/TestData:/home/TestData
   #   steps:
   #       - name: Checkout repository
   #         uses: actions/checkout@v2
@@ -625,15 +682,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -650,22 +710,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/speaker_tasks/recognition/speaker_recognition_results
             rm -rf examples/speaker_tasks/recognition/speaker_recognition_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speaker_dev_run_Speaker_Diarization:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -683,22 +746,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/speaker_tasks/diarization/speaker_diarization_results
             rm -rf examples/speaker_tasks/diarization/speaker_diarization_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speaker_dev_run_Speech_to_Label:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -719,22 +785,25 @@ jobs:
             ~model.preprocessor.n_fft \
             exp_manager.exp_dir=examples/asr/speech_to_label_results
             rm -rf examples/asr/speech_to_label_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -750,22 +819,25 @@ jobs:
             diarizer.asr.parameters.asr_based_vad=True \
             diarizer.out_dir=examples/speaker_tasks/diarization/speaker_diarization_asr_results
             rm -rf examples/speaker_tasks/diarization/speaker_diarization_asr_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speaker_dev_run_Clustering_Diarizer_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -780,7 +852,7 @@ jobs:
             diarizer.vad.model_path=/home/TestData/an4_diarizer/MatchboxNet_VAD_3x2.nemo \
             diarizer.out_dir=examples/speaker_tasks/diarization/clustering_diarizer_results
             rm -rf examples/speaker_tasks/diarization/clustering_diarizer_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -788,15 +860,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -808,22 +883,25 @@ jobs:
             diarizer.vad.model_path=/home/TestData/an4_diarizer/MatchboxNet_VAD_3x2.nemo \
             diarizer.out_dir=examples/speaker_tasks/diarization/neural_diarizer_results
             rm -rf examples/speaker_tasks/diarization/neural_diarizer_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -836,7 +914,7 @@ jobs:
             data_simulator.session_config.num_sessions=2 \
             data_simulator.session_config.session_length=60
             rm -rf ./test_simulator
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -845,15 +923,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -868,22 +949,25 @@ jobs:
             +trainer.num_sanity_val_steps=1 \
             exp_manager.exp_dir=examples/asr/speech_to_text_results
             rm -rf examples/asr/speech_to_text_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -905,7 +989,7 @@ jobs:
             ~model.preprocessor.n_fft \
             exp_manager.exp_dir=examples/asr/speech_to_label_results
             rm -rf examples/asr/speech_to_label_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -914,15 +998,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -939,22 +1026,25 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_adapters_results
             rm -rf examples/asr/speech_to_text_adapters_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_ASR_Adapters_RelPos_MHA_Adapters:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -972,7 +1062,7 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_adapters_mha_results
             rm -rf examples/asr/speech_to_text_adapters_mha_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -981,15 +1071,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1000,7 +1093,7 @@ jobs:
             output_filename="stt_test_res.json" \
             amp=true
             rm -rf stt_test_res.json
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Transducer alignment
@@ -1008,21 +1101,24 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
         - run: |
             pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Segmentation Tool
@@ -1030,15 +1126,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1055,22 +1154,25 @@ jobs:
             -r /home/TestData/ctc_segmentation/eng/eng_valid_segments_1.7.txt \
             -g /home/TestData/ctc_segmentation/eng/output${TIME}/verified_segments/nv_test_segments.txt && \
             rm -rf /home/TestData/ctc_segmentation/eng/output${TIME}
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1087,7 +1189,7 @@ jobs:
             -r /home/TestData/ctc_segmentation/ru/valid_ru_segments_1.7.txt \
             -g /home/TestData/ctc_segmentation/ru/output${TIME}/verified_segments/ru_segments.txt && \
             rm -rf /home/TestData/ctc_segmentation/ru/output${TIME}
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -1096,15 +1198,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1129,7 +1234,7 @@ jobs:
                     pretrained_model=${OUTPUT_DIR_CONFORMER}/G2P-Conformer-CTC/test/checkpoints/G2P-Conformer-CTC.nemo \
                     manifest_filepath=/home/TestData/g2p/g2p.json \
                     phoneme_field=text
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
     # TODO: pleasefixme @redoctopus
@@ -1155,22 +1260,25 @@ jobs:
     #             phoneme_field=text
     #   }
     # }
-    # - uses: "./.github/actions/cancel-workflow"
+    # - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
     # if: "failure()"
 
   L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1193,7 +1301,7 @@ jobs:
                     manifest=/home/TestData/g2p/manifest.json \
                     pretrained_model=${OUTPUT_DIR}/HeteronymClassification/test/checkpoints/HeteronymClassification.nemo \
                     output_manifest=preds.json
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -1204,7 +1312,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container_${{ github.run_id }}
+  #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -1212,7 +1320,7 @@ jobs:
   #       --shm-size=8g 
   #       --env TRANSFORMERS_OFFLINE=0 
   #       --env HYDRA_FULL_ERROR=1
-  #       --volume /home/TestData:/home/TestData
+  #       --volume /datadrive/TestData:/home/TestData
   #   steps:
   #       - name: Checkout repository
   #         uses: actions/checkout@v2
@@ -1245,15 +1353,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1277,22 +1388,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf sgd_gen_bert_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Classification_Intent_and_slot_classification_using_IntentSlotClassificationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1315,22 +1429,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf sgd_gen_bert_intent_classification_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Classification_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1356,22 +1473,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf sgd_gen_zero_shot_intent_classification_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1398,22 +1518,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf design_zero_shot_intent_classification_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel_BART_Classifier:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1433,22 +1556,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf design_zero_shot_intent_classification_bart_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Classification_Design_Intent_classification_using_DialogueNearestNeighbourModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1467,7 +1593,7 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf design_dialogue_nearest_neighbour_classification_outputs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Dialogue Generation
@@ -1475,15 +1601,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1509,22 +1638,25 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf answer_extender_s2s
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Dialogue_Generation_Dialogue_SGD_Based_Answer_Extender_using_DialogueS2SGenerationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1555,7 +1687,7 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf sgd_answer_extender_s2s
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 #     - name: L2: Dialogue Generation Part 2
@@ -1594,15 +1726,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1622,7 +1757,7 @@ jobs:
             trainer.accelerator=gpu \
             exp_manager=null  && \
             rm -rf answer_extender
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Duplex Text Normalization
@@ -1630,15 +1765,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1664,7 +1802,7 @@ jobs:
             data.train_ds.tar_metadata_file=/home/TestData/nlp/duplex_text_norm/tarred_small/metadata.json \
             data.test_ds.use_cache=false \
             data.test_ds.data_path=/home/TestData/nlp/duplex_text_norm/small_test.tsv
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 # Runs out of memory on the 12G TITAN V (GPU 0 on main CI)
@@ -1700,15 +1838,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1726,7 +1867,7 @@ jobs:
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Parallel BERT Question-Answering SQUAD v1.1 & v2.0
@@ -1734,15 +1875,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1768,22 +1912,25 @@ jobs:
             trainer.devices=[0] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_BERT_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1806,7 +1953,7 @@ jobs:
             trainer.devices=[1] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Parallel BART Question-Answering SQUAD v1.1 & v2.0
@@ -1814,15 +1961,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1848,22 +1998,25 @@ jobs:
             trainer.devices=[0] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_BART_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1886,7 +2039,7 @@ jobs:
             trainer.devices=[1] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Parallel GPT2 Question-Answering SQUAD v1.1 & v2.0
@@ -1894,15 +2047,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1928,22 +2084,25 @@ jobs:
             trainer.devices=[0] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_GPT2_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1966,7 +2125,7 @@ jobs:
             trainer.devices=[1] \
             trainer.accelerator="gpu" \
             exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Intent and Slot Classification Tasks
@@ -1974,15 +2133,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -1997,22 +2159,25 @@ jobs:
             +trainer.fast_dev_run=true \
             exp_manager.exp_dir=checkpoints
             rm -rf checkpoints
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Intent_and_Slot_Classification_Tasks_Multi-Label_Intent_and_Slot_Classification:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2026,7 +2191,7 @@ jobs:
             +trainer.fast_dev_run=true \
             exp_manager.exp_dir=checkpoints2
             rm -rf checkpoints2
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
     # TODO: add when megatron-bert is supported again
@@ -2140,15 +2305,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2164,22 +2332,25 @@ jobs:
             +trainer.fast_dev_run=true \
             model.dataset.class_balancing="weighted_loss" \
             exp_manager.exp_dir=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_NLP_Examples2_Punctuation_and_capitalization_finetuning_from_pretrained_test:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2200,22 +2371,25 @@ jobs:
               +trainer.fast_dev_run=true \
               exp_manager.exp_dir=null && \
             rm -rf "${data_dir}"
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_NLP_Examples2_NER_with_TurkuNLP__bert-base-finnish-cased-v1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2229,22 +2403,25 @@ jobs:
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name="TurkuNLP/bert-base-finnish-cased-v1" \
             exp_manager.exp_dir=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
         
   L2_Parallel_NLP_Examples2_Evaluation_script_for_Token_Classification:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2253,22 +2430,25 @@ jobs:
             model.dataset.data_dir=/home/TestData/nlp/ner/ \
             model.dataset.use_cache=false \
             pretrained_model=/home/TestData/nlp/pretrained_models/NER_Model_with_BERT_base_uncased.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_NLP_Examples2_Evaluation_script_for_Punctuation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2284,22 +2464,25 @@ jobs:
               +model.test_ds.use_cache=false \
               pretrained_model=/home/TestData/nlp/pretrained_models/Punctuation_Capitalization_with_DistilBERT_base_uncased.nemo && \
             rm -rf "${data_dir}"
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Parallel_NLP_Examples2_Punctuation_Capitalization_2GPUs_with_DistilBERT_Finetuning_on_other_data:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2343,7 +2526,7 @@ jobs:
             rm -rf /workspace/NeMo/examples/nlp/token_classification/nemo_experiments \
               "${tmp_data_dir_2}" \
               "${output_dir}"
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # Punctuation & Capitalization tarred dataset:
@@ -2351,15 +2534,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2408,7 +2594,7 @@ jobs:
               trainer.max_epochs=1 \
               +exp_manager.explicit_log_dir=${output_dir}/output && \
             rm -rf "${output_dir}" "${data_dir}"
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # Punctuation_Capitalization_Different_ways_of_passing_labels_to_model
@@ -2416,15 +2602,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2479,7 +2668,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container_${{ github.run_id }}
+  #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -2487,7 +2676,7 @@ jobs:
   #       --shm-size=8g 
   #       --env TRANSFORMERS_OFFLINE=0 
   #       --env HYDRA_FULL_ERROR=1
-  #       --volume /home/TestData:/home/TestData
+  #       --volume /datadrive/TestData:/home/TestData
   #   steps:
   #       - name: Checkout repository
   #         uses: actions/checkout@v2
@@ -2542,15 +2731,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2565,7 +2757,7 @@ jobs:
               --pretrained_name punctuation_en_bert \
               --batch_size 32 && \
             rm -rf "${output_dir}"
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
   
   # L2: Parallel Pretraining BERT pretraining from Text/Preprocessed
@@ -2573,15 +2765,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2608,22 +2803,25 @@ jobs:
               
             rm -f /home/TestData/nlp/wikitext-2/*.pkl
             #rm -rf examples/nlp/language_modeling/PretrainingBERTFromText
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Pretraining_BERT_from_Preprocessed:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2649,7 +2847,7 @@ jobs:
               exp_manager.create_checkpoint_callback=False \
               
             #rm -rf examples/nlp/language_modeling/PretrainingBERTFromPreprocessed
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Entity Linking        
@@ -2657,15 +2855,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2680,7 +2881,7 @@ jobs:
             model.train_ds.batch_size=8 \
             model.validation_ds.batch_size=8 \
             exp_manager.exp_dir=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
 
@@ -2691,15 +2892,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2762,22 +2966,25 @@ jobs:
               +exp_manager.resume_if_exists=True
               
             rm -rf examples/nlp/machine_translation/nmt_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Pre-LN:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2802,22 +3009,25 @@ jobs:
               +trainer.fast_dev_run=true \
               +trainer.limit_test_batches=2 \
               exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Multi-Validation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2840,7 +3050,7 @@ jobs:
               +trainer.fast_dev_run=true \
               +trainer.limit_test_batches=2 \
               exp_manager=null
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: NMT Attention is All You Need Inference
@@ -2848,15 +3058,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2868,7 +3081,7 @@ jobs:
             --tgtout=/home/TestData/nlp/nmt/toy_data/out.txt \
             --target_lang en \
             --source_lang de
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: NMT Attention is All You Need Finetuning
@@ -2876,15 +3089,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2911,7 +3127,7 @@ jobs:
             +exp_manager.checkpoint_callback_params.save_best_model=true
         
             rm -rf examples/nlp/machine_translation/nmt_finetune
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: NMT Tarred Dataset Creation
@@ -2919,15 +3135,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2953,22 +3172,25 @@ jobs:
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager=null \
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_NMT_Tarred_Dataset_Creation_Script_Tarred_Dataset_Creation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -2984,22 +3206,25 @@ jobs:
             --lines_per_dataset_fragment=500 \
             --num_batches_per_tarfile=10 \
             --n_preproc_jobs=2 \
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_NMT_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3093,22 +3318,25 @@ jobs:
             model.decoder_tokenizer.library=sentencepiece \
             model.decoder_tokenizer.model=/home/TestData/nlp/nmt/toy_data/spm_64k_all_langs_plus_en.model
             rm -rf examples/nlp/machine_translation/megatron_nmt_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_BART_Perceiver_MIM_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3202,7 +3430,7 @@ jobs:
             ++model.hiddens.loss.mim.cls_name=a_mim \
             ++model.hiddens.loss.mim.loss_weight=0.5
             rm -rf examples/nlp/language_modeling/megatron_mim_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
     # stage('L2: NMT Bottleneck Fallback') {
@@ -3418,15 +3646,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3492,22 +3723,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/bert_pretrain_results
             rm -rf examples/nlp/language_modeling/bert_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
  
   L2_Megatron_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3574,22 +3808,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/bert_pretrain_results
             rm -rf examples/nlp/language_modeling/bert_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_Core_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3658,22 +3895,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/bert_pretrain_results
             rm -rf examples/nlp/language_modeling/bert_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_RETRO_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3741,14 +3981,14 @@ jobs:
             +model.data.mock=True
 
             rm -rf examples/nlp/language_modeling/retro_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2_Megatron_RETRO_muTransfer_Pretraining_Performance:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container_${{ github.run_id }}
+  #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -3756,7 +3996,7 @@ jobs:
   #       --shm-size=8g 
   #       --env TRANSFORMERS_OFFLINE=0 
   #       --env HYDRA_FULL_ERROR=1
-  #       --volume /home/TestData:/home/TestData
+  #       --volume /datadrive/TestData:/home/TestData
   #   steps:
   #       - name: Checkout repository
   #         uses: actions/checkout@v2
@@ -3835,22 +4075,25 @@ jobs:
   #               assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"
 
   #               rm -rf examples/nlp/language_modeling/retro_results
-  #       - uses: "./.github/actions/cancel-workflow"
+  #       - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
   #         if: "failure()"
 
   L2_BioMegatron_Bert_NER_Task:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3862,22 +4105,25 @@ jobs:
             model.language_model.pretrained_model_name=biomegatron345m_biovocab_30k_cased \
             model.tokenizer.tokenizer_name=null
             rm -rf examples/nlp/language_modeling/token_classification_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -3955,22 +4201,25 @@ jobs:
         
             rm -rf examples/nlp/language_modeling/gpt_pretrain_results
             rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4053,7 +4302,7 @@ jobs:
 
            rm -rf examples/nlp/language_modeling/gpt_pretrain_results
            rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
     #  This test requires Ampere but some of the test GPUs are Volta
@@ -4152,15 +4401,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4241,22 +4493,25 @@ jobs:
         
             rm -rf examples/nlp/language_modeling/gpt_pretrain_results
             rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4337,22 +4592,25 @@ jobs:
             
             rm -rf examples/nlp/language_modeling/gpt_pretrain_results
             rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4436,7 +4694,7 @@ jobs:
         
             rm -rf examples/nlp/language_modeling/gpt_pretrain_results
             rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   #@athitten Remove /home/TestData/nlp/megatron_sft/trec.jsonl for validation and test file until we have support for multiple dataloaders in lightning 2.0
@@ -4444,15 +4702,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4518,22 +4779,25 @@ jobs:
             model.data.validation_ds.names=[quarel]
 
             rm -rf examples/nlp/language_modeling/gpt_sft_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_Finetuning_StarCoder_PP1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4562,22 +4826,25 @@ jobs:
             model.data.train_ds.concat_sampling_probabilities=[1.0]
         
             rm -rf examples/nlp/language_modeling/gpt_sft_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_PEFT_Lora_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4608,22 +4875,25 @@ jobs:
             model.data.validation_ds.names=[quarel]
 
             rm -rf examples/nlp/language_modeling/gpt_peft_lora_results_pp2
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_PEFT_Lora_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4670,22 +4940,25 @@ jobs:
             inference.outfile_path='/home/TestData/nlp/lora_tuning_tp2/out.jsonl'
 
             rm -rf /home/TestData/nlp/lora_tuning_tp2
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_Eval:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4696,22 +4969,25 @@ jobs:
                 tensor_model_parallel_size=1 \
                 inference.tokens_to_generate=32 \
                 trainer.precision=32
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_Eval_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4724,22 +5000,25 @@ jobs:
                 trainer.devices=2 \
                 trainer.num_nodes=1 \
                 trainer.precision=32
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_GPT_SFT_Eval_inference_seq_len_greaterThan_training_seq_len:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4759,7 +5038,7 @@ jobs:
                 inference.repetition_penalty=1.0 \
                 inference.outfile_path=examples/nlp/language_modeling/out.jsonl && \
                 rm -rf examples/nlp/language_modeling/out.jsonl
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
     # TODO: Add this test back. Test was failing on CI machines due to HW error
@@ -4794,15 +5073,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4816,22 +5098,25 @@ jobs:
                 --target_pipeline_model_parallel_size 2
 
              rm /home/TestData/nlp/megatron_gpt/TP2-Temp/test-reduce.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_Change_Partitions_Increase_TP_Num_Partitions_-2_to_4-_and_PP_Num_Partitions_-1_to_2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4845,22 +5130,25 @@ jobs:
                 --target_pipeline_model_parallel_size 1
 
             rm /home/TestData/nlp/megatron_gpt/TP2-Temp/test-increase.nemo
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -4952,22 +5240,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5059,22 +5350,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_with_KERPLE_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5166,22 +5460,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5247,22 +5544,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_w_Mixture_of_Expert_Pretraining:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5301,22 +5601,25 @@ jobs:
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_UL2_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5392,22 +5695,25 @@ jobs:
         
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
             rm -rf examples/nlp/language_modeling/t5_index_mappings
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_T5_Eval:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5416,22 +5722,25 @@ jobs:
                 --model_file /home/TestData/nlp/megatron_t5/8m/megatron_t5_8m-refactor.nemo \
                 --prompt 'How do I fix my GPU memory issue? I am seeing <mask> out of memory.' \
                 --tensor_model_parallel_size 1
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_BART_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5496,22 +5805,25 @@ jobs:
             model.data.data_prefix='{train:[1.0,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document],test:[/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document], validation:[/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document]}'
         
             rm -rf examples/nlp/language_modeling/bart_pretrain_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_Megatron_BART_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5580,7 +5892,7 @@ jobs:
             model.data.data_prefix=[.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document,.5,/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document]
         
             rm -rf examples/nlp/language_modeling/bart_pretrain_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Megatron T5 GLUE/XNLI Finetuning 
@@ -5589,15 +5901,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5626,22 +5941,25 @@ jobs:
             model.data.validation_ds.file_path=/home/TestData/nlp/megatron_t5/data/dev_ci.tsv
             
             rm -rf examples/nlp/language_modeling/t5_glue_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
   
   L2_Megatron_T5_GLUE_XNLI:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5675,22 +5993,25 @@ jobs:
             model.data.test_ds.file_path=/home/TestData/nlp/megatron_t5/data/xnli_dev_ci.tsv
             
             rm -rf examples/nlp/language_modeling/t5_xnli_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
  
   L2_Megatron_T5_PEFT_Lora_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5739,7 +6060,7 @@ jobs:
             inference.outfile_path=/home/TestData/nlp/t5_lora_tuning_tp2/out.jsonl
 
             rm -rf /home/TestData/nlp/t5_lora_tuning_tp2
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: Megatron Mock Data Generation                
@@ -5747,15 +6068,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5767,22 +6091,25 @@ jobs:
                 exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
                 model.data.data_impl=mock \
                 model.data.data_prefix=[]
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
  
   L2_Megatron_Mock_Data_Generation_MockT5Dataset:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5796,7 +6123,7 @@ jobs:
             model.data.data_prefix=[]
 
             rm -rf examples/nlp/language_modeling/t5_pretrain_results
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: TTS Fast dev runs 1
@@ -5804,15 +6131,18 @@ jobs:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5835,22 +6165,25 @@ jobs:
             ~model.text_normalizer \
             ~model.text_normalizer_call_kwargs \
             ~trainer.check_val_every_n_epoch
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_WaveGlow:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5869,22 +6202,25 @@ jobs:
             model.waveglow.n_wn_layers=2 \
             model.waveglow.n_wn_channels=32 \
             ~trainer.check_val_every_n_epoch
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_FastPitch:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5913,22 +6249,25 @@ jobs:
             ~trainer.check_val_every_n_epoch \
             ~model.text_normalizer \
             ~model.text_normalizer_call_kwargs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_RADTTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5954,22 +6293,25 @@ jobs:
             ~trainer.check_val_every_n_epoch \
             ~model.text_normalizer \
             ~model.text_normalizer_call_kwargs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_Mixer-TTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -5992,22 +6334,25 @@ jobs:
             ~trainer.check_val_every_n_epoch \
             ~model.text_normalizer \
             ~model.text_normalizer_call_kwargs
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_Hifigan:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -6027,7 +6372,7 @@ jobs:
             model.generator.upsample_initial_channel=64 \
             +model.debug=true \
             ~trainer.check_val_every_n_epoch
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
   # L2: NeRF
@@ -6035,7 +6380,7 @@ jobs:
   #   needs: [cicd-test-container-setup]
   #   runs-on: self-hosted-azure
   #   container:
-  #     image: localhost:5000/nemo_container_${{ github.run_id }}
+  #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
   #       # --user 0:128
   #       --device=/dev/nvidia0
@@ -6043,7 +6388,7 @@ jobs:
   #       --shm-size=8g 
   #       --env TRANSFORMERS_OFFLINE=0 
   #       --env HYDRA_FULL_ERROR=1
-  #       --volume /home/TestData:/home/TestData
+  #       --volume /datadrive/TestData:/home/TestData
   #   steps:
   #       - name: Checkout repository
   #         uses: actions/checkout@v2
@@ -6056,22 +6401,25 @@ jobs:
   #           exp_manager.exp_dir=examples/multimodal/text_to_image/nerf/dreamfusion_results
   #
   #           rm -rf examples/multimodal/text_to_image/nerf/dreamfusion_results
-  #       - uses: "./.github/actions/cancel-workflow"
+  #       - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
   #         if: "failure()"
 
   Speech_Checkpoints_tests:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     container:
-      image: localhost:5000/nemo_container_${{ github.run_id }}
+      credentials:
+         username: nemoci
+         password: ${{ secrets.ACR_PASSWORD }}
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
         # --user 0:128
         --device=/dev/nvidia0
         --gpus all
-        --shm-size=8g 
+        --shm-size=8g
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
-        --volume /home/TestData:/home/TestData
+        --volume /datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
           uses: actions/checkout@v2
@@ -6082,6 +6430,6 @@ jobs:
                 batch_size=64 \
                 tolerance=0.1012
             rm -f examples/asr/evaluation_transcripts.json
-        - uses: "./.github/actions/cancel-workflow"
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 

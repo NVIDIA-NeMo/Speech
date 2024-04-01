@@ -274,4 +274,5 @@ ogp_site_url = 'https://nvidia.github.io/NeMo/'
 ogp_image = 'https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/_static/nv_logo.png'
 
 # MathJax CDN
-mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/mml-chtml.min.js"
+# follow recommendation here https://www.sphinx-doc.org/en/master/usage/extensions/math.html#module-sphinx.ext.mathjax
+mathjax_path = "https://cdn.jsdelivr.net/npm/mathjax@2/MathJax.js?config=TeX-AMS-MML_HTMLorMML"

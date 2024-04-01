@@ -23,6 +23,7 @@ To learn more about using NeMo to train Large Language Models at scale, please r
    flash_attention
    positional_embeddings
    mcore_customization
+   packed_sequence
 
 
 References

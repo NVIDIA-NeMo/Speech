@@ -1,4 +1,4 @@
-
+.. _peft_supported_methods:
 
 Supported PEFT methods
 ----------------------

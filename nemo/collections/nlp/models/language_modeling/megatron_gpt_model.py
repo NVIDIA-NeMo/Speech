@@ -93,7 +93,10 @@ try:
     from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
     from megatron.core.deploy.gpt.model_specs import get_gpt_layer_ammo_spec
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
-    from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
+    from megatron.core.models.gpt.gpt_layer_specs import (
+        get_gpt_layer_local_spec,
+        get_gpt_layer_with_transformer_engine_spec,
+    )
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_config import TransformerConfig
@@ -133,12 +136,15 @@ def mcore_supports_moe() -> bool:
         return False
 
 
-def get_specs(spec_name, num_experts=None):
+def get_specs(spec_name, num_experts=None, moe_grouped_gemm=False, use_te=True):
     if num_experts is not None:
         assert mcore_supports_moe(), "Megatron-core >= v0.5.0 is required for MoE"
 
+    if use_te and spec_name == '':
+        spec_name = 'te_gpt'
     name_spec_dict = {
-        "": get_gpt_layer_with_transformer_engine_spec(num_experts),
+        "": get_gpt_layer_local_spec(num_experts, moe_grouped_gemm),
+        "te_gpt": get_gpt_layer_with_transformer_engine_spec(num_experts, moe_grouped_gemm),
         "megatron_falcon_gpt": get_falcon_layer_spec(),
         "megatron_gpt_full_te_layer_autocast": get_gpt_full_te_layer_autocast_spec(),
         "ammo": get_gpt_layer_ammo_spec(),
@@ -301,6 +307,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if self.cfg.get('expert_model_parallel_size', 1) > 1 and self.with_distributed_adam:
             raise ValueError('Expert parallelism is currently not supporting distributed optimizer')
 
+        self.transformer_engine = cfg.get('transformer_engine', False)
+        if self.megatron_amp_O2 and not self.transformer_engine:
+            logging.warning('megatron_amp_O2 is enabled but transformer-engine is not.')
+
         # build_model returns a list of modules which are used for interleaved pipeline parallelism
         if isinstance(self.trainer.accelerator, CPUAccelerator):
             self.model = build_model(
@@ -341,8 +351,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             True if (not self.megatron_amp_O2) and (self.autocast_dtype in [torch.float16, torch.bfloat16]) else False
         )
 
-        self.transformer_engine = cfg.get('transformer_engine', False)
-
         # configuration used for inference
         self._inference_config = None
 
@@ -380,7 +388,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if self.mcore_gpt:
             model = MCoreGPTModel(
                 config=self.transformer_config,
-                transformer_layer_spec=get_specs(self.spec_name, self.transformer_config.num_moe_experts),
+                transformer_layer_spec=get_specs(
+                    self.spec_name,
+                    self.transformer_config.num_moe_experts,
+                    self.transformer_config.moe_grouped_gemm,
+                    self.transformer_engine,
+                ),
                 vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),
                 max_sequence_length=self.cfg.get('encoder_seq_length', 512),
                 pre_process=pre_process,

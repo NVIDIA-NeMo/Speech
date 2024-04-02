@@ -3843,6 +3843,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.optim.name=distributed_fused_adam \
         model.optim.lr=2e-4 \
         model.optim.sched.warmup_steps=1 \
+        model.transformer_engine=true \
         model.optim.sched.constant_steps=1 \
         model.optim.sched.min_lr=8e-5 \
         model.max_position_embeddings=128 \
@@ -3885,6 +3886,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
         model.data.seq_length=128 \
         model.normalization=rmsnorm \
         model.bias=False \
+        model.transformer_engine=True \
         model.bias_activation_fusion=False \
         model.bias_dropout_add_fusion=False \
         model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
@@ -3984,6 +3986,7 @@ assert_frame_equal(training_curve, gt_curve, rtol=1e-3, atol=1e-3)"'''
        model.position_embedding_type=rope \
        model.rotary_percentage=0.5 \
        model.normalization=rmsnorm \
+       model.transformer_engine=True \
        model.bias=False \
        model.bias_activation_fusion=False \
        model.bias_dropout_add_fusion=False \

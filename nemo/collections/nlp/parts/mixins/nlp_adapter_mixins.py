@@ -191,7 +191,7 @@ class NLPAdapterModelMixin:
             return
 
         self.base_keys = self._get_all_keys()
-        self.freeze()
+        self.freeze(training=True)
         logging.info(f"Before adding PEFT params:\n{self.summarize()}")
 
         for peft_cfg in peft_cfgs:
@@ -241,7 +241,7 @@ class NLPAdapterModelMixin:
         and/or prompt table will use the learning rate set by the user.
         """
         if self.use_peft:
-            self.freeze()  # Freeze the entire model
+            self.freeze(training=True)  # Freeze the entire model
             if not self.ptuning_only_and_non_first_stage:
                 opt_params = []
                 for _, module in self.named_modules():
@@ -518,3 +518,22 @@ class NLPAdapterModelMixin:
 
         peft_cfg.megatron_amp_O2 = False  # always evaluate with O1
         return peft_cfg
+
+    def freeze(self, training: bool = False) -> None:
+        """Freeze all params
+
+        Finetuning, e.g. with PEFT, involves training steps with
+        frozen modules. Even if the params are not being updated, the
+        modules may require other training mode behaviors like
+        updating FP8 scaling factors. See
+        https://pytorch.org/docs/stable/notes/autograd.html#locally-disabling-gradient-computation.
+
+        Args:
+            training (bool): Whether to set training mode or
+                evaluation mode.
+
+        """
+
+        for param in self.parameters():
+            param.requires_grad = False
+        self.train(mode=training)

@@ -683,8 +683,6 @@ class MegatronBertModel(MegatronBaseModel):
         logging.info(f'Finished building LDDL Dataloaders')
 
     def build_train_valid_test_datasets(self):
-        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
-        self._reconfigure_val_batches()
         logging.info('Building Bert datasets.')
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
@@ -730,6 +728,10 @@ class MegatronBertModel(MegatronBaseModel):
         if self._test_ds is not None:
             logging.info(f'Length of test dataset: {len(self._test_ds)}')
         logging.info(f'Finished building Bert datasets.')
+
+        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+        self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_dl, 'val')
+
         return self._train_ds, self._validation_ds, self._test_ds
 
     def backward(self, *args, **kwargs):

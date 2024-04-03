@@ -324,40 +324,43 @@ class MegatronBaseModel(NLPModel):
         else:
             return [self.model]
 
-    def _reconfigure_val_batches(self):
+    def _reconfigure_limit_batches(self, limit_batches, dataloader, mode):
         """
         Reconfigure trainer.limit_val_batches for pretraining
         """
-        # Override limit_val_batches to be a multiple of num microbatches and so there are limit_val_batches//num_micro_batches num of global batches
-        if isinstance(self.trainer.limit_val_batches, int):
-            self.trainer.limit_val_batches *= get_num_microbatches()
+        # Override limit_batches in terms of num microbatches and so there are limit_batches//num_micro_batches num of global batches
+        if isinstance(limit_batches, int):
+            limit_batches *= get_num_microbatches()
         else:
-            assert isinstance(self.trainer.limit_val_batches, float)
-            # Don't reconfigure if limit_val_batches is 0.0 or if there's no val dataloader
-            if self.trainer.limit_val_batches == 0.0 or self._validation_dl is None:
+            assert isinstance(limit_batches, float)
+            # Don't reconfigure if limit_batches is 0.0 or if there's no dataloader
+            if limit_batches == 0.0 or dataloader is None:
                 return
-            # len(self._validation_dl) returns len as num of microbatches
-            val_len_in_micro_batches = len(self._validation_dl)
-            if self._validation_ds is not None and len(self._validation_dl) != float("inf"):
-                if self.trainer.limit_val_batches == 1.0:
-                    self.trainer.limit_val_batches = val_len_in_micro_batches
+            # len(dataloader) returns len as num of microbatches
+            dl_len_in_micro_batches = len(dataloader)
+            if len(dataloader) != float("inf"):
+                if limit_batches == 1.0:
+                    limit_batches = dl_len_in_micro_batches
                 else:
-                    limit_val_micro_batches = int(val_len_in_micro_batches * self.trainer.limit_val_batches)
-                    if limit_val_micro_batches == 0 and self.trainer.limit_val_batches > 0.0:
-                        min_percentage = 1.0 / len(self._validation_dl)
+                    limit_micro_batches = int(dl_len_in_micro_batches * limit_batches)
+                    if limit_micro_batches == 0 and limit_batches > 0.0:
+                        min_percentage = 1.0 / len(dataloader)
                         raise MisconfigurationException(
-                            f"You requested to check {self.trainer.limit_val_batches} of the val_dataloader but"
-                            f" {self.trainer.limit_val_batches} * {len(self._validation_dl)} < 1. Please increase the"
+                            f"You requested to check {limit_batches} of the val_dataloader but"
+                            f" {limit_batches} * {len(dataloader)} < 1. Please increase the"
                             f" `limit_val_batches` argument. Try at least"
                             f" `limit_val_batches={min_percentage}`"
                         )
                     # Make sure trainer.limit_val_batches is a multiple of num of microbatches
-                    if limit_val_micro_batches < get_num_microbatches():
-                        self.trainer.limit_val_batches = get_num_microbatches()
+                    if limit_micro_batches < get_num_microbatches():
+                        limit_batches = get_num_microbatches()
                     else:
-                        self.trainer.limit_val_batches = (
-                            limit_val_micro_batches - limit_val_micro_batches % get_num_microbatches()
-                        )
+                        limit_batches = limit_batches - limit_batches % get_num_microbatches()
+
+        if mode == 'train':
+            self.trainer.limit_train_batches = limit_batches
+        else:
+            self.trainer.limit_val_batches = limit_batches
 
         # Override num sanity steps to be a multiple of num of microbatches
         self.trainer.num_sanity_val_steps *= get_num_microbatches()

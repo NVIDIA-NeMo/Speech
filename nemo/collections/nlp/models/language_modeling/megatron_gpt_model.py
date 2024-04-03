@@ -1453,8 +1453,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.setup_training_data(self.cfg.data)
             self.setup_validation_data(self.cfg.data)
             self.setup_test_data(self.cfg.data)
+            # Override limit_train_batches in terms of num of microbatches
+            self._reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_dl, 'train')
             # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
-            self._reconfigure_val_batches()
+            self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_dl, 'val')
 
         if stage == 'fit':
             self.initialize_last_rank_embeddings()

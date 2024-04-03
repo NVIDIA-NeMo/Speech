@@ -10,6 +10,5 @@ tensorboard
 text-unidecode
 torch
 tqdm>=4.41.0
-triton
 wget
 wrapt

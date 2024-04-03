@@ -35,6 +35,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
     MegatronPretrainingRandomSampler,
     MegatronPretrainingSampler,
 )
+from nemo.collections.nlp.data.language_modeling.megatron.gpt_dataset import build_train_valid_test_datasets
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_fim_dataset import (
     GPTFIMDataset,
     GPTFIMDatasetConfig,
@@ -971,9 +972,10 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             'tokens': data["tokens"],
             'labels': data["labels"],
             'loss_mask': data["loss_mask"],
-            'attention_mask': data["attention_mask"],
             'position_ids': data["position_ids"],
         }
+        if "attention_mask" in data:
+            batch['attention_mask'] = data["attention_mask"]
 
         return batch
 
@@ -1309,41 +1311,55 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             fim_tokens = [fim_tokens.prefix, fim_tokens.middle, fim_tokens.suffix, fim_tokens.pad, fim_tokens.eod]
             self.tokenizer.add_special_tokens({'additional_special_tokens': fim_tokens})
 
-        mock_dataset = True if self.cfg.data.get("data_impl", "mmap") == "mock" else False
-        kwargs = {
-            "is_built_on_rank": is_dataset_built_on_rank,
-            "random_seed": self.cfg.seed,
-            "sequence_length": self.cfg.data.seq_length,
-            "path_to_cache": self.cfg.data.index_mapping_dir,
-            "tokenizer": self.tokenizer,
-            "reset_position_ids": self.reset_position_ids,
-            "reset_attention_mask": self.reset_attention_mask,
-            "eod_mask_loss": self.eod_mask_loss,
-            "mock": mock_dataset,
-            "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
-        }
-
-        # support for dict data input type
-        if isinstance(self.cfg.data.data_prefix, DictConfig):
-            _pref = self.cfg.data.data_prefix
-            kwargs['blend_per_split'] = [_pref['train'], _pref['validation'], _pref['test']]
+        if self.cfg.data.get("legacy_dataset", False):
+            self._train_ds, self._validation_ds, self._test_ds = build_train_valid_test_datasets(
+                cfg=self.cfg,
+                trainer=self.trainer,
+                data_prefix=self.cfg.data.data_prefix,
+                data_impl=self.cfg.data.data_impl,
+                splits_string=self.cfg.data.splits_string,
+                train_valid_test_num_samples=train_valid_test_num_samples,
+                seq_length=self.cfg.data.seq_length,
+                seed=self.cfg.seed,
+                skip_warmup=self.cfg.data.get('skip_warmup', True),
+                tokenizer=self.tokenizer,
+            )
         else:
-            kwargs['blend'] = self.cfg.data.data_prefix
-            kwargs["split"] = self.cfg.data.splits_string
+            mock_dataset = True if self.cfg.data.get("data_impl", "mmap") == "mock" else False
+            kwargs = {
+                "is_built_on_rank": is_dataset_built_on_rank,
+                "random_seed": self.cfg.seed,
+                "sequence_length": self.cfg.data.seq_length,
+                "path_to_cache": self.cfg.data.index_mapping_dir,
+                "tokenizer": self.tokenizer,
+                "reset_position_ids": self.reset_position_ids,
+                "reset_attention_mask": self.reset_attention_mask,
+                "eod_mask_loss": self.eod_mask_loss,
+                "mock": mock_dataset,
+                "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
+            }
 
-        if self.cfg.data.get('add_fim', False):
-            dataset_config = GPTFIMDatasetConfig(self.cfg.data.fim, **kwargs)
+            # support for dict data input type
+            if isinstance(self.cfg.data.data_prefix, DictConfig):
+                _pref = self.cfg.data.data_prefix
+                kwargs['blend_per_split'] = [_pref['train'], _pref['validation'], _pref['test']]
+            else:
+                kwargs['blend'] = self.cfg.data.data_prefix
+                kwargs["split"] = self.cfg.data.splits_string
 
-            self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
-                GPTFIMDataset, train_valid_test_num_samples, dataset_config,
-            ).build()
-        else:
-            dataset_config = GPTDatasetConfig(**kwargs)
-            dataset_type = MockGPTDataset if mock_dataset else GPTDataset
+            if self.cfg.data.get('add_fim', False):
+                dataset_config = GPTFIMDatasetConfig(self.cfg.data.fim, **kwargs)
 
-            self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
-                dataset_type, train_valid_test_num_samples, dataset_config,
-            ).build()
+                self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
+                    GPTFIMDataset, train_valid_test_num_samples, dataset_config,
+                ).build()
+            else:
+                dataset_config = GPTDatasetConfig(**kwargs)
+                dataset_type = MockGPTDataset if mock_dataset else GPTDataset
+
+                self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
+                    dataset_type, train_valid_test_num_samples, dataset_config,
+                ).build()
 
         if self._train_ds is not None:
             logging.info(f'Length of train dataset: {len(self._train_ds)}')

@@ -15,7 +15,7 @@ name: "CICD NeMo"
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened, ready_for_review]
     branches: [ "main" ]
 
 jobs:

@@ -1,0 +1,204 @@
+name: stable-diffusion-xl-train
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  precision: bf16-mixed
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
+  max_steps: -1 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10
+  accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
+  gradient_clip_val: 1.0
+  benchmark: False
+  enable_model_summary: True
+  limit_val_batches: 0
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: stable-diffusion
+    group: nemo-sd
+    name: ${name}
+    resume: True
+  create_checkpoint_callback: True
+  create_tensorboard_logger: True
+  checkpoint_callback_params:
+    every_n_train_steps: 10000
+    every_n_epochs: 0
+    monitor: reduced_train_loss
+    filename: '${name}--{reduced_train_loss:.2f}-{step}-{consumed_samples}'
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  ema:
+    enable: False
+    decay: 0.9999
+    validate_original_weights: False
+    every_n_steps: 1
+    cpu_offload: False
+
+
+model:
+  precision: ${trainer.precision}
+  # specify micro_batch_size, global_batch_size, and model parallelism
+  # gradient accumulation will be done automatically based on data_parallel_size
+  micro_batch_size: 1 # limited by GPU memory
+  global_batch_size: 2 # will use more micro batches to reach global batch size
+
+
+  scale_factor: 0.13025
+  disable_first_stage_autocast: True
+  is_legacy: False
+  inductor: False
+  capture_cudagraph_iters: -1
+  scale_by_std: False
+  channels_last: False
+  fsdp: True
+  precache_mode: null # [text, both, null]
+
+  loss_fn_config:
+    _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.loss.StandardDiffusionLoss
+    sigma_sampler:
+      _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.sigma_sampling.DiscreteSampling
+      num_idx: 1000
+      discretization:
+        _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.discretizer.LegacyDDPMDiscretization
+
+
+  denoiser_config:
+    _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.denoiser.DiscreteDenoiser
+    num_idx: 1000
+
+    weighting_config:
+      _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.denoiser_weighting.EpsWeighting
+    scaling_config:
+      _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.denoiser_scaling.EpsScaling
+    discretization_config:
+      _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.discretizer.LegacyDDPMDiscretization
+
+
+  unet_config:
+    _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.openaimodel.UNetModel
+    from_NeMo: False
+    adm_in_channels: 1280
+    num_classes: sequential
+    use_checkpoint: False
+    in_channels: 4
+    out_channels: 4
+    model_channels: 320
+    attention_resolutions: [ 4, 2 ]
+    num_res_blocks: 2
+    channel_mult: [ 1, 2, 4 ]
+    num_head_channels: 64
+    use_spatial_transformer: True
+    use_linear_in_transformer: True
+    transformer_depth: [ 1, 2, 10 ]  # note: the first is unused (due to attn_res starting at 2) 32, 16, 8 --> 64, 32, 16
+    context_dim: 2048
+    image_size: 64 # unused
+    legacy: False
+    use_flash_attention: True
+
+  first_stage_config:
+    _target_: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder.AutoencoderKLInferenceWrapper
+    from_pretrained: /sdxl_ckpts/stable-diffusion-xl-base-1.0/vae/diffusion_pytorch_model.safetensors
+    embed_dim: 4
+    monitor: val/rec_loss
+    ddconfig:
+      attn_type: vanilla
+      double_z: true
+      z_channels: 4
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult: [ 1, 2, 4, 4 ]
+      num_res_blocks: 2
+      attn_resolutions: [ ]
+      dropout: 0.0
+    lossconfig:
+      target: torch.nn.Identity
+
+
+
+  conditioner_config:
+    _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.GeneralConditioner
+    emb_models:
+      # crossattn cond
+      - is_trainable: False
+        input_key: captions
+        ucg_rate: 0.1
+        emb_model:
+          _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenCLIPEmbedder
+          layer: hidden
+          layer_idx: 11
+      # crossattn and vector cond
+      - is_trainable: False
+        ucg_rate: 0.1
+        input_key: captions
+        emb_model:
+          _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenOpenCLIPEmbedder2
+          arch: ViT-bigG-14
+          version: laion2b_s39b_b160k
+          freeze: True
+          layer: penultimate
+          always_return_pooled: True
+          legacy: False
+
+
+
+  data:
+    num_workers: 16
+    train:
+      dataset_path:
+        - YOUR_TRAINING_DATASET_WDINFO_FILE
+      augmentations:
+        resize_smallest_side: 256
+        center_crop_h_w: 256, 256
+        horizontal_flip: False
+      filterings:
+
+    webdataset:
+      infinite_sampler: False
+      local_root_path: /datasets/coyo
+
+  seed: 1234
+  resume_from_checkpoint: null # manually set the checkpoint file to load from
+  apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
+  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+
+  optim:
+    name: fused_adam
+    lr: 1e-4 # Need to adjust according to the global bs
+    weight_decay: 0.
+    betas:
+      - 0.9
+      - 0.999
+    sched:
+      name: WarmupHoldPolicy
+      warmup_steps: 10000
+      hold_steps: 10000000000000 # Incredibly large value to hold the lr as constant
+
+  # Nsys profiling options
+  nsys_profile:
+    enabled: False
+    start_step: 10  # Global batch to start profiling
+    end_step: 10 # Global batch to end profiling
+    ranks: [ 0 ] # Global rank IDs to profile
+    gen_shape: False # Generate model and kernel details including input shapes
+
+  peft:
+    peft_scheme: null
+    restore_from_path: null
+    lora_tuning:
+      adapter_dim: 32
+      adapter_dropout: 0.0
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      layer_selection:  null  # selects in which layers to add lora adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
+      weight_tying: False
+      position_embedding_strategy: null # used only when weight_tying is True

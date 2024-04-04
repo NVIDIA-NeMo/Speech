@@ -1,0 +1,67 @@
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  precision: 32
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
+  max_steps: -1 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10
+  accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
+  gradient_clip_val: 1.0
+  benchmark: False
+  enable_model_summary: True
+  limit_val_batches: 0
+
+
+infer:
+  num_samples: 4
+  prompt:
+    - "A professional photograph of an astronaut riding a pig"
+    - 'A photo of a Shiba Inu dog with a backpack riding a bike. It is wearing sunglasses and a beach hat.'
+    - 'A cute corgi lives in a house made out of sushi.'
+    - 'A high contrast portrait of a very happy fuzzy panda dressed as a chef in a high end kitchen making dough. There is a painting of flowers on the wall behind him.'
+    - 'A brain riding a rocketship heading towards the moon.'
+  negative_prompt: ""
+  seed: 123
+
+
+sampling:
+  base:
+    sampler: EulerEDMSampler
+    width: 256
+    height: 256
+    steps: 40
+    discretization: "LegacyDDPMDiscretization"
+    guider: "VanillaCFG"
+    thresholder: "None"
+    scale: 5.0
+    img2img_strength: 1.0
+    sigma_min: 0.0292
+    sigma_max: 14.6146
+    rho: 3.0
+    s_churn: 0.0
+    s_tmin: 0.0
+    s_tmax: 999.0
+    s_noise: 1.0
+    eta: 1.0
+    order: 4
+    orig_width: 1024
+    orig_height: 1024
+    crop_coords_top: 0
+    crop_coords_left: 0
+    aesthetic_score: 5.0
+    negative_aesthetic_score: 5.0
+
+model:
+  restore_from_path:
+  is_legacy: False
+
+use_refiner: False
+use_fp16: False # use fp16 model weights
+out_path: ./output
+
+base_model_config: /opt/NeMo/examples/multimodal/generative/stable_diffusion/conf/sd_xl_base.yaml
+refiner_config: /opt/NeMo/examples/multimodal/generative/stable_diffusion/conf/sd_xl_refiner.yaml

@@ -1,0 +1,95 @@
+name: stable-diffusion-train
+
+fid:
+  classifier_free_guidance:
+    - 1.5
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+  nnodes_per_cfg: 1
+  ntasks_per_node: 8
+  local_task_id: null
+  num_images_to_eval: 30000
+  coco_captions_path: /coco2014/coco2014_val_sampled_30k/captions
+  coco_images_path: /coco2014/coco2014_val/images_256
+  save_path: output
+
+model:
+  restore_from_path:
+  is_legacy: False
+
+use_refiner: False
+use_fp16: False # use fp16 model weights
+
+base_model_config: /opt/NeMo/examples/multimodal/generative/stable_diffusion/conf/sd_xl_base.yaml
+refiner_config: /opt/NeMo/examples/multimodal/generative/stable_diffusion/conf/sd_xl_refiner.yaml
+
+
+infer:
+  num_samples: 1
+  prompt:
+    - "A professional photograph of an astronaut riding a pig"
+  negative_prompt: ""
+  seed: 123
+
+
+sampling:
+  base:
+    sampler: EulerEDMSampler
+    width: 1344
+    height: 768
+    steps: 40
+    discretization: "LegacyDDPMDiscretization"
+    guider: "VanillaCFG"
+    thresholder: "None"
+    scale: 5.0
+    aesthetic_score: 5.0
+    negative_aesthetic_score: 5.0
+    img2img_strength: 1.0
+    orig_width: 1344
+    orig_height: 768
+    crop_coords_top: 0
+    crop_coords_left: 0
+    sigma_min: 0.0292
+    sigma_max: 14.6146
+    rho: 3.0
+    s_churn: 0.0
+    s_tmin: 0.0
+    s_tmax: 999.0
+    s_noise: 1.0
+    eta: 1.0
+    order: 4
+  refiner:
+    sampler: EulerEDMSampler
+    width: 1344
+    height: 768
+    steps: 40
+    discretization: "LegacyDDPMDiscretization"
+    guider: "VanillaCFG"
+    thresholder: "None"
+    scale: 5.0
+    aesthetic_score: 6.0
+    negative_aesthetic_score: 2.5
+    img2img_strength: 0.15
+    crop_coords_top: 0
+    crop_coords_left: 0
+    sigma_min: 0.0292
+    sigma_max: 14.6146
+    rho: 3.0
+    s_churn: 0.0
+    s_tmin: 0.0
+    s_tmax: 999.0
+    s_noise: 1.0
+    eta: 1.0
+    order: 4
+
+trainer:
+  devices: ${evaluation.fid.ntasks_per_node}
+  num_nodes: 1
+  accelerator: gpu
+  precision: 32
+  logger: False # logger provided by exp_manager

@@ -24,6 +24,7 @@ thanks!
 '''
 
 import math
+from inspect import isfunction
 
 import numpy as np
 import torch
@@ -317,3 +318,13 @@ def expand_dims(v, dims):
     Expand the tensor `v` to the dim `dims`.
     """
     return v[(...,) + (None,) * (dims - 1)]
+
+
+def exists(x):
+    return x is not None
+
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if isfunction(d) else d

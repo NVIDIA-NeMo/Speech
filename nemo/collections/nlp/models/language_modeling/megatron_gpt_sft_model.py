@@ -373,7 +373,7 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
         fwd_bwd_function = get_forward_backward_func()
 
         losses_reduced_per_micro_batch = fwd_bwd_function(
-            forward_step_func=self.get_forward_output_and_loss_func(tuning=True),
+            forward_step_func=self.get_forward_output_and_loss_func(tuning=True, validation_step=forward_only),
             data_iterator=self._make_data_iterator_list(data_iter),
             model=self.model,
             num_microbatches=get_num_microbatches(),

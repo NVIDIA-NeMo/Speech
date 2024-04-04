@@ -486,13 +486,12 @@ class GPTSFTDataset(Dataset):
 
 class GPTSFTPackedDataset(GPTSFTDataset):
     def __init__(self, file_path: str, tokenizer: TokenizerSpec, return_cu_seqlen: bool = True, **kwargs):
+        np.random.seed(kwargs.get('seed', 1234))
         super().__init__(file_path, tokenizer, **kwargs)
         assert self.virtual_tokens == 0, "P-Tuning with packed sequence is not supported."
 
         # Whether to return `cu_seqlen` to pass to model. This should be true for almost all use cases.
         self.return_cu_seqlen = return_cu_seqlen
-
-        np.random.seed(self.seed)
 
     def __getitem__(self, idx):
         if self.samples_mapping is not None:
@@ -502,6 +501,8 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         input_ids = self.indexed_dataset[idx]['input_ids']
         seq_boundaries = self.indexed_dataset[idx]['seq_start_id'] + [len(input_ids)]
         loss_mask = self.indexed_dataset[idx]['loss_mask']
+        if idx < 0:
+            loss_mask = [0] * len(loss_mask)
         return {'input_ids': input_ids, 'seq_boundaries': seq_boundaries, 'loss_mask': loss_mask}
 
     def _load_dataset(self):

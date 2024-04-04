@@ -1145,11 +1145,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                         },
                     )
                 elif validation_step and not self.cfg.data.get('validation_drop_last', True):
+                    sample_weight = self.cfg.data.get('sample_weight', 'token')
                     num_valid_tokens_in_ub = batch['num_valid_tokens_in_ub']
                     if loss_for_ub.isnan():
                         assert batch['loss_mask'].count_nonzero() == 0, 'Got NaN loss with non-empty input'
-                        loss_sum_for_ub = torch.zeros_like(num_valid_tokens_in_ub)
+                        loss_sum_for_ub = torch.zeros_like(loss_for_ub)
+                        num_valid_tokens_in_ub = 0
                     else:
+                        if sample_weight == 'constant':
+                            num_valid_tokens_in_ub = 1
                         loss_sum_for_ub = num_valid_tokens_in_ub * loss_for_ub
 
                     loss_sum_and_ub_size_all_gpu = torch.cat(

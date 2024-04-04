@@ -101,7 +101,7 @@ model:
       position_embedding_strategy: null # used only when weight_tying is True
 
     lora_tuning:
-      target_modules: ['attention_qkv','attention_dense','mlp_fc1','mlp_fc2'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
+      target_modules: ['attention_qkv'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
       adapter_dim: 32
       alpha: ${model.peft.lora_tuning.adapter_dim} 
       adapter_dropout: 0.0

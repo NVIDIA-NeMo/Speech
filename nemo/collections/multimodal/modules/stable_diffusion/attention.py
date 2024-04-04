@@ -17,7 +17,7 @@ from inspect import isfunction
 import torch
 import torch.nn.functional as F
 from apex.contrib.group_norm import GroupNorm
-from einops import rearrange
+from einops import rearrange, repeat
 from torch import einsum, nn
 from torch._dynamo import disable
 
@@ -27,11 +27,12 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     ParallelLinearAdapterConfig,
 )
 from nemo.core import adapter_mixins
+from nemo.utils import logging
 
 
 def check_cuda():
     if not torch.cuda.is_available():
-        raise RuntimeError('CUDA is not available')
+        raise ImportError('CUDA is not available')
     cur_device = torch.cuda.current_device()
     dprops = torch.cuda.get_device_properties(cur_device)
 
@@ -252,19 +253,32 @@ class CrossAttention(nn.Module):
             else:
                 self.flash_attn = FlashCrossAttention(softmax_scale=self.scale)
 
-    def forward(self, x, context=None, mask=None):
+    def forward(self, x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
         h = self.heads
+
+        if additional_tokens is not None:
+            # get the number of masked tokens at the beginning of the output sequence
+            n_tokens_to_mask = additional_tokens.shape[1]
+            # add additional token
+            x = torch.cat([additional_tokens, x], dim=1)
 
         q = self.to_q(x)
         context = default(context, x)
         k = self.to_k(context)
         v = self.to_v(context)
 
-        out = self._attention(q, k, v, mask)
+        if n_times_crossframe_attn_in_self:
+            # reprogramming cross-frame attention as in https://arxiv.org/abs/2303.13439
+            assert x.shape[0] % n_times_crossframe_attn_in_self == 0
+            n_cp = x.shape[0] // n_times_crossframe_attn_in_self
+            k = repeat(k[::n_times_crossframe_attn_in_self], "b ... -> (b n) ...", n=n_cp)
+            v = repeat(v[::n_times_crossframe_attn_in_self], "b ... -> (b n) ...", n=n_cp)
+
+        out = self._attention(q, k, v, mask, additional_tokens=None)
 
         return self.to_out(out)
 
-    def _attention(self, q, k, v, mask=None):
+    def _attention(self, q, k, v, mask=None, additional_tokens=None):
         h = self.heads
 
         if (
@@ -318,7 +332,9 @@ class CrossAttention(nn.Module):
 
             out = self.flash_attn(q, kv)
             out = out.view(b, s_q, hd)
-
+        if additional_tokens is not None:
+            # remove additional token
+            out = out[:, n_tokens_to_mask:]
         return out
 
 
@@ -362,15 +378,33 @@ class BasicTransformerBlock(nn.Module):
         self.norm3 = nn.LayerNorm(dim)
         self.use_checkpoint = use_checkpoint
 
-    def forward(self, x, context=None):
+    def forward(self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
+        kwargs = {"x": x}
+
+        if context is not None:
+            kwargs.update({"context": context})
+        if additional_tokens is not None:
+            kwargs.update({"additional_tokens": additional_tokens})
+
+        if n_times_crossframe_attn_in_self:
+            kwargs.update({"n_times_crossframe_attn_in_self": n_times_crossframe_attn_in_self})
+
         if self.use_checkpoint:
             return checkpoint(self._forward, (x, context), self.parameters(), self.use_checkpoint)
         else:
             return self._forward(x, context)
 
-    def _forward(self, x, context=None):
-        x = self.attn1(self.norm1(x), context=context if self.disable_self_attn else None) + x
-        x = self.attn2(self.norm2(x), context=context) + x
+    def _forward(self, x, context=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
+        x = (
+            self.attn1(
+                self.norm1(x),
+                context=context if self.disable_self_attn else None,
+                additional_tokens=additional_tokens,
+                n_times_crossframe_attn_in_self=n_times_crossframe_attn_in_self if not self.disable_self_attn else 0,
+            )
+            + x
+        )
+        x = self.attn2(self.norm2(x), context=context, additional_tokens=additional_tokens) + x
         x = self.ff(self.norm3(x)) + x
         return x
 
@@ -399,8 +433,26 @@ class SpatialTransformer(nn.Module):
         lora_network_alpha=None,
     ):
         super().__init__()
-        if exists(context_dim) and not isinstance(context_dim, list):
+        logging.info(
+            f"constructing {self.__class__.__name__} of depth {depth} w/ {in_channels} channels and {n_heads} heads"
+        )
+        from omegaconf import ListConfig
+
+        if exists(context_dim) and not isinstance(context_dim, (list, ListConfig)):
             context_dim = [context_dim]
+        if exists(context_dim) and isinstance(context_dim, list):
+            if depth != len(context_dim):
+                logging.info(
+                    f"WARNING: {self.__class__.__name__}: Found context dims {context_dim} of depth {len(context_dim)}, "
+                    f"which does not match the specified 'depth' of {depth}. Setting context_dim to {depth * [context_dim[0]]} now."
+                )
+                # depth does not match context dims.
+                assert all(
+                    map(lambda x: x == context_dim[0], context_dim)
+                ), "need homogenous context_dim to match depth automatically"
+                context_dim = depth * [context_dim[0]]
+        elif context_dim is None:
+            context_dim = [None] * depth
         self.in_channels = in_channels
         inner_dim = n_heads * d_head
         self.norm = Normalize(in_channels)
@@ -409,7 +461,6 @@ class SpatialTransformer(nn.Module):
             self.proj_in = nn.Conv2d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
         else:
             self.proj_in = nn.Linear(in_channels, inner_dim)
-
         self.transformer_blocks = nn.ModuleList(
             [
                 BasicTransformerBlock(
@@ -431,6 +482,8 @@ class SpatialTransformer(nn.Module):
             self.proj_out = zero_module(nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0))
         else:
             self.proj_out = zero_module(nn.Linear(in_channels, inner_dim))
+            # self.proj_out = zero_module(nn.Linear(inner_dim, in_channels))
+            # Usually inner_dim is the same as in_channels.
         self.use_linear = use_linear
 
     def forward(self, x, context=None):
@@ -446,10 +499,12 @@ class SpatialTransformer(nn.Module):
         if self.use_linear:
             x = self.proj_in(x)
         for i, block in enumerate(self.transformer_blocks):
+            if i > 0 and len(context) == 1:
+                i = 0  # use same context for each block
             x = block(x, context=context[i])
         if self.use_linear:
             x = self.proj_out(x)
         x = x.transpose(1, 2).view(b, c, h, w)  # b (h w) c -> b c h w
         if not self.use_linear:
             x = self.proj_out(x)
-        return x + x_in
+        return x_in + x

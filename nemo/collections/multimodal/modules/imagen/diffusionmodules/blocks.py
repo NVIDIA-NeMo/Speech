@@ -690,6 +690,7 @@ class SelfAttentionBlock(nn.Module):
         if self.flash_attention:
             # qkv shape: (b, (3 h d) s), need to reshape to (b, s, h, d) for each q, k, v
             b, _, _ = qkv.shape
+            h = self.num_heads
             q, k, v = qkv.chunk(3, dim=1)
             max_seqlen_q, max_seqlen_k = q.shape[2], k.shape[2]
             q = rearrange(q, 'b (h d) s -> (b s) h d', h=self.num_heads)

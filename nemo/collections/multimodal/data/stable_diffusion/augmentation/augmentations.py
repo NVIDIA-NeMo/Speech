@@ -17,6 +17,8 @@ try:
     TORCHVISION_AVAILABLE = True
 except (ImportError, ModuleNotFoundError):
     TORCHVISION_AVAILABLE = False
+import numpy as np
+import torch
 
 
 def construct_clip_augmentations(n_px=224):

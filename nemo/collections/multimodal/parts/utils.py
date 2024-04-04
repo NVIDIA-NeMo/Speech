@@ -54,6 +54,15 @@ def randn_like(x, generator=None):
     return torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
 
 
+def extend_instance(obj, mixin):
+    """Apply mixins to a class instance after creation"""
+    base_cls = obj.__class__
+    base_cls_name = obj.__class__.__name__
+    obj.__class__ = type(
+        base_cls_name, (mixin, base_cls), {}
+    )  # mixin needs to go first for our forward() logic to work
+
+
 def getattr_recursive(obj, att):
     """
     Return nested attribute of obj
@@ -212,6 +221,7 @@ def setup_trainer_and_models_for_inference(
         else:
             raise ValueError(f"Unrecognized checkpoint type: {single_model_cfg.restore_from_path}")
 
+    # initialize apex DDP strategy
     def dummy():
         return
 
@@ -294,6 +304,7 @@ def setup_trainer_and_model_for_inference(
     else:
         raise ValueError(f"Unrecognized checkpoint type: {cfg.model.restore_from_path}")
 
+    # initialize apex DDP strategy
     def dummy():
         return
 
@@ -309,7 +320,7 @@ def setup_trainer_and_model_for_inference(
 
 
 def create_neva_model_and_processor(cfg):
-    from nemo.collections.multimodal.models.multimodal_llm.neva.neva_model import MegatronNevaModel
+    from nemo.collections.multimodal.models.neva.neva_model import MegatronNevaModel
 
     plugins = []
     if cfg.get('cluster_type', None) == 'BCP':

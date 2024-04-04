@@ -15,7 +15,6 @@
 """Gradient clipping."""
 
 import itertools
-
 import torch
 from torch import inf
 

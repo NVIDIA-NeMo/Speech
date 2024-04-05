@@ -22,6 +22,12 @@ from apex.contrib.optimizers.distributed_fused_adam import (
     _disable_pre_forward_hook,
     _multi_tensor_copy,
 )
+
+try:
+    import apex.contrib.nccl_allocator as nccl_allocator
+except ImportError:
+    nccl_allocator = None
+
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
@@ -284,8 +290,15 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
             buffer_sizes[dtypes] = max(bucket.contiguous_buffer_offset + bucket.bucket_size, buffer_sizes[dtypes])
         for dtypes, buffer_size in buffer_sizes.items():
             _, _, param_sync_dtype = dtypes
-            self._param_buffers[dtypes] = torch.zeros([buffer_size], dtype=param_sync_dtype, device=self.device)
-
+            if getattr(self, "nccl_ub", False):
+                if not nccl_allocator:
+                    raise RuntimeError("NCCL allocator importing failed but nccl ub is still requested")
+                with nccl_allocator.nccl_mem():
+                    self._param_buffers[dtypes] = torch.zeros(
+                        [buffer_size], dtype=param_sync_dtype, device=self.device
+                    )
+            else:
+                self._param_buffers[dtypes] = torch.zeros([buffer_size], dtype=param_sync_dtype, device=self.device)
         # Figure out corresponding positions in params and param buffer
         params = list(self.parameters())
         param_flat_views = []

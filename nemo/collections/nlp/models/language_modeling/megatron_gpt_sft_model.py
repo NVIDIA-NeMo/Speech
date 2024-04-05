@@ -95,7 +95,6 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
             self._nsys_profile_start_step = self.cfg.nsys_profile.get('start_step', 0)
             self._nsys_profile_end_step = self.cfg.nsys_profile.get('end_step', 0)
 
-        self._reset_activation_checkpointing_args()
         self.virtual_tokens = 0
         self.init_global_step = 0
 

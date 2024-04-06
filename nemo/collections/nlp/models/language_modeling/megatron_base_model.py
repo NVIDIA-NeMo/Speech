@@ -1155,6 +1155,7 @@ class MegatronBaseModel(NLPModel):
             "no_sync_func": None,  # set dynamically during training
             "grad_sync_func": None,  # set dynamically during training
             "param_sync_func": None,  # set dynamically during training
+            "tp_comm_overlap": self.cfg.get('ub_tp_comm_overlap', False),
         }
 
         # instantitate ModelParallelConfig from this dict

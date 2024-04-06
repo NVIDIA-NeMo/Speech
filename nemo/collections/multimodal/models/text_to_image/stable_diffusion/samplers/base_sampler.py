@@ -279,6 +279,48 @@ class AbstractBaseSampler(ABC):
                 intermediates["pred_x0"].append(pred_x0)
         return img, intermediates
 
+    def single_ddim_denoise_step(
+        self,
+        img,
+        total_steps,
+        i,
+        b,
+        device,
+        step,
+        cond,
+        ddim_use_original_steps=None,
+        quantize_denoised=None,
+        temperature=1.0,
+        noise_dropout=0.0,
+        score_corrector=None,
+        corrector_kwargs=None,
+        unconditional_guidance_scale=1.0,
+        unconditional_conditioning=None,
+    ):
+
+        index = total_steps - i - 1
+        ts = torch.full((b,), step, device=device, dtype=torch.long)
+
+        outs, eps_t = self.grad_p_sampling_fn(
+            img,
+            cond,
+            ts,
+            index=index,
+            use_original_steps=ddim_use_original_steps,
+            quantize_denoised=quantize_denoised,
+            temperature=temperature,
+            noise_dropout=noise_dropout,
+            score_corrector=score_corrector,
+            corrector_kwargs=corrector_kwargs,
+            unconditional_guidance_scale=unconditional_guidance_scale,
+            unconditional_conditioning=unconditional_conditioning,
+            old_eps=None,
+            t_next=None,
+        )
+
+        img, pred_x0 = outs[0], outs[1]
+        return img, pred_x0, eps_t
+
     def _get_model_output(
         self, x, t, unconditional_conditioning, unconditional_guidance_scale, score_corrector, c, corrector_kwargs,
     ):

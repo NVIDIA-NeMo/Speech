@@ -66,6 +66,44 @@ class DDIMSampler(AbstractBaseSampler):
         )
         return x_prev, pred_x0
 
+    def grad_p_sampling_fn(
+        self,
+        x,
+        c,
+        t,
+        index,
+        repeat_noise=False,
+        use_original_steps=False,
+        quantize_denoised=False,
+        temperature=1.0,
+        noise_dropout=0.0,
+        score_corrector=None,
+        corrector_kwargs=None,
+        unconditional_guidance_scale=1.0,
+        unconditional_conditioning=None,
+        old_eps=None,
+        t_next=None,
+    ):
+        b, *_, device = *x.shape, x.device
+        e_t, model_output = self._get_model_output(
+            x, t, unconditional_conditioning, unconditional_guidance_scale, score_corrector, c, corrector_kwargs
+        )
+        outs = self._get_x_prev_and_pred_x0(
+            use_original_steps,
+            b,
+            index,
+            device,
+            x,
+            t,
+            model_output,
+            e_t,
+            quantize_denoised,
+            repeat_noise,
+            temperature,
+            noise_dropout,
+        )
+        return outs, e_t
+
     @torch.no_grad()
     def stochastic_encode(self, x0, t, use_original_steps=False, noise=None):
         # fast, but does not allow for exact reconstruction

@@ -175,11 +175,7 @@ def main(cfg) -> None:
     # trainer required for restoring model parallel models
     trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
 
-    if (
-        cfg.tensor_model_parallel_size < 0
-        or cfg.pipeline_model_parallel_size < 0
-        or cfg.get('pipeline_model_parallel_split_rank', -1) < 0
-    ):
+    if cfg.tensor_model_parallel_size < 0 or cfg.pipeline_model_parallel_size < 0:
         model_config = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file, trainer=trainer, return_config=True,
         )
@@ -187,7 +183,6 @@ def main(cfg) -> None:
         with open_dict(cfg):
             cfg.tensor_model_parallel_size = model_config.get('tensor_model_parallel_size', 1)
             cfg.pipeline_model_parallel_size = model_config.get('pipeline_model_parallel_size', 1)
-            cfg.pipeline_model_parallel_split_rank = model_config.get('pipeline_model_parallel_split_rank', 0)
 
     if cfg.gpt_model_file:
         save_restore_connector = NLPSaveRestoreConnector()
@@ -207,7 +202,6 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_method = None
             pretrained_cfg.precision = trainer.precision
             pretrained_cfg.use_cpu_initialization = cfg.trainer.accelerator == 'cpu'
-            pretrained_cfg["apply_rope_fusion"] = False
         model = MegatronGPTModel.restore_from(
             restore_path=cfg.gpt_model_file,
             trainer=trainer,
@@ -226,14 +220,12 @@ def main(cfg) -> None:
                 app_state.pipeline_model_parallel_rank,
                 app_state.model_parallel_size,
                 app_state.data_parallel_size,
-                app_state.pipeline_model_parallel_split_rank,
                 app_state.virtual_pipeline_model_parallel_rank,
             ) = fake_initialize_model_parallel(
                 world_size=app_state.model_parallel_size,
                 rank=trainer.global_rank,
                 tensor_model_parallel_size_=cfg.tensor_model_parallel_size,
                 pipeline_model_parallel_size_=cfg.pipeline_model_parallel_size,
-                pipeline_model_parallel_split_rank_=cfg.pipeline_model_parallel_split_rank,
             )
         checkpoint_path = inject_model_parallel_rank(os.path.join(cfg.checkpoint_dir, cfg.checkpoint_name))
         model = MegatronGPTModel.load_from_checkpoint(checkpoint_path, hparams_file=cfg.hparams_file, trainer=trainer)

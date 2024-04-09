@@ -14,7 +14,8 @@
 
 import amp_C
 import torch
-from nemo.collections.nlp.modules.common.megatron.module import param_is_not_shared
+
+from nemo.utils.model_utils import param_is_not_shared
 
 try:
     from megatron.core import parallel_state
@@ -118,7 +119,7 @@ class MegatronFusedAdam(FusedAdam):
                         False,
                     )
                 else:
-                    fp32_grad_norm = torch.tensor([0.0], dtype=torch.float32, device=device)
+                    fp32_grad_norm = torch.zeros(1, dtype=torch.float32, device=device)
 
                 if fp16_grads_for_norm:
                     fp16_grad_norm, _ = multi_tensor_applier(
@@ -129,7 +130,7 @@ class MegatronFusedAdam(FusedAdam):
                         False,
                     )
                 else:
-                    fp16_grad_norm = torch.tensor([0.0], dtype=torch.float32, device=device)
+                    fp16_grad_norm = torch.zeros(1, dtype=torch.float32, device=device)
 
                 # Prep L2 norm for allreduce
                 total_norm = (fp32_grad_norm ** self.norm_type + fp16_grad_norm ** self.norm_type).squeeze()

@@ -12,6 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# CUDAGraphCallback is a full iteration CUDA graph callback designed for
+# models with PyTorch Lightning first, this has been tested with Stable
+# Diffusion right now.
+#
+# Prerequisites for this callback:
+# 1. Capturable: user has to make sure (almost) all the host & device
+#    synchronizations are removed, some of the syncs regarding logging
+#    of metrics introduced by PyTorch Lightning itself have been removed
+#    by this callback. This ensures the graph can be captured.
+# 2. Topology: user has to make sure there's no dynamic control flow
+#    within the iteration. Please use APEX alternatives for building
+#    blocks that contain dynamic control flow, e.g. gradient clipping.
+#    Otherwise the captured graph can run, but may raise silent failure,
+#    e.g. NaN loss.
+# 3. Parameters: user has to make sure pointers involved in the graph
+#    capturing range don't change across iterations. In this case users
+#    have to ensure that data is copied to static tensors. Otherwise this
+#    can also lead to silent failure.
+
 import os
 import time
 from dataclasses import dataclass
@@ -20,9 +39,11 @@ from typing import Any, Dict
 
 import pytorch_lightning as pl
 import torch
+from pytorch_lightning import LightningModule
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.loops.optimization.automatic import ClosureResult
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from pytorch_lightning.trainer.connectors.logger_connector.result import _ResultCollection, _ResultMetric
+from pytorch_lightning.utilities import CombinedLoader, rank_zero_info
 from pytorch_lightning.utilities.signature_utils import is_param_in_hook_signature
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torch.nn.parallel import DistributedDataParallel
@@ -104,6 +125,39 @@ def zero_grad(optimizer, *args, **kwargs):
         optimizer.__orig_zero_grad__(*args, **kwargs)
 
 
+def to_tensor(self, value, name):
+    # Log metrics in PyTorch Lightning often invokes CPU & GPU synchronizations. Here
+    # we implement smart metrics to avoid those synchronizations.
+    # Refer to: https://github.com/Lightning-AI/pytorch-lightning/blob/2.0.7/src/lightning/pytorch/core/module.py#L615
+    value = value.clone().detach() if isinstance(value, torch.Tensor) else torch.tensor(value)
+    if not torch.numel(value) == 1:
+        raise ValueError(
+            f"`self.log({name}, {value})` was called, but the tensor must have a single element."
+            f" You can try doing `self.log({name}, {value}.mean())`"
+        )
+    value = value.squeeze()
+    return value
+
+
+def register_key(self, key, meta, value):
+    # PyTorch Lightning creates all metrics on GPU, but creating the metric on
+    # its input device is prefered.
+    # Refer to: https://github.com/Lightning-AI/pytorch-lightning/blob/2.0.7/src/lightning/pytorch/trainer/connectors/logger_connector/result.py#L409
+    metric = _ResultMetric(meta, isinstance(value, torch.Tensor))
+    device = value.device if isinstance(value, torch.Tensor) else self.device
+    metric = metric.to(device)
+    self[key] = metric
+
+
+def update_metrics(self, key, value, batch_size):
+    # PyTorch Lightning always move all metrics to GPU, but moving the metric to
+    # its input device is prefered.
+    result_metric = self[key]
+    device = value.device if isinstance(value, torch.Tensor) else self.device
+    result_metric.forward(value.to(device), batch_size)
+    result_metric.has_reset = False
+
+
 def get_optimizer_step(state):
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None,) -> None:
         # Not all optimizer supports set_to_none.
@@ -131,7 +185,7 @@ def get_optimizer_step(state):
             # Sleep for one second to let environment stable
             time.sleep(1)
             rank_zero_info("CUDAGraphCallback: capturing CUDA graph for module %s.", self.__class__.__name__)
-            with torch.cuda.graph(state.graph, stream=state.stream):
+            with torch.cuda.graph(state.graph, stream=state.stream, capture_error_mode="global"):
                 self.__orig_optimizer_step__(
                     epoch, batch_idx, optimizer, optimizer_closure=optimizer_closure,
                 )
@@ -152,8 +206,8 @@ def get_optimizer_step(state):
 
 
 def get_training_step(state):
-    def training_step(self, batch, batch_idx):
-        results = self.__orig_training_step__(batch, batch_idx)
+    def training_step(self, batch):
+        results = self.__orig_training_step__(batch)
         if state.output is None:
             state.output = struct_copy_one(results)
 
@@ -246,7 +300,7 @@ class CUDAGraphCallback(Callback):
         if self.state.capture_iteration < 0:
             return
 
-        if is_param_in_hook_signature(pl_module, "dataloader_iter", explicit=True):
+        if is_param_in_hook_signature(pl_module.training_step, "dataloader_iter", explicit=True):
             raise Exception(
                 "Found `dataloader_iter` argument in the `training_step`. This is "
                 "not supported by full iteration CUDA graph capturing yet since "
@@ -270,13 +324,17 @@ class CUDAGraphCallback(Callback):
             return
 
         # Ensure training dataloader loads data to static buffer
-        dataloader = trainer.train_dataloader
+        dataloader = trainer.fit_loop._combined_loader._iterables
         assert isinstance(
             dataloader, torch.utils.data.dataloader.DataLoader
         ), f"Expect Dataloader type but got {type(dataloader)}"
-        trainer.train_dataloader.__orig_dataloader__ = dataloader
         static_loader = StaticBufferLoader(dataloader)
-        trainer.train_dataloader.loaders = static_loader
+        _mode = trainer.fit_loop._combined_loader._mode
+        combined_loader = CombinedLoader(static_loader, mode=_mode)
+        trainer.fit_loop.__orig_combined_loader__ = trainer.fit_loop._combined_loader
+        trainer.fit_loop._combined_loader = combined_loader
+        trainer.fit_loop._data_fetcher.setup(trainer.fit_loop._combined_loader)
+        iter(trainer.fit_loop._data_fetcher)
 
         # Warn if `optimizer.zero_grad()` invoked during graph capturing
         for optimizer in trainer.optimizers:
@@ -290,9 +348,17 @@ class CUDAGraphCallback(Callback):
         for config in trainer.lr_scheduler_configs:
             assert isinstance(
                 config.scheduler, torch.optim.lr_scheduler._LRScheduler
-            ), f"Expect _LRScheduler type but got {type(dataloader)}"
+            ), f"Expect _LRScheduler type but got {type(config.scheduler)}"
             config.scheduler.__orig_get_lr__ = config.scheduler.get_lr
             config.scheduler.get_lr = MethodType(get_lr, config.scheduler)
+
+        # Use smart metrics to avoid syncs
+        LightningModule.__orig_to_tensor__ = LightningModule._LightningModule__to_tensor
+        LightningModule._LightningModule__to_tensor = to_tensor
+        _ResultCollection.__orig_register_key__ = _ResultCollection.register_key
+        _ResultCollection.register_key = register_key
+        _ResultCollection.__orig_update_metrics__ = _ResultCollection.update_metrics
+        _ResultCollection.update_metrics = update_metrics
 
         # Save model outputs to static buffer for PL states reconstruct
         pl_module.__orig_training_step__ = pl_module.training_step
@@ -309,9 +375,10 @@ class CUDAGraphCallback(Callback):
         if self.state.capture_iteration < 0:
             return
 
-        dataloader = trainer.train_dataloader.__orig_dataloader__
-        trainer.train_dataloader.loaders = dataloader
-        del trainer.train_dataloader.__orig_dataloader__
+        trainer.fit_loop._combined_loader = trainer.fit_loop.__orig_combined_loader__
+        trainer.fit_loop._data_fetcher.setup(trainer.fit_loop._combined_loader)
+        iter(trainer.fit_loop._data_fetcher)
+        del trainer.fit_loop.__orig_combined_loader__
 
         for optimizer in trainer.optimizers:
             optimizer.zero_grad = optimizer.__orig_zero_grad__
@@ -320,6 +387,13 @@ class CUDAGraphCallback(Callback):
         for config in trainer.lr_scheduler_configs:
             config.scheduler.get_lr = config.scheduler.__orig_get_lr__
             del config.scheduler.__orig_get_lr__
+
+        LightningModule._LightningModule__to_tensor = LightningModule.__orig_to_tensor__
+        del LightningModule.__orig_to_tensor__
+        _ResultCollection.register_key = _ResultCollection.__orig_register_key__
+        del _ResultCollection.__orig_register_key__
+        _ResultCollection.update_metrics = _ResultCollection.__orig_update_metrics__
+        del _ResultCollection.__orig_update_metrics__
 
         pl_module.training_step = pl_module.__orig_training_step__
         del pl_module.__orig_training_step__

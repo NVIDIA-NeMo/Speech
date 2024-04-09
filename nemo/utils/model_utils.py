@@ -79,6 +79,10 @@ def load_config(model_file: str) -> DictConfig:
     return model_config
 
 
+def param_is_not_shared(param):
+    return not hasattr(param, 'shared') or not param.shared
+
+
 def resolve_dataset_name_from_cfg(cfg: 'DictConfig') -> Optional[str]:
     """
     Parses items of the provided sub-config to find the first potential key that

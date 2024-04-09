@@ -143,7 +143,7 @@ class TestOptimizersSchedulers:
             model.cuda()
 
         for opt_name in AVAILABLE_OPTIMIZERS.keys():
-            if opt_name == 'fused_adam':
+            if opt_name == 'fused_adam' or opt_name == 'megatron_fused_adam':
                 if not torch.cuda.is_available():
                     continue
             if opt_name == 'distributed_fused_adam':

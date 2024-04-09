@@ -53,6 +53,12 @@ from torch.distributed.fsdp.api import FullOptimStateDictConfig, ShardedOptimSta
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.nn.parallel import DistributedDataParallel
 
+try:
+    from torch.cuda.amp.grad_scaler import _refresh_per_optimizer_state
+except ImportError:
+    # since PyTorch 2.3 the path has changed
+    from torch.amp.grad_scaler import _refresh_per_optimizer_state
+
 from nemo.collections.multimodal.modules.stable_diffusion.attention import BasicTransformerBlock
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.transformer import AutocastTransformerLayer, ParallelTransformerLayer
@@ -1161,16 +1167,26 @@ class PipelineMixedPrecisionPlugin(MixedPrecisionPlugin):
 
     def __init__(
         self,
-        precision: Literal["16-mixed", "bf16-mixed"],
+        precision: Literal["16-mixed", "bf16-mixed", '16', 'bf16', 16],
         device: str,
         scaler: Optional[torch.cuda.amp.GradScaler] = None,
     ) -> None:
-        super().__init__(precision, device, scaler=scaler)
-        dtype = None
         # MixedPrecisionPlugin class in PTL >= 2.0 takes only "16-mixed" or "bf16-mixed" for precision arg
-        if precision == '16-mixed':
+        if precision in ['16-mixed', '16', 16]:
+            plugin_precision = '16-mixed'
+        elif precision in ['bf16-mixed', 'bf16']:
+            plugin_precision = 'bf16-mixed'
+        else:
+            raise RuntimeError(
+                "precision expected to be one of: "
+                "['16-mixed', '16', 16, 'bf16-mixed', 'bf16']"
+                f" but {precision} found"
+            )
+        super().__init__(plugin_precision, device, scaler=scaler)
+        dtype = None
+        if precision in ['16-mixed', '16', 16]:
             dtype = torch.float16
-        elif precision == 'bf16-mixed':
+        elif precision in ['bf16-mixed', 'bf16']:
             dtype = torch.bfloat16
 
         torch.set_autocast_gpu_dtype(dtype)
@@ -1331,7 +1347,7 @@ class GradScaler(torch.cuda.amp.GradScaler):
                     self._hysteresis_tracker = self.hysteresis
 
         # To prepare for next iteration, clear the data collected from optimizers this iteration.
-        self._per_optimizer_states = defaultdict(torch.cuda.amp.grad_scaler._refresh_per_optimizer_state)
+        self._per_optimizer_states = defaultdict(_refresh_per_optimizer_state)
 
     def state_dict(self):
         """

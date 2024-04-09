@@ -18,8 +18,8 @@ import itertools
 import torch
 from torch import inf
 
-from nemo.collections.nlp.modules.common.megatron.module import param_is_not_shared
 from nemo.utils import logging
+from nemo.utils.model_utils import param_is_not_shared
 
 try:
     import amp_C
@@ -82,7 +82,6 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
     grads_for_norm = []
     sharded_grads = []
     sharded_grads_for_norm = []
-    dummy_overflow_buf = torch.cuda.IntTensor([0])
 
     for param in parameters:
         if param.grad is not None:
@@ -110,7 +109,7 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
     # Norm parameters.
     max_norm = float(max_norm)
     norm_type = float(norm_type)
-    total_norm = 0.0
+    total_norm = torch.zeros(1, device='cuda', dtype=torch.float32).squeeze()
 
     # Calculate norm.
     if norm_type == inf:
@@ -118,23 +117,20 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
             total_norm = max(grad.abs().max() for grad in grads_for_norm)
 
         if not use_fsdp:
-            total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
             # Take max across all model-parallel GPUs.
             torch.distributed.all_reduce(
-                total_norm_cuda, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group()
+                total_norm, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group()
             )
         else:
             if len(sharded_grads_for_norm) > 0:
                 sharded_total_norm = max(grad.abs().max() for grad in sharded_grads_for_norm)
                 total_norm = max(total_norm, sharded_total_norm)
-            total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
             # Take max across both model-parallel and data-parallel GPUs.
-            torch.distributed.all_reduce(total_norm_cuda, op=torch.distributed.ReduceOp.MAX)
-
-        total_norm = total_norm_cuda[0].item()
+            torch.distributed.all_reduce(total_norm, op=torch.distributed.ReduceOp.MAX)
 
     else:
         if norm_type == 2.0:
+            dummy_overflow_buf = torch.zeros(1, device='cuda', dtype=torch.int32).squeeze()
             # Use apex's multi-tensor applier for efficiency reasons.
             # Multi-tensor applier takes a function and a list of list
             # and performs the operation on that list all in one kernel.
@@ -143,7 +139,7 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
                     amp_C.multi_tensor_l2norm, dummy_overflow_buf, [grads_for_norm], False  # no per-parameter norm
                 )
             else:
-                grad_norm = 0.0
+                grad_norm = torch.zeros(1, device='cuda', dtype=torch.float32).squeeze()
             # Since we will be summing across data parallel groups,
             # we need the pow(norm-type).
             total_norm = grad_norm ** norm_type
@@ -153,7 +149,7 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
                         amp_C.multi_tensor_l2norm, dummy_overflow_buf.fill_(0), [sharded_grads_for_norm], False
                     )
                 else:
-                    sharded_grad_norm = 0.0
+                    sharded_grad_norm = torch.zeros(1, device='cuda', dtype=torch.float32).squeeze()
                 total_sharded_norm = sharded_grad_norm ** norm_type
         else:
             for grad in grads_for_norm:
@@ -164,29 +160,25 @@ def clip_grad_norm_fp32(parameters, max_norm, norm_type=2, use_fsdp=False):
                     grad_norm = torch.norm(grad, norm_type)
                     total_sharded_norm += grad_norm ** norm_type
 
-        total_norm_cuda = torch.cuda.FloatTensor([float(total_norm)])
         if use_fsdp:
-            total_sharded_norm_cuda = torch.cuda.FloatTensor([float(total_sharded_norm)])
             # Sum norm of grad shards across data-parallel GPUs.
             torch.distributed.all_reduce(
-                total_sharded_norm_cuda,
-                op=torch.distributed.ReduceOp.SUM,
-                group=parallel_state.get_data_parallel_group(),
+                total_sharded_norm, op=torch.distributed.ReduceOp.SUM, group=parallel_state.get_data_parallel_group(),
             )
-            total_norm_cuda += total_sharded_norm_cuda
+            total_norm += total_sharded_norm.squeeze()
 
+        # Sum across all model-parallel GPUs.
         torch.distributed.all_reduce(
-            total_norm_cuda, op=torch.distributed.ReduceOp.SUM, group=parallel_state.get_model_parallel_group()
+            total_norm, op=torch.distributed.ReduceOp.SUM, group=parallel_state.get_model_parallel_group()
         )
-        total_norm = total_norm_cuda[0].item()
         total_norm = total_norm ** (1.0 / norm_type)
 
     # Scale.
     clip_coeff = max_norm / (total_norm + 1.0e-6)
-    if clip_coeff < 1.0:
-        if len(grads) > 0 or len(sharded_grads) > 0:  # (@adithyare) grads can be empty for adapter training.
-            grads += sharded_grads
-            multi_tensor_applier(amp_C.multi_tensor_scale, dummy_overflow_buf.fill_(0), [grads, grads], clip_coeff)
+    clip_coeff_clamped = torch.clamp(clip_coeff, max=1.0)
+    if len(grads) > 0 or len(sharded_grads) > 0:  # (@adithyare) grads can be empty for adapter training.
+        grads += sharded_grads
+        torch._foreach_mul_(grads, clip_coeff_clamped.squeeze())
 
     return total_norm
 

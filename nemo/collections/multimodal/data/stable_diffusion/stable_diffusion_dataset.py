@@ -36,17 +36,21 @@ class SDSyntheticDataset(NeMoDataset):
         self.W = image_W
         self.image_key = image_key
         self.txt_key = txt_key
-        assert image_key.endswith('encoded') == txt_key.endswith(
-            'encoded'
-        ), 'In precached mode, first and second stage key must both end with "encoded"'
-        self.precached = self.image_key.endswith('encoded')
+        img_precached = image_key.endswith('encoded') or image_key.endswith('moments')
+        txt_precached = txt_key.endswith('encoded')
+        assert (
+            img_precached == txt_precached
+        ), 'First and second stage keys should enable/disable precache at the same time.'
         self.seq_len = seq_len
         self.context_dim = context_dim
 
     def __getitem__(self, index):
         item = {}
-        if self.precached:
+        if self.image_key.endswith('encoded'):
             item[self.image_key] = torch.randn(8, self.H // 8, self.W // 8)
+            item[self.txt_key] = torch.randn(self.seq_len, self.context_dim)
+        elif self.image_key.endswith('moments'):
+            item[self.image_key] = torch.randn(1, 8, self.H // 8, self.W // 8)
             item[self.txt_key] = torch.randn(self.seq_len, self.context_dim)
         else:
             item[self.image_key] = torch.randn(self.H, self.W, 3)
@@ -174,7 +178,7 @@ def build_train_valid_precached_datasets(
     if data_cfg.get("validation") is not None and data_cfg.validation.get("data_path"):
         if data_cfg.get('synthetic_data', False):
             H, W = data_cfg.train.augmentations.center_crop_h_w.split(',')
-            train_data = SDSyntheticDataset(
+            val_data = SDSyntheticDataset(
                 int(H),
                 int(W),
                 image_key=model_cfg.first_stage_key,
@@ -212,23 +216,45 @@ def build_train_valid_precached_clip_datasets(model_cfg, consumed_samples):
         # latents are of shape ([4, 64, 64])
         return latents, text_embed
 
-    train_data = WebDatasetCommon(
-        dataset_cfg=data_cfg,
-        consumed_samples=consumed_samples,
-        map_fn=transform_fn,
-        compose_fn=tuple_to_dict,
-        is_train=True,
-    )
-
-    val_data = None
-    if data_cfg.get("validation") is not None and data_cfg.validation.get("data_path"):
-        val_data = WebDatasetCommon(
+    if data_cfg.get('synthetic_data', False):
+        H, W = data_cfg.train.augmentations.center_crop_h_w.split(',')
+        train_data = SDSyntheticDataset(
+            int(H),
+            int(W),
+            image_key=model_cfg.first_stage_key,
+            txt_key=model_cfg.cond_stage_key,
+            context_dim=model_cfg.unet_config.context_dim,
+            seq_len=77,
+        )
+    else:
+        train_data = WebDatasetCommon(
             dataset_cfg=data_cfg,
             consumed_samples=consumed_samples,
             map_fn=transform_fn,
             compose_fn=tuple_to_dict,
-            is_train=False,
+            is_train=True,
         )
+
+    val_data = None
+    if data_cfg.get("validation") is not None and data_cfg.validation.get("data_path"):
+        if data_cfg.get('synthetic_data', False):
+            H, W = data_cfg.train.augmentations.center_crop_h_w.split(',')
+            val_data = SDSyntheticDataset(
+                int(H),
+                int(W),
+                image_key=model_cfg.first_stage_key,
+                txt_key=model_cfg.cond_stage_key,
+                context_dim=model_cfg.unet_config.context_dim,
+                seq_len=77,
+            )
+        else:
+            val_data = WebDatasetCommon(
+                dataset_cfg=data_cfg,
+                consumed_samples=consumed_samples,
+                map_fn=transform_fn,
+                compose_fn=tuple_to_dict,
+                is_train=False,
+            )
 
     return train_data, val_data
 

@@ -38,10 +38,6 @@ _HALF_TYPES = (torch.HalfTensor, torch.cuda.HalfTensor)
 _BF16_TYPES = (torch.BFloat16Tensor, torch.cuda.BFloat16Tensor)
 
 
-def param_is_not_shared(param):
-    return not hasattr(param, 'shared') or not param.shared
-
-
 class MegatronModule(torch.nn.Module):
     """Megatron specific extensions of torch Module with support
     for pipelining."""

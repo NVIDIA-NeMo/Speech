@@ -23,6 +23,7 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.utils.callbacks import CUDAGraphCallback
 from nemo.utils.exp_manager import exp_manager
 
 
@@ -56,11 +57,40 @@ def main(cfg) -> None:
 
     torch.backends.cuda.matmul.allow_tf32 = True
 
-    trainer = MegatronStableDiffusionTrainerBuilder(cfg).create_trainer()
+    callbacks = (
+        None
+        if cfg.model.capture_cudagraph_iters < 0
+        else [CUDAGraphCallback(capture_iteration=cfg.model.capture_cudagraph_iters)]
+    )
+    trainer = MegatronStableDiffusionTrainerBuilder(cfg).create_trainer(callbacks)
 
     exp_manager(trainer, cfg.exp_manager)
 
     model = MegatronLatentDiffusion(cfg.model, trainer)
+
+    if cfg.model.capture_cudagraph_iters >= 0:
+        # Warmup the model with random data
+        with torch.cuda.stream(torch.cuda.Stream()):
+            n, c, h = cfg.model.micro_batch_size, cfg.model.channels, cfg.model.image_size
+            x = torch.randn((n, c, h, h), dtype=torch.float32, device="cuda")
+            t = torch.randint(77, (n,), device="cuda")
+            cc = torch.randn((n, 77, cfg.model.unet_config.context_dim), dtype=torch.float32, device="cuda",)
+            if cfg.model.precision in [16, '16']:
+                x = x.type(torch.float16)
+                cc = cc.type(torch.float16)
+                autocast_enabled = False
+                dgrad_dtype = torch.float16
+            else:
+                autocast_enabled = True
+                dgrad_dtype = torch.float16
+
+            model = model.cuda()
+            for _ in range(5):
+                with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=torch.float16):
+                    out = model.model.model.diffusion_model(x, t, context=cc)
+                grad = torch.randn_like(out, dtype=dgrad_dtype)
+                out.backward(grad)
+                model.zero_grad()
 
     if cfg.model.get('peft', None):
 

@@ -366,17 +366,25 @@ def get_params_for_weight_decay_optimization(
     is_expert = lambda param: not getattr(param, 'allreduce', True)
     # Do the actual param classification
     for module in modules:
-        for name, param in module.named_parameters():
-            if param is None:
-                continue
-            if name.endswith('.bias'):
-                no_weight_decay_params['params'].extend([param])
+        for module_ in module.modules():
+            if isinstance(module_, (FusedLayerNorm, FastLayerNorm, MixedFusedRMSNorm)):
+                no_weight_decay_params['params'].extend(
+                    list(filter(lambda p: p is not None, module_._parameters.values()))
+                )
             else:
-                if is_expert(param):
-                    weight_decay_expert_params['params'].extend([param])
-                else:
-                    weight_decay_params['params'].extend([param])
-    return weight_decay_params, weight_decay_expert_params, no_weight_decay_params
+                for name, param in module_._parameters.items():
+                    if param is None:
+                        continue
+                    if name.endswith('bias'):
+                        no_weight_decay_params['params'].extend([param])
+                    else:
+                        if is_expert(param):
+                            weight_decay_expert_params['params'].extend([param])
+                        else:
+                            weight_decay_params['params'].extend([param])
+
+    param_groups = [weight_decay_params, weight_decay_expert_params, no_weight_decay_params]
+    return tuple(filter(lambda g: len(g['params']) > 0, param_groups))
 
 
 def get_all_params_for_weight_decay_optimization(
@@ -394,7 +402,8 @@ def get_all_params_for_weight_decay_optimization(
         weight_decay_params['params'] += list(filter(lambda x: not is_expert(x), module.parameters()))
         weight_decay_expert_params['params'] += list(filter(is_expert, module.parameters()))
 
-    return weight_decay_params, weight_decay_expert_params
+    param_groups = [weight_decay_params, weight_decay_expert_params]
+    return tuple(filter(lambda g: len(g['params']) > 0, param_groups))
 
 
 def get_iterator_k_split(batch: List[torch.Tensor], num_microbatches: int) -> Iterator:

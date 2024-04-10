@@ -768,33 +768,6 @@ class MegatronBaseModel(NLPModel):
             optim_dtype = str_to_dtype(get_config_arg('dtype', torch.float32))
             optim_kwargs['dtype'] = optim_dtype
 
-            # Make sure embedding grad reductions are in FP32
-            if optim_dtype == torch.float32:
-                fp32_params = []
-                modules = self.get_model_module_list()
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
-                    if self.mcore_gpt:
-                        fp32_params.append(modules[0].shared_embedding_or_output_weight())
-                        if modules[0].embedding.add_position_embedding:
-                            fp32_params.append(modules[0].embedding.position_embeddings.weight)
-                    else:
-                        fp32_params.append(modules[0].word_embeddings_weight())
-                        fp32_params.append(modules[0].position_embeddings_weight())
-                if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
-                    share_embeddings_and_output_weights = (
-                        modules[-1].share_embeddings_and_output_weights
-                        if self.mcore_gpt
-                        else modules[-1].share_token_embeddings
-                    )
-                    if share_embeddings_and_output_weights:
-                        if self.mcore_gpt:
-                            fp32_params.append(modules[-1].shared_embedding_or_output_weight())
-                        else:
-                            fp32_params.append(modules[-1].word_embeddings_weight())
-                for param in fp32_params:
-                    if param is not None:
-                        param._with_fp32_optimizer = True
-
             # Match param allgather with model dtype
             model_dtype = torch.float32
             if self.megatron_amp_O2 and hasattr(self, 'autocast_dtype'):

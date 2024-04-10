@@ -189,6 +189,11 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 param._disable_greedy_grad_copy = not self.megatron_amp_O2
                 param._disable_overlap_grad_sync = True
 
+            # Make sure embedding grads are reduced in FP32
+            for name, param in self.named_parameters():
+                if 'word_embedding' in name or 'position_embedding' in name or 'output_layer' in name:
+                    param._with_fp32_optimizer = True
+
         return super().configure_optimizers()
 
     def _handle_bias_activation_fusion_args(self, cfg):

@@ -102,9 +102,6 @@ try:
     from megatron.core.transformer.transformer_config import TransformerConfig
     from megatron.core.utils import drain_embedding_wgrad_compute, init_method_normal, scaled_init_method_normal
 
-    # TODO @tmoon: Use once available in Megatron-LM
-    # from megatron.core.pipeline_parallel.schedules import DataIteratorList
-
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
@@ -494,36 +491,45 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         if self.with_distributed_adam:
 
-            # Disable overlapped grad sync for embedding grad when
-            # pipeline parallelism is enabled
-            if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-                modules = self.get_model_module_list()
-                if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
-                    if len(modules) > 1:
-                        module = modules[0]  # only the first virtual rank has the embeddings
-                    else:
-                        module = modules[0]
-                    if self.cfg.get('share_embeddings_and_output_weights', True):
-                        param = (
-                            module.shared_embedding_or_output_weight()
-                            if self.mcore_gpt
-                            else module.word_embeddings_weight()
-                        )
-                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
-                        param._disable_overlap_grad_sync = True
-                if parallel_state.is_pipeline_last_stage(ignore_virtual=True):
-                    if len(modules) > 1:
-                        module = modules[-1]  # only the last virtual rank has the embeddings
-                    else:
-                        module = modules[0]
-                    if self.cfg.get('share_embeddings_and_output_weights', True):
-                        param = (
-                            module.shared_embedding_or_output_weight()
-                            if self.mcore_gpt
-                            else module.word_embeddings_weight()
-                        )
-                        param._disable_greedy_grad_copy = not self.megatron_amp_O2
-                        param._disable_overlap_grad_sync = True
+            # Special handling for embedding grads
+            modules = self.get_model_module_list()
+            if parallel_state.is_pipeline_first_stage(ignore_virtual=True):
+                module = modules[0]  # first virtual rank has the embeddings
+
+                # Word embeddings: use FP32 grads and disable
+                # overlapped grad sync with pipeline parallelism
+                word_embeddings = (
+                    module.shared_embedding_or_output_weight() if self.mcore_gpt else module.word_embeddings_weight()
+                )
+                word_embeddings._with_fp32_optimizer = True
+                if parallel_state.get_pipeline_model_parallel_world_size() > 1 and self.cfg.get(
+                    'share_embeddings_and_output_weights', True
+                ):
+                    word_embeddings._disable_greedy_grad_copy = not self.megatron_amp_O2
+                    word_embeddings._disable_overlap_grad_sync = True
+
+                # Position embeddings: use FP32 grads
+                position_embeddings = None
+                if self.mcore_gpt:
+                    if module.embedding.add_position_embedding:
+                        position_embeddings = module.embedding.position_embeddings.weight
+                else:
+                    position_embeddings = module.position_embeddings_weight()
+                if position_embeddings is not None:
+                    position_embeddings._with_fp32_optimizer = True
+
+            # Handle case where embeddings are used in output layer
+            if parallel_state.is_pipeline_last_stage(ignore_virtual=True) and self.cfg.get(
+                'share_embeddings_and_output_weights', True
+            ):
+                module = modules[-1]  # last virtual rank has the embeddings
+                word_embeddings = (
+                    module.shared_embedding_or_output_weight() if self.mcore_gpt else module.word_embeddings_weight()
+                )
+                word_embeddings._with_fp32_optimizer = True
+                if parallel_state.get_pipeline_model_parallel_world_size() > 1:
+                    word_embeddings._disable_greedy_grad_copy = not self.megatron_amp_O2
+                    word_embeddings._disable_overlap_grad_sync = True
 
             # Disable overlapped grad sync for layer norm grads when
             # sequence parallelism is enabled

@@ -31,6 +31,7 @@ from omegaconf import OmegaConf
 from transformers import AutoModel
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
+from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import logging
 
 
@@ -238,6 +239,8 @@ def convert(args):
             nemo_state_dict['model.language_model.embedding.word_embeddings.weight'] = padded_embedding
 
     model.load_state_dict(nemo_state_dict, strict=True)
+    dtype = torch_dtype_from_precision(args.precision)
+    model = model.to(dtype=dtype)
     model.save_to(args.output_path)
     logging.info(f'NeMo model saved to: {args.output_path}')
 

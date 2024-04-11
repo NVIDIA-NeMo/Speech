@@ -187,6 +187,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
                 bias=False,
                 gather_output=True,
                 init_method=self._get_init_fn(column_init_method),
+                disable_grad_reduce=self._sequence_parallel,
             )
         if gather_output:
             self.linear_out = RowParallelLinear(

@@ -36,7 +36,7 @@
 .. _main-readme:
 
 **NVIDIA NeMo Framework**
-===============
+=========================
 
 Latest News
 -----------

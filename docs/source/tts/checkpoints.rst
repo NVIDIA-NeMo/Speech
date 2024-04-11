@@ -152,3 +152,10 @@ End2End models
    :file: data/ngc_models_e2e.csv
    :align: left
    :header-rows: 1
+
+Codec models
+^^^^^^^^^^^^
+.. csv-table::
+   :file: data/ngc_models_codec.csv
+   :align: left
+   :header-rows: 1

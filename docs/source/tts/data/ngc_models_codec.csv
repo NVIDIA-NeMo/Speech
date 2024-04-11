@@ -1,0 +1,2 @@
+Model Name,Dataset,Sampling Rate,Model Class,Overview,Checkpoint
+audio_codec_16khz_small,Libri-Light,16000Hz,nemo.collections.tts.models.AudioCodecModel,`audio_codec_16khz_small <https://ngc.nvidia.com/catalog/models/nvidia:nemo:audio_codec_16khz_small>`_,``https://api.ngc.nvidia.com/v2/models/nvidia/nemo/audio_codec_16khz_small/versions/v1/files/audio_codec_16khz_small.nemo``

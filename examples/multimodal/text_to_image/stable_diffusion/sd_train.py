@@ -83,7 +83,8 @@ def main(cfg) -> None:
             else:
                 autocast_enabled = True
                 dgrad_dtype = torch.float16
-
+            # akoumparouli: temp fix.
+            autocast_enabled = True
             model = model.cuda()
             for _ in range(5):
                 with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=torch.float16):

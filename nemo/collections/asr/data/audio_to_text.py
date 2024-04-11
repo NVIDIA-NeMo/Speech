@@ -16,6 +16,7 @@ import json
 import math
 import multiprocessing
 import os
+from collections.abc import Iterable as IterableABC
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 import braceexpand
@@ -472,6 +473,12 @@ class _AudioTextDataset(Dataset):
         return self.manifest_processor.collection[sample_id]
 
     def __getitem__(self, index):
+        if isinstance(index, IterableABC):
+            return [self._process_sample(_index) for _index in index]
+        else:
+            return self._process_sample(index)
+
+    def _process_sample(self, index):
         sample = self.manifest_processor.collection[index]
         offset = sample.offset
 

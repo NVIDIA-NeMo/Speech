@@ -31,7 +31,7 @@ jobs:
         nvidia-smi
 
   cicd-cluster-clean:
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-cpu
     steps:
     - name: Clean server from old files
       run: |
@@ -53,7 +53,7 @@ jobs:
 
   cicd-test-container-setup:
     needs: [cicd-cluster-clean]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-cpu
     # uses: actions/cache@v2
     #container:
 #      image: nvcr.io/nvidia/pytorch:24.01-py3
@@ -196,7 +196,7 @@ jobs:
 
   L0_Unit_Tests_CPU:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-cpu
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 

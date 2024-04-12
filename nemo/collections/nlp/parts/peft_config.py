@@ -184,6 +184,7 @@ class LoraPEFTConfig(PEFTConfig):
             "dropout": lora_cfg.adapter_dropout,
             "alpha": lora_cfg.get("alpha", lora_cfg.adapter_dim),
             "dropout_position": lora_cfg.get("dropout_position", "post"),
+            "a2a_experimental": lora_cfg.get("a2a_experimental", False),
         }
 
         if lora_cfg.weight_tying:

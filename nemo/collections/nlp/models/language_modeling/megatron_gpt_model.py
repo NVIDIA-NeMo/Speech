@@ -365,6 +365,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.log_train_loss = bool(int(os.getenv("NEMO_LOG_TRAIN_LOSS", 1)))
         self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
         self.loss_broadcast_src_rank = None
+        self.validation_param_sync_overlap = self.cfg.get('validation_param_sync_overlap', False)
 
         self.inference_params = None
 
@@ -585,10 +586,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         no_sync_func = None
         grad_sync_func = None
         param_sync_func = None
-        if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
-            grad_sync_func = self.reduce_overlap_gradients
-            param_sync_func = self.sync_overlap_parameters
+        if self.with_distributed_adam:
+            if forward_only:
+                if self.validation_param_sync_overlap:
+                    param_sync_func = self.sync_overlap_parameters
+            else:
+                no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+                grad_sync_func = self.reduce_overlap_gradients
+                param_sync_func = self.sync_overlap_parameters
 
         # pipeline schedules will get these from self.model.config
         for module in self.get_model_module_list():
@@ -1702,6 +1707,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                     self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
                 parallel_state.set_virtual_pipeline_model_parallel_rank(0)
+
+    def on_validation_model_zero_grad(self) -> None:
+        """
+         Skip gradient zeroing at the beginning of validation routine.
+         This is needed when overlapping the AllGather of the updated parameters with the following valdation step.
+         """
+        if not self.validation_param_sync_overlap:
+            super().on_validation_model_zero_grad()
 
     def sharded_state_dict(self, prefix: str = '') -> Dict[str, Any]:
         """

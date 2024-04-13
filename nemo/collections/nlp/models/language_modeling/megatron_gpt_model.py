@@ -1741,7 +1741,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     x = LocalNonpersitentObject(x.data)  # use the FP8 state from initialization, not from ckpt
                 return x
 
-            if self.cfg.get('fp8_dot_product_attention', False) or self.cfg.get('fp8_multi_head_attention', False):
+            if self.cfg.get('skip_fp8_attention_checkpoint_load', True):
                 dict_list_map_inplace(skip_fp8_load, sharded_state_dict)
 
             return sharded_state_dict

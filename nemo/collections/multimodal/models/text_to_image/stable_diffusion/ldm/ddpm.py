@@ -1770,12 +1770,7 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
             # we can avoid this broadcast by updating the PTL log function to accept specific ranks
             if parallel_state.get_pipeline_model_parallel_world_size() > 1:
                 if self.loss_broadcast_src_rank is None:
-                    dp_size = parallel_state.get_data_parallel_world_size()
-                    tp_size = parallel_state.get_tensor_model_parallel_world_size()
-                    pp_size = parallel_state.get_pipeline_model_parallel_world_size()
-                    rank_in_dp_tp_group = torch.distributed.get_rank() % (dp_size * tp_size)
-                    last_pipeline_stage_offset = (tp_size * dp_size) * (pp_size - 1)
-                    self.loss_broadcast_src_rank = last_pipeline_stage_offset + rank_in_dp_tp_group
+                    self.loss_broadcast_src_rank = parallel_state.get_pipeline_model_parallel_last_rank()
                 torch.distributed.broadcast(
                     loss_mean, self.loss_broadcast_src_rank, group=parallel_state.get_pipeline_model_parallel_group(),
                 )

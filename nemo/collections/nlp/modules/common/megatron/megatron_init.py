@@ -32,6 +32,7 @@ except (ImportError, ModuleNotFoundError):
 try:
     from megatron.core import tensor_parallel
     from megatron.core.parallel_state import (
+        RankGenerator,
         get_pipeline_model_parallel_rank,
         set_expert_model_parallel_rank,
         set_expert_model_parallel_world_size,
@@ -74,6 +75,7 @@ def initialize_model_parallel_for_nemo(
     init_mpi_proc_group=False,
     seed=1234,
     apex_transformer_log_level=30,
+    use_tp_pp_dp_mapping=False,
 ):
 
     if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
@@ -84,6 +86,7 @@ def initialize_model_parallel_for_nemo(
     app_state.global_rank = global_rank
     app_state.world_size = world_size
     app_state.local_rank = local_rank
+    app_state.use_tp_pp_dp_mapping = use_tp_pp_dp_mapping
     app_state.expert_model_parallel_size = expert_model_parallel_size
     app_state.tensor_model_parallel_size = tensor_model_parallel_size
     app_state.pipeline_model_parallel_size = pipeline_model_parallel_size
@@ -108,6 +111,7 @@ def initialize_model_parallel_for_nemo(
         pipeline_model_parallel_split_rank_=pipeline_model_parallel_split_rank,
         context_parallel_size_=context_parallel_size,
         expert_model_parallel_size_=expert_model_parallel_size,
+        use_tp_pp_dp_mapping=use_tp_pp_dp_mapping,
     )
 
     # update apex.transformer globals
@@ -192,6 +196,7 @@ def fake_initialize_model_parallel(
     virtual_pipeline_model_parallel_size_=None,
     expert_model_parallel_size_=1,
     context_parallel_size_=1,
+    use_tp_pp_dp_mapping=False,
 ):
     """
     Fake initialize model data parallel groups so that we can instantiate model parallel models before DDP is initialized.
@@ -241,24 +246,29 @@ def fake_initialize_model_parallel(
     if virtual_pipeline_model_parallel_size_ is not None:
         virtual_pipeline_model_parallel_rank = 0
 
+    rank_generator = RankGenerator(
+        tp=tensor_model_parallel_size,
+        ep=expert_model_parallel_size_,
+        dp=data_parallel_size,
+        pp=pipeline_model_parallel_size,
+        cp=context_parallel_size,
+        order='tp-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+    )
+
     # Build the data-parallel groups.
     all_data_parallel_group_ranks_with_cp = []
-    for i in range(pipeline_model_parallel_size):
-        start_rank = i * num_pipeline_model_parallel_groups
-        end_rank = (i + 1) * num_pipeline_model_parallel_groups
-        for j in range(context_parallel_size * tensor_model_parallel_size):
-            ranks = range(start_rank + j, end_rank, context_parallel_size * tensor_model_parallel_size)
-            if rank in ranks:
-                data_parallel_group = list(ranks)
-                logging.info(f'Rank {rank} has data parallel group : {data_parallel_group}')
-        for j in range(tensor_model_parallel_size):
-            ranks_with_cp = range(start_rank + j, end_rank, tensor_model_parallel_size)
-            all_data_parallel_group_ranks_with_cp.append(list(ranks_with_cp))
-            if rank in ranks_with_cp:
-                data_parallel_group_with_cp = list(ranks_with_cp)
-                logging.info(
-                    f'Rank {rank} has combined group of data parallel and context parallel : {data_parallel_group_with_cp}'
-                )
+    for ranks in rank_generator.get_ranks('dp'):
+        if rank in ranks:
+            data_parallel_group = list(ranks)
+            logging.info(f'Rank {rank} has data parallel group : {data_parallel_group}')
+
+    for ranks_with_cp in rank_generator.get_ranks('dp-cp'):
+        all_data_parallel_group_ranks_with_cp.append(ranks_with_cp)
+        if rank in ranks_with_cp:
+            data_parallel_group_with_cp = ranks_with_cp
+            logging.info(
+                f'Rank {rank} has combined group of data parallel and context parallel : {data_parallel_group_with_cp}'
+            )
 
     data_parallel_rank = data_parallel_group.index(rank)
     logging.info(
@@ -268,20 +278,11 @@ def fake_initialize_model_parallel(
 
     # Build the context-parallel groups.
     all_context_parallel_group_ranks = []
-    for i in range(pipeline_model_parallel_size):
-        for j in range(data_parallel_size):
-            start_rank = (
-                i * num_pipeline_model_parallel_groups + j * tensor_model_parallel_size * context_parallel_size
-            )
-            end_rank = (
-                i * num_pipeline_model_parallel_groups + (j + 1) * tensor_model_parallel_size * context_parallel_size
-            )
-            for k in range(tensor_model_parallel_size):
-                ranks = range(start_rank + k, end_rank, tensor_model_parallel_size)
-                all_context_parallel_group_ranks.append(list(ranks))
-                if rank in ranks:
-                    context_parallel_group = list(ranks)
-                    logging.info(f'Rank {rank} has context parallel group: {context_parallel_group}')
+    for ranks in rank_generator.get_ranks('cp'):
+        all_context_parallel_group_ranks.append(ranks)
+        if rank in ranks:
+            context_parallel_group = ranks
+            logging.info(f'Rank {rank} has context parallel group: {context_parallel_group}')
 
     context_parallel_rank = context_parallel_group.index(rank)
     logging.info(f'All context parallel group ranks: {all_context_parallel_group_ranks}')
@@ -289,11 +290,7 @@ def fake_initialize_model_parallel(
 
     # Build the model-parallel groups.
     all_model_parallel_group_ranks = []
-    for i in range(data_parallel_size * context_parallel_size):
-        ranks = [
-            data_parallel_group_ranks_with_cp[i]
-            for data_parallel_group_ranks_with_cp in all_data_parallel_group_ranks_with_cp
-        ]
+    for ranks in rank_generator.get_ranks('tp-pp'):
         all_model_parallel_group_ranks.append(ranks)
         if rank in ranks:
             logging.info(f'Rank {rank} has model parallel group: {list(ranks)}')
@@ -302,11 +299,10 @@ def fake_initialize_model_parallel(
     # Build the tensor model-parallel groups.
     all_tensor_model_parallel_group_ranks = []
     tensor_model_parallel_group = None
-    for i in range(num_tensor_model_parallel_groups):
-        ranks = range(i * tensor_model_parallel_size, (i + 1) * tensor_model_parallel_size)
-        all_tensor_model_parallel_group_ranks.append(list(ranks))
+    for ranks in rank_generator.get_ranks('tp'):
+        all_tensor_model_parallel_group_ranks.append(ranks)
         if rank in ranks:
-            tensor_model_parallel_group = list(ranks)
+            tensor_model_parallel_group = ranks
             logging.info(f'Rank {rank} has tensor model parallel group: {tensor_model_parallel_group}')
 
     tensor_model_parallel_rank = tensor_model_parallel_group.index(rank)
@@ -317,17 +313,9 @@ def fake_initialize_model_parallel(
     # EP rank
     expert_model_parallel_rank = 0
     if expert_model_parallel_size_ is not None and expert_model_parallel_size_ > 1:
-        tensor_and_data_group_size: int = tensor_model_parallel_size * data_parallel_size
-        num_tensor_and_data_groups: int = world_size // tensor_and_data_group_size
-        tensor_and_expert_group_size: int = tensor_model_parallel_size * expert_model_parallel_size_
-        num_expert_groups: int = data_parallel_size // expert_model_parallel_size_
-        for i in range(num_tensor_and_data_groups):
-            for j in range(num_expert_groups):
-                start_rank = i * tensor_and_data_group_size + j * tensor_and_expert_group_size
-                end_rank = i * tensor_and_data_group_size + (j + 1) * tensor_and_expert_group_size
-                ranks = range(start_rank, end_rank)
-                if rank in ranks:
-                    expert_model_parallel_rank = list(ranks).index(rank) // tensor_model_parallel_size
+        for ranks in rank_generator.get_ranks('ep', independent_ep=True):
+            if rank in ranks:
+                expert_model_parallel_rank = list(ranks).index(rank) // tensor_model_parallel_size
 
     # Build the pipeline model-parallel groups and embedding groups
     # (first and last rank in each pipeline model-parallel group).
@@ -336,11 +324,10 @@ def fake_initialize_model_parallel(
     pipeline_model_parallel_group = None
     embedding_group = None
     embedding_rank = None
-    for i in range(num_pipeline_model_parallel_groups):
-        ranks = range(i, world_size, num_pipeline_model_parallel_groups)
-        all_pipeline_model_parallel_group_ranks.append(list(ranks))
+    for ranks in rank_generator.get_ranks('pp'):
+        all_pipeline_model_parallel_group_ranks.append(ranks)
         if rank in ranks:
-            pipeline_model_parallel_group = list(ranks)
+            pipeline_model_parallel_group = ranks
             logging.info(f'Rank {rank} has pipeline model parallel group: {pipeline_model_parallel_group}')
 
         # Setup embedding group (to exchange gradients between

@@ -137,6 +137,7 @@ def init_model_parallel(sharp: bool, nccl_communicator_config_path: str = None) 
                 nccl_communicator_config_path=nccl_communicator_config_path,
                 use_sharp=sharp,
                 expert_model_parallel_size=app_state.expert_model_parallel_size,
+                order='tp-pp-dp' if app_state.use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
             )
 
             # assert that fake tp and pp rank match after model parallel init

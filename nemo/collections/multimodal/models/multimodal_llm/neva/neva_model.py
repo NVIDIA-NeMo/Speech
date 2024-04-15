@@ -387,9 +387,6 @@ class MCoreNevaModel(MCoreGPTModel, NevaBaseModel):
     def freeze_llm(self, mm_cfg):
         for param in chain(self.embedding.parameters(), self.decoder.parameters(), self.output_layer.parameters(),):
             param.requires_grad = False
-        self.embedding = self.embedding.eval()
-        self.decoder = self.decoder.eval()
-        self.output_layer = self.output_layer.eval()
 
     def forward(
         self, *args, **kwargs,

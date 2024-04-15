@@ -782,7 +782,7 @@ class DataCollatorForSupervisedDataset(object):
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         max_len = max(instance['tokens'].shape[0] for instance in instances)
-        max_len = (max_len - 1) // 4 * 4 + 4
+        max_len = (max_len - 1) // 64 * 64 + 64
         for instance in instances:
             pad_len = max_len - instance['tokens'].shape[0]
             instance['tokens'] = F.pad(instance['tokens'], (0, pad_len), 'constant', 0)

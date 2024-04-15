@@ -194,7 +194,7 @@ def convert(args):
     nemo_config.precision = precision
     logging.info(f"nemo_config: {nemo_config}")
 
-    trainer = Trainer(plugins=plugins, accelerator='cpu', precision=precision, strategy=NLPDDPStrategy())
+    trainer = Trainer(plugins=plugins, accelerator='cpu', strategy=NLPDDPStrategy())
 
     hidden_size = nemo_config.hidden_size
     head_num = nemo_config.num_attention_heads

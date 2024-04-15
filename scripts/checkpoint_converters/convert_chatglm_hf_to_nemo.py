@@ -142,7 +142,7 @@ def convert(args):
 
     nemo_config.precision = precision
 
-    trainer = Trainer(plugins=plugins, accelerator='cpu', precision=precision, strategy=NLPDDPStrategy())
+    trainer = Trainer(plugins=plugins, accelerator='cpu', strategy=NLPDDPStrategy())
 
     hidden_size = hf_config["hidden_size"]
     head_num = hf_config["num_attention_heads"]

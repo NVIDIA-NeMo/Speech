@@ -28,7 +28,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.indexed_retrieval_data
     MMapRetrievalIndexedDatasetBuilder,
     merge_knn_files,
 )
-from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset import RETRODataset
+from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset_legacy import RETRODataset
 
 try:
     from megatron.core import parallel_state

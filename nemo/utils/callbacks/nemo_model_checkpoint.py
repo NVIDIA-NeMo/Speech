@@ -357,12 +357,15 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             barrier_before: Synchronize ranks before removing the marker file.
               Defaults to False.
         """
-        if barrier_before and torch.distributed.is_initialized():
-            torch.distributed.barrier()
-        if is_global_rank_zero():
-            marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(checkpoint_path)
-            if marker_path.exists():
-                marker_path.unlink()
+        try:
+            if barrier_before and torch.distributed.is_initialized():
+                torch.distributed.barrier()
+            if is_global_rank_zero():
+                marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(checkpoint_path)
+                if marker_path.exists():
+                    marker_path.unlink()
+        except:
+            return
 
     def _save_checkpoint(self, trainer: 'pytorch_lightning.Trainer', filepath: str) -> None:
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.

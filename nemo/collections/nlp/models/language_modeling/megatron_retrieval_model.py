@@ -23,7 +23,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
     MegatronPretrainingRandomSampler,
     MegatronPretrainingSampler,
 )
-from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset import (
+from nemo.collections.nlp.data.language_modeling.megatron.retro_dataset_legacy import (
     build_mock_train_valid_test_datasets,
     build_train_valid_test_datasets,
 )

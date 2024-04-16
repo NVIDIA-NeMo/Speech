@@ -114,6 +114,7 @@ def get_tokenizer(
         tokenizer_name = get_megatron_tokenizer(tokenizer_name)
 
     if tokenizer_name == 'sentencepiece':
+        logging.info("tokenizer_model: " + str(tokenizer_model))
         return nemo.collections.common.tokenizers.sentencepiece_tokenizer.SentencePieceTokenizer(
             model_path=tokenizer_model, special_tokens=special_tokens, legacy=True
         )
@@ -195,6 +196,14 @@ def get_nmt_tokenizer(
         logging.info(f'Using regex tokenization')
         return RegExTokenizer().load_tokenizer(regex_file=tokenizer_model, vocab_file=vocab_file)
     elif library == 'megatron':
+
+        if model_name == 'GPTSentencePieceTokenizer':
+            logging.info("tokenizer_model: ")
+            logging.info(tokenizer_model)
+            return nemo.collections.common.tokenizers.sentencepiece_tokenizer.SentencePieceTokenizer(
+                model_path=tokenizer_model, legacy=legacy
+            )
+
         if model_name in megatron_tokenizer_model_map:
             model_name = megatron_tokenizer_model_map[model_name]
         logging.info(

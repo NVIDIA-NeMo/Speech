@@ -1,0 +1,127 @@
+defaults:
+  - .@model: megatron_model_base_config
+
+name: test_retro
+restore_from_path: null # used when starting from a .nemo file
+
+trainer:
+  devices: 2
+  num_nodes: 1
+  accelerator: gpu
+  precision: 16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: -1 # PTL default. In practice we don't usually train for more than 1 epoch.
+  max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10
+  val_check_interval: 100
+  limit_val_batches: null
+  limit_test_batches: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+
+exp_manager:
+  explicit_log_dir: null
+  exp_dir: null
+  name: megatron_retro
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: val_loss
+    save_top_k: 10
+    mode: min
+    always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
+    filename: 'megatron_retro--{val_loss:.2f}-{step}-{consumed_samples}'
+    model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
+
+
+model:
+  version: 1 # indicate the retro model version
+
+  # model parallelism 
+  micro_batch_size: 4
+  tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1 # has to be one. not supporting pipeline parallel yet
+
+  # model architecture
+  encoder_seq_length: 2048
+  max_position_embeddings: ${.encoder_seq_length}
+
+  gradient_as_bucket_view: True # Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+
+  dump_debug_info: False # dump out the debug information
+  dump_debug_info_to_file: False # dump out the debug information to files
+
+  # retro architecture
+  chunk_size: 64   # the chunk size used to retrive
+  enc_num_layers: 4    # total number of encoder layers
+  dec_num_layers: 6    # total number of decoder layers
+  enc_cross_attention: [3]    # layer numbers for cross attention in encoder
+  dec_cross_attention: [3, 5]    # layer numbers for chunked cross attention in decoder
+  add_position_embedding: False   # whether use the absolute position encoding
+
+  make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
+  pre_process: True # add embedding
+  post_process: True # add pooler
+  bert_binary_head: True # BERT binary head
+
+  megatron_amp_O2: False # use AMP with O2 style mixed precision instead of native amp on-the-fly weight autocasting.
+  grad_allreduce_chunk_size_mb: 125
+
+  megatron_lm_compatible: False # a flag to indicate whether the model is compatible with Megatron LM
+
+  tokenizer:
+    library: 'megatron'
+    type: 'GPT2BPETokenizer'
+    model: null
+    vocab_file: null
+    merge_file: null 
+    delimiter: null # only used for tabular tokenizer
+
+  # precision
+  native_amp_init_scale: 4294967296 # 2 ** 32
+  native_amp_growth_interval: 1000
+  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
+
+  # miscellaneous
+  seed: 1234
+
+  data:
+    # Path to data must be specified by the user.
+    # can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
+    # Or see example below: 
+    # data_prefix: 
+    #   - .5
+    #   - /raid/data/pile/my-gpt3_00_text_document
+    #   - .5
+    #   - /raid/data/pile/my-gpt3_01_text_document
+    data_prefix: ???  # list of training datasets
+    knn_index: ???  # list of KNN map index files
+    retrieval_prefix: ???   # a singe path to retrieval data
+    index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
+    data_impl: retmmap   # for retro model, this is the only allowed type
+    splits_string: 900,50,50
+    seq_length: ${model.encoder_seq_length}  # must be multiple of the chunk_size in your dataset
+    skip_warmup: True
+    num_workers: 0
+    dataloader_type: single # cyclic
+    neighbors: 2  # number of retrieved neighbors
+  
+  optim:
+    name: fused_adam
+    lr: 1e-4
+    weight_decay: 0.01 
+    betas: 
+    - 0.9
+    - 0.98
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 500
+      constant_steps: 50000
+      min_lr: 1e-5

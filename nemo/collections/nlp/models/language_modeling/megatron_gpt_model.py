@@ -1481,7 +1481,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             f'Pipeline model parallel rank: {parallel_state.get_pipeline_model_parallel_rank()}, '
             f'Tensor model parallel rank: {parallel_state.get_tensor_model_parallel_rank()}, '
             f'Number of model parameters on device: {num_parameters_on_device:.2e}. '
-            f'Total number of model parameters: {total_num_parameters:.2e}.'
+            f'Number of precise model parameters on device: {total_num_parameters}.'
         )
 
         resume_checkpoint_path = self.trainer.ckpt_path
@@ -1548,11 +1548,14 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
     def setup_test_data(self, cfg):
         if hasattr(self, '_test_ds'):
-            consumed_samples = 0
-            logging.info(
-                f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
-            )
-            self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
+            if self._test_ds is not None:
+                consumed_samples = 0
+                logging.info(
+                    f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
+                )
+                self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
+            else:
+                self._test_dl = None
 
     def generate(
         self,

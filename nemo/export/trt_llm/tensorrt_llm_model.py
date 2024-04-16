@@ -144,15 +144,7 @@ class ModelBuilder(Module):
         if attention_mask is not None:
             attention_mask = expand_mask(attention_mask, shape(input_ids, -1))
 
-        for layer_idx, (layer, past, pointer, host_pointer, max_attention_window_size) in enumerate(
-            zip(
-                self.layers,
-                kv_cache_params.past_key_value,
-                kv_cache_params.kv_cache_block_pointers,
-                kv_cache_params.host_kv_cache_block_pointers,
-                kv_cache_params.host_max_attention_window_sizes,
-            )
-        ):
+        for layer_idx, (layer, past) in enumerate(zip(self.layers, kv_cache_params.past_key_value,)):
 
             decoder_params = {
                 "hidden_states": hidden_states,
@@ -161,8 +153,8 @@ class ModelBuilder(Module):
                 "kv_cache_params": KeyValueCacheParams(
                     past_key_value=[past],
                     host_past_key_value_lengths=kv_cache_params.host_past_key_value_lengths,
-                    kv_cache_block_pointers=[pointer],
-                    host_max_attention_window_sizes=max_attention_window_size,
+                    kv_cache_block_pointers=kv_cache_params.kv_cache_block_pointers,
+                    host_max_attention_window_sizes=kv_cache_params.host_max_attention_window_sizes,
                     cache_indirection=kv_cache_params.cache_indirection,
                     host_sink_token_length=kv_cache_params.host_sink_token_length,
                     host_kv_cache_block_pointers=kv_cache_params.host_kv_cache_block_pointers,
@@ -329,8 +321,8 @@ class LMHeadModelBuilder(ModelBuilder, GenerationMixin):
                 past_key_value=model_inputs['past_key_value'],
                 host_past_key_value_lengths=model_inputs['host_past_key_value_lengths'],
                 host_max_attention_window_sizes=model_inputs['host_max_attention_window_sizes'],
-                kv_cache_block_pointers=model_inputs['kv_cache_block_pointers_list'],
-                host_kv_cache_block_pointers=model_inputs['host_kv_cache_block_pointers_list'],
+                kv_cache_block_pointers=model_inputs['kv_cache_block_pointers'],
+                host_kv_cache_block_pointers=model_inputs['host_kv_cache_block_pointers'],
                 cache_indirection=model_inputs['cache_indirection'],
                 host_sink_token_length=model_inputs['host_sink_token_length'],
             ),

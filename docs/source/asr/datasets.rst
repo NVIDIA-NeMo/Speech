@@ -664,6 +664,141 @@ Some other Lhotse related arguments we support:
 
 The full and always up-to-date list of supported options can be found in ``LhotseDataLoadingConfig`` class.
 
+Extended multi-dataset configuration format
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Combining a large number of datasets and defining weights for them can be tricky.
+We offer an extended configuration format that allows you to explicitly define datasets,
+dataset groups, and their weights either inline in the experiment configuration,
+or as a path to a separate YAML file.
+
+In addition to the features above, this format introduces a special ``tags`` dict-like field.
+The keys and values in ``tags`` are automatically attached to every sampled example, which
+is very useful when combining multiple datasets with different properties.
+The dataset class which converts these examples to tensors can partition the mini-batch and apply
+different processing to each group.
+For example, you may want to construct different prompts for the model using metadata in ``tags``.
+
+.. note:: When fine-tuning a model that was trained with ``input_cfg`` option, typically you'd only need
+    to override the following options: ``input_cfg=null`` and ``manifest_filepath=path/to/manifest.json``.
+
+Example 1. Combine two datasets with equal weights and attach custom metadata in ``tags`` to each cut:
+
+.. code-block:: yaml
+
+    input_cfg:
+      - type: nemo_tarred
+        manifest_filepath: /path/to/manifest__OP_0..512_CL_.json
+        tarred_audio_filepath: /path/to/tarred_audio/audio__OP_0..512_CL_.tar
+        weight: 0.4
+        tags:
+          lang: en
+          pnc: no
+      - type: nemo_tarred
+        manifest_filepath: /path/to/other/manifest__OP_0..512_CL_.json
+        tarred_audio_filepath: /path/to/other/tarred_audio/audio__OP_0..512_CL_.tar
+        weight: 0.6
+        tags:
+          lang: pl
+          pnc: yes
+
+Example 2. Combine multiple (4) datasets, corresponding to different tasks (ASR, AST).
+Each task gets its own group and its own weight.
+Then within each task, each dataset get its own within-group weight as well.
+The final weight is the product of outer and inner weight:
+
+.. code-block:: yaml
+
+    input_cfg:
+      - type: group
+        weight: 0.7
+        tags:
+          task: asr
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /path/to/asr1/manifest__OP_0..512_CL_.json
+            tarred_audio_filepath: /path/to/tarred_audio/asr1/audio__OP_0..512_CL_.tar
+            weight: 0.6
+            tags:
+              source_lang: en
+              target_lang: en
+          - type: nemo_tarred
+            manifest_filepath: /path/to/asr2/manifest__OP_0..512_CL_.json
+            tarred_audio_filepath: /path/to/asr2/tarred_audio/audio__OP_0..512_CL_.tar
+            weight: 0.4
+            tags:
+              source_lang: pl
+              target_lang: pl
+      - type: group
+        weight: 0.3
+        tags:
+          task: ast
+        input_cfg:
+          - type: nemo_tarred
+            manifest_filepath: /path/to/ast1/manifest__OP_0..512_CL_.json
+            tarred_audio_filepath: /path/to/ast1/tarred_audio/audio__OP_0..512_CL_.tar
+            weight: 0.2
+            tags:
+              source_lang: en
+              target_lang: pl
+          - type: nemo_tarred
+            manifest_filepath: /path/to/ast2/manifest__OP_0..512_CL_.json
+            tarred_audio_filepath: /path/to/ast2/tarred_audio/audio__OP_0..512_CL_.tar
+            weight: 0.8
+            tags:
+              source_lang: pl
+              target_lang: en
+
+Configuring multi-modal dataloading
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Our configuration format supports specifying data sources from other modalities than just audio.
+At this time, this support is extended to text-only data. We provide the following parser types:
+
+* ``txt`` for raw text files, sharded or unsharded. This can represent, for example, language modeling data.
+* ``txt_pair`` for pairs of raw text files, sharded or unsharded. This can represent, for example, machine translation data.
+
+The key strength of this approach is that we can easily combine audio datasets and text datasets,
+and benefit from every other technique we described above such as dynamic data mixing, data weighting, dynamic bucketing, and so on.
+To enable multimodal dataloading, we provide several configuration options:
+
+* ``use_multimodal_sampling`` when set to True, we'll discard the settings of ``batch_duration`` and ``quadratic_duration`` and consider the settings below instead.
+
+* ``batch_tokens`` is the maximum number of tokens we want to find inside a mini-batch. Similarly to ``batch_duration``, this number does consider padding tokens too, therefore enabling bucketing is recommended to maximize the ratio of real vs padding tokens.
+
+* ``token_equivalent_duration`` is used to be able to measure audio examples in the number of "tokens". For example, if we're using fbank with 0.01s frame shift and an acoustic model that has a subsampling factor of 0.08, then a reasonable setting for this could be 0.08 (which means every subsampled frame counts as one token). Calibrate this value to fit your needs. Note that this value acts as a "balancer" between how much audio data vs text data gets sampled into a mini-batch.
+
+* ``quadratic_factor`` works the same way as ``quadratic_duration``, but is defined in the number of tokens.
+
+Example 3. Combine an ASR (audio-text) dataset with an MT (text-only) dataset so that mini-batches have some examples from both datasets. Provide a custom prompt field for both datasets (to be leveraged by a relevant dataset class):
+
+```yaml
+use_multimodal_sampling: true
+batch_tokens: 1024
+token_equivalent_duration: 0.08  # 0.01 frame shift * 8 subsampling factor
+quadratic_factor: 50
+num_buckets: 30
+use_bucketing: true
+input_cfg:
+  - type: nemo_tarred
+    manifest_filepath: /path/to/manifest__OP_0..512_CL_.json
+    tarred_audio_filepath: /path/to/tarred_audio/audio__OP_0..512_CL_.tar
+    weight: 0.5
+    tags:
+      lang: en
+      prompt: "Given the following recording, transcribe what the person is saying:"
+  - type: txt_pair
+    source_path: /path/to/en__OP_0..512_CL_.txt
+    target_path: /path/to/pl__OP_0..512_CL_.txt
+    source_language: en
+    target_language: pl
+    weight: 0.5
+    tags:
+      prompt: "Translate the following text to Polish:"
+```
+
+.. caution:: We strongly recommend to use multiple shards for text files as well so that different nodes and dataloading workers are able to randomize the order of text iteration. Otherwise, multi-GPU training has a high risk of duplication of text examples.
+
 Pre-computing bucket duration bins
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

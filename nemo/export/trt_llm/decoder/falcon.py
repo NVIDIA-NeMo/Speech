@@ -17,8 +17,7 @@ from typing import Optional
 
 from tensorrt_llm.functional import non_gated_version
 from tensorrt_llm.models.falcon.model import FalconDecoderLayer
-from tensorrt_llm.models.modeling_utils import PretrainedConfig
-from tensorrt_llm.quantization import QuantMode
+from tensorrt_llm.models.modeling_utils import PretrainedConfig, QuantConfig
 from typing_extensions import override
 
 from nemo.export.trt_llm.decoder.decoder import DecoderLayerBuilder, DecoderLayerConfigBuilder
@@ -119,8 +118,7 @@ class FALCONDecoderLayerBuilder(DecoderLayerBuilder):
             world_size=self.tensor_parallel,
             tp_size=self.tensor_parallel,
             pp_size=1,
-            quant_mode=QuantMode(0),
-            quant_kwargs=None,
+            quantization=QuantConfig(),
             max_lora_rank=layer.max_lora_rank,
             use_parallel_embedding=False,
         )

@@ -17,6 +17,7 @@ from typing import Optional
 
 from tensorrt_llm.layers import AttentionMaskType, PositionEmbeddingType
 from tensorrt_llm.models.gpt.model import GPTDecoderLayer
+from tensorrt_llm.models.modeling_utils import PretrainedConfig, QuantConfig
 from typing_extensions import override
 
 from nemo.export.trt_llm.decoder.decoder import DecoderLayerBuilder, DecoderLayerConfigBuilder
@@ -85,13 +86,10 @@ class GPTDecoderLayerBuilder(DecoderLayerBuilder):
     @override
     def build_decoder(self, layer):
         rotary_pct = layer.rotary_pct
-        position_embedding_type = (
-            PositionEmbeddingType.rope_gpt_neox
-            if layer.position_embedding_type == "rope"
-            else PositionEmbeddingType.learned_absolute
-        )
 
-        assert not (position_embedding_type == PositionEmbeddingType.rope_gpt_neox and rotary_pct == 0.0)
+        position_embedding_type = "rope_gpt_neox" if layer.position_embedding_type == "rope" else "learned_absolute"
+
+        assert not (position_embedding_type == "rope_gpt_neox" and rotary_pct == 0.0)
 
         bias_qkv = layer.attention.qkv.bias is not None
 
@@ -99,23 +97,33 @@ class GPTDecoderLayerBuilder(DecoderLayerBuilder):
         if layer.rotary_scaling is not None:
             rotary_scaling = {"type": "linear", "factor": float(layer.rotary_scaling)}
 
-        return GPTDecoderLayer(
-            hidden_size=self.hidden_size,
-            num_attention_heads=self.num_attention_heads,
-            max_position_embeddings=self.max_position_embeddings,
-            num_layers=self.num_layers,
+        config = PretrainedConfig(
+            architecture=None,
             dtype=self.dtype,
-            apply_query_key_layer_scaling=False,
-            attention_mask_type=AttentionMaskType.causal,
+            logits_dtype=self.dtype,
+            vocab_size=layer.vocab_size,
+            max_position_embeddings=self.max_position_embeddings,
+            hidden_size=self.hidden_size,
+            num_hidden_layers=self.num_layers,
+            num_attention_heads=self.num_attention_heads,
+            num_key_value_heads=self.num_kv_heads,
             hidden_act=self.hidden_act,
+            intermediate_size=layer.ffn_hidden_size_local * self.tensor_parallel,
+            norm_epsilon=layer.norm_epsilon,
             position_embedding_type=position_embedding_type,
-            rotary_embedding_percentage=rotary_pct,
-            rotary_base=layer.rotary_base,
-            rotary_scaling=rotary_scaling,
-            inter_size=layer.ffn_hidden_size_local * self.tensor_parallel,
-            bias=bias_qkv,
-            num_kv_heads=self.num_kv_heads,
-            tp_group=self.tp_group,
+            world_size=self.tensor_parallel,
             tp_size=self.tensor_parallel,
+            pp_size=1,
             max_lora_rank=layer.max_lora_rank,
+            quantization=QuantConfig(),
         )
+
+        config.set_if_not_exist('hidden_act', self.hidden_act)
+        config.set_if_not_exist('apply_query_key_layer_scaling', False)
+        config.set_if_not_exist('bias', bias_qkv)
+        config.set_if_not_exist('rotary_base', layer.rotary_base)
+        config.set_if_not_exist('rotary_scaling', rotary_scaling)
+        config.set_if_not_exist('rotary_pct', rotary_pct)
+        config.set_if_not_exist('moe_num_experts', 0)
+
+        return GPTDecoderLayer(config=config, layer_idx=self.layer_id,)

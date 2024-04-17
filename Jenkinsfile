@@ -70,7 +70,7 @@ pipeline {
              git fetch origin bfe21c3d68b0a9951e5716fb520045db53419c5e && \
              git checkout FETCH_HEAD && \
              git submodule init && git submodule update && \
-             NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .'
+             NVTE_FRAMEWORK=pytorch pip install .'
       }
     }
 

@@ -183,13 +183,14 @@ pipeline {
       steps {
         sh "rm -rf /home/TestData/multimodal/stable_diffusion_train"
         sh "python examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
-            trainer.precision=16 \
+            trainer.precision=bf16 \
             trainer.num_nodes=1 \
             trainer.devices=1 \
             ++exp_manager.max_time_per_run=00:00:03:00 \
             trainer.max_steps=20 \
             model.micro_batch_size=1 \
             model.global_batch_size=1 \
+            model.optim.name=megatron_fused_adam \
             model.data.synthetic_data=True \
             exp_manager.exp_dir=/home/TestData/multimodal/stable_diffusion_train \
             model.inductor=False \
@@ -220,7 +221,7 @@ pipeline {
       steps {
         sh "rm -rf /home/TestData/multimodal/stable_diffusion_train_with_cuda_graphs"
         sh "python examples/multimodal/text_to_image/stable_diffusion/sd_train.py \
-            trainer.precision=16 \
+            trainer.precision=bf16 \
             trainer.num_nodes=1 \
             trainer.devices=1 \
             ++exp_manager.max_time_per_run=00:00:03:00 \

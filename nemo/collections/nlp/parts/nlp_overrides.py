@@ -35,6 +35,7 @@ from pytorch_lightning.loops.fetchers import _DataFetcher
 from pytorch_lightning.plugins import ClusterEnvironment
 from pytorch_lightning.plugins.io.checkpoint_plugin import CheckpointIO
 from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
+from pytorch_lightning.plugins.precision.fsdp import FSDPPrecision
 from pytorch_lightning.strategies import DDPStrategy, FSDPStrategy
 from pytorch_lightning.trainer.states import TrainerFn
 from pytorch_lightning.trainer.trainer import Trainer
@@ -1191,6 +1192,38 @@ class PipelineMixedPrecisionPlugin(MixedPrecisionPlugin):
             dtype = torch.bfloat16
 
         torch.set_autocast_gpu_dtype(dtype)
+
+    @contextmanager
+    def forward_context(self) -> Generator[None, None, None]:
+        """Have the PTL context manager do nothing."""
+        yield
+
+
+class FSDPMixedPrecisionPlugin(FSDPPrecision):
+    """ Overrides PTL autocasting to not wrap training/val/test_step.
+        We do this because we have the megatron-core fwd/bwd functions in training_step.
+        This means .backward is being called in training_step so we do not want the whole
+        step wrapped in autocast.
+
+        We instead wrap the fwd_output_and_loss_func that is passed to the megatron-core fwd/bwd functions.
+    """
+
+    def __init__(
+        self,
+        precision: Literal['16-mixed', 'bf16-mixed', '16', 'bf16', 16],
+        scaler: Optional['ShardedGradScaler'] = None,
+    ) -> None:
+        if precision in ['16-mixed', '16', 16]:
+            plugin_precision = '16-mixed'
+        elif precision in ['bf16-mixed', 'bf16']:
+            plugin_precision = 'bf16-mixed'
+        else:
+            raise RuntimeError(
+                "precision expected to be one of: "
+                "['16-mixed', '16', 16, 'bf16-mixed', 'bf16']"
+                f" but {precision} found"
+            )
+        super().__init__(precision=plugin_precision, scaler=scaler)
 
     @contextmanager
     def forward_context(self) -> Generator[None, None, None]:

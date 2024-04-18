@@ -25,6 +25,18 @@ If converting from OpenCLIP, specify the architecture (`arch`) and version (`ver
 If converting from Hugging Face, set the version to `huggingface` and the architecture (`arch`) to the Hugging Face model name (e.g., `yuvalkirstain/PickScore_v1`).
 
 Additionally, provide a NeMo hparams file with the correct model architecture arguments. Refer to examples/multimodal/foundation/clip/conf/megatron_clip_config.yaml.
+
+After conversion, you can verify with the following command:
+
+  wget https://upload.wikimedia.org/wikipedia/commons/0/0f/1665_Girl_with_a_Pearl_Earring.jpg
+  python /opt/NeMo/examples/multimodal/vision_language_foundation/clip/megatron_clip_infer.py \
+    model.restore_from_path=./open_clip.nemo \
+    image_path=./1665_Girl_with_a_Pearl_Earring.jpg \
+    texts='["a dog", "a boy", "a girl"]'
+
+It should generate a high probability for "a girl" tag, e.g.
+Given image's CLIP text probability:  [('a dog', 0.0049710185), ('a boy', 0.002258187), ('a girl', 0.99277073)]
+
 """
 
 import os
@@ -164,8 +176,8 @@ def mapping_hf_state_dict(hf_model):
         ".pre_layrnorm.bias": ".preprocess_layernorm.bias",
         ".post_layernorm.weight": ".transformer.final_layernorm.weight",
         ".post_layernorm.bias": ".transformer.final_layernorm.bias",
-        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings.weight",
-        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings.weight",
+        ".backbone.embeddings.position_embedding.weight": ".backbone.position_embeddings",
+        ".language_model.embeddings.position_embedding.weight": ".language_model.embedding.position_embeddings",
         ".embeddings.class_embedding": ".cls_token",
         ".backbone.embeddings.patch_embedding.weight": ".backbone.conv1.weight",
         ".final_layer_norm.weight": ".encoder.final_layernorm.weight",

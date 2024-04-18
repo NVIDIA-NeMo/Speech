@@ -19,6 +19,8 @@ from typing import List, Optional
 
 import torch.distributed as dist
 from megatron.core import parallel_state
+from megatron.core.transformer.module import Float16Module
+from megatron.training.utils import unwrap_model
 from omegaconf import OmegaConf
 from omegaconf.omegaconf import DictConfig, open_dict
 from pytorch_lightning.trainer.trainer import Trainer
@@ -158,7 +160,6 @@ class Quantizer:
                 model_cfg.tensor_model_parallel_size = tensor_model_parallel_size
             if pipeline_model_parallel_size is not None:
                 model_cfg.pipeline_model_parallel_size = pipeline_model_parallel_size
-            model_cfg.megatron_amp_O2 = False  # Support for `megatron_amp_O2 = true` will be enabled in AMMO > 0.7
             # Only custom AMMO spec is supported for PTQ: this custom spec is largely based on local Megatron-LM
             # layer definitions to avoid Transformer Engine implementations that are currently not supported.
             model_cfg.name = "ammo"
@@ -192,6 +193,9 @@ class Quantizer:
     def export(self, model, model_save: str):
         """Export model to '.qnemo' format for TensorRT-LLM engine build."""
         torch_dtype = torch_dtype_from_precision(self.export_config.dtype)
+
+        if model.cfg.megatron_amp_O2:
+            model.model = unwrap_model(model.model, Float16Module)
 
         # Setup model export handling: temporary directory for
         # '.qnemo' tarball or directly write to model_save

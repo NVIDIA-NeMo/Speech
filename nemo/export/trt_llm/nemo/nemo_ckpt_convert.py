@@ -18,10 +18,10 @@ import logging
 import math
 import multiprocessing
 import os
-import shutil
 import typing
 from collections import defaultdict
 from pathlib import Path
+from typing import Union
 
 import numpy as np
 import tensorstore  # This is important even though not used. Otherwise zarr raises error.
@@ -31,10 +31,10 @@ from tensorrt_llm._utils import np_bfloat16, str_dtype_to_torch, torch_to_numpy
 from tqdm import tqdm
 from transformers import AutoTokenizer, GPT2Tokenizer, LlamaConfig
 
+from nemo.export.tarutils import TarPath, ZarrPathStore
 from nemo.export.trt_llm.nemo.convert import save_weight_torch, split_and_save_weight
 from nemo.export.trt_llm.nemo.nemo import UnpackedNemoCheckpointDir, extract_layers_with_prefix, nemo_to_llm_config
 from nemo.export.trt_llm.nemo.sentencepiece_tokenizer import SentencePieceTokenizer
-
 
 LOGGER = logging.getLogger("NeMo")
 
@@ -121,14 +121,16 @@ def rename_key_dist_ckpt(old_key: str, layer: int):
     return new_key
 
 
-def load_sharded_metadata(checkpoint_dir: str, torch_tensor=True):
-    checkpoint_dir = Path(checkpoint_dir)
+def load_sharded_metadata(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
     sharded_state_dict = {}
     for subdir in checkpoint_dir.iterdir():
         if not subdir.is_dir() or not (subdir / '.zarray').exists():
             continue
         key = subdir.name
-        arr = zarr.open(str(subdir), 'r')
+
+        zstore = ZarrPathStore(subdir)
+        arr = zarr.open(zstore, 'r')
+
         if torch_tensor:
             # sharded_state_dict[key] = torch.from_numpy(arr[:].astype("float32")).to(dtype=torch.bfloat16)
             if arr.dtype.name == "bfloat16":
@@ -524,7 +526,7 @@ def update_tokenizer_paths(tokenizer_config: typing.Dict, unpacked_checkpoints_d
         new_path = unpacked_checkpoints_dir.get_tokenizer_file_path("tokenizer", key, file_pattern)
         if new_path:
             LOGGER.debug(f"Update tokenizer {key} {old_path} -> {new_path}")
-            tokenizer_config[key] = new_path.as_posix()
+            tokenizer_config[key] = new_path
         elif not old_path.exists():
             LOGGER.warning(f"Tokenizer {key}'s path {old_path} does not exists: set it to None")
             tokenizer_config[key] = None
@@ -546,14 +548,23 @@ def copy_tokenizer_files(config, out_dir):
     for key in basenames.keys():
         if config[key] is None:
             continue
-        path = Path(config[key])
+
+        path = config[key]
+
+        if isinstance(path, str):
+            path = Path(path)
+
         if not path.exists():
             LOGGER.debug(f"Tokenizer {key}: {path} file not found")
             continue
 
         dst_path = out_dir / f"{basenames[key]}{path.suffix}"
         LOGGER.debug(f"Copy tokenizer {key}: {path}->{dst_path}")
-        shutil.copy(path.as_posix(), dst_path.as_posix())
+
+        # Copy 'path' to 'dst_path' without shutil.copy(...) because 'path' may be a TarPath
+        with path.open('rb') as infile:
+            with open(dst_path, 'wb') as outfile:
+                outfile.write(infile.read())
 
 
 def build_tokenizer(tokenizer):

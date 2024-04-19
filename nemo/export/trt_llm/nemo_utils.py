@@ -30,6 +30,7 @@ import tensorrt_llm
 from tensorrt_llm import str_dtype_to_trt
 from transformers import AutoTokenizer, LlamaConfig, PretrainedConfig, PreTrainedTokenizer
 
+from nemo.export.tarutils import TarPath
 from nemo.export.trt_llm.model_config import (
     LAYERNORM_DEFAULT,
     LAYERNORM_RMS,
@@ -40,7 +41,7 @@ from nemo.export.trt_llm.model_config import (
     LinearConfig,
     ModelConfig,
 )
-from nemo.export.trt_llm.nemo.nemo import UnpackedNemoCheckpointDir, unpack_nemo_ckpt
+from nemo.export.trt_llm.nemo.nemo import UnpackedNemoCheckpointDir
 from nemo.export.trt_llm.nemo.nemo_ckpt_convert import build_tokenizer, convert_dist_checkpoint, convert_nemo_model
 from nemo.export.trt_llm.tensor_utils import get_tensor_from_dict, get_tensor_parallel_group, split
 
@@ -59,7 +60,6 @@ def _nemo_llm_decode(
 ) -> Tuple[Dict[str, np.ndarray], PretrainedConfig, PreTrainedTokenizer]:
     """Decodes the NEMO file and returns the weights dict, llm config and tokenizer."""
     args = argparse.Namespace()
-    args.in_file = in_file
     args.out_dir = out_dir
     args.tensor_parallelism = tensor_parallelism
     args.processes = processes
@@ -68,23 +68,16 @@ def _nemo_llm_decode(
     args.verbose = False
     args.decoder_type = decoder_type
 
-    input_path = Path(args.in_file)
-    if not input_path.exists():
-        LOGGER.error("%s does not exists", input_path)
+    if not os.path.exists(in_file):
+        LOGGER.error("%s does not exist", in_file)
         sys.exit(1)
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_dir = Path(temp_dir)
+    if os.path.isdir(in_file):
+        nemo_dir = Path(in_file)
+    else:
+        nemo_dir = TarPath(in_file)
 
-        # unpack if needed
-        if input_path.is_dir():
-            nemo_dir = input_path
-        else:
-            start_time = datetime.datetime.now()
-            checkpoint_dir_path = temp_dir / "unpacked"
-            nemo_dir = unpack_nemo_ckpt(args.in_file, checkpoint_dir_path)
-            LOGGER.info("Spent %s (h:m:s) to unpack NeMo archive", datetime.datetime.now() - start_time)
-
+    try:
         unpacked_checkpoint_dir = UnpackedNemoCheckpointDir(
             nemo_dir, load_checkpoints_to_cpu=not args.load_checkpoints_on_gpu
         )
@@ -102,11 +95,15 @@ def _nemo_llm_decode(
         LOGGER.info("Spent %s (h:m:s) to convert the model", datetime.datetime.now() - start_time)
 
         if save_nemo_model_config:
-            shutil.copyfile(
-                unpacked_checkpoint_dir._checkpoints_dir / "model_config.yaml", args.out_dir / "model_config.yaml"
-            )
+            # Copy the config file without using shutil.copy(...) because input may be a TarPath
+            with (unpacked_checkpoint_dir._checkpoints_dir / "model_config.yaml").open("rb") as infile:
+                with open(os.path.join(args.out_dir, "model_config.yaml"), "wb") as outfile:
+                    outfile.write(infile.read())
+    finally:
+        if isinstance(nemo_dir, TarPath):
+            nemo_dir.tarobject.close()
 
-        return weights_dict, llm_config, tokenizer
+    return weights_dict, llm_config, tokenizer
 
 
 def get_tokenzier(tokenizer_dir_or_path: Path) -> PreTrainedTokenizer:

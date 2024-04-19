@@ -60,7 +60,7 @@ Latest News
     </details>
 
     <details>
-      <summary><a href="https://blogs.nvidia.com/blog/bria-builds-responsible-generative-ai-using-nemo-picasso/">New NVIDIA NeMo Framework Features and NVIDIA H200</a> (2023/12/06) </summary>
+      <summary><a href="https://developer.nvidia.com/blog/new-nvidia-nemo-framework-features-and-nvidia-h200-supercharge-llm-training-performance-and-versatility/">New NVIDIA NeMo Framework Features and NVIDIA H200</a> (2023/12/06) </summary>
 
       NVIDIA NeMo Framework now includes several optimizations and enhancements, including: 1) Fully Sharded Data Parallelism (FSDP) to improve the efficiency of training large-scale AI models, 2) Mix of Experts (MoE)-based LLM architectures with expert parallelism for efficient LLM training at scale, 3) Reinforcement Learning from Human Feedback (RLHF) with TensorRT-LLM for inference stage acceleration, and 4) up to 4.2x speedups for Llama 2 pre-training on NVIDIA H200 Tensor Core GPUs.
       <br><br>

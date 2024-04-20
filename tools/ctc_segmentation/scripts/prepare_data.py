@@ -26,6 +26,8 @@ from sox import Transformer
 from tqdm import tqdm
 
 from nemo.collections.asr.models import ASRModel
+from nemo.collections.asr.models.ctc_models import EncDecCTCModel
+from nemo.collections.asr.models.hybrid_rnnt_ctc_models import EncDecHybridRNNTCTCModel
 from nemo.utils import model_utils
 
 try:
@@ -354,7 +356,19 @@ if __name__ == "__main__":
             asr_model = ASRModel.from_pretrained(model_name=args.model)  # type: ASRModel
             model_name = args.model
 
-        vocabulary = asr_model.cfg.decoder.vocabulary
+        if not (isinstance(asr_model, EncDecCTCModel) or isinstance(asr_model, EncDecHybridRNNTCTCModel)):
+            raise NotImplementedError(
+                f"Model is not an instance of NeMo EncDecCTCModel or ENCDecHybridRNNTCTCModel."
+                " Currently only instances of these models are supported"
+            )
+
+        # get vocabulary list
+        if hasattr(asr_model, 'tokenizer'):  # i.e. tokenization is BPE-based
+            vocabulary = asr_model.tokenizer.vocab
+        elif hasattr(asr_model.decoder, "vocabulary"):  # i.e. tokenization is character-based
+            vocabulary = asr_model.cfg.decoder.vocabulary
+        else:
+            raise ValueError("Unexpected model type. Vocabulary list not found.")
 
         if os.path.isdir(args.in_text):
             text_files = glob(f"{args.in_text}/*.txt")

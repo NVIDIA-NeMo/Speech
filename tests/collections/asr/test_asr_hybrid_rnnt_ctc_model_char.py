@@ -265,7 +265,7 @@ class TestEncDecHybridRNNTCTCModel:
 
     @pytest.mark.unit
     def test_GreedyRNNTInferConfig(self):
-        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']
+        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index', 'tdt_include_duration_confidence']
 
         result = assert_dataclass_signature_match(
             greedy_decode.GreedyRNNTInfer, greedy_decode.GreedyRNNTInferConfig, ignore_args=IGNORE_ARGS
@@ -279,7 +279,7 @@ class TestEncDecHybridRNNTCTCModel:
 
     @pytest.mark.unit
     def test_GreedyBatchedRNNTInferConfig(self):
-        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index']
+        IGNORE_ARGS = ['decoder_model', 'joint_model', 'blank_index', 'tdt_include_duration_confidence']
 
         result = assert_dataclass_signature_match(
             greedy_decode.GreedyBatchedRNNTInfer, greedy_decode.GreedyBatchedRNNTInferConfig, ignore_args=IGNORE_ARGS

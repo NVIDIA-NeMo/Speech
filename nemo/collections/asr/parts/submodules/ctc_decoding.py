@@ -98,6 +98,10 @@ class AbstractCTCDecoding(ConfidenceMixin):
                     Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
 
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
+
                 method_cfg:
                     A dict-like object which contains the method name and settings to compute per-frame
                     confidence scores.
@@ -911,9 +915,14 @@ class CTCDecoding(AbstractCTCDecoding):
                 exclude_blank:
                     Bool flag indicating that blank token confidence scores are to be excluded
                     from the `token_confidence`.
+
                 aggregation:
                     Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
+
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
 
                 method_cfg:
                     A dict-like object which contains the method name and settings to compute per-frame
@@ -1121,6 +1130,10 @@ class CTCBPEDecoding(AbstractCTCDecoding):
                 aggregation:
                     Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
+
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
 
                 method_cfg:
                     A dict-like object which contains the method name and settings to compute per-frame

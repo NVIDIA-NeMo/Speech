@@ -136,6 +136,9 @@ class ConfidenceConfig:
             from the `token_confidence`.
         aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
             Valid options are `mean`, `min`, `max`, `prod`.
+        tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+            attached to the regular frame confidence,
+            making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
         method_cfg: A dict-like object which contains the method name and settings to compute per-frame
             confidence scores.
 
@@ -175,6 +178,7 @@ class ConfidenceConfig:
     preserve_word_confidence: bool = False
     exclude_blank: bool = True
     aggregation: str = "min"
+    tdt_include_duration: bool = False
     method_cfg: ConfidenceMethodConfig = field(default_factory=lambda: ConfidenceMethodConfig())
 
     def __post_init__(self):
@@ -361,6 +365,7 @@ class ConfidenceMixin(ABC):
             confidence_cfg.get('preserve_frame_confidence', False) | self.preserve_token_confidence
         )
         self.exclude_blank_from_confidence = confidence_cfg.get('exclude_blank', True)
+        self.tdt_include_duration_confidence = confidence_cfg.get('tdt_include_duration', False)
         self.word_confidence_aggregation = confidence_cfg.get('aggregation', "min")
 
         # define aggregation functions
@@ -368,8 +373,8 @@ class ConfidenceMixin(ABC):
         self._aggregate_confidence = self.confidence_aggregation_bank[self.word_confidence_aggregation]
 
         # Update preserve frame confidence
-        if self.preserve_frame_confidence is False:
-            if self.cfg.strategy in ['greedy', 'greedy_batch']:
+        if self.cfg.strategy in ['greedy', 'greedy_batch']:
+            if not self.preserve_frame_confidence:
                 self.preserve_frame_confidence = self.cfg.greedy.get('preserve_frame_confidence', False)
                 # OmegaConf.structured ensures that post_init check is always executed
                 confidence_method_cfg = OmegaConf.structured(self.cfg.greedy).get('confidence_method_cfg', None)
@@ -378,6 +383,8 @@ class ConfidenceMixin(ABC):
                     if confidence_method_cfg is None
                     else OmegaConf.structured(ConfidenceMethodConfig(**confidence_method_cfg))
                 )
+            if not self.tdt_include_duration_confidence:
+                self.tdt_include_duration_confidence = self.cfg.greedy.get('tdt_include_duration_confidence', False)
 
     @abstractmethod
     def compute_confidence(self, hypotheses_list: List[Hypothesis]) -> List[Hypothesis]:

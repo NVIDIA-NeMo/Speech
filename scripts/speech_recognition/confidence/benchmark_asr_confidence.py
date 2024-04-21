@@ -82,6 +82,7 @@ def get_experiment_params(cfg):
         String with the experiment name.
     """
     blank = "no_blank" if cfg.exclude_blank else "blank"
+    duration = "duration" if cfg.tdt_include_duration else "no_duration"
     aggregation = cfg.aggregation
     method_name = cfg.method_cfg.name
     alpha = cfg.method_cfg.alpha
@@ -91,15 +92,24 @@ def get_experiment_params(cfg):
         experiment_param_list = [
             aggregation,
             str(cfg.exclude_blank),
+            str(cfg.tdt_include_duration),
             method_name,
             entropy_type,
             entropy_norm,
             str(alpha),
         ]
-        experiment_str = "-".join([aggregation, blank, method_name, entropy_type, entropy_norm, str(alpha)])
+        experiment_str = "-".join([aggregation, blank, duration, method_name, entropy_type, entropy_norm, str(alpha)])
     else:
-        experiment_param_list = [aggregation, str(cfg.exclude_blank), method_name, "-", "-", str(alpha)]
-        experiment_str = "-".join([aggregation, blank, method_name, str(alpha)])
+        experiment_param_list = [
+            aggregation,
+            str(cfg.exclude_blank),
+            str(cfg.tdt_include_duration),
+            method_name,
+            "-",
+            "-",
+            str(alpha),
+        ]
+        experiment_str = "-".join([aggregation, blank, duration, method_name, str(alpha)])
     return experiment_param_list, experiment_str
 
 
@@ -214,6 +224,7 @@ def main(cfg: ConfidenceBenchmarkingConfig):
                 "model_type",
                 "aggregation",
                 "blank",
+                "duration",
                 "method_name",
                 "entropy_type",
                 "entropy_norm",

@@ -96,6 +96,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     from the `token_confidence`.
                 aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
                 method_cfg: A dict-like object which contains the method name and settings to compute per-frame
                     confidence scores.
 
@@ -209,7 +212,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         self.compute_timestamps = self.cfg.get('compute_timestamps', None)
         self.word_seperator = self.cfg.get('word_seperator', ' ')
 
-        if self.durations is not None and self.durations != []:  # this means it's a TDT model.
+        self._is_tdt = self.durations is not None and self.durations != []  # this means it's a TDT model.
+        if self._is_tdt:
             if blank_id == 0:
                 raise ValueError("blank_id must equal len(non_blank_vocabs) for TDT models")
             if self.big_blank_durations is not None and self.big_blank_durations != []:
@@ -254,6 +258,12 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # initialize confidence-related fields
         self._init_confidence(self.cfg.get('confidence_cfg', None))
 
+        if self._is_tdt:
+            if self.preserve_frame_confidence is True and self.preserve_alignments is False:
+                raise ValueError(
+                    "If `preserve_frame_confidence` flag is set, then `preserve_alignments` flag must also be set."
+                )
+
         # Confidence estimation is not implemented for these strategies
         if (
             not self.preserve_frame_confidence
@@ -264,7 +274,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         if self.cfg.strategy == 'greedy':
             if self.big_blank_durations is None or self.big_blank_durations == []:
-                if self.durations is None or self.durations == []:
+                if not self._is_tdt:
                     self.decoding = rnnt_greedy_decoding.GreedyRNNTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
@@ -289,6 +299,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         ),
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
+                        include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                     )
             else:
@@ -307,7 +318,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         elif self.cfg.strategy == 'greedy_batch':
             if self.big_blank_durations is None or self.big_blank_durations == []:
-                if self.durations is None or self.durations == []:
+                if not self._is_tdt:
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedRNNTInfer(
                         decoder_model=decoder,
                         joint_model=joint,
@@ -334,6 +345,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         ),
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
+                        include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', False),
                     )
@@ -530,7 +542,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             if self.big_blank_durations is not None and self.big_blank_durations != []:  # multi-blank RNNT
                 num_extra_outputs = len(self.big_blank_durations)
                 prediction = [p for p in prediction if p < self.blank_id - num_extra_outputs]
-            elif self.durations is not None and self.durations != []:  # TDT model.
+            elif self._is_tdt:  # TDT model.
                 prediction = [p for p in prediction if p < self.blank_id]
             else:  # standard RNN-T
                 prediction = [p for p in prediction if p != self.blank_id]
@@ -569,28 +581,69 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         Returns:
             A list of hypotheses with high-level confidence scores.
         """
-        if self.exclude_blank_from_confidence:
+        if self._is_tdt:
+            # if self.tdt_include_duration_confidence is True then frame_confidence elements consist of two numbers
+            maybe_pre_aggregate = (
+                (lambda x: self._aggregate_confidence(x)) if self.tdt_include_duration_confidence else (lambda x: x)
+            )
             for hyp in hypotheses_list:
-                hyp.token_confidence = hyp.non_blank_frame_confidence
-        else:
-            for hyp in hypotheses_list:
-                offset = 0
                 token_confidence = []
-                if len(hyp.timestep) > 0:
-                    for ts, te in zip(hyp.timestep, hyp.timestep[1:] + [len(hyp.frame_confidence)]):
-                        if ts != te:
-                            # <blank> tokens are considered to belong to the last non-blank token, if any.
-                            token_confidence.append(
-                                self._aggregate_confidence(
-                                    [hyp.frame_confidence[ts][offset]]
-                                    + [fc[0] for fc in hyp.frame_confidence[ts + 1 : te]]
+                # trying to recover frame_confidence according to alignments
+                subsequent_blank_confidence = []
+                # going backwards since <blank> tokens are considered belonging to the last non-blank token.
+                for fc, fa in zip(hyp.frame_confidence[::-1], hyp.alignments[::-1]):
+                    # there is only one score per frame most of the time
+                    if len(fa) > 1:
+                        for i, a in reversed(list(enumerate(fa))):
+                            if a[-1] == self.blank_id:
+                                if not self.exclude_blank_from_confidence:
+                                    subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
+                            elif not subsequent_blank_confidence:
+                                token_confidence.append(maybe_pre_aggregate(fc[i]))
+                            else:
+                                token_confidence.append(
+                                    self._aggregate_confidence(
+                                        [maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence
+                                    )
                                 )
-                            )
-                            offset = 0
+                                subsequent_blank_confidence = []
+                    else:
+                        i, a = 0, fa[0]
+                        if a[-1] == self.blank_id:
+                            if not self.exclude_blank_from_confidence:
+                                subsequent_blank_confidence.append(maybe_pre_aggregate(fc[i]))
+                        elif not subsequent_blank_confidence:
+                            token_confidence.append(maybe_pre_aggregate(fc[i]))
                         else:
-                            token_confidence.append(hyp.frame_confidence[ts][offset])
-                            offset += 1
+                            token_confidence.append(
+                                self._aggregate_confidence([maybe_pre_aggregate(fc[i])] + subsequent_blank_confidence)
+                            )
+                            subsequent_blank_confidence = []
+                token_confidence = token_confidence[::-1]
                 hyp.token_confidence = token_confidence
+        else:
+            if self.exclude_blank_from_confidence:
+                for hyp in hypotheses_list:
+                    hyp.token_confidence = hyp.non_blank_frame_confidence
+            else:
+                for hyp in hypotheses_list:
+                    offset = 0
+                    token_confidence = []
+                    if len(hyp.timestep) > 0:
+                        for ts, te in zip(hyp.timestep, hyp.timestep[1:] + [len(hyp.frame_confidence)]):
+                            if ts != te:
+                                # <blank> tokens are considered to belong to the last non-blank token, if any.
+                                token_confidence.append(
+                                    self._aggregate_confidence(
+                                        [hyp.frame_confidence[ts][offset]]
+                                        + [fc[0] for fc in hyp.frame_confidence[ts + 1 : te]]
+                                    )
+                                )
+                                offset = 0
+                            else:
+                                token_confidence.append(hyp.frame_confidence[ts][offset])
+                                offset += 1
+                    hyp.token_confidence = token_confidence
         if self.preserve_word_confidence:
             for hyp in hypotheses_list:
                 hyp.word_confidence = self._aggregate_token_confidence(hyp)
@@ -1010,6 +1063,9 @@ class RNNTDecoding(AbstractRNNTDecoding):
                     from the `token_confidence`.
                 aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
                 method_cfg: A dict-like object which contains the method name and settings to compute per-frame
                     confidence scores.
 
@@ -1276,6 +1332,9 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                     from the `token_confidence`.
                 aggregation: Which aggregation type to use for collapsing per-token confidence into per-word confidence.
                     Valid options are `mean`, `min`, `max`, `prod`.
+                tdt_include_duration: Bool flag indicating that the duration confidence scores are to be calculated and
+                    attached to the regular frame confidence,
+                    making TDT frame confidence element a pair: (`prediction_confidence`, `duration_confidence`).
                 method_cfg: A dict-like object which contains the method name and settings to compute per-frame
                     confidence scores.
 

@@ -41,7 +41,7 @@ Model Classes
 
 .. _confidence-ensembles-api:
 
-.. autoclass:: nemo.collections.asr.models.confidence_ensembles.ConfidenceEnsembleModel
+.. autoclass:: nemo.collections.asr.models.confidence_ensemble.ConfidenceEnsembleModel
     :show-inheritance:
     :members: transcribe
 

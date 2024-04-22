@@ -15,7 +15,7 @@
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Literal
+from typing import Iterator, Literal, Union
 
 from lhotse.cut.text import TextExample, TextPairExample
 from lhotse.dataset.dataloading import resolve_seed
@@ -31,10 +31,10 @@ class LhotseTextAdapter:
     each line into a ``TextExample``.
     """
 
-    paths: Pathlike | list[Pathlike]
+    paths: Union[Pathlike, list[Pathlike]]
     language: str | None = None
     shuffle_shards: bool = False
-    shard_seed: int | Literal["trng", "randomized"] = "trng"
+    shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
 
     def __post_init__(self):
         self.paths = expand_sharded_filepaths(self.paths)
@@ -62,12 +62,12 @@ class LhotseTextPairAdapter:
     with Lhotse together with training examples in audio modality.
     """
 
-    source_paths: Pathlike | list[Pathlike]
-    target_paths: Pathlike | list[Pathlike]
+    source_paths: Union[Pathlike, list[Pathlike]]
+    target_paths: Union[Pathlike, list[Pathlike]]
     source_language: str | None = None
     target_language: str | None = None
     shuffle_shards: bool = False
-    shard_seed: int | Literal["trng", "randomized"] = "trng"
+    shard_seed: Union[int, Literal["trng", "randomized"]] = "trng"
 
     def __post_init__(self):
         ASSERT_MSG = "Both source and target must be a single path or lists of paths"

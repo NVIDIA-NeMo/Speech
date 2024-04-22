@@ -314,7 +314,7 @@ For more details about this model, see the `paper <https://arxiv.org/abs/2306.15
 or read our `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/stable/tutorials/asr/Confidence_Ensembles.ipynb>`_.
 
 NeMo support Confidence-based Ensembles through the
-:ref:`nemo.collections.asr.models.confidence_ensembles.ConfidenceEnsembleModel <confidence-ensembles-api>` class.
+:ref:`nemo.collections.asr.models.confidence_ensemble.ConfidenceEnsembleModel <confidence-ensembles-api>` class.
 
 A typical workflow to create and use the ensemble is like this
 

@@ -14,8 +14,8 @@
 
 import warnings
 from dataclasses import dataclass
-from functools import partial, singledispatch
-from typing import Any, Optional
+from functools import partial
+from typing import Any, Optional, TypeVar, Union
 
 import numpy as np
 import torch
@@ -375,37 +375,24 @@ class MultimodalSamplingConstraint(SamplingConstraint):
         raise RuntimeError(f"Unsupported example type: {type(example)}")
 
 
-# The functions below are overloads for different types of examples.
-# This is required for multi-modal dataloading since we will iterate
-# over a union type now.
-
-
 def is_text(example) -> bool:
     return isinstance(example, (TextExample, TextPairExample))
 
 
-@singledispatch
-def tokenize(example, tokenizer):
-    raise RuntimeError(f"Unsupported type of example: {type(example)}")
+Example = TypeVar("Example", bound=Union[Cut, TextExample, TextPairExample])
 
 
-@tokenize.register
-def _(example: Cut, tokenizer) -> Cut:
-    for s in example.supervisions:
-        s.tokens = np.asarray(tokenizer(s.text, s.language))
-    return example
-
-
-@tokenize.register
-def _(example: TextExample, tokenizer) -> TextExample:
-    example.tokens = np.asarray(tokenizer(example.text, example.language))
-    return example
-
-
-@tokenize.register
-def _(example: TextPairExample, tokenizer) -> TextPairExample:
-    example.source.tokens = np.asarray(tokenizer(example.source.text, example.source.language))
-    example.target.tokens = np.asarray(tokenizer(example.source.text, example.target.language))
+def tokenize(example: Example, tokenizer) -> Example:
+    if isinstance(example, Cut):
+        for s in example.supervisions:
+            s.tokens = np.asarray(tokenizer(s.text, s.language))
+    elif isinstance(example, TextExample):
+        example.tokens = np.asarray(tokenizer(example.text, example.language))
+    elif isinstance(example, TextPairExample):
+        example.source.tokens = np.asarray(tokenizer(example.source.text, example.source.language))
+        example.target.tokens = np.asarray(tokenizer(example.source.text, example.target.language))
+    else:
+        raise RuntimeError(f"Unsupported type of example: {type(example)}")
     return example
 
 

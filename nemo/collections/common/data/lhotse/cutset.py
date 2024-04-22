@@ -17,7 +17,7 @@ import warnings
 from functools import partial
 from itertools import repeat
 from pathlib import Path
-from typing import Sequence, Tuple
+from typing import Sequence, Tuple, Union
 
 from lhotse import CutSet, Features, Recording
 from lhotse.array import Array, TemporalArray
@@ -200,7 +200,7 @@ def attach_tags(cut, tags: dict):
 
 
 def parse_and_combine_datasets(
-    config_list: list[DictConfig] | ListConfig, propagate_attrs: dict
+    config_list: Union[list[DictConfig], ListConfig], propagate_attrs: dict
 ) -> tuple[CutSet, bool]:
     cuts = []
     weights = []

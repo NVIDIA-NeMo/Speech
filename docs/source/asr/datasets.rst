@@ -806,13 +806,17 @@ We recommend to pre-compute the bucket duration bins in order to accelerate the 
 The following script may be used:
 
 .. code-block:: bash
+
     $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 manifest.json
     Use the following options in your config:
             num_buckets=30
             bucket_duration_bins=[1.78,2.34,2.69,...
     <other diagnostic information about the dataset>
+
 For multi-dataset setups, one may provide multiple manifests and even their weights:
+
 .. code-block:: bash
+
     $ python scripts/speech_recognition/estimate_duration_bins.py -b 30 [[manifest.json,0.7],[other.json,0.3]]
     Use the following options in your config:
             num_buckets=30

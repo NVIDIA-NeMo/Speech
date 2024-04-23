@@ -52,8 +52,8 @@ class TestMegatronParallel:
 
     def test_init_with_defaults(self, mocker, mock_pipeline):
         """Test __init__ with default parameters."""
-        mocker.patch('megatron.core.mpu.get_pipeline_model_parallel_world_size', return_value=1)
-        mocker.patch('megatron.core.mpu.model_parallel_is_initialized', return_value=False)
+        mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=1)
+        mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=False)
 
         megatron_parallel = mp.MegatronParallel(pipeline=mock_pipeline)
 
@@ -76,8 +76,8 @@ class TestMegatronParallel:
     #     mock_loss_reduction
     # ):
     #     """Test __init__ with custom parameters."""
-    #     mocker.patch('megatron.core.mpu.get_pipeline_model_parallel_world_size', return_value=1)
-    #     mocker.patch('megatron.core.mpu.model_parallel_is_initialized', return_value=False)
+    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=1)
+    #     mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=False)
     #
     #     megatron_parallel = mp.MegatronParallel(
     #         pipeline=mock_pipeline,
@@ -99,20 +99,20 @@ class TestMegatronParallel:
     # def test_init_with_virtual_pipeline(self, mocker, mock_pipeline):
     #     """Test __init__ with virtual pipeline model parallel world size."""
     #     mocker.patch('torch.distributed.get_rank', return_value=1)
-    #     mocker.patch('megatron.core.mpu.get_tensor_model_parallel_group', return_value=1)
-    #     mocker.patch('megatron.core.mpu.get_pipeline_model_parallel_group', return_value=1)
-    #     mocker.patch('megatron.core.mpu.get_pipeline_model_parallel_world_size', return_value=2)
-    #     mocker.patch('megatron.core.mpu.model_parallel_is_initialized', return_value=True)
-    #     mocker.patch('megatron.core.mpu.set_virtual_pipeline_model_parallel_world_size')
-    #     mocker.patch('megatron.core.mpu.set_virtual_pipeline_model_parallel_rank')
+    #     mocker.patch('megatron.core.parallel_state.get_tensor_model_parallel_group', return_value=1)
+    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_group', return_value=1)
+    #     mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=2)
+    #     mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=True)
+    #     mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_world_size')
+    #     mocker.patch('megatron.core.parallel_state.set_virtual_pipeline_model_parallel_rank')
     #     mocker.patch('nemo_ext.lightning._strategy_lib.init_lightning_module', return_value=mock_pipeline)
 
     #     megatron_parallel = mp.MegatronParallel(mock_pipeline, vp_size=2)
 
     #     assert len(megatron_parallel.pipeline) == 2
     #     assert all(isinstance(mod, nn.Module) for mod in megatron_parallel.pipeline)
-    #     megatron.core.mpu.set_virtual_pipeline_model_parallel_world_size.assert_called_once_with(2)
-    #     assert megatron.core.mpu.set_virtual_pipeline_model_parallel_rank.call_count == 1
+    #     megatron.core.parallel_state.set_virtual_pipeline_model_parallel_world_size.assert_called_once_with(2)
+    #     assert megatron.core.parallel_state.set_virtual_pipeline_model_parallel_rank.call_count == 1
 
 
 class TestCallbackConnector:

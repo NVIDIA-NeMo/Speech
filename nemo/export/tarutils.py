@@ -202,3 +202,8 @@ class ZarrPathStore(zarr.storage.BaseStore):
 
     def keys(self):
         return self._path.iterdir()
+
+
+def unpack_tarball(archive: str, dest_dir: str):
+    with tarfile.open(archive, mode="r") as tar:
+        tar.extractall(path=dest_dir)

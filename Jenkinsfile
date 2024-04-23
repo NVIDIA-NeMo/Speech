@@ -97,7 +97,7 @@ pipeline {
 
     stage('AMMO installation') {
       steps {
-         sh 'pip install nvidia-ammo~=0.7.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir'
+         sh 'pip install nvidia-ammo~=0.9.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir'
       }
     }
 

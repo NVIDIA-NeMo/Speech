@@ -204,6 +204,115 @@ def get_infer_test_data():
     test_data["LLAMA2-7B-code"]["max_output_token"] = 128
     test_data["LLAMA2-7B-code"]["max_batch_size"] = 10
 
+    test_data["LLAMA2-7B-base-fp8"] = {}
+    test_data["LLAMA2-7B-base-fp8"]["model_type"] = "llama"
+    test_data["LLAMA2-7B-base-fp8"]["min_gpus"] = 1
+    test_data["LLAMA2-7B-base-fp8"]["location"] = "Local"
+    test_data["LLAMA2-7B-base-fp8"]["trt_llm_model_dir"] = "/tmp/LLAMA2-7B-base-fp8/trt_llm_model-1/"
+    test_data["LLAMA2-7B-base-fp8"]["checkpoint"] = "/opt/checkpoints/LLAMA2-7B-base-fp8/LLAMA2-7B-base-fp8-1.qnemo"
+    test_data["LLAMA2-7B-base-fp8"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-7B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-7B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-fp8"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-7B-base-int4"] = {}
+    test_data["LLAMA2-7B-base-int4"]["model_type"] = "llama"
+    test_data["LLAMA2-7B-base-int4"]["min_gpus"] = 1
+    test_data["LLAMA2-7B-base-int4"]["location"] = "Local"
+    test_data["LLAMA2-7B-base-int4"]["trt_llm_model_dir"] = "/tmp/LLAMA2-7B-base-int4/trt_llm_model-1/"
+    test_data["LLAMA2-7B-base-int4"]["checkpoint"] = "/opt/checkpoints/LLAMA2-7B-base-int4/LLAMA2-7B-base-int4-1.qnemo"
+    test_data["LLAMA2-7B-base-int4"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-7B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-7B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-int4"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-7B-base-int8"] = {}
+    test_data["LLAMA2-7B-base-int8"]["model_type"] = "llama"
+    test_data["LLAMA2-7B-base-int8"]["min_gpus"] = 1
+    test_data["LLAMA2-7B-base-int8"]["location"] = "Local"
+    test_data["LLAMA2-7B-base-int8"]["trt_llm_model_dir"] = "/tmp/LLAMA2-7B-base-int8/trt_llm_model-1/"
+    test_data["LLAMA2-7B-base-int8"]["checkpoint"] = "/opt/checkpoints/LLAMA2-7B-base-int8/LLAMA2-7B-base-int8-1.qnemo"
+    test_data["LLAMA2-7B-base-int8"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-7B-base-int8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-7B-base-int8"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-int8"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-13B-base-fp8"] = {}
+    test_data["LLAMA2-13B-base-fp8"]["model_type"] = "llama"
+    test_data["LLAMA2-13B-base-fp8"]["min_gpus"] = 2
+    test_data["LLAMA2-13B-base-fp8"]["location"] = "Local"
+    test_data["LLAMA2-13B-base-fp8"]["trt_llm_model_dir"] = "/tmp/LLAMA2-13B-base-fp8/trt_llm_model-1/"
+    test_data["LLAMA2-13B-base-fp8"]["checkpoint"] = "/opt/checkpoints/LLAMA2-13B-base-fp8/LLAMA2-13B-base-fp8-1-qnemo"
+    test_data["LLAMA2-13B-base-fp8"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-13B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-13B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-13B-base-fp8"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-13B-base-int4"] = {}
+    test_data["LLAMA2-13B-base-int4"]["model_type"] = "llama"
+    test_data["LLAMA2-13B-base-int4"]["min_gpus"] = 2
+    test_data["LLAMA2-13B-base-int4"]["location"] = "Local"
+    test_data["LLAMA2-13B-base-int4"]["trt_llm_model_dir"] = "/tmp/LLAMA2-13B-base-int4/trt_llm_model-1/"
+    test_data["LLAMA2-13B-base-int4"][
+        "checkpoint"
+    ] = "/opt/checkpoints/LLAMA2-13B-base-int4/LLAMA2-13B-base-int4-1-qnemo"
+    test_data["LLAMA2-13B-base-int4"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-13B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-13B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-13B-base-int4"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-70B-base-fp8"] = {}
+    test_data["LLAMA2-70B-base-fp8"]["model_type"] = "llama"
+    test_data["LLAMA2-70B-base-fp8"]["min_gpus"] = 8
+    test_data["LLAMA2-70B-base-fp8"]["location"] = "Local"
+    test_data["LLAMA2-70B-base-fp8"]["trt_llm_model_dir"] = "/tmp/LLAMA2-70B-base-fp8/trt_llm_model-1/"
+    test_data["LLAMA2-70B-base-fp8"]["checkpoint"] = "/opt/checkpoints/LLAMA2-70B-base-fp8/LLAMA2-70B-base-fp8-1-qnemo"
+    test_data["LLAMA2-70B-base-fp8"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-70B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-70B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-70B-base-fp8"]["max_batch_size"] = 10
+
+    test_data["LLAMA2-70B-base-int4"] = {}
+    test_data["LLAMA2-70B-base-int4"]["model_type"] = "llama"
+    test_data["LLAMA2-70B-base-int4"]["min_gpus"] = 8
+    test_data["LLAMA2-70B-base-int4"]["location"] = "Local"
+    test_data["LLAMA2-70B-base-int4"]["trt_llm_model_dir"] = "/tmp/LLAMA2-70B-base-int4/trt_llm_model-1/"
+    test_data["LLAMA2-70B-base-int4"][
+        "checkpoint"
+    ] = "/opt/checkpoints/LLAMA2-70B-base-int4/LLAMA2-70B-base-int4-1-qnemo"
+    test_data["LLAMA2-70B-base-int4"]["prompt_template"] = [
+        "The capital of France is",
+        "Largest animal in the sea is",
+        "Fastest animal in the world is",
+    ]
+    test_data["LLAMA2-70B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["LLAMA2-70B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-70B-base-int4"]["max_batch_size"] = 10
+
     test_data["FALCON-7B-base"] = {}
     test_data["FALCON-7B-base"]["model_type"] = "falcon"
     test_data["FALCON-7B-base"]["min_gpus"] = 1

@@ -60,6 +60,7 @@ For more information, browse the developer docs for your area of interest in the
    nlp/models
    nlp/machine_translation/machine_translation
    nlp/megatron_onnx_export
+   nlp/quantization
    nlp/api
 
 

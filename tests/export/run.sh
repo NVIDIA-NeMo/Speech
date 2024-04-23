@@ -28,9 +28,16 @@ python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base --existing_t
 python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --ptuning --min_gpus 1 --max_gpus 2
 python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --lora --min_gpus 1 --max_gpus 2
 python tests/export/test_nemo_export.py --model_name LLAMA2-7B-code --existing_test_models --min_gpus 1 --max_gpus 2
+python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base-fp8 --existing_test_models --min_gpus 1 --max_gpus 1
+python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base-int4 --existing_test_models --min_gpus 1 --max_gpus 1
+python tests/export/test_nemo_export.py --model_name LLAMA2-7B-base-int8 --existing_test_models --min_gpus 1 --max_gpus 1
 python tests/export/test_nemo_export.py --model_name LLAMA2-13B-base --existing_test_models --min_gpus 1 --max_gpus 2
 python tests/export/test_nemo_export.py --model_name LLAMA2-13B-base --existing_test_models --ptuning --min_gpus 1 --max_gpus 2
+python tests/export/test_nemo_export.py --model_name LLAMA2-13B-base-fp8 --existing_test_models --min_gpus 2 --max_gpus 2
+python tests/export/test_nemo_export.py --model_name LLAMA2-13B-base-int4 --existing_test_models --min_gpus 2 --max_gpus 2
 python tests/export/test_nemo_export.py --model_name LLAMA2-70B-base --existing_test_models --min_gpus 2 --max_gpus 8
+python tests/export/test_nemo_export.py --model_name LLAMA2-70B-base-fp8 --existing_test_models --min_gpus 8 --max_gpus 8
+python tests/export/test_nemo_export.py --model_name LLAMA2-70B-base-int4 --existing_test_models --min_gpus 8 --max_gpus 8
 python tests/export/test_nemo_export.py --model_name NV-GPT-8B-Base-4k --existing_test_models --min_gpus 1 --max_gpus 8
 python tests/export/test_nemo_export.py --model_name NV-GPT-8B-QA-4k --existing_test_models --min_gpus 1 --max_gpus 8
 python tests/export/test_nemo_export.py --model_name NV-GPT-8B-Chat-4k-SFT --existing_test_models --min_gpus 1 --max_gpus 8
@@ -42,5 +49,3 @@ python tests/export/test_nemo_export.py --model_name FALCON-40B-base --existing_
 python tests/export/test_nemo_export.py --model_name FALCON-180B-base --existing_test_models --min_gpus 8 --max_gpus 8
 python tests/export/test_nemo_export.py --model_name STARCODER1-15B-base --existing_test_models --min_gpus 1 --max_gpus 1
 python tests/export/test_nemo_export.py --model_name GEMMA-base --existing_test_models --min_gpus 1 --max_gpus 1 --run_accuracy --test_deployment True
-
-

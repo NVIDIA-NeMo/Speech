@@ -89,6 +89,13 @@ def _read_config(config_path: Path):
     else:
         tokens_per_block = config["builder_config"]["tokens_per_block"]
 
+    if quantization := config["builder_config"].get("quantization"):
+        # Field "quantization" (dict) is introduced for quantized Nemo checkpoints support.
+        # For regular Nemo checkpoints "quant_mode" field should be used (default: 0).
+        quant_mode = QuantMode.from_quant_algo(quantization['quant_algo'], quantization['kv_cache_quant_algo'])
+    else:
+        quant_mode = QuantMode(config["builder_config"]["quant_mode"])
+
     model_config = ModelConfig(
         model_name=config["builder_config"]["name"],
         max_batch_size=config["builder_config"]["max_batch_size"],
@@ -107,7 +114,7 @@ def _read_config(config_path: Path):
         dtype=config["builder_config"]["precision"],
         lora_plugin=config["plugin_config"]["lora_plugin"],
         lora_target_modules=config["builder_config"]["lora_target_modules"],
-        quant_mode=QuantMode(config["builder_config"]["quant_mode"]),
+        quant_mode=quant_mode,
         use_custom_all_reduce=config["plugin_config"]["use_custom_all_reduce"],
         use_context_fmha_for_generation=config["plugin_config"]["use_context_fmha_for_generation"],
         gather_context_logits=config["builder_config"]["gather_context_logits"],

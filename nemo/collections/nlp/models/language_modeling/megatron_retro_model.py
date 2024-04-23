@@ -219,10 +219,6 @@ class MegatronRetroModel(MegatronGPTModel):
 
         inference_config = self.get_inference_config()
 
-        if torch.distributed.get_rank() == 0:
-            logging.info("inference_config: ")
-            logging.info(inference_config)
-
         if inference_config is None:
             return None
         else:
@@ -359,9 +355,9 @@ class MegatronRetroModel(MegatronGPTModel):
         def fwd_output_only_func(dataloader_iter, model):
             batch = next(dataloader_iter)
             extra_arg = {}
-            if len(batch) == 5:
+            if len(batch) == 6:
                 batch = [x.cuda() for x in batch]
-                tokens, attention_mask, position_ids, context_input_ids, context_position_ids, context_mask = batch
+                tokens, attention_mask, position_ids, context_input_ids, context_mask, context_position_ids = batch
                 attention_mask = attention_mask[0:1]
             else:
                 (
@@ -369,26 +365,21 @@ class MegatronRetroModel(MegatronGPTModel):
                     attention_mask,
                     position_ids,
                     context_input_ids,
-                    context_position_ids,
                     context_mask,
+                    context_position_ids,
                     set_inference_key_value_memory,
                     inference_max_sequence_len,
                 ) = batch
+                # Transfer needed data to GPU
                 tokens = tokens.cuda()
                 position_ids = position_ids.cuda()
-                if attention_mask is not None:
-                    attention_mask = attention_mask.cuda()
-                    attention_mask = attention_mask[0:1]
                 context_input_ids = context_input_ids.cuda()
                 context_position_ids = context_position_ids.cuda()
                 context_mask = None
                 if self.mcore_gpt:
-                    # if first step, then clear KV cache, otherwise reuse inference_paarms
-                    if set_inference_key_value_memory[0].item():
-                        self.inference_params = InferenceParams(
-                            max_batch_size=tokens.size(0), max_sequence_length=inference_max_sequence_len[0].item()
-                        )
-                    extra_arg['inference_params'] = self.inference_params
+                    # No caching key, value because currently it's not supported for mcore RETRO in NeMo
+                    pass
+
                 else:
                     extra_arg['set_inference_key_value_memory'] = set_inference_key_value_memory[0].item()
                     extra_arg['inference_max_sequence_len'] = inference_max_sequence_len[0].item()

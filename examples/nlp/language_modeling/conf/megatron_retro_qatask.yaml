@@ -24,7 +24,7 @@ trainer:
   logger: False # logger provided by exp_manager
   precision: 32 # 16, 32, or bf16
   use_distributed_sampler: False
-  
+
 tensor_model_parallel_size: -1
 pipeline_model_parallel_size: -1
 pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
@@ -35,8 +35,6 @@ checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpo
 checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
 hparams_file: null # model configuration file, only used for PTL checkpoint loading
 
-# RETRO inference
-prompt: "sample prompt"
-neighbors:
-  - "neighbor text 1"
-  - "neighbor text 2"
+# qa tasks
+qa_file_path: null
+pred_file_path: null

@@ -22,6 +22,7 @@ from typing import List, Set, Tuple
 import torch
 
 from nemo.collections.nlp.modules.common.lm_utils import pad_batch
+from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 
 try:
@@ -34,6 +35,8 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
+    from megatron.core.transformer.identity_op import IdentityOp
+    from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
 
     HAVE_MEGATRON_CORE = True
 
@@ -593,6 +596,225 @@ class PromptLearningModelTextGenerationStrategy(TextGenerationStrategy):
             tokens[:, :context_length][(tokens[:, :context_length] >= pseudo_token_ids_start)] = tokenizer.unk_id
 
 
+class McoreRetroModelTextGenerationStrategy(TextGenerationStrategy):
+    def __init__(self, model):
+        super().__init__(model)
+        self.forward_model = self.model.model
+
+    def clip_max_len(self, maxlen: int) -> int:
+        """ clip the max len based on the LM model max sequence length"""
+
+        # for positional embedding types that allow length extrapolation, don't clip the max length
+        if self.model.cfg.get("position_embedding_type", "learned_absolute") == "learned_absolute":
+            if maxlen > self.model.cfg.encoder_seq_length + 1:
+                maxlen = self.model.cfg.encoder_seq_length + 1
+        return maxlen
+
+    def tokenize_batch(self, sentences, max_len, add_BOS):
+        """
+        convert the sentences into lists of tokens, pad them to the same length, add bos tokens if it is needed
+        Args:
+            sentences (List[str]): list of input sentences in str format.
+            max_len (int): max number of tokens to generate.
+            add_BOS (bool): whether to add the BOS token at the beginning
+        Returns:
+            Tuple[torch.Tensor], the tokenized and padded torch tensor and the token context length tensor.
+        """
+        tokenizer = self.model.tokenizer
+        if add_BOS:
+            context_tokens = [[tokenizer.bos_id] + tokenizer.text_to_ids(s) for s in sentences]
+        else:
+            context_tokens = [tokenizer.text_to_ids(s) for s in sentences]
+
+        # attention, not pad_batch, padding will be done at init_batch
+        context_tokens, context_lengths = pad_batch(batch=context_tokens, pad_id=tokenizer.eos_id, max_len=0)
+
+        context_tokens_tensor = torch.cuda.LongTensor(context_tokens)
+        context_length_tensor = torch.cuda.LongTensor(context_lengths)
+        return context_tokens_tensor, context_length_tensor
+
+    def tokenize_neighbors_batch(self, neighbors, retro_args):
+        tokenizer = self.model.tokenizer
+        r = retro_args['retro_gpt_retrieved_length']
+        retro_num_neighbors = retro_args['retro_num_neighbors']
+        ft_neighbours = retro_args['ft_neighbours']
+        reuse_top = retro_args['reuse_top']
+
+        padded_valid_neighbours_tokens = []
+        for i in range(len(neighbors)):
+            onesample_neighbors = neighbors[i]
+
+            # tokenize neighbors
+            onesample_neighbors_tokens = []
+            for neighbor in onesample_neighbors:
+                onesample_neighbors_tokens.append(tokenizer.text_to_ids(neighbor))
+
+            # take top k neighbours
+            if reuse_top:
+                valid_onesample_neighbours_tokens = onesample_neighbors_tokens[:retro_num_neighbors]
+            else:
+                valid_onesample_neighbours_tokens = onesample_neighbors_tokens[
+                    ft_neighbours : retro_num_neighbors + ft_neighbours
+                ]
+
+            # pad neighbors
+            padded_valid_onesample_neighbours_tokens = []
+            for neighbour_tokens in valid_onesample_neighbours_tokens:
+                if len(neighbour_tokens) >= r:
+                    padded_onesample_neighbour_tokens = neighbour_tokens[:r]
+                else:
+                    padded_onesample_neighbour_tokens = neighbour_tokens + [tokenizer.eos_id] * (
+                        r - len(neighbour_tokens)
+                    )
+                padded_valid_onesample_neighbours_tokens.append(padded_onesample_neighbour_tokens)
+
+            # check if have enough neighbors
+            if len(padded_valid_onesample_neighbours_tokens) < retro_num_neighbors:
+                assert ValueError("neighbours are not enough, add empty ones and create mask for those empty ones")
+
+            # append to batch
+            padded_valid_neighbours_tokens.append(padded_valid_onesample_neighbours_tokens)
+
+        # cast to torch tensor
+        padded_valid_neighbours_tokens = torch.cuda.LongTensor(padded_valid_neighbours_tokens)
+        padded_valid_neighbours_tokens_shape = torch.cuda.LongTensor(padded_valid_neighbours_tokens.shape)
+
+        return padded_valid_neighbours_tokens, padded_valid_neighbours_tokens_shape
+
+    def init_batch(self, context_tokens: torch.Tensor, context_length: int, compute_attention_mask: bool, **extra):
+        """initialize the batch data before the inference steps."""
+
+        # For Mcore retrieval RETRO model, modify tokens and neighbors to set them into 2 chunks, one for question, and one for answer, both having the same length of context_tokens.shape[1]
+        bs, context_tokens_length = context_tokens.shape
+        assert bs == 1  # similar to M-LM RETRO inference code, currently only support batch_size=1
+        context_tokens = [context_tokens[0].tolist() + [self.model.tokenizer.eos_id] * context_tokens_length]
+        context_tokens = torch.cuda.LongTensor(context_tokens)
+        self.model.model.config.retro_gpt_chunk_length = context_tokens_length  # set RetroConfig of M-LM's RETRO model
+        # reshape tensor extra['neighbors_tokens'] (currently: [k, 1, r]) to [bs, l, k, r]
+        neighbors_tokens = extra['neighbors_tokens']
+        neighbors_tokens = neighbors_tokens.permute(1, 0, 2)
+        neighbors_tokens = neighbors_tokens.unsqueeze(0)
+        # duplicate into 2 chunks from [bs, l, k ,r] to [bs, 2*l, k ,r]
+        neighbors_tokens = neighbors_tokens.repeat(1, 2, 1, 1)
+
+        # Move to GPU.
+        tokenizer = self.model.tokenizer
+        tokens = context_tokens.contiguous().cuda()
+        neighbors_tokens = neighbors_tokens.contiguous().cuda()
+
+        # Get the attention mask and postition ids.
+        self.attention_mask, _, self.position_ids = get_ltor_masks_and_position_ids(
+            tokens,
+            tokenizer.eos_id,
+            self.model.cfg.get('reset_position_ids', False),
+            self.model.cfg.get('reset_attention_mask', False),
+            self.model.cfg.get('eod_mask_loss', False),
+            compute_attention_mask=compute_attention_mask,
+        )
+
+        # Get the attention mask and postition ids for neighbors (retro_generation.retro_generate_tokens_probs_and_return_on_first_stage)
+        # Reshape neighbors_tokens tensor to 2D for get_ltor_masks_and_position_ids and as forward arg of RETRO model, original shape is 3D ([bs, k, r])
+        [bs, l, k, r] = neighbors_tokens.shape
+        neighbors_tokens = neighbors_tokens.view(-1, r).long()
+
+        _, _, self.neighbor_position_ids = get_ltor_masks_and_position_ids(
+            neighbors_tokens,
+            tokenizer.eos_id,
+            self.model.cfg.get('reset_position_ids', False),
+            self.model.cfg.get('reset_attention_mask', False),
+            self.model.cfg.get('eod_mask_loss', False),
+        )
+        self.neighbor_attention_mask = torch.zeros(
+            [1, 1]
+        )  # dummy value, since the batch neighbor_attention_mask will be set to None in megatron_retro_model.py in Mcore implementation
+        self.neighbors_tokens = neighbors_tokens
+
+        # For Mcore retrieval RETRO model, following ADLR's Mcore RETRO inferencing implementation, updating the arguments inside RETRO model (retro_num_neighbors, retro_chunk_length) with the inference's sample
+        inference_retro_num_neighbors = k
+        inference_retro_chunk_length = context_tokens_length
+        inference_retro_retrieved_length = r
+        self.forward_model.config.retro_num_neighbors = inference_retro_num_neighbors
+        self.forward_model.config.retro_chunk_length = inference_retro_chunk_length
+        self.forward_model.config.retro_retrieved_length = inference_retro_retrieved_length
+        contain_encoder = True
+        if isinstance(self.forward_model, (Float16Module, MCoreFloat16Module)):
+            layers = self.forward_model.module.decoder.layers
+        else:
+            layers = self.forward_model.decoder.layers
+        for layer in layers:
+            if not (isinstance(layer.cross_attention, IdentityOp)):  # if this is encoder-decoder cross-attention layer
+                # updating RetroDecoder (RetroDecoderCrossAttention, RetroDecoderBiasDropoutAdd)
+                layer.cross_attention.retro_num_neighbors = inference_retro_num_neighbors
+                layer.cross_attention.retro_chunk_length = inference_retro_chunk_length
+                layer.cross_attention.retro_retrieved_length = inference_retro_retrieved_length
+                layer.cross_attn_bda.retro_chunk_length = inference_retro_chunk_length
+
+                # updating RetroEncoder (RetroEncoderCrossAttention, RetroEncoderBiasDropoutAdd, RetroEncoderLayerNorm)
+                if contain_encoder:  # the first cross-attention decoder layer contain encoder
+                    layer.cross_attention.encoder.layers[
+                        0
+                    ].cross_attention.retro_num_neighbors = inference_retro_num_neighbors
+                    layer.cross_attention.encoder.layers[
+                        0
+                    ].cross_attention.retro_chunk_length = inference_retro_chunk_length
+                    layer.cross_attention.encoder.layers[
+                        0
+                    ].cross_attention.retro_retrieved_length = inference_retro_retrieved_length
+                    layer.cross_attention.encoder.layers[
+                        0
+                    ].cross_attn_bda.retro_num_neighbors = inference_retro_num_neighbors
+                    layer.cross_attention.encoder.layers[
+                        0
+                    ].pre_mlp_layernorm.retro_num_neighbors = inference_retro_num_neighbors
+                    contain_encoder = False
+
+        return context_tokens
+
+    def prepare_batch_at_step(
+        self,
+        tokens: torch.Tensor,
+        maxlen: int,
+        micro_batch_size: int,
+        step: int,
+        context_length: int,
+        compute_attention_mask: bool = True,
+        **extra,
+    ) -> Tuple[List[torch.Tensor], List[int]]:
+        """
+        generate the batch used in inference for each of the steps
+        """
+
+        # For Mcore retrieval RETRO model, currently not support memory caching, always allocate memory for the entire context
+        # Allocate memory for the entire context.
+        set_inference_key_value_memory = True
+        tokens2use = tokens
+        positions2use = self.position_ids
+        attention_mask2use = self.attention_mask
+
+        """Prepare batch for each of the inference steps"""
+        attention_mask_repeat = None
+        if compute_attention_mask:
+            attention_mask_repeat = torch.concat([attention_mask2use for _ in range(micro_batch_size)])
+
+        setkey_value_array = torch.tensor(
+            [set_inference_key_value_memory] * micro_batch_size, device=torch.cuda.current_device()
+        )
+        len_array = torch.tensor([maxlen] * micro_batch_size, device=torch.cuda.current_device())
+
+        batch = [
+            tokens2use,
+            attention_mask_repeat,
+            positions2use,
+            self.neighbors_tokens,
+            self.neighbor_attention_mask,
+            self.neighbor_position_ids,
+            setkey_value_array,
+            len_array,
+        ]
+        tensor_shape = [tokens2use.shape[1], micro_batch_size, self.model.cfg.hidden_size]
+        return batch, tensor_shape
+
+
 def model_inference_strategy_dispatcher(model, **args):
     from nemo.collections.multimodal.models.multimodal_llm.neva.neva_model import MegatronNevaModel
     from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
@@ -600,6 +822,7 @@ def model_inference_strategy_dispatcher(model, **args):
         MegatronGPTPromptLearningModel,
     )
     from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
+    from nemo.collections.nlp.models.language_modeling.megatron_retro_model import MegatronRetroModel
     from nemo.collections.nlp.modules.common.retro_inference_strategies import (
         RetroFileQAModelTextGenerationStrategy,
         RetroModelTextGenerationStrategy,
@@ -610,7 +833,7 @@ def model_inference_strategy_dispatcher(model, **args):
         return NevaModelTextGenerationStrategy(model)
     if isinstance(model, MegatronGPTPromptLearningModel):
         return PromptLearningModelTextGenerationStrategy(model, **args)
-    elif isinstance(model, MegatronGPTModel):
+    elif isinstance(model, MegatronGPTModel) and not (isinstance(model, MegatronRetroModel)):
         return GPTModelTextGenerationStrategy(model)
     elif isinstance(model, MegatronRetrievalModel):
         strategy_name = args['strategy']
@@ -625,6 +848,8 @@ def model_inference_strategy_dispatcher(model, **args):
             return RetroFileQAModelTextGenerationStrategy(model, **args)
         else:
             raise ValueError(f'{strategy_name} is not supported for inference')
+    elif isinstance(model, MegatronRetroModel):
+        return McoreRetroModelTextGenerationStrategy(model)
     else:
         raise ValueError(f'{model} is not supported for inference')
 

@@ -113,7 +113,9 @@ except (ImportError, ModuleNotFoundError):
 NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE = "NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE"
 
 
-def init_model_parallel(sharp: bool, nccl_communicator_config_path: str = None) -> None:
+def init_model_parallel(
+    sharp: bool, nccl_communicator_config_path: str = None, distributed_timeout_minutes: int = 30
+) -> None:
     """ Initializes Megatron-LM model parallel if using model parallelism.
 
     Args:
@@ -139,6 +141,7 @@ def init_model_parallel(sharp: bool, nccl_communicator_config_path: str = None) 
                 use_sharp=sharp,
                 expert_model_parallel_size=app_state.expert_model_parallel_size,
                 order='tp-pp-dp' if app_state.use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+                distributed_timeout_minutes=distributed_timeout_minutes,
             )
 
             # assert that fake tp and pp rank match after model parallel init
@@ -219,7 +222,11 @@ class NLPDDPStrategy(DDPStrategy):
             app_state = AppState()
 
             if app_state.model_parallel_size is not None:
-                init_model_parallel(self.sharp, self.nccl_communicator_config_path)
+                init_model_parallel(
+                    self.sharp,
+                    self.nccl_communicator_config_path,
+                    distributed_timeout_minutes=self._timeout.total_seconds() / 60,
+                )
 
     def configure_ddp(self):
         """ Override LightningModule ddp if using model parallel.

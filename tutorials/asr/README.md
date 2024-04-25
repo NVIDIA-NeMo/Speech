@@ -34,7 +34,7 @@ In this repository, you will find several tutorials discussing what is Automatic
 
 13) `ASR_Example_CommonVoice_Finetuning`: Learn how to fine-tune an ASR model using CommonVoice to a new alphabet, Esperanto. We walk through the data processing steps of MCV data using HuggingFace Datasets, preparation of the tokenizer, model and then setup fine-tuning.
 
-14) `ASR_Context_Biasing`: This tutorial aims to show how to improve the recognition accuracy of specific words in NeMo framework for CTC and Trasducer (RNN-T) ASR models by using the fast context-biasing method with CTC-based Word Spotter.
+14) `ASR_Context_Biasing`: This tutorial aims to show how to improve the recognition accuracy of specific words in NeMo Framework for CTC and Trasducer (RNN-T) ASR models by using the fast context-biasing method with CTC-based Word Spotter.
 
 ----------------
 

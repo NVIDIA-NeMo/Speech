@@ -25,7 +25,7 @@ In NeMo, the text encoder is anchored in the :class:`~nemo.collections.nlp.model
 Vision Model
 ^^^^^^^^^^^^
 
-For visual interpretation, NeVA harnesses the power of the pre-trained CLIP visual encoder, ViT-L/14, recognized for its visual comprehension acumen. Images are first partitioned into standardized patches, for instance, 16x16 pixels. These patches are linearly embedded, forming a flattened vector that subsequently feeds into the transformer. The culmination of the transformer's processing is a unified image representation. In the NeMo framework, the NeVA vision model, anchored on the CLIP visual encoder ViT-L/14, can either be instantiated via the :class:`~nemo.collections.multimodal.models.multimodal_llm.clip.megatron_clip_models.CLIPVisionTransformer` class or initiated through the `transformers` package from Hugging Face.
+For visual interpretation, NeVA harnesses the power of the pre-trained CLIP visual encoder, ViT-L/14, recognized for its visual comprehension acumen. Images are first partitioned into standardized patches, for instance, 16x16 pixels. These patches are linearly embedded, forming a flattened vector that subsequently feeds into the transformer. The culmination of the transformer's processing is a unified image representation. In the NeMo Framework, the NeVA vision model, anchored on the CLIP visual encoder ViT-L/14, can either be instantiated via the :class:`~nemo.collections.multimodal.models.multimodal_llm.clip.megatron_clip_models.CLIPVisionTransformer` class or initiated through the `transformers` package from Hugging Face.
 
 Projection and Integration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

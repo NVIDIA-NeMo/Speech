@@ -1,7 +1,7 @@
 Stable Diffusion
 ================
 
-This section gives a brief overview of the stable diffusion model in NeMo framework.
+This section gives a brief overview of the stable diffusion model in NeMo Framework.
 
 Model Introduction
 --------------------

@@ -8,42 +8,125 @@ Introduction
 
 .. _dummy_header:
 
-NVIDIA NeMo Framework is an end-to-end, cloud-native framework to build, customize, and deploy generative AI models anywhere. 
-To learn more about using NeMo in generative AI workflows, please refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_.
+NVIDIA NeMo Framework is an end-to-end, cloud-native framework for building, customizing, and deploying generative AI models anywhere. It allows for the creation of state-of-the-art models across a wide array of domains, including speech, language, and vision. For detailed information on utilizing NeMo in your generative AI workflows, refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/index.html>`_.
 
-`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for Large Language Models (LLMs), 
-Multimodal (MM), Computer Vision (CV), Automatic Speech Recognition (ASR), 
-and Text-to-Speech (TTS) models. Each collection consists of
-prebuilt modules that include everything needed to train on your data.
-Every module can easily be customized, extended, and composed to create new generative AI
-model architectures.
+Training generative AI architectures typically requires significant data and computing resources. NeMo utilizes `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for efficient and performant multi-GPU/multi-node mixed-precision training.
+NeMo is built on top of NVIDIA's powerful Megatron-LM and Transformer Engine for its Large Language Models (LLMs) and Multimodal Models (MMs), leveraging cutting-edge advancements in model training and optimization. For Speech AI applications, Automatic Speech Recognition (ASR) and Text-to-Speech (TTS), NeMo is developed with native PyTorch and PyTorch Lightning, ensuring seamless integration and ease of use. Future updates are planned to align Speech AI models with the Megatron framework, enhancing training efficiency and model performance.
 
-Generative AI architectures are typically large and require a lot of data and compute
-for training. NeMo uses `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for easy and performant multi-GPU/multi-node
-mixed-precision training.
 
-`Pre-trained NeMo models <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ are available
-in 14+ languages.
+`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ features separate collections for Large Language Models (LLMs), Multimodal Models (MMs), Computer Vision (CV), Automatic Speech Recognition (ASR), and Text-to-Speech (TTS) models. Each collection comprises prebuilt modules that include everything needed to train on your data. These modules can be easily customized, extended, and composed to create new generative AI model architectures.
+
+(TODO: Still valid? LLM is not included here.) `Pre-trained NeMo models <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_ are available in 14+ languages.
 
 Prerequisites
 -------------
 
-Before you begin using NeMo, it's assumed you meet the following prerequisites.
+Before using NeMo, make sure you meet the following prerequisites:
 
-#. You have Python version 3.10 or above.
+#. Python version 3.10 or above.
 
-#. You have Pytorch version 1.13.1 or 2.0+.
+#. Pytorch version 1.13.1 or 2.0+.
 
-#. You have access to an NVIDIA GPU, if you intend to do model training.
+#. Access to an NVIDIA GPU for model training.
 
-.. _quick_start_guide:
+Installation
+------------
+
+**Using NVIDIA PyTorch Container**
+
+To leverage all optimizations for LLM training, including 3D Model Parallel, fused kernels, FP8, and more, we recommend using the NVIDIA PyTorch container.
+
+.. code-block:: bash
+
+    docker pull nvcr.io/nvidia/pytorch:24.01-py3
+    docker run --gpus all -it nvcr.io/nvidia/pytorch:24.01-py3
+
+Within the container, you can install NeMo and its dependencies as follows:
+
+NeMo Installation
+
+.. code-block:: bash
+
+    apt-get update && apt-get install -y libsndfile1 ffmpeg
+    pip install Cython
+    pip install nemo_toolkit['all']
+
+Transformer Engine Installation
+
+This step involves cloning the Transformer Engine repository, checking out a specific commit, and installing it with specific flags.
+
+.. code-block:: bash
+
+    git clone https://github.com/NVIDIA/TransformerEngine.git && \
+    cd TransformerEngine && \
+    git fetch origin 8c9abbb80dba196f086b8b602a7cf1bce0040a6a && \
+    git checkout FETCH_HEAD && \
+    git submodule init && git submodule update && \
+    NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
+
+Apex Installation
+
+This step includes a bug fix for Apex in the PyTorch 23.11 container.
+
+.. code-block:: bash
+
+    git clone https://github.com/NVIDIA/apex.git && \
+    cd apex && \
+    git checkout c07a4cf67102b9cd3f97d1ba36690f985bae4227 && \
+    cp -R apex /usr/local/lib/python3.10/dist-packages
+
+PyTorch Lightning Installation
+
+This step involves installing a bug-fixed version of PyTorch Lightning from a specific branch.
+
+.. code-block:: bash
+
+    git clone -b bug_fix https://github.com/athitten/pytorch-lightning.git && \
+    cd pytorch-lightning && \
+    PACKAGE_NAME=pytorch pip install -e .
+
+Megatron Core Installation
+
+This section details the steps to clone and install the Megatron Core.
+
+.. code-block:: bash
+
+    git clone https://github.com/NVIDIA/Megatron-LM.git && \
+    cd Megatron-LM && \
+    git checkout a5415fcfacef2a37416259bd38b7c4b673583675 && \
+    pip install .
+
+AMMO Installation
+
+This final step involves installing the AMMO package.
+
+.. code-block:: bash
+
+    pip install nvidia-ammo~=0.7.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir
+
+
+.. code-block:: bash
+
+    apt-get update && apt-get install -y libsndfile1 ffmpeg
+    pip install Cython
+    pip install nemo_toolkit['all']
+
+**Conda Installation**
+
+If you do not use the NVIDIA PyTorch container, we recommend installing NeMo in a clean Conda environment.
+
+.. code-block:: bash
+
+    conda create --name nemo python==3.10.12
+    conda activate nemo
+
+Refer to the PyTorch configurator for instructions on installing PyTorch. `configurator <https://pytorch.org/get-started/locally/>`_
 
 Quick Start Guide
 -----------------
 
-You can try out NeMo's ASR, LLM and TTS functionality with the example below, which is based on the `Audio Translation <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/AudioTranslationSample.ipynb>`_ tutorial.
+To explore NeMo's capabilities in LLM, ASR, and TTS, follow the example below based on the `Audio Translation <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/AudioTranslationSample.ipynb>`_ tutorial. Ensure NeMo is :ref:`installed <installation>` before proceeding.
 
-Once you have :ref:`installed NeMo <installation>`, then you can run the code below:
 
 .. code-block:: python
 
@@ -66,7 +149,7 @@ Once you have :ref:`installed NeMo <installation>`, then you can run the code be
     english_text = nmt_model.translate(mandarin_text)
     print(english_text)
 
-    # Instantiate a spectrogram generator (which converts text -> spectrogram) 
+    # Instantiate a spectrogram generator (which converts text -> spectrogram)
     # and vocoder model (which converts spectrogram -> audio waveform)
     spectrogram_generator = nemo_tts.models.FastPitchModel.from_pretrained(model_name="tts_en_fastpitch")
     vocoder = nemo_tts.models.HifiGanModel.from_pretrained(model_name="tts_en_hifigan")
@@ -80,67 +163,19 @@ Once you have :ref:`installed NeMo <installation>`, then you can run the code be
     import soundfile as sf
     sf.write("output_audio.wav", audio.to('cpu').detach().numpy()[0], 22050)
 
-You can learn more by about specific tasks you are interested in by checking out the NeMo :doc:`tutorials <./tutorials>`, or documentation (e.g. read :doc:`here <../asr/intro>` to learn more about ASR).
+For detailed tutorials and documentation on specific tasks or to learn more about NeMo, check out the NeMo :doc:`tutorials <./tutorials>` or dive deeper into the documentation, such as learning about ASR in :doc:`here <../asr/intro>`.
 
-You can also learn more about NeMo in the `NeMo Primer <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/00_NeMo_Primer.ipynb>`_ tutorial, which introduces NeMo, PyTorch Lightning, and OmegaConf, and shows how to use, modify, save, and restore NeMo models. Additionally, the `NeMo Models <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/01_NeMo_Models.ipynb>`__ tutorial explains the fundamentals of how NeMo models are created. These concepts are also explained in detail in the :doc:`NeMo Core <../core/core>` documentation.
-
-
-Introductory videos
--------------------
-
-See the two introductory videos below for a high level overview of NeMo.
-
-**Developing State-Of-The-Art Conversational AI Models in Three Lines of Code**
-
-.. raw:: html
-
-    <div style="position: relative; padding-bottom: 3%; height: 0; overflow: hidden; max-width: 100%; height: auto;">
-        <iframe width="560" height="315" src="https://www.youtube.com/embed/wBgpMf_KQVw" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-    </div>
-
-.. _installation:
-
-Installation
-------------
-
-The simplest way to install NeMo is via pip, see info below. 
-
-.. note:: Full NeMo installation instructions (with more ways to install NeMo, and how to handle optional dependencies) can be found in the `GitHub README <https://github.com/NVIDIA/NeMo#installation>`_.
-
-Conda
-~~~~~
-
-We recommend installing NeMo in a fresh Conda environment.
-
-.. code-block:: bash
-
-    conda create --name nemo python==3.10.12
-    conda activate nemo
-
-Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_.
-
-Pip
-~~~
-Use this installation mode if you want the latest released version.
-
-.. code-block:: bash
-
-    apt-get update && apt-get install -y libsndfile1 ffmpeg
-    pip install Cython
-    pip install nemo_toolkit['all']
-
-Depending on the shell used, you may need to use ``"nemo_toolkit[all]"`` instead in the above command.
-
-Discussion board
+Discussion Board
 ----------------
-For more information and questions, visit the `NVIDIA NeMo Discussion Board <https://github.com/NVIDIA/NeMo/discussions>`_.
 
-Contributing
-------------
+For additional information and questions, visit the `NVIDIA NeMo Discussion Board <https://github.com/NVIDIA/NeMo/discussions>`_.
 
-We welcome community contributions! Refer to the `CONTRIBUTING.md <https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md>`_  file for the process.
+Contribute to NeMo
+------------------
+
+Community contributions are welcome! See the `CONTRIBUTING.md <https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md>`_ file for how to contribute.
 
 License
 -------
 
-NeMo is released under an `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.
+NeMo is released under the `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.

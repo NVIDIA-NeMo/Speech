@@ -1,6 +1,8 @@
+Throughput Optimizations
+========================
+
 Sequence Packing for SFT/PEFT
 -----------------------------
-
 
 Overview
 ^^^^^^^^
@@ -132,6 +134,10 @@ To train with packed sequences, you need to change four items in the SFT/PEFT co
         model.global_batch_size=<GBS divided by n>
 
 Now you are all set to finetune your model with a much improved throughput!
+
+Communication Overlap
+---------------------
+NeMo leverages Megatron-Core's optimizations to enhance bandwidth utilization and effectively overlap computation with communication. Additional details will be provided soon.
 
 
 .. rubric:: Footnotes

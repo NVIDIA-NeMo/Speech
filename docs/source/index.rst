@@ -1,7 +1,19 @@
 NVIDIA NeMo Framework Developer Docs
 ====================================
 
-NVIDIA NeMo Framework is an end-to-end, cloud-native framework to build, customize, and deploy generative AI models anywhere.
+NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build, customize, and deploy generative AI models anywhere.
+
+`NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ supports large-scale training features, including:
+
+- Mixed Precision Training
+- Parallelism
+- Distributed Optimizer
+- Fully Sharded Data Parallel (FSDP)
+- Flash Attention
+- Activation Recomputation
+- Positional Embeddings and Positional Interpolation
+- Post-Training Quantization (PTQ) with Ammo
+- Sequence Packing
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:
 
@@ -9,7 +21,7 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework to build, customi
 
 * :doc:`Automatic Speech Recognition (ASR) <asr/intro>`
 
-* :doc:`Multimodal (MM) Models <multimodal/mllm/intro>`
+* :doc:`Multimodal Models (MMs) <multimodal/mllm/intro>`
 
 * :doc:`Text-to-Speech (TTS) <tts/intro>`
 
@@ -29,105 +41,49 @@ For quick guides and tutorials, see the "Getting started" section below.
    :titlesonly:
 
    starthere/intro
-   starthere/tutorials
    starthere/best-practices
+   starthere/tutorials
 
 For more information, browse the developer docs for your area of interest in the contents section below or on the left sidebar.
 
+
 .. toctree::
    :maxdepth: 1
-   :caption: NeMo Core
-   :name: core
+   :caption: Key Optimizations
+   :name: Key Optimizations
+
+   features/mixed_precision
+   features/parallelisms
+   features/memory_optimizations
+   features/throughput_optimizations
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Community Model Converters
+   :name: CheckpointConverters
+
+   ckpt_converters/intro
+
+.. toctree::
+   :maxdepth: 1
+   :caption: APIs
+   :name: APIs
    :titlesonly:
 
    core/core_index
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Community Model Converters
-   :name: CheckpointConverters
+   :maxdepth: 1
+   :caption: Collections
+   :name: Collections
+   :titlesonly:
 
-   ckpt_converters/user_guide
-   ckpt_converters/dev_guide
+   collections
 
 .. toctree::
    :maxdepth: 1
-   :caption: Large Language Models (LLMs)
-   :name: Large Language Models
-   :titlesonly:
-
-   nlp/nemo_megatron/intro
-   nlp/models
-   nlp/machine_translation/machine_translation
-   nlp/megatron_onnx_export
-   nlp/quantization
-   nlp/api
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Speech AI
-   :name: Speech AI
-   :titlesonly:
-
-   asr/intro
-   asr/speech_classification/intro
-   asr/speaker_recognition/intro
-   asr/speaker_diarization/intro
-   asr/ssl/intro
-   asr/speech_intent_slot/intro
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Multimodal (MM)
-   :name: Multimodal
-   :titlesonly:
-
-   multimodal/mllm/intro
-   multimodal/vlm/intro
-   multimodal/text2img/intro
-   multimodal/nerf/intro
-   multimodal/api
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Text To Speech (TTS)
-   :name: Text To Speech
-   :titlesonly:
-
-   tts/intro
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Vision (CV)
-   :name: vision
-   :titlesonly:
-
-   vision/intro
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Common
-   :name: Common
-   :titlesonly:
-
-   common/intro
-
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Speech Tools
-   :name: Speech Tools
+   :caption: Speech AI Tools
+   :name: Speech AI Tools
    :titlesonly:
 
    tools/intro
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Upgrade Guide
-   :name: Upgrade Guide
-   :titlesonly:
-
-   starthere/migration-guide

@@ -1,5 +1,5 @@
 =========
-NeMo Core
+NeMo APIs
 =========
 
 You can learn more about the underlying principles of the NeMo codebase in this section.
@@ -30,7 +30,7 @@ Alternatively, you can jump straight to the documentation for the individual col
 
 * :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
 
-* :doc:`Multimodal (MM) Models <../multimodal/mllm/intro>`
+* :doc:`Multimodal Models (MMs) <../multimodal/mllm/intro>`
 
 * :doc:`Text-to-Speech (TTS) <../tts/intro>`
 

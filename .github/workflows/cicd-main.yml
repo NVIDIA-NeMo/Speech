@@ -325,7 +325,7 @@ jobs:
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -343,7 +343,7 @@ jobs:
             python examples/asr/asr_ctc/speech_to_text_ctc.py \
             model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_results
@@ -353,7 +353,7 @@ jobs:
 
   ASR_dev_run_Speech_to_Text_WPE_-_CitriNet:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -374,7 +374,7 @@ jobs:
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
             model.tokenizer.dir="/home/TestData/asr_tokenizers/an4_wpe_128/" \
             model.tokenizer.type="wpe" \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_results
@@ -384,7 +384,7 @@ jobs:
 
   ASR_dev_run_Speech_Pre-training_-_CitriNet:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -403,7 +403,7 @@ jobs:
             --config-path="../conf/ssl/citrinet/" --config-name="citrinet_ssl_ci" \
             model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_pre_training_results
@@ -413,7 +413,7 @@ jobs:
 
   ASR_dev_run_Speech_To_Text_Finetuning:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -434,7 +434,7 @@ jobs:
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
             init_from_nemo_model=/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo \
             model.tokenizer.update_tokenizer=False \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_finetuning_results
@@ -444,7 +444,7 @@ jobs:
 
   ASR_dev_run_Speech_To_Text_HF_Finetuning:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -481,7 +481,7 @@ jobs:
             model.optim.sched.warmup_steps=0 \
             +model.optim.sched.max_steps=3 \
             trainer.max_epochs=null \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_finetuning_results
@@ -491,7 +491,7 @@ jobs:
 
   ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -514,7 +514,7 @@ jobs:
             model.tokenizer.type="wpe" \
             model.train_ds.batch_size=4 \
             model.validation_ds.batch_size=4 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_conformer_results
@@ -525,7 +525,7 @@ jobs:
   # L2: ASR dev run - part two
   ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -549,7 +549,7 @@ jobs:
             model.encoder.d_model=144 \
             model.train_ds.batch_size=4 \
             model.validation_ds.batch_size=4 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_wpe_squeezeformer_results
@@ -588,7 +588,7 @@ jobs:
 
   # L2_Speech_to_Text_AED:
   #   needs: [cicd-test-container-setup]
-  #   runs-on: self-hosted-azure
+  #   runs-on: self-hosted-azure-gpus-1
   #   container:
   #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
@@ -627,7 +627,7 @@ jobs:
   #           model.tokenizer.langs.en.type=bpe \
   #           ++model.tokenizer.langs.es.dir=/home/TestData/asr_tokenizers/canary/es/tokenizer_spe_bpe_v1024_max_4 \
   #           ++model.tokenizer.langs.es.type=bpe \
-  #           trainer.devices=[0] \
+  #           trainer.devices=1 \
   #           trainer.accelerator="gpu" \
   #           +trainer.use_distributed_sampler=false \
   #           +trainer.fast_dev_run=True \
@@ -638,7 +638,7 @@ jobs:
   # L2: Speaker dev run
   L2_Speaker_dev_run_Speaker_Recognition:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -660,7 +660,7 @@ jobs:
             model.validation_ds.manifest_filepath=/home/TestData/an4_speaker/dev.json \
             model.decoder.num_classes=2 \
             trainer.max_epochs=10 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/speaker_tasks/recognition/speaker_recognition_results
@@ -670,7 +670,7 @@ jobs:
 
   L2_Speaker_dev_run_Speaker_Diarization:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -693,7 +693,7 @@ jobs:
             model.validation_ds.emb_dir=examples/speaker_tasks/diarization/speaker_diarization_results \
             model.train_ds.manifest_filepath=/home/TestData/an4_diarizer/simulated_train/msdd_data.50step.json \
             model.validation_ds.manifest_filepath=/home/TestData/an4_diarizer/simulated_valid/msdd_data.50step.json \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/speaker_tasks/diarization/speaker_diarization_results
@@ -703,7 +703,7 @@ jobs:
 
   L2_Speaker_dev_run_Speech_to_Label:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -722,7 +722,7 @@ jobs:
             model.train_ds.manifest_filepath=/home/TestData/speech_commands/train_manifest.json \
             model.validation_ds.manifest_filepath=/home/TestData/speech_commands/test_manifest.json \
             model.test_ds.manifest_filepath=/home/TestData/speech_commands/test_manifest.json \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             model.preprocessor._target_=nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor \
@@ -858,7 +858,7 @@ jobs:
   # L2: ASR Multi-dataloader dev run
   L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -876,7 +876,7 @@ jobs:
             python examples/asr/asr_ctc/speech_to_text_ctc.py \
             model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
             model.validation_ds.manifest_filepath=[/home/TestData/an4_dataset/an4_val.json,/home/TestData/an4_dataset/an4_val.json] \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             trainer.max_epochs=1 \
             trainer.max_steps=1 \
@@ -888,7 +888,7 @@ jobs:
 
   L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -906,7 +906,7 @@ jobs:
             python examples/asr/speech_classification/speech_to_label.py \
             model.train_ds.manifest_filepath=/home/TestData/speech_commands/train_manifest.json \
             model.validation_ds.manifest_filepath=[/home/TestData/speech_commands/test_manifest.json,/home/TestData/speech_commands/test_manifest.json] \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             trainer.max_epochs=1 \
             trainer.max_steps=1 \
@@ -927,7 +927,7 @@ jobs:
   # L2: ASR Adapters
   L2_ASR_Adapters_Linear_Adapters:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -949,7 +949,7 @@ jobs:
             model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
             trainer.max_steps=5 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_adapters_results
@@ -959,7 +959,7 @@ jobs:
 
   L2_ASR_Adapters_RelPos_MHA_Adapters:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -982,7 +982,7 @@ jobs:
             model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
             model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
             trainer.max_steps=5 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_to_text_adapters_mha_results
@@ -1109,7 +1109,7 @@ jobs:
   # L2: G2P Models
   L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1133,7 +1133,7 @@ jobs:
                     model.tokenizer.dir=/home/TestData/g2p/tokenizer_spe_unigram_v512 \
                     trainer.max_epochs=1 \
                     model.max_source_len=64 \
-                    trainer.devices=[0] \
+                    trainer.devices=1 \
                     do_training=True \
                     do_testing=True \
                     exp_manager.exp_dir=${OUTPUT_DIR_CONFORMER} \
@@ -1158,7 +1158,7 @@ jobs:
     #             model.test_ds.manifest_filepath=/home/TestData/g2p/g2p.json \
     #             trainer.max_epochs=1 \
     #             model.max_source_len=64 \
-    #             trainer.devices=[1] \
+    #             trainer.devices=1 \
     #             do_training=True \
     #             do_testing=True \
     #             exp_manager.exp_dir=${OUTPUT_DIR_T5} \
@@ -1217,7 +1217,7 @@ jobs:
   # TODO: pleasefixme
   # L2_Dialogue_Classification_Dialogue_Intent_and_slot_classification_using_GPT:
   #   needs: [cicd-test-container-setup]
-  #   runs-on: self-hosted-azure
+  #   runs-on: self-hosted-azure-gpus-1
   #   container:
   #     image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #     options: 
@@ -1246,7 +1246,7 @@ jobs:
   #           model.test_ds.batch_size=2 \
   #           model.nemo_path=null \
   #           trainer.val_check_interval=0.0 \
-  #           trainer.devices=[0] \
+  #           trainer.devices=1 \
   #           model.dataset.use_cache=false \
   #           model.tokenizer.special_tokens={pad_token:"endoftext"} \
   #           model.tokenizer.tokenizer_name=gpt2 \
@@ -1258,7 +1258,7 @@ jobs:
 
   L2_Dialogue_Classification_Intent_and_slot_classification_using_SGDQA:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1286,7 +1286,7 @@ jobs:
             model.dataset.num_tasks=6 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-cased \
             trainer.accelerator=gpu \
@@ -1297,7 +1297,7 @@ jobs:
 
   L2_Dialogue_Classification_Intent_and_slot_classification_using_IntentSlotClassificationModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1324,7 +1324,7 @@ jobs:
             model.test_ds.batch_size=2 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-uncased \
             trainer.accelerator=gpu \
@@ -1335,7 +1335,7 @@ jobs:
 
   L2_Dialogue_Classification_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1365,7 +1365,7 @@ jobs:
             model.test_ds.batch_size=2 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-uncased \
             trainer.accelerator=gpu \
@@ -1376,7 +1376,7 @@ jobs:
 
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1407,7 +1407,7 @@ jobs:
             model.test_ds.batch_size=2 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-uncased \
             trainer.accelerator=gpu \
@@ -1418,7 +1418,7 @@ jobs:
 
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel_BART_Classifier:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1442,7 +1442,7 @@ jobs:
             model.dataset.task=design \
             model.dataset.prompt_template="This example is related to" \
             model.library=huggingface \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=bert-base-uncased \
             trainer.accelerator=gpu \
@@ -1453,7 +1453,7 @@ jobs:
 
   L2_Dialogue_Classification_Design_Intent_classification_using_DialogueNearestNeighbourModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1476,7 +1476,7 @@ jobs:
             model.dataset.task=design \
             model.dataset.prompt_template="" \
             model.library=huggingface \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=sentence-transformers/all-MiniLM-L6-v2 \
             trainer.accelerator=gpu \
@@ -1488,7 +1488,7 @@ jobs:
   # L2: Dialogue Generation
   L2_Dialogue_Generation_Dialogue_Answer_Extender_using_DialogueS2SGenerationModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1518,7 +1518,7 @@ jobs:
             model.test_ds.batch_size=2 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=facebook/bart-large \
             trainer.accelerator=gpu \
@@ -1529,7 +1529,7 @@ jobs:
 
   L2_Dialogue_Generation_Dialogue_SGD_Based_Answer_Extender_using_DialogueS2SGenerationModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1565,7 +1565,7 @@ jobs:
             model.test_ds.batch_size=2 \
             model.nemo_path=null \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             model.language_model.pretrained_model_name=facebook/bart-large \
             trainer.accelerator=gpu \
             exp_manager=null  && \
@@ -1593,7 +1593,7 @@ jobs:
 #             model.dataset.task=ms_marco \
 #             model.dataset.debug_mode=True \
 #             trainer.val_check_interval=0.0 \
-#             trainer.devices=[0] \
+#             trainer.devices=1 \
 #             model.dataset.use_cache=false \
 #             model.language_model.pretrained_model_name=gpt2 \
 #             trainer.accelerator=gpu \
@@ -1607,7 +1607,7 @@ jobs:
   # L2: COPY
   L2_COPY_Dialogue_Answer_Extender_using_DialogueGPTGenerationModel:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1631,7 +1631,7 @@ jobs:
             model.dataset.task=ms_marco \
             model.dataset.debug_mode=True \
             trainer.val_check_interval=0.0 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             model.dataset.use_cache=false \
             model.language_model.pretrained_model_name=gpt2 \
             trainer.accelerator=gpu \
@@ -1703,7 +1703,7 @@ jobs:
 #     trainer.accelerator=gpu \
 #     trainer.strategy=ddp \
 #     trainer.precision=16 \
-#     trainer.devices=[1] \
+#     trainer.devices=1 \
 #     trainer.accelerator="gpu" \
 #     +trainer.fast_dev_run=true \
 #     exp_manager=null
@@ -1713,7 +1713,7 @@ jobs:
   # L2: BERT Text Classification
   L2_BERT_Text_Classification_with_BERT_Test:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1737,7 +1737,7 @@ jobs:
             model.train_ds.batch_size=10 \
             model.dataset.max_seq_length=50 \
             model.dataset.use_cache=false \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager=null
@@ -1747,7 +1747,7 @@ jobs:
   # L2: Parallel BERT Question-Answering SQUAD v1.1 & v2.0
   L2_Parallel_BERT_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1780,7 +1780,7 @@ jobs:
             model.language_model.pretrained_model_name=bert-base-uncased \
             model.dataset.version_2_with_negative=false \
             trainer.precision=16 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1788,7 +1788,7 @@ jobs:
 
   L2_Parallel_BERT_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1818,7 +1818,7 @@ jobs:
             model.language_model.pretrained_model_name=bert-base-uncased \
             model.dataset.version_2_with_negative=true \
             trainer.precision=16 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1827,7 +1827,7 @@ jobs:
   # L2: Parallel BART Question-Answering SQUAD v1.1 & v2.0
   L2_Parallel_BART_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1860,7 +1860,7 @@ jobs:
             model.language_model.pretrained_model_name=facebook/bart-base \
             model.dataset.version_2_with_negative=false \
             trainer.precision=16 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1868,7 +1868,7 @@ jobs:
 
   L2_Parallel_BART_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1898,7 +1898,7 @@ jobs:
             model.language_model.pretrained_model_name=facebook/bart-base \
             model.dataset.version_2_with_negative=true \
             trainer.precision=16 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1907,7 +1907,7 @@ jobs:
   # L2: Parallel GPT2 Question-Answering SQUAD v1.1 & v2.0
   L2_Parallel_GPT2_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1940,7 +1940,7 @@ jobs:
             model.language_model.pretrained_model_name=gpt2 \
             model.dataset.version_2_with_negative=false \
             trainer.precision=16 \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1948,7 +1948,7 @@ jobs:
 
   L2_Parallel_GPT2_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1978,7 +1978,7 @@ jobs:
             model.language_model.pretrained_model_name=gpt2 \
             model.dataset.version_2_with_negative=true \
             trainer.precision=16 \
-            trainer.devices=[1] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             exp_manager=null
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
@@ -1987,7 +1987,7 @@ jobs:
   # L2: Intent and Slot Classification Tasks
   L2_Intent_and_Slot_Classification_Tasks_Intent_and_Slot_Classification:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2007,7 +2007,7 @@ jobs:
             model.data_dir=/home/TestData/nlp/retail \
             model.validation_ds.prefix=dev \
             model.test_ds.prefix=dev \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager.exp_dir=checkpoints
@@ -2017,7 +2017,7 @@ jobs:
 
   L2_Intent_and_Slot_Classification_Tasks_Multi-Label_Intent_and_Slot_Classification:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2037,7 +2037,7 @@ jobs:
             model.data_dir=/home/TestData/nlp/new_multiatis \
             model.validation_ds.prefix=dev \
             model.test_ds.prefix=dev \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             +trainer.fast_dev_run=true \
             exp_manager.exp_dir=checkpoints2
             rm -rf checkpoints2
@@ -2153,7 +2153,7 @@ jobs:
   # L2: Parallel NLP Examples 2
   L2_Parallel_NLP_Examples2_NER_finetuning_from_pretrained_Test:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2174,7 +2174,7 @@ jobs:
             model.dataset.data_dir=/home/TestData/nlp/ner/ \
             model.train_ds.batch_size=2 \
             model.dataset.use_cache=false \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             model.dataset.class_balancing="weighted_loss" \
@@ -2184,7 +2184,7 @@ jobs:
 
   L2_Parallel_NLP_Examples2_Punctuation_and_capitalization_finetuning_from_pretrained_test:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2210,7 +2210,7 @@ jobs:
               +model.train_ds.use_cache=false \
               +model.validation_ds.use_cache=false \
               +model.test_ds.use_cache=false \
-              trainer.devices=[1] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               +trainer.fast_dev_run=true \
               exp_manager.exp_dir=null && \
@@ -2220,7 +2220,7 @@ jobs:
 
   L2_Parallel_NLP_Examples2_NER_with_TurkuNLP__bert-base-finnish-cased-v1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2238,7 +2238,7 @@ jobs:
             cd examples/nlp/token_classification && \
             python token_classification_train.py \
             model.dataset.data_dir=/home/TestData/nlp/token_classification_punctuation/ \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             model.dataset.use_cache=false \
@@ -2586,7 +2586,7 @@ jobs:
   # L2: Parallel Pretraining BERT pretraining from Text/Preprocessed
   L2_Pretraining_BERT_pretraining_from_Text:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2604,7 +2604,7 @@ jobs:
             cd examples/nlp/language_modeling && \
               python bert_pretraining.py \
               --config-name=bert_pretraining_from_text_config.yaml \
-              trainer.devices=[0] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               trainer.precision=16 \
               +trainer.fast_dev_run=true \
@@ -2628,7 +2628,7 @@ jobs:
 
   L2_Pretraining_BERT_from_Preprocessed:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2646,7 +2646,7 @@ jobs:
             cd examples/nlp/language_modeling && \
               python bert_pretraining.py \
               --config-name=bert_pretraining_from_preprocessed_config.yaml \
-              trainer.devices=[1] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               trainer.precision=16 \
               +trainer.fast_dev_run=false \
@@ -2704,7 +2704,7 @@ jobs:
   # L2: NMT Attention is All You Need Training
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Post-LN:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2738,7 +2738,7 @@ jobs:
               model.decoder.hidden_size=64 \
               model.decoder.inner_size=256 \
               +model.optim.capturable=True \
-              trainer.devices=[0] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               +trainer.val_check_interval=2 \
               +trainer.limit_val_batches=1 \
@@ -2766,7 +2766,7 @@ jobs:
               model.decoder.hidden_size=64 \
               model.decoder.inner_size=256 \
               +model.optim.capturable=True \
-              trainer.devices=[0] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               +trainer.val_check_interval=10 \
               +trainer.limit_val_batches=1 \
@@ -2782,7 +2782,7 @@ jobs:
 
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Pre-LN:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2812,7 +2812,7 @@ jobs:
               model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/spm_4k_ende.model \
               model.encoder.pre_ln=true \
               model.decoder.pre_ln=true \
-              trainer.devices=[1] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               +trainer.fast_dev_run=true \
               +trainer.limit_test_batches=2 \
@@ -2822,7 +2822,7 @@ jobs:
 
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Multi-Validation:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2850,7 +2850,7 @@ jobs:
               model.test_ds.tgt_file_name=[/home/TestData/nlp/nmt/toy_data/wmt13-en-de.ref,/home/TestData/nlp/nmt/toy_data/wmt14-en-de.ref] \
               model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/spm_4k_ende.model \
               model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/spm_4k_ende.model \
-              trainer.devices=[0] \
+              trainer.devices=1 \
               trainer.accelerator="gpu" \
               +trainer.fast_dev_run=true \
               +trainer.limit_test_batches=2 \
@@ -2889,7 +2889,7 @@ jobs:
   # L2: NMT Attention is All You Need Finetuning
   L2_NMT_Attention_is_All_You_Need_Finetuning:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2907,7 +2907,7 @@ jobs:
             cd examples/nlp/machine_translation && \
             python enc_dec_nmt_finetune.py \
             model_path=/home/TestData/nlp/nmt/toy_data/enes_v16k_s100k_6x6.nemo \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             ~trainer.max_epochs \
             model.train_ds.src_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
             model.train_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref \
@@ -2932,7 +2932,7 @@ jobs:
   # L2: NMT Tarred Dataset Creation
   L2_NMT_Tarred_Dataset_Creation_Auto_Tarred_Dataset_Creation:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2964,7 +2964,7 @@ jobs:
             model.encoder_tokenizer.vocab_size=2000 \
             model.decoder_tokenizer.vocab_size=2000 \
             ~model.test_ds \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.fast_dev_run=true \
             exp_manager=null \
@@ -3257,7 +3257,7 @@ jobs:
     #           model.test_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt13-en-de.ref \
     #           model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
     #           model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-    #           trainer.devices=[1] \
+    #           trainer.devices=1 \
     #           trainer.accelerator="gpu" \
     #           +trainer.fast_dev_run=true \
     #           +trainer.limit_test_batches=2 \
@@ -3303,7 +3303,7 @@ jobs:
     #           model.test_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
     #           model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
     #           model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-    #           trainer.devices=[0] \
+    #           trainer.devices=1 \
     #           trainer.accelerator="gpu" \
     #           +trainer.fast_dev_run=true \
     #           +trainer.limit_test_batches=2 \
@@ -3338,7 +3338,7 @@ jobs:
     #           model.test_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
     #           model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
     #           model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-    #           trainer.devices=[1] \
+    #           trainer.devices=1 \
     #           trainer.accelerator="gpu" \
     #           +trainer.fast_dev_run=true \
     #           +trainer.limit_test_batches=2 \
@@ -3384,7 +3384,7 @@ jobs:
     #           model.test_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
     #           model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
     #           model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-    #           trainer.devices=[0] \
+    #           trainer.devices=1 \
     #           trainer.accelerator="gpu" \
     #           +trainer.fast_dev_run=true \
     #           +trainer.limit_test_batches=2 \
@@ -3419,7 +3419,7 @@ jobs:
     #           model.test_ds.tgt_file_name=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src \
     #           model.encoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
     #           model.decoder_tokenizer.tokenizer_model=/home/TestData/nlp/nmt/toy_data/tt_tokenizer.BPE.4096.model \
-    #           trainer.devices=[1] \
+    #           trainer.devices=1 \
     #           trainer.accelerator="gpu" \
     #           +trainer.fast_dev_run=true \
     #           +trainer.limit_test_batches=2 \
@@ -4607,7 +4607,7 @@ jobs:
 
   L2_Megatron_GPT_Finetuning_StarCoder_PP1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5671,7 +5671,7 @@ jobs:
   # TODO(Oktai15): update it in 1.8.0 version
   L2_Megatron_T5_GLUE_RTE:  
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5715,7 +5715,7 @@ jobs:
   
   L2_Megatron_T5_GLUE_XNLI:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5886,7 +5886,7 @@ jobs:
   # L2: TTS Fast dev runs 1
   L2_TTS_Fast_dev_runs_1_Tacotron_2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-1
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5904,7 +5904,7 @@ jobs:
             python examples/tts/tacotron2.py \
             train_dataset=/home/TestData/an4_dataset/an4_train.json \
             validation_datasets=/home/TestData/an4_dataset/an4_val.json \
-            trainer.devices=[0] \
+            trainer.devices=1 \
             trainer.accelerator="gpu" \
             +trainer.limit_train_batches=1 +trainer.limit_val_batches=1 trainer.max_epochs=1 \
             trainer.strategy=auto \

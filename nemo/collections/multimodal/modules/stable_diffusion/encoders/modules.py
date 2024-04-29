@@ -718,7 +718,7 @@ class FrozenMegatronCLIPEmbedder(AbstractEmbModel):
 
     def encode_with_transformer(self, text):
         x = self.model.language_model.embedding.word_embeddings(text)
-        x += self.model.language_model.embedding.position_embeddings
+        x = x + self.model.language_model.embedding.position_embeddings
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.text_transformer_forward(x, attn_mask=self.model.attn_mask)
         x = self.model.language_model.encoder.final_layernorm(x)

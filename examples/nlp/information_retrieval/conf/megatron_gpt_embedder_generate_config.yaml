@@ -4,7 +4,7 @@ trainer:
   devices: 1
   accelerator: gpu
   num_nodes: 1
-  precision: 16
+  precision: bf16
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
@@ -66,8 +66,14 @@ model:
   hidden_dropout: 0.0
   attention_dropout: 0.0
   ffn_dropout: 0.0
-  temperature: 0.8
+  temperature: 0.02
   num_soft_negatives: 0 # Number of soft negatives to use for contrastive loss,it should be max(batch_size - 1), 0 means use hard negatives only
+  use_all_possible_negatives: False # If True, use all possible negatives for contrastive loss, otherwise use num_soft_negatives, if num_soft_negatives is 0, use hard negatives only
+  post_process: False # should be False.
+  transformer_engine: True # required to be True for newer versions of Megatron-LM based models
+  mcore_gpt: True # required to be True for newer versions of Megatron-LM based models
+  use_flash_attention: True
+  precision: bf16
 
   peft:
     peft_scheme: "lora"  # can be either adapter,ia3, or ptuning
@@ -119,8 +125,8 @@ model:
       query_file_names: ??? # Path to a list of JSONL files corresponding to the query data. Data format is identical to validation_ds.
       doc_file_names: ??? # Path to a list of JSONL files corresponding to the doc data. Data format is identical to validation_ds.
       names: ["queries", "doc"] # Names of the corresponding datasets used to log metrics.
-      global_batch_size: 1
-      micro_batch_size: 1
+      global_batch_size: ${global_batch_size}
+      micro_batch_size: ${micro_batch_size}
       shuffle: False
       num_workers: 0
       pin_memory: True

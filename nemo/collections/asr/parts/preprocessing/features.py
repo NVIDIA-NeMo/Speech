@@ -60,17 +60,33 @@ def normalize_batch(x, seq_len, normalize_type):
     x_mean = None
     x_std = None
     if normalize_type == "per_feature":
-        x_mean = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
-        x_std = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
-        for i in range(x.shape[0]):
-            if x[i, :, : seq_len[i]].shape[1] == 1:
-                raise ValueError(
-                    "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
-                    "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
-                    "feature (ex. at least `hop_length` for Mel Spectrograms)."
-                )
-            x_mean[i, :] = x[i, :, : seq_len[i]].mean(dim=1)
-            x_std[i, :] = x[i, :, : seq_len[i]].std(dim=1)
+        batch_size = x.shape[0]
+        max_time = x.shape[2]
+
+        # When doing stream capture to a graph, item() is not allowed
+        # becuase it calls cudaStreamSynchronize(). Therefore, we are
+        # sacrificing some error checking when running with cuda graphs.
+        if (
+            torch.cuda.is_available()
+            and not torch.cuda.is_current_stream_capturing()
+            and torch.any(seq_len == 1).item()
+        ):
+            raise ValueError(
+                "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
+                "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
+                "feature (ex. at least `hop_length` for Mel Spectrograms)."
+            )
+        time_steps = torch.arange(max_time, device=x.device).unsqueeze(0).expand(batch_size, max_time)
+        valid_mask = time_steps < seq_len.unsqueeze(1)
+        x_mean_numerator = torch.where(valid_mask.unsqueeze(1), x, 0.0).sum(axis=2)
+        x_mean_denominator = valid_mask.sum(axis=1)
+        x_mean = x_mean_numerator / x_mean_denominator.unsqueeze(1)
+
+        # Subtract 1 in the denominator to correct for the bias.
+        x_std = torch.sqrt(
+            torch.sum(torch.where(valid_mask.unsqueeze(1), x - x_mean.unsqueeze(2), 0.0) ** 2, axis=2)
+            / (x_mean_denominator.unsqueeze(1) - 1.0)
+        )
         # make sure x_std is not zero
         x_std += CONSTANT
         return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2), x_mean, x_std
@@ -457,7 +473,7 @@ class FilterbankFeatures(nn.Module):
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
         max_len = x.size(-1)
-        mask = torch.arange(max_len).to(x.device)
+        mask = torch.arange(max_len, device=x.device)
         mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
         x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
         del mask

@@ -89,6 +89,7 @@ class LhotseDataLoadingConfig:
     seed: int | str = 0
     num_workers: int = 0
     pin_memory: bool = False
+    channel_selector: int | str | None = None
 
     # 4. Optional Lhotse data augmentation.
     #   a. On-the-fly noise/audio mixing.
@@ -155,6 +156,11 @@ def get_lhotse_dataloader_from_config(
 
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, is_tarred = read_cutset_from_config(config)
+
+    # Apply channel selector
+    if config.channel_selector is not None:
+        logging.info('Using channel selector %s.', config.channel_selector)
+        cuts = cuts.map(partial(_select_channel, channel_selector=config.channel_selector))
 
     # Resample as a safeguard; it's a no-op when SR is already OK
     cuts = cuts.resample(config.sample_rate)
@@ -443,3 +449,25 @@ def _flatten_alt_text(cut) -> list:
         text_instance.custom = {"text": data.pop("text"), "lang": data.pop("lang"), **data}
         ans.append(text_instance)
     return ans
+
+
+def _select_channel(cut, channel_selector: int | str) -> list:
+    if isinstance(channel_selector, int):
+        channel_idx = channel_selector
+    elif isinstance(channel_selector, str):
+        if channel_selector in cut.custom:
+            channel_idx = cut.custom[channel_selector]
+        else:
+            raise ValueError(f"Channel selector {channel_selector} not found in cut.custom")
+
+    if channel_idx >= cut.num_channels:
+        raise ValueError(
+            f"Channel index {channel_idx} is larger than the actual number of channels {cut.num_channels}"
+        )
+
+    if cut.num_channels == 1:
+        # one channel available and channel_idx==0
+        return cut
+    else:
+        # with_channels only defined on MultiCut
+        return cut.with_channels(channel_idx)

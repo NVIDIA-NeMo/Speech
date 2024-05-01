@@ -123,6 +123,9 @@ class LoraPEFTConfig(PEFTConfig):
         kv_channels = self._calculate_kv_channels(cfg)
         projection_size = kv_channels * cfg.num_attention_heads
         num_query_groups = cfg.get("num_query_groups", cfg.num_attention_heads)
+        if num_query_groups is None:
+            # Cover the case where num_query_groups is explicitly set to null
+            num_query_groups = cfg.num_attention_heads
 
         qkv_projection_size = projection_size + (2 * kv_channels * num_query_groups)
 

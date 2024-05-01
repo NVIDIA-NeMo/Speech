@@ -41,7 +41,7 @@ Converting Local Checkpoints
 
 The training script only auto-converts the final checkpoint into the ``.nemo`` format. To evaluate intermediate training checkpoints, conversion to ``.nemo`` might be needed. For this:
 
-.. code-block:: python
+.. code-block:: bash
 
    python -m torch.distributed.launch --nproc_per_node=<tensor_model_parallel_size> * <pipeline_model_parallel_size> \
        examples/multimodal/convert_ckpt_to_nemo.py \
@@ -59,12 +59,12 @@ NeVA Checkpoints
 
 Currently, the conversion mainly supports LLaVA checkpoints based on "llama-2 chat" checkpoints. As a reference, we'll consider the checkpoint `llava-llama-2-13b-chat-lightning-preview <https://huggingface.co/liuhaotian/llava-llama-2-13b-chat-lightning-preview>`_.
 
-After downloading this checkpoint and saving it at `/path/to/llava-llama-2-13b-chat-lightning-preview`, undertake the following procedures:
+After downloading this checkpoint and saving it at ``/path/to/llava-llama-2-13b-chat-lightning-preview``, undertake the following procedures:
 
 Modifying the Tokenizer
 """""""""""""""""""""""
 
-NeMo mandates adding specific tokens to the tokenizer model for peak performance. To modify an existing tokenizer located in `/path/to/llava-llama-2-13b-chat-lightning-preview/tokenizer`, execute the following in the NeMo container:
+NeMo mandates adding specific tokens to the tokenizer model for peak performance. To modify an existing tokenizer located in ``/path/to/llava-llama-2-13b-chat-lightning-preview/tokenizer``, execute the following in the NeMo container:
 
 .. code-block:: bash
 
@@ -82,7 +82,7 @@ Checkpoint Conversion
 
 For conversion:
 
-.. code-block:: python
+.. code-block:: bash
 
    python examples/multimodal/mllm/neva/convert_hf_llava_to_neva.py \
      --in-file /path/to/llava-llama-2-13b-chat-lightning-preview \
@@ -99,7 +99,7 @@ NeVA Checkpoints
 
 Adjust model parallelism with:
 
-.. code-block:: python
+.. code-block:: bash
 
    python examples/nlp/language_modeling/megatron_change_num_partitions.py \
     --model_file=/path/to/source.nemo \

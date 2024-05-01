@@ -25,6 +25,7 @@ from nemo.collections.nlp.data.language_modeling.megatron.t5_dataset import T5Da
 class UL2Dataset(T5Dataset):
     """ UL2 Dataset from https://arxiv.org/abs/2205.05131.
     Consists of three different objectives:
+
     1. Short span masking with small probabilities (ex: T5). Typically max ngram size of 5 with 0.15 mask prob.
     2. Extreme span masking with either large probabilities or large ngram sizes or both.
     3. Prefx-LM as in the T5 or LM-adapted T5 (prompt-tuning paper).
@@ -312,7 +313,8 @@ class UL2Dataset(T5Dataset):
         skip_masking_id=None,
     ):
         """Build training sample.
-        Arguments:
+
+        Args:
             sample: A list of sentences in which each sentence is a list token ids.
             target_seq_length: Desired sequence length.
             max_seq_length: Maximum length of the sequence. All values are padded to

@@ -203,9 +203,9 @@ class ExportableEncDecModel(Exportable):
         """
         This forward is used when we need to export the model to ONNX format.
         Inputs cache_last_channel and cache_last_time are needed to be passed for exporting streaming models.
+
         Args:
-            input: Tensor that represents a batch of raw audio signals,
-                of shape [B, T]. T here represents timesteps.
+            input: Tensor that represents a batch of raw audio signals of shape [B, T]. T here represents timesteps.
             length: Vector of length B, that contains the individual lengths of the audio sequences.
             cache_last_channel: Tensor of shape [N, B, T, H] which contains the cache for last channel layers
             cache_last_time: Tensor of shape [N, B, H, T] which contains the cache for last time layers

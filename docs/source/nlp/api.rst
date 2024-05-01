@@ -22,7 +22,7 @@ Pretraining Model Classes
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_bart_model.MegatronBARTModel
     :show-inheritance: 
     :no-members:
-    :members: training_step, validation_step, build_train_valid_test_datasets, setup, on_save_checkpoint, on_load_checkpoint
+    :members: training_step, validation_step, build_train_valid_test_datasets, setup
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_retrieval_model.MegatronRetrievalModel
     :show-inheritance: 
@@ -45,32 +45,27 @@ Customization Model Classes
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_gpt_adapter_model.MegatronGPTAdapterLearningModel
     :show-inheritance: 
     :no-members:
-    :members: __init__, state_dict, generate, training_step, validation_step, build_train_valid_test_datasets, setup
+    :members: __init__, state_dict, generate, training_step, validation_step, setup
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_gpt_adapter_model.MegatronGPTInfusedAdapterModel
     :show-inheritance: 
     :no-members:
-    :members: __init__, state_dict, generate, training_step, validation_step, build_train_valid_test_datasets, setup
+    :members: __init__, state_dict, generate, training_step, validation_step, setup
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_gpt_prompt_learning_model.MegatronGPTPromptLearningModel
     :show-inheritance: 
     :no-members:
-    :members: built_virtual_prompt_dataset, generate, training_step, validation_step, build_train_valid_test_datasets, setup
+    :members: build_virtual_prompt_dataset, generate, training_step, validation_step, setup
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model.MegatronT5AdapterLearningModel
     :show-inheritance: 
     :no-members:
-    :members: __init__, state_dict, training_step, validation_step, build_train_valid_test_datasets, setup
-
-.. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model.MegatronT5AdapterLearningModel
-    :show-inheritance: 
-    :no-members:
-    :members: _add_adapters_to_component, __init__, state_dict, training_step, validation_step, build_train_valid_test_datasets, setup
+    :members: _add_adapters_to_component, __init__, state_dict, training_step, validation_step, setup
 
 .. autoclass:: nemo.collections.nlp.models.language_modeling.megatron_t5_adapter_model.MegatronT5InfusedAdapterModel
     :show-inheritance: 
     :no-members:
-    :members: _add_adapters_to_component, __init__, state_dict, training_step, validation_step, build_train_valid_test_datasets, setup
+    :members: _add_adapters_to_component, __init__, state_dict, training_step, validation_step, setup
 
 Modules
 -------
@@ -86,7 +81,7 @@ Modules
     :no-members:
     :members: forward
 
-.. autoclass:: nemo.collections.nlp.models.language_modeling.megatron.bert_model.BertModel
+.. autoclass:: nemo.collections.nlp.models.language_modeling.megatron.bert.bert_model.NeMoBertModel
     :show-inheritance: 
     :no-members:
     :members: forward

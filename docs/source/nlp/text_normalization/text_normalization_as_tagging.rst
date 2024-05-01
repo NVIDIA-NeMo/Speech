@@ -59,7 +59,7 @@ In the example, ``<self>`` denotes that the spoken form is the same as the writt
     <eos>	<eos>
 
 
-More information about the Google Text Normalization Dataset can be found in the paper `RNN Approaches to Text Normalization: A Challenge <https://arxiv.org/ftp/arxiv/papers/1611/1611.00068.pdf>`__ :cite:`nlp-textnorm-sproat2016rnn`.
+More information about the Google Text Normalization Dataset can be found in the paper `RNN Approaches to Text Normalization: A Challenge <https://arxiv.org/ftp/arxiv/papers/1611/1611.00068.pdf>`__ :cite:`nlp-textnorm-tag-sproat2016rnn`.
 
 
 Data preprocessing
@@ -146,7 +146,7 @@ contextualized representation for each input token. It then uses a classificatio
 to predict the tag for each token. Another classification head is used to predict a "semiotic" class label for each token.
 
 Overall, our design is partly inspired by the LaserTagger approach proposed in the paper
-`Encode, tag, realize: High-precision text editing <https://arxiv.org/abs/1909.01187>`__ :cite:`nlp-textnorm-malmi2019encode`.
+`Encode, tag, realize: High-precision text editing <https://arxiv.org/abs/1909.01187>`__ :cite:`nlp-textnorm-tag-malmi2019encode`.
 
 The LaserTagger method is not directly applicable to ITN because it can only regard the whole non-common fragment as a single
 replacement tag, whereas spoken-to-written conversion, e.g. a date, needs to be aligned on a more granular level. Otherwise,
@@ -161,5 +161,5 @@ References
 
 .. bibliography:: tn_itn_all.bib
     :style: plain
-    :labelprefix: NLP-TEXTNORM
-    :keyprefix: nlp-textnorm-
+    :labelprefix: NLP-TEXTNORM-TAG
+    :keyprefix: nlp-textnorm-tag

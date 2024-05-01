@@ -53,7 +53,7 @@ BERT checkpoint to NeMo (mcore) using the following:
 
 Then you can fine-tune the sentence-BERT model using the following script:
 
-.. code-block:: python
+.. code-block:: bash
 
 
     #!/bin/bash

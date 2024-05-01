@@ -4,7 +4,7 @@ ViT
 Model Introduction
 -------------------
 
-The Vision Transformer, commonly referred to as ViT :cite:`vision-models-vit`, serves as a foundational model
+The Vision Transformer, commonly referred to as ViT :cite:`vision-models-vit-vit`, serves as a foundational model
 for image classification tasks in NeMo. Unlike conventional convolutional neural networks, ViT adopts a transformer-like
 architecture to process image data. In this approach, an image is divided into fixed-size patches, typically
 14x14 or 16x16. These patches are linearly embedded and augmented with position embeddings. The resulting
@@ -136,5 +136,5 @@ Reference
 .. bibliography:: ./vision_all.bib
     :style: plain
     :filter: docname in docnames
-    :labelprefix: VISION-MODELS
-    :keyprefix: vision-models-
+    :labelprefix: VISION-MODELS-VIT
+    :keyprefix: vision-models-vit-

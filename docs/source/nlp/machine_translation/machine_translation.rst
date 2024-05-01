@@ -470,12 +470,12 @@ NMT with bottleneck encoder architecture is also supported (i.e., fixed size bot
 
 1. Supported  learning frameworks (**model.model_type**):
     * NLL - Conditional cross entropy (the usual NMT loss)
-    * VAE - Variational Auto-Encoder (`paper <https://arxiv.org/pdf/1312.6114.pdf>`_)
-    * MIM - Mutual Information Machine (`paper <https://arxiv.org/pdf/2003.02645.pdf>`_)
+    * VAE - Variational Auto-Encoder (`paper <https://arxiv.org/pdf/1312.6114.pdf>`__)
+    * MIM - Mutual Information Machine (`paper <https://arxiv.org/pdf/2003.02645.pdf>`__)
 2. Supported encoder architectures (**model.encoder.arch**):
     * seq2seq - the usual transformer encoder without a bottleneck
-    * bridge - attention bridge bottleneck (`paper <https://arxiv.org/pdf/1703.03130.pdf>`_)
-    * perceiver -  Perceiver bottleneck (`paper <https://arxiv.org/pdf/2103.03206.pdf>`_)
+    * bridge - attention bridge bottleneck (`paper <https://arxiv.org/pdf/1703.03130.pdf>`__)
+    * perceiver -  Perceiver bottleneck (`paper <https://arxiv.org/pdf/2103.03206.pdf>`__)
 
 
 +----------------------------------------+----------------+--------------+-------------------------------------------------------------------------------------------------------+

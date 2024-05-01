@@ -13,4 +13,5 @@ NeMo multimodal provides implementations of multiple image-to-text models, inclu
    imagen
    dreambooth
    controlnet
+   insp2p
    sdxl_quantization

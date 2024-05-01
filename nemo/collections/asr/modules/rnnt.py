@@ -1559,13 +1559,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
         NOTE:
             The implementation of this model is slightly modified from the original paper.
             The original paper proposes the following steps :
-            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- *1
-            *1 -> Forward through joint final [B, T, U, V + 1].
+            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- \*1
+            \*1 -> Forward through joint final [B, T, U, V + 1].
 
             We instead split the joint hidden into joint_hidden_enc and joint_hidden_dec and act as follows:
-            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- *1
-            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- *2
-            (*1, *2) -> Sum [B, T, U, H] -> Forward through joint final [B, T, U, V + 1].
+            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- \*1
+            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- \*2
+            (\*1, \*2) -> Sum [B, T, U, H] -> Forward through joint final [B, T, U, V + 1].
 
         Args:
             f: Output of the Encoder model. A torch.Tensor of shape [B, T, H1]
@@ -2050,8 +2050,7 @@ class SampledRNNTJoint(RNNTJoint):
         """
         Compute the sampled joint step of the network.
 
-        # Reference
-        - [Memory-Efficient Training of RNN-Transducer with Sampled Softmax](https://arxiv.org/abs/2203.16868)
+        Reference: `Memory-Efficient Training of RNN-Transducer with Sampled Softmax <https://arxiv.org/abs/2203.16868>`__.
 
         Here,
         B = Batch size
@@ -2065,13 +2064,13 @@ class SampledRNNTJoint(RNNTJoint):
         NOTE:
             The implementation of this joint model is slightly modified from the original paper.
             The original paper proposes the following steps :
-            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- *1
-            *1 -> Forward through joint final [B, T, U, V + 1].
+            (enc, dec) -> Expand + Concat + Sum [B, T, U, H1+H2] -> Forward through joint hidden [B, T, U, H] -- \*1
+            \*1 -> Forward through joint final [B, T, U, V + 1].
 
             We instead split the joint hidden into joint_hidden_enc and joint_hidden_dec and act as follows:
-            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- *1
-            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- *2
-            (*1, *2) -> Sum [B, T, U, H] -> Sample Vocab V_Pos (for target tokens) and V_Neg ->
+            enc -> Forward through joint_hidden_enc -> Expand [B, T, 1, H] -- \*1
+            dec -> Forward through joint_hidden_dec -> Expand [B, 1, U, H] -- \*2
+            (\*1, \*2) -> Sum [B, T, U, H] -> Sample Vocab V_Pos (for target tokens) and V_Neg ->
             (V_Neg is sampled not uniformly by as a rand permutation of all vocab tokens, then eliminate
             all Intersection(V_Pos, V_Neg) common tokens to avoid duplication of loss) ->
             Concat new Vocab V_Sampled = Union(V_Pos, V_Neg)

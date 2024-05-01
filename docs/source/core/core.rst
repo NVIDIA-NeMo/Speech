@@ -16,9 +16,10 @@ NeMo models contain everything needed to train and reproduce Conversational AI m
 
 NeMo uses `Hydra <https://hydra.cc/>`_ for configuring both NeMo models and the PyTorch Lightning Trainer.
 
-.. note:: Every NeMo model has an example configuration file and training script that can be found `here <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_.
+.. note::
+    Every NeMo model has an example configuration file and training script that can be found `here <https://github.com/NVIDIA/NeMo/tree/stable/examples>`__.
 
-The end result of using NeMo, `Pytorch Lightning <https://github.com/PyTorchLightning/pytorch-lightning>`_, and Hydra is that NeMo models all have the same look and feel and are also fully compatible with the PyTorch ecosystem. 
+The end result of using NeMo, `Pytorch Lightning <https://github.com/PyTorchLightning/pytorch-lightning>`__, and Hydra is that NeMo models all have the same look and feel and are also fully compatible with the PyTorch ecosystem.
 
 Pretrained
 ----------
@@ -42,14 +43,14 @@ To see all available pretrained models for a specific NeMo model, use the ``list
 
 For detailed information on the available pretrained models, refer to the collections documentation: 
 
-- :ref:`Automatic Speech Recognition (ASR)`
+- :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
 - :doc:`Natural Language Processing (NLP) <../nlp/models>`
 - :doc:`Text-to-Speech Synthesis (TTS) <../tts/intro>`
 
 Training
 --------
 
-NeMo leverages `PyTorch Lightning <https://www.pytorchlightning.ai/>`_ for model training. PyTorch Lightning lets NeMo decouple the 
+NeMo leverages `PyTorch Lightning <https://www.pytorchlightning.ai/>`__ for model training. PyTorch Lightning lets NeMo decouple the
 conversational AI code from the PyTorch training code. This means that NeMo users can focus on their domain (ASR, NLP, TTS) and 
 build complex AI applications without having to rewrite boiler plate code for PyTorch training.
 
@@ -298,7 +299,7 @@ With NeMo and Hydra, every aspect of model training can be modified from the com
 of experiments on compute clusters or for quickly testing parameters while developing.
 
 All NeMo `examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ come with instructions on how to
-run the training/inference script from the command-line (see `here <https://github.com/NVIDIA/NeMo/blob/4e9da75f021fe23c9f49404cd2e7da4597cb5879/examples/asr/asr_ctc/speech_to_text_ctc.py#L24>`_
+run the training/inference script from the command-line (see `here <https://github.com/NVIDIA/NeMo/blob/4e9da75f021fe23c9f49404cd2e7da4597cb5879/examples/asr/asr_ctc/speech_to_text_ctc.py#L24>`__
 for an example).
 
 With Hydra, arguments are set using the ``=`` operator:

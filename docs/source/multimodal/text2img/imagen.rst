@@ -4,7 +4,7 @@ Imagen
 Model Introduction
 -------------------
 
-Imagen  :cite:`mm-models-saharia2022photorealistic` is a multi-stage text-to-image diffusion model with an unprecedented 
+Imagen  :cite:`mm-models-imagen-saharia2022photorealistic` is a multi-stage text-to-image diffusion model with an unprecedented 
 degree of photorealism and a deep level of language understanding. Given a text prompt, 
 Imagen first generates an image at a 64x64 resolution and then upsamples the generated image to 256x256 and 1024x1024 
 resolutions, all using diffusion models.
@@ -75,9 +75,9 @@ Recommended Efficient UNet size for SR256 and SR1024 models are listed below:
 Noise Scheduling / Sampler
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-NeMo Imagen supports two types of noise scheduling: Continous DDPM :cite:`mm-models-nichol2021improved` and EDM :cite:`mm-models-karras2022elucidating`.
+NeMo Imagen supports two types of noise scheduling: Continous DDPM :cite:`mm-models-imagen-nichol2021improved` and EDM :cite:`mm-models-imagen-karras2022elucidating`.
 
-Denoising diffusion probabilistic models (DDPM) :cite:`mm-models-ho2020denoising` 
+Denoising diffusion probabilistic models (DDPM) :cite:`mm-models-imagen-ho2020denoising` 
 represents the most widely adopted noise scheduling approach among all diffusion models. 
 Continuous DDPM introduces several modifications to the standard DDPM framework, 
 with the most significant change being the transition from a discrete noise space to a continuous space.
@@ -285,5 +285,5 @@ Reference
 .. bibliography:: ../mm_all.bib
     :style: plain
     :filter: docname in docnames
-    :labelprefix: MM-MODELS
-    :keyprefix: mm-models-
+    :labelprefix: MM-MODELS-IMAGEN
+    :keyprefix: mm-models-imagen-

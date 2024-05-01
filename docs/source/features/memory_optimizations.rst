@@ -3,7 +3,7 @@ Memory Optimizations
 
 Parallelism
 -----------
-Refer to :doc:`Parallelism <./parallelism>`.
+Refer to :doc:`Parallelism <./parallelisms>`.
 
 Flash Attention
 ---------------
@@ -20,10 +20,8 @@ In the NeMo Framework, Flash Attention is supported through the Transformer Engi
 
 For more details on the supported Dot Attention backend, please refer to the Transformer Engine source code available at `Transformer Engine's Attention Mechanism <https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/attention.py>`_.
 
-.. bibliography:: ./nlp_all.bib
-    :style: plain
-    :labelprefix: nlp-megatron
-    :keyprefix: nlp-megatron-
+Activation Recomputation
+------------------------
 
 Overview
 ^^^^^^^^
@@ -41,8 +39,3 @@ Selective Activation Recomputation
 This method reduces memory footprint of activations significantly via smart activation checkpointing. This approach involves selectively storing only crucial activations and recomputing the others as needed. It is particularly useful in large models to minimize memory usage while controlling the computational cost.
 
 Refer to "Reducing Activation Recomputation in Large Transformer Models" for more details: https://arxiv.org/abs/2205.05198
-
-.. bibliography:: ./nlp_all.bib
-    :style: plain
-    :labelprefix: nlp-megatron
-    :keyprefix: nlp-megatron-

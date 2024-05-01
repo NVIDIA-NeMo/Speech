@@ -132,6 +132,9 @@ jobs:
                 apt-get update && apt-get install libsox-fmt-all -y && \
                 popd
 
+            # AMMO installation
+            pip install nvidia-ammo~=0.9.0 --extra-index-url https://pypi.nvidia.com --no-cache-dir
+
             # PyTorch Lightning version
             python -c "import pytorch_lightning; print(pytorch_lightning.__version__)"
 
@@ -220,7 +223,26 @@ jobs:
     - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
       if: "failure()"
 
-
+  L0_Setup_Test_Data_And_Models:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python -m tests.setup --save_dir /home/TestData/nlp
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
 
 ##     - name: L2: Multimodal Imagen Train
 
@@ -243,10 +265,9 @@ jobs:
           uses: actions/checkout@v4
         - run: |
             CUDA_VISIBLE_DEVICES=0 python scripts/checkpoint_converters/convert_llama_hf_to_nemo.py \
-            --input_name_or_path=/home/TestData/nlp/megatron_llama/llama-ci-hf \
-            --output_path=/home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo \
+            --input_name_or_path=/home/TestData/nlp/megatron_llama/llama-ci-hf-tiny \
+            --output_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
             --precision=16
-            rm -f /home/TestData/nlp/megatron_llama/llama-ci-hf/llama_ci.nemo
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
@@ -319,6 +340,124 @@ jobs:
             --input_name_or_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base \
             --output_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
             rm -f /home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
+  L2_PTQ_Llama2_Export_Only:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+            quantization.algorithm=null \
+            model_save=/home/TestData/nlp/megatron_llama/ci_baseline
+
+            rm -rf /home/TestData/nlp/megatron_llama/ci_baseline
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
+  L2_PTQ_Llama2_FP8:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+            tensor_model_parallel_size=2 \
+            trainer.devices=2 \
+            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+            quantization.algorithm=fp8 \
+            quantization.num_calib_size=8 \
+            inference.batch_size=2 \
+            export.inference_tensor_parallel=2 \
+            model_save=/home/TestData/nlp/megatron_llama/ci_fp8.qnemo
+
+            rm -rf /home/TestData/nlp/megatron_llama/ci_fp8.qnemo
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
+  L2_PTQ_Llama2_INT8_SQ:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+            quantization.algorithm=int8_sq \
+            quantization.num_calib_size=8 \
+            inference.batch_size=2 \
+            model_save=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
+
+            rm -rf /home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
+  L2_PTQ_Llama2_INT4_AWQ:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options:
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/language_modeling/megatron_llama_quantization.py \
+            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+            tensor_model_parallel_size=1 \
+            trainer.devices=1 \
+            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+            quantization.algorithm=int4_awq \
+            quantization.num_calib_size=8 \
+            inference.batch_size=2 \
+            model_save=/home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
+
+            rm -rf /home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
@@ -4664,7 +4803,7 @@ jobs:
         --volume /mnt/datadrive/TestData:/home/TestData
     steps:
         - name: Checkout repository
-          uses: actions/checkout@v2
+          uses: actions/checkout@v4
         - run: |
             rm -rf /home/TestData/nlp/megatron_ir/working_dir
 

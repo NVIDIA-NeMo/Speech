@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import tarfile
 from contextlib import nullcontext
 from typing import List, Optional
@@ -21,7 +20,6 @@ import torch
 import torch.distributed as dist
 from megatron.core import parallel_state
 from megatron.core.transformer.module import Float16Module
-from megatron.training.utils import unwrap_model
 from omegaconf import OmegaConf
 from omegaconf.omegaconf import DictConfig, open_dict
 from pytorch_lightning.trainer.trainer import Trainer
@@ -31,7 +29,7 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRest
 from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import logging
 from nemo.utils.distributed import temporary_directory
-from nemo.utils.model_utils import load_config, save_artifacts
+from nemo.utils.model_utils import load_config, save_artifacts, unwrap_model
 
 try:
     import ammo.torch.quantization as atq

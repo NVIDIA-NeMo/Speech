@@ -24,7 +24,7 @@ from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Type, Union
 
 import wrapt
 
@@ -90,6 +90,24 @@ def load_config(model_file: str) -> DictConfig:
         raise FileNotFoundError(model_file)
 
     return model_config
+
+
+def unwrap_model(model, module_instances: Union[Type, Tuple[Type]]):
+    """Unwrap model from wrapper classes like Float16Module, for example."""
+
+    # TODO: Import this from megatron.core once moved there from megatron.training.
+    return_list = True
+    if not isinstance(model, list):
+        model = [model]
+        return_list = False
+    unwrapped_model = []
+    for model_module in model:
+        while isinstance(model_module, module_instances):
+            model_module = model_module.module
+        unwrapped_model.append(model_module)
+    if not return_list:
+        return unwrapped_model[0]
+    return unwrapped_model
 
 
 def param_is_not_shared(param):

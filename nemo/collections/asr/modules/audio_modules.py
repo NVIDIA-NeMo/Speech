@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from nemo.collections.asr.losses.audio_losses import temporal_mean
+from nemo.collections.asr.losses.audio_losses import calculate_mean
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder
 from nemo.collections.asr.parts.preprocessing.features import make_seq_mask_like
 from nemo.collections.asr.parts.submodules.multichannel_modules import (
@@ -39,6 +39,7 @@ __all__ = [
     'MaskReferenceChannel',
     'MaskBasedBeamformer',
     'MaskBasedDereverbWPE',
+    'MixtureConsistencyProjection',
 ]
 
 
@@ -158,7 +159,7 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
             mean = torch.mean(input, dim=(-1, -3), keepdim=True)
         else:
             # temporal mean
-            mean = temporal_mean(input, input_length, keepdim=True)
+            mean = calculate_mean(input, input_length, dim=-1, keepdim=True)
             # channel mean
             mean = torch.mean(mean, dim=-3, keepdim=True)
 
@@ -186,7 +187,7 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
             mean = cls.get_mean_time_channel(input, input_length)
             std = (input - mean).pow(2)
             # temporal mean
-            std = temporal_mean(std, input_length, keepdim=True)
+            std = calculate_mean(std, input_length, dim=-1, keepdim=True)
             # channel mean
             std = torch.mean(std, dim=-3, keepdim=True)
             # final value

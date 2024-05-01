@@ -155,7 +155,11 @@ class TestAudioSpectrogram:
     @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
     @pytest.mark.parametrize('fft_length', [128, 1024])
     @pytest.mark.parametrize('num_channels', [1, 4])
-    def test_audio_to_spectrogram_reconstruction(self, fft_length: int, num_channels: int):
+    @pytest.mark.parametrize('magnitude_power', [0.5, 1, 2])
+    @pytest.mark.parametrize('scale', [0.1, 1.0])
+    def test_audio_to_spectrogram_reconstruction(
+        self, fft_length: int, num_channels: int, magnitude_power: float, scale: float
+    ):
         """Test analysis and synthesis transform result in a perfect reconstruction.
         """
         batch_size = 4
@@ -169,8 +173,12 @@ class TestAudioSpectrogram:
         hop_lengths = [fft_length // 2, fft_length // 4]
 
         for hop_length in hop_lengths:
-            audio2spec = AudioToSpectrogram(fft_length=fft_length, hop_length=hop_length)
-            spec2audio = SpectrogramToAudio(fft_length=fft_length, hop_length=hop_length)
+            audio2spec = AudioToSpectrogram(
+                fft_length=fft_length, hop_length=hop_length, magnitude_power=magnitude_power, scale=scale
+            )
+            spec2audio = SpectrogramToAudio(
+                fft_length=fft_length, hop_length=hop_length, magnitude_power=magnitude_power, scale=scale
+            )
 
             for n in range(num_examples):
                 x = _rng.normal(size=(batch_size, num_channels, num_samples))

@@ -12,15 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import os
+import tempfile
 from abc import ABC, abstractmethod
-from typing import List, Union
+from typing import Dict, List, Optional, Union
 
 import hydra
+import librosa
+import soundfile as sf
 import torch
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
+from tqdm import tqdm
 
+from nemo.collections.asr.data import audio_to_audio_dataset
+from nemo.collections.asr.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
+from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
 from nemo.collections.asr.metrics.audio import AudioMetricWrapper
+from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
+from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
 from nemo.utils import logging, model_utils
 
@@ -158,23 +169,384 @@ class AudioToAudioModel(ModelPT, ABC):
     def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
         return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'test')
 
-    @abstractmethod
+    @torch.no_grad()
     def process(
-        self, paths2audio_files: List[str], output_dir: str, batch_size: int = 4
-    ) -> List[Union[str, List[str]]]:
+        self,
+        paths2audio_files: List[str],
+        output_dir: str,
+        batch_size: int = 1,
+        num_workers: Optional[int] = None,
+        input_channel_selector: Optional[ChannelSelectorType] = None,
+    ) -> List[str]:
+        """
+        Process audio files provided in paths2audio_files.
+        Processed signals will be saved in output_dir.
+
+        Args:
+            paths2audio_files: (a list) of paths to audio files. \
+                Recommended length per file is between 5 and 25 seconds. \
+                But it is possible to pass a few hours long file if enough GPU memory is available.
+            output_dir: 
+            batch_size: (int) batch size to use during inference.
+                Bigger will result in better throughput performance but would use more memory.
+            num_workers: Number of workers for the dataloader
+            input_channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
+
+        Returns:
+        """
+        if paths2audio_files is None or len(paths2audio_files) == 0:
+            return {}
+
+        if num_workers is None:
+            num_workers = min(batch_size, os.cpu_count() - 1)
+
+        # Output
+        paths2processed_files = []
+
+        # Model's mode and device
+        mode = self.training
+        device = next(self.parameters()).device
+
+        try:
+            # Switch model to evaluation mode
+            self.eval()
+            # Freeze weights
+            self.freeze()
+
+            logging_level = logging.get_verbosity()
+            logging.set_verbosity(logging.WARNING)
+
+            # Processing
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Save temporary manifest
+                temporary_manifest_filepath = os.path.join(tmpdir, 'manifest.json')
+                with open(temporary_manifest_filepath, 'w', encoding='utf-8') as fp:
+                    for audio_file in paths2audio_files:
+                        entry = {'input_filepath': audio_file, 'duration': librosa.get_duration(path=audio_file)}
+                        fp.write(json.dumps(entry) + '\n')
+
+                config = {
+                    'manifest_filepath': temporary_manifest_filepath,
+                    'input_key': 'input_filepath',
+                    'input_channel_selector': input_channel_selector,
+                    'batch_size': min(batch_size, len(paths2audio_files)),
+                    'num_workers': num_workers,
+                }
+
+                # Create output dir if necessary
+                if not os.path.isdir(output_dir):
+                    os.makedirs(output_dir)
+
+                # DataLoader for the input files
+                temporary_dataloader = self._setup_process_dataloader(config)
+
+                # Indexing of the original files, used to form the output file name
+                file_idx = 0
+
+                # Process batches
+                for test_batch in tqdm(temporary_dataloader, desc="Processing"):
+                    input_signal = test_batch[0]
+                    input_length = test_batch[1]
+
+                    # Expand channel dimension, if necessary
+                    # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+                    if input_signal.ndim == 2:
+                        input_signal = input_signal.unsqueeze(1)
+
+                    processed_batch, _ = self.forward(
+                        input_signal=input_signal.to(device), input_length=input_length.to(device)
+                    )
+
+                    for example_idx in range(processed_batch.size(0)):
+                        # This assumes the data loader is not shuffling files
+                        file_name = os.path.basename(paths2audio_files[file_idx])
+                        # Prepare output file
+                        output_file = os.path.join(output_dir, f'processed_{file_name}')
+                        # Crop the output signal to the actual length
+                        output_signal = processed_batch[example_idx, :, : input_length[example_idx]].cpu().numpy()
+                        # Write audio
+                        sf.write(output_file, output_signal.T, self.sample_rate, 'float')
+                        # Update the file counter
+                        file_idx += 1
+                        # Save processed file
+                        paths2processed_files.append(output_file)
+
+                    del test_batch
+                    del processed_batch
+
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+            if mode is True:
+                self.unfreeze()
+            logging.set_verbosity(logging_level)
+
+        return paths2processed_files
+
+    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+
+        if config.get("use_lhotse", False):
+            return get_lhotse_dataloader_from_config(
+                config, global_rank=self.global_rank, world_size=self.world_size, dataset=LhotseAudioToTargetDataset()
+            )
+
+        is_concat = config.get('is_concat', False)
+        if is_concat:
+            raise NotImplementedError('Concat not implemented')
+
+        # TODO: Consider moving `inject` from `audio_to_text_dataset` to a utility module?
+        # Automatically inject args from model config to dataloader config
+        inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
+
+        # Instantiate tarred dataset loader or normal dataset loader
+        if config.get('is_tarred', False):
+            raise NotImplementedError('Tarred datasets not supported')
+
+        if 'manifest_filepath' in config and config['manifest_filepath'] is None:
+            logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
+            return None
+
+        dataset = audio_to_audio_dataset.get_audio_to_target_dataset(config=config)
+
+        if hasattr(dataset, 'collate_fn'):
+            collate_fn = dataset.collate_fn
+        elif hasattr(dataset.datasets[0], 'collate_fn'):
+            # support datasets that are lists of entries
+            collate_fn = dataset.datasets[0].collate_fn
+        else:
+            # support datasets that are lists of lists
+            collate_fn = dataset.datasets[0].datasets[0].collate_fn
+
+        return torch.utils.data.DataLoader(
+            dataset=dataset,
+            batch_size=config['batch_size'],
+            collate_fn=collate_fn,
+            drop_last=config.get('drop_last', False),
+            shuffle=config['shuffle'],
+            num_workers=config.get('num_workers', 0),
+            pin_memory=config.get('pin_memory', False),
+        )
+
+    def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
+        """
+        Sets up the training data loader via a Dict-like object.
+
+        Args:
+            train_data_config: A config that contains the information regarding construction
+                of a training dataset.
+
+        Supported Datasets:
+            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
+        """
+        if 'shuffle' not in train_data_config:
+            train_data_config['shuffle'] = True
+
+        # preserve config
+        self._update_dataset_config(dataset_name='train', config=train_data_config)
+
+        self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
+
+        if 'is_tarred' in train_data_config and train_data_config['is_tarred']:
+            raise NotImplementedError('Tarred datasets not supported')
+
+    def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
+        """
+        Sets up the validation data loader via a Dict-like object.
+
+        Args:
+            val_data_config: A config that contains the information regarding construction
+                of a validation dataset.
+
+        Supported Datasets:
+            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
+        """
+        if 'shuffle' not in val_data_config:
+            val_data_config['shuffle'] = False
+
+        # preserve config
+        self._update_dataset_config(dataset_name='validation', config=val_data_config)
+
+        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
+
+    def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
+        """
+        Sets up the test data loader via a Dict-like object.
+
+        Args:
+            test_data_config: A config that contains the information regarding construction
+                of a test dataset.
+
+        Supported Datasets:
+            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
+        """
+        if 'shuffle' not in test_data_config:
+            test_data_config['shuffle'] = False
+
+        # preserve config
+        self._update_dataset_config(dataset_name='test', config=test_data_config)
+
+        self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
+
+    def _setup_process_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
+        """Prepare a dataloader for processing files.
+
+        Args:
+            config: A python dictionary which contains the following keys:
+                manifest_filepath: path to a manifest file
+                input_key: key with audio filepaths in the manifest
+                input_channel_selector: Optional, used to select a subset of channels from input audio files
+                batch_size: batch size for the dataloader
+                num_workers: number of workers for the dataloader
+
+        Returns:
+            A pytorch DataLoader for the given manifest filepath.
+        """
+        dl_config = {
+            'manifest_filepath': config['manifest_filepath'],
+            'sample_rate': self.sample_rate,
+            'input_key': config['input_key'],
+            'input_channel_selector': config.get('input_channel_selector', None),
+            'target_key': None,
+            'target_channel_selector': None,
+            'batch_size': config['batch_size'],
+            'shuffle': False,
+            'num_workers': config.get('num_workers', min(config['batch_size'], os.cpu_count() - 1)),
+            'pin_memory': True,
+        }
+
+        temporary_dataloader = self._setup_dataloader_from_config(config=DictConfig(dl_config))
+        return temporary_dataloader
+
+    @staticmethod
+    def match_batch_length(input: torch.Tensor, batch_length: int) -> torch.Tensor:
+        """Trim or pad the output to match the batch length.
+
+        Args:
+            input: tensor with shape (B, C, T)
+            batch_length: int
+
+        Returns:
+            Tensor with shape (B, C, T), where T matches the
+            batch length.
+        """
+        input_length = input.size(-1)
+        pad_length = batch_length - input_length
+        pad = (0, pad_length)
+        # pad with zeros or crop
+        return torch.nn.functional.pad(input, pad, 'constant', 0)
+
+    @torch.no_grad()
+    def process(
+        self,
+        paths2audio_files: List[str],
+        output_dir: str,
+        batch_size: int = 1,
+        num_workers: Optional[int] = None,
+        input_channel_selector: Optional[ChannelSelectorType] = None,
+    ) -> List[str]:
         """
         Takes paths to audio files and returns a list of paths to processed
         audios.
 
         Args:
             paths2audio_files: paths to audio files to be processed
-            output_dir: directory to save processed files
-            batch_size: batch size for inference
+            output_dir: directory to save the processed files
+            batch_size: (int) batch size to use during inference.
+            num_workers: Number of workers for the dataloader
+            input_channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio.
+                            If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
 
         Returns:
             Paths to processed audio signals.
         """
-        pass
+        if paths2audio_files is None or len(paths2audio_files) == 0:
+            return {}
+
+        if num_workers is None:
+            num_workers = min(batch_size, os.cpu_count() - 1)
+
+        # Output
+        paths2processed_files = []
+
+        # Model's mode and device
+        mode = self.training
+        device = next(self.parameters()).device
+
+        try:
+            # Switch model to evaluation mode
+            self.eval()
+            # Freeze weights
+            self.freeze()
+
+            logging_level = logging.get_verbosity()
+            logging.set_verbosity(logging.WARNING)
+
+            # Processing
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Save temporary manifest
+                temporary_manifest_filepath = os.path.join(tmpdir, 'manifest.json')
+                with open(temporary_manifest_filepath, 'w', encoding='utf-8') as fp:
+                    for audio_file in paths2audio_files:
+                        entry = {'input_filepath': audio_file, 'duration': librosa.get_duration(path=audio_file)}
+                        fp.write(json.dumps(entry) + '\n')
+
+                config = {
+                    'manifest_filepath': temporary_manifest_filepath,
+                    'input_key': 'input_filepath',
+                    'input_channel_selector': input_channel_selector,
+                    'batch_size': min(batch_size, len(paths2audio_files)),
+                    'num_workers': num_workers,
+                }
+
+                # Create output dir if necessary
+                if not os.path.isdir(output_dir):
+                    os.makedirs(output_dir)
+
+                # DataLoader for the input files
+                temporary_dataloader = self._setup_process_dataloader(config)
+
+                # Indexing of the original files, used to form the output file name
+                file_idx = 0
+
+                # Process batches
+                for test_batch in tqdm(temporary_dataloader, desc="Processing"):
+                    input_signal = test_batch[0]
+                    input_length = test_batch[1]
+
+                    # Expand channel dimension, if necessary
+                    # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+                    if input_signal.ndim == 2:
+                        input_signal = input_signal.unsqueeze(1)
+
+                    processed_batch, _ = self.forward(
+                        input_signal=input_signal.to(device), input_length=input_length.to(device)
+                    )
+
+                    for example_idx in range(processed_batch.size(0)):
+                        # This assumes the data loader is not shuffling files
+                        file_name = os.path.basename(paths2audio_files[file_idx])
+                        # Prepare output file
+                        output_file = os.path.join(output_dir, f'processed_{file_name}')
+                        # Crop the output signal to the actual length
+                        output_signal = processed_batch[example_idx, :, : input_length[example_idx]].cpu().numpy()
+                        # Write audio
+                        sf.write(output_file, output_signal.T, self.sample_rate, 'float')
+                        # Update the file counter
+                        file_idx += 1
+                        # Save processed file
+                        paths2processed_files.append(output_file)
+
+                    del test_batch
+                    del processed_batch
+
+        finally:
+            # set mode back to its original value
+            self.train(mode=mode)
+            if mode is True:
+                self.unfreeze()
+            logging.set_verbosity(logging_level)
+
+        return paths2processed_files
 
     @classmethod
     def list_available_models(cls) -> 'List[PretrainedModelInfo]':

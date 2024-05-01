@@ -709,9 +709,11 @@ class AudioToSpectrogram(NeuralModule):
         hop_length: length of hops/shifts of the sliding window
         power: exponent for magnitude spectrogram. Default `None` will
                return a complex-valued spectrogram
+        magnitude_power: Transform magnitude of the spectrogram as x^magnitude_power.
+        scale: Positive scaling of the spectrogram.
     """
 
-    def __init__(self, fft_length: int, hop_length: int, power: Optional[float] = None):
+    def __init__(self, fft_length: int, hop_length: int, magnitude_power: float = 1.0, scale: float = 1.0):
         if not HAVE_TORCHAUDIO:
             logging.error('Could not import torchaudio. Some features might not work.')
 
@@ -726,11 +728,25 @@ class AudioToSpectrogram(NeuralModule):
             raise ValueError(f'fft_length = {fft_length} must be divisible by 2')
 
         self.stft = torchaudio.transforms.Spectrogram(
-            n_fft=fft_length, hop_length=hop_length, power=power, pad_mode='constant'
+            n_fft=fft_length, hop_length=hop_length, power=None, pad_mode='constant'
         )
 
         # number of subbands
         self.F = fft_length // 2 + 1
+
+        if magnitude_power <= 0:
+            raise ValueError(f'Magnitude power needs to be positive: current value {magnitude_power}')
+        self.magnitude_power = magnitude_power
+
+        if scale <= 0:
+            raise ValueError(f'Scale needs to be positive: current value {scale}')
+        self.scale = scale
+
+        logging.debug('Initialized %s with:', self.__class__.__name__)
+        logging.debug('\tfft_length:      %s', fft_length)
+        logging.debug('\thop_length:      %s', hop_length)
+        logging.debug('\tmagnitude_power: %s', magnitude_power)
+        logging.debug('\tscale:           %s', scale)
 
     @property
     def num_subbands(self) -> int:
@@ -776,6 +792,14 @@ class AudioToSpectrogram(NeuralModule):
         with torch.cuda.amp.autocast(enabled=False):
             output = self.stft(input.float())
 
+            if self.magnitude_power != 1:
+                # apply power on the magnitude
+                output = torch.pow(output.abs(), self.magnitude_power) * torch.exp(1j * output.angle())
+
+            if self.scale != 1:
+                # apply scaling of the coefficients
+                output = self.scale * output
+
         if input_length is not None:
             # Mask padded frames
             output_length = self.get_output_length(input_length=input_length)
@@ -810,11 +834,11 @@ class SpectrogramToAudio(NeuralModule):
     Args:
         fft_length: length of FFT
         hop_length: length of hops/shifts of the sliding window
-        power: exponent for magnitude spectrogram. Default `None` will
-               return a complex-valued spectrogram
+        magnitude_power: Transform magnitude of the spectrogram as x^(1/magnitude_power).
+        scale: Spectrogram will be scaled with 1/scale before the inverse transform. 
     """
 
-    def __init__(self, fft_length: int, hop_length: int):
+    def __init__(self, fft_length: int, hop_length: int, magnitude_power: float = 1.0, scale: float = 1.0):
         if not HAVE_TORCHAUDIO:
             logging.error('Could not import torchaudio. Some features might not work.')
 
@@ -833,6 +857,20 @@ class SpectrogramToAudio(NeuralModule):
         )
 
         self.F = fft_length // 2 + 1
+
+        if magnitude_power <= 0:
+            raise ValueError(f'Magnitude power needs to be positive: current value {magnitude_power}')
+        self.magnitude_power = magnitude_power
+
+        if scale <= 0:
+            raise ValueError(f'Scale needs to be positive: current value {scale}')
+        self.scale = scale
+
+        logging.debug('Initialized %s with:', self.__class__.__name__)
+        logging.debug('\tfft_length:      %s', fft_length)
+        logging.debug('\thop_length:      %s', hop_length)
+        logging.debug('\tmagnitude_power: %s', magnitude_power)
+        logging.debug('\tscale:           %s', scale)
 
     @property
     def num_subbands(self) -> int:
@@ -875,7 +913,16 @@ class SpectrogramToAudio(NeuralModule):
 
         # iSTFT output (B, C, T)
         with torch.cuda.amp.autocast(enabled=False):
-            output = self.istft(input.cfloat())
+            output = input.cfloat()
+
+            if self.scale != 1:
+                # apply 1/scale on the coefficients
+                output = output / self.scale
+
+            if self.magnitude_power != 1:
+                # apply 1/power on the magnitude
+                output = torch.pow(output.abs(), 1 / self.magnitude_power) * torch.exp(1j * output.angle())
+            output = self.istft(output)
 
         if input_length is not None:
             # Mask padded samples

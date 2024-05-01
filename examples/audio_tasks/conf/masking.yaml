@@ -1,5 +1,3 @@
-# This configuration contains the exemplary values for training a multichannel speech enhancement model with a mask-based beamformer.
-#
 name: "masking"
 
 model:
@@ -44,7 +42,6 @@ model:
     _target_: nemo.collections.asr.modules.audio_preprocessing.AudioToSpectrogram
     fft_length: 512 # Length of the window and FFT for calculating spectrogram
     hop_length: 256 # Hop length for calculating spectrogram
-    power: null
 
   decoder:
     _target_: nemo.collections.asr.modules.audio_preprocessing.SpectrogramToAudio

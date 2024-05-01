@@ -16,6 +16,8 @@ import os
 import tempfile
 from typing import Dict, List, Optional, Union
 
+import einops
+import hydra
 import librosa
 import soundfile as sf
 import torch
@@ -23,17 +25,13 @@ from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 from tqdm import tqdm
 
-from nemo.collections.asr.data import audio_to_audio_dataset
-from nemo.collections.asr.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
-from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
+
 from nemo.collections.asr.models.audio_to_audio_model import AudioToAudioModel
-from nemo.collections.asr.parts.utils.audio_utils import ChannelSelectorType
-from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
-from nemo.core.neural_types import AudioSignal, LengthsType, NeuralType
+from nemo.core.neural_types import AudioSignal, LengthsType, LossType, NeuralType
 from nemo.utils import logging
 
-__all__ = ['EncMaskDecAudioToAudioModel']
+__all__ = ['EncMaskDecAudioToAudioModel', 'ScoreBasedGenerativeAudioToAudioModel', 'PredictiveAudioToAudioModel']
 
 
 class EncMaskDecAudioToAudioModel(AudioToAudioModel):
@@ -69,10 +67,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
             logging.debug('Mixture consistency not used')
             self.mixture_consistency = None
 
-        # Future enhancement:
-        # If subclasses need to modify the config before calling super()
-        # Check ASRBPE* classes do with their mixin
-
         # Setup augmentation
         if hasattr(self.cfg, 'channel_augment') and self.cfg.channel_augment is not None:
             logging.debug('Using channel augmentation')
@@ -83,254 +77,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
 
         # Setup optional Optimization flags
         self.setup_optimization_flags()
-
-    @torch.no_grad()
-    def process(
-        self,
-        paths2audio_files: List[str],
-        output_dir: str,
-        batch_size: int = 1,
-        num_workers: Optional[int] = None,
-        input_channel_selector: Optional[ChannelSelectorType] = None,
-    ) -> List[str]:
-        """
-        Process audio files provided in paths2audio_files.
-        Processed signals will be saved in output_dir.
-
-        Args:
-            paths2audio_files: (a list) of paths to audio files. \
-                Recommended length per file is between 5 and 25 seconds. \
-                But it is possible to pass a few hours long file if enough GPU memory is available.
-            output_dir: 
-            batch_size: (int) batch size to use during inference.
-                Bigger will result in better throughput performance but would use more memory.
-            num_workers: Number of workers for the dataloader
-            input_channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
-
-        Returns:
-        """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
-            return {}
-
-        if num_workers is None:
-            num_workers = min(batch_size, os.cpu_count() - 1)
-
-        # Output
-        paths2processed_files = []
-
-        # Model's mode and device
-        mode = self.training
-        device = next(self.parameters()).device
-
-        try:
-            # Switch model to evaluation mode
-            self.eval()
-            # Freeze weights
-            self.freeze()
-
-            logging_level = logging.get_verbosity()
-            logging.set_verbosity(logging.WARNING)
-
-            # Processing
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Save temporary manifest
-                temporary_manifest_filepath = os.path.join(tmpdir, 'manifest.json')
-                with open(temporary_manifest_filepath, 'w', encoding='utf-8') as fp:
-                    for audio_file in paths2audio_files:
-                        entry = {'input_filepath': audio_file, 'duration': librosa.get_duration(path=audio_file)}
-                        fp.write(json.dumps(entry) + '\n')
-
-                config = {
-                    'manifest_filepath': temporary_manifest_filepath,
-                    'input_key': 'input_filepath',
-                    'input_channel_selector': input_channel_selector,
-                    'batch_size': min(batch_size, len(paths2audio_files)),
-                    'num_workers': num_workers,
-                }
-
-                # Create output dir if necessary
-                if not os.path.isdir(output_dir):
-                    os.makedirs(output_dir)
-
-                # DataLoader for the input files
-                temporary_dataloader = self._setup_process_dataloader(config)
-
-                # Indexing of the original files, used to form the output file name
-                file_idx = 0
-
-                # Process batches
-                for test_batch in tqdm(temporary_dataloader, desc="Processing"):
-                    input_signal = test_batch[0]
-                    input_length = test_batch[1]
-
-                    # Expand channel dimension, if necessary
-                    # For consistency, the model uses multi-channel format, even if the channel dimension is 1
-                    if input_signal.ndim == 2:
-                        input_signal = input_signal.unsqueeze(1)
-
-                    processed_batch, _ = self.forward(
-                        input_signal=input_signal.to(device), input_length=input_length.to(device)
-                    )
-
-                    for example_idx in range(processed_batch.size(0)):
-                        # This assumes the data loader is not shuffling files
-                        file_name = os.path.basename(paths2audio_files[file_idx])
-                        # Prepare output file
-                        output_file = os.path.join(output_dir, f'processed_{file_name}')
-                        # Crop the output signal to the actual length
-                        output_signal = processed_batch[example_idx, :, : input_length[example_idx]].cpu().numpy()
-                        # Write audio
-                        sf.write(output_file, output_signal.T, self.sample_rate, 'float')
-                        # Update the file counter
-                        file_idx += 1
-                        # Save processed file
-                        paths2processed_files.append(output_file)
-
-                    del test_batch
-                    del processed_batch
-
-        finally:
-            # set mode back to its original value
-            self.train(mode=mode)
-            if mode is True:
-                self.unfreeze()
-            logging.set_verbosity(logging_level)
-
-        return paths2processed_files
-
-    def _setup_dataloader_from_config(self, config: Optional[Dict]):
-
-        if config.get("use_lhotse", False):
-            return get_lhotse_dataloader_from_config(
-                config, global_rank=self.global_rank, world_size=self.world_size, dataset=LhotseAudioToTargetDataset()
-            )
-
-        is_concat = config.get('is_concat', False)
-        if is_concat:
-            raise NotImplementedError('Concat not implemented')
-
-        # TODO: Consider moving `inject` from `audio_to_text_dataset` to a utility module?
-        # Automatically inject args from model config to dataloader config
-        inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
-
-        # Instantiate tarred dataset loader or normal dataset loader
-        if config.get('is_tarred', False):
-            raise NotImplementedError('Tarred datasets not supported')
-
-        if 'manifest_filepath' in config and config['manifest_filepath'] is None:
-            logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
-            return None
-
-        dataset = audio_to_audio_dataset.get_audio_to_target_dataset(config=config)
-
-        if hasattr(dataset, 'collate_fn'):
-            collate_fn = dataset.collate_fn
-        elif hasattr(dataset.datasets[0], 'collate_fn'):
-            # support datasets that are lists of entries
-            collate_fn = dataset.datasets[0].collate_fn
-        else:
-            # support datasets that are lists of lists
-            collate_fn = dataset.datasets[0].datasets[0].collate_fn
-
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=config['shuffle'],
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
-
-    def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
-        """
-        Sets up the training data loader via a Dict-like object.
-
-        Args:
-            train_data_config: A config that contains the information regarding construction
-                of a training dataset.
-
-        Supported Datasets:
-            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
-        """
-        if 'shuffle' not in train_data_config:
-            train_data_config['shuffle'] = True
-
-        # preserve config
-        self._update_dataset_config(dataset_name='train', config=train_data_config)
-
-        self._train_dl = self._setup_dataloader_from_config(config=train_data_config)
-
-        if 'is_tarred' in train_data_config and train_data_config['is_tarred']:
-            raise NotImplementedError('Tarred datasets not supported')
-
-    def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
-        """
-        Sets up the validation data loader via a Dict-like object.
-
-        Args:
-            val_data_config: A config that contains the information regarding construction
-                of a validation dataset.
-
-        Supported Datasets:
-            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
-        """
-        if 'shuffle' not in val_data_config:
-            val_data_config['shuffle'] = False
-
-        # preserve config
-        self._update_dataset_config(dataset_name='validation', config=val_data_config)
-
-        self._validation_dl = self._setup_dataloader_from_config(config=val_data_config)
-
-    def setup_test_data(self, test_data_config: Optional[Union[DictConfig, Dict]]):
-        """
-        Sets up the test data loader via a Dict-like object.
-
-        Args:
-            test_data_config: A config that contains the information regarding construction
-                of a test dataset.
-
-        Supported Datasets:
-            -   :class:`~nemo.collections.asr.data.audio_to_audio.AudioToTargetDataset`
-        """
-        if 'shuffle' not in test_data_config:
-            test_data_config['shuffle'] = False
-
-        # preserve config
-        self._update_dataset_config(dataset_name='test', config=test_data_config)
-
-        self._test_dl = self._setup_dataloader_from_config(config=test_data_config)
-
-    def _setup_process_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
-        """Prepare a dataloader for processing files.
-
-        Args:
-            config: A python dictionary which contains the following keys:
-                manifest_filepath: path to a manifest file
-                input_key: key with audio filepaths in the manifest
-                input_channel_selector: Optional, used to select a subset of channels from input audio files
-                batch_size: batch size for the dataloader
-                num_workers: number of workers for the dataloader
-
-        Returns:
-            A pytorch DataLoader for the given manifest filepath.
-        """
-        dl_config = {
-            'manifest_filepath': config['manifest_filepath'],
-            'sample_rate': self.sample_rate,
-            'input_key': config['input_key'],
-            'input_channel_selector': config.get('input_channel_selector', None),
-            'target_key': None,
-            'target_channel_selector': None,
-            'batch_size': config['batch_size'],
-            'shuffle': False,
-            'num_workers': config.get('num_workers', min(config['batch_size'], os.cpu_count() - 1)),
-            'pin_memory': True,
-        }
-
-        temporary_dataloader = self._setup_dataloader_from_config(config=DictConfig(dl_config))
-        return temporary_dataloader
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
@@ -350,23 +96,6 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
             "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
-    def match_batch_length(self, input: torch.Tensor, batch_length: int):
-        """Trim or pad the output to match the batch length.
-
-        Args:
-            input: tensor with shape (B, C, T)
-            batch_length: int
-
-        Returns:
-            Tensor with shape (B, C, T), where T matches the
-            batch length.
-        """
-        input_length = input.size(-1)
-        pad_length = batch_length - input_length
-        pad = (0, pad_length)
-        # pad with zeros or crop
-        return torch.nn.functional.pad(input, pad, 'constant', 0)
-
     @typecheck()
     def forward(self, input_signal, input_length=None):
         """
@@ -380,6 +109,7 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
                 sequences.
 
         Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
         """
         batch_length = input_signal.size(-1)
 
@@ -414,12 +144,11 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         else:
             input_signal, input_length, target_signal, _ = batch
 
-        # Expand channel dimension, if necessary
         # For consistency, the model uses multi-channel format, even if the channel dimension is 1
         if input_signal.ndim == 2:
-            input_signal = input_signal.unsqueeze(1)
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
         if target_signal.ndim == 2:
-            target_signal = target_signal.unsqueeze(1)
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
 
         # Apply channel augmentation
         if self.training and self.channel_augmentation is not None:
@@ -449,12 +178,11 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         else:
             input_signal, input_length, target_signal, _ = batch
 
-        # Expand channel dimension, if necessary
         # For consistency, the model uses multi-channel format, even if the channel dimension is 1
         if input_signal.ndim == 2:
-            input_signal = input_signal.unsqueeze(1)
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
         if target_signal.ndim == 2:
-            target_signal = target_signal.unsqueeze(1)
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
 
         # Process input
         processed_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
@@ -485,3 +213,406 @@ class EncMaskDecAudioToAudioModel(AudioToAudioModel):
         results = []
 
         return results
+
+
+class PredictiveAudioToAudioModel(AudioToAudioModel):
+    """This models aims to directly estimate the coefficients
+    in the encoded domain by applying a neural model.
+    """
+
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        super().__init__(cfg=cfg, trainer=trainer)
+        self.sample_rate = self._cfg.sample_rate
+
+        # Setup processing modules
+        self.encoder = self.from_config_dict(self._cfg.encoder)
+        self.decoder = self.from_config_dict(self._cfg.decoder)
+
+        # Neural estimator
+        self.estimator = self.from_config_dict(self._cfg.estimator)
+
+        # Normalization
+        self.normalize_input = self._cfg.get('normalize_input', False)
+
+        # Term added to the denominator to improve numerical stability
+        self.eps = self._cfg.get('eps', 1e-8)
+
+        # Setup optional Optimization flags
+        self.setup_optimization_flags()
+
+        logging.debug('Initialized %s', self.__class__.__name__)
+        logging.debug('\tnormalize_input: %s', self.normalize_input)
+        logging.debug('\teps:             %s', self.eps)
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        return {
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        return {
+            "output_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @typecheck()
+    def forward(self, input_signal, input_length=None):
+        """Forward pass of the model.
+        
+        Args:
+            input_signal: time-domain signal
+            input_length: valid length of each example in the batch
+        
+        Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
+        """
+        batch_length = input_signal.size(-1)
+
+        if self.normalize_input:
+            # max for each example in the batch
+            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
+            # scale input signal
+            input_signal = input_signal / (norm_scale + self.eps)
+
+        # Encoder
+        encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
+
+        # Backbone
+        estimated, estimated_length = self.estimator(input=encoded, input_length=encoded_length)
+
+        # Decoder
+        output, output_length = self.decoder(input=estimated, input_length=estimated_length)
+
+        if self.normalize_input:
+            # rescale to the original scale
+            output = output * norm_scale
+
+        # Trim or pad the estimated signal to match input length
+        output = self.match_batch_length(input=output, batch_length=batch_length)
+        return output, output_length
+
+    # PTL-specific methods
+    def training_step(self, batch, batch_idx):
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        # Estimate the signal
+        output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
+
+        # Calculate the loss
+        loss = self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
+
+        # Logs
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return loss
+
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        # Estimate the signal
+        output_signal, _ = self.forward(input_signal=input_signal, input_length=input_length)
+
+        # Prepare output
+        loss = self.loss(estimate=output_signal, target=target_signal, input_length=input_length)
+
+        # Update metrics
+        if hasattr(self, 'metrics') and tag in self.metrics:
+            # Update metrics for this (tag, dataloader_idx)
+            for name, metric in self.metrics[tag][dataloader_idx].items():
+                metric.update(preds=output_signal, target=target_signal, input_length=input_length)
+
+        # Log global step
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return {f'{tag}_loss': loss}
+
+
+class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
+    """This models is using a score-based diffusion process to generate
+    an encoded representation of the enhanced signal.
+    
+    The model consists of the following blocks:
+        - encoder: transforms input multi-channel audio signal into an encoded representation (analysis transform)
+        - estimator: neural model, estimates a score for the diffusion process
+        - sde: stochastic differential equation (SDE) defining the forward and reverse diffusion process
+        - sampler: sampler for the reverse diffusion process, estimates coefficients of the target signal
+        - decoder: transforms sampler output into the time domain (synthesis transform)
+    """
+
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        super().__init__(cfg=cfg, trainer=trainer)
+        self.sample_rate = self._cfg.sample_rate
+
+        # Setup processing modules
+        self.encoder = self.from_config_dict(self._cfg.encoder)
+        self.decoder = self.from_config_dict(self._cfg.decoder)
+
+        # Neural score estimator
+        self.estimator = self.from_config_dict(self._cfg.estimator)
+
+        # SDE
+        self.sde = self.from_config_dict(self._cfg.sde)
+
+        # Sampler
+        if 'sde' in self._cfg.sampler:
+            raise ValueError('SDE should be defined in the model config, not in the sampler config')
+        if 'score_estimator' in self._cfg.sampler:
+            raise ValueError('Score estimator should be defined in the model config, not in the sampler config')
+
+        self.sampler = hydra.utils.instantiate(self._cfg.sampler, sde=self.sde, score_estimator=self.estimator)
+
+        # Normalization
+        self.normalize_input = self._cfg.get('normalize_input', False)
+
+        # Metric evaluation
+        self.max_utts_evaluation_metrics = self._cfg.get('max_utts_evaluation_metrics')
+
+        if self.max_utts_evaluation_metrics is not None:
+            logging.warning(
+                'Metrics will be evaluated on first %d examples of the evaluation datasets.',
+                self.max_utts_evaluation_metrics,
+            )
+
+        # Term added to the denominator to improve numerical stability
+        self.eps = self._cfg.get('eps', 1e-8)
+
+        # Setup optional Optimization flags
+        self.setup_optimization_flags()
+
+        logging.debug('Initialized %s', self.__class__.__name__)
+        logging.debug('\tnormalize_input: %s', self.normalize_input)
+        logging.debug('\teps:             %s', self.eps)
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        return {
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        return {
+            "output_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @typecheck()
+    @torch.inference_mode()
+    def forward(self, input_signal, input_length=None):
+        """Forward pass of the model.
+
+        Forward pass of the model aplies the following steps:
+            - encoder to obtain the encoded representation of the input signal
+            - sampler to generate the estimated coefficients of the target signal
+            - decoder to transform the sampler output into the time domain
+
+        Args:
+            input_signal: Tensor that represents a batch of raw audio signals,
+                of shape [B, T] or [B, T, C]. T here represents timesteps, with 1 second of audio represented as
+                `self.sample_rate` number of floating point values.
+            input_signal_length: Vector of length B, that contains the individual lengths of the audio
+                sequences.
+
+        Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
+        """
+        batch_length = input_signal.size(-1)
+
+        if self.normalize_input:
+            # max for each example in the batch
+            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
+            # scale input signal
+            input_signal = input_signal / (norm_scale + self.eps)
+
+        # Encoder
+        encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
+
+        # Sampler
+        generated, generated_length = self.sampler(
+            prior_mean=encoded, score_condition=encoded, state_length=encoded_length
+        )
+
+        # Decoder
+        output, output_length = self.decoder(input=generated, input_length=generated_length)
+
+        if self.normalize_input:
+            # rescale to the original scale
+            output = output * norm_scale
+
+        # Trim or pad the estimated signal to match input length
+        output = self.match_batch_length(input=output, batch_length=batch_length)
+        return output, output_length
+
+    @typecheck(
+        input_types={
+            "target_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "input_length": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={"loss": NeuralType(None, LossType()),},
+    )
+    def _step(self, target_signal, input_signal, input_length=None):
+        """Randomly generate a time step for each example in the batch, estimate
+        the score and calculate the loss value.
+
+        Note that this step does not include sampler.
+        """
+        batch_size = target_signal.size(0)
+
+        if self.normalize_input:
+            # max for each example in the batch
+            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
+            # scale input signal
+            input_signal = input_signal / (norm_scale + self.eps)
+            # scale the target signal
+            target_signal = target_signal / (norm_scale + self.eps)
+
+        # Apply encoder to both target and the input
+        input_enc, input_enc_len = self.encoder(input=input_signal, input_length=input_length)
+        target_enc, _ = self.encoder(input=target_signal, input_length=input_length)
+
+        # Generate random time steps
+        sde_time = self.sde.generate_time(size=batch_size, device=input_enc.device)
+
+        # Get the mean and the variance of the perturbation kernel
+        pk_mean, pk_std = self.sde.perturb_kernel_params(state=target_enc, prior_mean=input_enc, time=sde_time)
+
+        # Generate a random sample from a standard normal distribution
+        z_norm = torch.randn_like(input_enc)
+
+        # Prepare perturbed data
+        perturbed_enc = pk_mean + pk_std * z_norm
+
+        # Score is conditioned on the perturbed data and the input
+        estimator_input = torch.cat([perturbed_enc, input_enc], dim=-3)
+
+        # Estimate the score using the neural estimator
+        # SDE time is used to inform the estimator about the current time step
+        # Note:
+        # - some implementations use `score = -self._raw_dnn_output(x, t, y)`
+        # - this seems to be unimportant, and is an artifact of transfering code from the original Song's repo
+        score_est, score_len = self.estimator(input=estimator_input, input_length=input_enc_len, condition=sde_time)
+
+        # Score loss weighting as in Section 4.2 in http://arxiv.org/abs/1907.05600
+        score_est = score_est * pk_std
+        score_ref = -z_norm
+
+        # Score matching loss on the normalized scores
+        loss = self.loss(estimate=score_est, target=score_ref, input_length=score_len)
+
+        return loss
+
+    # PTL-specific methods
+    def training_step(self, batch, batch_idx):
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        # Calculate the loss
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
+        # Logs
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return loss
+
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch['target_signal']
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        # Calculate loss
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
+        # Update metrics
+        update_metrics = False
+        if self.max_utts_evaluation_metrics is None:
+            # Always update if max is not configured
+            update_metrics = True
+            # Number of examples to process
+            num_examples = input_signal.size(0)  # batch size
+        else:
+            # Check how many examples have been used for metric calculation
+            first_metric_name = next(iter(self.metrics[tag][dataloader_idx]))
+            num_examples_evaluated = self.metrics[tag][dataloader_idx][first_metric_name].num_examples
+            # Update metrics if some examples were not processed
+            update_metrics = num_examples_evaluated < self.max_utts_evaluation_metrics
+            # Number of examples to process
+            num_examples = min(self.max_utts_evaluation_metrics - num_examples_evaluated, input_signal.size(0))
+
+        if update_metrics:
+            # Generate output signal
+            output_signal, _ = self.forward(
+                input_signal=input_signal[:num_examples, ...], input_length=input_length[:num_examples]
+            )
+
+            # Update metrics
+            if hasattr(self, 'metrics') and tag in self.metrics:
+                # Update metrics for this (tag, dataloader_idx)
+                for name, metric in self.metrics[tag][dataloader_idx].items():
+                    metric.update(
+                        preds=output_signal,
+                        target=target_signal[:num_examples, ...],
+                        input_length=input_length[:num_examples],
+                    )
+
+        # Log global step
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return {f'{tag}_loss': loss}

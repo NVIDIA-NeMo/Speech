@@ -26,14 +26,42 @@ Basic run (on CPU for 50 epochs):
 
 PyTorch Lightning Trainer arguments and args of the model and the optimizer can be added or overriden from CLI
 """
+from enum import Enum
+
 import pytorch_lightning as pl
 import torch
 from omegaconf import OmegaConf
 
-from nemo.collections.asr.models import EncMaskDecAudioToAudioModel
+from nemo.collections.asr.models.enhancement_models import (
+    EncMaskDecAudioToAudioModel,
+    PredictiveAudioToAudioModel,
+    ScoreBasedGenerativeAudioToAudioModel,
+)
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+
+
+class ModelType(str, Enum):
+    """Enumeration with the available model types.
+    """
+
+    MaskBased = 'mask_based'
+    Predictive = 'predictive'
+    ScoreBased = 'score_based'
+
+
+def get_model_class(model_type: ModelType):
+    """Get model class for a given model type.
+    """
+    if model_type == ModelType.MaskBased:
+        return EncMaskDecAudioToAudioModel
+    elif model_type == ModelType.Predictive:
+        return PredictiveAudioToAudioModel
+    elif model_type == ModelType.ScoreBased:
+        return ScoreBasedGenerativeAudioToAudioModel
+    else:
+        raise ValueError(f'Unknown model type: {model_type}')
 
 
 @hydra_runner(config_path="./conf", config_name="masking")
@@ -42,9 +70,20 @@ def main(cfg):
 
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
-    model = EncMaskDecAudioToAudioModel(cfg=cfg.model, trainer=trainer)
 
-    # Initialize the weights of the model from another model, if provided via config
+    # Get model class
+    model_type = cfg.model.get('type')
+    if model_type is None:
+        model_type = ModelType.MaskBased
+        logging.warning('model_type not found in config. Using default: %s', model_type)
+
+    logging.info('Get class for model type: %s', model_type)
+    model_class = get_model_class(model_type)
+
+    logging.info('Instantiate model %s', model_class.__name__)
+    model = model_class(cfg=cfg.model, trainer=trainer)
+
+    logging.info('Initialize the weights of the model from another model, if provided via config')
     model.maybe_init_from_pretrained_checkpoint(cfg)
 
     # Train the model

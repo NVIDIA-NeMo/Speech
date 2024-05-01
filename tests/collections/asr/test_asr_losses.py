@@ -17,7 +17,9 @@ import pytest
 import torch
 
 from nemo.collections.asr.losses.audio_losses import (
+    MSELoss,
     SDRLoss,
+    calculate_mse_batch,
     calculate_sdr_batch,
     convolution_invariant_target,
     scale_invariant_target,
@@ -271,7 +273,7 @@ class TestAudioLosses:
             estimate = target + noise
 
             # Limit calculation to masked samples
-            mask = _rng.integers(low=0, high=2, size=(batch_size, max_num_samples))
+            mask = _rng.integers(low=0, high=2, size=(batch_size, num_channels, max_num_samples))
 
             # Tensors for testing the loss
             tensor_estimate = torch.tensor(estimate)
@@ -282,7 +284,9 @@ class TestAudioLosses:
             golden_sdr = 0
             for b in range(batch_size):
                 sdr = [
-                    calculate_sdr_numpy(estimate=estimate[b, m, mask[b, :] > 0], target=target[b, m, mask[b, :] > 0])
+                    calculate_sdr_numpy(
+                        estimate=estimate[b, m, mask[b, m, :] > 0], target=target[b, m, mask[b, m, :] > 0]
+                    )
                     for m in range(num_channels)
                 ]
                 sdr = np.mean(np.array(sdr))
@@ -467,3 +471,187 @@ class TestAudioLosses:
             assert np.allclose(
                 uut_sdr_loss.cpu().detach().numpy(), -golden_sdr, atol=atol
             ), f'SDRLoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mse(self, num_channels: int, ndim: int):
+        """Test SDR calculation
+        """
+        batch_size = 8
+        num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        mse_loss = MSELoss(ndim=ndim)
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.01, high=1) * _rng.normal(size=signal_shape)
+            # Estimate
+            estimate = target + noise
+
+            # DC bias for both
+            target += _rng.uniform(low=-1, high=1)
+            estimate += _rng.uniform(low=-1, high=1)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+
+            # Reference MSE
+            golden_mse = np.zeros((batch_size, num_channels))
+            for b in range(batch_size):
+                for m in range(num_channels):
+                    err = estimate[b, m, :] - target[b, m, :]
+                    golden_mse[b, m] = np.mean(np.abs(err) ** 2, axis=reduction_dim)
+
+            # Calculate MSE in torch
+            uut_mse = calculate_mse_batch(estimate=tensor_estimate, target=tensor_target)
+
+            # Calculate MSE loss
+            uut_mse_loss = mse_loss(estimate=tensor_estimate, target=tensor_target)
+
+            # Compare torch SDR vs numpy
+            assert np.allclose(
+                uut_mse.cpu().detach().numpy(), golden_mse, atol=atol
+            ), f'MSE not matching for example {n}'
+
+            # Compare SDR loss vs average of torch SDR
+            assert np.isclose(uut_mse_loss, uut_mse.mean(), atol=atol), f'MSELoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mse_weighted(self, num_channels: int, ndim: int):
+        """Test SDR calculation with weighting for channels
+        """
+        batch_size = 8
+        num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        channel_weight = _rng.uniform(low=0.01, high=1.0, size=num_channels)
+        channel_weight = channel_weight / np.sum(channel_weight)
+        mse_loss = MSELoss(weight=channel_weight, ndim=ndim)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+
+            # Reference MSE
+            golden_mse = 0
+            for b in range(batch_size):
+                mse = [
+                    np.mean(np.abs(estimate[b, m, :] - target[b, m, :]) ** 2, axis=reduction_dim)
+                    for m in range(num_channels)
+                ]
+                # weighted sum
+                mse = np.sum(np.array(mse) * channel_weight)
+                golden_mse += mse
+            golden_mse /= batch_size  # average over batch
+
+            # Calculate MSE loss
+            uut_mse_loss = mse_loss(estimate=tensor_estimate, target=tensor_target)
+
+            # Compare
+            assert np.allclose(
+                uut_mse_loss.cpu().detach().numpy(), golden_mse, atol=atol
+            ), f'MSELoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mse_input_length(self, num_channels: int, ndim: int):
+        """Test SDR calculation with input length.
+        """
+        batch_size = 8
+        max_num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, max_num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, max_num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        mse_loss = MSELoss(ndim=ndim)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=1, high=max_num_samples, size=batch_size)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_input_length = torch.tensor(input_length)
+
+            # Reference MSE
+            golden_mse = 0
+            for b, b_len in enumerate(input_length):
+                mse = [
+                    np.mean(np.abs(estimate[b, m, ..., :b_len] - target[b, m, ..., :b_len]) ** 2, axis=reduction_dim)
+                    for m in range(num_channels)
+                ]
+                mse = np.mean(np.array(mse))
+                golden_mse += mse
+            golden_mse /= batch_size  # average over batch
+
+            # Calculate MSE
+            uut_mse_loss = mse_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_mse_loss.cpu().detach().numpy(), golden_mse, atol=atol
+            ), f'MSELoss not matching for example {n}'

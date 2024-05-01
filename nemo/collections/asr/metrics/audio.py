@@ -57,6 +57,7 @@ class AudioMetricWrapper(Metric):
     """
 
     full_state_update: bool = False
+    num_examples: torch.Tensor
 
     def __init__(
         self, metric: Metric, channel: Optional[int] = None, metric_using_batch_averaging: Optional[bool] = None
@@ -74,6 +75,7 @@ class AudioMetricWrapper(Metric):
 
         self._metric = metric
         self._channel = channel
+        self.add_state('num_examples', default=torch.tensor(0), dist_reduce_fx='sum')
         logging.debug('Setup metric %s, channel %s', metric, str(channel))
 
     def _select_channel(self, preds: torch.Tensor, target: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -144,6 +146,8 @@ class AudioMetricWrapper(Metric):
             for b_preds, b_target in self._trim_inputs(preds=preds, target=target, input_length=input_length):
                 self._metric.update(preds=b_preds, target=b_target)
 
+        self.num_examples += preds.size(0)
+
     def compute(self) -> torch.Tensor:
         """Compute the underlying metric.
         """
@@ -179,6 +183,9 @@ class AudioMetricWrapper(Metric):
     def reset(self) -> None:
         """Reset the underlying metric.
         """
+        # reset the internal states
+        super().reset()
+        # reset the underlying metric
         self._metric.reset()
 
     def __repr__(self) -> str:

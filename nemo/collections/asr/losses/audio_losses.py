@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import math
-from typing import List, Optional
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -21,31 +21,33 @@ import torch
 from nemo.collections.asr.parts.preprocessing.features import make_seq_mask_like
 from nemo.collections.asr.parts.utils.audio_utils import toeplitz
 from nemo.core.classes import Loss, Typing, typecheck
-from nemo.core.neural_types import AudioSignal, LengthsType, LossType, MaskType, NeuralType
+from nemo.core.neural_types import AudioSignal, LengthsType, LossType, MaskType, NeuralType, VoidType
 from nemo.utils import logging
 
-__all__ = ['SDRLoss']
+__all__ = ['SDRLoss', 'MSELoss']
 
 
-def temporal_mean(
+def calculate_mean(
     input: torch.Tensor,
     input_length: Optional[torch.Tensor] = None,
     mask: Optional[torch.Tensor] = None,
+    dim: Union[int, Tuple[int]] = -1,
     keepdim: bool = False,
     eps: float = 1e-10,
 ) -> torch.Tensor:
-    """Calculate mean along temporal dimension with optionally
+    """Calculate mean along dimension `dim` with optionally
     averaging only over valid samples (based on the input length).
 
     Args:
-        input: Batch of signals, shape (B, C, T)
+        input: signal, for example (B, C, T) or (B, C, D, T)
         input_length: Optional, length of each example in the batch, shape (B,)
-        mask: Optional, temporal mask for each example in the batch, shape (B, T)
+        mask: Optional, temporal mask for each example in the batch, same shape as the input signal
+        dim: dimension or dimensions to reduce
         keepdim: Whether to keep the temporal dimension
         eps: Regularization to avoid division by zero
 
     Returns:
-        (B, C, 1) if keepdim=True, otherwise (B, C)
+        Mean over dimensions `dim`.
     """
     if input_length is not None:
         if mask is not None:
@@ -53,17 +55,18 @@ def temporal_mean(
                 'Argument `input_length` is mutually exclusive with `mask`. Both cannot be used at the same time.'
             )
         # Construct a binary mask
-        mask = make_seq_mask_like(lengths=input_length, like=input, time_dim=-1, valid_ones=True).squeeze(1)
+        mask = make_seq_mask_like(lengths=input_length, like=input, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(input)
 
     if mask is None:
         # No length information, assume all samples are valid
-        mean = torch.mean(input, dim=-1, keepdim=keepdim)
+        mean = torch.mean(input, dim=dim, keepdim=keepdim)
     else:
         # Average using temporal mask
-        mean = mask.unsqueeze(1) * input
-        mean = torch.sum(mean, axis=-1, keepdim=keepdim)
-        normalization = torch.sum(mask, axis=-1, keepdim=keepdim)
-        mean = mean / (normalization.unsqueeze(1) + eps)
+        mean = mask * input
+        mean = torch.sum(mean, dim=dim, keepdim=keepdim)
+        normalization = torch.sum(mask, dim=dim, keepdim=keepdim)
+        mean = mean / (normalization + eps)
 
     return mean
 
@@ -101,16 +104,17 @@ def scale_invariant_target(
             )
 
         # Construct a binary mask
-        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True).squeeze(1)
+        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(estimate)
 
-    estimate_dot_target = temporal_mean(estimate * target, mask=mask, keepdim=True, eps=eps)
-    target_pow = temporal_mean(torch.abs(target) ** 2, mask=mask, keepdim=True, eps=eps)
+    estimate_dot_target = calculate_mean(estimate * target, mask=mask, dim=-1, keepdim=True, eps=eps)
+    target_pow = calculate_mean(torch.abs(target) ** 2, mask=mask, dim=-1, keepdim=True, eps=eps)
     scale = estimate_dot_target / (target_pow + eps)
     target_scaled = scale * target
 
     # Mask to keep only the valid samples
     if mask is not None:
-        target_scaled = mask.unsqueeze(1) * target_scaled
+        target_scaled = mask * target_scaled
 
     return target_scaled
 
@@ -162,12 +166,13 @@ def convolution_invariant_target(
             )
 
         # Construct a binary mask
-        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True).squeeze(1)
+        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(estimate)
 
     # Apply a mask, if available
     if mask is not None:
-        estimate = mask.unsqueeze(1) * estimate
-        target = mask.unsqueeze(1) * target
+        estimate = mask * estimate
+        target = mask * target
 
     # Calculate filtered target
     input_shape = estimate.shape
@@ -207,7 +212,7 @@ def convolution_invariant_target(
 
     # Mask to keep only the valid samples
     if mask is not None:
-        target_filt = mask.unsqueeze(1) * target_filt
+        target_filt = mask * target_filt
 
     return target_filt
 
@@ -261,11 +266,12 @@ def calculate_sdr_batch(
             )
 
         # Construct a binary mask
-        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True).squeeze(1)
+        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(estimate)
 
     if remove_mean:
-        estimate = estimate - temporal_mean(estimate, mask=mask, keepdim=True, eps=eps)
-        target = target - temporal_mean(target, mask=mask, keepdim=True, eps=eps)
+        estimate = estimate - calculate_mean(estimate, mask=mask, dim=-1, keepdim=True, eps=eps)
+        target = target - calculate_mean(target, mask=mask, dim=-1, keepdim=True, eps=eps)
 
     if scale_invariant or (convolution_invariant and convolution_filter_length == 1):
         target = scale_invariant_target(estimate=estimate, target=target, mask=mask, eps=eps)
@@ -276,8 +282,8 @@ def calculate_sdr_batch(
 
     distortion = estimate - target
 
-    target_pow = temporal_mean(torch.abs(target) ** 2, mask=mask, eps=eps)
-    distortion_pow = temporal_mean(torch.abs(distortion) ** 2, mask=mask, eps=eps)
+    target_pow = calculate_mean(torch.abs(target) ** 2, mask=mask, dim=-1, eps=eps)
+    distortion_pow = calculate_mean(torch.abs(distortion) ** 2, mask=mask, dim=-1, eps=eps)
 
     if sdr_max is not None:
         distortion_pow = distortion_pow + 10 ** (-sdr_max / 10) * target_pow
@@ -353,7 +359,7 @@ class SDRLoss(Loss, Typing):
             "estimate": NeuralType(signal_shape, AudioSignal()),
             "target": NeuralType(signal_shape, AudioSignal()),
             "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
-            "mask": NeuralType(('B', 'T'), MaskType(), optional=True),
+            "mask": NeuralType(('B', 'C', 'T'), MaskType(), optional=True),
         }
 
     @property
@@ -376,10 +382,10 @@ class SDRLoss(Loss, Typing):
         perform averaging across channels (weighting optional), and apply reduction across the batch.
 
         Args:
-            estimate: Batch of signals, shape (B, T, C)
-            target: Batch of signals, shape (B, T, C)
+            estimate: Batch of signals, shape (B, C, T)
+            target: Batch of signals, shape (B, C, T)
             input_length: Batch of lengths, shape (B,)
-            mask: Batch of temporal masks, shape (B, T)
+            mask: Batch of temporal masks for each channel, shape (B, C, T)
 
         Returns:
             Scalar loss.
@@ -410,3 +416,161 @@ class SDRLoss(Loss, Typing):
         sdr = self.reduce(sdr)
 
         return -sdr
+
+
+def calculate_mse_batch(
+    estimate: torch.Tensor,
+    target: torch.Tensor,
+    input_length: Optional[torch.Tensor] = None,
+    mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Calculate MSE per channel.
+
+        MSE = ||estimate - target||_2^2 / input_length
+
+    Args:
+        estimate: estimated signal, shape (B, C, T) or (B, C, D, T)
+        target: target signal, shape (B, C, T) or (B, C, D, T)
+        input_length: Optional, length of valid samples, shape (B,)
+        mask: Optional, temporal mask, same shape as signals
+
+    Returns:
+        MSE for each channel, shape (B, C)
+    """
+    assert (
+        estimate.shape == target.shape
+    ), f'Estimate shape ({estimate.shape}) not matching target shape ({target.shape})'
+
+    if input_length is not None:
+        if mask is not None:
+            raise RuntimeError(
+                'Argument `input_length` is mutually exclusive with `mask`. Both cannot be used at the same time.'
+            )
+
+        # Construct a binary mask
+        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(estimate)
+
+    # error
+    err = estimate - target
+
+    # dimensions for averaging
+    if estimate.ndim == 3:
+        # average across time
+        dim = -1
+    elif estimate.ndim == 4:
+        # average across time and features
+        dim = (-2, -1)
+    else:
+        raise RuntimeError(f'Unexpected dimension of the input: {estimate.shape}')
+
+    # calculate masked mean
+    mse = calculate_mean(torch.abs(err) ** 2, mask=mask, dim=dim)
+
+    return mse
+
+
+class MSELoss(Loss, Typing):
+    """
+    Computes MSE loss with weighted average across channels.
+
+    Args:
+        weight: weight for loss of each output channel, used for averaging the loss across channels. Defaults to `None` (averaging).
+        reduction: batch reduction. Defaults to `mean` over the batch.
+        ndim: Number of dimensions for the input signal
+    """
+
+    def __init__(
+        self, weight: Optional[List[float]] = None, reduction: str = 'mean', ndim: int = 3,
+    ):
+        super().__init__()
+
+        # weight buffer
+        if weight is not None:
+            if any([w <= 0 for w in weight]):
+                raise ValueError(f'Weight must be positive! Current value: {weight}')
+            elif not np.isclose(sum(weight), 1, atol=1e-6):
+                raise ValueError(f'Weight should add to one, current weight: {weight}')
+            weight = torch.tensor(weight).reshape(1, -1)
+            logging.info(f'Channel weight set to %s', weight)
+        self.register_buffer('weight', weight)
+        self.weight: Optional[Tensor]
+
+        # Batch reduction
+        self.reduction = reduction
+        if reduction == 'mean':
+            self.reduce = torch.mean
+        else:
+            raise ValueError(f'Unexpected reduction mode {reduction}.')
+
+        # Input dimension
+        self.ndim = ndim
+
+        if self.ndim == 3:
+            # Time-domain input
+            self.signal_shape = ('B', 'C', 'T')
+        elif self.ndim == 4:
+            # Spectral-domain input
+            self.signal_shape = ('B', 'C', 'D', 'T')
+        else:
+            raise ValueError(f'Unexpected input dimension: {self.ndim}')
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tweight:       %s', self.weight)
+        logging.debug('\treduction:    %s', self.reduction)
+        logging.debug('\tndim:         %s', self.ndim)
+        logging.debug('\tsignal_shape: %s', self.signal_shape)
+
+    @property
+    def input_types(self):
+        """Input types definitions for SDRLoss.
+        """
+        return {
+            "estimate": NeuralType(self.signal_shape, VoidType()),
+            "target": NeuralType(self.signal_shape, VoidType()),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "mask": NeuralType(self.signal_shape, MaskType(), optional=True),
+        }
+
+    @property
+    def output_types(self):
+        """Output types definitions for SDRLoss.
+        loss:
+            NeuralType(None)
+        """
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(
+        self,
+        estimate: torch.Tensor,
+        target: torch.Tensor,
+        input_length: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """For input batch of multi-channel signals, calculate SDR between estimate and target for each channel,
+        perform averaging across channels (weighting optional), and apply reduction across the batch.
+
+        Args:
+            estimate: Estimate of the target signal
+            target: Target signal
+            input_length: Length of each example in the batch
+            mask: Mask for each signal
+
+        Returns:
+            Scalar loss.
+        """
+        mse = calculate_mse_batch(estimate=estimate, target=target, input_length=input_length, mask=mask,)
+
+        # channel averaging
+        if self.weight is None:
+            mse = torch.mean(mse, dim=1)
+        else:
+            # weighting across channels
+            mse = mse * self.weight
+            mse = torch.sum(mse, dim=1)
+
+        # reduction
+        mse = self.reduce(mse)
+
+        return mse

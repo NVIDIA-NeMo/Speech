@@ -810,6 +810,39 @@ class TestAudioDatasets:
         assert (ASRAudioProcessor.list_to_multichannel(target_list) == golden_target).all()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 2])
+    def test_processor_process_audio(self, num_channels):
+        """Test signal normalization in process_audio.
+        """
+        num_samples = 1000
+        num_examples = 30
+
+        signals = ['input_signal', 'target_signal', 'reference_signal']
+
+        for normalization_signal in [None] + signals:
+            # Create processor
+            processor = ASRAudioProcessor(
+                sample_rate=16000, random_offset=False, normalization_signal=normalization_signal
+            )
+
+            # Generate random signals
+            for n in range(num_examples):
+                example = {signal: torch.randn(num_channels, num_samples) for signal in signals}
+                processed_example = processor.process_audio(example)
+
+                # Expected scale
+                if normalization_signal:
+                    scale = 1.0 / (example[normalization_signal].abs().max() + processor.eps)
+                else:
+                    scale = 1.0
+
+                # Make sure all signals are scaled as expected
+                for signal in signals:
+                    assert torch.allclose(
+                        processed_example[signal], example[signal] * scale
+                    ), f'Failed example {n} signal {signal}'
+
+    @pytest.mark.unit
     def test_audio_collate_fn(self):
         """Test `_audio_collate_fn`
         """

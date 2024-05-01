@@ -77,6 +77,31 @@ Latest News
 
   </details>
 
+  <details open>
+    <summary><b>Speech Recognition</b></summary>
+        <details>
+          <summary><a href="https://developer.nvidia.com/blog/new-standard-for-speech-recognition-and-translation-from-the-nvidia-nemo-canary-model/">New Standard for Speech Recognition and Translation from the NVIDIA NeMo Canary Model</a> (2024/04/18) </summary>
+
+          The NeMo team just released Canary, a multilingual model that transcribes speech in English, Spanish, German, and French with punctuation and capitalization. Canary also provides bi-directional translation, between English and the three other supported languages.
+          <br><br>
+        </details>
+
+      <details>
+        <summary><a href="https://developer.nvidia.com/blog/pushing-the-boundaries-of-speech-recognition-with-nemo-parakeet-asr-models/">Pushing the Boundaries of Speech Recognition with NVIDIA NeMo Parakeet ASR Models</a> (2024/04/18) </summary>
+
+        NVIDIA NeMo, an end-to-end platform for the development of multimodal generative AI models at scale anywhere—on any cloud and on-premises—released the Parakeet family of automatic speech recognition (ASR) models. These state-of-the-art ASR models, developed in collaboration with Suno.ai, transcribe spoken English with exceptional accuracy.
+        <br><br>
+    </details>
+
+    <details>
+      <summary><a href="https://developer.nvidia.com/blog/turbocharge-asr-accuracy-and-speed-with-nvidia-nemo-parakeet-tdt/">Turbocharge ASR Accuracy and Speed with NVIDIA NeMo Parakeet-TDT</a> (2024/04/18) </summary>
+
+      NVIDIA NeMo, an end-to-end platform for developing multimodal generative AI models at scale anywhere—on any cloud and on-premises—recently released Parakeet-TDT. This new addition to the  NeMo ASR Parakeet model family boasts better accuracy and 64% greater speed over the previously best model, Parakeet-RNNT-1.1B.
+      <br><br>
+    </details>
+
+  </details>
+
    
 
 

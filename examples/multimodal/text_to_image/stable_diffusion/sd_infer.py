@@ -28,6 +28,9 @@ def main(cfg):
         model_cfg.unet_config.use_flash_attention = False
         model_cfg.unet_config.from_pretrained = None
         model_cfg.first_stage_config.from_pretrained = None
+        model_cfg.first_stage_config._target_ = (
+            'nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder.AutoencoderKL'
+        )
 
     torch.backends.cuda.matmul.allow_tf32 = True
     trainer, megatron_diffusion_model = setup_trainer_and_model_for_inference(

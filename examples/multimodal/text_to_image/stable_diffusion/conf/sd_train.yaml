@@ -49,8 +49,8 @@ model:
   precision: ${trainer.precision}
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
-  micro_batch_size: 1 # limited by GPU memory
-  global_batch_size: 1 # will use more micro batches to reach global batch size
+  micro_batch_size: 16 # limited by GPU memory
+  global_batch_size: 16 # will use more micro batches to reach global batch size
   native_amp_init_scale: 65536.0 # Init scale for grad scaler used at fp16
 
 
@@ -97,15 +97,15 @@ model:
   unet_config:
     _target_: nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.openaimodel.UNetModel
     from_pretrained: #/ckpts/nemo-v1-2.ckpt
-    from_NeMo: True #Must be specified when from pretrained is not None, False means loading unet from HF ckpt
+    from_NeMo: False #Must be specified when from pretrained is not None, False means loading unet from HF ckpt
     image_size: 32 # unused
     in_channels: 4
     out_channels: 4
     model_channels: 320
     attention_resolutions:
-    - 4
-    - 2
-    - 1
+      - 4
+      - 2
+      - 1
     num_res_blocks: 2
     channel_mult:
     - 1
@@ -121,6 +121,7 @@ model:
     use_flash_attention: True
     unet_precision: fp32
     resblock_gn_groups: 32
+    use_te_fp8: False
 
   first_stage_config:
     _target_: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder.AutoencoderKL
@@ -140,22 +141,22 @@ model:
       - 4
       - 4
       num_res_blocks: 2
-      attn_resolutions: []
+      attn_resolutions: [ ]
       dropout: 0.0
     lossconfig:
       target: torch.nn.Identity
 
   cond_stage_config:
-    _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenMegatronCLIPEmbedder
-    restore_from_path: /ckpts/openai.nemo
+    _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenCLIPEmbedder
+    version: openai/clip-vit-large-patch14
     device: cuda
-    freeze: True
-    layer: "last"
-    #    For compatibility of history version that uses HF clip model
-    #    _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenCLIPEmbedder
-    #    version: openai/clip-vit-large-patch14
-    #    device: cuda
-    #    max_length: 77
+    max_length: 77
+  #    _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.FrozenMegatronCLIPEmbedder
+  #    restore_from_path: /ckpts/openai-old.nemo
+  #    device: cuda
+  #    freeze: True
+  #    layer: "last"
+
 
 
   # miscellaneous
@@ -163,7 +164,7 @@ model:
   resume_from_checkpoint: null # manually set the checkpoint file to load from
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
-  ddp_overlap: True # True for using PyTorch DDP overlap.
+  ddp_overlap: False # True for using PyTorch DDP overlap.
 
   optim:
     name: fused_adam
@@ -191,7 +192,7 @@ model:
       synthetic_data_length: 10000
       train:
           dataset_path:
-            - /datasets/coyo/test.pkl
+            - /datasets/coyo/wdinfo/coyo-700m/wdinfo-selene.pkl
           augmentations:
             resize_smallest_side: 512
             center_crop_h_w: 512, 512

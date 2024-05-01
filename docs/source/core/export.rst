@@ -194,7 +194,7 @@ To facilitate that, the hooks below are provided. To export, for example, 'encod
         First goes the one receiving input (input_example)
         """
 
-Some nertworks may be exported differently according to user-settable options (like ragged batch support for TTS or cache support for ASR). To facilitate that - `set_export_config()` method is provided by Exportable to set key/value pairs to predefined model.export_config dictionary, to be used during the export:
+Some networks may be exported differently according to user-settable options (like ragged batch support for TTS or cache support for ASR). To facilitate that - `set_export_config()` method is provided by Exportable to set key/value pairs to predefined model.export_config dictionary, to be used during the export:
 
 .. code-block:: Python	
 
@@ -202,6 +202,7 @@ Some nertworks may be exported differently according to user-settable options (l
         """
         Sets/updates export_config dictionary
         """
+
 Also, if an action hook on setting config is desired, this method may be overloaded by `Exportable` descendants to include one.
 An example can be found in ``<NeMo_git_root>/nemo/collections/asr/models/rnnt_models.py``.
 

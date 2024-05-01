@@ -261,11 +261,6 @@ Semi Sorted Batching
 
 Sorting samples by duration and spliting them into batches speeds up training, but can degrade the quality of the model. To avoid quality degradation and maintain some randomness in the partitioning process, we add pseudo noise to the sample length when sorting.
 
-  .. image:: images/ssb.png
-    :align: center
-    :alt: semi sorted batching
-    :scale: 50%
-
 It may result into training speeedup of more than 40 percent with the same quality. To enable and use semi sorted batching add some lines in config.
 
   .. code::
@@ -772,30 +767,30 @@ To enable multimodal dataloading, we provide several configuration options:
 
 Example 3. Combine an ASR (audio-text) dataset with an MT (text-only) dataset so that mini-batches have some examples from both datasets. Provide a custom prompt field for both datasets (to be leveraged by a relevant dataset class):
 
-```yaml
-use_multimodal_sampling: true
-batch_tokens: 1024
-token_equivalent_duration: 0.08  # 0.01 frame shift * 8 subsampling factor
-quadratic_factor: 50
-num_buckets: 30
-use_bucketing: true
-input_cfg:
-  - type: nemo_tarred
-    manifest_filepath: /path/to/manifest__OP_0..512_CL_.json
-    tarred_audio_filepath: /path/to/tarred_audio/audio__OP_0..512_CL_.tar
-    weight: 0.5
-    tags:
-      lang: en
-      prompt: "Given the following recording, transcribe what the person is saying:"
-  - type: txt_pair
-    source_path: /path/to/en__OP_0..512_CL_.txt
-    target_path: /path/to/pl__OP_0..512_CL_.txt
-    source_language: en
-    target_language: pl
-    weight: 0.5
-    tags:
-      prompt: "Translate the following text to Polish:"
-```
+.. code-block:: yaml
+
+    use_multimodal_sampling: true
+    batch_tokens: 1024
+    token_equivalent_duration: 0.08  # 0.01 frame shift * 8 subsampling factor
+    quadratic_factor: 50
+    num_buckets: 30
+    use_bucketing: true
+    input_cfg:
+      - type: nemo_tarred
+        manifest_filepath: /path/to/manifest__OP_0..512_CL_.json
+        tarred_audio_filepath: /path/to/tarred_audio/audio__OP_0..512_CL_.tar
+        weight: 0.5
+        tags:
+          lang: en
+          prompt: "Given the following recording, transcribe what the person is saying:"
+      - type: txt_pair
+        source_path: /path/to/en__OP_0..512_CL_.txt
+        target_path: /path/to/pl__OP_0..512_CL_.txt
+        source_language: en
+        target_language: pl
+        weight: 0.5
+        tags:
+          prompt: "Translate the following text to Polish:"
 
 .. caution:: We strongly recommend to use multiple shards for text files as well so that different nodes and dataloading workers are able to randomize the order of text iteration. Otherwise, multi-GPU training has a high risk of duplication of text examples.
 

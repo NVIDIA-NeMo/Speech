@@ -400,10 +400,15 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                 multi-scale input tensors during forward propagating.
 
                 Example: `batch_size=3, scale_n=6, emb_dim=192`
-                    ms_seg_counts =  
-                     [[8,  9, 12, 16, 25, 51],  
-                      [11, 13, 14, 17, 25, 51],  
-                      [ 9,  9, 11, 16, 23, 50]]  
+                    .. code:: python
+
+                        ms_seg_counts =
+                            [
+                                [ 8,  9, 12, 16, 25, 51],
+                                [11, 13, 14, 17, 25, 51],
+                                [ 9,  9, 11, 16, 23, 50]
+                            ]
+
                     Counts of merged segments: (121, 131, 118)  
                     embs has shape of (370, 192)  
                     clus_label_index has shape of (3, 131)  

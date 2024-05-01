@@ -911,9 +911,11 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         )
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
-            We setup datasets here as megatron datasets require DDP to instantiate.
-            See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
+        """
+        PTL hook that is executed after DDP spawns.
+        We setup datasets here as megatron datasets require DDP to instantiate.
+        See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
+
         Args:
             stage (str, optional): Can be 'fit', 'validate', 'test' or 'predict'. Defaults to None.
         """
@@ -1413,11 +1415,13 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
     def complete(self, request: Dict):
         """
-            Autoregressively invokes language model in the inference mode
+        Autoregressively invokes language model in the inference mode
+
         Args:
             request: Dictionary with the following fields
                 * prompt: a string which text the model should complete.
                 * tokens_to_generate: how many tokens to generate while doing prompt completion.
+
         Returns:
             response: A python dictionary with the following fields
                 * prompt: original text of the prompt

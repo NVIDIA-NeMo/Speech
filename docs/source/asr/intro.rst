@@ -156,11 +156,11 @@ Canary-1B is a multi-lingual, multi-task model, supporting automatic speech-to-t
 
 .. raw:: html
 
-    <iframe src="https://hf.space/embed/nvidia/canary-1b/+"
+    <iframe src="https://nvidia-canary-1b.hf.space"
     width="100%" class="gradio-asr" allow="microphone *"></iframe>
 
     <script type="text/javascript" language="javascript">
-        $('.gradio-asr').css('height', $(window).height()+'px');
+        $('.gradio-asr').css('height', $(window).height() * 0.8+'px');
     </script>
 
 

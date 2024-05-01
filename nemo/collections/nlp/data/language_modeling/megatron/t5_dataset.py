@@ -252,7 +252,8 @@ class T5Dataset(Dataset):
         skip_masking_id=None,
     ):
         """Build training sample.
-        Arguments:
+
+        Args:
             sample: A list of sentences in which each sentence is a list token ids.
             target_seq_length: Desired sequence length.
             max_seq_length: Maximum length of the sequence. All values are padded to

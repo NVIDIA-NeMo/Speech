@@ -12,14 +12,14 @@ NFA can be used on long audio files of 1+ hours duration (subject to your hardwa
 Demos & Tutorials
 -----------------
 
-* HuggingFace Space `demo <https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner>`_ to quickly try out NFA in various languages.
-* NFA "how-to" notebook `tutorial <https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/>`_.
-* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`_.
+* HuggingFace Space `demo <https://huggingface.co/spaces/erastorgueva-nv/NeMo-Forced-Aligner>`__ to quickly try out NFA in various languages.
+* NFA "how-to" notebook `tutorial <https://nvidia.github.io/NeMo/blogs/2023/2023-08-forced-alignment/>`__.
+* "How forced alignment works" NeMo blog `tutorial <https://colab.research.google.com/github/NVIDIA/NeMo/blob/main/tutorials/tools/NeMo_Forced_Aligner_Tutorial.ipynb>`__.
 
 Quickstart
 ----------
 
-1. Install `NeMo <https://github.com/NVIDIA/NeMo#installation>`_.
+1. Install `NeMo <https://github.com/NVIDIA/NeMo#installation>`__.
 2. Prepare a NeMo-style manifest containing the paths of audio files you would like to proces, and (optionally) their text.
 3. Run NFA's ``align.py`` script with the desired config, e.g.:
 

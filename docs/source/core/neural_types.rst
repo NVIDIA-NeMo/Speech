@@ -24,6 +24,7 @@ Types are implemented in ``nemo.core.neural_types.NeuralType`` class. When you i
 are expected to include both *axes* information and *element type* information.
 
 .. autoclass:: nemo.core.neural_types.NeuralType
+    :no-index:
 
 Type Comparison Results
 -----------------------
@@ -31,6 +32,7 @@ Type Comparison Results
 When comparing two neural types, the following comparison results are generated.
 
 .. autoclass:: nemo.core.neural_types.NeuralTypeComparisonResult
+    :no-index:
 
 Examples
 --------
@@ -113,6 +115,7 @@ Custom element types
 It is possible to create user-defined element types to express the semantics of elements in your tensors. To do so, the user will need to inherit and implement abstract methods of the ``nemo.core.neural_types.elements.ElementType`` class
 
 .. autoclass:: nemo.core.neural_types.elements.ElementType
+    :no-index:
 
 Note that element types can be parametrized. Consider this example where it distinguishes between audio sampled at 8Khz and 16Khz.
 

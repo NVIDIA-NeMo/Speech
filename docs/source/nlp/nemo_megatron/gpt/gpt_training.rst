@@ -70,7 +70,7 @@ Note that training tokenizer model will also take some time.
         --pad_id=0 --unk_id=1 --bos_id=2 --eos_id=3 \
         --split_digits true
 
-After this is done (will take a while), you'll have two files: ```spm_32k_wiki.model``` and ```spm_32k_wiki.vocab``corresponding to the model and vocabulary.
+After this is done (will take a while), you'll have two files: ``spm_32k_wiki.model`` and ``spm_32k_wiki.vocab`` corresponding to the model and vocabulary.
 
 **Step 4: Convert training data into memory map format**
 

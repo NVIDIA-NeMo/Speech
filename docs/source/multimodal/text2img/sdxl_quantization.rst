@@ -7,16 +7,17 @@ This example shows how to use Ammo to calibrate and quantize the UNet part of th
 We also provide instructions on deploying and running E2E SDXL pipeline
 with Ammo quantized int8 UNet to generate images and measure latency on target GPUs.
 
-To get started, it is required to have a pretrained SDXL checkpoint in `nemo` format. The example training configs are provided in NeMo,
-which is located in `NeMo/examples/multimodal/text2img/stable_diffusion`.
+To get started, it is required to have a pretrained SDXL checkpoint in ``nemo`` format. The example training configs are provided in NeMo,
+which is located in ``NeMo/examples/multimodal/text2img/stable_diffusion``.
 
 Calibration
 ---------------
 The first step is to run quantization script with default config, and finally the script will export the quantized unet to onnx file.
-Here is the default config for `NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_quantize.py`.
+Here is the default config for ``NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_quantize.py``.
 
 
 .. code-block:: yaml
+
     quantize
       exp_name: nemo
       n_steps: 20          # number of inference steps
@@ -41,6 +42,7 @@ Build the TRT engine for the Quantized ONNX UNet
 ------------------------------------------------------------
 
 .. code-block:: bash
+
     trtexec --onnx=./nemo_onnx/unet.onnx --shapes=x:8x4x128x128,timesteps:8,context:8x80x2048,y:8x2816 --fp16 --int8 --builderOptimizationLevel=4 --saveEngine=nemo_unet_xl.plan
 
 
@@ -57,6 +59,7 @@ Build End-to-end Stable Diffusion XL Pipeline with NeMo
 We provide a script to build end to end TRT inference pipeline with NeMo backend, which is located at `NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_export.py`.
 
 .. code-block:: yaml
+
     infer:
         out_path: sdxl_export
         width: 1024
@@ -82,6 +85,7 @@ Run End-to-end Stable Diffusion XL TRT Pipeline
 The inference script can be found at `NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_trt_inference.py`.
 
 .. code-block:: yaml
+
     unet_xl: sdxl_export/plan/unet_xl.plan
     vae: sdxl_export/plan/vae.plan
     clip1: sdxl_export/plan/clip1.plan

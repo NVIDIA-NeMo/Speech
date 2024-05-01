@@ -9,6 +9,7 @@ Core
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -17,6 +18,7 @@ Core
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -28,6 +30,7 @@ Adapter Networks
     :show-inheritance:
     :members:
     :member-order: bysource
+    :no-index:
 
 -----
 
@@ -35,6 +38,7 @@ Adapter Networks
     :show-inheritance:
     :members:
     :member-order: bysource
+    :no-index:
 
 -----
 
@@ -47,6 +51,7 @@ Adapter Strategies
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -55,6 +60,7 @@ Adapter Strategies
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -63,3 +69,4 @@ Adapter Strategies
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:

@@ -4,7 +4,7 @@ CLIP
 Model Introduction
 -------------------
 
-Contrastive Language-Image Pre-training (CLIP) :cite:`mm-models-radford2021learning` offers an efficient method for learning image representations using natural language supervision. The essence of CLIP is to train both an image encoder and a text encoder from scratch. The model aims to predict the correct pairings of a batch of (image, text) training examples by jointly training these encoders. During pre-training, CLIP is designed to predict which images and texts form a semantically coherent pair by maximizing the similarity between the correct (image, text) pairs while minimizing the similarity between incorrect pairs. This contrastive learning approach ensures that CLIP learns meaningful and contextually rich representations of both visual and textual data.
+Contrastive Language-Image Pre-training (CLIP) :cite:`mm-models-clip-radford2021learning` offers an efficient method for learning image representations using natural language supervision. The essence of CLIP is to train both an image encoder and a text encoder from scratch. The model aims to predict the correct pairings of a batch of (image, text) training examples by jointly training these encoders. During pre-training, CLIP is designed to predict which images and texts form a semantically coherent pair by maximizing the similarity between the correct (image, text) pairs while minimizing the similarity between incorrect pairs. This contrastive learning approach ensures that CLIP learns meaningful and contextually rich representations of both visual and textual data.
 
 NeMo's implementation of the CLIP model leverages its parallel transformer implementation, specifically the `nemo.collections.nlp.modules.common.megatron.transformer.ParallelTransformer`, to enable model parallelism support in both the text encoder and vision model. This design choice ensures efficient scaling and utilization of resources during training. Additionally, some of the model design and loss implementations in NeMo's CLIP are inspired by the open-source [open_clip](https://github.com/mlfoundations/open_clip) repository.
 
@@ -153,5 +153,5 @@ References
 .. bibliography:: ../mm_all.bib
     :style: plain
     :filter: docname in docnames
-    :labelprefix: MM-MODELS
-    :keyprefix: mm-models-
+    :labelprefix: MM-MODELS-CLIP
+    :keyprefix: mm-models-clip-

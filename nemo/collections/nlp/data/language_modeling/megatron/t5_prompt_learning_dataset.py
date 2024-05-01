@@ -72,10 +72,10 @@ class T5PromptLearningDataset(BasePromptLearningDataset):
         """
         Loads a dataset by filling in the task templates specified in the config file
         with the information from each training/inference example. Converts all input 
-        text into token ids. Also replaces the <|VIRTUAL_PROMPT_#|> placeholders in 
+        text into token ids. Also replaces the ``<|VIRTUAL_PROMPT_#|>`` placeholders in
         the task templates with the actual virtual prompt token ids. 
 
-        params:
+        Args:
             dataset: A list of json objects or a dictionary objects each
                      containing the information needed for a training example
         """

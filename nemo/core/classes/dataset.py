@@ -42,12 +42,15 @@ class Dataset(data.Dataset, Typing, Serialization):
 
         Please note, subclasses of Dataset should not implement `input_types`.
 
-        # Usage:
-        dataloader = torch.utils.data.DataLoader(
-                ....,
-                collate_fn=dataset.collate_fn,
-                ....
-        )
+        Usage:
+
+        .. code-block:: python
+
+            dataloader = torch.utils.data.DataLoader(
+                    ....,
+                    collate_fn=dataset.collate_fn,
+                    ....
+            )
 
         Returns:
             Collated batch, with or without types.

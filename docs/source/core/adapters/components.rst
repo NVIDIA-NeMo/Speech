@@ -8,7 +8,7 @@ An adapter module can be any pytorch module, but it must follow certain straight
 1) The model accepts an input of some input dimension, and its output must match this dimension.
 2) Ideally, the module is initialized such that the output of the adapter when initialized is such that it does not modify the original input. This allows the model to produce the same output results, even when additional parameters have been added.
 
-According to Junxian et al :cite:`adapters-Junxian2021unified`, we can consider an adapter being represented as three components -
+According to Junxian et al :cite:`adapters-components-Junxian2021unified`, we can consider an adapter being represented as three components -
 
 1) Functional form - the trainable parameters that will modify the input
 2) Insertion form - Where the adapter outputs are integrated with the original input. The input to the adapters can be the last output of the layer, the input to some attention layer, or even the original input to the module itself (before even the modules forward pass).
@@ -17,7 +17,7 @@ According to Junxian et al :cite:`adapters-Junxian2021unified`, we can consider 
 Functional Form - Adapter Networks
 ==================================
 
-Adapter modules represent the functional form of the adapter. We discuss an example of a most commonly used adapter module found in literature, titled the ``LinearAdapter`` (or Houlsby Adapter) :cite:`adapters-houlsby2019adapter`.
+Adapter modules represent the functional form of the adapter. We discuss an example of a most commonly used adapter module found in literature, titled the ``LinearAdapter`` (or Houlsby Adapter) :cite:`adapters-components-houlsby2019adapter`.
 
 .. note::
 
@@ -28,6 +28,7 @@ Adapter modules represent the functional form of the adapter. We discuss an exam
     :show-inheritance:
     :members:
     :member-order: bysource
+    :no-index:
 
 -----
 
@@ -35,12 +36,13 @@ Adapter modules represent the functional form of the adapter. We discuss an exam
     :show-inheritance:
     :members:
     :member-order: bysource
+    :no-index:
 
 
 Insertion Form - Module Adapters
 --------------------------------
 
-Adapter modules can be integrated into many different locations of a given module. For example, it is possible to have an adapter that affects only the outputs of the final layer in each module. We can also have a ``Parallel Adapter`` :cite:`adapters-Junxian2021unified` that operates at the input of the module itself, in parallel to the forward pass of the module. Yet another insertion location is inside the Multi Head Attention Layers.
+Adapter modules can be integrated into many different locations of a given module. For example, it is possible to have an adapter that affects only the outputs of the final layer in each module. We can also have a ``Parallel Adapter`` :cite:`adapters-components-Junxian2021unified` that operates at the input of the module itself, in parallel to the forward pass of the module. Yet another insertion location is inside the Multi Head Attention Layers.
 
 On top of this, while adapters are commonly used only in the layers containing the most parameters (say the Encoder of a network), some models can support adapters in multiple locations (Encoder-Decoder architecture for Language Models, Machine Translation, or even Encoder-Decoder-Joint for ASR with Transducer Loss). As such, NeMo utilizes the concept of ``Module Adapters``.
 
@@ -70,6 +72,7 @@ We discuss a simple residual additional connection strategy below - that accepts
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -78,6 +81,7 @@ We discuss a simple residual additional connection strategy below - that accepts
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
+    :no-index:
 
 -----
 
@@ -87,4 +91,4 @@ References
 
 .. bibliography:: ./adapter_bib.bib
     :style: plain
-    :keyprefix: adapters-
+    :keyprefix: adapters-components-

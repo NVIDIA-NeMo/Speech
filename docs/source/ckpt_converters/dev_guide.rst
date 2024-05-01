@@ -48,7 +48,7 @@ Script Placement and Naming Conventions
 Code Template
 -------------
 
-Below template tries to address the 11 steps in the guideline part. Please also use `Gemma Huggingface to NeMo converter <https://github.com/NVIDIA/NeMo/tree/main/scripts/checkpoint_converters/convert_gemma_hf_to_nemo.py>`_  as an full example for development.
+Below template tries to address the 11 steps in the guideline part. Please also use `Gemma Huggingface to NeMo converter <https://github.com/NVIDIA/NeMo/tree/main/scripts/checkpoint_converters/convert_gemma_hf_to_nemo.py>`__  as an full example for development.
 
 .. code-block:: python
 
@@ -210,7 +210,7 @@ A Simple Guide for Model Mapping and Conversion
 
 2. **Common issues when converting: results not matching between Community model and NeMo model**:
 
-   a. Megatron Core uses a special QKV layout, which needs careful handling and reshaping from community models, especially when GQA or MQA is used. Refer to the `Gemma Huggingface to NeMo converter <https://github.com/NVIDIA/NeMo/tree/main/scripts/checkpoint_converters/convert_gemma_hf_to_nemo.py#L144>`_ for guidance.
+   a. Megatron Core uses a special QKV layout, which needs careful handling and reshaping from community models, especially when GQA or MQA is used. Refer to the `Gemma Huggingface to NeMo converter <https://github.com/NVIDIA/NeMo/tree/main/scripts/checkpoint_converters/convert_gemma_hf_to_nemo.py#L144>`__ for guidance.
 
    b. GLU Variants weights could also be a common source of error. In Megatron Core, the regular feedforward projection weights and gated forward weights are fused together, requiring careful attention to the order of these two. Refer to the `Gemma Huggingface to NeMo converter <https://github.com/NVIDIA/NeMo/tree/main/scripts/checkpoint_converters/convert_gemma_hf_to_nemo.py#L135>`_ for more details.
 

@@ -8,6 +8,7 @@ Model Classes
     :show-inheritance:
     :no-members:
     :members: __init__, configure_optimizers
+    :no-index:
 
 
 .. autoclass:: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion
@@ -16,18 +17,18 @@ Model Classes
     :members: __init__, training_step, validation_step, setup, build_train_valid_test_datasets
 
 
-.. autoclass:: nemo.collections.multimodal.models.dreambooth.dreambooth.MegatronDreamBooth
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.dreambooth.dreambooth.MegatronDreamBooth
     :show-inheritance:
     :no-members:
     :members: __init__, training_step, validation_step, setup, build_train_valid_test_datasets
 
 
-.. autoclass:: nemo.collections.multimodal.models.controlnet.controlnet.MegatronControlNet
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.controlnet.controlnet.MegatronControlNet
     :show-inheritance:
     :no-members:
     :members: __init__, training_step, validation_step, setup, build_train_valid_test_datasets
 
-.. autoclass:: nemo.collections.multimodal.models.imagen.imagen.MegatronImagen
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.imagen.imagen.MegatronImagen
     :show-inheritance:
     :no-members:
     :members: __init__, training_step, validation_step, setup, build_train_valid_test_datasets
@@ -65,7 +66,7 @@ Modules
     :members: __init__, encode
 
 
-.. autoclass:: nemo.collections.multimodal.models.controlnet.controlnet.ControlledUnetModel
+.. autoclass:: nemo.collections.multimodal.models.text_to_image.controlnet.controlnet.ControlledUnetModel
     :show-inheritance:
     :no-members:
     :members: forward

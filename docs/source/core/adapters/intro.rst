@@ -144,4 +144,5 @@ References
 
 .. bibliography:: ./adapter_bib.bib
     :style: plain
+    :labelprefix: adapters
     :keyprefix: adapters-

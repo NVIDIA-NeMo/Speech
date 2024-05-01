@@ -36,7 +36,7 @@ Quick Start Guide
 Model Description
 -----------------
 In addition to :doc:`Punctuation And Capitalization model <./punctuation_and_capitalization>` we add audio encoder (e.g. Conformer's encoder) and attention based fusion of lexical and audio features.
-This model architecture is based on `Multimodal Semi-supervised Learning Framework for Punctuation Prediction in Conversational Speech <https://arxiv.org/pdf/2008.00702.pdf>`__ :cite:`nlp-punct-sunkara20_interspeech`.
+This model architecture is based on `Multimodal Semi-supervised Learning Framework for Punctuation Prediction in Conversational Speech <https://arxiv.org/pdf/2008.00702.pdf>`__ :cite:`nlp-punct-lex-sunkara20_interspeech`.
 
 .. note::
 
@@ -386,6 +386,6 @@ References
 
 .. bibliography:: nlp_all.bib
     :style: plain
-    :labelprefix: NLP-PUNCT
-    :keyprefix: nlp-punct-
+    :labelprefix: NLP-PUNCT-LEX
+    :keyprefix: nlp-punct-lex-
 

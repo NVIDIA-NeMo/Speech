@@ -23,7 +23,7 @@ NeMo excels in training large-scale LLM & MM, utilizing optimizations from Megat
 - Advanced checkpointing through the Distributed Checkpoint Format.
 
 Speech AI
---------
+---------
 
 Data Augmentation
 ~~~~~~~~~~~~~~~~~

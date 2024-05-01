@@ -46,12 +46,14 @@ HuggingFace Spaces to try out Parakeet models in your browser:
 * `Parakeet-TDT-1.1B <https://huggingface.co/spaces/nvidia/parakeet-tdt-1.1b>`__ space
 
 .. _Conformer_model:
+
 Conformer
 ---------
+
 .. _Conformer-CTC_model:
+
 Conformer-CTC
 ~~~~~~~~~~~~~
--------------
 
 Conformer-CTC is a CTC-based variant of the Conformer model introduced in :cite:`asr-models-gulati2020conformer`. Conformer-CTC has a
 similar encoder as the original Conformer but uses CTC loss and decoding instead of RNNT/Transducer loss, which makes it a non-autoregressive model.

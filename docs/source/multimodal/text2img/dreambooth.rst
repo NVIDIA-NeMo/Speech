@@ -5,7 +5,7 @@ DreamBooth
 Model Introduction
 --------------------
 
-DreamBooth :cite:`mm-models-dreamboothpaper` is a fine-tuning technique and a solution to personalize large diffusion models like Stable Diffusion, which are powerful but lack the
+DreamBooth :cite:`mm-models-db-dreamboothpaper` is a fine-tuning technique and a solution to personalize large diffusion models like Stable Diffusion, which are powerful but lack the
 ability to mimic subjects of a given reference set. With DreamBooth, you only need a few images of a specific subject to
 fine-tune a pretrained text-to-image model, so that it learns to bind a unique identifier with a special subject. This
 unique identifier can then be used to synthesize fully-novel photorealistic images of the subject contextualized in
@@ -28,7 +28,7 @@ NeMo's Dreambooth is built upon the Stable Diffusion framework. While its archit
 
 - Training Dataset
 
-    NeMo's Dreambooth model dataset is different from other NeMo multimodal models in that it doesn't necessitate data stored in the webdataset format. You can find a sample dataset at :cite:`mm-models-dreamboothdataset`. For each object you aim to integrate into the model, just place its images (typically 3-5) in a folder and specify its path in ``model.data.instance_dir``. When training with the prior preservation loss, store images produced by the original model in a distinct folder and reference its path in ``model.data.regularization_dir``. This process is automated in NeMo's DreamBooth implementation.
+    NeMo's Dreambooth model dataset is different from other NeMo multimodal models in that it doesn't necessitate data stored in the webdataset format. You can find a sample dataset at :cite:`mm-models-db-dreamboothdataset`. For each object you aim to integrate into the model, just place its images (typically 3-5) in a folder and specify its path in ``model.data.instance_dir``. When training with the prior preservation loss, store images produced by the original model in a distinct folder and reference its path in ``model.data.regularization_dir``. This process is automated in NeMo's DreamBooth implementation.
 
 Model Configuration
 --------------------
@@ -130,5 +130,5 @@ Reference
 .. bibliography:: ../mm_all.bib
     :style: plain
     :filter: docname in docnames
-    :labelprefix: MM-MODELS
-    :keyprefix: mm-models-
+    :labelprefix: MM-MODELS-DB
+    :keyprefix: mm-models-db-

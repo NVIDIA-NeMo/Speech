@@ -23,7 +23,9 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True
     share_embeddings_and_output_weights: bool = False
+    make_vocab_size_divisible_by: int = 128
     position_embedding_type: Literal["learned_absolute", "rope"] = "learned_absolute"
+    rotary_base: int = 10000
     rotary_percent: float = 1.0
     seq_len_interpolation_factor: Optional[float] = None
     seq_length: int = 1024
@@ -48,20 +50,21 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         return MCoreGPTModel(
             self,
             transformer_layer_spec=get_gpt_layer_with_transformer_engine_spec(),
-            vocab_size=get_vocab_size(self, tokenizer.vocab_size),
+            vocab_size=get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by),
             max_sequence_length=self.seq_length,
             fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
             parallel_output=self.parallel_output,
             share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
             position_embedding_type=self.position_embedding_type,
             rotary_percent=self.rotary_percent,
+            rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
             pre_process=parallel_state.is_pipeline_first_stage(),
             post_process=parallel_state.is_pipeline_last_stage(),
         )
 
 
-class GPTModel(L.LightningModule, io.IOMixin):
+class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin):
     def __init__(
         self,
         config: GPTConfig,

@@ -2,13 +2,16 @@ import functools
 import inspect
 from dataclasses import is_dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union
 
 import fiddle as fdl
 from cloudpickle import dump
 from typing_extensions import Self
 
 from nemo.io.capture import IOProtocol
+from nemo.io.connector import ModelConnector
+
+ConnT = TypeVar('ConnT', bound=ModelConnector)
 
 
 class IOMixin:
@@ -137,3 +140,182 @@ class IOMixin:
         config_path = Path(output) / "io.pkl"
         with open(config_path, "wb") as f:
             dump(self.__io__, f)
+
+
+class ConnectorMixin:
+    """
+    A mixin class that provides methods to register and retrieve model connectors for importing
+    and exporting models. This class supports dynamic registration of connectors based on file
+    extensions, which facilitates the customization and extension of model serialization and
+    deserialization processes.
+
+    Attributes
+    ----------
+        _IMPORTERS (Dict[str, Type[ModelConnector]]): A dictionary mapping file extensions to
+            model connector classes that handle the import process.
+        _EXPORTERS (Dict[str, Type[ModelConnector]]): A dictionary mapping file extensions to
+            model connector classes that handle the export process.
+    """
+
+    _IMPORTERS: Dict[str, Type[ModelConnector]] = {}
+    _EXPORTERS: Dict[str, Type[ModelConnector]] = {}
+
+    @classmethod
+    def import_from(cls, path: str) -> Self:
+        """
+        Creates an instance of a model by using the appropriate importer based on the file
+        extension of the provided path.
+
+        Args:
+            path (str): The path to the model file to be imported.
+            
+        Example:
+            from nemo import llm
+            model = llm.Mistral7BModel.import_from("hf")
+
+        Returns
+        -------
+            Self: An instance of the model initialized from the imported data.
+        """
+        output = cls._get_connector(path).init()
+        output.ckpt_path = output.import_ckpt_path(path)
+
+        return output
+
+    @classmethod
+    def register_importer(cls, ext: str, default_path: Optional[str] = None) -> Callable[[Type[ConnT]], Type[ConnT]]:
+        """
+        A class method decorator to register a model connector as an importer for a specific file
+        extension.
+
+        Args:
+            ext (str): The file extension to associate with the model connector.
+            default_path (Optional[str]): The default path to use if no path is specified during import.
+
+        Returns
+        -------
+            Callable[[Type[ConnT]], Type[ConnT]]: The decorator that registers the model connector.
+        """
+
+        def decorator(connector: Type[ConnT]) -> Type[ConnT]:
+            cls._IMPORTERS[ext] = connector
+            if default_path:
+                connector.default_path = default_path
+            return connector
+
+        return decorator
+
+    @classmethod
+    def register_exporter(cls, ext: str, default_path: Optional[str] = None) -> Callable[[Type[ConnT]], Type[ConnT]]:
+        """
+        A class method decorator to register a model connector as an exporter for a specific file
+        extension.
+
+        Args:
+            ext (str): The file extension to associate with the model connector.
+            default_path (Optional[str]): The default path to use if no path is specified during export.
+
+        Returns
+        -------
+            Callable[[Type[ConnT]], Type[ConnT]]: The decorator that registers the model connector.
+        """
+
+        def decorator(connector: Type[ConnT]) -> Type[ConnT]:
+            cls._EXPORTERS[ext] = connector
+            if default_path:
+                connector.default_path = default_path
+            return connector
+
+        return decorator
+
+    @classmethod
+    def importer(cls, path: str) -> ModelConnector:
+        """
+        Retrieves the appropriate model connector for importing based on the extension of the
+        provided path.
+
+        Args:
+            path (str): The path to the model file to be imported.
+
+        Returns
+        -------
+            ModelConnector: The model connector instance capable of handling the import.
+        """
+        return cls._get_connector(path, importer=True)
+
+    @classmethod
+    def exporter(cls, ext: str, path: Union[str, Path]) -> ModelConnector:
+        """
+        Retrieves the appropriate model connector for exporting based on the extension.
+
+        Args:
+            ext (str): The file extension associated with the model connector.
+            path (Union[str, Path]): The path where the model will be exported.
+
+        Returns
+        -------
+            ModelConnector: The model connector instance capable of handling the export.
+        """
+        return cls._get_connector(ext, path, importer=False)
+
+    def import_ckpt(self, path: str, overwrite: bool = False, base_path: Optional[Path] = None) -> Path:
+        """
+        Imports a checkpoint from a specified path, potentially overwriting existing files.
+
+        Args:
+            path (str): The path to the checkpoint file to be imported.
+            overwrite (bool): Flag to determine if existing files should be overwritten (default is False).
+            base_path (Optional[Path]): The base path where the checkpoint file is located; used to resolve
+                                        relative paths.
+
+        Returns
+        -------
+            Path: The path to the imported checkpoint.
+
+        Raises
+        ------
+            FileNotFoundError: If the checkpoint file does not exist at the specified path.
+        """
+        connector = self._get_connector(path)
+        ckpt_path: Path = connector.local_path(base_path=base_path)
+        ckpt_path = connector(ckpt_path, overwrite=overwrite)
+
+        return ckpt_path
+
+    @classmethod
+    def _get_connector(cls, ext, path=None, importer=True) -> ModelConnector:
+        """
+        Retrieves the appropriate model connector based on the file extension and path, 
+        distinguishing between importers and exporters.
+
+        Args:
+            ext (str): The file extension or a URI that may include a protocol specifier.
+            path (Optional[Union[str, Path]]): The path where the model file is located or will be saved.
+            importer (bool): Flag to determine if the connector is for importing (True) or exporting (False).
+
+        Returns
+        -------
+            ModelConnector: The model connector instance capable of handling the import or export.
+
+        Raises
+        ------
+            ValueError: If no connector is found for the specified extension or if no default path is provided
+                        when required.
+        """
+        _path = None
+        if "://" in ext:
+            ext, _path = ext.split("://")
+        else:
+            _path = path
+
+        connector = cls._IMPORTERS.get(ext) if importer else cls._EXPORTERS.get(ext)
+        if not connector:
+            raise ValueError(f"No connector found for extension '{ext}'")
+
+        if not _path:
+            if not connector.default_path:
+                raise ValueError(f"No default path specified for extension '{ext}'. ", "Please provide a path")
+
+            return connector()
+
+        return connector(_path)

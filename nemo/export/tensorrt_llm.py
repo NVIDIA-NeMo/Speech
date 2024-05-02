@@ -97,6 +97,7 @@ class TensorRTLLM(ITritonDeployable):
         self.ptuning_tables = []
         self.p_table = None
         self.task_vocab_size = 0
+        self.task_vtoken_counts = []
         self.task_ids = {}
 
         if load_model:
@@ -358,12 +359,15 @@ class TensorRTLLM(ITritonDeployable):
                     prompt_embeddings_table, prompt_embeddings_checkpoint_path
                 )
                 tv_size = prompt_table.size(dim=0)
+                task_vtoken_counts = [tv_size]
             elif len(self.ptuning_tables) > 0:
                 prompt_table = self.p_table
                 tv_size = self.task_vocab_size
+                task_vtoken_counts = self.task_vtoken_counts
             else:
                 prompt_table = None
                 tv_size = None
+                task_vtoken_counts = None
 
             if task_ids is None:
                 assert prompt_table is None, "There is a prompt embedding table and task_ids cannot be None"
@@ -404,6 +408,7 @@ class TensorRTLLM(ITritonDeployable):
                     temperature=temperature,
                     prompt_table=prompt_table,
                     task_vocab_size=tv_size,
+                    task_vtoken_counts=task_vtoken_counts,
                     task_ids=input_task_ids,
                     lora_uids=lora_uids,
                     stop_words_list=stop_words_list,
@@ -423,6 +428,7 @@ class TensorRTLLM(ITritonDeployable):
                     temperature=temperature,
                     prompt_table=prompt_table,
                     task_vocab_size=tv_size,
+                    task_vtoken_counts=task_vtoken_counts,
                     task_ids=input_task_ids,
                     lora_uids=lora_uids,
                     stop_words_list=stop_words_list,
@@ -578,19 +584,31 @@ class TensorRTLLM(ITritonDeployable):
             if self.task_vocab_size < pt["table"].size(dim=0):
                 self.task_vocab_size = pt["table"].size(dim=0)
 
-        # pad tasks to longest task embedding table
+        # pad tasks to longest task embedding table, remember the original task vtoken counts
         vtokens_embeddings = []
+        self.task_vtoken_counts = []
         self.task_ids = {}
         tid = 0
         for i, ptuning_table in enumerate(self.ptuning_tables):
-            padded_table = torch.zeros((self.task_vocab_size, self.get_hidden_size))
-            padded_table[: ptuning_table["table"].size(dim=0), :] = ptuning_table["table"]
+            original_table = ptuning_table["table"]
+            vtoken_count = original_table.size(dim=0)
+            padded_table = torch.zeros((self.task_vocab_size, self.get_hidden_size), dtype=original_table.dtype)
+            padded_table[:vtoken_count, :] = original_table
             vtokens_embeddings.append(padded_table)
             self.task_ids[ptuning_table["task_name"]] = tid
+            self.task_vtoken_counts.append(vtoken_count)
             tid = tid + 1
 
         if len(vtokens_embeddings) > 0:
             self.p_table = torch.stack(vtokens_embeddings, dim=0).view(-1, self.get_hidden_size)
+
+            max_prompt_embedding_table_size = self.config['builder_config']['max_prompt_embedding_table_size']
+            actual_prompt_table_size = self.p_table.shape[0]
+
+            if actual_prompt_table_size > max_prompt_embedding_table_size:
+                raise Exception(
+                    f"The size of the combined prompt embedding table ({actual_prompt_table_size}) is greater than max_prompt_embedding_table_size ({max_prompt_embedding_table_size})."
+                )
         else:
             self.p_table = None
 

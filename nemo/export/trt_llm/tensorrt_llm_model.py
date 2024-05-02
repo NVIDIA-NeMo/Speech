@@ -26,7 +26,7 @@ from tensorrt_llm.models.generation_mixin import GenerationMixin
 from tensorrt_llm.module import Module, ModuleList
 
 from nemo.export.trt_llm.decoder import build_decoder_layer
-from nemo.export.trt_llm.model_config import DECODER_GEMMA, ModelConfig
+from nemo.export.trt_llm.model_config import DECODER_GEMMA, DECODER_LLAMA, ModelConfig
 from nemo.export.trt_llm.quantization_utils import quantize_linear
 from nemo.export.trt_llm.tensorrt_llm_build import build
 from nemo.export.trt_llm.tensorrt_llm_utils import (
@@ -65,7 +65,7 @@ class ModelBuilder(Module):
             else model_config.head_size
         )
         self._use_prompt_tuning = model_config.use_prompt_tuning
-        self._add_bos = model_config.layers[0].decoder_type == DECODER_GEMMA
+        self._add_bos = model_config.layers[0].decoder_type in (DECODER_GEMMA, DECODER_LLAMA)
         self._mapping = model_config.mapping
         self.rank = model_config.mapping.rank
         self.max_lora_rank = model_config.max_lora_rank

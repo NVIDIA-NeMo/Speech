@@ -31,6 +31,7 @@ from nemo.collections.nlp.parts.nlp_overrides import (
     PipelineMixedPrecisionPlugin,
 )
 from nemo.utils import logging
+from nemo.utils.callbacks.dist_ckpt_io import DistributedCheckpointIO
 
 
 class MegatronTrainerBuilder:
@@ -80,7 +81,6 @@ class MegatronTrainerBuilder:
             find_unused_parameters=False,
             nccl_communicator_config_path=self.cfg.model.get('nccl_communicator_config_path', None),
             sharp=self.cfg.model.get('sharp', False),
-            torch_dist_ckpt=self.cfg.model.get('torch_distributed_checkpoint', False),
         )
 
     def _grad_scaler(self) -> GradScaler:
@@ -126,6 +126,13 @@ class MegatronTrainerBuilder:
 
         if self.cfg.get('cluster_type', None) == 'BCP':
             plugins.append(TorchElasticEnvironment())
+
+        # Use dist-ckt for non-FSDP MCore models
+        use_dist_ckpt = not self.cfg.model.get('fsdp', False) and (
+            self.cfg.model.get('mcore_gpt', False) or self.cfg.model.get('mcore_bert', False)
+        )
+        if use_dist_ckpt:
+            plugins.append(DistributedCheckpointIO(self.cfg.model.get('dist_ckpt_format', 'zarr')))
 
         return plugins
 

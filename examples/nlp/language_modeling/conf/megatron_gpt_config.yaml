@@ -150,8 +150,8 @@ model:
   fsdp_grad_reduce_dtype: 32 # Gradient reduction data type.
   fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
 
-  # PyTorch distributed checkpoint
-  torch_distributed_checkpoint: False # Set to True to use PyTorch distributed checkpoint format.
+  # Distributed checkpoint format
+  dist_ckpt_format: 'zarr' # Set to 'torch_dist' to use PyTorch distributed checkpoint format.
 
   ## Activation Checkpointing
   # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.

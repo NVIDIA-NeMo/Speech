@@ -1,5 +1,6 @@
 addict
 clip
+decord
 diffusers>=0.19.3
 einops_exts
 imageio

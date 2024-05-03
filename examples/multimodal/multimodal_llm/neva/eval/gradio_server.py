@@ -41,8 +41,8 @@ inference:
   min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
   compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
   end_strings: ["<extra_id_1>","<extra_id_7>",]  # generation will stop when one of these tokens is generated
-  images_base_path: /pwd/images
-  insert_image_token: null # `left` or `right` or `null`
+  media_base_path: /pwd/images
+  insert_media_token: null # `left` or `right` or `null`
 
 cluster_type: BCP
 tensor_model_parallel_size: 1
@@ -58,7 +58,7 @@ hparams_file: null #/pwd/nemo_multimodal/nemo_experiments/nemo_llava_finetune/ve
 
 cfg = OmegaConf.create(CFG_STRING)
 cfg.neva_model_file = "/path/to/llava-v1.5-7b.nemo"
-model, image_processor = create_neva_model_and_processor(cfg)
+model, image_processor, _ = create_neva_model_and_processor(cfg)
 
 
 def predict(prompt, image_base64=None):

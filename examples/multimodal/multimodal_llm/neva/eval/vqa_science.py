@@ -45,8 +45,8 @@ inference:
   min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
   compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
   end_strings: ["<extra_id_1>","<extra_id_7>",]  # generation will stop when one of these tokens is generated
-  images_base_path: /pwd/images
-  insert_image_token: null # `left` or `right` or `null`
+  media_base_path: /pwd/images
+  insert_media_token: null # `left` or `right` or `null`
 
 cluster_type: BCP
 tensor_model_parallel_size: 1
@@ -77,12 +77,12 @@ def eval_model(args):
     cfg = OmegaConf.create(CFG_STRING)
     cfg.neva_model_file = args.model_path
     cfg.base_model_file = args.model_base
-    cfg.inference.images_base_path = args.image_folder
+    cfg.inference.media_base_path = args.image_folder
     cfg.tensor_model_parallel_size = args.tp
     cfg.pipeline_model_parallel_size = args.pp
     cfg.trainer.devices = args.tp * args.pp
 
-    model, image_processor = create_neva_model_and_processor(cfg)
+    model, image_processor, _ = create_neva_model_and_processor(cfg)
     length_params: LengthParam = {
         "max_length": cfg.inference.tokens_to_generate,
         "min_length": cfg.inference.min_tokens_to_generate,
@@ -113,7 +113,7 @@ def eval_model(args):
 
         if 'image' in line:
             cur_prompt = qs = '<image>' + cur_prompt
-            line['image'] = image_processor(os.path.join(cfg.inference.images_base_path, line['image']))
+            line['image'] = image_processor(os.path.join(cfg.inference.media_base_path, line['image']))
 
         if args.single_pred_prompt:
             qs = qs + '\n' + "Answer with the option's letter from the given choices directly."

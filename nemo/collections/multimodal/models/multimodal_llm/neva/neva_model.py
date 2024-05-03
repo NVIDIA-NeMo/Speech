@@ -168,7 +168,6 @@ class NevaWordEmbeddingMixin(torch.nn.Module, adapter_mixins.AdapterModuleMixin)
 
         assert vision_x.ndim == 6, "vision_x should be of shape (b, T_img, F, C, H, W)"
         b, T, F = vision_x.shape[:3]
-        assert F == 1, "Only single frame supported"
 
         vision_x = rearrange(vision_x, "b T F c h w -> (b T F) c h w")
         vision_x = vision_x.to(self.vision_encoder.dtype)
@@ -195,7 +194,7 @@ class NevaWordEmbeddingMixin(torch.nn.Module, adapter_mixins.AdapterModuleMixin)
         # calculate media features without gradients
         media_features = self.encode_vision_x(media)  # b T F S(eq) H(idden)
         num_images_per_sample = media_features.size(1)
-        num_patches = media_features.size(3)
+        num_patches = media_features.size(3) * media_features.size(2)
         # flatten patches
         media_features = media_features.view(batch_size, -1, hidden_size)
 

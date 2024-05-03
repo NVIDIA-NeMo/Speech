@@ -154,6 +154,8 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
     conv_template = model.cfg.data.get("conv_template", "nvgpt")
     final_response = []
     for idx, prompt_dict in enumerate(prompt_dict_list):
+        # determine the media type in the prompt_dict
+        media_type_token = inference_config.inference.get("media_type", "image")
         response = generate(
             model,
             inputs=prompt_dict.get('prompt'),
@@ -169,7 +171,7 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
             end_strings=sampling_params['end_strings'],
             min_tokens_to_generate=length_params['min_length'],
             compute_attention_mask=sampling_params.get("compute_attention_mask", True),
-            image_list=prompt_dict.get('image'),
+            image_list=prompt_dict.get(media_type_token),
             **strategy_args,
         )
 
@@ -181,7 +183,7 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
         pattern = re.compile(rf'{DEFAULT_IM_START_TOKEN}( ⁇ )+{DEFAULT_IM_END_TOKEN}')
         pattern_nvgpt = re.compile(rf'{DEFAULT_IM_START_TOKEN}({DEFAULT_IMAGE_PATCH_TOKEN})+{DEFAULT_IM_END_TOKEN}')
         combined_pattern = re.compile(f'{pattern.pattern}|{pattern_nvgpt.pattern}')
-        clean_text = re.sub(combined_pattern, '<image>', response['sentences'][0])
+        clean_text = re.sub(combined_pattern, f"<{media_type_token}>", response['sentences'][0])
 
         clean_response = clean_text
 

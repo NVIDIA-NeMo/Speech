@@ -15,6 +15,7 @@ import os
 import tempfile
 from typing import Any, Callable, Tuple
 
+import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
 from PIL import Image
@@ -25,6 +26,7 @@ from transformers import CLIPImageProcessor
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
+from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import AppState, logging
 from nemo.utils.model_utils import inject_model_parallel_rank
 
@@ -178,7 +180,6 @@ def setup_trainer_and_models_for_inference(
     # Create the NLPSaveRestoreConnector object for model saving and restoring.
     save_restore_connector = NLPSaveRestoreConnector()
 
-    print(f'Loading {cfg.models} models')
     models = []
     for single_model_cfg in cfg.models:
         if not single_model_cfg.restore_from_path:
@@ -389,6 +390,7 @@ def create_neva_model_and_processor(cfg):
             (
                 app_state.tensor_model_parallel_rank,
                 app_state.pipeline_model_parallel_rank,
+                app_state.expert_model_parallel_rank,
                 app_state.model_parallel_size,
                 app_state.data_parallel_size,
                 app_state.pipeline_model_parallel_split_rank,
@@ -459,13 +461,71 @@ def create_neva_model_and_processor(cfg):
         else:
             image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
-        if neva_cfg.precision in [16, '16', '16-mixed']:
-            media = image.type(torch.float16)
-        elif neva_cfg.precision in [32, '32', '32-true']:
-            media = image.type(torch.float32)
-        else:
-            media = image.type(torch.bfloat16)
-
+        media = image.type(torch_dtype_from_precision(neva_cfg.precision))
         return media.unsqueeze(dim=0).unsqueeze(dim=0).unsqueeze(dim=0)
 
-    return model, image_processor
+    # add video processor for video neva
+    def video_processor(maybe_video_path):
+        from decord import VideoReader
+
+        if isinstance(maybe_video_path, str):
+            vr = VideoReader(maybe_video_path)
+            if neva_cfg.data.splice_single_frame == 'first':
+                frames = [Image.fromarray(vr[0].asnumpy()[:, :, ::-1]).convert('RGB')]
+            elif neva_cfg.data.splice_single_frame == 'middle':
+                frames = [Image.fromarray(vr[len(vr) // 2].asnumpy()[:, :, ::-1]).convert('RGB')]
+            elif neva_cfg.data.splice_single_frame == 'last':
+                frames = [Image.fromarray(vr[-1].asnumpy()[:, :, ::-1]).convert('RGB')]
+            else:
+                if neva_cfg.data.num_frames == -1:
+                    frames = [Image.fromarray(frame.asnumpy()[:, :, ::-1]).convert('RGB') for frame in vr]
+                else:
+                    num_frames = min(len(vr), neva_cfg.data.num_frames)
+                    indices = np.linspace(0, len(vr) - 1, num_frames, dtype=int)
+                    frames = [Image.fromarray(vr[i].asnumpy()[:, :, ::-1]).convert('RGB') for i in indices]
+
+                    while len(frames) < neva_cfg.data.num_frames:
+                        frames.append(frames[-1])
+        else:
+            frames = maybe_video_path
+
+        if neva_cfg.mm_cfg.vision_encoder.from_hf:
+            processor = CLIPImageProcessor.from_pretrained(
+                neva_cfg.mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
+            )
+        else:
+            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14", torch_dtype=torch.bfloat16)
+
+        # support single video inference
+        if neva_cfg.data.image_aspect_ratio == 'keep':
+            max_hw, min_hw = max(frames.size), min(frames.size)
+            aspect_ratio = max_hw / min_hw
+            max_len, min_len = 448, 224
+            shortest_edge = int(min(max_len / aspect_ratio, min_len))
+            frames = processor.preprocess(
+                frames, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
+            )['pixel_values']
+        elif neva_cfg.data.image_aspect_ratio == 'pad':
+
+            def expand2square(pil_img, background_color):
+                width, height = pil_img.size
+                if width == height:
+                    return pil_img
+                elif width > height:
+                    result = Image.new(pil_img.mode, (width, width), background_color)
+                    result.paste(pil_img, (0, (width - height) // 2))
+                    return result
+                else:
+                    result = Image.new(pil_img.mode, (height, height), background_color)
+                    result.paste(pil_img, ((height - width) // 2, 0))
+                    return result
+
+            frames = expand2square(frames, tuple(int(x * 255) for x in processor.image_mean))
+            frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']
+        else:
+            frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']
+
+        media_tensors = frames.type(torch_dtype_from_precision(neva_cfg.precision))
+        return media_tensors.unsqueeze(dim=0).unsqueeze(dim=0)
+
+    return model, image_processor, video_processor

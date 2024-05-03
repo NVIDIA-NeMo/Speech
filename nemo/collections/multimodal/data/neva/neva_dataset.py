@@ -20,6 +20,8 @@ import tarfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple, Union
 
+import decord
+import numpy as np
 import torch
 import torch.nn.functional as F
 import transformers
@@ -43,6 +45,7 @@ from nemo.collections.multimodal.data.neva.conversation import (
     DEFAULT_SEPARATOR_TOKEN,
     DEFAULT_SYSTEM_TOKEN,
     DEFAULT_UNK_TOKEN,
+    DEFAULT_VIDEO_TOKEN,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 
@@ -101,6 +104,87 @@ class TarOrFolderImageLoader:
         else:
             return Image.open(os.path.join(self.image_folder, file_name)).convert('RGB')
         return None
+
+
+class TarOrFolderVideoLoader:
+    """
+    A class for loading videos from a tar archive or a regular folder.
+
+    This class provides functionality to open and read videos from either a tar archive
+    (.tar file) or a standard directory with video files. It builds an index of videos
+    if the source is a tar archive for efficient access.
+
+    Attributes:
+        video_folder (str): The path to the tar archive or video folder.
+        data_cfg (dict): A dictionary of configuration options for video decoding to frames
+        tar_index (dict): A dictionary that maps file names to their tarfile member
+                          objects if the video source is a tar archive.
+
+    Methods:
+        __init__(self, video_folder): Initializes the loader with the specified video folder.
+        build_index(self): Builds an index of image file names and their corresponding
+                           tarfile member objects for a tar archive.
+        open_video(self, file_name): Opens and returns an video by its file name. The video
+                                     is returned as a list of RGB PIL Image objects.
+        flatten_frames(self, cap): Converts decord VideoReader video object to list of frame
+                                   images based on data config information.
+    """
+
+    def __init__(self, video_folder, data_cfg):
+        self.video_folder = video_folder
+        self.data_cfg = data_cfg
+        self.tar_index = {}
+        if self.video_folder.endswith('.tar'):
+            self.build_index()
+
+    def build_index(self):
+        with tarfile.open(self.video_folder, 'r') as tar:
+            for member in tar.getmembers():
+                self.tar_index[member.name] = member
+
+    def open_video(self, file_name):
+        if self.video_folder.endswith('.tar'):
+            with tarfile.open(self.video_folder, 'r') as tar:
+                member = self.tar_index.get(file_name)
+                if member:
+                    f = tar.extractfile(member)
+                    cap = decord.VideoReader(f)
+                    return self.flatten_frames(cap)
+        else:
+            cap = decord.VideoReader(os.path.join(self.video_folder, file_name))
+            return self.flatten_frames(cap)
+        return None
+
+    def flatten_frames(self, cap):
+        if self.data_cfg['splice_single_frame'] == 'first':
+            frame = cap[0].asnumpy()[:, :, ::-1]
+            return Image.fromarray(frame).convert('RGB')
+        elif self.data_cfg['splice_single_frame'] == 'middle':
+            frame = cap[len(cap) // 2].asnumpy()[:, :, ::-1]
+            return Image.fromarray(frame).convert('RGB')
+        elif self.data_cfg['splice_single_frame'] == 'last':
+            frame = cap[-1].asnumpy()[:, :, ::-1]
+            return Image.fromarray(frame).convert('RGB')
+        else:
+            if self.data_cfg['num_frames'] == -1:
+                frames = []
+                for frame in cap:
+                    rgb_frame = frame.asnumpy()[:, :, ::-1]
+                    img = Image.fromarray(rgb_frame).convert('RGB')
+                    frames.append(img)
+                return frames
+            else:
+                num_frames = min(len(cap), self.data_cfg['num_frames'])
+                indices = np.linspace(0, len(cap) - 1, num_frames, dtype=int)
+                frames = []
+                for i in indices:
+                    rgb_frame = cap[i].asnumpy()[:, :, ::-1]
+                    img = Image.fromarray(rgb_frame).convert('RGB')
+                    frames.append(img)
+
+                while len(frames) < self.data_cfg['num_frames']:
+                    frames.append(frames[-1])
+                return frames
 
 
 def tokenize(
@@ -167,33 +251,46 @@ def preprocess_multimodal(sources: dict, multimodal_cfg: dict, cur_token_len: in
     - dict: The processed sources dictionary after applying multimodal preprocessing steps.
     """
     is_multimodal = multimodal_cfg['is_multimodal']
+    media_type = multimodal_cfg['media_type']
     image_token_len = cur_token_len
+    if media_type == 'image':
+        default_token = DEFAULT_IMAGE_TOKEN
+    elif media_type == 'video':
+        default_token = DEFAULT_VIDEO_TOKEN
+    else:
+        return sources
+
     if not is_multimodal:
         return sources
 
+    num_patches = image_token_len
+    if media_type == 'video':
+        num_patches *= multimodal_cfg['num_frames']
+
     if multimodal_cfg['use_im_start_end']:
-        replace_token = DEFAULT_IMAGE_PATCH_TOKEN * image_token_len
+        replace_token = DEFAULT_IMAGE_PATCH_TOKEN * num_patches
     else:
-        replace_token = DEFAULT_IMAGE_PATCH_TOKEN * (image_token_len - 2)
+        replace_token = DEFAULT_IMAGE_PATCH_TOKEN * (num_patches - 2)
+
     replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
 
     for source in sources:
         conversation = source['conversations']
         if multimodal_cfg['sep_image_conv_front']:
-            assert DEFAULT_IMAGE_TOKEN in conversation[0]['value']
-            conversation[0]['value'] = conversation[0]['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+            assert default_token in conversation[0]['value']
+            conversation[0]['value'] = conversation[0]['value'].replace(default_token, '').strip()
             conversation[0]['value'] = (
-                DEFAULT_IMAGE_TOKEN
+                default_token
                 + conversation_lib.default_conversation.sep
                 + conversation_lib.default_conversation.roles[0]
                 + ": "
                 + conversation[0]['value']
             )
         if use_plain:
-            assert DEFAULT_IMAGE_TOKEN in conversation[0]['value']
-            conversation[0]['value'] = DEFAULT_IMAGE_TOKEN
+            assert default_token in conversation[0]['value']
+            conversation[0]['value'] = default_token
         for turn in conversation:
-            turn["value"] = turn["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+            turn["value"] = turn["value"].replace(default_token, replace_token)
 
     return sources
 
@@ -626,11 +723,9 @@ def preprocess_plain(sources, tokenizer, cfg,) -> Dict:
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, data_path: str, tokenizer, multimodal_cfg: dict):
+    def __init__(self, data_path: str, tokenizer, multimodal_cfg: dict, data_cfg: dict):
         super(LazySupervisedDataset, self).__init__()
-        logging.warning("Loading data...")
         if data_path is not None:
-            logging.warning("Loading data...")
             with open(data_path, "r") as file:
                 list_data_dict = json.load(file)
         else:
@@ -642,9 +737,11 @@ class LazySupervisedDataset(Dataset):
         self.multimodal_cfg = multimodal_cfg
         self.conv_template = multimodal_cfg["conv_template"]
         self.image_folder = multimodal_cfg['image_folder']
+        self.video_folder = multimodal_cfg['video_folder']
         self.processor = multimodal_cfg["image_processor"]
 
         self.image_loader = TarOrFolderImageLoader(self.image_folder)
+        self.video_loader = TarOrFolderVideoLoader(self.video_folder, data_cfg)
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -698,11 +795,11 @@ class LazySupervisedDataset(Dataset):
                     ), 'NeMo image transform with setting `image_aspect_ratio` to `square`.'
                     image = self.processor(image)
                 images.append(image)
-            images_tensors = torch.tensor([])
+            media_tensors = torch.tensor([])
             if images:
-                images_tensors = torch.stack(images)
-                cur_token_len = (images_tensors[0].shape[1] // 14) * (
-                    images_tensors[0].shape[2] // 14
+                media_tensors = torch.stack(images)
+                cur_token_len = (media_tensors[0].shape[1] // 14) * (
+                    media_tensors[0].shape[2] // 14
                 )  # FIXME: 14 is hardcoded patch size
                 sources = preprocess_multimodal(
                     copy.deepcopy(sources),
@@ -710,8 +807,66 @@ class LazySupervisedDataset(Dataset):
                     cur_token_len,
                     use_plain=(self.conv_template == "plain"),
                 )
+        elif 'video' in sources[0]:
+            if not isinstance(self.list_data_dict[i]['video'], list):
+                self.list_data_dict[i]['video'] = [self.list_data_dict[i]['video']]
+
+            videos = []
+            for video_file in self.list_data_dict[i]['video']:
+                frames = self.video_loader.open_video(video_file)
+                if frames is None:
+                    logging.warning(f"Video {video_file} could not be found!")
+                if isinstance(self.processor, CLIPImageProcessor):
+                    # image processor from HF
+                    if self.multimodal_cfg['image_aspect_ratio'] == 'keep':
+                        max_hw, min_hw = max(frames.size), min(frames.size)
+                        aspect_ratio = max_hw / min_hw
+                        max_len, min_len = 448, 224
+                        shortest_edge = int(min(max_len / aspect_ratio, min_len))
+                        frames = self.processor.preprocess(
+                            frames, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
+                        )['pixel_values']
+                    elif self.multimodal_cfg['image_aspect_ratio'] == 'pad':
+
+                        def expand2square(pil_img, background_color):
+                            width, height = pil_img.size
+                            if width == height:
+                                return pil_img
+                            elif width > height:
+                                result = Image.new(pil_img.mode, (width, width), background_color)
+                                result.paste(pil_img, (0, (width - height) // 2))
+                                return result
+                            else:
+                                result = Image.new(pil_img.mode, (height, height), background_color)
+                                result.paste(pil_img, ((height - width) // 2, 0))
+                                return result
+
+                        frames = expand2square(frames, tuple(int(x * 255) for x in self.processor.image_mean))
+                        frames = self.processor.preprocess(frames, return_tensors='pt')['pixel_values']
+                    else:
+                        frames = self.processor.preprocess(frames, return_tensors='pt')['pixel_values']
+                else:
+                    assert (
+                        self.multimodal_cfg['image_aspect_ratio'] == 'square'
+                    ), 'NeMo image transform with setting `image_aspect_ratio` to `square`.'
+                    frames = self.processor(frames)
+                videos.append(frames)
+            media_tensors = frames
+            if videos:
+                media_tensors = torch.stack(videos)
+                cur_token_len = (media_tensors[0].shape[-1] // 14) * (
+                    media_tensors[0].shape[-2] // 14
+                )  # FIXME: 14 is hardcoded patch size
+                sources = preprocess_multimodal(
+                    copy.deepcopy(sources),
+                    self.multimodal_cfg,
+                    cur_token_len,
+                    use_plain=(self.conv_template == "plain"),
+                )
+
         else:
-            images_tensors = torch.tensor([])
+            logging.warning("media not found in sources")
+            media_tensors = torch.tensor([])
             sources = copy.deepcopy(sources)
 
         if self.conv_template in ["nvgpt", "nv_steerlm"]:
@@ -736,47 +891,55 @@ class LazySupervisedDataset(Dataset):
                 crop_size = [self.processor.crop_size['height'], self.processor.crop_size['width']]
             else:
                 crop_size = self.multimodal_cfg['crop_size']
-            # image does not exist in the data, but the model is multimodal
-            zero_padding = torch.zeros(
-                (MAX_NUM_IMAGES - len(images_tensors), 3, crop_size[0], crop_size[1]), dtype=torch.float
-            )
-            images_tensors = torch.cat((images_tensors, zero_padding), dim=0)
-            data_dict['image'] = images_tensors
+
+            # Image does not exist in the data, but the model is multimodal
+            # TODO, if there are different videos on T dimensions.
+            if media_tensors.shape[0] < MAX_NUM_IMAGES:
+                padding_size = MAX_NUM_IMAGES - media_tensors.shape[0]
+                zero_padding = torch.zeros((padding_size, 3, crop_size[0], crop_size[1]), dtype=torch.float)
+                media_tensors = torch.cat((media_tensors, zero_padding), dim=0)
+
+            if self.multimodal_cfg['media_type'] == 'image':
+                data_dict['image'] = media_tensors
+            elif self.multimodal_cfg['media_type'] == 'video':
+                data_dict['video'] = media_tensors
+
         return data_dict
 
 
 class NevaDataset(LazySupervisedDataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, data_path: str, tokenizer, multimodal_cfg: dict):
+    def __init__(self, data_path: str, tokenizer, multimodal_cfg: dict, data_cfg: dict):
 
         if data_path.endswith(".json"):
-            super(NevaDataset, self).__init__(data_path, tokenizer, multimodal_cfg)
+            super(NevaDataset, self).__init__(data_path, tokenizer, multimodal_cfg, data_cfg)
 
         elif data_path.endswith(".jsonl"):
             super(NevaDataset, self).__init__(None, tokenizer, multimodal_cfg)
             logging.warning("Loading image inputs from SteerLM Dataset")
-            image_folder = multimodal_cfg['image_folder']
-            for line in open(data_path, "r"):
-                record = json.loads(line)
+            if multimodal_cfg['media_type'] == 'image':
+                image_folder = multimodal_cfg['image_folder']
+                for line in open(data_path, "r"):
+                    record = json.loads(line)
 
-                # This currently supports only a single image
-                # search for <img src="/absolute/path/to/image" in the conversation
-                #   add it as record['image'], remove src tag from the <img> tag
+                    # This currently supports only a single image
+                    # search for <img src="/absolute/path/to/image" in the conversation
+                    #   add it as record['image'], remove src tag from the <img> tag
 
-                record['image'] = []
-                for turn in record['conversations']:
-                    matches = re.finditer('<img src="([^"]+)"', turn['value'])
-                    for match in matches:
-                        image_name = match.group(1).split("/")[-1]
-                        image_path = os.path.join(image_folder, image_name)
-                        if not os.path.isfile(image_path):
-                            logging.warning(f"Image not found: {image_path}")
-                            continue
-                        record['image'].append(image_name)  # url
-                    turn['value'] = re.sub('<img src="([^"]+)">', DEFAULT_IMAGE_TOKEN, turn['value'])
+                    record['image'] = []
+                    for turn in record['conversations']:
+                        matches = re.finditer('<img src="([^"]+)"', turn['value'])
+                        for match in matches:
+                            image_name = match.group(1).split("/")[-1]
+                            image_path = os.path.join(image_folder, image_name)
+                            if not os.path.isfile(image_path):
+                                logging.warning(f"Image not found: {image_path}")
+                                continue
+                            record['image'].append(image_name)  # url
+                        turn['value'] = re.sub('<img src="([^"]+)">', DEFAULT_IMAGE_TOKEN, turn['value'])
 
-                self.list_data_dict.append(record)
+                    self.list_data_dict.append(record)
 
         else:
             raise ValueError(f"Formatting of {data_path} is not supported in Neva.")
@@ -818,7 +981,13 @@ class DataCollatorForSupervisedDataset(object):
 
         tokens = batch['tokens']
         labels = batch['labels']
-        media = batch.get('image')
+        media_type = model_cfg.data.get('media_type')
+        if media_type == 'image':
+            media = batch.get('image')
+        elif media_type == 'video':
+            media = batch.get('video')
+        else:
+            raise ValueError(f"Unsupported media type {media_type}")
 
         if packed_sequence:
             cu_seqlens = batch["cu_seqlens"]
@@ -847,7 +1016,10 @@ class DataCollatorForSupervisedDataset(object):
         if media is None:
             raise NotImplementedError
         else:
-            media = rearrange(media, "b T c h w -> b T 1 c h w")
+            if media_type == 'image':
+                media = rearrange(media, "b T c h w -> b T 1 c h w")
+            elif media_type == 'video':
+                media = rearrange(media, "b T F c h w -> b T F c h w")
 
         batch = {
             'tokens': tokens,
@@ -888,11 +1060,19 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
             crop_size=crop_size,
             image_token_len=data_cfg.image_token_len,
             image_folder=data_cfg.image_folder,
+            video_folder=data_cfg.video_folder,
             image_aspect_ratio=data_cfg.image_aspect_ratio,
             use_im_start_end=getattr(model_cfg.mm_cfg, 'use_im_start_end', False),
             image_processor=image_processor,
             add_extra_token=add_extra_token,
             context_length=model_cfg.encoder_seq_length,
+            media_type=data_cfg.media_type,
+            num_frames=data_cfg.num_frames,
+        ),
+        data_cfg=dict(
+            splice_single_frame=data_cfg.splice_single_frame,
+            num_frames=data_cfg.num_frames,
+            sep_token_between_frames=data_cfg.sep_token_between_frames,
         ),
     )
 

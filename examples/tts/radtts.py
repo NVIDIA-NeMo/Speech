@@ -68,7 +68,7 @@ def main(cfg):
     lr_logger = pl.callbacks.LearningRateMonitor()
     epoch_time_logger = LogEpochTimeCallback()
     trainer.callbacks.extend([lr_logger, epoch_time_logger])
-    trainer.fit(model.cuda())
+    trainer.fit(model)
 
 
 if __name__ == '__main__':

@@ -78,7 +78,7 @@ jobs:
       run: |
         # Pull base PyTorch container
         docker pull nvcr.io/nvidia/pytorch:24.02-py3
-        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume ${{ github.workspace }}/${{ github.run_id }}:/workspace --volume /mnt/datadrive/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.02-py3 /bin/bash -c '
+        docker run --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 --volume ${{ github.workspace }}/${{ github.run_id }}:/workspace --volume /mnt/datadrive/TestData:/home/TestData nvcr.io/nvidia/pytorch:24.02-py3 /bin/bash -c '
             set -x
 
             # PyTorch version
@@ -6224,6 +6224,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_RADTTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 15
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 

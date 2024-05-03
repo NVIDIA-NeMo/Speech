@@ -263,5 +263,5 @@ if __name__ == '__main__':
             args.hf_output_tokenizer,
         )
     else:
-        logging.info("`hf-in-path` and/or `hf-out-path` not provided, not generating full HF model.")
+        logging.info("`hf_input_path` and/or `hf_output_path` not provided, not generating full HF model.")
         logging.info(f".bin file is saved to {args.output_path}")

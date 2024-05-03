@@ -27,7 +27,7 @@ from collections import OrderedDict
 import torch
 from omegaconf import OmegaConf
 from pytorch_lightning.trainer.trainer import Trainer
-from transformers import LlamaForCausalLM, LlamaTokenizer
+from transformers import AutoTokenizer, LlamaForCausalLM, LlamaTokenizer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -78,7 +78,19 @@ def load_config(args, llama_config):
         nemo_config.num_query_groups = llama_config['num_key_value_heads']
     nemo_config.use_cpu_initialization = True
     nemo_config.activation = 'fast-swiglu'
-    nemo_config.tokenizer.model = llama_config['tokenizer_model']
+
+    # Tokenizer config
+    if 'tokenizer_model' in llama_config:
+        nemo_config.tokenizer.model = llama_config['tokenizer_model']
+    else:
+        # Llama3 uses converted TikToken Tokenizer
+        tokenizer_dict = {
+            'library': 'huggingface',
+            'type': args.input_name_or_path,
+            'use_fast': True,
+        }
+        nemo_config.tokenizer = tokenizer_dict
+
     if llama_config['rope_scaling'] is not None:
         if llama_config['rope_scaling']['type'] == 'linear':
             nemo_config['seq_len_interpolation_factor'] = llama_config['rope_scaling']['factor']
@@ -98,9 +110,12 @@ def load_config(args, llama_config):
 def convert(args):
     logging.info(f"loading checkpoint {args.input_name_or_path}")
     model = LlamaForCausalLM.from_pretrained(args.input_name_or_path)
-    tokenizer = LlamaTokenizer.from_pretrained(args.input_name_or_path)
     hf_config = vars(model.config)
-    hf_config['tokenizer_model'] = str(tokenizer.vocab_file)
+    if os.path.exists(f'{args.input_name_or_path}/tokenizer.model'):
+        tokenizer = LlamaTokenizer.from_pretrained(args.input_name_or_path)
+        hf_config['tokenizer_model'] = str(tokenizer.vocab_file)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(args.input_name_or_path)
     print(f"hf_config: {hf_config}")
     print("named parameters:")
     for name, param in model.named_parameters():
@@ -273,6 +288,15 @@ def convert(args):
     model = load_state_dict_helper(MegatronGPTModel, nemo_config, trainer, checkpoint['state_dict'])
 
     model._save_restore_connector = NLPSaveRestoreConnector()
+
+    # We make sure that the tokenizer can be instantiated later regardless of args.input_name_or_path
+    if 'tokenizer_model' not in hf_config:
+        if hf_config['num_hidden_layers'] == 32:
+            model.cfg.tokenizer.update(type='meta-llama/Meta-Llama-3-8B')
+        elif hf_config['num_hidden_layers'] == 80:
+            model.cfg.tokenizer.update(type='meta-llama/Meta-Llama-3-70B')
+        else:
+            logging.warning("Unexpected model config for Llama3. Tokenizer config has not been modified.")
 
     # cast to target precision and disable cpu init
     dtype = torch_dtype_from_precision(precision)

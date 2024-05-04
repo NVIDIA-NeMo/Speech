@@ -17,6 +17,8 @@ on:
   pull_request:
     branches: [ "main" ]
     types: [ labeled ]
+  issue_comment:
+    types: [ created ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,7 +27,15 @@ concurrency:
 jobs:
   gpu-test:
     runs-on: self-hosted-azure
-    if: ${{ github.event.label.name == 'Run CICD' }}
+    if: >
+      (
+        github.event.label.name == 'Run CICD'
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(fromJSON('["MEMBER", "COLLABORATOR", "OWNER"]'), github.event.comment.author_association) &&
+        contains(github.event.comment.body, '/cicd')
+      )
     steps:
     - name: Run nvidia-smi test
       run: |
@@ -34,7 +44,15 @@ jobs:
 
   cicd-cluster-clean:
     runs-on: self-hosted-azure-builder
-    if: ${{ github.event.label.name == 'Run CICD' }}
+    if: >
+      (
+        github.event.label.name == 'Run CICD'
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(fromJSON('["MEMBER", "COLLABORATOR", "OWNER"]'), github.event.comment.author_association) &&
+        contains(github.event.comment.body, '/cicd')
+      )
     steps:
     - name: Clean server from old files
       run: |
@@ -57,7 +75,15 @@ jobs:
   cicd-test-container-setup:
     needs: [cicd-cluster-clean]
     runs-on: self-hosted-azure-builder
-    if: ${{ github.event.label.name == 'Run CICD' }}
+    if: >
+      (
+        github.event.label.name == 'Run CICD'
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(fromJSON('["MEMBER", "COLLABORATOR", "OWNER"]'), github.event.comment.author_association) &&
+        contains(github.event.comment.body, '/cicd')
+      )
     # uses: actions/cache@v2
     #container:
 #      image: nvcr.io/nvidia/pytorch:24.02-py3

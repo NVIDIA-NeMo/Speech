@@ -118,7 +118,7 @@ jobs:
             # Megatron Core installation
             git clone https://github.com/NVIDIA/Megatron-LM.git && \
                 pushd Megatron-LM && \
-                git checkout fbb375d4b5e88ce52f5f7125053068caff47f93f && \
+                git checkout 709472117364eed93b6a767e2ac343e229d3aa89 && \
                 pip install . && \
                   pushd megatron/core/datasets && \
                   make && \
@@ -6070,6 +6070,7 @@ jobs:
                 trainer.limit_val_batches=7 \
                 trainer.val_check_interval=10 \
                 exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+                model.mcore_gpt=True \
                 model.data.data_impl=mock \
                 model.data.data_prefix=[]
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"

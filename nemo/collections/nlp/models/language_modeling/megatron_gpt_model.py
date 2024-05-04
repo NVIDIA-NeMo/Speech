@@ -89,6 +89,7 @@ try:
     from megatron.core import InferenceParams, parallel_state, tensor_parallel
     from megatron.core.datasets.blended_megatron_dataset_builder import BlendedMegatronDatasetBuilder
     from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
+    from megatron.core.datasets.utils import get_blend_from_list
     from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
     from megatron.core.dist_checkpointing.mapping import LocalNonpersitentObject, ShardedObject
 
@@ -1403,12 +1404,17 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
             }
 
+            data_prefix = self.cfg.data.data_prefix
+
             # support for dict data input type
-            if isinstance(self.cfg.data.data_prefix, DictConfig):
-                _pref = self.cfg.data.data_prefix
-                kwargs['blend_per_split'] = [_pref['train'], _pref['validation'], _pref['test']]
+            if isinstance(data_prefix, DictConfig):
+                kwargs['blend_per_split'] = [
+                    get_blend_from_list(data_prefix.train),
+                    get_blend_from_list(data_prefix.validation),
+                    get_blend_from_list(data_prefix.test),
+                ]
             else:
-                kwargs['blend'] = self.cfg.data.data_prefix
+                kwargs['blend'] = data_prefix if mock_dataset else get_blend_from_list(data_prefix)
                 kwargs["split"] = self.cfg.data.splits_string
 
             if self.cfg.data.get('add_fim', False):

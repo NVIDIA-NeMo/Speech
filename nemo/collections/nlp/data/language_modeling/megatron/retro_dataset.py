@@ -40,6 +40,7 @@ try:
         MultiSplitGPTDatasetConfig,
     )
     from megatron.core.datasets.retro.query.retro_dataset import get_retro_datasets
+    from megatron.core.datasets.utils import get_blend_from_list
     from megatron.core.models.retro import RetroConfig
 
     from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
@@ -190,7 +191,7 @@ def gpt_train_valid_test_datasets_provider(cfg, train_val_test_num_samples, toke
     data_config = MultiSplitGPTDatasetConfig(
         random_seed=cfg.seed,
         sequence_length=cfg.data.seq_length,
-        blend=cfg.data.data_prefix,
+        blend=get_blend_from_list(cfg.data.data_prefix),
         split=cfg.data.splits_string,
         split_preprocessing=cfg.data.retro_data.retro_split_preprocessing,
         path_to_cache=None,

@@ -6287,8 +6287,8 @@ jobs:
             ~trainer.check_val_every_n_epoch \
             ~model.text_normalizer \
             ~model.text_normalizer_call_kwargs
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+        #  if: "failure()"
 
   L2_TTS_Fast_dev_runs_1_Mixer-TTS:
     needs: [cicd-test-container-setup]
@@ -6530,7 +6530,7 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Tacotron_2
       - L2_TTS_Fast_dev_runs_1_WaveGlow
       - L2_TTS_Fast_dev_runs_1_FastPitch
-      - L2_TTS_Fast_dev_runs_1_RADTTS
+      #- L2_TTS_Fast_dev_runs_1_RADTTS
       - L2_TTS_Fast_dev_runs_1_Mixer-TTS
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests

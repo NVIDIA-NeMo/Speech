@@ -24,6 +24,17 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import hydra
 import torch
+
+try:
+    from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+    from megatron.core.utils import get_model_config
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
 from omegaconf import DictConfig, OmegaConf, open_dict
 from pytorch_lightning import LightningModule, Trainer
 from pytorch_lightning.utilities import model_summary, rank_zero_only
@@ -32,7 +43,7 @@ from nemo import package_info
 from nemo.core import optim
 from nemo.core.classes.common import Model
 from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
-from nemo.core.optim import prepare_lr_scheduler
+from nemo.core.optim import McoreDistributedOptimizer, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
 from nemo.utils.app_state import AppState
 from nemo.utils.debug_hook import register_debug_hooks
@@ -570,6 +581,31 @@ class ModelPT(LightningModule, Model):
             if self._test_dl is not None and type(self._test_dl) in [list, tuple]:
                 self._test_names = ['test_{}_'.format(idx) for idx in range(len(self._test_dl))]
 
+    def setup_megatron_optimization(self, optim_config: Union[Dict[str, Any], DictConfig]):
+        """
+        Setup mcore optimizer config.
+
+        Args:
+            optim_config: Nemo optim args used to set up Mcore optimizer options.
+        """
+
+        config = get_model_config(self.model[0])
+
+        megatron_optim_config = OptimizerConfig(
+            fp16=config.fp16,
+            bf16=config.bf16,
+            params_dtype=config.params_dtype,
+            lr=optim_config['lr'],
+            weight_decay=optim_config['weight_decay'],
+            adam_beta1=optim_config['betas'][0],
+            adam_beta2=optim_config['betas'][1],
+            clip_grad=self.trainer.gradient_clip_val,
+            use_distributed_optimizer=self.use_mcore_dist_optim,
+            overlap_grad_reduce=self.cfg.optim.get('overlap_grad_sync', False),
+            overlap_param_gather=self.cfg.optim.get('overlap_param_sync', False),
+        )
+        return megatron_optim_config
+
     def setup_optimization(
         self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
     ):
@@ -718,14 +754,20 @@ class ModelPT(LightningModule, Model):
                     raise e
 
         else:
-            optimizer = optim.get_optimizer(optimizer_name)
-            optimizer = optimizer(self._optimizer_param_groups, **optimizer_args)
+            if optimizer_name == 'mcore_distributed_optim':
+                # setup megatron_optim_config and get Mcore based optimizer with the wrapper
+                megatron_optim_config = self.setup_megatron_optimization(optimizer_args)
+                _megatron_optimizer = get_megatron_optimizer(megatron_optim_config, self.model,)
+                optimizer = McoreDistributedOptimizer(_megatron_optimizer)
 
-            logging.info("Optimizer config = %s", str(optimizer))
+            else:
+                optimizer = optim.get_optimizer(optimizer_name)
+                optimizer = optimizer(self._optimizer_param_groups, **optimizer_args)
+
+                logging.info("Optimizer config = %s", str(optimizer))
 
             self._optimizer = optimizer
 
-        # Try to instantiate scheduler for optimizer
         self._scheduler = prepare_lr_scheduler(
             optimizer=self._optimizer, scheduler_config=scheduler_config, train_dataloader=self._train_dl
         )

@@ -59,6 +59,7 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core import ModelParallelConfig, parallel_state
+    from megatron.core.distributed import DistributedDataParallel as McoreDDP
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_config import TransformerConfig
     from megatron.core.utils import init_method_normal, scaled_init_method_normal
@@ -147,7 +148,8 @@ class MegatronBaseModel(NLPModel):
         # set the megatron core model parallel config
         self.model_parallel_config: ModelParallelConfig = self.build_model_parallel_config()
 
-        self.with_distributed_adam = cfg.optim.get('name') == 'distributed_fused_adam'
+        self.use_mcore_dist_optim = cfg.optim.get('name') == 'mcore_distributed_optim'
+        self.with_distributed_adam = cfg.optim.get('name') == 'distributed_fused_adam' or self.use_mcore_dist_optim
         self.with_megatron_fused_adam = cfg.optim.get('name') == 'megatron_fused_adam'
 
         # used in NVIDIA NGC PyTorch containers
@@ -301,7 +303,6 @@ class MegatronBaseModel(NLPModel):
         }
 
         args = mcore_args if is_mcore_model else nemo_args
-
         # Model wrapper to convert both model and inputs to half precision
         if isinstance(self.model, list):
             converted_model = []
@@ -312,13 +313,12 @@ class MegatronBaseModel(NLPModel):
         else:
             args['module'] = self.model
             self.model = Float16Wrapper(**args)
-
         args.pop('module')
 
     def get_model_module_list(self):
         if isinstance(self.model, list):
             return [
-                model.module if isinstance(model, (Float16Module, MCoreFloat16Module)) else model
+                model.module if isinstance(model, (Float16Module, MCoreFloat16Module, McoreDDP)) else model
                 for model in self.model
             ]
         elif isinstance(self.model, (Float16Module, MCoreFloat16Module)):
@@ -612,7 +612,7 @@ class MegatronBaseModel(NLPModel):
         if clip_val <= 0:
             return
 
-        if self.with_megatron_fused_adam:
+        if self.with_megatron_fused_adam or self.use_mcore_dist_optim:
             # Gradient clipping is done in optimizer step
             return
 
@@ -847,7 +847,7 @@ class MegatronBaseModel(NLPModel):
             )
 
         # Configure distributed optimizer
-        if self.with_distributed_adam:
+        if self.with_distributed_adam and not self.use_mcore_dist_optim:
 
             # Initialize param buckets if explicitly provided
             if getattr(self, 'distributed_adam_buckets', None) is not None:
@@ -930,7 +930,10 @@ class MegatronBaseModel(NLPModel):
         # async grad allreduce. This should be fixed!
         # For now we must disable it whenever using the baseline implementaion.
         # The distributed adam from apex does work with gradient accumulation fusion.
-        distributed_fused_adam = self.cfg.optim.get('name', 'fused_adam') == 'distributed_fused_adam'
+        distributed_fused_adam = (
+            self.cfg.optim.get('name', 'fused_adam') == 'distributed_fused_adam'
+            or self.cfg.optim.get('name', 'fused_adam') == 'mcore_distributed_optim'
+        )
         pipeline_model_parallel_size = self.cfg.get('pipeline_model_parallel_size', 1)
         data_parallel_size = app_state.data_parallel_size
 

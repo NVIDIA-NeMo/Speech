@@ -239,6 +239,7 @@ class NLPDDPStrategy(DDPStrategy):
             hasattr(self.model, 'with_distributed_adam') and self.model.with_distributed_adam
         ):
             # do not use DDP if using megatron amp O2 or distributed optimizer
+            self.model.setup_mcore_distributed_parallel()
             self._model = self.model
         else:
             app_state = AppState()

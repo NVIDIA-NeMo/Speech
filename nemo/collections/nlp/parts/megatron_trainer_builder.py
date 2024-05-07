@@ -56,6 +56,7 @@ class MegatronTrainerBuilder:
         if self.cfg.model.get('fsdp', False):
             assert (
                 not self.cfg.model.optim.get('name') == 'distributed_fused_adam'
+                and not self.cfg.model.optim.get('name') == 'mcore_distributed_optim'
             ), 'Distributed optimizer cannot be used with FSDP.'
             sharded_checkpoint = self.cfg.model.get('fsdp_sharded_checkpoint', False)
             if self.cfg.model.get('tensor_model_parallel_size', 1) > 1:
@@ -100,7 +101,12 @@ class MegatronTrainerBuilder:
         """
         megatron_amp_O2 = self.cfg.model.get('megatron_amp_O2', False)
         with_distributed_adam = (
-            self.cfg.model.optim.get('name') == 'distributed_fused_adam' if self.cfg.model.get('optim') else False
+            (
+                self.cfg.model.optim.get('name') == 'distributed_fused_adam'
+                or self.cfg.model.optim.get('name') == 'mcore_distributed_optim'
+            )
+            if self.cfg.model.get('optim')
+            else False
         )
 
         plugins = []

@@ -118,7 +118,7 @@ jobs:
             # Megatron Core installation
             git clone https://github.com/NVIDIA/Megatron-LM.git && \
                 pushd Megatron-LM && \
-                git checkout 709472117364eed93b6a767e2ac343e229d3aa89 && \
+                git checkout c90aa1671fc0b97f80fa6c3bb892ce6f8e88e7c9 && \
                 pip install . && \
                   pushd megatron/core/datasets && \
                   make && \

@@ -226,6 +226,7 @@ jobs:
   L0_Setup_Test_Data_And_Models:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options:
@@ -250,6 +251,7 @@ jobs:
   L2_Community_LLM_Checkpoints_tests_Llama:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -274,6 +276,7 @@ jobs:
   L2_Community_LLM_Checkpoints_tests_Llama3:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -299,6 +302,7 @@ jobs:
   L2_Community_LLM_Checkpoints_tests_StarCoder:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -323,6 +327,7 @@ jobs:
   L2_Community_LLM_Checkpoints_tests_Falcon:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -374,6 +379,7 @@ jobs:
   L2_PTQ_Llama2_Export_Only:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options:
@@ -400,6 +406,7 @@ jobs:
   L2_PTQ_Llama2_FP8:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options:
@@ -432,6 +439,7 @@ jobs:
   L2_PTQ_Llama2_INT8_SQ:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options:
@@ -461,7 +469,7 @@ jobs:
   #L2_PTQ_Llama2_INT4_AWQ:
   #  needs: [cicd-test-container-setup]
   #  runs-on: self-hosted-azure
-  #  timeout-minutes: 15
+  #  timeout-minutes: 10
   #  container:
   #    image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
   #    options:
@@ -494,6 +502,7 @@ jobs:
   ASR_dev_run_Speech_to_Text:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -522,6 +531,7 @@ jobs:
   ASR_dev_run_Speech_to_Text_WPE_-_CitriNet:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -553,6 +563,7 @@ jobs:
   ASR_dev_run_Speech_Pre-training_-_CitriNet:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -582,6 +593,7 @@ jobs:
   ASR_dev_run_Speech_To_Text_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -613,6 +625,7 @@ jobs:
   ASR_dev_run_Speech_To_Text_HF_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -660,6 +673,7 @@ jobs:
   ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -694,6 +708,7 @@ jobs:
   ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -728,6 +743,7 @@ jobs:
   L2_Speech_to_Text_EMA:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -807,6 +823,7 @@ jobs:
   L2_Speaker_dev_run_Speaker_Recognition:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -839,6 +856,7 @@ jobs:
   L2_Speaker_dev_run_Speaker_Diarization:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -872,6 +890,7 @@ jobs:
   L2_Speaker_dev_run_Speech_to_Label:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -908,6 +927,7 @@ jobs:
   L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -939,6 +959,7 @@ jobs:
   L2_Speaker_dev_run_Clustering_Diarizer_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -970,6 +991,7 @@ jobs:
   L2_Speaker_dev_run_Neural_Diarizer_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -997,6 +1019,7 @@ jobs:
   L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1027,6 +1050,7 @@ jobs:
   L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1057,6 +1081,7 @@ jobs:
   L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1096,6 +1121,7 @@ jobs:
   L2_ASR_Adapters_Linear_Adapters:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1128,6 +1154,7 @@ jobs:
   L2_ASR_Adapters_RelPos_MHA_Adapters:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1163,6 +1190,7 @@ jobs:
   L2_Speech_Transcription_Speech_to_Text_Transcribe:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1190,6 +1218,7 @@ jobs:
   L2_Transducer_alignment_Running_pytest:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1212,6 +1241,7 @@ jobs:
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1244,6 +1274,7 @@ jobs:
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1278,6 +1309,7 @@ jobs:
   L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1344,6 +1376,7 @@ jobs:
   L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1427,6 +1460,7 @@ jobs:
   L2_Dialogue_Classification_Intent_and_slot_classification_using_SGDQA:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1466,6 +1500,7 @@ jobs:
   L2_Dialogue_Classification_Intent_and_slot_classification_using_IntentSlotClassificationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1504,6 +1539,7 @@ jobs:
   L2_Dialogue_Classification_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1545,6 +1581,7 @@ jobs:
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1587,6 +1624,7 @@ jobs:
   L2_Dialogue_Classification_Design_Intent_classification_using_ZeroShotIntentModel_BART_Classifier:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1622,6 +1660,7 @@ jobs:
   L2_Dialogue_Classification_Design_Intent_classification_using_DialogueNearestNeighbourModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1657,6 +1696,7 @@ jobs:
   L2_Dialogue_Generation_Dialogue_Answer_Extender_using_DialogueS2SGenerationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1698,6 +1738,7 @@ jobs:
   L2_Dialogue_Generation_Dialogue_SGD_Based_Answer_Extender_using_DialogueS2SGenerationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1776,6 +1817,7 @@ jobs:
   L2_COPY_Dialogue_Answer_Extender_using_DialogueGPTGenerationModel:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1812,6 +1854,7 @@ jobs:
   L2_Duplex_Text_Normalization_with_Tarred_dataset:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1882,6 +1925,7 @@ jobs:
   L2_BERT_Text_Classification_with_BERT_Test:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1916,6 +1960,7 @@ jobs:
   L2_Parallel_BERT_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1957,6 +2002,7 @@ jobs:
   L2_Parallel_BERT_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -1996,6 +2042,7 @@ jobs:
   L2_Parallel_BART_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2037,6 +2084,7 @@ jobs:
   L2_Parallel_BART_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2076,6 +2124,7 @@ jobs:
   L2_Parallel_GPT2_Question-Answering_SQUAD_v1_1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2117,6 +2166,7 @@ jobs:
   L2_Parallel_GPT2_Question-Answering_SQUAD_v2_0:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2156,6 +2206,7 @@ jobs:
   L2_Intent_and_Slot_Classification_Tasks_Intent_and_Slot_Classification:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2186,6 +2237,7 @@ jobs:
   L2_Intent_and_Slot_Classification_Tasks_Multi-Label_Intent_and_Slot_Classification:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2322,6 +2374,7 @@ jobs:
   L2_Parallel_NLP_Examples2_NER_finetuning_from_pretrained_Test:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2353,6 +2406,7 @@ jobs:
   L2_Parallel_NLP_Examples2_Punctuation_and_capitalization_finetuning_from_pretrained_test:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2389,6 +2443,7 @@ jobs:
   L2_Parallel_NLP_Examples2_NER_with_TurkuNLP__bert-base-finnish-cased-v1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2418,6 +2473,7 @@ jobs:
   L2_Parallel_NLP_Examples2_Evaluation_script_for_Token_Classification:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2442,6 +2498,7 @@ jobs:
   L2_Parallel_NLP_Examples2_Evaluation_script_for_Punctuation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2473,6 +2530,7 @@ jobs:
   L2_Parallel_NLP_Examples2_Punctuation_Capitalization_2GPUs_with_DistilBERT_Finetuning_on_other_data:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2533,6 +2591,7 @@ jobs:
   Punctuation_Capitalization_tarred_dataset_create_and_use_tarred_dataset:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2598,6 +2657,7 @@ jobs:
   Punctuation_Capitalization_Using_model-common_datasets_parameters-label_vocab_dir:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2724,6 +2784,7 @@ jobs:
   Punctuation_Capitalization_inference_Restore_punctuation_and_capitalization_in_long_text:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2755,6 +2816,7 @@ jobs:
   L2_Pretraining_BERT_pretraining_from_Text:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2797,6 +2859,7 @@ jobs:
   L2_Pretraining_BERT_from_Preprocessed:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2839,6 +2902,7 @@ jobs:
   L2_Entity_Linking_Self_Alignment_Pretraining_BERT:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2873,6 +2937,7 @@ jobs:
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Post-LN:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2951,6 +3016,7 @@ jobs:
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Pre-LN:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -2991,6 +3057,7 @@ jobs:
   L2_NMT_Attention_is_All_You_Need_Training_NMT_Multi-Validation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3030,6 +3097,7 @@ jobs:
   L2_NMT_Attention_is_All_You_Need_Inference:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3058,6 +3126,7 @@ jobs:
   L2_NMT_Attention_is_All_You_Need_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3101,6 +3170,7 @@ jobs:
   L2_NMT_Tarred_Dataset_Creation_Auto_Tarred_Dataset_Creation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3142,6 +3212,7 @@ jobs:
   L2_NMT_Tarred_Dataset_Creation_Script_Tarred_Dataset_Creation:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3173,6 +3244,7 @@ jobs:
   L2_Megatron_NMT_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3282,6 +3354,7 @@ jobs:
   L2_Megatron_BART_Perceiver_MIM_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3600,6 +3673,7 @@ jobs:
   L2_Megatron_Bert_Pretraining_and_Resume_Training_with_Pipeline_Parallelism:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3681,6 +3755,7 @@ jobs:
   L2_Megatron_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3763,6 +3838,7 @@ jobs:
   L2_Megatron_Core_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3847,6 +3923,7 @@ jobs:
   L2_Megatron_RETRO_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -3916,6 +3993,7 @@ jobs:
   L2_Legacy_Megatron_RETRO_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4093,6 +4171,7 @@ jobs:
   L2_BioMegatron_Bert_NER_Task:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4120,6 +4199,7 @@ jobs:
   L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4213,6 +4293,7 @@ jobs:
   L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4403,6 +4484,7 @@ jobs:
   L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4499,6 +4581,7 @@ jobs:
   L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4595,6 +4678,7 @@ jobs:
   L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4695,6 +4779,7 @@ jobs:
   L2_Megatron_GPT_Finetuning_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4776,6 +4861,7 @@ jobs:
   L2_Megatron_GPT_Finetuning_StarCoder_PP1:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4820,6 +4906,7 @@ jobs:
   L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4874,6 +4961,7 @@ jobs:
   L2_Megatron_GPT_PEFT_Lora_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4920,6 +5008,7 @@ jobs:
   L2_Megatron_GPT_PEFT_Lora_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -4982,6 +5071,7 @@ jobs:
   L2_Megatron_GPT_Eval:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5008,6 +5098,7 @@ jobs:
   L2_Megatron_GPT_Eval_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5036,6 +5127,7 @@ jobs:
   L2_Megatron_GPT_SFT_Eval_inference_seq_len_greaterThan_training_seq_len:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5099,6 +5191,7 @@ jobs:
   L2_Megatron_Change_Partitions_Reduce_TP_Num_Partitions_-2_to_1-_and_PP_Num_Partitions_-1_to_2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5128,6 +5221,7 @@ jobs:
   L2_Megatron_Change_Partitions_Increase_TP_Num_Partitions_-2_to_4-_and_PP_Num_Partitions_-1_to_2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5157,6 +5251,7 @@ jobs:
   L2_Megatron_T5_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5264,6 +5359,7 @@ jobs:
   L2_Megatron_T5_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5371,6 +5467,7 @@ jobs:
   L2_Megatron_T5_with_KERPLE_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5478,6 +5575,7 @@ jobs:
   L2_Megatron_T5_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5559,6 +5657,7 @@ jobs:
   L2_Megatron_T5_w_Mixture_of_Expert_Pretraining:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5613,6 +5712,7 @@ jobs:
   L2_Megatron_UL2_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5704,6 +5804,7 @@ jobs:
   L2_Megatron_T5_Eval:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5728,6 +5829,7 @@ jobs:
   L2_Megatron_BART_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5808,6 +5910,7 @@ jobs:
   L2_Megatron_BART_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5894,6 +5997,7 @@ jobs:
   L2_Megatron_T5_GLUE_RTE:  
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5938,6 +6042,7 @@ jobs:
   L2_Megatron_T5_GLUE_XNLI:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -5987,6 +6092,7 @@ jobs:
   L2_Megatron_T5_PEFT_Lora_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6052,6 +6158,7 @@ jobs:
   L2_Megatron_Mock_Data_Generation_MockGPTDataset:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6080,6 +6187,7 @@ jobs:
   L2_Megatron_Mock_Data_Generation_MockT5Dataset:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6110,6 +6218,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_Tacotron_2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6148,6 +6257,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_WaveGlow:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6182,6 +6292,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_FastPitch:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6226,7 +6337,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_RADTTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
-    timeout-minutes: 15
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6268,6 +6379,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_Mixer-TTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6306,6 +6418,7 @@ jobs:
   L2_TTS_Fast_dev_runs_1_Hifigan:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6370,6 +6483,7 @@ jobs:
   Speech_Checkpoints_tests:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
+    timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
       options: 
@@ -6514,4 +6628,3 @@ jobs:
     steps:
         # This should depend on all the tests so we block/unblock based on all tests passing
       - run: exit 0
-

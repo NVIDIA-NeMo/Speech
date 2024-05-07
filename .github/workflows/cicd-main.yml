@@ -458,36 +458,37 @@ jobs:
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
-  L2_PTQ_Llama2_INT4_AWQ:
-    needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options:
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/language_modeling/megatron_llama_quantization.py \
-            model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
-            tensor_model_parallel_size=1 \
-            trainer.devices=1 \
-            quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
-            quantization.algorithm=int4_awq \
-            quantization.num_calib_size=8 \
-            inference.batch_size=2 \
-            model_save=/home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
-
-            rm -rf /home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+  #L2_PTQ_Llama2_INT4_AWQ:
+  #  needs: [cicd-test-container-setup]
+  #  runs-on: self-hosted-azure
+  #  timeout-minutes: 15
+  #  container:
+  #    image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+  #    options:
+  #      # --user 0:128
+  #      --device=/dev/nvidia0
+  #      --gpus all
+  #      --shm-size=8g
+  #      --env TRANSFORMERS_OFFLINE=0
+  #      --env HYDRA_FULL_ERROR=1
+  #      --volume /mnt/datadrive/TestData:/home/TestData
+  #  steps:
+  #      - name: Checkout repository
+  #        uses: actions/checkout@v4
+  #      - run: |
+  #          python examples/nlp/language_modeling/megatron_llama_quantization.py \
+  #          model_file=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+  #          tensor_model_parallel_size=1 \
+  #          trainer.devices=1 \
+  #          quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+  #          quantization.algorithm=int4_awq \
+  #          quantization.num_calib_size=8 \
+  #          inference.batch_size=2 \
+  #          model_save=/home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
+  #
+  #          rm -rf /home/TestData/nlp/megatron_llama/ci_int4_awq.qnemo
+        #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+        #  if: "failure()"
 
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:

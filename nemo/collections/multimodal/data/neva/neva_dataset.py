@@ -740,8 +740,8 @@ class LazySupervisedDataset(Dataset):
         self.video_folder = multimodal_cfg['video_folder']
         self.processor = multimodal_cfg["image_processor"]
 
-        self.image_loader = TarOrFolderImageLoader(self.image_folder)
-        self.video_loader = TarOrFolderVideoLoader(self.video_folder, data_cfg)
+        self.image_loader = TarOrFolderImageLoader(self.image_folder) if self.image_folder else None
+        self.video_loader = TarOrFolderVideoLoader(self.video_folder, data_cfg) if self.video_folder else None
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -916,7 +916,7 @@ class NevaDataset(LazySupervisedDataset):
             super(NevaDataset, self).__init__(data_path, tokenizer, multimodal_cfg, data_cfg)
 
         elif data_path.endswith(".jsonl"):
-            super(NevaDataset, self).__init__(None, tokenizer, multimodal_cfg)
+            super(NevaDataset, self).__init__(None, tokenizer, multimodal_cfg, data_cfg)
             logging.warning("Loading image inputs from SteerLM Dataset")
             if multimodal_cfg['media_type'] == 'image':
                 image_folder = multimodal_cfg['image_folder']
@@ -1059,20 +1059,20 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
             conv_template=data_cfg.get("conv_template", "nvgpt"),
             crop_size=crop_size,
             image_token_len=data_cfg.image_token_len,
-            image_folder=data_cfg.image_folder,
-            video_folder=data_cfg.video_folder,
+            image_folder=data_cfg.get('image_folder', None),
+            video_folder=data_cfg.get('video_folder', None),
             image_aspect_ratio=data_cfg.image_aspect_ratio,
             use_im_start_end=getattr(model_cfg.mm_cfg, 'use_im_start_end', False),
             image_processor=image_processor,
             add_extra_token=add_extra_token,
             context_length=model_cfg.encoder_seq_length,
-            media_type=data_cfg.media_type,
-            num_frames=data_cfg.num_frames,
+            media_type=data_cfg.get('media_type', 'image'),
+            num_frames=data_cfg.get('num_frames', -1),
         ),
         data_cfg=dict(
-            splice_single_frame=data_cfg.splice_single_frame,
-            num_frames=data_cfg.num_frames,
-            sep_token_between_frames=data_cfg.sep_token_between_frames,
+            splice_single_frame=data_cfg.get('splice_single_frame', None),
+            num_frames=data_cfg.get('num_frames', -1),
+            sep_token_between_frames=data_cfg.get('sep_token_between_frames', False),
         ),
     )
 

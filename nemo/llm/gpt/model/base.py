@@ -9,6 +9,7 @@ from torch.optim import Optimizer
 
 from nemo import io
 from nemo.lightning import get_vocab_size
+from nemo.lightning.base import ModelConfig
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 
 if TYPE_CHECKING:
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class GPTConfig(TransformerConfig, io.IOMixin):
+class GPTConfig(TransformerConfig, ModelConfig):
     # From megatron.core.models.gpt.gpt_model.GPTModel
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True

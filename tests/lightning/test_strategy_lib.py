@@ -75,7 +75,7 @@ def test_init_model_parallel(mock_mpu, *args):
     )
 
 
-# TODO @chcui uncomment after DataConfig is merged
+# TODO @chcui uncomment after fabric API is merged
 # @patch('nemo.lightning._strategy_lib.DataLoader', return_value=MagicMock())
 # @patch('megatron.core.parallel_state')
 # def test_process_dataloader(mock_mpu, mock_dataloader) -> None:

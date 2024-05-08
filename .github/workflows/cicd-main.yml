@@ -6334,7 +6334,7 @@ jobs:
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
-  L2_TTS_Fast_dev_runs_1_RADTTS:
+  OPTIONAL_L2_TTS_Fast_dev_runs_1_RADTTS:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
     timeout-minutes: 10
@@ -6619,7 +6619,7 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Tacotron_2
       - L2_TTS_Fast_dev_runs_1_WaveGlow
       - L2_TTS_Fast_dev_runs_1_FastPitch
-      #- L2_TTS_Fast_dev_runs_1_RADTTS
+      #- OPTIONAL_L2_TTS_Fast_dev_runs_1_RADTTS
       - L2_TTS_Fast_dev_runs_1_Mixer-TTS
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests

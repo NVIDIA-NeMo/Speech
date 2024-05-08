@@ -188,9 +188,8 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
             logging.warning(f'always_save_nemo will slow down training for model_parallel > 1.')
         # since we are creating tarfile artifacts we need to update .nemo path
-        app_state.model_restore_path = os.path.abspath(
-            os.path.expanduser(os.path.join(self.dirpath, self.prefix + self.postfix))
-        )
+        self._backup_existing_nemo_ckpt(trainer)
+        app_state.model_restore_path = self._format_nemo_checkpoint_name()
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
             maybe_injected_best_model_path = inject_model_parallel_rank(self.best_model_path)
         else:
@@ -236,7 +235,10 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 should_save_last_checkpoint = True
             if should_save_last_checkpoint:
                 monitor_candidates = self._monitor_candidates(trainer)
-                super()._save_last_checkpoint(trainer, monitor_candidates)
+                if self.last_model_path == self.format_checkpoint_name(monitor_candidates, self.CHECKPOINT_NAME_LAST):
+                    logging.debug(f'Last checkpoint {self.last_model_path} already saved')
+                else:
+                    super()._save_last_checkpoint(trainer, monitor_candidates)
         # Call parent on_train_end() to save the -last checkpoint
         super().on_train_end(trainer, pl_module)
 
@@ -256,7 +258,36 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 trainer._checkpoint_connector.restore(self.best_model_path)
 
         if self.save_nemo_on_train_end:
-            pl_module.save_to(save_path=os.path.join(self.dirpath, self.prefix + self.postfix))
+            self._backup_existing_nemo_ckpt(trainer)
+            pl_module.save_to(save_path=self._format_nemo_checkpoint_name())
+
+    def _backup_existing_nemo_ckpt(self, trainer) -> str:
+        """ Search for an available name with version infix and rename existing checkpoint.
+
+        NOTE: this behavior is slightly different from regular checkpoints.
+        PTL creates new regular checkpoint with the first available name.
+        Here, for backward compatibility, we create .nemo checkpoint as before
+        and create a backup under the first available name.
+        """
+        base_path = self._format_nemo_checkpoint_name()
+        available_path = base_path
+        if self._enable_version_counter:
+            version_cnt = self.STARTING_VERSION
+            while self.file_exists(available_path, trainer, check_dist_ckpt=False):
+                available_path = self._format_nemo_checkpoint_name(version_cnt)
+                version_cnt += 1
+        if available_path != base_path:
+            if trainer.is_global_zero:
+                logging.info(f'{base_path} already exists, moving existing checkpoint to {available_path}')
+                shutil.move(base_path, available_path)
+            trainer.strategy.barrier()
+        return available_path
+
+    def _format_nemo_checkpoint_name(self, ver: Optional[int] = None) -> str:
+        version_infix = '' if ver is None else f'{self.CHECKPOINT_JOIN_CHAR}v{ver}'
+        return os.path.abspath(
+            os.path.expanduser(os.path.join(self.dirpath, self.prefix + version_infix + self.postfix))
+        )
 
     def _del_model_without_trainer(self, filepath: str) -> None:
 
@@ -366,6 +397,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                     marker_path.unlink()
         except:
             return
+
+    def file_exists(self, filepath: str, trainer: "pytorch_lightning.Trainer", check_dist_ckpt: bool = True) -> bool:
+        """Checks if a file or a file without a suffix (distributed checkpoint) exists."""
+        exists = self._fs.exists(filepath) or (check_dist_ckpt and self._fs.exists(ckpt_to_dir(filepath)))
+        return trainer.strategy.broadcast(exists)
 
     def _save_checkpoint(self, trainer: 'pytorch_lightning.Trainer', filepath: str) -> None:
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.

@@ -231,7 +231,7 @@ class TestEncDecHybridRNNTCTCModel:
 
         assert hybrid_asr_model.ctc_decoding is not None
         assert isinstance(hybrid_asr_model.ctc_decoding, CTCDecoding)
-        assert hybrid_asr_model.ctc_decoding.cfg.strategy == "greedy"
+        assert hybrid_asr_model.ctc_decoding.cfg.strategy == "greedy_batched"
         assert hybrid_asr_model.ctc_decoding.preserve_alignments is False
         assert hybrid_asr_model.ctc_decoding.compute_timestamps is False
 

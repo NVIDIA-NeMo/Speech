@@ -150,7 +150,7 @@ class TestEncDecCTCModel:
     def test_decoding_change(self, asr_model):
         assert asr_model.decoding is not None
         assert isinstance(asr_model.decoding, CTCDecoding)
-        assert asr_model.decoding.cfg.strategy == "greedy"
+        assert asr_model.decoding.cfg.strategy == "greedy_batched"
         assert asr_model.decoding.preserve_alignments is False
         assert asr_model.decoding.compute_timestamps is False
 

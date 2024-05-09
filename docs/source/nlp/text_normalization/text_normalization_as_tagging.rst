@@ -20,7 +20,7 @@ An example bash-script that runs inference and evaluation is provided here: `run
 Quick Start Guide
 -----------------
 
-To run the pretrained models see :ref:`inference_text_normalization`.
+To run the pretrained models see :ref:`inference_text_normalization_tagging`.
 
 Available models
 ^^^^^^^^^^^^^^^^
@@ -115,7 +115,7 @@ Example of a training command:
 
 
 
-.. _inference_text_normalization:
+.. _inference_text_normalization_tagging:
 
 Model Inference
 ---------------
@@ -162,4 +162,4 @@ References
 .. bibliography:: tn_itn_all.bib
     :style: plain
     :labelprefix: NLP-TEXTNORM-TAG
-    :keyprefix: nlp-textnorm-tag
+    :keyprefix: nlp-textnorm-tag-

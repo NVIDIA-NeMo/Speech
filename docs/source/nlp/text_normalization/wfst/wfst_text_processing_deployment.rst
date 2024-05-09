@@ -5,14 +5,13 @@ Deploy to Production with C++ backend
 
 .. warning::
 
-    *TN/ITN transitioned from [NVIDIA/NeMo](https://github.com/NVIDIA/NeMo) repository to a standalone [NVIDIA/NeMo-text-processing](https://github.com/NVIDIA/NeMo-text-processing) repository. All updates and discussions/issues should go to the new repository.*
-
+    TN/ITN transitioned from `NVIDIA/NeMo <https://github.com/NVIDIA/NeMo>`_ repository to a standalone `NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_ repository. All updates and discussions/issues should go to the new repository.
 
 NeMo-text-processing provides tools to deploy :doc:`TN and ITN <wfst_text_normalization>` for production :cite:`textprocessing-deployment-zhang2021nemo`.
 It uses `Sparrowhawk <https://github.com/google/sparrowhawk>`_ :cite:`textprocessing-deployment-sparrowhawk` -- an open-source C++ framework by Google.
 The grammars written with NeMo-text-processing can be exported into an `OpenFST <https://www.openfst.org/>`_ Archive File (FAR) and dropped into Sparrowhawk.
 
-    .. image:: images/deployment_pipeline.png
+    .. image:: ./images/deployment_pipeline.png
         :align: center
         :alt: Deployment pipeline
         :scale: 50%

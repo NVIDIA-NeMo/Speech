@@ -26,7 +26,7 @@ The term *duplex* refers to the fact that our system can be trained to do both T
 Quick Start Guide
 -----------------
 
-To run the pretrained models interactively see :ref:`inference_text_normalization`.
+To run the pretrained models interactively see :ref:`inference_text_normalization_nn`.
 
 Available models
 ^^^^^^^^^^^^^^^^
@@ -79,7 +79,7 @@ The purpose of the preprocessing scripts is to standardize the format in order t
 We also changed punctuation class `PUNCT` to be treated like a plain token ( label changed from `<sil> to ``<self>`), since we want to preserve punctuation even after normalization. 
 For text normalization it is crucial to avoid unrecoverable errors, which are linguistically coherent and not semantic preserving. 
 We noticed that due to data scarcity the model struggles verbalizing long numbers correctly, so we changed the ground truth for long numbers to digit by digit verbalization.
-We also ignore certain semiotic classes from neural verbalization, e.g. `ELECTRONIC` or `WHITELIST` -- `VERBATIM` and `LETTER` in the original dataset. Instead we label urls/email addresses and abbreviations as plain tokens, and handle it separately with WFST-based grammars, see :ref:`inference_text_normalization`.
+We also ignore certain semiotic classes from neural verbalization, e.g. `ELECTRONIC` or `WHITELIST` -- `VERBATIM` and `LETTER` in the original dataset. Instead we label urls/email addresses and abbreviations as plain tokens, and handle it separately with WFST-based grammars, see :ref:`inference_text_normalization_nn`.
 This simplifies the task for the model and significantly reduces unrecoverable errors.
 
 
@@ -199,7 +199,7 @@ To enable training with the tarred dataset, add the following arguments:
     data.train_ds.use_tarred_dataset=True \
     data.train_ds.tar_metadata_file=\PATH_TO\<TARRED_DATA_OUTPUT_DIR>\metadata.json
 
-.. _inference_text_normalization:
+.. _inference_text_normalization_nn:
 
 Model Inference
 ---------------
@@ -230,16 +230,16 @@ To run inference from a file adjust the previous command by
 
 This pipeline consists of 
     
-    * WFST-based grammars to verbalize hard classes, such as urls and abbreviations.
-    * regex pre-preprocssing of the input, e.g.
-        * adding space around `-` in alpha-numerical words, e.g. `2-car` -> `2 - car`
-        * converting unicode fraction e.g. ½ to 1/2
-        * normalizing greek letters and some special characters, e.g. `+` -> `plus`
-    * Moses :cite:`nlp-textnorm-koehnetal2007moses`. tokenization/preprocessing of the input
-    * inference with neural tagger and decoder
-    * Moses postprocessing/ detokenization
-    * WFST-based grammars to verbalize some `VERBATIM`
-    * punctuation correction for TTS (to match  the output punctuation to the input form)
+* WFST-based grammars to verbalize hard classes, such as urls and abbreviations.
+* regex pre-preprocssing of the input, e.g.
+    * adding space around `-` in alpha-numerical words, e.g. `2-car` -> `2 - car`
+    * converting unicode fraction e.g. ½ to 1/2
+    * normalizing greek letters and some special characters, e.g. `+` -> `plus`
+* Moses :cite:`nlp-textnorm-koehnetal2007moses` tokenization/preprocessing of the input
+* inference with neural tagger and decoder
+* Moses postprocessing/ detokenization
+* WFST-based grammars to verbalize some `VERBATIM`
+* punctuation correction for TTS (to match  the output punctuation to the input form)
 
 Model Architecture
 ------------------

@@ -475,7 +475,7 @@ class NLPDDPStrategy(DDPStrategy):
             logging.warning(
                 'Distributed checkpoints requires DistributedCheckpointIO plugin to be used. Setting up a default now.'
             )
-            self.checkpoint_io = DistributedCheckpointIO(self.lightning_module.cfg.get('dist_ckpt_format', 'zarr'))
+            self.checkpoint_io = DistributedCheckpointIO.from_config(self.lightning_module.cfg)
         if not has_sharded_state_dict and has_dist_ckpt_io:
             logging.warning(
                 'DistributedCheckpointIO configured but should not be used. Reverting back to TorchCheckpointIO'
@@ -1151,7 +1151,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                 tmp_model_weights_ckpt = os.path.join(tmpdir, self.model_weights_ckpt)
                 tmp_model_weights_dir = os.path.splitext(tmp_model_weights_ckpt)[0]
                 assert os.path.isdir(tmp_model_weights_dir), f'Expected {tmp_model_weights_dir} to be a directory.'
-                checkpoint_io = DistributedCheckpointIO(conf.get('dist_ckpt_format', 'zarr'))
+                checkpoint_io = DistributedCheckpointIO.from_config(conf)
                 checkpoint = checkpoint_io.load_checkpoint(tmp_model_weights_dir, sharded_state_dict=checkpoint)
                 instance.on_load_checkpoint(checkpoint)
                 if hasattr(instance, 'setup_transformer_engine_tp_groups'):

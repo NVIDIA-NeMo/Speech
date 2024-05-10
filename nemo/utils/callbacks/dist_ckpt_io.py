@@ -15,13 +15,24 @@ class DistributedCheckpointIO(CheckpointIO):
 
     Args:
         save_ckpt_format (str): Distributed checkpoint format to use for checkpoint saving.
+        load_directly_on_device (bool, optional): if True, loads the weights directly
+            on GPU. Has effect only for `zarr` based checkpoints (PyT Distributed
+            always loads on device). Defaults to True.
     """
 
-    def __init__(self, save_ckpt_format: str):
+    def __init__(self, save_ckpt_format: str, load_directly_on_device: bool = True):
         super().__init__()
         self.save_ckpt_format = save_ckpt_format
+        self.load_directly_on_device = load_directly_on_device
 
         self.save_sharded_strategy = self.determine_dist_ckpt_save_strategy()
+
+    @classmethod
+    def from_config(cls, model_cfg):
+        return cls(
+            save_ckpt_format=model_cfg.get('dist_ckpt_format', 'zarr'),
+            load_directly_on_device=model_cfg.get('dist_ckpt_load_on_device', True),
+        )
 
     def save_checkpoint(self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None) -> None:
         """ Saves a distributed checkpoint. Creates the checkpoint root directory if doesn't exist.
@@ -59,7 +70,7 @@ class DistributedCheckpointIO(CheckpointIO):
         if map_location is not None:
             raise ValueError('DistributedCheckpointIO doesnt handle map_location argument')
 
-        if self.save_ckpt_format == 'zarr':
+        if self.save_ckpt_format == 'zarr' and self.load_directly_on_device:
             sharded_strategy = tensorstore.TensorStoreLoadShardedStrategy(load_directly_on_device=True)
         else:
             sharded_strategy = None

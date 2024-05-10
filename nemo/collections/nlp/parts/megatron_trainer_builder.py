@@ -138,7 +138,7 @@ class MegatronTrainerBuilder:
             self.cfg.model.get('mcore_gpt', False) or self.cfg.model.get('mcore_bert', False)
         )
         if use_dist_ckpt:
-            plugins.append(DistributedCheckpointIO(self.cfg.model.get('dist_ckpt_format', 'zarr')))
+            plugins.append(DistributedCheckpointIO.from_config(self.cfg.model))
 
         return plugins
 

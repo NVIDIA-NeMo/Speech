@@ -27,8 +27,35 @@ extend_skip = ["setup.py", "docs/source/conf.py"]
 [tool.black]
 line_length = 119
 skip_string_normalization = true
-required_version = "19.10b0"  # recongized by future versions, disallows to reformat code with incompatible versions
-
+# major year version is stable, see details in
+# https://black.readthedocs.io/en/stable/the_black_code_style/index.html
+# `required_version` is necessary for consistency (other `black` versions will fail to reformat files)
+required_version = "24"
+target-version = ['py310', 'py311', 'py312']
+extend-exclude = '''
+# A regex preceded with ^/ will apply only to files and directories
+# in the root of the project.
+# include here only current collections, new collections should not be ignored
+# exclude the collection once it is reformatted (due to changes in PRs)
+(
+  ^\/docs\/
+  | ^\/external\/
+  | ^\/examples\/
+  | ^\/nemo\/collections\/asr\/
+  | ^\/nemo\/collections\/common\/
+  | ^\/nemo\/collections\/multimodal\/
+  | ^\/nemo\/collections\/nlp\/
+  | ^\/nemo\/collections\/tts\/
+  | ^\/nemo\/collections\/vision\/
+  | ^\/nemo\/core\/
+  | ^\/nemo\/utils\/
+  | ^\/scripts\/
+  | ^\/tests\/
+  | ^\/tools\/
+  | ^\/tutorials\/
+  | ^\/setup.py
+)
+'''
 
 [tool.pytest.ini_options]
 # durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.

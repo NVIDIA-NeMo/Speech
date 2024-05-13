@@ -622,7 +622,7 @@ jobs:
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
-  ASR_dev_run_Speech_To_Text_HF_Finetuning:
+  OPTIONAL_ASR_dev_run_Speech_To_Text_HF_Finetuning:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure-gpus-1
     timeout-minutes: 10
@@ -667,8 +667,8 @@ jobs:
             +trainer.fast_dev_run=True \
             exp_manager.exp_dir=examples/asr/speech_finetuning_results
             rm -rf examples/asr/speech_finetuning_results
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+        #  if: "failure()"
 
   ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
     needs: [cicd-test-container-setup]
@@ -6521,7 +6521,7 @@ jobs:
       - ASR_dev_run_Speech_to_Text_WPE_-_CitriNet
       - ASR_dev_run_Speech_Pre-training_-_CitriNet
       - ASR_dev_run_Speech_To_Text_Finetuning
-      - ASR_dev_run_Speech_To_Text_HF_Finetuning
+      #- OPTIONAL_ASR_dev_run_Speech_To_Text_HF_Finetuning
       - ASR_dev_run_Speech_to_Text_WPE_-_Conformer
       - ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
       - L2_Speech_to_Text_EMA

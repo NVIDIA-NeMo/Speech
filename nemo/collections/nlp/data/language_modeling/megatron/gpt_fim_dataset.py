@@ -17,6 +17,7 @@ from typing import Tuple
 import numpy as np
 
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+from nemo.utils import logging
 
 try:
     from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig
@@ -36,8 +37,8 @@ except (ImportError, ModuleNotFoundError) as e:
 class GPTFIMDatasetConfig(GPTDatasetConfig):
     """Configuration object for Megatron Core GPT FIM datasets
 
-        Attributes:
-            fim: fill in the middle parameters config
+    Attributes:
+        fim: fill in the middle parameters config
     """
 
     def __init__(self, fim, **kwargs):
@@ -79,6 +80,27 @@ class GPTFIMDataset(GPTDataset):
         super().__init__(indexed_dataset, dataset_path, indexed_indices, num_samples, index_split, config)
 
         self.indexed_dataset = indexed_dataset
+        self.np_rng = np.random.RandomState(seed=self.config.random_seed)
+        logging.info(f"Initialized FIM RNG with seed = {self.config.random_seed}")
+        # get FIM params
+        self.fim_rate = self.config.fim.get('rate', 0.5)
+        self.fim_spm_rate = self.config.fim.get('spm_rate', 0.5)
+        self.fragment_fim_rate = self.config.fim.get('fragment_rate', 0.5)
+        split_sample = self.config.fim.get('split_sample', None)
+        self.fim_split_sample = self.config.tokenizer.tokens_to_ids(split_sample) if split_sample else None
+        self.no_fim_prefix = self.config.fim.get('no_prefix', None)
+
+        # get extra tokens ids
+        fim_tokens = self.config.fim.extra_tokens
+        fim_tokens = [fim_tokens.prefix, fim_tokens.middle, fim_tokens.suffix, fim_tokens.pad, fim_tokens.eod]
+        fim_tokens_ids = self.config.tokenizer.tokens_to_ids(fim_tokens)
+        (
+            self.prefix_tok_id,
+            self.middle_tok_id,
+            self.suffix_tok_id,
+            self.pad_tok_id,
+            self.eod_tok_id,
+        ) = fim_tokens_ids
 
     def _query_document_sample_shuffle_indices(self, idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """Get the text (token ids) and document ids for a given index
@@ -126,29 +148,9 @@ class GPTFIMDataset(GPTDataset):
 
         sample = np.concatenate(sample_parts)
 
-        # get FIM params
-        self.fim_rate = self.config.fim.get('rate', 0.5)
-        self.fim_spm_rate = self.config.fim.get('spm_rate', 0.5)
-        self.fragment_fim_rate = self.config.fim.get('fragment_rate', 0.5)
-        split_sample = self.config.fim.get('split_sample', None)
-        self.fim_split_sample = self.config.tokenizer.tokens_to_ids(split_sample) if split_sample else None
-        self.no_fim_prefix = self.config.fim.get('no_prefix', None)
-
-        # get extra tokens ids
-        fim_tokens = self.config.fim.extra_tokens
-        fim_tokens = [fim_tokens.prefix, fim_tokens.middle, fim_tokens.suffix, fim_tokens.pad, fim_tokens.eod]
-        fim_tokens_ids = self.config.tokenizer.tokens_to_ids(fim_tokens)
-        (
-            self.prefix_tok_id,
-            self.middle_tok_id,
-            self.suffix_tok_id,
-            self.pad_tok_id,
-            self.eod_tok_id,
-        ) = fim_tokens_ids
-
         sample_len = sample.shape[0]
         segment_breaks = np.argwhere(sample == self.eod_tok_id)
-        np_rng = np.random.RandomState(seed=self.config.random_seed)
+        np_rng = self.np_rng
 
         if segment_breaks.shape != (0, 1):  # then there is an EOD token in this example
             curr_start_position = 0
@@ -245,7 +247,7 @@ class GPTFIMDataset(GPTDataset):
         no_fim_prefix=None,
     ):
         """
-        Take in a sample (np array w/ size (0,chunklength)) and perform a FIM transformation on it. 
+        Take in a sample (np array w/ size (0,chunklength)) and perform a FIM transformation on it.
         Maintain the same sample length (if transform creates a few extra tokens, drop them).
         """
         if np_rng.binomial(1, fim_rate):  # sample bernoulli dist

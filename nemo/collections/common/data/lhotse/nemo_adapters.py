@@ -49,7 +49,7 @@ class LazyNeMoIterator:
 
     .. caution:: We will perform some I/O (as much as required by soundfile.info) to discover the sampling rate
         of the audio file. If this is not acceptable, convert the manifest to Lhotse format which contains
-        sampling rate info. For pure metadata iteration purposes we also provide a ``missing_sampling_rate_ok`` flag that
+        sampling rate info. For pure metadata iteration purposes we also provide a ``metadata_only`` flag that
         will create only partially valid Lhotse objects (with metadata related to sampling rate / num samples missing).
 
     Example::
@@ -62,16 +62,23 @@ class LazyNeMoIterator:
         path: str | Path,
         text_field: str = "text",
         lang_field: str = "lang",
-        missing_sampling_rate_ok: bool = False,
+        metadata_only: bool = False,
+        shuffle_shards: bool = False,
+        shard_seed: int | Literal["randomized", "trng"] = "trng",
     ) -> None:
-        self.source = LazyJsonlIterator(path)
+        self.path = path
+        self.shuffle_shards = shuffle_shards
+        self.shard_seed = shard_seed
+        paths = expand_sharded_filepaths(path)
+        if len(paths) == 1:
+            self.source = LazyJsonlIterator(paths[0])
+        else:
+            self.source = LazyIteratorChain(
+                *(LazyJsonlIterator(p) for p in paths), shuffle_iters=self.shuffle_shards, seed=self.shard_seed
+            )
         self.text_field = text_field
         self.lang_field = lang_field
-        self.missing_sampling_rate_ok = missing_sampling_rate_ok
-
-    @property
-    def path(self) -> str | Path:
-        return self.source.path
+        self.metadata_only = metadata_only
 
     def __iter__(self) -> Generator[Cut, None, None]:
         for data in self.source:
@@ -104,7 +111,12 @@ class LazyNeMoIterator:
     def __add__(self, other):
         return LazyIteratorChain(self, other)
 
-    def _create_recording(self, audio_path: str, duration: float, sampling_rate: int | None = None,) -> Recording:
+    def _create_recording(
+        self,
+        audio_path: str,
+        duration: float,
+        sampling_rate: int | None = None,
+    ) -> Recording:
         if sampling_rate is not None:
             # TODO(pzelasko): It will only work with single-channel audio in the current shape.
             return Recording(
@@ -115,7 +127,7 @@ class LazyNeMoIterator:
                 duration=duration,
                 channel_ids=[0],
             )
-        elif self.missing_sampling_rate_ok:
+        elif self.metadata_only:
             return Recording(
                 id=audio_path,
                 sources=[AudioSource(type="file", channels=[0], source=audio_path)],

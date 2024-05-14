@@ -95,7 +95,9 @@ class LhotseDataLoadingConfig:
 
     # 4. Optional Lhotse data augmentation.
     #   a. On-the-fly noise/audio mixing.
-    noise_path: Any | None = None  # str | dict where dict can have any of keys: manifest_filepath, tarred_audio_filepaths, cuts_path, shar_path
+    noise_path: Any | None = (
+        None  # str | dict where dict can have any of keys: manifest_filepath, tarred_audio_filepaths, cuts_path, shar_path
+    )
     noise_snr: tuple[float, float] = (10.0, 20.0)
     noise_mix_prob: float = 0.5
     #   b. On-the-fly 3-way speed perturbation.
@@ -114,7 +116,9 @@ class LhotseDataLoadingConfig:
     cut_into_windows_duration: Optional[float] = None  # set this to enable
     cut_into_windows_hop: Optional[float] = None
     #       III) common options
-    keep_excessive_supervisions: bool = True  # when a cut is truncated in the middle of a supervision, should we keep them.
+    keep_excessive_supervisions: bool = (
+        True  # when a cut is truncated in the middle of a supervision, should we keep them.
+    )
     #   e. RIR augmentation (synthetic RIR if rir_path is None)
     #   at the moment supports only Lhotse recording manifests, e.g. https://github.com/lhotse-speech/lhotse/blob/master/lhotse/recipes/rir_noise.py
     rir_enabled: bool = False
@@ -126,11 +130,15 @@ class LhotseDataLoadingConfig:
     lang_field: str = "lang"  # key to read the language tag from
     # Enables iteration of NeMo non-tarred manifests that don't have a "sampling_rate" key without performing any I/O.
     # Note that this will not allow actual dataloading; it's only for manifest iteration as Lhotse objects.
-    missing_sampling_rate_ok: bool = False
+    metadata_only: bool = False
 
 
 def get_lhotse_dataloader_from_config(
-    config: DictConfig, global_rank: int, world_size: int, dataset: torch.utils.data.Dataset, tokenizer=None,
+    config: DictConfig,
+    global_rank: int,
+    world_size: int,
+    dataset: torch.utils.data.Dataset,
+    tokenizer=None,
 ) -> torch.utils.data.DataLoader:
     """
     Set up a Lhotse training dataloder.
@@ -205,7 +213,11 @@ def get_lhotse_dataloader_from_config(
     #    and applying it here (before sampler/dataset) ensures optimal
     #    bucket allocation.
     if config.perturb_speed:
-        cuts = CutSet.mux(cuts, cuts.perturb_speed(0.9), cuts.perturb_speed(1.1),)
+        cuts = CutSet.mux(
+            cuts,
+            cuts.perturb_speed(0.9),
+            cuts.perturb_speed(1.1),
+        )
 
     # 2.d: truncation/slicing
     if config.truncate_duration is not None:
@@ -249,6 +261,7 @@ def get_lhotse_dataloader_from_config(
             f"Creating a Lhotse DynamicBucketingSampler "
             f"(max_batch_duration={config.batch_duration} max_batch_size={config.batch_size})"
         )
+        # Determine the bucket duration bins
         sampler = DynamicBucketingSampler(
             cuts,
             constraint=constraint,
@@ -257,7 +270,7 @@ def get_lhotse_dataloader_from_config(
             shuffle_buffer_size=config.shuffle_buffer_size,
             seed=config.shard_seed,
             num_buckets=config.num_buckets,
-            duration_bins=config.bucket_duration_bins,
+            duration_bins=determine_bucket_duration_bins(config),
             num_cuts_for_bins_estimate=config.num_cuts_for_bins_estimate,
             buffer_size=config.bucket_buffer_size,
             rank=0 if is_tarred else global_rank,
@@ -291,7 +304,10 @@ def get_lhotse_dataloader_from_config(
         # object with texts joined by a whitespace so that "regular" dataset classes don't
         # have to add a special support for multi-supervision cuts.
         sampler = sampler.map(
-            CutConcatenate(gap=config.concatenate_gap_seconds, duration_factor=config.concatenate_duration_factor,)
+            CutConcatenate(
+                gap=config.concatenate_gap_seconds,
+                duration_factor=config.concatenate_duration_factor,
+            )
         )
         if config.db_norm is not None:
             sampler = sampler.map(partial(_normalize_loudness, db_norm=config.db_norm))
@@ -326,10 +342,36 @@ def get_lhotse_dataloader_from_config(
         # the meta-data to Dataset, which performs the actual I/O inside its __getitem__ method.
         dloader_kwargs = dict(dataset=dataset, sampler=sampler)
     dloader = torch.utils.data.DataLoader(
-        **dloader_kwargs, batch_size=None, num_workers=config.num_workers, pin_memory=config.pin_memory,
+        **dloader_kwargs,
+        batch_size=None,
+        num_workers=config.num_workers,
+        pin_memory=config.pin_memory,
     )
 
     return dloader
+
+
+def determine_bucket_duration_bins(config):
+    if config.bucket_duration_bins is not None:
+        # Bucket duration bins are provided: just use them.
+        return config.bucket_duration_bins
+    # Bucket duration bins are not set.
+    if config.use_multimodal_sampling:
+        # For multimodal sampling it's currently impossible to define a linspace over durations
+        # because the buckets are counted in the number of tokens.
+        # The bins will be auto-estimated by lhotse at the cost of a slight lag in the training start.
+        return None
+    elif config.max_duration is not None and config.max_duration < float("inf"):
+        # If max duration is provided, we can use that to compute uniformly distant bucket bins.
+        # This is not optimal but should be close enough for users who didn't want to estimate these up-front.
+        begin = config.min_duration if config.min_duration is not None and config.min_duration > 0 else 0.0
+        end = config.max_duration
+        return np.linspace(begin, end, config.num_buckets + 1)[1:-1].tolist()
+    else:
+        # If we don't know max_duration, we can't guess a reasonable estimate of the upper bound of
+        # durations.
+        # The bins will be auto-estimated by lhotse at the cost of a slight lag in the training start.
+        return None
 
 
 def make_structured_with_schema_warnings(config: DictConfig) -> DictConfig:
@@ -377,7 +419,9 @@ class MultimodalSamplingConstraint(SamplingConstraint):
 
     def __post_init__(self):
         self._internal = TokenConstraint(
-            max_tokens=self.batch_tokens, max_examples=self.batch_size, quadratic_length=self.quadratic_factor,
+            max_tokens=self.batch_tokens,
+            max_examples=self.batch_size,
+            quadratic_length=self.quadratic_factor,
         )
 
     def add(self, example: Any) -> None:

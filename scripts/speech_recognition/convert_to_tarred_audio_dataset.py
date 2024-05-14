@@ -412,7 +412,7 @@ class ASRTarredDatasetBuilder:
         from lhotse.dataset.sampling.dynamic_bucketing import estimate_duration_buckets
         from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator
 
-        cuts = CutSet(LazyNeMoIterator(manifest_path, missing_sampling_rate_ok=True))
+        cuts = CutSet(LazyNeMoIterator(manifest_path, metadata_only=True))
         bins = estimate_duration_buckets(cuts, num_buckets=num_buckets)
         print(
             f"Note: we estimated the optimal bucketing duration bins for {num_buckets} buckets. "

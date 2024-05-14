@@ -127,7 +127,7 @@ def read_dataset_config(config) -> tuple[CutSet, bool]:
         "shard_seed": config.shard_seed,
         "text_field": config.text_field,
         "lang_field": config.lang_field,
-        "missing_sampling_rate_ok": config.missing_sampling_rate_ok,
+        "metadata_only": config.metadata_only,
         "max_open_streams": config.max_open_streams,
     }
     input_cfg = config.input_cfg
@@ -164,7 +164,10 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
         is_tarred = True
         cuts = read_txt_pair_paths(grp_cfg)
     elif grp_cfg.type == "group":
-        cuts, is_tarred = parse_and_combine_datasets(grp_cfg.input_cfg, propagate_attrs=propagate_attrs,)
+        cuts, is_tarred = parse_and_combine_datasets(
+            grp_cfg.input_cfg,
+            propagate_attrs=propagate_attrs,
+        )
     else:
         raise ValueError(f"Unrecognized group: {grp_cfg.type}")
     # Attach extra tags to every utterance dynamically, if provided.
@@ -176,7 +179,10 @@ def parse_group(grp_cfg: DictConfig, propagate_attrs: dict) -> [CutSet, bool]:
 def read_txt_paths(config: DictConfig) -> CutSet:
     return CutSet(
         LhotseTextAdapter(
-            paths=config.paths, language=config.language, shuffle_shards=config.shuffle, shard_seed=config.shard_seed,
+            paths=config.paths,
+            language=config.language,
+            shuffle_shards=config.shuffle,
+            shard_seed=config.shard_seed,
         )
     ).repeat()
 
@@ -238,6 +244,7 @@ def parse_and_combine_datasets(
             weights=weights if weights else None,
             max_open_streams=propagate_attrs["max_open_streams"],
             seed=propagate_attrs["shard_seed"],
+            metadata_only=propagate_attrs["metadata_only"],
         )
     else:
         (cuts,) = cuts
@@ -261,11 +268,16 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
         # - integer means we'll set a specific seed in every worker, and data would be duplicated across them.
         #   This is mostly useful for unit testing or debugging.
         shard_seed = config.shard_seed
+        metadata_only = config.metadata_only
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
             logging.info(f"Initializing Lhotse Shar CutSet (tarred) from a single data source: '{config.shar_path}'")
-            cuts = CutSet.from_shar(in_dir=config.shar_path, shuffle_shards=True, seed=shard_seed).repeat()
+            cuts = CutSet.from_shar(
+                **_resolve_shar_inputs(config.shar_path, metadata_only), shuffle_shards=True, seed=shard_seed
+            )
+            if not metadata_only:
+                cuts = cuts.repeat()
         else:
             # Multiple datasets in Lhotse Shar format: we will dynamically multiplex them
             # with probability approximately proportional to their size
@@ -278,7 +290,9 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
             for item in config.shar_path:
                 if isinstance(item, (str, Path)):
                     path = item
-                    cs = CutSet.from_shar(in_dir=path, shuffle_shards=True, seed=shard_seed)
+                    cs = CutSet.from_shar(
+                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                    )
                     weight = len(cs)
                 else:
                     assert isinstance(item, Sequence) and len(item) == 2 and isinstance(item[1], (int, float)), (
@@ -288,16 +302,31 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
                         f"We got: '{item}'"
                     )
                     path, weight = item
-                    cs = CutSet.from_shar(in_dir=path, shuffle_shards=True, seed=shard_seed)
+                    cs = CutSet.from_shar(
+                        **_resolve_shar_inputs(path, metadata_only), shuffle_shards=True, seed=shard_seed
+                    )
                 logging.info(f"- {path=} {weight=}")
-                cutsets.append(cs.repeat())
+                cutsets.append(cs)
                 weights.append(weight)
-            cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams, seed=config.shard_seed)
+            cuts = mux(
+                *cutsets,
+                weights=weights,
+                max_open_streams=config.max_open_streams,
+                seed=config.shard_seed,
+                metadata_only=metadata_only,
+            )
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).
         path = config.cuts_path
         cuts = CutSet.from_file(path).map(partial(resolve_relative_paths, manifest_path=path))
     return cuts
+
+
+def _resolve_shar_inputs(path: str | Path, only_metadata: bool) -> dict:
+    if only_metadata:
+        return dict(fields={"cuts": sorted(Path(path).glob("cuts.*"))})
+    else:
+        return dict(in_dir=path)
 
 
 def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:
@@ -352,20 +381,24 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
     common_kwargs = {
         "text_field": config.text_field,
         "lang_field": config.lang_field,
+        "shuffle_shards": config.shuffle,
+        "shard_seed": config.shard_seed,
     }
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
-    # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse.
-    # This is useful for utility scripts that iterate metadata and estimate optimal batching settings.
-    notar_kwargs = {"missing_sampling_rate_ok": config.missing_sampling_rate_ok}
+    # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
+    # so lhotse has to look up the headers of audio files to fill it on-the-fly.
+    # (this only has an impact on non-tarred data; tarred data is read into memory anyway).
+    # This is useful for utility scripts that iterate metadata and estimate optimal batching settings
+    # and other data statistics.
+    notar_kwargs = {"metadata_only": config.metadata_only}
+    metadata_only = config.metadata_only
     if isinstance(config.manifest_filepath, (str, Path)):
         logging.info(f"Initializing Lhotse CutSet from a single NeMo manifest (tarred): '{config.manifest_filepath}'")
-        if is_tarred:
+        if is_tarred and not metadata_only:
             cuts = CutSet(
                 LazyNeMoTarredIterator(
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
-                    shuffle_shards=config.shuffle,
-                    shard_seed=config.shard_seed,
                     **common_kwargs,
                 )
             ).repeat()
@@ -393,12 +426,10 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
         for manifest_info, (tar_path,) in zip(config.manifest_filepath, tar_paths):
             # First, convert manifest_path[+tar_path] to an iterator.
             manifest_path = manifest_info[0]
-            if is_tarred:
+            if is_tarred and not metadata_only:
                 nemo_iter = LazyNeMoTarredIterator(
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
-                    shuffle_shards=config.shuffle,
-                    shard_seed=config.shard_seed,
                     **common_kwargs,
                 )
             else:
@@ -431,12 +462,22 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
                 cutsets.append(CutSet(nemo_iter))
                 weights.append(weight)
         # Finally, we multiplex the dataset streams to mix the data.
-        cuts = mux(*cutsets, weights=weights, max_open_streams=config.max_open_streams, seed=config.shard_seed)
+        cuts = mux(
+            *cutsets,
+            weights=weights,
+            max_open_streams=config.max_open_streams,
+            seed=config.shard_seed,
+            metadata_only=metadata_only,
+        )
     return cuts
 
 
 def mux(
-    *cutsets: CutSet, weights: list[int | float], max_open_streams: int | None = None, seed: str | int = "trng"
+    *cutsets: CutSet,
+    weights: list[int | float],
+    max_open_streams: int | None = None,
+    seed: str | int = "trng",
+    metadata_only: bool = False,
 ) -> CutSet:
     """
     Helper function to call the right multiplexing method flavour in lhotse.
@@ -444,9 +485,12 @@ def mux(
     it will select a more appropriate multiplexing strategy.
     """
     if max_open_streams is not None:
+        assert not metadata_only, "max_open_streams and metadata_only options are not compatible"
         cuts = CutSet.infinite_mux(*cutsets, weights=weights, seed=seed, max_open_streams=max_open_streams)
     else:
-        cuts = CutSet.mux(*[cs.repeat() for cs in cutsets], weights=weights, seed=seed)
+        if not metadata_only:
+            cutsets = [cs.repeat() for cs in cutsets]
+        cuts = CutSet.mux(*cutsets, weights=weights, seed=seed)
     return cuts
 
 

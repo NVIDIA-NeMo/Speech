@@ -43,7 +43,14 @@ import math
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-from apex.contrib.group_norm import GroupNorm
+
+try:
+    from apex.contrib.group_norm import GroupNorm
+
+    OPT_GROUP_NORM = True
+except Exception:
+    print('Fused optimized group norm has not been installed.')
+    OPT_GROUP_NORM = False
 
 
 def conv_nd(dims, *args, **kwargs):

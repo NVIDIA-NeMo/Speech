@@ -17,11 +17,18 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from apex.contrib.group_norm import GroupNorm
 from einops import rearrange
 
 from nemo.collections.multimodal.modules.stable_diffusion.attention import LinearAttention
 from nemo.collections.multimodal.parts.stable_diffusion.utils import instantiate_from_config
+
+try:
+    from apex.contrib.group_norm import GroupNorm
+
+    OPT_GROUP_NORM = True
+except Exception:
+    print('Fused optimized group norm has not been installed.')
+    OPT_GROUP_NORM = False
 
 
 def get_timestep_embedding(timesteps, embedding_dim):

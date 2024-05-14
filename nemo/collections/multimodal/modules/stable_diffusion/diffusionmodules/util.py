@@ -29,10 +29,17 @@ from inspect import isfunction
 import numpy as np
 import torch
 import torch.nn as nn
-from apex.contrib.group_norm import GroupNorm
 from einops import repeat
 from torch._dynamo import disable
 from torch.cuda.amp import custom_bwd, custom_fwd
+
+try:
+    from apex.contrib.group_norm import GroupNorm
+
+    OPT_GROUP_NORM = True
+except Exception:
+    print('Fused optimized group norm has not been installed.')
+    OPT_GROUP_NORM = False
 
 
 def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):

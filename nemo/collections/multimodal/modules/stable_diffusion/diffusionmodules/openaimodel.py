@@ -26,10 +26,6 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
-# FP8 related import
-import transformer_engine
-from apex.contrib.group_norm import GroupNorm
-
 from nemo.collections.multimodal.modules.stable_diffusion.attention import SpatialTransformer
 from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util import (
     avg_pool_nd,
@@ -44,6 +40,23 @@ from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util 
     zero_module,
 )
 from nemo.utils import logging
+
+try:
+    # FP8 related import
+    import transformer_engine
+
+    HAVE_TE = True
+
+except (ImportError, ModuleNotFoundError):
+    HAVE_TE = False
+
+try:
+    from apex.contrib.group_norm import GroupNorm
+
+    OPT_GROUP_NORM = True
+except Exception:
+    print('Fused optimized group norm has not been installed.')
+    OPT_GROUP_NORM = False
 
 
 def convert_module_to_dtype(module, dtype, enable_norm_layers=False):

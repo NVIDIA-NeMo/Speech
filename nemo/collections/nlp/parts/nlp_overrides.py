@@ -450,8 +450,9 @@ class NLPDDPStrategy(DDPStrategy):
 
     def remove_checkpoint(self, filepath: Union[str, Path]) -> None:
         # check if filepath is a distributed checkpoint
-        if self.use_distributed_checkpointing and self.is_global_zero:
-            self.checkpoint_io.remove_checkpoint(ckpt_to_dir(filepath))
+        if self.use_distributed_checkpointing:
+            if self.is_global_zero:
+                self.checkpoint_io.remove_checkpoint(ckpt_to_dir(filepath))
 
         # legacy checkpoint logic, does not use megatron core
         else:

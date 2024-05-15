@@ -69,10 +69,28 @@ class TestASRModulesBasicTests:
             assert diff <= 1e-3
 
     @pytest.mark.unit
-    def test_SpectrogramAugmentationr(self):
+    def test_SpectrogramAugmentationr_legacy(self):
         # Make sure constructor works
         instance1 = modules.SpectrogramAugmentation(
-            freq_masks=10, time_masks=3, rect_masks=3, use_numba_spec_augment=False
+            freq_masks=10, time_masks=3, rect_masks=3, use_numba_spec_augment=False, use_vectorized_spec_augment=False
+        )
+        assert isinstance(instance1, modules.SpectrogramAugmentation)
+
+        # Make sure forward doesn't throw with expected input
+        instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
+        input_signal = torch.randn(size=(4, 512))
+        length = torch.randint(low=161, high=500, size=[4])
+        res0 = instance0(input_signal=input_signal, length=length)
+        res = instance1(input_spec=res0[0], length=length)
+
+        assert res.shape == res0[0].shape
+
+    @pytest.mark.unit
+    @pytest.mark.run_only_on('GPU')
+    def test_SpectrogramAugmentationr_vectorized(self):
+        # Make sure constructor works
+        instance1 = modules.SpectrogramAugmentation(
+            freq_masks=10, time_masks=3, rect_masks=3, use_numba_spec_augment=False, use_vectorized_spec_augment=True
         )
         assert isinstance(instance1, modules.SpectrogramAugmentation)
 
@@ -97,7 +115,7 @@ class TestASRModulesBasicTests:
 
         # Make sure constructor works
         instance1 = modules.SpectrogramAugmentation(
-            freq_masks=10, time_masks=3, rect_masks=3, use_numba_spec_augment=True
+            freq_masks=10, time_masks=3, rect_masks=3, use_numba_spec_augment=True, use_vectorized_spec_augment=False
         )
         assert isinstance(instance1, modules.SpectrogramAugmentation)
 
@@ -120,7 +138,8 @@ class TestASRModulesBasicTests:
     def test_SpectrogramAugmentationr_config(self):
         # Test that dataclass matches signature of module
         result = config_utils.assert_dataclass_signature_match(
-            modules.SpectrogramAugmentation, modules.audio_preprocessing.SpectrogramAugmentationConfig,
+            modules.SpectrogramAugmentation,
+            modules.audio_preprocessing.SpectrogramAugmentationConfig,
         )
         signatures_match, cls_subset, dataclass_subset = result
 
@@ -178,7 +197,8 @@ class TestASRModulesBasicTests:
     def test_MaskedPatchAugmentation_config(self):
         # Test that dataclass matches signature of module
         result = config_utils.assert_dataclass_signature_match(
-            modules.MaskedPatchAugmentation, modules.audio_preprocessing.MaskedPatchAugmentationConfig,
+            modules.MaskedPatchAugmentation,
+            modules.audio_preprocessing.MaskedPatchAugmentationConfig,
         )
         signatures_match, cls_subset, dataclass_subset = result
 
@@ -195,7 +215,10 @@ class TestASRModulesBasicTests:
         pred_config = OmegaConf.create(
             {
                 '_target_': 'nemo.collections.asr.modules.RNNTDecoder',
-                'prednet': {'pred_hidden': 32, 'pred_rnn_layers': 1,},
+                'prednet': {
+                    'pred_hidden': 32,
+                    'pred_rnn_layers': 1,
+                },
                 'vocab_size': vocab_size,
                 'blank_as_pad': True,
             }

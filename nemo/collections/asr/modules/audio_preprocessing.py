@@ -66,8 +66,8 @@ __all__ = [
 
 class AudioPreprocessor(NeuralModule, ABC):
     """
-        An interface for Neural Modules that performs audio pre-processing,
-        transforming the wav files to features.
+    An interface for Neural Modules that performs audio pre-processing,
+    transforming the wav files to features.
     """
 
     def __init__(self, win_length, hop_length):
@@ -101,72 +101,72 @@ class AudioPreprocessor(NeuralModule, ABC):
 class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
     """Featurizer module that converts wavs to mel spectrograms.
 
-        Args:
-            sample_rate (int): Sample rate of the input audio data.
-                Defaults to 16000
-            window_size (float): Size of window for fft in seconds
-                Defaults to 0.02
-            window_stride (float): Stride of window for fft in seconds
-                Defaults to 0.01
-            n_window_size (int): Size of window for fft in samples
-                Defaults to None. Use one of window_size or n_window_size.
-            n_window_stride (int): Stride of window for fft in samples
-                Defaults to None. Use one of window_stride or n_window_stride.
-            window (str): Windowing function for fft. can be one of ['hann',
-                'hamming', 'blackman', 'bartlett']
-                Defaults to "hann"
-            normalize (str): Can be one of ['per_feature', 'all_features']; all
-                other options disable feature normalization. 'all_features'
-                normalizes the entire spectrogram to be mean 0 with std 1.
-                'pre_features' normalizes per channel / freq instead.
-                Defaults to "per_feature"
-            n_fft (int): Length of FT window. If None, it uses the smallest power
-                of 2 that is larger than n_window_size.
-                Defaults to None
-            preemph (float): Amount of pre emphasis to add to audio. Can be
-                disabled by passing None.
-                Defaults to 0.97
-            features (int): Number of mel spectrogram freq bins to output.
-                Defaults to 64
-            lowfreq (int): Lower bound on mel basis in Hz.
-                Defaults to 0
-            highfreq  (int): Lower bound on mel basis in Hz.
-                Defaults to None
-            log (bool): Log features.
-                Defaults to True
-            log_zero_guard_type(str): Need to avoid taking the log of zero. There
-                are two options: "add" or "clamp".
-                Defaults to "add".
-            log_zero_guard_value(float, or str): Add or clamp requires the number
-                to add with or clamp to. log_zero_guard_value can either be a float
-                or "tiny" or "eps". torch.finfo is used if "tiny" or "eps" is
-                passed.
-                Defaults to 2**-24.
-            dither (float): Amount of white-noise dithering.
-                Defaults to 1e-5
-            pad_to (int): Ensures that the output size of the time dimension is
-                a multiple of pad_to.
-                Defaults to 16
-            frame_splicing (int): Defaults to 1
-            exact_pad (bool): If True, sets stft center to False and adds padding, such that num_frames = audio_length
-                // hop_length. Defaults to False.
-            pad_value (float): The value that shorter mels are padded with.
-                Defaults to 0
-            mag_power (float): The power that the linear spectrogram is raised to
-                prior to multiplication with mel basis.
-                Defaults to 2 for a power spec
-            rng : Random number generator
-            nb_augmentation_prob (float) : Probability with which narrowband augmentation would be applied to
-                samples in the batch.
-                Defaults to 0.0
-            nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
-                Defaults to 4000
-            use_torchaudio: Whether to use the `torchaudio` implementation.
-            mel_norm: Normalization used for mel filterbank weights.
-                Defaults to 'slaney' (area normalization)
-            stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
-            stft_conv: Deprecated argument, kept for compatibility with older checkpoints.
-        """
+    Args:
+        sample_rate (int): Sample rate of the input audio data.
+            Defaults to 16000
+        window_size (float): Size of window for fft in seconds
+            Defaults to 0.02
+        window_stride (float): Stride of window for fft in seconds
+            Defaults to 0.01
+        n_window_size (int): Size of window for fft in samples
+            Defaults to None. Use one of window_size or n_window_size.
+        n_window_stride (int): Stride of window for fft in samples
+            Defaults to None. Use one of window_stride or n_window_stride.
+        window (str): Windowing function for fft. can be one of ['hann',
+            'hamming', 'blackman', 'bartlett']
+            Defaults to "hann"
+        normalize (str): Can be one of ['per_feature', 'all_features']; all
+            other options disable feature normalization. 'all_features'
+            normalizes the entire spectrogram to be mean 0 with std 1.
+            'pre_features' normalizes per channel / freq instead.
+            Defaults to "per_feature"
+        n_fft (int): Length of FT window. If None, it uses the smallest power
+            of 2 that is larger than n_window_size.
+            Defaults to None
+        preemph (float): Amount of pre emphasis to add to audio. Can be
+            disabled by passing None.
+            Defaults to 0.97
+        features (int): Number of mel spectrogram freq bins to output.
+            Defaults to 64
+        lowfreq (int): Lower bound on mel basis in Hz.
+            Defaults to 0
+        highfreq  (int): Lower bound on mel basis in Hz.
+            Defaults to None
+        log (bool): Log features.
+            Defaults to True
+        log_zero_guard_type(str): Need to avoid taking the log of zero. There
+            are two options: "add" or "clamp".
+            Defaults to "add".
+        log_zero_guard_value(float, or str): Add or clamp requires the number
+            to add with or clamp to. log_zero_guard_value can either be a float
+            or "tiny" or "eps". torch.finfo is used if "tiny" or "eps" is
+            passed.
+            Defaults to 2**-24.
+        dither (float): Amount of white-noise dithering.
+            Defaults to 1e-5
+        pad_to (int): Ensures that the output size of the time dimension is
+            a multiple of pad_to.
+            Defaults to 16
+        frame_splicing (int): Defaults to 1
+        exact_pad (bool): If True, sets stft center to False and adds padding, such that num_frames = audio_length
+            // hop_length. Defaults to False.
+        pad_value (float): The value that shorter mels are padded with.
+            Defaults to 0
+        mag_power (float): The power that the linear spectrogram is raised to
+            prior to multiplication with mel basis.
+            Defaults to 2 for a power spec
+        rng : Random number generator
+        nb_augmentation_prob (float) : Probability with which narrowband augmentation would be applied to
+            samples in the batch.
+            Defaults to 0.0
+        nb_max_freq (int) : Frequency above which all frequencies will be masked for narrowband augmentation.
+            Defaults to 4000
+        use_torchaudio: Whether to use the `torchaudio` implementation.
+        mel_norm: Normalization used for mel filterbank weights.
+            Defaults to 'slaney' (area normalization)
+        stft_exact_pad: Deprecated argument, kept for compatibility with older checkpoints.
+        stft_conv: Deprecated argument, kept for compatibility with older checkpoints.
+    """
 
     def save_to(self, save_path: str):
         pass
@@ -177,8 +177,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {
             "input_signal": NeuralType(('B', 'T'), AudioSignal(freq=self._sample_rate)),
             "length": NeuralType(
@@ -218,7 +217,7 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         highfreq=None,
         log=True,
         log_zero_guard_type="add",
-        log_zero_guard_value=2 ** -24,
+        log_zero_guard_value=2**-24,
         dither=1e-5,
         pad_to=16,
         frame_splicing=1,
@@ -335,8 +334,7 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {
             "input_signal": NeuralType(('B', 'T'), AudioSignal(freq=self._sample_rate)),
             "length": NeuralType(tuple('B'), LengthsType()),
@@ -344,8 +342,7 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "processed_signal": NeuralType(('B', 'D', 'T'), MFCCSpectrogramType()),
             "processed_length": NeuralType(tuple('B'), LengthsType()),
@@ -463,12 +460,14 @@ class SpectrogramAugmentation(NeuralModule):
         rect_time (int): maximum size of cut rectangles along the time
             dimension
             Defaults to 25.
+        use_numba_spec_augment: use numba code for Spectrogram augmentation
+        use_vectorized_spec_augment: use vectorized code for Spectrogram augmentation
+
     """
 
     @property
     def input_types(self):
-        """Returns definitions of module input types
-        """
+        """Returns definitions of module input types"""
         return {
             "input_spec": NeuralType(('B', 'D', 'T'), SpectrogramType()),
             "length": NeuralType(tuple('B'), LengthsType()),
@@ -476,8 +475,7 @@ class SpectrogramAugmentation(NeuralModule):
 
     @property
     def output_types(self):
-        """Returns definitions of module output types
-        """
+        """Returns definitions of module output types"""
         return {"augmented_spec": NeuralType(('B', 'D', 'T'), SpectrogramType())}
 
     def __init__(
@@ -491,12 +489,18 @@ class SpectrogramAugmentation(NeuralModule):
         rect_freq=20,
         rng=None,
         mask_value=0.0,
-        use_numba_spec_augment: bool = True,
+        use_vectorized_spec_augment: bool = True,
+        use_numba_spec_augment: bool = False,
     ):
         super().__init__()
 
         if rect_masks > 0:
-            self.spec_cutout = SpecCutout(rect_masks=rect_masks, rect_time=rect_time, rect_freq=rect_freq, rng=rng,)
+            self.spec_cutout = SpecCutout(
+                rect_masks=rect_masks,
+                rect_time=rect_time,
+                rect_freq=rect_freq,
+                rng=rng,
+            )
             # self.spec_cutout.to(self._device)
         else:
             self.spec_cutout = lambda input_spec: input_spec
@@ -508,6 +512,7 @@ class SpectrogramAugmentation(NeuralModule):
                 time_width=time_width,
                 rng=rng,
                 mask_value=mask_value,
+                use_vectorized_code=use_vectorized_spec_augment,
             )
         else:
             self.spec_augment = lambda input_spec, length: input_spec
@@ -541,26 +546,25 @@ class SpectrogramAugmentation(NeuralModule):
 
 class MaskedPatchAugmentation(NeuralModule):
     """
-        Zeroes out fixed size time patches of the spectrogram.
-        All samples in batch are guaranteed to have the same amount of masked time steps.
-        Optionally also performs frequency masking in the same way as SpecAugment.
-        Args:
-            patch_size (int): up to how many time steps does one patch consist of.
-                Defaults to 48.
-            mask_patches (float): how many patches should be masked in each sample.
-                if >= 1., interpreted as number of patches (after converting to int)
-                if <1.,   interpreted as fraction of total tokens to be masked (number of patches is rounded up)
-                Defaults to 10.
-            freq_masks (int): how many frequency segments should be cut.
-                Defaults to 0.
-            freq_width (int): maximum number of frequencies to be cut in a segment.
-                Defaults to 0.
+    Zeroes out fixed size time patches of the spectrogram.
+    All samples in batch are guaranteed to have the same amount of masked time steps.
+    Optionally also performs frequency masking in the same way as SpecAugment.
+    Args:
+        patch_size (int): up to how many time steps does one patch consist of.
+            Defaults to 48.
+        mask_patches (float): how many patches should be masked in each sample.
+            if >= 1., interpreted as number of patches (after converting to int)
+            if <1.,   interpreted as fraction of total tokens to be masked (number of patches is rounded up)
+            Defaults to 10.
+        freq_masks (int): how many frequency segments should be cut.
+            Defaults to 0.
+        freq_width (int): maximum number of frequencies to be cut in a segment.
+            Defaults to 0.
     """
 
     @property
     def input_types(self):
-        """Returns definitions of module input types
-        """
+        """Returns definitions of module input types"""
         return {
             "input_spec": NeuralType(('B', 'D', 'T'), SpectrogramType()),
             "length": NeuralType(tuple('B'), LengthsType()),
@@ -568,12 +572,15 @@ class MaskedPatchAugmentation(NeuralModule):
 
     @property
     def output_types(self):
-        """Returns definitions of module output types
-        """
+        """Returns definitions of module output types"""
         return {"augmented_spec": NeuralType(('B', 'D', 'T'), SpectrogramType())}
 
     def __init__(
-        self, patch_size: int = 48, mask_patches: float = 10.0, freq_masks: int = 0, freq_width: int = 0,
+        self,
+        patch_size: int = 48,
+        mask_patches: float = 10.0,
+        freq_masks: int = 0,
+        freq_width: int = 0,
     ):
         super().__init__()
         self.patch_size = patch_size
@@ -586,7 +593,12 @@ class MaskedPatchAugmentation(NeuralModule):
             raise ValueError('mask_patches cannot be negative')
 
         if freq_masks > 0:
-            self.spec_augment = SpecAugment(freq_masks=freq_masks, time_masks=0, freq_width=freq_width, time_width=0,)
+            self.spec_augment = SpecAugment(
+                freq_masks=freq_masks,
+                time_masks=0,
+                freq_width=freq_width,
+                time_width=0,
+            )
         else:
             self.spec_augment = None
 
@@ -676,8 +688,7 @@ class CropOrPadSpectrogramAugmentation(NeuralModule):
 
     @property
     def input_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "input_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
             "length": NeuralType(tuple('B'), LengthsType()),
@@ -685,8 +696,7 @@ class CropOrPadSpectrogramAugmentation(NeuralModule):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "processed_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
             "processed_length": NeuralType(tuple('B'), LengthsType()),
@@ -754,8 +764,7 @@ class AudioToSpectrogram(NeuralModule):
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "input": NeuralType(('B', 'C', 'T'), AudioSignal()),
             "input_length": NeuralType(('B',), LengthsType(), optional=True),
@@ -763,8 +772,7 @@ class AudioToSpectrogram(NeuralModule):
 
     @property
     def output_types(self) -> Dict[str, NeuralType]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "output": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
             "output_length": NeuralType(('B',), LengthsType()),
@@ -835,7 +843,7 @@ class SpectrogramToAudio(NeuralModule):
         fft_length: length of FFT
         hop_length: length of hops/shifts of the sliding window
         magnitude_power: Transform magnitude of the spectrogram as x^(1/magnitude_power).
-        scale: Spectrogram will be scaled with 1/scale before the inverse transform. 
+        scale: Spectrogram will be scaled with 1/scale before the inverse transform.
     """
 
     def __init__(self, fft_length: int, hop_length: int, magnitude_power: float = 1.0, scale: float = 1.0):
@@ -878,8 +886,7 @@ class SpectrogramToAudio(NeuralModule):
 
     @property
     def input_types(self) -> Dict[str, NeuralType]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "input": NeuralType(('B', 'C', 'D', 'T'), SpectrogramType()),
             "input_length": NeuralType(('B',), LengthsType(), optional=True),
@@ -887,8 +894,7 @@ class SpectrogramToAudio(NeuralModule):
 
     @property
     def output_types(self) -> Dict[str, NeuralType]:
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {
             "output": NeuralType(('B', 'C', 'T'), AudioSignal()),
             "output_length": NeuralType(('B',), LengthsType()),
@@ -968,7 +974,7 @@ class AudioToMelSpectrogramPreprocessorConfig:
     highfreq: Optional[int] = None
     log: bool = True
     log_zero_guard_type: str = "add"
-    log_zero_guard_value: float = 2 ** -24
+    log_zero_guard_value: float = 2**-24
     dither: float = 1e-5
     pad_to: int = 16
     frame_splicing: int = 1
@@ -1015,7 +1021,8 @@ class SpectrogramAugmentationConfig:
     rect_freq: int = 0
     mask_value: float = 0
     rng: Optional[Any] = None  # random.Random() type
-    use_numba_spec_augment: bool = True
+    use_numba_spec_augment: bool = False
+    use_vectorized_spec_augment: bool = True
 
 
 @dataclass

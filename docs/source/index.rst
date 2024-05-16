@@ -41,7 +41,6 @@ For quick guides and tutorials, see the "Getting started" section below.
    :titlesonly:
 
    starthere/intro
-   starthere/best-practices
    starthere/tutorials
 
 For more information, browse the developer docs for your area of interest in the contents section below or on the left sidebar.

@@ -15,7 +15,9 @@ name: "CICD NeMo"
 
 on:
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - 'main'
+      - 'r**'
     types: [ labeled ]
 
 concurrency:

@@ -15,13 +15,10 @@
 import json
 import os
 import subprocess
+
 from typing import List, Optional
 
-from nemo.export.trt_llm.qnemo import align_config
-from nemo.export.trt_llm.tensorrt_llm_build import MODEL_NAME, get_engine_name
-
 CONFIG_NAME = "config.json"
-CONFIG_TRTLLM_BUILD_NAME = "config_trtllm_build.json"
 
 
 def qnemo_to_tensorrt_llm(
@@ -34,6 +31,7 @@ def qnemo_to_tensorrt_llm(
     lora_target_modules: Optional[List[str]] = None,
 ):
     """Build TRT-LLM engine via trtllm-build CLI API in a subprocess."""
+    assert not lora_target_modules, f"LoRA is not supported for quantized checkpoints, got {lora_target_modules}"
     print(
         "Note that setting n_gpus, tensor_parallel_size and pipeline_parallel_size parameters"
         " for quantized models is possible only on export step via nemo.export.quantize module."
@@ -58,6 +56,8 @@ def qnemo_to_tensorrt_llm(
         str(max_prompt_embedding_table_size),
         "--gemm_plugin",
         model_config["dtype"],
+        "--gpt_attention_plugin",
+        model_config["dtype"],
         "--strongly_typed",
         "--use_custom_all_reduce",
         "disable",
@@ -75,35 +75,3 @@ def qnemo_to_tensorrt_llm(
 
     print("Building engine done. Full logs are:")
     print(result.stdout.decode())
-
-    # Alignment to make nemo-fw tensorrt_llm.runtime ModelConfig definition compatible with config
-    # produced by trtllm-build API. The new config is saved as "config.json" while the source build
-    # config is saved as "config_trtllm_build.json" in the engine directory for reference.
-    os.rename(os.path.join(engine_dir, CONFIG_NAME), os.path.join(engine_dir, CONFIG_TRTLLM_BUILD_NAME))
-    with open(os.path.join(engine_dir, CONFIG_TRTLLM_BUILD_NAME), "r") as f:
-        config_trtllm_build = json.load(f)
-
-    config = align_config(config_trtllm_build)
-
-    # Other parameters
-    assert lora_target_modules is None
-    config["builder_config"]["lora_target_modules"] = lora_target_modules
-
-    with open(os.path.join(engine_dir, CONFIG_NAME), "w") as f:
-        json.dump(config, f, indent=2)
-
-    # Rename for consistency with how engine is run later
-    for i in range(config["builder_config"]["world_size"]):
-        os.rename(
-            os.path.join(engine_dir, f"rank{i}.engine"),
-            os.path.join(
-                engine_dir,
-                get_engine_name(
-                    MODEL_NAME,
-                    config["builder_config"]["precision"],
-                    config["builder_config"]["tensor_parallel"],
-                    config["builder_config"]["pipeline_parallel"],
-                    i,
-                ),
-            ),
-        )

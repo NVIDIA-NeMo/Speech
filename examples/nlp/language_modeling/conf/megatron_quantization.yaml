@@ -31,7 +31,7 @@ export:
   decoder_type: llama # gptnext, gpt2, llama
   inference_tensor_parallel: 1 # Default using 1 TP for inference
   inference_pipeline_parallel: 1 # Default using 1 PP for inference
-  dtype: 16 # Default precision data type
+  dtype: bf16 # Default precision data type
 
 model_file: llama2-7b-fp16.nemo # Nemo file path
 model_save: llama2-7b-fp8.qnemo # Path where the quantized model will be saved

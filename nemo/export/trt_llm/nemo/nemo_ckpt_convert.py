@@ -14,6 +14,7 @@
 
 
 import configparser
+import json
 import logging
 import math
 import multiprocessing
@@ -28,6 +29,8 @@ import tensorstore  # This is important even though not used. Otherwise zarr rai
 import torch
 import zarr
 from tensorrt_llm._utils import np_bfloat16, pad_vocab_size, str_dtype_to_torch, torch_to_numpy
+from torch.distributed.checkpoint import FileSystemReader, TensorStorageMetadata
+from torch.distributed.checkpoint.state_dict_loader import load_state_dict
 from tqdm import tqdm
 from transformers import AutoTokenizer, GPT2Tokenizer, LlamaConfig
 
@@ -122,6 +125,54 @@ def rename_key_dist_ckpt(old_key: str, layer: int):
 
 
 def load_sharded_metadata(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
+    with (checkpoint_dir / 'metadata.json').open(mode='r') as f:
+        config_dict = json.load(f)
+    if config_dict['sharded_backend'] == 'zarr':
+        return load_sharded_metadata_zarr(checkpoint_dir, torch_tensor)
+    elif config_dict['sharded_backend'] == 'torch_dist':
+        return load_sharded_metadata_torch_dist(checkpoint_dir, torch_tensor)
+    else:
+        raise NotImplementedError(f'Distributed checkpoint backend {config_dict["sharded_backend"]} not supported')
+
+
+class TarFileSystemReader(FileSystemReader):
+    """Reader that accepts both Path and TarPath checkpoint directory.
+
+    The FileSystemReader works with TarPath, but expects a pure Path.
+    It's enough to skip the Path check in __init__.
+    """
+
+    def __init__(self, path: Union[Path, TarPath]) -> None:
+        """No call to super().__init__ because it expects pure Path."""
+        self.path = path
+        self.storage_data = dict()
+
+
+def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
+    fs_reader = TarFileSystemReader(checkpoint_dir)
+    metadata = fs_reader.read_metadata()
+
+    state_dict = {
+        k: torch.empty(tp.size, dtype=tp.properties.dtype)
+        for k, tp in metadata.state_dict_metadata.items()
+        if isinstance(tp, TensorStorageMetadata)
+    }
+    load_state_dict(
+        state_dict,
+        storage_reader=fs_reader,
+        no_dist=True,
+    )
+
+    if not torch_tensor:
+        for k, v in state_dict.items():
+            if v.dtype == torch.bfloat16:
+                state_dict[k] = v.view(torch.int16).numpy().view(np_bfloat16)
+            else:
+                state_dict[k] = v.numpy()
+    return state_dict
+
+
+def load_sharded_metadata_zarr(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
     sharded_state_dict = {}
     for subdir in checkpoint_dir.iterdir():
         if not subdir.is_dir() or not (subdir / '.zarray').exists():

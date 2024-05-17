@@ -138,7 +138,8 @@ def load_nemo_model_weights(nemo_path, sharded_state_dict=None):
                 tmp_model_weights_dir = os.path.splitext(tmp_model_weights_ckpt)[0]
                 assert os.path.isdir(tmp_model_weights_dir), f'Expected {tmp_model_weights_dir} to be a directory.'
                 checkpoint = dist_checkpointing.load(
-                    sharded_state_dict=checkpoint, checkpoint_dir=tmp_model_weights_dir,
+                    sharded_state_dict=checkpoint,
+                    checkpoint_dir=tmp_model_weights_dir,
                 )
                 state_dict = checkpoint["state_dict"]
 
@@ -149,7 +150,9 @@ def load_nemo_model_weights(nemo_path, sharded_state_dict=None):
 
 
 def setup_trainer_and_models_for_inference(
-    model_provider: Any, cfg: DictConfig, model_cfg_modifier: Callable,
+    model_provider: Any,
+    cfg: DictConfig,
+    model_cfg_modifier: Callable,
 ):
     """
     Set up a trainer and NeMo model for inference.
@@ -172,7 +175,10 @@ def setup_trainer_and_models_for_inference(
 
     # Use the NLPDDPStrategy for the distributed data parallel strategy.
     # We don't use DDP for async grad allreduce and don't find unused parameters.
-    strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
+    strategy = NLPDDPStrategy(
+        no_ddp_communication_hook=True,
+        find_unused_parameters=False,
+    )
 
     # Set up the trainer with the specified plugins and strategy.
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
@@ -215,7 +221,9 @@ def setup_trainer_and_models_for_inference(
             )
 
             model = model_provider.load_from_checkpoint(
-                single_model_cfg.restore_from_path, hparams_file=cfg.model.get("hparams_file"), trainer=trainer,
+                single_model_cfg.restore_from_path,
+                hparams_file=cfg.model.get("hparams_file"),
+                trainer=trainer,
             )
             models.append(model)
 
@@ -239,7 +247,9 @@ def setup_trainer_and_models_for_inference(
 
 
 def setup_trainer_and_model_for_inference(
-    model_provider: Any, cfg: DictConfig, model_cfg_modifier: Callable,
+    model_provider: Any,
+    cfg: DictConfig,
+    model_cfg_modifier: Callable,
 ) -> Tuple[Trainer, Any]:
     """
     Set up a trainer and NeMo model for inference.
@@ -261,7 +271,10 @@ def setup_trainer_and_model_for_inference(
 
     # Use the NLPDDPStrategy for the distributed data parallel strategy.
     # We don't use DDP for async grad allreduce and don't find unused parameters.
-    strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=False,)
+    strategy = NLPDDPStrategy(
+        no_ddp_communication_hook=True,
+        find_unused_parameters=False,
+    )
 
     # Set up the trainer with the specified plugins and strategy.
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer)
@@ -299,7 +312,9 @@ def setup_trainer_and_model_for_inference(
         )
 
         model = model_provider.load_from_checkpoint(
-            cfg.model.restore_from_path, hparams_file=cfg.model.get("hparams_file"), trainer=trainer,
+            cfg.model.restore_from_path,
+            hparams_file=cfg.model.get("hparams_file"),
+            trainer=trainer,
         )
 
     else:
@@ -335,7 +350,9 @@ def create_neva_model_and_processor(cfg):
         or cfg.get('pipeline_model_parallel_split_rank', -1) < 0
     ):
         model_config = MegatronNevaModel.restore_from(
-            restore_path=cfg.neva_model_file, trainer=trainer, return_config=True,
+            restore_path=cfg.neva_model_file,
+            trainer=trainer,
+            return_config=True,
         )
 
         with open_dict(cfg):
@@ -366,6 +383,7 @@ def create_neva_model_and_processor(cfg):
             neva_cfg.activations_checkpoint_method = None
             neva_cfg.precision = trainer.precision
             neva_cfg.mm_cfg.llm.from_pretrained = cfg.get('base_model_file', None)
+            neva_cfg.apply_rope_fusion = False
             neva_cfg.fp8 = False
         #    neva_cfg.mm_cfg.vision_encoder.from_pretrained = None
 

@@ -68,9 +68,6 @@ class MegatronGPTEmbeddingModel(MegatronGPTSFTModel):
         assert (
             self.cfg.get("post_process", False) is False
         ), "post_process must be False to get hidden states in the loss_func"
-        assert (
-            self.cfg.get('apply_rope_fusion', True) is False
-        ), "RoPE fusion should be set to False for MegatronGPTEmbeddingModel"
 
     def model_provider_func(self, pre_process, post_process):
         # (@adithyare) We need post_process to be False to get hidden states in the loss_func

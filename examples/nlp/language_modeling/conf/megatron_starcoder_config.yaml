@@ -117,7 +117,7 @@ model:
   bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropout and residual connection addition.
   masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
   get_attention_mask_from_fusion: True # When using fused softmax it will create the attention mask so we won't copy it to the pipeline stages.
-  apply_rope_fusion: True # Use a kernel to add rotary positional embeddings. Only used if position_embedding_type=rope
+  apply_rope_fusion: False # Use a kernel to add rotary positional embeddings. Only used if position_embedding_type=rope
 
   # Miscellaneous
   seed: 1234

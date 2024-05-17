@@ -1,5 +1,5 @@
-Multimodal API
-=======================
+NeMo Multimodal API
+===================
 
 Model Classes
 -------------

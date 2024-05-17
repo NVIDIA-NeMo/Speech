@@ -1,6 +1,6 @@
 
-Core APIs
-=========
+NeMo Core APIs
+==============
 
 Base class for all NeMo models
 ------------------------------

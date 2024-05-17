@@ -15,8 +15,6 @@ We will illustrate details in the following sections.
     datasets
     checkpoints
     configs
-    api
-    resources
     g2p
 
 .. include:: resources.rst

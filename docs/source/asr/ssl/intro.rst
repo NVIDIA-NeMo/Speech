@@ -1,5 +1,5 @@
-Self-Supervised Learning
-=================================
+Speech Self-Supervised Learning
+===============================
 
 Self-Supervised Learning (SSL) refers to the problem of learning without explicit labels. As 
 any learning process require feedback, without explit labels, SSL derives supervisory signals from 

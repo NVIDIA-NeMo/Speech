@@ -14,14 +14,26 @@ You can learn more about aspects of the NeMo "core" by following the links below
    :name: core
    :titlesonly:
 
-   core
-   neural_modules
-   exp_manager
-   neural_types
-   export
-   adapters/intro
-   api
+   core/core
+   core/neural_modules
+   core/exp_manager
+   core/neural_types
+   core/export
+   core/adapters/intro
 
+You can learn more about aspects of the NeMo APIs by following the links below:
+
+.. toctree::
+   :maxdepth: 1
+   :name: API
+   :titlesonly:
+
+   core/api
+   common/intro
+   nlp/api
+   multimodal/api
+   asr/api
+   tts/api
 
 
 Alternatively, you can jump straight to the documentation for the individual collections:

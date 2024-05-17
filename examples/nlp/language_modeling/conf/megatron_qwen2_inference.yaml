@@ -1,0 +1,39 @@
+inference:
+  greedy: False # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  add_BOS: True # add the bos token at the begining of the prompt
+  tokens_to_generate: 30 # The minimum length of the sequence to be generated.
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  end_strings: ["</s>"]  # generation will stop when one of these tokens is generated
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 32 # 16, 32, or bf16
+  use_distributed_sampler: False
+
+tensor_model_parallel_size: -1
+pipeline_model_parallel_size: -1
+pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
+megatron_amp_O2: False  # Enable O2-level automatic mixed precision to save memory
+gpt_model_file: null  # GPT nemo file path
+checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
+checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
+hparams_file: null # model configuration file, only used for PTL checkpoint loading
+prompts: # prompts for GPT inference
+  - "Q: How are you?"
+  - "Q: How big is the universe?"
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+web_port: 9889 # the port number of the web server

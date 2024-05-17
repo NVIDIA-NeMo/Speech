@@ -148,7 +148,9 @@ class RequestDataSet(Dataset):
         super().__init__()
         self.sentences = sentences
 
-    def __len__(self,):
+    def __len__(
+        self,
+    ):
         return len(self.sentences)
 
     def __getitem__(self, idx):
@@ -173,7 +175,9 @@ def main(cfg) -> None:
         callbacks.append(CustomProgressBar())
     # trainer required for restoring model parallel models
     trainer = Trainer(
-        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)), **cfg.trainer, callbacks=callbacks,
+        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)),
+        **cfg.trainer,
+        callbacks=callbacks,
     )
 
     if cfg.gpt_model_file is not None:
@@ -224,6 +228,7 @@ def main(cfg) -> None:
             pretrained_cfg.activations_checkpoint_method = None
             pretrained_cfg.precision = trainer.precision
             pretrained_cfg["use_flash_attention"] = cfg.inference.get("use_flash_attention", False)
+            pretrained_cfg["apply_rope_fusion"] = False
             if pretrained_cfg.get('mcore_gpt', False):
                 # with dist checkpointing we can use the model parallel config specified by the user
                 pretrained_cfg.tensor_model_parallel_size = cfg.tensor_model_parallel_size

@@ -11,3 +11,4 @@ The endeavor to extend Language Models (LLMs) into multimodal domains by integra
    checkpoint
    neva
    video_neva
+   sequence_packing

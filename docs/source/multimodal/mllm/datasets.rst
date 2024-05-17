@@ -90,6 +90,14 @@ For NeVA training, integrating special tokens into the tokenizer is vital. After
 
 .. code-block:: bash
 
+   cd /opt; git clone https://github.com/google/sentencepiece.git && \
+     cd sentencepiece && \
+     mkdir build && \
+     cd build && \
+     cmake .. && \
+     make && \
+     make install && \
+     ldconfig
    cd /opt/sentencepiece/src/; protoc --python_out=/opt/NeMo/scripts/tokenizers/ sentencepiece_model.proto
    python /opt/NeMo/scripts/tokenizers/add_special_tokens_to_sentencepiece.py \
    --input_file /path/to/neva/tokenizers/tokenizer.model \

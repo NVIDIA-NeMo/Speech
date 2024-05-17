@@ -135,6 +135,14 @@ To train with packed sequences, you need to change four items in the SFT/PEFT co
 
 Now you are all set to finetune your model with a much improved throughput!
 
+Sequence Packing for NeVA
+-------------------------
+
+Sequence packing in NeVA (Multimodal LLMs) differs slightly from the LLM SFT/PEFT approach. For details,
+please refer to the documentation below
+
+:doc:`../multimodal/mllm/sequence_packing`
+
 Communication Overlap
 ---------------------
 NeMo leverages Megatron-Core's optimizations to enhance bandwidth utilization and effectively overlap computation with communication. Additional details will be provided soon.

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import random
 import re
 import tarfile
@@ -197,6 +198,12 @@ class LazyNeMoTarredIterator:
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
+            logging.warning(
+                f"""You are using Lhotse dataloading for tarred audio with a non-sharded manifest.
+                            This will incur significant memory overhead and slow-down training. To prevent this error message
+                            please shard file '{self.paths[0]}' using 'scripts/speech_recognition/convert_to_tarred_audio_dataset.py'
+                            WITHOUT '--no_shard_manifest'"""
+            )
             self.source = LazyJsonlIterator(self.paths[0])
             self.shard_id_to_manifest = groupby("shard_id", self.source)
         else:
@@ -272,15 +279,16 @@ class LazyNeMoTarredIterator:
             random.Random(seed).shuffle(shard_ids)
 
         for sid in shard_ids:
-            shard_manifest = self.shard_id_to_manifest[sid]
+            manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
+            shard_manifest = {data["audio_filepath"]: data for data in self.shard_id_to_manifest[sid]}
             tar_path = self.shard_id_to_tar_path[sid]
             with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
-                for data, tar_info in zip(shard_manifest, tar):
-                    manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
-                    assert data["audio_filepath"] == tar_info.name, (
+                for tar_info in tar:
+                    assert tar_info.name in shard_manifest, (
                         f"Mismatched entry between JSON manifest ('{manifest_path}') and tar file ('{tar_path}'). "
-                        f"Conflicting audio file names are JSON='{data['audio_filepath']}' and TAR='{tar_info.name}'"
+                        f"Cannot locate JSON entry for tar file '{tar_info.name}'"
                     )
+                    data = shard_manifest[tar_info.name]
                     raw_audio = tar.extractfile(tar_info).read()
                     # Note: Lhotse has a Recording.from_bytes() utility that we won't use here because
                     #       the profiling indicated significant overhead in torchaudio ffmpeg integration

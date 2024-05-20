@@ -289,9 +289,6 @@ jobs:
           run: |
             rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/megatron_starcoder_tp1_pp1.nemo; 
             rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/${{ github.run_id }}/
-        - name: Cleanup
-          if: "always()"
-          run: |
             rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/model_weights
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"

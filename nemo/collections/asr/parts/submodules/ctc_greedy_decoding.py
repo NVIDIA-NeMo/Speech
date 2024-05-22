@@ -25,7 +25,10 @@ from nemo.core.neural_types import HypothesisType, LengthsType, LogprobsType, Ne
 from nemo.utils import logging
 
 
-def pack_hypotheses(hypotheses: List[rnnt_utils.Hypothesis], logitlen: torch.Tensor,) -> List[rnnt_utils.Hypothesis]:
+def pack_hypotheses(
+    hypotheses: List[rnnt_utils.Hypothesis],
+    logitlen: torch.Tensor,
+) -> List[rnnt_utils.Hypothesis]:
 
     if logitlen is not None:
         if hasattr(logitlen, 'cpu'):
@@ -53,6 +56,9 @@ def _states_to_device(dec_state, device='cpu'):
         dec_state = tuple(_states_to_device(dec_i, device) for dec_i in dec_state)
 
     return dec_state
+
+
+_DECODER_LENGTHS_NONE_WARNING = "Passing in decoder_lengths=None for CTC decoding is likely to be an error, since it is unlikely that each element of your batch has exactly the same length. decoder_lengths will default to decoder_output.shape[0]."
 
 
 class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
@@ -108,8 +114,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         # Input can be of dimension -
         # ('B', 'T', 'D') [Log probs] or ('B', 'T') [Labels]
 
@@ -120,8 +125,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"predictions": [NeuralType(elements_type=HypothesisType())]}
 
     def __init__(
@@ -145,7 +149,9 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
 
     @typecheck()
     def forward(
-        self, decoder_output: torch.Tensor, decoder_lengths: torch.Tensor,
+        self,
+        decoder_output: torch.Tensor,
+        decoder_lengths: Optional[torch.Tensor],
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-repressively.
@@ -158,6 +164,15 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         Returns:
             packed list containing batch number of sentences (Hypotheses).
         """
+
+        logging.warning(
+            "CTC decoding strategy 'greedy' is slower than 'greedy_batch', which implements the same exact interface. Consider changing your strategy to 'greedy_batch' for a free performance improvement.",
+            mode=logging_mode.ONCE,
+        )
+
+        if decoder_lengths is None:
+            logging.warning(_DECODER_LENGTHS_NONE_WARNING, mode=logging_mode.ONCE)
+
         with torch.inference_mode():
             hypotheses = []
             # Process each sequence independently
@@ -204,7 +219,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         return (packed_result,)
 
     @torch.no_grad()
-    def _greedy_decode_logprobs(self, x: torch.Tensor, out_len: torch.Tensor):
+    def _greedy_decode_logprobs(self, x: torch.Tensor, out_len: Optional[torch.Tensor]):
         # x: [T, D]
         # out_len: [seq_len]
 
@@ -234,7 +249,7 @@ class GreedyCTCInfer(Typing, ConfidenceMethodMixin):
         return hypothesis
 
     @torch.no_grad()
-    def _greedy_decode_labels(self, x: torch.Tensor, out_len: torch.Tensor):
+    def _greedy_decode_labels(self, x: torch.Tensor, out_len: Optional[torch.Tensor]):
         # x: [T]
         # out_len: [seq_len]
 
@@ -324,8 +339,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         # Input can be of dimension -
         # ('B', 'T', 'D') [Log probs] or ('B', 'T') [Labels]
 
@@ -336,8 +350,7 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"predictions": [NeuralType(elements_type=HypothesisType())]}
 
     def __init__(
@@ -361,7 +374,9 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
     @typecheck()
     def forward(
-        self, decoder_output: torch.Tensor, decoder_lengths: torch.Tensor,
+        self,
+        decoder_output: torch.Tensor,
+        decoder_lengths: Optional[torch.Tensor],
     ):
         """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
         Output token is generated auto-repressively.
@@ -374,11 +389,18 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
         Returns:
             packed list containing batch number of sentences (Hypotheses).
         """
+
+        input_decoder_lengths = decoder_lengths
+
+        if decoder_lengths is None:
+            logging.warning(_DECODER_LENGTHS_NONE_WARNING, mode=logging_mode.ONCE)
+            decoder_lengths = torch.tensor([decoder_output.shape[1]], dtype=torch.long).expand(decoder_output.shape[0])
+
         if decoder_output.ndim == 2:
             hypotheses = self._greedy_decode_labels_batched(decoder_output, decoder_lengths)
         else:
             hypotheses = self._greedy_decode_logprobs_batched(decoder_output, decoder_lengths)
-        packed_result = pack_hypotheses(hypotheses, decoder_lengths)
+        packed_result = pack_hypotheses(hypotheses, input_decoder_lengths)
         return (packed_result,)
 
     @torch.no_grad()

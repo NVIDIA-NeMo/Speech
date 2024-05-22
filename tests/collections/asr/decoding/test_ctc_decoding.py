@@ -90,7 +90,9 @@ class TestCTCDecoding:
         assert decoding is not None
 
     @pytest.mark.unit
-    def test_char_decoding_greedy_forward(self,):
+    def test_char_decoding_greedy_forward(
+        self,
+    ):
         cfg = CTCDecodingConfig(strategy='greedy')
         vocab = char_vocabulary()
         decoding = CTCDecoding(decoding_cfg=cfg, vocabulary=vocab)
@@ -197,7 +199,10 @@ class TestCTCDecoding:
     @pytest.mark.parametrize('alignments', [False, True])
     @pytest.mark.parametrize('timestamps', [False, True])
     @pytest.mark.parametrize('preserve_frame_confidence', [False, True])
-    def test_batched_decoding_logprobs(self, tmp_tokenizer, alignments, timestamps, preserve_frame_confidence):
+    @pytest.mark.parametrize('length_is_none', [False, True])
+    def test_batched_decoding_logprobs(
+        self, tmp_tokenizer, alignments, timestamps, preserve_frame_confidence, length_is_none
+    ):
         cfg = CTCBPEDecodingConfig(
             strategy='greedy',
             preserve_alignments=alignments,
@@ -217,7 +222,10 @@ class TestCTCDecoding:
         # that we always handle at least a few blanks.
         input_signal[:, 0, unbatched_decoding.tokenizer.tokenizer.vocab_size] = 1000
         input_signal[:, 1, unbatched_decoding.tokenizer.tokenizer.vocab_size] = 1000
-        length = torch.randint(low=1, high=T, size=[B])
+        if length_is_none:
+            length = None
+        else:
+            length = torch.randint(low=1, high=T, size=[B])
 
         with torch.inference_mode():
             hyps, _ = unbatched_decoding.ctc_decoder_predictions_tensor(
@@ -240,7 +248,8 @@ class TestCTCDecoding:
 
     @pytest.mark.unit
     @pytest.mark.parametrize('timestamps', [False, True])
-    def test_batched_decoding_labels(self, tmp_tokenizer, timestamps):
+    @pytest.mark.parametrize('length_is_none', [False, True])
+    def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none):
         cfg = CTCBPEDecodingConfig(strategy='greedy', compute_timestamps=timestamps)
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
         cfg.strategy = 'greedy_batched'
@@ -254,7 +263,10 @@ class TestCTCDecoding:
         # at least a few blanks.
         input_labels[:, 0] = unbatched_decoding.tokenizer.tokenizer.vocab_size
         input_labels[:, 1] = unbatched_decoding.tokenizer.tokenizer.vocab_size
-        length = torch.randint(low=1, high=T, size=[B])
+        if length_is_none:
+            length = None
+        else:
+            length = torch.randint(low=1, high=T, size=[B])
 
         with torch.inference_mode():
             hyps, _ = unbatched_decoding.ctc_decoder_predictions_tensor(

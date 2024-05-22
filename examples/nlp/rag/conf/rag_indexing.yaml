@@ -1,0 +1,19 @@
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 'bf16-mixed'
+  use_distributed_sampler: False
+  
+indexing:
+  embedder:
+    model_type: bert
+    model_path: null
+    embed_batch_size: 128
+  data:
+    data_path: null
+    chunk_size: 256
+    chunk_overlap: 10
+  index_path: null

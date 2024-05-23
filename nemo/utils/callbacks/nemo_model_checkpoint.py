@@ -22,6 +22,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import pytorch_lightning
 import torch
 from _weakref import proxy
+
+from lightning_fabric.utilities.cloud_io import get_filesystem
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint, _is_local_file_protocol
 from pytorch_lightning.utilities import rank_zero_info
 
@@ -198,7 +200,6 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
             logging.warning(f'always_save_nemo will slow down training for model_parallel > 1.')
         # since we are creating tarfile artifacts we need to update .nemo path
-        self._backup_existing_nemo_ckpt(trainer)
         app_state.model_restore_path = self._format_nemo_checkpoint_name()
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
             maybe_injected_best_model_path = inject_model_parallel_rank(self.best_model_path)
@@ -222,14 +223,19 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             pl_module.load_state_dict(checkpoint, strict=True)
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
+            backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=app_state.model_restore_path)
             logging.info(f"New best .nemo model saved to: {app_state.model_restore_path}")
             pl_module.load_state_dict(old_state_dict, strict=True)
         else:
             if torch.distributed.is_initialized():
                 torch.distributed.barrier()
+            backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=app_state.model_restore_path)
             logging.info(f"New .nemo model saved to: {app_state.model_restore_path}")
+        if backup_path is not None and is_global_rank_zero():
+            logging.info(f'Removing old .nemo backup {backup_path}')
+            get_filesystem(backup_path).rm(backup_path)
         return output
 
     def on_train_end(self, trainer, pl_module):
@@ -268,16 +274,25 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 trainer._checkpoint_connector.restore(self.best_model_path)
 
         if self.save_nemo_on_train_end:
-            self._backup_existing_nemo_ckpt(trainer)
+            backup_path = self._backup_existing_nemo_ckpt(trainer)
             pl_module.save_to(save_path=self._format_nemo_checkpoint_name())
+            if backup_path is not None and is_global_rank_zero():
+                logging.info(f'Removing old .nemo backup {backup_path}')
+                get_filesystem(backup_path).rm(backup_path)
 
-    def _backup_existing_nemo_ckpt(self, trainer) -> str:
+    def _backup_existing_nemo_ckpt(self, trainer) -> Optional[str]:
         """Search for an available name with version infix and rename existing checkpoint.
 
         NOTE: this behavior is slightly different from regular checkpoints.
         PTL creates new regular checkpoint with the first available name.
         Here, for backward compatibility, we create .nemo checkpoint as before
         and create a backup under the first available name.
+
+        Args:
+            trainer (Trainer): trainer instance.
+
+        Returns:
+            Path to the backup checkpoint or None, if no backup was created
         """
         base_path = self._format_nemo_checkpoint_name()
         available_path = base_path
@@ -286,11 +301,13 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             while self.file_exists(available_path, trainer, check_dist_ckpt=False):
                 available_path = self._format_nemo_checkpoint_name(version_cnt)
                 version_cnt += 1
-        if available_path != base_path:
-            if trainer.is_global_zero:
-                logging.info(f'{base_path} already exists, moving existing checkpoint to {available_path}')
-                shutil.move(base_path, available_path)
-            trainer.strategy.barrier()
+        if available_path == base_path:
+            # no existing ckpt, no need to backup
+            return None
+        if trainer.is_global_zero:
+            logging.info(f'{base_path} already exists, moving existing checkpoint to {available_path}')
+            shutil.move(base_path, available_path)
+        trainer.strategy.barrier()
         return available_path
 
     def _format_nemo_checkpoint_name(self, ver: Optional[int] = None) -> str:

@@ -6482,9 +6482,8 @@ jobs:
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: "failure()"
 
-
   Nemo_CICD_Test:
-    needs:
+    needs: 
       - L0_Unit_Tests_GPU
       - L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Llama
@@ -6598,8 +6597,22 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Mixer-TTS
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests
-
+    if: always()
     runs-on: ubuntu-latest
     steps:
         # This should depend on all the tests so we block/unblock based on all tests passing
-      - run: exit 0
+      - if: ${{ contains(needs.*.result, 'success') }}
+        run: exit 0
+
+      - if: ${{ contains(needs.*.result, 'failure') }}
+        name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - if: ${{ contains(needs.*.result, 'failure') }}
+        run: |
+          source .github/scripts/slackHelper.sh
+
+          WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK }}
+          PIPELINE_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          sendSlackMessage "$WEBHOOK_URL" "$PIPELINE_URL"

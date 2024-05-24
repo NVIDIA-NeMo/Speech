@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, List, Optional, Union
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
+from nemo.collections.llm.gpt.data.core import create_sft_dataset
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
-from nemo.llm.gpt.data.core import create_sft_dataset
 
 if TYPE_CHECKING:
     from nemo.collections.common.tokenizers import TokenizerSpec
@@ -74,7 +74,13 @@ class FineTuningDataModule(pl.LightningDataModule):
         return self._create_dataloader(self._create_dataset(str(self.validation_path)))
 
     def test_dataloader(self) -> DataLoader:
-        return self._create_dataloader(self._create_dataset(str(self.test_path), tokens_to_generate=32, is_test=True,))
+        return self._create_dataloader(
+            self._create_dataset(
+                str(self.test_path),
+                tokens_to_generate=32,
+                is_test=True,
+            )
+        )
 
     @lru_cache
     def _create_dataset(self, path, **kwargs):
@@ -89,7 +95,7 @@ class FineTuningDataModule(pl.LightningDataModule):
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             collate_fn=dataset.collate_fn,
-            **kwargs
+            **kwargs,
         )
 
     @property

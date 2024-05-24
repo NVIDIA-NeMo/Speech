@@ -8,8 +8,8 @@ import fiddle as fdl
 from cloudpickle import dump
 from typing_extensions import Self
 
-from nemo.io.capture import IOProtocol
-from nemo.io.connector import ModelConnector
+from nemo.lightning.io.capture import IOProtocol
+from nemo.lightning.io.connector import ModelConnector
 
 ConnT = TypeVar('ConnT', bound=ModelConnector)
 
@@ -35,8 +35,8 @@ class IOMixin:
 
     Examples
     --------
-        from nemo import io
-        
+        from nemo.lightning import io
+
         class ExampleClass(io.IOMixin):
             def __init__(self, param1, param2):
                 super().__init__()
@@ -46,7 +46,7 @@ class IOMixin:
         # Creating an instance of ExampleClass
         example = ExampleClass('value1', 'value2')
         example_copy = io.reinit(example)
-        
+
 
     Note:
         For more information on `fdl.Config`, refer to the Fiddle library documentation at
@@ -168,9 +168,9 @@ class ConnectorMixin:
 
         Args:
             path (str): The path to the model file to be imported.
-            
+
         Example:
-            from nemo import llm
+            from nemo.collections import llm
             model = llm.Mistral7BModel.import_from("hf")
 
         Returns
@@ -285,7 +285,7 @@ class ConnectorMixin:
     @classmethod
     def _get_connector(cls, ext, path=None, importer=True) -> ModelConnector:
         """
-        Retrieves the appropriate model connector based on the file extension and path, 
+        Retrieves the appropriate model connector based on the file extension and path,
         distinguishing between importers and exporters.
 
         Args:

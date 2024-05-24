@@ -32,7 +32,7 @@ def create_sft_dataset(
     truncation_method: str = 'right',
     memmap_workers: int = 2,
     hf_dataset: bool = False,
-    **kwargs
+    **kwargs,
 ) -> "GPTSFTDataset":
     from nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset import GPTSFTDataset
 
@@ -53,5 +53,5 @@ def create_sft_dataset(
         index_mapping_dir=index_mapping_dir,
         prompt_template=prompt_template,
         truncation_method=truncation_method,
-        **kwargs
+        **kwargs,
     )

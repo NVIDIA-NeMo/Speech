@@ -20,7 +20,10 @@ def create_dataloader(
 
 
 def setup_microbatch_calculator(
-    global_rank: int, micro_batch_size: int, global_batch_size: int, rampup_batch_size: Optional[List[int]] = None,
+    global_rank: int,
+    micro_batch_size: int,
+    global_batch_size: int,
+    rampup_batch_size: Optional[List[int]] = None,
 ) -> None:
     """
     Initializes the data for distributed training by setting up the microbatch calculator
@@ -41,7 +44,6 @@ def setup_microbatch_calculator(
 
     """
     from nemo.lightning._strategy_lib import NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE
-
     from nemo.utils import AppState
 
     app_state = AppState()
@@ -189,8 +191,7 @@ class BaseMegatronSampler:
             return (num_available_samples - 1) // self.micro_batch_times_data_parallel_size + 1
 
     @abc.abstractmethod
-    def __iter__(self):
-        ...
+    def __iter__(self): ...
 
 
 class MegatronPretrainingSampler(BaseMegatronSampler):

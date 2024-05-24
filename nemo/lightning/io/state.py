@@ -26,11 +26,11 @@ def apply_transforms(
     transforms: Optional[List[Callable[[TransformCTX], TransformCTX]]] = None,
 ) -> TargetModuleT:
     """
-    Applies a series of transformations to adapt the state dictionary of a source module to 
+    Applies a series of transformations to adapt the state dictionary of a source module to
     match the structure of a target module's state dictionary.
 
     This function renames keys according to a provided mapping and modifies values using a list
-    of transformation functions. Each transformation function typically is decorated 
+    of transformation functions. Each transformation function typically is decorated
     with `io.state_transform`.
 
     Args:
@@ -91,7 +91,12 @@ def apply_transforms(
         _target = target.module
 
     target_state = _target.state_dict()
-    ctx = TransformCTX(source=_source, source_state=_source.state_dict(), target=_target, target_state=target_state,)
+    ctx = TransformCTX(
+        source=_source,
+        source_state=_source.state_dict(),
+        target=_target,
+        target_state=target_state,
+    )
 
     for key, val in mapping.items():
         ctx = StateDictTransform(key, val)(ctx)
@@ -349,16 +354,15 @@ def _match_keys(keys: List[str], pattern: str) -> np.ndarray:
 
 @overload
 def state_transform(
-    source_key: Union[str, Tuple[str, ...], Dict[str, str]], target_key: Union[str, Tuple[str, ...]],
-) -> Callable[[F], StateDictTransform[F]]:
-    ...
+    source_key: Union[str, Tuple[str, ...], Dict[str, str]],
+    target_key: Union[str, Tuple[str, ...]],
+) -> Callable[[F], StateDictTransform[F]]: ...
 
 
 @overload
 def state_transform(
     source_key: Union[str, Tuple[str, ...], Dict[str, str]], target_key: Union[str, Tuple[str, ...]], fn: F
-) -> StateDictTransform[F]:
-    ...
+) -> StateDictTransform[F]: ...
 
 
 def state_transform(

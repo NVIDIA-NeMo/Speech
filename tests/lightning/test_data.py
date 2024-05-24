@@ -6,11 +6,15 @@ from unittest.mock import MagicMock, patch
     'nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset.GPTSFTDataset.__init__', return_value=None
 )
 def test_finetuning_module(mock_gpt_sft_dataset) -> None:
-    from nemo.llm.gpt.data import FineTuningDataModule
+    from nemo.collections.llm.gpt.data import FineTuningDataModule
 
     dataset_root = 'random_root'
     datamodule = FineTuningDataModule(
-        dataset_root, seq_length=2048, micro_batch_size=4, global_batch_size=8, seed=1234,
+        dataset_root,
+        seq_length=2048,
+        micro_batch_size=4,
+        global_batch_size=8,
+        seed=1234,
     )
 
     datamodule.train_dataloader()
@@ -21,9 +25,14 @@ def test_finetuning_module(mock_gpt_sft_dataset) -> None:
     'nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset.GPTSFTDataset.__init__', return_value=None
 )
 def test_dolly_module(mock_gpt_sft_dataset) -> None:
-    from nemo.llm.gpt.data import DollyDataModule
+    from nemo.collections.llm.gpt.data import DollyDataModule
 
-    datamodule = DollyDataModule(seq_length=2048, micro_batch_size=4, global_batch_size=8, seed=1234,)
+    datamodule = DollyDataModule(
+        seq_length=2048,
+        micro_batch_size=4,
+        global_batch_size=8,
+        seed=1234,
+    )
 
     datamodule.train_dataloader()
     mock_gpt_sft_dataset.assert_called_once()
@@ -33,9 +42,14 @@ def test_dolly_module(mock_gpt_sft_dataset) -> None:
     'nemo.collections.nlp.data.language_modeling.megatron.gpt_sft_dataset.GPTSFTDataset.__init__', return_value=None
 )
 def test_squad_module(mock_gpt_sft_dataset) -> None:
-    from nemo.llm.gpt.data import SquadDataModule
+    from nemo.collections.llm.gpt.data import SquadDataModule
 
-    datamodule = SquadDataModule(seq_length=2048, micro_batch_size=4, global_batch_size=8, seed=1234,)
+    datamodule = SquadDataModule(
+        seq_length=2048,
+        micro_batch_size=4,
+        global_batch_size=8,
+        seed=1234,
+    )
 
     datamodule.train_dataloader()
     mock_gpt_sft_dataset.assert_called_once()
@@ -45,7 +59,7 @@ def test_squad_module(mock_gpt_sft_dataset) -> None:
 # @patch('megatron.core.datasets.blended_megatron_dataset_builder.BlendedMegatronDatasetBuilder')
 # @patch('nemo.lightning.pytorch.trainer.Trainer')
 # def test_pretraining_module(mock_pretraining_dataset_builder, mock_trainer) -> None:
-#     from nemo.llm.gpt.data import PreTrainingDataModule
+#     from nemo.collections.llm.gpt.data import PreTrainingDataModule
 #
 #     datamodule = PreTrainingDataModule(
 #         path=Path('random_path'),

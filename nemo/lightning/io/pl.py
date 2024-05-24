@@ -11,8 +11,8 @@ from lightning_fabric.utilities.types import _PATH
 from torch import nn
 from typing_extensions import Self, override
 
-from nemo.io.capture import IOProtocol
-from nemo.io.mixin import IOMixin
+from nemo.lightning.io.capture import IOProtocol
+from nemo.lightning.io.mixin import IOMixin
 
 if TYPE_CHECKING:
     from nemo.lightning.pytorch.strategies import MegatronStrategy
@@ -53,11 +53,9 @@ class TrainerCheckpoint(IOMixin, Generic[LightningModuleT]):
 
 class TrainerCkptProtocol(Protocol):
     @classmethod
-    def from_strategy(cls, strategy: "MegatronStrategy") -> Self:
-        ...
+    def from_strategy(cls, strategy: "MegatronStrategy") -> Self: ...
 
-    def io_dump(self, output: Path):
-        ...
+    def io_dump(self, output: Path): ...
 
 
 class MegatronCheckpointIO(CheckpointIO):

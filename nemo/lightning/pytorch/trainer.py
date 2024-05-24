@@ -4,7 +4,7 @@ import fiddle as fdl
 import pytorch_lightning as pl
 from typing_extensions import Self
 
-from nemo.io.mixin import IOMixin
+from nemo.lightning.io.mixin import IOMixin
 
 
 class Trainer(pl.Trainer, IOMixin):

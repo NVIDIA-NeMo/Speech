@@ -3,6 +3,12 @@ from typing import Union
 from lightning_fabric.plugins.environments import slurm
 from pytorch_lightning import plugins as _pl_plugins
 
+# This is here to import it once, which improves the speed of launch when in debug-mode
+try:
+    import transformer_engine  # noqa
+except ImportError:
+    pass
+
 from nemo.lightning.base import get_vocab_size, teardown
 from nemo.lightning.pytorch.plugins import MegatronDataSampler, MegatronMixedPrecision
 from nemo.lightning.pytorch.plugins import data_sampler as _data_sampler

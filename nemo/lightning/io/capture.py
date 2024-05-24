@@ -42,14 +42,12 @@ SelfT = TypeVar("SelfT", covariant=True)
 @runtime_checkable
 class IOProtocol(Protocol, Generic[SelfT]):
     @property
-    def __io__(self) -> fdl.Config[SelfT]:
-        ...
+    def __io__(self) -> fdl.Config[SelfT]: ...
 
 
 @runtime_checkable
 class ReInitProtocol(Protocol, Generic[SelfT]):
-    def reinit(self) -> SelfT:
-        ...
+    def reinit(self) -> SelfT: ...
 
 
 def reinit(configurable: IOProtocol[SelfT]) -> SelfT:

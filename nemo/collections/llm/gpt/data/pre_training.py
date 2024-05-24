@@ -9,6 +9,7 @@ from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
 if TYPE_CHECKING:
     from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
+
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
@@ -82,7 +83,10 @@ class PreTrainingDataModule(pl.LightningDataModule):
 
         train_valid_test_num_samples = [num_train_samples, num_val_samples, num_test_samples]
         self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
-            GPTDataset, train_valid_test_num_samples, is_built_on_rank=lambda: True, config=self.gpt_dataset_config,
+            GPTDataset,
+            train_valid_test_num_samples,
+            is_built_on_rank=lambda: True,
+            config=self.gpt_dataset_config,
         ).build()
 
     # uncomment once fabric API is merged

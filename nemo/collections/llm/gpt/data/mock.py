@@ -74,7 +74,12 @@ class MockDataModule(pl.LightningDataModule):
 
 class _MockGPTDataset(Dataset):
     def __init__(
-        self, tokenizer: "TokenizerSpec", name: str, num_samples: int, seq_length: int, seed: int = 42,
+        self,
+        tokenizer: "TokenizerSpec",
+        name: str,
+        num_samples: int,
+        seq_length: int,
+        seed: int = 42,
     ) -> None:
         super().__init__()
         self.name = name
@@ -118,7 +123,7 @@ class _MockGPTDataset(Dataset):
 
     def collate_fn(self, batch):
         """Method that user pass as functor to DataLoader.
-        
+
         The method optionally performs neural type checking and add types to the outputs.
 
         Please note, subclasses of Dataset should not implement `input_types`.

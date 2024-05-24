@@ -5,8 +5,8 @@ from typing import Any, Callable, Optional, Type, TypeVar
 import fiddle as fdl
 import pytorch_lightning as pl
 
-from nemo.io.mixin import ConnectorMixin, ConnT, ModelConnector
-from nemo.io.pl import TrainerCheckpoint
+from nemo.lightning.io.mixin import ConnectorMixin, ConnT, ModelConnector
+from nemo.lightning.io.pl import TrainerCheckpoint
 
 CkptType = TypeVar("CkptType")
 
@@ -128,14 +128,14 @@ def import_ckpt(
     path for the imported checkpoint; if not provided, the importer's default path will be used.
     The 'overwrite' parameter enables the replacement of existing data at the output path, which
     is useful when updating models with new data and discarding old checkpoint files.
-    
-    For instance, using `import_ckpt(Mistral7BModel(), "hf")` initiates the import process 
-    by searching for a registered model importer tagged with "hf". In NeMo, `HFMistral7BImporter` 
+
+    For instance, using `import_ckpt(Mistral7BModel(), "hf")` initiates the import process
+    by searching for a registered model importer tagged with "hf". In NeMo, `HFMistral7BImporter`
     is registered under this tag via:
-    `@io.model_importer(Mistral7BModel, "hf", default_path="mistralai/Mistral-7B-v0.1")`. 
-    This links `Mistral7BModel` to `HFMistral7BImporter`, designed for HuggingFace checkpoints. 
-    The importer then processes and integrates these checkpoints into `Mistral7BModel` for further 
-    fine-tuning. 
+    `@io.model_importer(Mistral7BModel, "hf", default_path="mistralai/Mistral-7B-v0.1")`.
+    This links `Mistral7BModel` to `HFMistral7BImporter`, designed for HuggingFace checkpoints.
+    The importer then processes and integrates these checkpoints into `Mistral7BModel` for further
+    fine-tuning.
 
     Args:
         model (pl.LightningModule): The model into which the checkpoint will be imported.
@@ -188,7 +188,7 @@ def export_ckpt(
 ) -> Path:
     """
     Exports a checkpoint from a model using the model's associated exporter, typically for
-    the purpose of sharing a model that has been fine-tuned or customized within NeMo. 
+    the purpose of sharing a model that has been fine-tuned or customized within NeMo.
     This function leverages the ConnectorMixin interface to seamlessly integrate
     the model's state into an external checkpoint format.
 

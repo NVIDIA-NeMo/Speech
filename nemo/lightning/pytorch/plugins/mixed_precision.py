@@ -27,11 +27,16 @@ AnyT = TypeVar("AnyT")
 
 
 class MegatronMixedPrecision(MixedPrecision):
-    def __init__(self, precision: Literal["16-mixed", "bf16-mixed"], amp_O2: bool = True, device="cuda",) -> None:
+    def __init__(
+        self,
+        precision: Literal["16-mixed", "bf16-mixed"],
+        amp_O2: bool = False,
+        device="cuda",
+    ) -> None:
         if precision == "bf16-mixed":
             scaler = None
         else:
-            scaler = GradScaler(init_scale=2 ** 32, growth_interval=1000, hysteresis=2)
+            scaler = GradScaler(init_scale=2**32, growth_interval=1000, hysteresis=2)
 
         super().__init__(precision, device, scaler)
 
@@ -94,7 +99,11 @@ class MegatronMixedPrecision(MixedPrecision):
         if isinstance(optimizer, MainParamsOptimizerWrapper) or not self.amp_O2:
             return optimizer
 
-        return MainParamsOptimizerWrapper(optimizer, fp32_grad_accum=True, contiguous_grad_bucket=True,)
+        return MainParamsOptimizerWrapper(
+            optimizer,
+            fp32_grad_accum=True,
+            contiguous_grad_bucket=True,
+        )
 
     def convert_input(self, data: AnyT) -> AnyT:
         """Convert model inputs (forward) to the floating point precision type of this plugin.

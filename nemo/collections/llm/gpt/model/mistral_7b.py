@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 import torch
 import torch.nn.functional as F
 
-from nemo import io
-from nemo.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.lightning import io, teardown
 
 if TYPE_CHECKING:
     from transformers import MistralConfig, MistralForCausalLM
@@ -21,7 +21,7 @@ class Mistral7BConfig(GPTConfig):
     position_embedding_type: str = "rope"
     add_bias_linear: bool = False
     gated_linear_unit: bool = True
-    apply_query_key_layer_scaling: bool = True
+    apply_query_key_layer_scaling: bool = False  # TODO: Should this be True?
 
     num_layers: int = 32
     hidden_size: int = 4096
@@ -55,6 +55,9 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
+
+        teardown(trainer, target)
+        del trainer, target
 
         return output_path
 
@@ -90,11 +93,12 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
             return base
 
         output = Mistral7BConfig(
-            seq_length=source.max_position_embeddings,
+            seq_length=source.sliding_window,
             num_layers=source.num_hidden_layers,
             hidden_size=source.hidden_size,
             ffn_hidden_size=source.intermediate_size,
             num_attention_heads=source.num_attention_heads,
+            max_position_embeddings=source.max_position_embeddings,
             init_method_std=source.initializer_range,
             layernorm_epsilon=source.rms_norm_eps,
             num_query_groups=source.num_key_value_heads,

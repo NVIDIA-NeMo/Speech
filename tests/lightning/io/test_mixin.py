@@ -1,4 +1,4 @@
-from nemo import io
+from nemo.lightning import io
 
 
 class DummyClass(io.IOMixin):

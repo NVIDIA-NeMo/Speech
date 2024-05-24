@@ -31,11 +31,9 @@ DataT = TypeVar("DataT", Tensor, Dict[str, Tensor], Sequence[Tensor])
 
 @runtime_checkable
 class PrecisionPluginProtocol(Protocol[DataT]):
-    def convert_input(self, data: DataT) -> DataT:
-        ...
+    def convert_input(self, data: DataT) -> DataT: ...
 
-    def convert_output(self, output: torch.Tensor) -> torch.Tensor:
-        ...
+    def convert_output(self, output: torch.Tensor) -> torch.Tensor: ...
 
 
 def default_data_step(dataloader_iter: Iterator[DataT]) -> DataT:
@@ -122,7 +120,7 @@ class MegatronParallel(nn.ModuleList):
 
         if vp_size is not None:
             if len(_pipeline) == 1 and parallel_state.get_pipeline_model_parallel_world_size() > 1:
-                from nemo import io
+                from nemo.lightning import io
 
                 parallel_state.set_virtual_pipeline_model_parallel_world_size(vp_size)
                 for i in range(1, vp_size):
@@ -212,7 +210,10 @@ class MegatronParallel(nn.ModuleList):
         if wrap_forward_step:
             _data_step = data_step or self.data_step
             forward_step_func = self.wrapped_forward_step(
-                _forward_step, data_step=_data_step, loss_reduction=loss_reduction, context=context,
+                _forward_step,
+                data_step=_data_step,
+                loss_reduction=_loss_reduction,
+                context=context,
             )
         else:
             forward_step_func = _forward_step
@@ -259,7 +260,11 @@ class MegatronParallel(nn.ModuleList):
         return loss_mean
 
     def wrapped_forward_step(
-        self, forward_step, loss_reduction, context, data_step,
+        self,
+        forward_step,
+        loss_reduction,
+        context,
+        data_step,
     ) -> Callable[[nn.Module, DataT], Tuple[torch.Tensor, "MegatronCallbackProtocol"]]:
         """The method wraps the forward step function and returns a callable.
 
@@ -309,7 +314,11 @@ class MegatronParallel(nn.ModuleList):
 
             # callback
             self._setup_module(
-                forward_callback, batch=batch, model=self, forward_module=model, tensor=output_tensor,
+                forward_callback,
+                batch=batch,
+                model=self,
+                forward_module=model,
+                tensor=output_tensor,
             )
 
             if self.precision_plugin and parallel_state.is_pipeline_last_stage():
@@ -728,29 +737,21 @@ class CallbackConnector:
 
 
 class CallbackMethods:
-    def on_megatron_step_start(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_step_start(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_microbatch_start(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_microbatch_start(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_microbatch_callback(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_microbatch_callback(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_microbatch_end(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_microbatch_end(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_reduce_microbatches_start(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_reduce_microbatches_start(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_reduce_microbatches_end(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_reduce_microbatches_end(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_log_step_end(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_log_step_end(self, *args, **kwargs) -> None: ...
 
-    def on_megatron_step_end(self, *args, **kwargs) -> None:
-        ...
+    def on_megatron_step_end(self, *args, **kwargs) -> None: ...
 
 
 ReductionT = TypeVar("ReductionT")
@@ -778,8 +779,7 @@ class MegatronLossReduction(nn.Module, Generic[DataT, ReductionT]):
 
 @runtime_checkable
 class MegatronCallbackProtocol(Protocol):
-    def __call__(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        ...
+    def __call__(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]: ...
 
 
 @runtime_checkable
@@ -796,8 +796,7 @@ class MegatronStepProtocol(Protocol):
         decoder_seq_length: Optional[int] = None,
         forward_only: bool = False,
         collect_non_loss_data: bool = False,
-    ) -> list:
-        ...
+    ) -> list: ...
 
 
 def _calc_number_of_params(model: List[nn.Module]) -> int:

@@ -29,19 +29,19 @@ class Connector(BasePath, Generic[SourceT, TargetT]):
     -------
         init() -> TargetT:
             Should be implemented to initialize the target type from the source type.
-        
+
         apply(output_path: Path) -> Path:
             Should be implemented to apply the transformation and save the result at the output path.
-        
+
         __new__(cls, *args, **kwargs) -> 'Connector':
             Creates a new instance of the connector, using default_path if no path is provided.
-        
+
         __call__(output_path: Optional[Path] = None, overwrite: bool = False) -> Path:
             Processes the transformation and handles file operations like overwriting.
-        
+
         local_path(base_path: Optional[Path] = None) -> Path:
             Computes the local path for storage based on a base path or a default cache home.
-        
+
         is_in_cache(base_path: Optional[Path] = None) -> bool:
             Checks if the transformed data is already cached at the specified base path.
     """
@@ -96,10 +96,10 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
     -------
         nemo_setup(model: pl.LightningModule, trainer: Optional[pl.Trainer] = None) -> pl.Trainer:
             Sets up the model and trainer using a specified strategy, preparing it for training or inference.
-        
+
         nemo_save(output_path: Path, trainer: pl.Trainer):
             Saves the model's state to the specified path using the trainer's current strategy.
-        
+
         nemo_load(path: Path, trainer: Optional[pl.Trainer] = None, cpu: bool = True) -> Tuple[Any, pl.Trainer]:
             Loads a model from the specified path, optionally using a CPU-focused strategy, and returns the model and trainer.
     """
@@ -118,7 +118,9 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         """
         from nemo.lightning import MegatronStrategy, Trainer
 
-        _trainer = trainer or Trainer(devices=1, accelerator="cpu", strategy=MegatronStrategy())
+        _trainer = trainer or Trainer(
+            devices=1, accelerator="cpu", strategy=MegatronStrategy(store_optimizer_states=False)
+        )
 
         _trainer.strategy.connect(model)
         _trainer.strategy.setup_environment()
@@ -156,8 +158,8 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         -------
             Tuple[pl.LightningModule, pl.Trainer]: The loaded model and the trainer configured with the model.
         """
-        from nemo.io.api import load_ckpt
         from nemo.lightning import MegatronStrategy, Trainer, _strategy_lib
+        from nemo.lightning.io.api import load_ckpt
 
         model = load_ckpt(path).model
         _trainer = trainer or Trainer(devices=1, accelerator="cpu" if cpu else "gpu", strategy=MegatronStrategy())
@@ -177,3 +179,13 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         _trainer.strategy.load_checkpoint(path)
 
         return model, _trainer
+
+    def local_path(self, base_path: Optional[Path] = None) -> Path:
+        if base_path:
+            _base = base_path
+        else:
+            from nemo.lightning.base import NEMO_MODELS_CACHE
+
+            _base = Path(NEMO_MODELS_CACHE)
+
+        return _base / str(self).replace("://", "/")

@@ -9,7 +9,7 @@ import torch.distributed
 from pytorch_lightning import LightningModule, Trainer
 from torch import nn
 
-from nemo import io
+from nemo.lightning import io
 
 DEFAULT_NEMO_CACHE_HOME = Path.home() / ".cache" / "nemo"
 NEMO_CACHE_HOME = Path(os.getenv("NEMO_HOME", DEFAULT_NEMO_CACHE_HOME))
@@ -18,27 +18,7 @@ NEMO_DATASETS_CACHE = Path(os.getenv("NEMO_DATASETS_CACHE", DEFAULT_NEMO_DATASET
 DEFAULT_NEMO_MODELS_CACHE = NEMO_CACHE_HOME / "models"
 NEMO_MODELS_CACHE = Path(os.getenv("NEMO_MODELS_CACHE", DEFAULT_NEMO_MODELS_CACHE))
 
-#
-# @dataclass
-# class DataConfig:
-#     seq_length: int
-#     micro_batch_size: int = 4
-#     global_batch_size: int = 8
-#     rampup_batch_size: Optional[List[int]] = None
-#     train_drop_last: bool = True
-#     val_drop_last: bool = True
-#     test_drop_last: bool = True
-#     num_workers: int = 8
-#     pin_memory: bool = True
-#     persistent_workers: bool = False
-#
-#     @property
-#     def num_microbatches(self) -> int:
-#         from apex.transformer.pipeline_parallel.utils import get_num_microbatches
-#
-#         return get_num_microbatches()
-#
-#
+
 ModelT = TypeVar("ModelT", bound=LightningModule)
 
 
@@ -66,7 +46,11 @@ class ModelConfig(Generic[ModelT], io.IOMixin):
         return model
 
 
-def get_vocab_size(config, vocab_size: int, make_vocab_size_divisible_by: int = 128,) -> int:
+def get_vocab_size(
+    config,
+    vocab_size: int,
+    make_vocab_size_divisible_by: int = 128,
+) -> int:
     from nemo.utils import logging
 
     after = vocab_size

@@ -233,7 +233,7 @@ def convert(in_file, precision=None) -> None:
 
 if __name__ == '__main__':
     args = get_args()
-    parallel_state.set_cpu_expert_model_parallel_world_size(1)
+    parallel_state.set_expert_model_parallel_world_size(1)
     hf_state_dict, nemo_config = convert(args.input_name_or_path, args.precision)
 
     config = load_config(args.hf_model_name, nemo_config)

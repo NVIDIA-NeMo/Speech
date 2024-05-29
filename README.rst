@@ -240,6 +240,8 @@ Install PyTorch using their `configurator <https://pytorch.org/get-started/local
 
 The command used to install PyTorch may depend on your system. Please use the configurator linked above to find the right command for your system.
 
+Then, install NeMo via Pip or from Source. We do not provide NeMo on the conda-forge or any other Conda channel.
+
 Pip
 ~~~
 Use this installation mode if you want the latest released version.

@@ -152,8 +152,8 @@ jobs:
     - name: "L0: Unit Tests GPU"
       run: |
         NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --with_downloads
-    - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-      if: "failure()"
+    #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+    #  if: "failure()"
       
 
   L0_Unit_Tests_CPU:

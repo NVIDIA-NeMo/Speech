@@ -45,8 +45,8 @@ def get_args(argv):
     parser.add_argument(
         "-dt",
         "--dtype",
-        choices=["bf16", "fp16", "fp8", "int8"],
-        default="bf16",
+        choices=["bfloat16", "float16", "fp8", "int8"],
+        default="bfloat16",
         type=str,
         help="dtype of the model on TensorRT-LLM",
     )
@@ -59,7 +59,7 @@ def get_args(argv):
         "-mpet", "--max_prompt_embedding_table_size", default=None, type=int, help="Max prompt embedding table size"
     )
     parser.add_argument(
-        "-upkc", "--use_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
+        "-npkc", "--no_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
     )
     parser.add_argument(
         "-drip",
@@ -123,7 +123,7 @@ def nemo_export_trt_llm(argv):
     LOGGER.info("Logging level set to {}".format(loglevel))
     LOGGER.info(args)
 
-    if args.dtype != "bf16":
+    if args.dtype != "bfloat16":
         LOGGER.error(
             "Only bf16 is currently supported for the optimized deployment with TensorRT-LLM. "
             "Support for the other precisions will be added in the coming releases."
@@ -146,7 +146,7 @@ def nemo_export_trt_llm(argv):
             max_num_tokens=args.max_num_tokens,
             opt_num_tokens=args.opt_num_tokens,
             max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
-            paged_kv_cache=args.use_paged_kv_cache,
+            paged_kv_cache=(not args.no_paged_kv_cache),
             remove_input_padding=(not args.disable_remove_input_padding),
             dtype=args.dtype,
             enable_multi_block_mode=args.multi_block_mode,

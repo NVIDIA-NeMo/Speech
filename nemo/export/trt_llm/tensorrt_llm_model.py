@@ -144,7 +144,12 @@ class ModelBuilder(Module):
         if attention_mask is not None:
             attention_mask = expand_mask(attention_mask, shape(input_ids, -1))
 
-        for layer_idx, (layer, past) in enumerate(zip(self.layers, kv_cache_params.past_key_value,)):
+        for layer_idx, (layer, past) in enumerate(
+            zip(
+                self.layers,
+                kv_cache_params.past_key_value,
+            )
+        ):
 
             decoder_params = {
                 "hidden_states": hidden_states,

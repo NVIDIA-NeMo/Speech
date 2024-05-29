@@ -69,7 +69,11 @@ class FALCONDecoderLayerConfigBuilder(DecoderLayerConfigBuilder):
         )
 
         config.dense = LinearConfig.from_nn_module(
-            layer.self_attn.o_proj, LINEAR_ROW, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.self_attn.o_proj,
+            LINEAR_ROW,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
 
         return config
@@ -78,13 +82,25 @@ class FALCONDecoderLayerConfigBuilder(DecoderLayerConfigBuilder):
     def build_mlp(self, layer) -> MLPConfig:
         config = MLPConfig()
         config.fc = LinearConfig.from_nn_module(
-            layer.mlp.gate_proj, LINEAR_COLUMN, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.gate_proj,
+            LINEAR_COLUMN,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
         config.proj = LinearConfig.from_nn_module(
-            layer.mlp.down_proj, LINEAR_ROW, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.down_proj,
+            LINEAR_ROW,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
         config.gate = LinearConfig.from_nn_module(
-            layer.mlp.up_proj, LINEAR_COLUMN, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.up_proj,
+            LINEAR_COLUMN,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
 
         return config
@@ -130,4 +146,7 @@ class FALCONDecoderLayerBuilder(DecoderLayerBuilder):
         config.set_if_not_exist('bias', False)
         config.set_if_not_exist('moe_num_experts', 0)
 
-        return FalconDecoderLayer(config=config, layer_idx=self.layer_id,)
+        return FalconDecoderLayer(
+            config=config,
+            layer_idx=self.layer_id,
+        )

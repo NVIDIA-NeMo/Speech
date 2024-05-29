@@ -90,7 +90,11 @@ class DecoderLayerConfigBuilder(ABC):
         pass
 
     def __init__(
-        self, decoder_type: str, dtype: trt.DataType = trt.float16, rank: int = 0, tensor_parallel: int = 1,
+        self,
+        decoder_type: str,
+        dtype: trt.DataType = trt.float16,
+        rank: int = 0,
+        tensor_parallel: int = 1,
     ):
         """Initializes the DecoderLayerConfigBuilder."""
         self.decoder_type = decoder_type

@@ -82,15 +82,24 @@ class TensorRTLLM(ITritonDeployable):
 
     """
 
-    def __init__(self, model_dir: str, lora_ckpt_list: List[str] = None, load_model: bool = True):
+    def __init__(
+        self,
+        model_dir: str,
+        lora_ckpt_list: List[str] = None,
+        load_model: bool = True,
+        use_python_runtime: bool = True,
+    ):
         """
         Args:
             model_dir (str): path for storing the TensorRT-LLM model files.
+            lora_ckpt_list (List[str]): lora checkpoint paths.
             load_model (bool): load TensorRT-LLM model if the engine files exist in the model_dir.
+            use_python_runtime (bool): whether to use python or c++ runtime.
         """
 
         self.model_dir = model_dir
         self.lora_ckpt_list = lora_ckpt_list
+        self.use_python_runtime = use_python_runtime
         self.model = None
         self.tokenizer = None
         self.n_gpus = None
@@ -623,7 +632,7 @@ class TensorRTLLM(ITritonDeployable):
         if len(vtokens_embeddings) > 0:
             self.p_table = torch.stack(vtokens_embeddings, dim=0).view(-1, self.get_hidden_size)
 
-            max_prompt_embedding_table_size = self.config['builder_config']['max_prompt_embedding_table_size']
+            max_prompt_embedding_table_size = self.config['build_config']['max_prompt_embedding_table_size']
             actual_prompt_table_size = self.p_table.shape[0]
 
             if actual_prompt_table_size > max_prompt_embedding_table_size:
@@ -754,7 +763,10 @@ class TensorRTLLM(ITritonDeployable):
                     self._load_config_file()
                     self.tokenizer = get_tokenzier(Path(os.path.join(self.model_dir)))
                     self.model = load(
-                        tokenizer=self.tokenizer, engine_dir=self.model_dir, lora_ckpt_list=self.lora_ckpt_list
+                        tokenizer=self.tokenizer,
+                        engine_dir=self.model_dir,
+                        lora_ckpt_list=self.lora_ckpt_list,
+                        use_python_runtime=self.use_python_runtime,
                     )
                     self._load_prompt_tables()
                 except Exception as error:

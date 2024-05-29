@@ -80,7 +80,7 @@ def get_args(argv):
         "-mpet", "--max_prompt_embedding_table_size", default=None, type=int, help="Max prompt embedding table size"
     )
     parser.add_argument(
-        "-upkc", "--use_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
+        "-npkc", "--no_paged_kv_cache", default=False, action='store_true', help="Enable paged kv cache."
     )
     parser.add_argument(
         "-drip",
@@ -132,6 +132,13 @@ def get_args(argv):
     )
     parser.add_argument(
         "-lc", "--lora_ckpt", default=None, type=str, nargs="+", help="The checkpoint list of LoRA weights"
+    )
+    parser.add_argument(
+        "-ucr",
+        '--use_cpp_runtime',
+        default=False,
+        action='store_true',
+        help='Use TensorRT LLM C++ runtime',
     )
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
 
@@ -206,32 +213,13 @@ def nemo_deploy(argv):
                 )
                 return
 
-    trt_llm_exporter = TensorRTLLM(model_dir=trt_llm_path, lora_ckpt_list=args.lora_ckpt)
+    trt_llm_exporter = TensorRTLLM(
+        model_dir=trt_llm_path,
+        lora_ckpt_list=args.lora_ckpt,
+        use_python_runtime=(not args.use_cpp_runtime),
+    )
 
     if args.nemo_checkpoint is not None:
-
-        trt_llm_exporter.export(
-            nemo_checkpoint_path=args.nemo_checkpoint,
-            model_type=args.model_type,
-            n_gpus=args.num_gpus,
-            tensor_parallel_size=args.num_gpus,
-            pipeline_parallel_size=1,
-            max_input_token=args.max_input_len,
-            max_output_token=args.max_output_len,
-            max_batch_size=args.max_batch_size,
-            max_num_tokens=args.max_num_tokens,
-            opt_num_tokens=args.opt_num_tokens,
-            max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
-            paged_kv_cache=args.use_paged_kv_cache,
-            remove_input_padding=(not args.disable_remove_input_padding),
-            dtype=args.dtype,
-            enable_multi_block_mode=args.multi_block_mode,
-            use_lora_plugin=args.use_lora_plugin,
-            lora_target_modules=args.lora_target_modules,
-            max_lora_rank=args.max_lora_rank,
-            save_nemo_model_config=True,
-        )
-
         try:
             LOGGER.info("Export operation will be started to export the nemo checkpoint to TensorRT-LLM.")
             trt_llm_exporter.export(
@@ -246,7 +234,7 @@ def nemo_deploy(argv):
                 max_num_tokens=args.max_num_tokens,
                 opt_num_tokens=args.opt_num_tokens,
                 max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
-                paged_kv_cache=args.use_paged_kv_cache,
+                paged_kv_cache=(not args.no_paged_kv_cache),
                 remove_input_padding=(not args.disable_remove_input_padding),
                 dtype=args.dtype,
                 enable_multi_block_mode=args.multi_block_mode,

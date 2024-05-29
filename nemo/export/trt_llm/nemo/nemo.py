@@ -106,7 +106,9 @@ def extract_layers_with_prefix(model_, prefix):
 
 class UnpackedNemoCheckpointDir:
     def __init__(
-        self, checkpoints_dir: typing.Union[pathlib.Path, TarPath], load_checkpoints_to_cpu: bool = False,
+        self,
+        checkpoints_dir: typing.Union[pathlib.Path, TarPath],
+        load_checkpoints_to_cpu: bool = False,
     ):
         assert isinstance(checkpoints_dir, (pathlib.Path, TarPath))
         self._checkpoints_dir = checkpoints_dir
@@ -121,11 +123,7 @@ class UnpackedNemoCheckpointDir:
         model_configs_paths = list(self._checkpoints_dir.rglob(model_config_filename))
         if model_configs_paths:
             if len(model_configs_paths) > 1:
-                raise RuntimeError(
-                    f"There are more than single {model_config_filename} in"
-                    f" {self._checkpoints_dir}:"
-                    f" {', '.join(map(lambda p: p.as_posix(), model_configs_paths))}"
-                )
+                LOGGER.debug(f"There are more than single {model_config_filename} in" f" {self._checkpoints_dir}")
             model_config_path = model_configs_paths[0]
             LOGGER.debug("Loading model config from %s", model_config_path)
             with model_config_path.open("r") as model_config_file:

@@ -66,7 +66,11 @@ class LLAMADecoderLayerConfigBuilder(DecoderLayerConfigBuilder):
         )
 
         config.dense = LinearConfig.from_nn_module(
-            layer.self_attn.o_proj, LINEAR_ROW, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.self_attn.o_proj,
+            LINEAR_ROW,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
 
         return config
@@ -75,13 +79,25 @@ class LLAMADecoderLayerConfigBuilder(DecoderLayerConfigBuilder):
     def build_mlp(self, layer) -> MLPConfig:
         config = MLPConfig()
         config.fc = LinearConfig.from_nn_module(
-            layer.mlp.gate_proj, LINEAR_COLUMN, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.gate_proj,
+            LINEAR_COLUMN,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
         config.proj = LinearConfig.from_nn_module(
-            layer.mlp.down_proj, LINEAR_ROW, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.down_proj,
+            LINEAR_ROW,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
         config.gate = LinearConfig.from_nn_module(
-            layer.mlp.up_proj, LINEAR_COLUMN, rank=self.rank, tensor_parallel=self.tensor_parallel, dtype=self.dtype,
+            layer.mlp.up_proj,
+            LINEAR_COLUMN,
+            rank=self.rank,
+            tensor_parallel=self.tensor_parallel,
+            dtype=self.dtype,
         )
 
         return config
@@ -147,4 +163,7 @@ class LLAMADecoderLayerBuilder(DecoderLayerBuilder):
                 config.moe_tp_mode = layer.moe_tp_mode
                 config.moe_normalization_mode = layer.moe_renorm_mode
 
-        return LLaMADecoderLayer(config=config, layer_idx=self.layer_id,)
+        return LLaMADecoderLayer(
+            config=config,
+            layer_idx=self.layer_id,
+        )

@@ -133,10 +133,10 @@ class MultimodalAdapterModelMixin(NLPAdapterModelMixin):
             state_dict = torch.load(filepath, map_location)['state_dict']
         else:
             raise RuntimeError(f"{filepath} is not nemo file or ckpt file")
-        if self.cfg.megatron_amp_O2:
-            state_dict = {replace_prefix(k, 'model.', 'model.module.'): v for k, v in state_dict.items()}
         if not self.ptuning_only_and_non_first_stage:
             assert set(state_dict.keys()) == self.adapter_keys.union(self.tunable_base_param_keys)
+        if self.cfg.megatron_amp_O2:
+            state_dict = {replace_prefix(k, 'model.', 'model.module.'): v for k, v in state_dict.items()}
 
         missing_keys, unexpected_keys = NLPModel.load_state_dict(self, state_dict, strict=False)
 

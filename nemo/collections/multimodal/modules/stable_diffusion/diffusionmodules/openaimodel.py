@@ -115,10 +115,14 @@ class AttentionPool2d(nn.Module):
     """
 
     def __init__(
-        self, spacial_dim: int, embed_dim: int, num_heads_channels: int, output_dim: int = None,
+        self,
+        spacial_dim: int,
+        embed_dim: int,
+        num_heads_channels: int,
+        output_dim: int = None,
     ):
         super().__init__()
-        self.positional_embedding = nn.Parameter(th.randn(embed_dim, spacial_dim ** 2 + 1) / embed_dim ** 0.5)
+        self.positional_embedding = nn.Parameter(th.randn(embed_dim, spacial_dim**2 + 1) / embed_dim**0.5)
         self.qkv_proj = conv_nd(1, embed_dim, 3 * embed_dim, 1)
         self.c_proj = conv_nd(1, embed_dim, output_dim or embed_dim, 1)
         self.num_heads = embed_dim // num_heads_channels
@@ -332,7 +336,10 @@ class ResBlock(TimestepBlock):
             self.emb_layers = None
             self.exchange_temb_dims = False
         else:
-            self.emb_layers = nn.Sequential(nn.SiLU(), linear(emb_channels, self.emb_out_channels),)
+            self.emb_layers = nn.Sequential(
+                nn.SiLU(),
+                linear(emb_channels, self.emb_out_channels),
+            )
         self.out_layers = nn.Sequential(
             normalization(self.out_channels, act="silu", gn_groups=resblock_gn_groups),
             nn.Dropout(p=dropout),
@@ -400,7 +407,12 @@ class AttentionBlock(nn.Module):
     """
 
     def __init__(
-        self, channels, num_heads=1, num_head_channels=-1, use_checkpoint=False, use_new_attention_order=False,
+        self,
+        channels,
+        num_heads=1,
+        num_head_channels=-1,
+        use_checkpoint=False,
+        use_new_attention_order=False,
     ):
         super().__init__()
         self.channels = channels
@@ -451,7 +463,7 @@ def count_flops_attn(model, _x, y):
     # We perform two matmuls with the same number of ops.
     # The first computes the weight matrix, the second computes
     # the combination of the value vectors.
-    matmul_ops = 2 * b * (num_spatial ** 2) * c
+    matmul_ops = 2 * b * (num_spatial**2) * c
     model.total_ops += th.DoubleTensor([matmul_ops])
 
 
@@ -653,7 +665,10 @@ class UNetModel(nn.Module):
         if num_attention_blocks is not None:
             assert len(num_attention_blocks) == len(self.num_res_blocks)
             assert all(
-                map(lambda i: self.num_res_blocks[i] >= num_attention_blocks[i], range(len(num_attention_blocks)),)
+                map(
+                    lambda i: self.num_res_blocks[i] >= num_attention_blocks[i],
+                    range(len(num_attention_blocks)),
+                )
             )
             logging.info(
                 f"Constructor of UNetModel received num_attention_blocks={num_attention_blocks}. "
@@ -674,7 +689,9 @@ class UNetModel(nn.Module):
         self.predict_codebook_ids = n_embed is not None
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
+            linear(model_channels, time_embed_dim),
+            nn.SiLU(),
+            linear(time_embed_dim, time_embed_dim),
         )
 
         self.time_embeddings = torch.Tensor(build_timestep_embedding(model_channels, timesteps))
@@ -691,7 +708,9 @@ class UNetModel(nn.Module):
                 self.label_emb = nn.Sequential(
                     Timestep(model_channels),
                     nn.Sequential(
-                        linear(model_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
+                        linear(model_channels, time_embed_dim),
+                        nn.SiLU(),
+                        linear(time_embed_dim, time_embed_dim),
                     ),
                 )
             elif self.num_classes == "sequential":
@@ -699,7 +718,9 @@ class UNetModel(nn.Module):
                 self.adm_in_channels = adm_in_channels
                 self.label_emb = nn.Sequential(
                     nn.Sequential(
-                        linear(adm_in_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
+                        linear(adm_in_channels, time_embed_dim),
+                        nn.SiLU(),
+                        linear(time_embed_dim, time_embed_dim),
                     )
                 )
             else:
@@ -810,26 +831,28 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
                 resblock_gn_groups=resblock_gn_groups,
             ),
-            AttentionBlock(
-                ch,
-                use_checkpoint=use_checkpoint,
-                num_heads=num_heads,
-                num_head_channels=dim_head,
-                use_new_attention_order=use_new_attention_order,
-            )
-            if not use_spatial_transformer
-            else SpatialTransformer(
-                ch,
-                num_heads,
-                dim_head,
-                depth=transformer_depth_middle,
-                context_dim=context_dim,
-                disable_self_attn=disable_middle_self_attn,
-                use_linear=use_linear_in_transformer,
-                use_checkpoint=use_checkpoint,
-                use_flash_attention=use_flash_attention,
-                use_te=self.use_te_fp8,
-                lora_network_alpha=lora_network_alpha,
+            (
+                AttentionBlock(
+                    ch,
+                    use_checkpoint=use_checkpoint,
+                    num_heads=num_heads,
+                    num_head_channels=dim_head,
+                    use_new_attention_order=use_new_attention_order,
+                )
+                if not use_spatial_transformer
+                else SpatialTransformer(
+                    ch,
+                    num_heads,
+                    dim_head,
+                    depth=transformer_depth_middle,
+                    context_dim=context_dim,
+                    disable_self_attn=disable_middle_self_attn,
+                    use_linear=use_linear_in_transformer,
+                    use_checkpoint=use_checkpoint,
+                    use_flash_attention=use_flash_attention,
+                    use_te=self.use_te_fp8,
+                    lora_network_alpha=lora_network_alpha,
+                )
             ),
             ResBlock(
                 ch,
@@ -1123,9 +1146,15 @@ class UNetModel(nn.Module):
             # norm_to_q.layer_norm_{weight|bias} -> norm.{weight|bias}
             # norm_to_q.weight -> to_q.weight
             new_key = key.replace('attn1.norm.', 'attn1.norm_to_q.layer_norm_')
-            new_key = new_key.replace('attn1.to_q.weight', 'attn1.norm_to_q.weight',)
+            new_key = new_key.replace(
+                'attn1.to_q.weight',
+                'attn1.norm_to_q.weight',
+            )
             new_key = new_key.replace('attn2.norm.', 'attn2.norm_to_q.layer_norm_')
-            new_key = new_key.replace('attn2.to_q.weight', 'attn2.norm_to_q.weight',)
+            new_key = new_key.replace(
+                'attn2.to_q.weight',
+                'attn2.norm_to_q.weight',
+            )
 
             ### LayerNormMLP
             # ff.net.layer_norm_{weight|bias} -> ff.net.0.{weight|bias}
@@ -1214,7 +1243,10 @@ class UNetModel(nn.Module):
         unexpected_keys = list(set(loaded_keys) - set(expected_keys))
 
         def _find_mismatched_keys(
-            state_dict, model_state_dict, loaded_keys, ignore_mismatched_sizes,
+            state_dict,
+            model_state_dict,
+            loaded_keys,
+            ignore_mismatched_sizes,
         ):
             mismatched_keys = []
             if ignore_mismatched_sizes:
@@ -1234,7 +1266,10 @@ class UNetModel(nn.Module):
         if state_dict is not None:
             # Whole checkpoint
             mismatched_keys = _find_mismatched_keys(
-                state_dict, model_state_dict, original_loaded_keys, ignore_mismatched_sizes,
+                state_dict,
+                model_state_dict,
+                original_loaded_keys,
+                ignore_mismatched_sizes,
             )
             error_msgs = self._load_state_dict_into_model(state_dict)
         return missing_keys, unexpected_keys, mismatched_keys, error_msgs
@@ -1329,9 +1364,14 @@ class UNetModel(nn.Module):
             return self.out(h)
 
     def forward(self, x, timesteps=None, context=None, y=None, **kwargs):
-        with transformer_engine.pytorch.fp8_autocast(
-            enabled=self.use_te_fp8, fp8_recipe=self.fp8_recipe,
-        ) if self.use_te_fp8 else nullcontext():
+        with (
+            transformer_engine.pytorch.fp8_autocast(
+                enabled=self.use_te_fp8,
+                fp8_recipe=self.fp8_recipe,
+            )
+            if self.use_te_fp8
+            else nullcontext()
+        ):
             out = self._forward(x, timesteps, context, y, **kwargs)
         return out
 
@@ -1387,7 +1427,9 @@ class EncoderUNetModel(nn.Module):
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
-            linear(model_channels, time_embed_dim), nn.SiLU(), linear(time_embed_dim, time_embed_dim),
+            linear(model_channels, time_embed_dim),
+            nn.SiLU(),
+            linear(time_embed_dim, time_embed_dim),
         )
 
         self.input_blocks = nn.ModuleList(
@@ -1489,11 +1531,15 @@ class EncoderUNetModel(nn.Module):
         elif pool == "attention":
             assert num_head_channels != -1
             self.out = nn.Sequential(
-                normalization(ch), nn.SiLU(), AttentionPool2d((image_size // ds), ch, num_head_channels, out_channels),
+                normalization(ch),
+                nn.SiLU(),
+                AttentionPool2d((image_size // ds), ch, num_head_channels, out_channels),
             )
         elif pool == "spatial":
             self.out = nn.Sequential(
-                nn.Linear(self._feature_size, 2048), nn.ReLU(), nn.Linear(2048, self.out_channels),
+                nn.Linear(self._feature_size, 2048),
+                nn.ReLU(),
+                nn.Linear(2048, self.out_channels),
             )
         elif pool == "spatial_v2":
             self.out = nn.Sequential(

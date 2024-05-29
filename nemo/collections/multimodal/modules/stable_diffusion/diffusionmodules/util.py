@@ -44,7 +44,7 @@ except Exception:
 
 def make_beta_schedule(schedule, n_timestep, linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3):
     if schedule == "linear":
-        betas = torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
+        betas = torch.linspace(linear_start**0.5, linear_end**0.5, n_timestep, dtype=torch.float64) ** 2
 
     elif schedule == "cosine":
         timesteps = torch.arange(n_timestep + 1, dtype=torch.float64) / n_timestep + cosine_s
@@ -169,7 +169,10 @@ class CheckpointFunction(torch.autograd.Function):
             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies)
         input_grads = torch.autograd.grad(
-            output_tensors, ctx.input_tensors + ctx.input_params, output_grads, allow_unused=True,
+            output_tensors,
+            ctx.input_tensors + ctx.input_params,
+            output_grads,
+            allow_unused=True,
         )
         del ctx.input_tensors
         del ctx.input_params
@@ -319,7 +322,11 @@ def interpolate_fn(x, xp, yp):
     start_idx = torch.where(
         torch.eq(x_idx, 0),
         torch.tensor(1, device=x.device),
-        torch.where(torch.eq(x_idx, K), torch.tensor(K - 2, device=x.device), cand_start_idx,),
+        torch.where(
+            torch.eq(x_idx, K),
+            torch.tensor(K - 2, device=x.device),
+            cand_start_idx,
+        ),
     )
     end_idx = torch.where(torch.eq(start_idx, cand_start_idx), start_idx + 2, start_idx + 1)
     start_x = torch.gather(sorted_all_x, dim=2, index=start_idx.unsqueeze(2)).squeeze(2)
@@ -327,7 +334,11 @@ def interpolate_fn(x, xp, yp):
     start_idx2 = torch.where(
         torch.eq(x_idx, 0),
         torch.tensor(0, device=x.device),
-        torch.where(torch.eq(x_idx, K), torch.tensor(K - 2, device=x.device), cand_start_idx,),
+        torch.where(
+            torch.eq(x_idx, K),
+            torch.tensor(K - 2, device=x.device),
+            cand_start_idx,
+        ),
     )
     y_positions_expanded = yp.unsqueeze(0).expand(N, -1, -1)
     start_y = torch.gather(y_positions_expanded, dim=2, index=start_idx2.unsqueeze(2)).squeeze(2)

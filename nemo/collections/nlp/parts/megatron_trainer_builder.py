@@ -146,7 +146,7 @@ class MegatronTrainerBuilder:
         use_dist_ckpt = not self.cfg.model.get('fsdp', False) and (
             self.cfg.model.get('mcore_gpt', False) or self.cfg.model.get('mcore_bert', False)
         )
-        async_save = self.cfg.exp_manager.get('checkpoint_callback_params', {}).get('async_save', False)
+        async_save = self.cfg.get('exp_manager', {}).get('checkpoint_callback_params', {}).get('async_save', False)
         if use_dist_ckpt:
             checkpoint_io = DistributedCheckpointIO.from_config(self.cfg.model, async_save)
             if async_save:
@@ -171,7 +171,7 @@ class MegatronTrainerBuilder:
         if 'enable_progress_bar' not in self.cfg.trainer or self.cfg.trainer.enable_progress_bar:
             callbacks.append(CustomProgressBar())
 
-        if self.cfg.exp_manager.get('checkpoint_callback_params', {}).get('async_save', False):
+        if self.cfg.get('exp_manager', {}).get('checkpoint_callback_params', {}).get('async_save', False):
             callbacks.append(AsyncFinalizerCallback())
         return callbacks
 

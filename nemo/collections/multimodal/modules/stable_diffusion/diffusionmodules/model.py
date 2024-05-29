@@ -233,7 +233,10 @@ class Model(nn.Module):
             # timestep embedding
             self.temb = nn.Module()
             self.temb.dense = nn.ModuleList(
-                [torch.nn.Linear(self.ch, self.temb_ch), torch.nn.Linear(self.temb_ch, self.temb_ch),]
+                [
+                    torch.nn.Linear(self.ch, self.temb_ch),
+                    torch.nn.Linear(self.temb_ch, self.temb_ch),
+                ]
             )
 
         # downsampling
@@ -669,7 +672,11 @@ class LatentRescaler(nn.Module):
             ]
         )
 
-        self.conv_out = nn.Conv2d(mid_channels, out_channels, kernel_size=1,)
+        self.conv_out = nn.Conv2d(
+            mid_channels,
+            out_channels,
+            kernel_size=1,
+        )
 
     def forward(self, x):
         x = self.conv_in(x)

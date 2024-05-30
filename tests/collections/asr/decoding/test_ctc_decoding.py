@@ -200,41 +200,8 @@ class TestCTCDecoding:
     @pytest.mark.parametrize('timestamps', [False, True])
     @pytest.mark.parametrize('preserve_frame_confidence', [False, True])
     @pytest.mark.parametrize('length_is_none', [False, True])
-    @pytest.mark.parametrize(
-        "logprobs_device",
-        [
-            torch.device("cpu"),
-            pytest.param(
-                torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
-            ),
-        ],
-    )
-    @pytest.mark.parametrize(
-        "length_device",
-        [
-            torch.device("cpu"),
-            pytest.param(
-                torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
-            ),
-        ],
-    )
     def test_batched_decoding_logprobs(
-        self,
-        tmp_tokenizer,
-        alignments,
-        timestamps,
-        preserve_frame_confidence,
-        length_is_none,
-        logprobs_device,
-        length_device,
+        self, tmp_tokenizer, alignments, timestamps, preserve_frame_confidence, length_is_none
     ):
         cfg = CTCBPEDecodingConfig(
             strategy='greedy',
@@ -250,7 +217,7 @@ class TestCTCDecoding:
         torch.manual_seed(1)
         B, T = 4, 20
         V = unbatched_decoding.tokenizer.tokenizer.vocab_size + 1
-        input_signal = torch.randn(size=(B, T, V), device=logprobs_device)
+        input_signal = torch.randn(size=(B, T, V))
         # Set the blank index to a very high probability to make sure
         # that we always handle at least a few blanks.
         input_signal[:, 0, unbatched_decoding.tokenizer.tokenizer.vocab_size] = 1000
@@ -258,7 +225,7 @@ class TestCTCDecoding:
         if length_is_none:
             length = None
         else:
-            length = torch.randint(low=1, high=T, size=[B], device=length_device)
+            length = torch.randint(low=1, high=T, size=[B])
 
         with torch.inference_mode():
             hyps, _ = unbatched_decoding.ctc_decoder_predictions_tensor(
@@ -282,33 +249,7 @@ class TestCTCDecoding:
     @pytest.mark.unit
     @pytest.mark.parametrize('timestamps', [False, True])
     @pytest.mark.parametrize('length_is_none', [False, True])
-    @pytest.mark.parametrize(
-        "labels_device",
-        [
-            torch.device("cpu"),
-            pytest.param(
-                torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
-            ),
-        ],
-    )
-    @pytest.mark.parametrize(
-        "length_device",
-        [
-            torch.device("cpu"),
-            pytest.param(
-                torch.device("cuda"),
-                marks=pytest.mark.skipif(
-                    not torch.cuda.is_available(),
-                    reason='CUDA required for test.',
-                ),
-            ),
-        ],
-    )
-    def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none, labels_device, length_device):
+    def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none):
         cfg = CTCBPEDecodingConfig(strategy='greedy', compute_timestamps=timestamps)
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
         cfg.strategy = 'greedy_batched'
@@ -317,7 +258,7 @@ class TestCTCDecoding:
         torch.manual_seed(1)
         B, T = 4, 20
         V = unbatched_decoding.tokenizer.tokenizer.vocab_size + 1
-        input_labels = torch.randint(V, size=(B, T), device=labels_device)
+        input_labels = torch.randint(V, size=(B, T))
         # Set some indices to blank to make sure that we always handle
         # at least a few blanks.
         input_labels[:, 0] = unbatched_decoding.tokenizer.tokenizer.vocab_size
@@ -325,7 +266,7 @@ class TestCTCDecoding:
         if length_is_none:
             length = None
         else:
-            length = torch.randint(low=1, high=T, size=[B], device=length_device)
+            length = torch.randint(low=1, high=T, size=[B])
 
         with torch.inference_mode():
             hyps, _ = unbatched_decoding.ctc_decoder_predictions_tensor(

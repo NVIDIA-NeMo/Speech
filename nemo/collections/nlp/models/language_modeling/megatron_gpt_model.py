@@ -1001,8 +1001,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         """All-reduce gradients of FSDP-sharding-omitted parameters in sharding domain (data-parallel domain)."""
         assert isinstance(self.model, torch.nn.Module)
         grads = []
-        for param in self.model.parameters():
-            if not isinstance(param, torch.distributed.fsdp.FlatParameter) and param.requires_grad:
+        for param in self.model._ignored_params:
+            if param.requires_grad and param.grad is not None:
                 grad = param.grad
                 grads.append(grad.data)
         if len(grads) > 0:

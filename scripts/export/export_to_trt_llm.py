@@ -131,7 +131,7 @@ def nemo_export_trt_llm(argv):
         return
 
     try:
-        trt_llm_exporter = TensorRTLLM(model_dir=args.model_repository)
+        trt_llm_exporter = TensorRTLLM(model_dir=args.model_repository, load_model=False)
 
         LOGGER.info("Export to TensorRT-LLM function is called.")
         trt_llm_exporter.export(

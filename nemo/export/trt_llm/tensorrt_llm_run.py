@@ -312,7 +312,13 @@ def load(
 
     max_batch_size = config["build_config"]["max_batch_size"]
     max_input_len = config["build_config"]["max_input_len"]
-    add_bos = True if config["pretrained_config"]["architecture"] == "GemmaForCausalLM" else False
+    architectures_that_need_bos_token = [
+        "GemmaForCausalLM",
+        "LLaMAForCausalLM",
+        "MistralForCausalLM",
+        "MixtralForCausalLM",
+    ]
+    add_bos = config["pretrained_config"]["architecture"] in architectures_that_need_bos_token
 
     return TensorrtLLMHostContext(
         executor=executor,

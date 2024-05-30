@@ -843,9 +843,11 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         # when using sequence parallelism, the sequence parallel layernorm grads must be all-reduced
         if self.cfg.get('tensor_model_parallel_size', 1) > 1 and self.cfg.get('sequence_parallel', False):
-            self.megatron_timer_start('allreduce_sequence_parallel_gradients', log_level=1)
-            self.allreduce_sequence_parallel_gradients()
-            self.megatron_timer_stop('allreduce_sequence_parallel_gradients')
+            # Mcore DistOpt handles this, so we don't have to
+            if not self.use_mcore_dist_optim:
+                self.megatron_timer_start('allreduce_sequence_parallel_gradients', log_level=1)
+                self.allreduce_sequence_parallel_gradients()
+                self.megatron_timer_stop('allreduce_sequence_parallel_gradients')
 
         self.megatron_timer_start('gradient_allreduce', log_level=1)
         if self.use_fsdp:

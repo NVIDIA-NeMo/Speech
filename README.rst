@@ -108,57 +108,51 @@ Latest News
 Introduction
 ------------
 
-NVIDIA NeMo Framework is a generative AI framework built for researchers and PyTorch developers
-working on large language models (LLMs), multimodal models (MM), automatic speech recognition (ASR),
-and text-to-speech synthesis (TTS).
-The primary objective of NeMo is to provide a scalable framework for researchers and developers from industry and academia
-to more easily implement and design new generative AI models by being able to leverage existing code and pretrained models.
+NVIDIA NeMo Framework is a scalable and cloud-native generative AI framework built for researchers and PyTorch developers working on Large Language Models (LLMs), Multimodal Models (MMs), Automatic Speech Recognition (ASR), Text to Speech (TTS), and Computer Vision (CV) domains. It is designed to help you efficiently create, customize, and deploy new generative AI models by leveraging existing code and pre-trained model checkpoints.
 
 For technical documentation, please see the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_.
 
-All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_ and
-training is automatically scalable to 1000s of GPUs.
+LLMs and MMs Training, Alignment, and Customization
+###################################################
 
-When applicable, NeMo models take advantage of the latest possible distributed training techniques,
-including parallelism strategies such as
+All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_.
+Training is automatically scalable to 1000s of GPUs.
 
-* data parallelism
-* tensor parallelism
-* pipeline model parallelism
-* fully sharded data parallelism (FSDP)
-* sequence parallelism
-* context parallelism
-* mixture-of-experts (MoE)
+When applicable, NeMo models leverage cutting-edge distributed training techniques, incorporating `parallelism strategies <https://docs.nvidia.com/nemo-framework/user-guide/latest/modeloverview.html>`_ to enable efficient training of very large models. These techniques include Tensor Parallelism (TP), Pipeline Parallelism (PP), Fully Sharded Data Parallelism (FSDP), Mixture-of-Experts (MoE), and Mixed Precision Training with BFloat16 and FP8, as well as others.
 
-and mixed precision training recipes with bfloat16 and FP8 training.
+NeMo Transformer-based LLMs and MMs utilize `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_ for FP8 training on NVIDIA Hopper GPUs, while leveraging `NVIDIA Megatron Core <https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core>`_ for scaling Transformer model training.
 
-NeMo's Transformer based LLM and Multimodal models leverage `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_ for FP8 training on NVIDIA Hopper GPUs
-and leverages `NVIDIA Megatron Core <https://github.com/NVIDIA/Megatron-LM/tree/main/megatron/core>`_ for scaling transformer model training.
+NeMo LLMs can be aligned with state-of-the-art methods such as SteerLM, Direct Preference Optimization (DPO), and Reinforcement Learning from Human Feedback (RLHF). See `NVIDIA NeMo Aligner <https://github.com/NVIDIA/NeMo-Aligner>`_ for more information.
 
-NeMo LLMs can be aligned with state of the art methods such as SteerLM, DPO and Reinforcement Learning from Human Feedback (RLHF),
-see `NVIDIA NeMo Aligner <https://github.com/NVIDIA/NeMo-Aligner>`_ for more details.
+In addition to supervised fine-tuning (SFT), NeMo also supports the latest parameter efficient fine-tuning (PEFT) techniques such as LoRA, P-Tuning, Adapters, and IA3. Refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/sft_peft/index.html>`_ for the full list of supported models and techniques.
 
-NeMo LLM and Multimodal models can be deployed and optimized with `NVIDIA Inference Microservices (Early Access) <https://developer.nvidia.com/nemo-microservices-early-access>`_.
+LLMs and MMs Deployment and Optimization
+########################################
 
-NeMo ASR and TTS models can be optimized for inference and deployed for production use-cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
+NeMo LLMs and MMs can be deployed and optimized with `NVIDIA Inference Microservices (Early Access) <https://developer.nvidia.com/nemo-microservices-early-access>`_, in short, NIMs.
 
-For scaling NeMo LLM and Multimodal training on Slurm clusters or public clouds, please see the `NVIDIA Framework Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_.
-The NeMo Framework launcher has extensive recipes, scripts, utilities, and documentation for training NeMo LLMs and Multimodal models and also has an `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_
-which can be used to find the optimal model parallel configuration for training on a specific cluster.
-To get started quickly with the NeMo Framework Launcher, please see the `NeMo Framework Playbooks <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_
-The NeMo Framework Launcher does not currently support ASR and TTS training but will soon.
+NeMo ASR and TTS models can be optimized for inference and deployed for production use cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
 
-Getting started with NeMo is simple.
-State of the Art pretrained NeMo models are freely available on `HuggingFace Hub <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_ and
+NeMo Framework Launcher
+#######################
+
+`NeMo Framework Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_ is a cloud-native tool that streamlines the NeMo Framework experience. It is used for launching end-to-end NeMo Framework training jobs on CSPs and Slurm clusters. 
+
+The NeMo Framework Launcher includes extensive recipes, scripts, utilities, and documentation for training NeMo LLMs. It also includes the NeMo Framework `Autoconfigurator <https://github.com/NVIDIA/NeMo-Megatron-Launcher#53-using-autoconfigurator-to-find-the-optimal-configuration>`_, which is designed to find the optimal model parallel configuration for training on a specific cluster.
+
+To get started quickly with the NeMo Framework Launcher, please see the `NeMo Framework Playbooks <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_. The NeMo Framework Launcher does not currently support ASR and TTS training, but it will soon.
+
+Get Started with NeMo Framework
+-------------------------------
+
+Getting started with NeMo Framework is easy. State-of-the-art pretrained NeMo models are freely available on `Hugging Face Hub <https://huggingface.co/models?library=nemo&sort=downloads&search=nvidia>`_ and
 `NVIDIA NGC <https://catalog.ngc.nvidia.com/models?query=nemo&orderBy=weightPopularDESC>`_.
 These models can be used to generate text or images, transcribe audio, and synthesize speech in just a few lines of code.
 
 We have extensive `tutorials <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/starthere/tutorials.html>`_ that
-can be run on `Google Colab <https://colab.research.google.com>`_ or with our `NGC NeMo Framework Container. <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo>`_
-and we have `playbooks <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_ for users that want to train NeMo models with the NeMo Framework Launcher.
+can be run on `Google Colab <https://colab.research.google.com>`_ or with our `NGC NeMo Framework Container <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo>`_. We also have `playbooks <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_ for users who want to train NeMo models with the NeMo Framework Launcher.
 
-For advanced users that want to train NeMo models from scratch or finetune existing NeMo models
-we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ that support multi-GPU/multi-node training.
+For advanced users who want to train NeMo models from scratch or fine-tune existing NeMo models, we have a full suite of `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ that support multi-GPU/multi-node training.
 
 Key Features
 ------------
@@ -172,9 +166,9 @@ Key Features
 Requirements
 ------------
 
-1) Python 3.10 or above
-2) Pytorch 1.13.1 or above
-3) NVIDIA GPU, if you intend to do model training
+* Python 3.10 or above
+* Pytorch 1.13.1 or above
+* NVIDIA GPU (if you intend to do model training)
 
 Developer Documentation
 -----------------------
@@ -197,54 +191,48 @@ Developer Documentation
 | Stable  | |stable|    | `Documentation of the stable (i.e. most recent release) branch. <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/>`_ |
 +---------+-------------+------------------------------------------------------------------------------------------------------------------------------------------+
 
-
-Getting help with NeMo
+Install NeMo Framework
 ----------------------
-FAQ can be found on NeMo's `Discussions board <https://github.com/NVIDIA/NeMo/discussions>`_. You are welcome to ask questions or start discussions there.
-
-
-Installation
-------------
 
 The NeMo Framework can be installed in a variety of ways, depending on your needs. Depending on the domain, you may find one of the following installation methods more suitable.
 
-* Conda / Pip - Refer to the `Conda <#conda>`_ and `Pip <#pip>`_ sections for installation instructions.
+* Conda / Pip - Refer to `Conda <#conda>`_ and `Pip <#pip>`_ for installation instructions.
 
-  * This is recommended for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
-  * When using a Nvidia PyTorch container as the base, this is the recommended installation method for all domains.
+  * This is the recommended method for Automatic Speech Recognition (ASR) and Text-to-Speech (TTS) domains.
+  * When using a Nvidia PyTorch container as the base, this is the recommended method for all domains.
 
-* Docker Containers - Refer to the `Docker containers <#docker-containers>`_ section for installation instructions.
+* Docker Containers - Refer to `Docker containers <#docker-containers>`_ for installation instructions.
 
-  * This is recommended for Large Language Models (LLM), Multimodal and Vision domains.
-  * NeMo LLM & Multimodal Container - `nvcr.io/nvidia/nemo:24.03.framework`
-  * NeMo Speech Container - `nvcr.io/nvidia/nemo:24.01.speech`
+  * NeMo Framework container - `nvcr.io/nvidia/nemo:24.05`
 
-* LLM and Multimodal Dependencies - Refer to the `LLM and Multimodal dependencies <#llm-and-multimodal-dependencies>`_ section for installation instructions.
-  * It's highly recommended to start with a base NVIDIA PyTorch container: `nvcr.io/nvidia/pytorch:24.02-py3`
+* LLMs and MMs Dependencies - Refer to `LLMs and MMs Dependencies <#install-llms-and-mms-dependencies>`_ for installation instructions.
+
+**Important: We strongly recommended that you start with a base NVIDIA PyTorch container: `nvcr.io/nvidia/pytorch:24.02-py3`**
 
 Conda
-~~~~~
+^^^^^^
 
-We recommend installing NeMo in a fresh Conda environment.
+Install NeMo in a fresh Conda environment:
 
 .. code-block:: bash
 
     conda create --name nemo python==3.10.12
     conda activate nemo
 
-Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_.
+Install PyTorch using their `configurator <https://pytorch.org/get-started/locally/>`_:
 
 .. code-block:: bash
 
     conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
 
-The command used to install PyTorch may depend on your system. Please use the configurator linked above to find the right command for your system.
+The command to install PyTorch may depend on your system. Use the configurator linked above to find the right command for your system.
 
 Then, install NeMo via Pip or from Source. We do not provide NeMo on the conda-forge or any other Conda channel.
 
 Pip
-~~~
-Use this installation mode if you want the latest released version.
+^^^
+
+To install the nemo_toolkit, use the following installation method:
 
 .. code-block:: bash
 
@@ -252,12 +240,12 @@ Use this installation mode if you want the latest released version.
     pip install Cython
     pip install nemo_toolkit['all']
 
-Depending on the shell used, you may need to use ``"nemo_toolkit[all]"`` instead in the above command.
+Depending on the shell used, you may need to use the ``"nemo_toolkit[all]"`` specifier instead in the above command.
 
-Pip (Domain Specific)
-~~~~~~~~~~~~~~~~~~~~~
+Pip from a Specific Domain
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To install only a specific domain of NeMo, use the following commands. Note: It is required to install the above pre-requisites before installing a specific domain of NeMo.
+To install a specific domain of NeMo, you must first install the nemo_toolkit using the instructions listed above. Then, you run the following domain-specific commands:
 
 .. code-block:: bash
 
@@ -267,9 +255,10 @@ To install only a specific domain of NeMo, use the following commands. Note: It 
     pip install nemo_toolkit['vision']
     pip install nemo_toolkit['multimodal']
 
-Pip from source
-~~~~~~~~~~~~~~~
-Use this installation mode if you want the version from a particular GitHub branch (e.g main).
+Pip from a Source Branch
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you want to work with a specific version of NeMo from a particular GitHub branch (e.g main), use the following installation method:
 
 .. code-block:: bash
 
@@ -278,9 +267,10 @@ Use this installation mode if you want the version from a particular GitHub bran
     python -m pip install git+https://github.com/NVIDIA/NeMo.git@{BRANCH}#egg=nemo_toolkit[all]
 
 
-From source
-~~~~~~~~~~~
-Use this installation mode if you are contributing to NeMo.
+Build from Source
+^^^^^^^^^^^^^^^^^
+
+If you want to clone the NeMo GitHub repository and contribute to NeMo open-source development work, use the following installation method:
 
 .. code-block:: bash
 
@@ -289,18 +279,16 @@ Use this installation mode if you are contributing to NeMo.
     cd NeMo
     ./reinstall.sh
 
-If you only want the toolkit without additional conda-based dependencies, you may replace ``reinstall.sh``
-with ``pip install -e .`` when your PWD is the root of the NeMo repository.
+If you only want the toolkit without the additional Conda-based dependencies, you can replace ``reinstall.sh`` with ``pip install -e .`` when your PWD is the root of the NeMo repository.
 
-Mac computers with Apple silicon
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-To install NeMo on Mac with Apple M-Series GPU:
+Mac Computers with Apple Silicon
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- create a new Conda environment
+To install NeMo on Mac computers with the Apple M-Series GPU, you need to create a new Conda environment, install PyTorch 2.0 or higher, and then install the nemo_toolkit.
 
-- install PyTorch 2.0 or higher
+**Important: This method is only applicable to the ASR domain.**
 
-- run the following code:
+Run the following code:
 
 .. code-block:: shell
 
@@ -322,24 +310,22 @@ To install NeMo on Mac with Apple M-Series GPU:
     # Note that only the ASR toolkit is guaranteed to work on MacBook - so for MacBook use pip install 'nemo_toolkit[asr]'
 
 Windows Computers
-~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^
 
-One of the options is using Windows Subsystem for Linux (WSL).
-
-To install WSL:
-
-- In PowerShell, run the following code:
+To install the Windows Subsystem for Linux (WSL), run the following code in PowerShell: 
 
 .. code-block:: shell
 
     wsl --install
     # [note] If you run wsl --install and see the WSL help text, it means WSL is already installed.
 
-Learn more about installing WSL at `Microsoft's official documentation <https://learn.microsoft.com/en-us/windows/wsl/install>`_.
+To learn more about installing WSL, refer to `Microsoft's official documentation <https://learn.microsoft.com/en-us/windows/wsl/install>`_.
 
-After Installing your Linux distribution with WSL:
-  - **Option 1:** Open the distribution (Ubuntu by default) from the Start menu and follow the instructions.
-  - **Option 2:** Launch the Terminal application. Download it from `Microsoft's Windows Terminal page <https://learn.microsoft.com/en-us/windows/terminal>`_ if not installed.
+After installing your Linux distribution with WSL, two options are available:
+
+**Option 1:** Open the distribution (Ubuntu by default) from the Start menu and follow the instructions.
+
+**Option 2:** Launch the Terminal application. Download it from `Microsoft's Windows Terminal page <https://learn.microsoft.com/en-us/windows/terminal>`_ if not installed.
 
 Next, follow the instructions for Linux systems, as provided above. For example:
 
@@ -351,8 +337,11 @@ Next, follow the instructions for Linux systems, as provided above. For example:
     ./reinstall.sh
 
 RNNT
-~~~~
-Note that RNNT requires numba to be installed from conda.
+^^^^
+
+For optimal performance of a Recurrent Neural Network Transducer (RNNT), install the Numba package from Conda.
+
+Run the following code:
 
 .. code-block:: bash
 
@@ -360,14 +349,12 @@ Note that RNNT requires numba to be installed from conda.
   pip uninstall numba
   conda install -c conda-forge numba
 
-LLM and Multimodal Dependencies
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Install LLMs and MMs Dependencies
+---------------------------------
 
-The LLM and Multimodal domains require three additional dependencies: 
-NVIDIA Apex, NVIDIA Transformer Engine, and NVIDIA Megatron Core.
+If you work with the LLM and MM domains, three additional dependencies are required: NVIDIA Apex, NVIDIA Transformer Engine, and NVIDIA Megatron Core. When working with the `main` branch, these dependencies may require a recent commit.
 
-When working with the `main` branch these dependencies may require a recent commit.
-The most recent working versions of these dependencies are:
+The most recent working versions of these dependencies are here:
 
 .. code-block:: bash
 
@@ -376,11 +363,14 @@ The most recent working versions of these dependencies are:
   export mcore_commit=fbb375d4b5e88ce52f5f7125053068caff47f93f
   export nv_pytorch_tag=24.02-py3
 
-When using a released version of NeMo, 
-please refer to the `Software Component Versions <https://docs.nvidia.com/nemo-framework/user-guide/latest/softwarecomponentversions.html>`_ 
-for the correct versions.
+When using a released version of NeMo, please refer to the `Software Component Versions <https://docs.nvidia.com/nemo-framework/user-guide/latest/softwarecomponentversions.html>`_ for the correct versions.
 
-If starting with a base NVIDIA PyTorch container first launch the container:
+PyTorch Container
+^^^^^^^^^^^^^^^^^
+
+We recommended that you start with a base NVIDIA PyTorch container: nvcr.io/nvidia/pytorch:24.02-py3.
+
+If starting with a base NVIDIA PyTorch container, you must first launch the container:
 
 .. code-block:: bash
 
@@ -393,15 +383,14 @@ If starting with a base NVIDIA PyTorch container first launch the container:
     --ulimit stack=67108864 \
     nvcr.io/nvidia/pytorch:$nv_pytorch_tag
 
-Then install the dependencies:
+Next, you need to install the dependencies.
 
 Apex
-~~~~
-NeMo LLM Multimodal Domains require that NVIDIA Apex to be installed.
-Apex comes installed in the NVIDIA PyTorch container but it's possible that
-NeMo LLM and Multimodal may need to be updated to a newer version.
+^^^^
 
-To install Apex, run
+NVIDIA Apex is required for LLM and MM domains. Although Apex is pre-installed in the NVIDIA PyTorch container, you may need to update it to a newer version.
+
+To install Apex, run the following code:
 
 .. code-block:: bash
 
@@ -410,35 +399,32 @@ To install Apex, run
     git checkout $apex_commit
     pip install . -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam --group_norm"
 
+When attempting to install Apex separately from the NVIDIA PyTorch container, you might encounter an error if the CUDA version on your system is different from the one used to compile PyTorch. To bypass this error, you can comment out the relevant line in the setup file located in the Apex repository on GitHub here: https://github.com/NVIDIA/apex/blob/master/setup.py#L32.
 
-While installing Apex outside of the NVIDIA PyTorch container,
-it may raise an error if the CUDA version on your system does not match the CUDA version torch was compiled with.
-This raise can be avoided by commenting it here: https://github.com/NVIDIA/apex/blob/master/setup.py#L32
+cuda-nvprof is needed to install Apex. The version should match the CUDA version that you are using.
 
-cuda-nvprof is needed to install Apex. The version should match the CUDA version that you are using:
+To install cuda-nvprof, run the following code:
 
 .. code-block:: bash
 
   conda install -c nvidia cuda-nvprof=11.8
 
-packaging is also needed:
+Finally, install the packaging:
 
 .. code-block:: bash
 
   pip install packaging
 
-With the latest versions of Apex, the `pyproject.toml` file in Apex may need to be deleted in order to install locally.
-
+To install the most recent versions of Apex locally, it might be necessary to remove the `pyproject.toml` file from the Apex directory.
 
 Transformer Engine
-~~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^^^
 
-The NeMo LLM Multimodal Domains require that NVIDIA Transformer Engine to be installed.
-Transformer Engine comes installed in the NVIDIA PyTorch container but it's possible that
-NeMo LLM and Multimodal may need Transformer Engine to be updated to a newer version.
+NVIDIA Transformer Engine is required for LLM and MM domains. Although the Transformer Engine is pre-installed in the NVIDIA PyTorch container, you may need to update it to a newer version.
 
-Transformer Engine enables FP8 training on NVIDIA Hopper GPUs and many performance optimizations for transformer-based model training.
-Documentation for installing Transformer Engine can be found `here <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_. 
+The Transformer Engine facilitates training with FP8 precision on NVIDIA Hopper GPUs and introduces many enhancements for the training of Transformer-based models. Refer to `Transformer Enginer <https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/installation.html>`_ for information. 
+
+To install Transformer Engine, run the following code:
 
 .. code-block:: bash
 
@@ -451,14 +437,15 @@ Documentation for installing Transformer Engine can be found `here <https://docs
 Transformer Engine requires PyTorch to be built with at least CUDA 11.8.
 
 Megatron Core
-~~~~~~~~~~~~~
+^^^^^^^^^^^^^
 
-The NeMo LLM Multimodal Domains require that NVIDIA Megatron Core to be installed.
-Megatron core is a library for scaling large transformer base models. 
-NeMo LLM and Multimodal models leverage Megatron Core for model parallelism, 
+Megatron Core is required for LLM and MM domains.
+
+Megatron Core is a library for scaling large Transformer-based models. NeMo LLMs and MMs leverage Megatron Core for model parallelism, 
+
 transformer architectures, and optimized PyTorch datasets.
 
-NeMo LLM and Multimodal may need Megatron Core to be updated to a recent version.
+To install Megatron Core, run the following code:
 
 .. code-block:: bash
 
@@ -469,27 +456,32 @@ NeMo LLM and Multimodal may need Megatron Core to be updated to a recent version
   cd megatron/core/datasets && \
   make
 
-
 NeMo Text Processing
-~~~~~~~~~~~~~~~~~~~~
-NeMo Text Processing, specifically (Inverse) Text Normalization, is now a separate repository `https://github.com/NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_.
+--------------------
 
-Docker containers
-~~~~~~~~~~~~~~~~~
-We release NeMo containers alongside NeMo releases. For example, NeMo ``r1.23.0`` comes with container ``nemo:24.01.speech``, you may find more details about released containers in `releases page <https://github.com/NVIDIA/NeMo/releases>`_.
+NeMo Text Processing, specifically Inverse Text Normalization, is now a separate repository. It is located here: `https://github.com/NVIDIA/NeMo-text-processing <https://github.com/NVIDIA/NeMo-text-processing>`_.
 
-To use a pre-built container, please run
+Docker Containers
+-----------------
+
+NeMo containers are launched concurrently with NeMo version updates. For example, the release of NeMo ``r1.23.0`` comes with the container ``nemo:24.01.speech``. The latest containers are:
+
+* NeMo LLM and MM container - `nvcr.io/nvidia/nemo:24.03.framework`
+* NeMo Speech container - `nvcr.io/nvidia/nemo:24.01.speech`
+
+You can find additional information about released containers on the `NeMo releases page <https://github.com/NVIDIA/NeMo/releases>`_.
+
+To use a pre-built container, run the following code:
 
 .. code-block:: bash
 
     docker pull nvcr.io/nvidia/nemo:24.01.speech
 
-To build a nemo container with Dockerfile from a branch, please run
+To build a nemo container with Dockerfile from a branch, run the following code:
 
 .. code-block:: bash
 
-    DOCKER_BUILDKIT=1 docker build -f Dockerfile -t nemo:latest .
-
+    DOCKER_BUILDKIT=1 docker build -f Dockerfile -t nemo:latest
 
 If you choose to work with the main branch, we recommend using NVIDIA's PyTorch container version 23.10-py3 and then installing from GitHub.
 
@@ -499,25 +491,32 @@ If you choose to work with the main branch, we recommend using NVIDIA's PyTorch 
     -p 8888:8888 -p 6006:6006 --ulimit memlock=-1 --ulimit \
     stack=67108864 --device=/dev/snd nvcr.io/nvidia/pytorch:23.10-py3
 
-Examples
---------
 
-Many examples can be found under the `"Examples" <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_ folder.
+Future Work
+-----------
 
+The NeMo Framework Launcher does not currently support ASR and TTS training, but it will soon.
 
-Contributing
-------------
+Discussions Board
+-----------------
+
+FAQ can be found on the NeMo `Discussions board <https://github.com/NVIDIA/NeMo/discussions>`_. You are welcome to ask questions or start discussions on the board.
+
+Contribute to NeMo
+------------------
 
 We welcome community contributions! Please refer to `CONTRIBUTING.md <https://github.com/NVIDIA/NeMo/blob/stable/CONTRIBUTING.md>`_ for the process.
 
 Publications
-------------
+------------------
 
 We provide an ever-growing list of `publications <https://nvidia.github.io/NeMo/publications/>`_ that utilize the NeMo Framework.
 
-If you would like to add your own article to the list, you are welcome to do so via a pull request to this repository's ``gh-pages-src`` branch.
-Please refer to the instructions in the `README of that branch <https://github.com/NVIDIA/NeMo/tree/gh-pages-src#readme>`_.
+To contribute an article to the collection, please submit a pull request to the ``gh-pages-src`` branch of this repository. For detailed information, please consult the README located at the `gh-pages-src branch <https://github.com/NVIDIA/NeMo/tree/gh-pages-src#readme>`_.
 
-License
--------
-NeMo is released under an `Apache 2.0 license <https://github.com/NVIDIA/NeMo/blob/stable/LICENSE>`_.
+Licenses
+--------
+
+* `NeMo GitHub Apache 2.0 license <https://github.com/NVIDIA/NeMo?tab=Apache-2.0-1-ov-file#readme>`__
+
+* NeMo is licensed under the `NVIDIA AI PRODUCT AGREEMENT <https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/>`__. By pulling and using the container, you accept the terms and conditions of this license.

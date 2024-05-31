@@ -56,6 +56,8 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         conv_kernel_size (int): kernel size for depthwise convolution in convolution module
         dropout (float): dropout probabilities for linear layers
         dropout_att (float): dropout probabilities for attention distributions
+        use_bias (bool): Apply bias to all Linear and Conv1d layers from each ConformerLayer to improve activation flow and stabilize training of huge models.
+            Defaults to True.
     """
 
     def __init__(
@@ -75,6 +77,7 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
         pos_bias_u=None,
         pos_bias_v=None,
         att_context_size=[-1, -1],
+        use_bias=True,
     ):
         super(ConformerLayer, self).__init__()
 
@@ -84,7 +87,7 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         # first feed forward module
         self.norm_feed_forward1 = LayerNorm(d_model)
-        self.feed_forward1 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout)
+        self.feed_forward1 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
 
         # convolution module
         self.norm_conv = LayerNorm(d_model)
@@ -93,6 +96,7 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             kernel_size=conv_kernel_size,
             norm_type=conv_norm_type,
             conv_context_size=conv_context_size,
+            use_bias=use_bias,
         )
 
         # multi-headed self-attention module
@@ -107,6 +111,7 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
                 pos_bias_u=pos_bias_u,
                 pos_bias_v=pos_bias_v,
                 max_cache_len=MHA_max_cache_len,
+                use_bias=use_bias,
             )
         elif self_attention_model == 'rel_pos_local_attn':
             self.self_attn = RelPositionMultiHeadAttentionLongformer(
@@ -120,10 +125,15 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
                 global_tokens=global_tokens,
                 global_tokens_spacing=global_tokens_spacing,
                 global_attn_separate=global_attn_separate,
+                use_bias=use_bias,
             )
         elif self_attention_model == 'abs_pos':
             self.self_attn = MultiHeadAttention(
-                n_head=n_heads, n_feat=d_model, dropout_rate=dropout_att, max_cache_len=MHA_max_cache_len
+                n_head=n_heads,
+                n_feat=d_model,
+                dropout_rate=dropout_att,
+                max_cache_len=MHA_max_cache_len,
+                use_bias=use_bias,
             )
         else:
             raise ValueError(
@@ -133,7 +143,7 @@ class ConformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
 
         # second feed forward module
         self.norm_feed_forward2 = LayerNorm(d_model)
-        self.feed_forward2 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout)
+        self.feed_forward2 = ConformerFeedForward(d_model=d_model, d_ff=d_ff, dropout=dropout, use_bias=use_bias)
 
         self.dropout = nn.Dropout(dropout)
         self.norm_out = LayerNorm(d_model)
@@ -280,16 +290,25 @@ class ConformerConvolution(nn.Module):
         pointwise_activation (str): name of the activation function to be used for the pointwise conv.
             Note that Conformer uses a special key `glu_` which is treated as the original default from
             the paper.
+        use_bias (bool): Use bias in all Linear and Conv1d layers improve activation flow and stabilize training of huge models.
+            Defaults to True
     """
 
     def __init__(
-        self, d_model, kernel_size, norm_type='batch_norm', conv_context_size=None, pointwise_activation='glu_'
+        self,
+        d_model,
+        kernel_size,
+        norm_type='batch_norm',
+        conv_context_size=None,
+        pointwise_activation='glu_',
+        use_bias=True,
     ):
         super(ConformerConvolution, self).__init__()
         assert (kernel_size - 1) % 2 == 0
         self.d_model = d_model
         self.kernel_size = kernel_size
         self.norm_type = norm_type
+        self.use_bias = use_bias
 
         if conv_context_size is None:
             conv_context_size = (kernel_size - 1) // 2
@@ -305,7 +324,12 @@ class ConformerConvolution(nn.Module):
             dw_conv_input_dim = d_model
 
         self.pointwise_conv1 = nn.Conv1d(
-            in_channels=d_model, out_channels=d_model * 2, kernel_size=1, stride=1, padding=0, bias=True
+            in_channels=d_model,
+            out_channels=d_model * 2,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=self.use_bias,
         )
 
         self.depthwise_conv = CausalConv1D(
@@ -315,7 +339,7 @@ class ConformerConvolution(nn.Module):
             stride=1,
             padding=conv_context_size,
             groups=dw_conv_input_dim,
-            bias=True,
+            bias=self.use_bias,
         )
 
         if norm_type == 'batch_norm':
@@ -334,7 +358,12 @@ class ConformerConvolution(nn.Module):
 
         self.activation = Swish()
         self.pointwise_conv2 = nn.Conv1d(
-            in_channels=dw_conv_input_dim, out_channels=d_model, kernel_size=1, stride=1, padding=0, bias=True
+            in_channels=dw_conv_input_dim,
+            out_channels=d_model,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=self.use_bias,
         )
 
     def forward(self, x, pad_mask=None, cache=None):
@@ -370,31 +399,34 @@ class ConformerConvolution(nn.Module):
             return x, cache
 
     def reset_parameters_conv(self):
-        pw1_max = pw2_max = self.d_model ** -0.5
-        dw_max = self.kernel_size ** -0.5
+        pw1_max = pw2_max = self.d_model**-0.5
+        dw_max = self.kernel_size**-0.5
 
         with torch.no_grad():
             nn.init.uniform_(self.pointwise_conv1.weight, -pw1_max, pw1_max)
-            nn.init.uniform_(self.pointwise_conv1.bias, -pw1_max, pw1_max)
             nn.init.uniform_(self.pointwise_conv2.weight, -pw2_max, pw2_max)
-            nn.init.uniform_(self.pointwise_conv2.bias, -pw2_max, pw2_max)
             nn.init.uniform_(self.depthwise_conv.weight, -dw_max, dw_max)
-            nn.init.uniform_(self.depthwise_conv.bias, -dw_max, dw_max)
+            if self.use_bias:
+                nn.init.uniform_(self.pointwise_conv1.bias, -pw1_max, pw1_max)
+                nn.init.uniform_(self.pointwise_conv2.bias, -pw2_max, pw2_max)
+                nn.init.uniform_(self.depthwise_conv.bias, -dw_max, dw_max)
 
 
 class ConformerFeedForward(nn.Module):
     """
     feed-forward module of Conformer model.
+    use_bias (bool): Apply bias to all Linear and Conv1d layers improve activation flow and stabilize training of huge models.
     """
 
-    def __init__(self, d_model, d_ff, dropout, activation=Swish()):
+    def __init__(self, d_model, d_ff, dropout, activation=Swish(), use_bias=True):
         super(ConformerFeedForward, self).__init__()
         self.d_model = d_model
         self.d_ff = d_ff
-        self.linear1 = nn.Linear(d_model, d_ff)
+        self.use_bias = use_bias
+        self.linear1 = nn.Linear(d_model, d_ff, bias=self.use_bias)
         self.activation = activation
         self.dropout = nn.Dropout(p=dropout)
-        self.linear2 = nn.Linear(d_ff, d_model)
+        self.linear2 = nn.Linear(d_ff, d_model, bias=self.use_bias)
 
     def forward(self, x):
         x = self.linear1(x)
@@ -404,10 +436,11 @@ class ConformerFeedForward(nn.Module):
         return x
 
     def reset_parameters_ff(self):
-        ffn1_max = self.d_model ** -0.5
-        ffn2_max = self.d_ff ** -0.5
+        ffn1_max = self.d_model**-0.5
+        ffn2_max = self.d_ff**-0.5
         with torch.no_grad():
             nn.init.uniform_(self.linear1.weight, -ffn1_max, ffn1_max)
-            nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
             nn.init.uniform_(self.linear2.weight, -ffn2_max, ffn2_max)
-            nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)
+            if self.use_bias:
+                nn.init.uniform_(self.linear1.bias, -ffn1_max, ffn1_max)
+                nn.init.uniform_(self.linear2.bias, -ffn2_max, ffn2_max)

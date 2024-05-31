@@ -88,6 +88,7 @@ model:
     feat_out: -1 # you may set it if you need different output size other than the default d_model
     n_layers: 17
     d_model: 512
+    use_bias: True # whether to apply bias in the feedforward, MHA and convolution modules
 
     # Sub-sampling params
     subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding

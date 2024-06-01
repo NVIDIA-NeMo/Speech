@@ -531,7 +531,13 @@ def maybe_set_cuda_expandable_segments(enabled: bool):
             warnings.warn(
                 "You have set PYTORCH_CUDA_ALLOC_CONF without expandable_segments:True option. We're setting that option anyway. To disable it, set cuda_expandable_segments=False in NeMo dataloader configuration."
             )
-        torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+
+        try:
+            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+        except RuntimeError:
+            logging.info(
+                "Failed to set expandable_segments:True for PyTorch CUDA allocator. You may get training speed improvements if you enable this"
+            )
 
 
 def _select_channel(cut, channel_selector: int | str) -> list:

@@ -101,7 +101,7 @@ class GPTSFTDataset(Dataset):
         self.seed = seed
         self.label_key = label_key
         self.answer_only_loss = answer_only_loss
-        self.truncation_fields = truncation_field.split(',')
+        self.truncation_fields = truncation_field.split(',') if truncation_field is not None else []
         self.pad_to_max_length = pad_to_max_length
         self.index_mapping_dir = index_mapping_dir
         self.prompt_template = prompt_template
@@ -166,8 +166,9 @@ class GPTSFTDataset(Dataset):
         ), f'{label_placeholder} must be at the end of prompt_template.'
 
         # Legacy checkpoints has self.truncation_fields = ['context'] and self.prompt_template_keys = ['input', 'output']
-        if self.prompt_template_keys[0] == 'input' and self.truncation_fields[0] == 'context':
-            self.truncation_fields[0] = self.prompt_template_keys[0]
+        if len(self.truncation_fields) > 0:
+            if self.prompt_template_keys[0] == 'input' and self.truncation_fields[0] == 'context':
+                self.truncation_fields[0] = self.prompt_template_keys[0]
 
         assert set(self.truncation_fields).issubset(
             self.prompt_template_keys
@@ -305,32 +306,61 @@ class GPTSFTDataset(Dataset):
         if total_ids > self.max_seq_length:
             truncation_length_total = total_ids - self.max_seq_length
             num_fields = len(self.truncation_fields)
-            # sorted equal divide length to each field
-            # examples:
-            #   truncation_length_total = 3
-            #   num_fields = 11
-            #   truncation_length_list = [3,4,4]
-            truncation_length_list = [
-                truncation_length_total // num_fields + (1 if i < truncation_length_total % num_fields else 0)
-                for i in range(num_fields)[::-1]
-            ]
+            if num_fields > 0:
+                # sorted equal divide length to each field
+                # examples:
+                #   truncation_length_total = 3
+                #   num_fields = 11
+                #   truncation_length_list = [3,4,4]
+                truncation_length_list = [
+                    truncation_length_total // num_fields + (1 if i < truncation_length_total % num_fields else 0)
+                    for i in range(num_fields)[::-1]
+                ]
 
-            for i, (ids, key) in enumerate(zip(template_ids, template_ids_keys)):
-                if key in self.truncation_fields:
-                    truncation_length = truncation_length_list.pop()
-                    if len(ids) < truncation_length:
-                        logging.warning(f'{key} is not long enough to truncate.')
-                        truncation_length = len(ids)
+                for i, (ids, key) in enumerate(zip(template_ids, template_ids_keys)):
+                    if key in self.truncation_fields:
+                        truncation_length = truncation_length_list.pop()
+                        if len(ids) < truncation_length:
+                            logging.warning(f'{key} is not long enough to truncate.')
+                            truncation_length = len(ids)
 
-                    if self.truncation_method == 'left':
-                        window_offset = truncation_length
-                    elif self.truncation_method == 'right':
-                        window_offset = 0
+                        if self.truncation_method == 'left':
+                            window_offset = truncation_length
+                        elif self.truncation_method == 'right':
+                            window_offset = 0
+                        else:
+                            raise ValueError(f'{self.truncation_method} is not supported')
+
+                        window_length = len(ids) - truncation_length
+                        template_ids[i] = ids[window_offset : window_offset + window_length]
+            else:
+                # If truncation_field is empty, we truncate template_ids (List[List[int]]) to make total ids < self.max_seq_length.
+                logging.warning(
+                    f'`truncation_field` is empty, we truncate input from {self.truncation_method} based on truncation_method.'
+                )
+                template_ids_lengths = [len(ids) for ids in template_ids]
+                if self.truncation_method == 'left':
+                    iters = range(0, len(template_ids_lengths), 1)
+                elif self.truncation_method == 'right':
+                    iters = range(len(template_ids_lengths) - 1, -1, -1)
+                else:
+                    raise ValueError(f'{self.truncation_method} is not supported')
+
+                # Iterate all lengths of template_ids.
+                for i in iters:
+                    if template_ids_lengths[i] >= truncation_length_total:
+                        template_ids_lengths[i] -= truncation_length_total
+                        if self.truncation_method == 'left':
+                            template_ids[i] = template_ids[i][-template_ids_lengths[i] :]
+                        elif self.truncation_method == 'right':
+                            template_ids[i] = template_ids[i][: template_ids_lengths[i]]
+                        else:
+                            raise ValueError(f'{self.truncation_method} is not supported')
+                        break
                     else:
-                        raise ValueError(f'{self.truncation_method} is not supported')
-
-                    window_length = len(ids) - truncation_length
-                    template_ids[i] = ids[window_offset : window_offset + window_length]
+                        truncation_length_total -= template_ids_lengths[i]
+                        template_ids_lengths[i] = 0
+                        template_ids[i] = []
 
         context_ids = [i for ids in template_ids[:-1] for i in ids]
         label_ids = template_ids[-1]
@@ -362,31 +392,30 @@ class GPTSFTDataset(Dataset):
             # these pad/eos tokens are placeholders for virtual tokens
             context_ids = [self.tokenizer.eos_id] * self.virtual_tokens + context_ids
 
-        input_ids = context_ids
-        answer_start_idx = len(input_ids)
-
         # Adds bos token in the start
         if self.add_bos:
             context_ids = [self.tokenizer.bos_id] + context_ids
-            input_ids = [self.tokenizer.bos_id] + input_ids
-            answer_start_idx += 1
 
         # Adds sep token between text/prompt and answer
         if self.add_sep:
             context_ids = context_ids + [self.sep_id]
-            input_ids = input_ids + [self.sep_id]
-            answer_start_idx += 1
 
-        input_ids = input_ids + answer_ids
+        input_ids = context_ids + answer_ids
 
         # Only training need to consider eos token
         if self.add_eos:
             input_ids = input_ids + [self.tokenizer.eos_id]
 
         if len(input_ids) > self.max_seq_length:
-            logging.warning(f'Input ids length {len(input_ids)} exceed max sequence length {self.max_seq_length}')
+            # this only happens if tuncation_field is not enough to truncate.
+            # context_ids can be empty if we truncate contexts.
+            # answer_ids can be empty if we truncate answers.
+            logging.warning(
+                f'After truncation, input ids length {len(input_ids)} still exceeds max sequence length {self.max_seq_length}'
+            )
+            context_ids = context_ids[: self.max_seq_length]
             input_ids = input_ids[: self.max_seq_length]
-            answer_ids = input_ids[answer_start_idx:]
+            answer_ids = input_ids[len(context_ids) :]
 
         # store metadata in dataset, in case user may have keys required in the prediction json files
         metadata = {k: v for k, v in example.items() if k not in self.prompt_template_keys}
@@ -396,7 +425,7 @@ class GPTSFTDataset(Dataset):
 
         processed_example = {
             'input_ids': input_ids,
-            'answer_start_idx': answer_start_idx,
+            'answer_start_idx': len(context_ids),
             'context_ids': context_ids,
             'context_length': len(context_ids),
             'answer_ids': answer_ids,
@@ -426,7 +455,7 @@ class GPTSFTDataset(Dataset):
         return item
 
     def _build_loss_mask(self, processed_example):
-        """ Pad input_ids in batch to max batch length while building loss mask """
+        """Pad input_ids in batch to max batch length while building loss mask"""
         input_ids = processed_example['input_ids']
         answer_start_idx = processed_example['answer_start_idx']
         if self.answer_only_loss:
@@ -641,7 +670,9 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         else:
             attention_mask = [self._create_attention_mask(max_length) for _ in batch]
             processed_batch.update(
-                {'attention_mask': torch.stack(attention_mask),}
+                {
+                    'attention_mask': torch.stack(attention_mask),
+                }
             )
 
         return processed_batch

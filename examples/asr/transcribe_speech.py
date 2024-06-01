@@ -16,7 +16,7 @@ import contextlib
 import glob
 import json
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from tempfile import NamedTemporaryFile
 from typing import List, Optional, Union
 
@@ -25,6 +25,7 @@ import torch
 from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.asr.models import EncDecCTCModel, EncDecHybridRNNTCTCModel, EncDecMultiTaskModel
+from nemo.collections.asr.models.aed_multitask_models import parse_multitask_prompt
 from nemo.collections.asr.modules.conformer_encoder import ConformerChangeConfig
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.multitask_decoding import MultiTaskDecoding, MultiTaskDecodingConfig
@@ -169,6 +170,14 @@ class TranscriptionConfig:
 
     # Decoding strategy for AED models
     multitask_decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()
+    # Prompt slots for prompted models, e.g. Canary-1B. Examples of acceptable prompt inputs:
+    # Implicit single-turn assuming default role='user' (works with Canary-1B)
+    #  +prompt.source_lang=en +prompt.target_lang=es +prompt.task=asr +prompt.pnc=yes
+    # Explicit single-turn prompt:
+    #  +prompt.role=user +prompt.slots.source_lang=en +prompt.slots.target_lang=es +prompt.slots.task=s2t_translation +prompt.slots.pnc=yes
+    # Explicit multi-turn prompt:
+    #  +prompt.turns='[{role:user,slots:{source_lang:en,target_lang:es,task:asr,pnc:yes}}]'
+    prompt: dict = field(default_factory=dict)
 
     # decoder type: ctc or rnnt, can be used to switch between CTC and RNNT decoder for Hybrid RNNT/CTC models
     decoder_type: Optional[str] = None
@@ -411,6 +420,8 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                 override_cfg.augmentor = augmentor
                 override_cfg.text_field = cfg.gt_text_attr_name
                 override_cfg.lang_field = cfg.gt_lang_attr_name
+                if hasattr(override_cfg, "prompt"):
+                    override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
                 transcriptions = asr_model.transcribe(
                     audio=filepaths,
                     override_config=override_cfg,

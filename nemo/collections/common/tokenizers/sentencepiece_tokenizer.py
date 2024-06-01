@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 import sentencepiece
+import torch
 
 from nemo.collections.common.parts.utils import if_exist
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -127,7 +128,7 @@ class SentencePieceTokenizer(TokenizerSpec):
         return self.tokenizer.decode_pieces(tokens)
 
     def ids_to_text(self, ids):
-        if isinstance(ids, np.ndarray):
+        if isinstance(ids, (np.ndarray, torch.Tensor)):
             ids = ids.tolist()
 
         if self.legacy:

@@ -148,11 +148,9 @@ class TranscriptionTensorDataset(Dataset):
         # Calculate seq length
         seq_len = torch.tensor(samples.shape[0], dtype=torch.long)
 
-        # Dummy text tokens
-        text_tokens = torch.tensor([0], dtype=torch.long)
-        text_tokens_len = torch.tensor(1, dtype=torch.long)
-
-        return (samples, seq_len, text_tokens, text_tokens_len)
+        # Typically NeMo ASR models expect the mini-batch to be a 4-tuple of (audio, audio_len, text, text_len).
+        # For inference, we set text and text_len to None to not disrupt the shape of the tuple.
+        return samples, seq_len, None, None
 
 
 class TranscriptionMixin(ABC):

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import warnings
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
@@ -45,6 +46,7 @@ from nemo.collections.common.data.lhotse.dataloader import get_lhotse_dataloader
 from nemo.collections.common.metrics import GlobalAverageLossMetric
 from nemo.collections.common.parts import transformer_weights_init
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
+from nemo.collections.common.prompts.formatter import PromptFormatter
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import (
     AudioSignal,
@@ -100,10 +102,7 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
     Configuration for Multi Task Transcription
     """
 
-    task: Optional[str] = None
-    pnc: Optional[bool] = None
-    source_lang: Optional[str] = None
-    target_lang: Optional[str] = None
+    prompt: list[dict[str, dict[str, str]]] | None = None
     text_field: str = "answer"
     lang_field: str = "target_lang"
 
@@ -112,10 +111,7 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
     )
 
     def __post_init__(self):
-        required_fields = ['task', 'pnc', 'source_lang', 'target_lang', 'text_field', 'lang_field']
-        for field in required_fields:
-            if not hasattr(self, field):
-                raise ValueError(f"`{field}` must be present in the transcription config: {self}")
+        self.prompt = parse_multitask_prompt(self.prompt)
 
 
 class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTranscriptionMixin):
@@ -133,6 +129,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         self._setup_tokenizer(cfg.tokenizer)
 
         super().__init__(cfg=cfg, trainer=trainer)
+
+        prompt_cls = PromptFormatter.resolve(self.prompt_format)
+        self.prompt = prompt_cls(
+            tokenizer=self.tokenizer,
+            defaults=OmegaConf.to_container(cfg.get("prompt_defaults")),
+        )
 
         # Setup audio preprocessor
         self.preprocessor = EncDecMultiTaskModel.from_config_dict(self.cfg.preprocessor)
@@ -391,15 +393,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         audio: Union[str, List[str], np.ndarray, DataLoader],
         batch_size: int = 4,
         return_hypotheses: bool = False,
-        task: Optional[str] = None,
-        pnc: Optional[bool] = None,
-        source_lang: Optional[str] = None,
-        target_lang: Optional[str] = None,
         num_workers: int = 0,
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
         override_config: Optional[MultiTaskTranscriptionConfig] = None,
+        **prompt,
     ) -> Union[List[str], List[Hypothesis]]:
         """
         Uses greedy decoding to transcribe audio files. Use this method for debugging and prototyping.
@@ -412,15 +411,12 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
                 Bigger will result in better throughput performance but would use more memory.
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
-            task: (str) task name. Defaults to `asr`.
-            pnc: (bool) whether to apply punctuation and capitalization or not. Defaults to True.
-            source_lang: (str) source language. Defaults to `en`.
-            target_lang: (str) target language. Defaults to `en`.
             num_workers: (int) number of workers for DataLoader
             channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
             verbose: (bool) whether to display tqdm progress bar
             override_config: (Optional[MultiTaskTranscriptionConfig]) A config to override the default config.
+            **prompt: Optional input to construct the prompts for the model. Accepted formats are: 1) legacy Canary-1B API source_lang=<lang>, target_lang=<lang>, etc. 2) explicit single-turn role=<role>, slots={<slot>: <value>, ...} 3) explicit multi-turn: turns=[{"role": <role>, "slots": {<slot>: <value>, ...}}]
 
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
@@ -433,10 +429,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
                 channel_selector=channel_selector,
                 augmentor=augmentor,
                 verbose=verbose,
-                task=task,
-                pnc=pnc,
-                source_lang=source_lang,
-                target_lang=target_lang,
+                prompt=prompt,
             )
         else:
             if not isinstance(override_config, MultiTaskTranscriptionConfig):
@@ -738,9 +731,6 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
                 if hasattr(trcfg, '_internal') and hasattr(trcfg._internal, 'manifest_path'):
                     trcfg._internal.manifest_filepath = manifest_path
 
-        elif isinstance(audio, (np.ndarray, torch.Tensor)):
-            raise NotImplementedError("Transcribing from numpy or torch tensors is not supported yet.")
-
     def _transcribe_input_manifest_processing(
         self, audio_files: List[str], temp_dir: str, trcfg: MultiTaskTranscriptionConfig
     ) -> Dict[str, Any]:
@@ -792,7 +782,47 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         log_probs, encoded_len, enc_states, enc_mask = self.forward(
             input_signal=batch[0], input_signal_length=batch[1]
         )
-        decoder_input_ids = batch[-2].to(trcfg._internal.device)
+        if len(batch) == 6:
+            # Prompt provided by the dataloader.
+            decoder_input_ids = batch[4]
+        else:
+            # The dataloader provided only audio + audio_lens, so we
+            # are constructing the prompt dynamically using TranscribeConfig.
+
+            # Now ask the prompt formatter about which slots are required.
+            # It will return a default prompt structure with default slot values (if available, None otherwise).
+            # We iterate over that structure and update slot values based on ``trcfg.prompt``.
+            default_turns = self.prompt.get_default_dialog_slots()
+            if not trcfg.prompt:
+                # No turns were provided, use defaults.
+                turns = default_turns
+            else:
+                # Turns were provided, iterate over them and fill missing slot values using defaults..
+                turns = trcfg.prompt.copy()  # shallow copy #1: don't override the config
+                for turn in turns:
+                    role = turn["role"]
+                    # Check if we have defaults for this role.
+                    # There shouldn't be more than a single turn for a given role, but if there are,
+                    # we'll emit a warning.
+                    if default_turns_for_role := [t for t in default_turns if t["role"] == role]:
+                        if len(default_turns_for_role) > 1:
+                            warnings.warn(
+                                f"More than one default turn detected for {role=}. "
+                                f"We'll be using default slot values for the first turn of {role=} only."
+                            )
+                        default_slots = default_turns_for_role[0]["slots"]
+                        turn["slots"] = turn["slots"].copy()  # shallow copy #1: don't override the config
+                        # fill missing slots using defaults
+                        for slot, val in default_slots.items():
+                            if turn["slots"].get(slot) is None:
+                                turn["slots"][slot] = val
+
+            decoder_input_ids = (
+                self.prompt.encode_dialog(turns=turns)["context_ids"]
+                .unsqueeze(0)
+                .repeat(batch[0].shape[0], 1)
+                .to(trcfg._internal.device)
+            )
         output = dict(
             log_probs=log_probs,
             encoded_lengths=encoded_len,
@@ -906,6 +936,8 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         Returns:
             A list of dictionaries with the audio file paths fixed.
         """
+        # This method is a legacy helper for Canary that checks whether prompt slot values were provided
+        # in the input manifest and if not, it injects the defaults.
         out_json_items = []
         for item in json_items:
             if isinstance(item, str):
@@ -913,28 +945,21 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
                 entry = {
                     'audio_filepath': item,
                     'duration': 100000,
-                    'source_lang': 'en' if trcfg.source_lang is None else trcfg.source_lang,
-                    'taskname': 'asr' if trcfg.task is None else trcfg.task,
-                    'target_lang': 'en' if trcfg.target_lang is None else trcfg.target_lang,
-                    'pnc': 'yes' if trcfg.pnc is None else 'yes' if trcfg.pnc else 'no',
                     trcfg.text_field: 'nothing',
                 }
             elif isinstance(item, dict):
                 entry = item
                 entry['audio_filepath'] = get_full_path(entry['audio_filepath'], manifest_file=manifest_path)
-
-                if 'source_lang' not in entry:
-                    entry['source_lang'] = 'en' if trcfg.source_lang is None else trcfg.source_lang
-                if 'taskname' not in entry:
-                    entry['taskname'] = 'asr' if trcfg.task is None else trcfg.task
-                if 'target_lang' not in entry:
-                    entry['target_lang'] = 'en' if trcfg.target_lang is None else trcfg.target_lang
-                if 'pnc' not in entry:
-                    entry['pnc'] = 'yes' if trcfg.pnc is None else 'yes' if trcfg.pnc else 'no'
                 if trcfg.text_field not in entry:
                     entry[trcfg.text_field] = 'nothing'
             else:
                 raise ValueError(f"Expected str or dict, got {type(item)}")
+            default_turn = [t for t in trcfg.prompt if t["role"] == "user"]
+            default_turn = default_turn[0]["slots"] if default_turn else {}
+            for k, dv in (("source_lang", "en"), ("target_lang", "en"), ("taskname", "asr"), ("pnc", "yes")):
+                if k not in entry:
+                    # last-chance fallback injecting legacy Canary defaults if none were provided.
+                    entry[k] = default_turn.get(k, dv)
             out_json_items.append(entry)
         return out_json_items
 
@@ -977,3 +1002,76 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         text = [self.decoding.strip_special_tokens(t) for t in text]
         return text
+
+
+def parse_multitask_prompt(prompt: dict | None) -> list[dict]:
+    if prompt is None or not prompt:
+        return []
+
+    # Case 1.
+    # Multi-turn prompting format. This format conforms to PromptFormatter API and needs no further modification.
+    # This format allows to condition the model on chat history, system+user prompts, etc.
+    # Example:
+    # model.transcribe(
+    #     audio,
+    #     turns=[
+    #         dict(
+    #             role="user",
+    #             slots=dict(
+    #                 source_lang='en', target_lang='de', task='asr', pnc=True, context='translate this text'
+    #             ),
+    #         ),
+    #         dict(
+    #             role="assistant",
+    #             slots=dict(message="Calculating the translation of given text. Do you want to proceed?"),
+    #         ),
+    #         dict(
+    #             role="user",
+    #             slots=dict(
+    #                 source_lang='en', target_lang='de', task='asr', pnc=True, context='Yes, please proceed.'
+    #             ),
+    #         ),
+    #     ],
+    # )
+    if 'turns' in prompt:
+        assert (
+            len(prompt) == 1
+            and isinstance(prompt["turns"], list)
+            and all(isinstance(t, dict) and "role" in t and "slots" in t for t in prompt["turns"])
+        ), (
+            f"When providing a multi-turn prompt through 'turns', no other keys are allowed "
+            f"and the value under prompt['turns'] must be a list of dicts with roles and slot values "
+            f"(we received {prompt=})"
+        )
+        return prompt["turns"]
+
+    values_are_dicts = any(isinstance(v, dict) for k, v in prompt.items() if k != "slots")
+    assert not values_are_dicts, (
+        f"We don't support dict values for prompt keys other than 'slots'. " f"We received {prompt=}"
+    )
+
+    # Case 2.
+    # Single-turn prompting format with explicitly provided role and slot names and values.
+    # We create a 1-item multi-turn prompt from this input.
+    # Example:
+    # model.transcribe(
+    #     audio,
+    #     role="user",
+    #     slots=dict(source_lang='en', target_lang='de', task='asr', pnc=True, context='translate this text'),
+    # )
+    if "role" in prompt and "slots" in prompt:
+        assert isinstance(prompt["slots"], dict), (
+            f"When providing a single-turn prompt through 'role', 'slots' must also be provided "
+            f"(we received {prompt=})."
+        )
+        return [prompt]
+
+    # Case 3.
+    # Legacy prompting format for Canary-1B preserved for backward compatibility.
+    # Extra fields are converted to a single-turn prompt with role "user" (unless overridden with 'role').
+    # Example:
+    # model.transcribe(
+    #     audio, pnc=True, source_lang='en', target_lang='de', task='asr', context='translate this text'
+    # )
+    role = prompt.pop("role", "user")
+    return [dict(role=role, slots=prompt)]

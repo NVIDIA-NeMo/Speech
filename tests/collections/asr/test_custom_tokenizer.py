@@ -67,7 +67,9 @@ def test_canary_tokenizer_init_from_cfg(special_tokenizer_path, lang_tokenizer_p
                 "spl_tokens": {"dir": special_tokenizer_path, "type": "bpe"},
                 "en": {"dir": lang_tokenizer_path, "type": "bpe"},
             },
-            "custom_tokenizer": {"_target_": "nemo.collections.common.tokenizers.canary_tokenizer.CanaryTokenizer",},
+            "custom_tokenizer": {
+                "_target_": "nemo.collections.common.tokenizers.canary_tokenizer.CanaryTokenizer",
+            },
         }
     )
     model._setup_aggregate_tokenizer(config)
@@ -83,5 +85,11 @@ def test_canary_tokenizer_init_from_cfg(special_tokenizer_path, lang_tokenizer_p
     assert isinstance(tokenizer.tokenizers_dict["en"], SentencePieceTokenizer)
     assert tokenizer.tokenizers_dict["en"].vocab_size == 6
 
-    assert tokenizer.text_to_ids("<|startoftranscript|>", lang_id="spl_tokens") == [13, 4]  # "_" comes first
+    assert tokenizer.text_to_ids("<|startoftranscript|><|en|><|asr|><|en|><|pnc|>", lang_id="spl_tokens") == [
+        4,
+        9,
+        7,
+        9,
+        5,
+    ]
     assert tokenizer.text_to_ids("a", lang_id="en") == [14 + 1, 14 + 2]

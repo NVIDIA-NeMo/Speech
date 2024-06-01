@@ -80,9 +80,18 @@ def asr_model(test_data_dir):
         'dir': None,
         'type': 'agg',
         'langs': {
-            'spl_tokens': {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "canary"), 'type': 'bpe',},
-            'en': {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"), 'type': 'wpe',},
-            'de': {'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"), 'type': 'wpe',},
+            'spl_tokens': {
+                'dir': os.path.join(test_data_dir, "asr", "tokenizers", "canary"),
+                'type': 'bpe',
+            },
+            'en': {
+                'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"),
+                'type': 'wpe',
+            },
+            'de': {
+                'dir': os.path.join(test_data_dir, "asr", "tokenizers", "an4_wpe_128"),
+                'type': 'wpe',
+            },
         },
         'custom_tokenizer': {
             '_target_': 'nemo.collections.common.tokenizers.canary_tokenizer.CanaryTokenizer',
@@ -98,6 +107,9 @@ def asr_model(test_data_dir):
     modelConfig = DictConfig(
         {
             'prompt_format': 'canary',
+            'prompt_defaults': [
+                {"role": "user", "slots": {"source_lang": "en", "target_lang": "en", "task": "asr", "pnc": "yes"}}
+            ],
             'sample_rate': 16000,
             'preprocessor': DictConfig(preprocessor),
             'model_defaults': DictConfig(model_defaults),
@@ -304,10 +316,9 @@ class TestEncDecMultiTaskModel:
         audio, sr = sf.read(audio_file, dtype='float32')
 
         # Numpy array test
-        with pytest.raises(NotImplementedError):
-            outputs = asr_model.transcribe(audio, batch_size=1)
-        # assert len(outputs) == 1
-        # assert isinstance(outputs[0], str)
+        outputs = asr_model.transcribe(audio, batch_size=1)
+        assert len(outputs) == 1
+        assert isinstance(outputs[0], str)
 
     @pytest.mark.unit
     def test_build_tokenizer(self, asr_model, test_data_dir):

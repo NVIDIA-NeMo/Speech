@@ -15,6 +15,7 @@
 from typing import Dict, List, Union
 
 import numpy as np
+import torch
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
@@ -124,7 +125,7 @@ class AggregateTokenizer(TokenizerSpec):
         return tokenizer.decode_pieces(tokens)
 
     def ids_to_text(self, ids):
-        if isinstance(ids, np.ndarray):
+        if isinstance(ids, (np.ndarray, torch.Tensor)):
             ids = ids.tolist()
 
         tokens = []
@@ -223,6 +224,12 @@ class AggregateTokenizer(TokenizerSpec):
             lang_id = langs[i]
             ids.append(self.token_to_id(token, lang_id))
         return ids
+
+    def get_bos(self, lang_id: str) -> int:
+        return self.tokenizers_dict[lang_id].bos + self.token_id_offset[lang_id]
+
+    def get_eos(self, lang_id: str) -> int:
+        return self.tokenizers_dict[lang_id].eos + self.token_id_offset[lang_id]
 
     @property
     def vocab(self):

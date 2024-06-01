@@ -24,7 +24,15 @@ from nemo.utils import logging
 __all__ = ['CanaryTokenizer']
 
 # Default tokens for compatibility with Canary.
-DEFAULT_TOKENS = ["<|nospeech|>", "<pad>", "<|endoftext|>", "<|startoftranscript|>", "<|pnc|>", "<|nopnc|>"]
+CANARY_BOS = "<|startoftranscript|>"
+CANARY_EOS = "<|endoftext|>"
+CANARY_PAD = "<pad>"
+CANARY_NOSPEECH = "<|nospeech|>"
+CANARY_PNC = "<|pnc|>"
+CANARY_NOPNC = "<|nopnc|>"
+DEFAULT_TOKENS = [CANARY_NOSPEECH, CANARY_PAD, CANARY_EOS, CANARY_BOS, CANARY_PNC, CANARY_NOPNC]
+
+CANARY_SPECIAL_TOKENIZER = "spl_tokens"
 
 
 class CanaryTokenizer(AggregateTokenizer):
@@ -37,26 +45,51 @@ class CanaryTokenizer(AggregateTokenizer):
 
         # for easy access of special tokens
         self.special_tokens = {}
-        for special in tokenizers['spl_tokens'].vocab:
+        for special in tokenizers[CANARY_SPECIAL_TOKENIZER].vocab:
             # Search for special prompting tokens
-            if (special.startswith("<|") and special.endswith("|>")) or special == "<pad>":
-                self.special_tokens[special] = self.token_to_id(special, lang_id='spl_tokens')
+            if (special.startswith("<|") and special.endswith("|>")) or special == CANARY_PAD:
+                self.special_tokens[special] = self.token_to_id(special, lang_id=CANARY_SPECIAL_TOKENIZER)
 
     @cached_property
     def eos_id(self) -> int:
-        return self.special_tokens["<|endoftext|>"]
+        return self.special_tokens[CANARY_EOS]
 
     @cached_property
     def bos_id(self) -> int:
-        return self.special_tokens["<|startoftranscript|>"]
+        return self.special_tokens[CANARY_BOS]
 
     @cached_property
     def nospeech_id(self) -> int:
-        return self.special_tokens["<|nospeech|>"]
+        return self.special_tokens[CANARY_NOSPEECH]
 
     @cached_property
     def pad_id(self) -> int:
-        return self.special_tokens["<pad>"]
+        return self.special_tokens[CANARY_PAD]
+
+    def text_to_ids(self, text, lang_id) -> list[int]:
+        if lang_id == CANARY_SPECIAL_TOKENIZER:
+            return self._tokenize_special_prompt(text)
+        if text.endswith(CANARY_EOS):
+            return super().text_to_ids(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
+        return super().text_to_ids(text[-len(CANARY_EOS) :], lang_id)
+
+    def _tokenize_special_prompt(self, text: str) -> list[int]:
+        """
+        Tokenize the input special prompt of the following schema:
+
+        <|startoftranscript|><|source_lang|><|taskname|><|target_lang|><|pnc|>
+
+        Required because otherwise self.text_to_ids() returns a different result than what Canary had been trained with.
+        """
+        ans = []
+        assert text.count('>') == 5, f"Expected exactly 5 special tokens in Canary's prompt, got: {text}."
+        assert text.startswith(CANARY_BOS), text
+        for _ in range(5):
+            token = text[: text.find(">") + 1]
+            ans.append(self.special_tokens[token])
+            text = text[len(token) :]
+        assert len(text) == 0, text
+        return ans
 
     def spl_token_to_id(self, token):
         if token_id := self.special_tokens.get(f"<|{token}|>", None):

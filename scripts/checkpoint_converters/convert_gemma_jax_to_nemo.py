@@ -14,6 +14,7 @@
 
 """
 Requires to install: `pip install orbax jax flax jaxlib`
+Requires to clone: https://github.com/google-deepmind/gemma.git
 Required to set: `export PYTHONPATH=/path/to/google/gemma_jax:$PYTHONPATH`
    python3 /opt/NeMo/scripts/nlp_language_modeling/convert_gemma_jax_to_nemo.py \
    --input_name_or_path /path/to/gemma/checkpoints/jax/7b \
@@ -27,8 +28,8 @@ from argparse import ArgumentParser
 
 import jax
 import torch
+from gemma.params import load_params, nest_params, param_remapper
 from omegaconf import OmegaConf
-from params import load_params, nest_params, param_remapper
 from transformer import TransformerConfig
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel

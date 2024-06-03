@@ -145,25 +145,26 @@ class TarOrFolderVideoLoader:
                     cap = decord.VideoReader(f)
                     return self.flatten_frames(cap)
         else:
+            decord.bridge.set_bridge("torch")
             cap = decord.VideoReader(os.path.join(self.video_folder, file_name))
             return self.flatten_frames(cap)
         return None
 
     def flatten_frames(self, cap):
         if self.data_cfg['splice_single_frame'] == 'first':
-            frame = cap[0].asnumpy()[:, :, ::-1]
+            frame = cap[0].asnumpy()
             return Image.fromarray(frame).convert('RGB')
         elif self.data_cfg['splice_single_frame'] == 'middle':
-            frame = cap[len(cap) // 2].asnumpy()[:, :, ::-1]
+            frame = cap[len(cap) // 2].asnumpy()
             return Image.fromarray(frame).convert('RGB')
         elif self.data_cfg['splice_single_frame'] == 'last':
-            frame = cap[-1].asnumpy()[:, :, ::-1]
+            frame = cap[-1].asnumpy()
             return Image.fromarray(frame).convert('RGB')
         else:
             if self.data_cfg['num_frames'] == -1:
                 frames = []
                 for frame in cap:
-                    rgb_frame = frame.asnumpy()[:, :, ::-1]
+                    rgb_frame = frame.asnumpy()
                     img = Image.fromarray(rgb_frame).convert('RGB')
                     frames.append(img)
                 return frames
@@ -171,10 +172,7 @@ class TarOrFolderVideoLoader:
                 num_frames = min(len(cap), self.data_cfg['num_frames'])
                 indices = np.linspace(0, len(cap) - 1, num_frames, dtype=int)
                 frames = []
-                for i in indices:
-                    rgb_frame = cap[i].asnumpy()[:, :, ::-1]
-                    img = Image.fromarray(rgb_frame).convert('RGB')
-                    frames.append(img)
+                frames = cap.get_batch(indices)
 
                 while len(frames) < self.data_cfg['num_frames']:
                     frames.append(frames[-1])
@@ -262,8 +260,12 @@ def preprocess_multimodal(sources: dict, multimodal_cfg: dict, cur_token_len: in
         return sources
 
     num_patches = image_token_len
+
     if media_type == 'video':
         num_patches *= multimodal_cfg['num_frames']
+
+    if multimodal_cfg['mm_mlp_adapter_type'] == 'mlp_downsample':
+        num_patches //= 4
 
     if multimodal_cfg['use_im_start_end']:
         replace_token = DEFAULT_IMAGE_PATCH_TOKEN[model_type] * num_patches
@@ -922,9 +924,19 @@ class LazySupervisedDataset(Dataset):
             media_tensors = torch.tensor([])
             if images:
                 media_tensors = torch.stack(images)
-                cur_token_len = (media_tensors[0].shape[1] // 14) * (
-                    media_tensors[0].shape[2] // 14
-                )  # FIXME: 14 is hardcoded patch size
+                patch_dim = self.multimodal_cfg['patch_dim']
+
+                height_num_patches = media_tensors[0].shape[1] // patch_dim
+                width_num_patches = media_tensors[0].shape[2] // patch_dim
+
+                if self.multimodal_cfg['mm_mlp_adapter_type'] == 'mlp_downsample':
+                    if height_num_patches % 2 != 0:
+                        height_num_patches += 1
+                    if width_num_patches % 2 != 0:
+                        width_num_patches += 1
+
+                cur_token_len = height_num_patches * width_num_patches
+
                 sources = preprocess_multimodal(
                     copy.deepcopy(sources),
                     self.multimodal_cfg,
@@ -978,9 +990,19 @@ class LazySupervisedDataset(Dataset):
             media_tensors = frames
             if videos:
                 media_tensors = torch.stack(videos)
-                cur_token_len = (media_tensors[0].shape[-1] // 14) * (
-                    media_tensors[0].shape[-2] // 14
-                )  # FIXME: 14 is hardcoded patch size
+                patch_dim = self.multimodal_cfg['patch_dim']
+
+                height_num_patches = media_tensors[0].shape[-2] // patch_dim
+                width_num_patches = media_tensors[0].shape[-1] // patch_dim
+
+                if self.multimodal_cfg['mm_mlp_adapter_type'] == 'mlp_downsample':
+                    if height_num_patches % 2 != 0:
+                        height_num_patches += 1
+                    if width_num_patches % 2 != 0:
+                        width_num_patches += 1
+
+                cur_token_len = height_num_patches * width_num_patches
+
                 sources = preprocess_multimodal(
                     copy.deepcopy(sources),
                     self.multimodal_cfg,
@@ -1190,11 +1212,15 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
     add_extra_token = 1
     if getattr(model_cfg, 'no_seqlen_plus_one_input_tokens', False):
         add_extra_token = 0
-    crop_size = data_cfg.get("crop_size", (224, 224))
+    crop_size = mm_cfg.vision_encoder.get("crop_size", (224, 224))
     if mm_cfg.vision_encoder.from_hf:
         image_processor = CLIPImageProcessor.from_pretrained(
             mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
         )
+        assert crop_size == (
+            image_processor.crop_size['height'],
+            image_processor.crop_size['width'],
+        ), f"Crop size {crop_size} does not match the HuggingFace CLIP model's crop size {(image_processor.crop_size['height'], image_processor.crop_size['width'])}"
     else:
         # TODO(yuya): Fix this hard-code for our own CLIP
         image_processor = image_transform(
@@ -1212,8 +1238,8 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
             sep_image_conv_front=data_cfg.sep_image_conv_front,
             model_type=mm_cfg.llm.get("model_type", "nvgpt"),
             conv_template=data_cfg.get("conv_template", "nvgpt"),
+            patch_dim=model_cfg.mm_cfg.vision_encoder.patch_dim,
             crop_size=crop_size,
-            image_token_len=data_cfg.image_token_len,
             image_folder=data_cfg.get('image_folder', None),
             video_folder=data_cfg.get('video_folder', None),
             image_aspect_ratio=data_cfg.image_aspect_ratio,
@@ -1223,6 +1249,7 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
             context_length=model_cfg.encoder_seq_length,
             media_type=data_cfg.get('media_type', 'image'),
             num_frames=data_cfg.get('num_frames', -1),
+            mm_mlp_adapter_type=model_cfg.mm_cfg.get('mm_mlp_adapter_type', 'linear'),
         ),
         data_cfg=dict(
             splice_single_frame=data_cfg.get('splice_single_frame', None),

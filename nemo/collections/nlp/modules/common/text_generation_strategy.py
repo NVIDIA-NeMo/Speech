@@ -20,7 +20,7 @@ import warnings
 from typing import List, Set, Tuple
 
 import torch
-
+from transformers import CLIPImageProcessor
 from nemo.collections.nlp.modules.common.lm_utils import pad_batch
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
@@ -533,7 +533,6 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
     def __init__(self, model):
         super().__init__(model)
         self.forward_model = self.model.model
-        self.num_media_latents = model.cfg.data.get("image_token_len", 576)
         self.tokenizer = self.model.tokenizer
         self.image_paths = []
         self.cfg = self.model.cfg
@@ -545,8 +544,10 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
             sep_image_conv_front=self.data_cfg.sep_image_conv_front,
             conv_template=self.data_cfg.get("conv_template", "nvgpt"),
             model_type=self.cfg.mm_cfg.llm.get("model_type", "nvgpt"),
-            image_token_len=self.data_cfg.image_token_len,
-            image_folder=self.data_cfg.image_folder,
+            patch_dim=self.cfg.mm_cfg.vision_encoder.patch_dim,
+            crop_size=self.cfg.mm_cfg.vision_encoder.get("crop_size", None),
+            image_folder=self.data_cfg.get('image_folder', None),
+            video_folder=self.data_cfg.get('video_folder', None),
             image_aspect_ratio=self.data_cfg.image_aspect_ratio,
             use_im_start_end=getattr(self.cfg.mm_cfg, 'use_im_start_end', False),
             image_processor=None,
@@ -554,7 +555,28 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
             context_length=self.cfg.encoder_seq_length,
             media_type=getattr(self.data_cfg, 'media_type', 'image'),
             num_frames=getattr(self.data_cfg, 'num_frames', 1),
+            mm_mlp_adapter_type=getattr(self.cfg.mm_cfg, 'mm_mlp_adapter_type', 'linear'),
         )
+        if self.multimodal_cfg['crop_size'] is None:
+            image_processor = CLIPImageProcessor.from_pretrained(
+                self.cfg.mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
+            )
+            self.multimodal_cfg['crop_size'] = (
+                image_processor.crop_size['height'],
+                image_processor.crop_size['width'],
+            )
+
+        patch_dim = self.multimodal_cfg['patch_dim']
+        height_num_patches = self.multimodal_cfg['crop_size'][0] // patch_dim
+        width_num_patches = self.multimodal_cfg['crop_size'][1] // patch_dim
+
+        if self.multimodal_cfg['mm_mlp_adapter_type'] == 'mlp_downsample':
+            if height_num_patches % 2 != 0:
+                height_num_patches += 1
+            if width_num_patches % 2 != 0:
+                width_num_patches += 1
+
+        self.num_media_latents = height_num_patches * width_num_patches
 
     def clip_max_len(self, maxlen: int) -> int:
         """clip the max len based on the LM model max sequence length"""

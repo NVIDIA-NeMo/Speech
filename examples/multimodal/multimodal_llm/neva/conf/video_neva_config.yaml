@@ -75,6 +75,7 @@ model:
       from_pretrained: "" # path or name
       from_hf: True
       patch_dim: 14
+      crop_size: [336, 336]
       hidden_size: 1024 # could be found from model but tricky in code
       vision_select_layer: -2   # default to the last layer
       class_token_length: 1
@@ -194,7 +195,6 @@ model:
     num_frames: 8 # selects the number of frames to use from the video
     sep_token_between_frames: False # TODO: allow usage of separator tokens between frames
     sep_image_conv_front: False
-    image_token_len: 256
     conv_template: ${model.mm_cfg.llm.model_type} # check `nemo/collections/multimodal/data/neva/conversation.py`
     image_folder: null
     video_folder: null

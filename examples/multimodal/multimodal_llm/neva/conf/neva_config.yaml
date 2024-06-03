@@ -74,6 +74,7 @@ model:
       from_pretrained: "" # path or name
       from_hf: True
       patch_dim: 14
+      crop_size: [224, 224]
       hidden_size: 1024 # could be found from model but tricky in code
       vision_select_layer: -2   # default to the last layer
       class_token_length: 1
@@ -189,7 +190,6 @@ model:
     is_multimodal: True
     media_type: image # currently supported: image
     sep_image_conv_front: False
-    image_token_len: 256
     conv_template: ${model.mm_cfg.llm.model_type} # check `nemo/collections/multimodal/data/neva/conversation.py`
     image_folder: null
     image_aspect_ratio: 'square'

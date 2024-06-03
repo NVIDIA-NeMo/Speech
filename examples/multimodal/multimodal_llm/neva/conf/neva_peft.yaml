@@ -74,6 +74,7 @@ model:
       from_pretrained: "" # path or name
       from_hf: True
       patch_dim: 14
+      crop_size: [224, 224]
       hidden_size: 1024 # could be found from model but tricky in code
       vision_select_layer: -2   # default to the last layer
       class_token_length: 1

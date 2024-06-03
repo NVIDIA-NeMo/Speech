@@ -275,7 +275,9 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             raise NotImplementedError("out_init_method should be zero, normal, kaiming or xavier")
         return init_fn
 
-    def adapter_unfreeze(self,):
+    def adapter_unfreeze(
+        self,
+    ):
         """
         Can be customized to allow for selective training of only some params in the PEFT.
         """
@@ -402,7 +404,7 @@ class LoraQAdapter(ParallelLinearAdapter):
 
 class LoraDenseAttentionAdapter(ParallelLinearAdapter):
     """
-    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes 
+    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
     and they do not use an bottleneck activation function
     """
 
@@ -411,7 +413,7 @@ class LoraDenseAttentionAdapter(ParallelLinearAdapter):
 
 class LoraHto4HAdapter(ParallelLinearAdapter):
     """
-    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes 
+    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
     and they do not use an bottleneck activation function
     """
 
@@ -420,7 +422,7 @@ class LoraHto4HAdapter(ParallelLinearAdapter):
 
 class Lora4HtoHAdapter(ParallelLinearAdapter):
     """
-    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes 
+    Lora Adapters are the same arch as regular adapters but with potentially different input and output feature sizes
     and they do not use an bottleneck activation function
     """
 
@@ -688,14 +690,20 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
         self.is_inference_ready = True
         return True
 
-    def clear_inference_table(self,):
+    def clear_inference_table(
+        self,
+    ):
         self.inference_table.fill_(0.0)
         self.is_inference_ready = False
 
-    def get_inference_table(self,):
+    def get_inference_table(
+        self,
+    ):
         return self.inference_table.data
 
-    def inner_forward(self,):
+    def inner_forward(
+        self,
+    ):
         input_embeds = self.embedding(self.indices).unsqueeze(0)
         intermediate_parallel, bias_parallel = self.first(input_embeds)
         intermediate_parallel = fused_bias_gelu(intermediate_parallel, bias_parallel)
@@ -890,6 +898,29 @@ class LoraKQVAdapterWeightTyingConfig(ParallelLinearAdapterWeightTyingConfig):
     _target_: str = "{0}.{1}".format(LoraKQVAdapterWeightTying.__module__, LoraKQVAdapterWeightTying.__name__)
 
 
+class DownSampleBlock(nn.Module):
+    def forward(self, x):
+        vit_embeds = x
+        h = w = int(vit_embeds.shape[3] ** 0.5)
+        vit_embeds = vit_embeds.reshape(*vit_embeds.shape[:3], h, w, -1)
+        vit_embeds = self.flat_square(vit_embeds)
+        vit_embeds = vit_embeds.reshape(*vit_embeds.shape[:3], -1, vit_embeds.shape[-1])
+        return vit_embeds
+
+    def flat_square(self, x):
+        b, T, F, h, w, c = x.size()
+        if w % 2 == 1:
+            x = torch.cat([x, torch.zeros((b, T, F, h, 1, c), dtype=x.dtype).to(x.device)], dim=4)
+            b, T, F, h, w, c = x.size()
+        if h % 2 == 1:
+            x = torch.cat([x, torch.zeros((b, T, F, 1, w, c), dtype=x.dtype).to(x.device)], dim=3)
+            b, T, F, h, w, c = x.size()
+        x = x.view(b, T, F, h, int(w / 2), int(c * 2))
+        x = x.permute(0, 1, 2, 4, 3, 5).contiguous()
+        x = x.view(b, T, F, int(h / 2), int(w / 2), int(c * 4))
+        return x
+
+
 class MultimodalProjectorAdapter(nn.Module, AdapterModuleUtil):
     def __init__(self, adapter_type: str, in_features: int, out_features: int, bias: bool, **kwargs) -> None:
         super().__init__()
@@ -898,6 +929,14 @@ class MultimodalProjectorAdapter(nn.Module, AdapterModuleUtil):
             self.mm_projector = torch.nn.Linear(in_features, out_features, bias)
         elif adapter_type == 'identity':
             self.mm_projector = lambda x: x
+        elif adapter_type == 'mlp_downsample':
+            self.mm_projector = torch.nn.Sequential(
+                DownSampleBlock(),
+                torch.nn.LayerNorm(in_features * 4),
+                torch.nn.Linear(in_features * 4, out_features, bias),
+                torch.nn.GELU(),
+                torch.nn.Linear(out_features, out_features, bias),
+            )
         else:
             mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', adapter_type)
             if mlp_gelu_match:

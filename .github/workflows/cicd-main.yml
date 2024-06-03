@@ -43,33 +43,11 @@ jobs:
         docker container prune --filter "until=24h" --force
         docker image prune -a --filter "until=24h" --force
 
-#  checkout-repository:
-#    runs-on: self-hosted-azure
-#    container:
-#      image: nvcr.io/nvidia/pytorch:24.02-py3
-#      volumes:
-#        - ${{ github.workspace }}:/workspace
-#    steps:
-#    - name: Checkout repository
-#      uses: actions/checkout@v4
-#      with:
-#        path: ${{ github.run_id }}
-
 
   cicd-test-container-setup:
     needs: [cicd-cluster-clean]
     runs-on: self-hosted-azure-builder
     if: ${{ github.event.label.name == 'Run CICD' }}
-    # uses: actions/cache@v2
-    #container:
-#      image: nvcr.io/nvidia/pytorch:24.02-py3
-#      options: 
-#        # --user 0:128
-#        --device=/dev/nvidia0
-#        --gpus all
-#        --shm-size=8g 
-#        --env TRANSFORMERS_OFFLINE=0
-#        --env HYDRA_FULL_ERROR=1
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -114,23 +92,7 @@ jobs:
           # These checks are not crucial
           exit 0
         '
-
-    # - name: Build and push to local registry
-    #   uses: docker/build-push-action@v5
-    #   with:
-    #       context: .
-    #       push: true
-    #       tags: nemoci.azurecr.io/name/app:latest
-
-    # - name: Inspect
-    #   run: |
-    #     docker buildx imagetools inspect nemoci.azurecr.io/name/app:latest
-
-    #- name: Post-workflow execution
-    #  uses: gacts/run-and-post-run@v1
-    #  with:
-    #    post: |
-    #      chmod -R 777 .
+        ### \'\'
 
 
   OPTIONAL_L0_Unit_Tests_GPU:

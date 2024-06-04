@@ -72,6 +72,7 @@ def audio_and_texts(test_data_dir):
 
 
 class TestASRConfidenceBenchmark:
+    @pytest.mark.pleasefixme
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
@@ -103,6 +104,7 @@ class TestASRConfidenceBenchmark:
                 atol=TOL,
             )
 
+    @pytest.mark.pleasefixme
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))

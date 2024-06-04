@@ -394,7 +394,17 @@ class GreedyBatchedCTCInfer(Typing, ConfidenceMethodMixin):
 
         if decoder_lengths is None:
             logging.warning(_DECODER_LENGTHS_NONE_WARNING, mode=logging_mode.ONCE)
-            decoder_lengths = torch.tensor([decoder_output.shape[1]], dtype=torch.long).expand(decoder_output.shape[0])
+            decoder_lengths = torch.tensor(
+                [decoder_output.shape[1]], dtype=torch.long, device=decoder_output.device
+            ).expand(decoder_output.shape[0])
+
+        # GreedyCTCInfer::forward(), by accident, works with
+        # decoder_lengths on either CPU or GPU when decoder_output is
+        # on GPU. For the sake of backwards compatibility, we also
+        # allow decoder_lengths to be on the CPU device. In this case,
+        # we simply copy the decoder_lengths from CPU to GPU. If both
+        # tensors are already on the same device, this is a no-op.
+        decoder_lengths = decoder_lengths.to(decoder_output.device)
 
         if decoder_output.ndim == 2:
             hypotheses = self._greedy_decode_labels_batched(decoder_output, decoder_lengths)

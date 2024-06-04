@@ -237,7 +237,7 @@ To install the nemo_toolkit, use the following installation method:
 .. code-block:: bash
 
     apt-get update && apt-get install -y libsndfile1 ffmpeg
-    pip install Cython
+    pip install Cython packaging
     pip install nemo_toolkit['all']
 
 Depending on the shell used, you may need to use the ``"nemo_toolkit[all]"`` specifier instead in the above command.
@@ -263,7 +263,7 @@ If you want to work with a specific version of NeMo from a particular GitHub bra
 .. code-block:: bash
 
     apt-get update && apt-get install -y libsndfile1 ffmpeg
-    pip install Cython
+    pip install Cython packaging
     python -m pip install git+https://github.com/NVIDIA/NeMo.git@{BRANCH}#egg=nemo_toolkit[all]
 
 
@@ -300,7 +300,7 @@ Run the following code:
     conda install -c conda-forge pynini
 
     # install Cython manually
-    pip install cython
+    pip install cython packaging
 
     # clone the repo and install in development mode
     git clone https://github.com/NVIDIA/NeMo

@@ -200,7 +200,7 @@ class MegatronParallel(nn.ModuleList):
         _forward_step = forward_step or self.forward_step
         _loss_reduction = loss_reduction or self.loss_reduction
         _micro_batch_size: int = micro_batch_size or self.infer_micro_batch_size(data)
-        _seq_length: int = seq_length or self.infer_seq_lenght(data)
+        _seq_length: int = seq_length or self.infer_seq_length(data)
         _num_microbatches: int = num_microbatches or self.infer_num_microbatches(data)
 
         pipeline = self.pipeline
@@ -396,7 +396,7 @@ class MegatronParallel(nn.ModuleList):
 
         raise ValueError("Cannot infer `micro_batch_size` from data, please specify it manually")
 
-    def infer_seq_lenght(self, data: Union[DataT, Iterator[DataT], List[Iterator[DataT]]]) -> int:
+    def infer_seq_length(self, data: Union[DataT, Iterator[DataT], List[Iterator[DataT]]]) -> int:
         if hasattr(data, "seq_length"):
             return data.seq_length
         if hasattr(data, "data_config"):
@@ -406,10 +406,10 @@ class MegatronParallel(nn.ModuleList):
             # TODO: Check if at least 2 dims
             return data.size(1)
         elif isinstance(data, dict):
-            return self.infer_seq_lenght(next(iter(data.values())))
+            return self.infer_seq_length(next(iter(data.values())))
         elif isinstance(data, (list, tuple)) and len(data) > 0:
             _tensor: Tensor = data[0]
-            return self.infer_seq_lenght(_tensor)
+            return self.infer_seq_length(_tensor)
 
         raise ValueError("Cannot infer `seq_length` from data, please specify it manually")
 

@@ -779,18 +779,21 @@ class MegatronBaseModel(NLPModel):
             model_dtype = torch.float32
             if self.megatron_amp_O2 and hasattr(self, 'autocast_dtype'):
                 model_dtype = self.autocast_dtype
-            optim_kwargs['param_sync_dtype'] = model_dtype
+            # Don't override user desired value
+            if 'param_sync_dtype' not in optim_config:
+                optim_kwargs['param_sync_dtype'] = model_dtype
 
             # Determine whether to store master params in optimizer
-            if self.cfg.get('fp8_params', False):
-                optim_kwargs['store_params'] = True
-            elif optim_dtype == model_dtype:
-                optim_kwargs['store_params'] = False
-            elif optim_dtype == torch.float32 and model_dtype == torch.bfloat16:
-                optim_kwargs['store_params'] = False
-                optim_kwargs['store_param_remainders'] = True
-            else:
-                optim_kwargs['store_params'] = True
+            if 'store_params' not in optim_config:
+                if self.cfg.get('fp8_params', False):
+                    optim_kwargs['store_params'] = True
+                elif optim_dtype == model_dtype:
+                    optim_kwargs['store_params'] = False
+                elif optim_dtype == torch.float32 and model_dtype == torch.bfloat16:
+                    optim_kwargs['store_params'] = False
+                    optim_kwargs['store_param_remainders'] = True
+                else:
+                    optim_kwargs['store_params'] = True
 
         return super().setup_optimization(optim_config=optim_config, optim_kwargs=optim_kwargs)
 

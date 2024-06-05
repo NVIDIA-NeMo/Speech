@@ -34,8 +34,61 @@ from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.optimizer import get_param_id_to_sharded_param_map, optim_state_to_sharding_state
 from transformer_engine.pytorch.cpp_extensions import cast_to_fp8
 
-from nemo.utils import str_to_dtype
+from nemo.utils import logging, str_to_dtype
 from nemo.utils.te_utils import is_float8tensor
+
+_distribute_within_nodes_pgs = {}
+
+
+def create_distribute_within_nodes_pgs():
+    """Create process groups for distributing with nodes.
+
+    User can reuse this function to reorder communicators for SHArP.
+    """
+    global _distribute_within_nodes_pgs
+    assert torch.distributed.is_initialized()
+    if _distribute_within_nodes_pgs:
+        return _distribute_within_nodes_pgs
+
+    world_size = torch.distributed.get_world_size()
+    rank = torch.distributed.get_rank()
+    devices = torch.cuda.device_count()
+    nodes = world_size // devices
+
+    if nodes * devices != world_size:
+        logging.warning("Expected all nodes have the same amout of devices, disable distribute_within_nodes.")
+        return {}
+
+    node_id = rank // devices
+    device_id = rank % devices
+
+    distributed_pgs = []
+    for i in range(nodes):
+        ranks = [i * devices + j for j in range(devices)]
+        pg = torch.distributed.new_group(ranks=ranks)
+        distributed_pgs.append(pg)
+
+    redundant_pgs = []
+    for i in range(devices):
+        ranks = [i + j * devices for j in range(nodes)]
+        pg = torch.distributed.new_group(ranks=ranks)
+        redundant_pgs.append(pg)
+
+    # To re-order SHArP communicator right after distributed init,
+    # we have to expose redundant_process_group to user.
+    # User has too invoke allreduce through redundant_process_group
+    # before all other communicators to lock SHArP tree.
+    _distribute_within_nodes_pgs = {
+        'world_size': world_size,
+        'rank': rank,
+        'devices': devices,
+        'nodes': nodes,
+        'node_id': node_id,
+        'device_id': device_id,
+        'distributed_process_group': distributed_pgs[node_id],
+        'redundant_process_group': redundant_pgs[device_id],
+    }
+    return _distribute_within_nodes_pgs
 
 
 class MegatronDistributedFusedAdam(DistributedFusedAdam):
@@ -78,27 +131,12 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
             kwargs['distributed_process_group'] = self_groups[rank]
             kwargs['redundant_process_group'] = kwargs['process_group']
         elif distribute_within_nodes:
-            world_size = torch.distributed.get_world_size()
-            rank = torch.distributed.get_rank()
-            devices = torch.cuda.device_count()
-            nodes = world_size // devices
-            assert nodes * devices == world_size, "Expected all nodes have teh same amout of devices."
-            node_id = rank // devices
-            device_id = rank % devices
-
-            distributed_pgs = []
-            for i in range(nodes):
-                ranks = [i * devices + j for j in range(devices)]
-                pg = torch.distributed.new_group(ranks=ranks)
-                distributed_pgs.append(pg)
-            kwargs['distributed_process_group'] = distributed_pgs[node_id]
-
-            redundant_pgs = []
-            for i in range(devices):
-                ranks = [i + j * devices for j in range(nodes)]
-                pg = torch.distributed.new_group(ranks=ranks)
-                redundant_pgs.append(pg)
-            kwargs['redundant_process_group'] = redundant_pgs[device_id]
+            dist_pg_infos = create_distribute_within_nodes_pgs()
+            if dist_pg_infos:
+                kwargs['distributed_process_group'] = dist_pg_infos['distributed_process_group']
+                kwargs['redundant_process_group'] = dist_pg_infos['redundant_process_group']
+                global _distribute_within_nodes_pgs
+                _distribute_within_nodes_pgs = {}
 
         # Make sure dtypes are in right type
         for keyword in ('dtype', 'grad_sync_dtype', 'param_sync_dtype'):
@@ -380,6 +418,8 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
                         f"Attempted to change a parameter with dtype={param.dtype} "
                         f"into a buffer view with dtype={param_buffer_view.dtype}"
                     )
+                if param.is_contiguous(memory_format=torch.channels_last):
+                    param = param.permute(0, 2, 3, 1)
                 param_flat_views.append(param.detach().view(-1))
             param_buffer_views.append(param_buffer_view)
 
@@ -395,7 +435,15 @@ class MegatronDistributedFusedAdam(DistributedFusedAdam):
             if is_float8tensor(param):
                 param._data = buffer_view.view(param.size())
             else:
-                param.data = buffer_view.view(param.size())
+                # Preserve memory format for param here, i.e. NHWC tensors
+                # `param.data.set_()` failed to change storage.
+                # `param.set_()` invalidates bprop hook.
+                param.data = torch.as_strided(
+                    buffer_view,
+                    param.size(),
+                    param.stride(),
+                    storage_offset=buffer_view.storage_offset(),
+                )
 
     def try_grad_sync(self, params: Iterable[torch.nn.Parameter]) -> None:
         """Attempt to launch gradient synchronization"""

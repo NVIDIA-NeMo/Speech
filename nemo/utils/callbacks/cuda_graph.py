@@ -159,7 +159,13 @@ def update_metrics(self, key, value, batch_size):
 
 
 def get_optimizer_step(state):
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure=None,) -> None:
+    def optimizer_step(
+        self,
+        epoch,
+        batch_idx,
+        optimizer,
+        optimizer_closure=None,
+    ) -> None:
         # Not all optimizer supports set_to_none.
         if not hasattr(optimizer, "support_set_to_none"):
             optimizer.support_set_to_none = is_param_in_hook_signature(
@@ -175,7 +181,10 @@ def get_optimizer_step(state):
             with torch.cuda.stream(state.stream):
                 optimizer.zero_grad(**zero_grad_kwargs)
                 self.__orig_optimizer_step__(
-                    epoch, batch_idx, optimizer, optimizer_closure=optimizer_closure,
+                    epoch,
+                    batch_idx,
+                    optimizer,
+                    optimizer_closure=optimizer_closure,
                 )
             torch.cuda.current_stream().wait_stream(state.stream)
 
@@ -194,7 +203,10 @@ def get_optimizer_step(state):
                 # `zero_grad()` being not captured.
                 optimizer.zero_grad(**zero_grad_kwargs)
                 self.__orig_optimizer_step__(
-                    epoch, batch_idx, optimizer, optimizer_closure=optimizer_closure,
+                    epoch,
+                    batch_idx,
+                    optimizer,
+                    optimizer_closure=optimizer_closure,
                 )
             torch.cuda.synchronize()
 
@@ -270,7 +282,7 @@ class CUDAGraphCallback(Callback):
             raise Exception("Warmup must run at least 11 DDP-enabled eager iterations before capture.")
         if torch.distributed.is_initialized():
             raise Exception("CUDAGraphCallback should be initialized before process group.")
-        os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "0"
+        os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "0"
 
         self.state = CUDAGraphState(capture_iteration=capture_iteration)
 

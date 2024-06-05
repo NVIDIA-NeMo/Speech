@@ -366,7 +366,7 @@ class MegatronGPTSFTModel(NLPAdapterModelMixin, MegatronGPTModel):
         no_sync_func = None
         grad_sync_func = None
         param_sync_func = None
-        if not forward_only and self.with_distributed_adam:
+        if not forward_only and self.with_distributed_adam and not self.use_mcore_dist_optim:
             no_sync_func = partial(
                 self._optimizer.no_sync,
                 greedy_grad_copy=self.megatron_amp_O2,

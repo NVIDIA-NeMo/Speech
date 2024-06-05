@@ -244,7 +244,7 @@ class TestCTCDecoding:
         )
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
 
-        cfg.strategy = 'greedy_batched'
+        cfg.strategy = 'greedy_batch'
         batched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
 
         torch.manual_seed(1)
@@ -311,7 +311,7 @@ class TestCTCDecoding:
     def test_batched_decoding_labels(self, tmp_tokenizer, timestamps, length_is_none, labels_device, length_device):
         cfg = CTCBPEDecodingConfig(strategy='greedy', compute_timestamps=timestamps)
         unbatched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
-        cfg.strategy = 'greedy_batched'
+        cfg.strategy = 'greedy_batch'
         batched_decoding = CTCBPEDecoding(decoding_cfg=cfg, tokenizer=tmp_tokenizer)
 
         torch.manual_seed(1)

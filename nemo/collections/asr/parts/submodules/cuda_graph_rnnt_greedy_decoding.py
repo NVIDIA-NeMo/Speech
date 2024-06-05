@@ -37,7 +37,7 @@ _CUDA_PROGRAM_NAME = b"while_loop_conditional.cu"
 
 def create_outer_for_loop_kernel():
     """
-    Creates a kernel that evaluates whether or not to enter the for loop body. 
+    Creates a kernel that evaluates whether or not to enter the for loop body.
     Effectively substitutes for `for time_idx in range(trip_count)`
     such that that for loop can run on a GPU.
     """
@@ -171,8 +171,10 @@ class RNNTGreedyDecodeCudaGraph:
 
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.device)
-        with torch.cuda.stream(stream_for_graph), torch.inference_mode(), torch.cuda.graph(
-            self.graph, stream=stream_for_graph
+        with (
+            torch.cuda.stream(stream_for_graph),
+            torch.inference_mode(),
+            torch.cuda.graph(self.graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             # This is failing...
             self.f = torch.zeros(

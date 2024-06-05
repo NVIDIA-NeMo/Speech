@@ -630,14 +630,18 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
-            torch.cuda.graph(self.separate_graphs.before_outer_loop, stream=stream_for_graph),
+            torch.cuda.graph(
+                self.separate_graphs.before_outer_loop, stream=stream_for_graph, capture_error_mode="thread_local"
+            ),
         ):
             self._before_outer_loop()
 
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
-            torch.cuda.graph(self.separate_graphs.before_inner_loop, stream=stream_for_graph),
+            torch.cuda.graph(
+                self.separate_graphs.before_inner_loop, stream=stream_for_graph, capture_error_mode="thread_local"
+            ),
         ):
             self._before_inner_loop_get_decoder_output()
             self._before_inner_loop_get_joint_output()
@@ -645,14 +649,18 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
-            torch.cuda.graph(self.separate_graphs.inner_loop_code, stream=stream_for_graph),
+            torch.cuda.graph(
+                self.separate_graphs.inner_loop_code, stream=stream_for_graph, capture_error_mode="thread_local"
+            ),
         ):
             self._inner_loop_code()
 
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
-            torch.cuda.graph(self.separate_graphs.after_inner_loop, stream=stream_for_graph),
+            torch.cuda.graph(
+                self.separate_graphs.after_inner_loop, stream=stream_for_graph, capture_error_mode="thread_local"
+            ),
         ):
             self._after_inner_loop()
 
@@ -660,12 +668,11 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
         """Compile full graph for decoding"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
-        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
         with (
             torch.cuda.stream(stream_for_graph),
             torch.inference_mode(),
-            torch.cuda.graph(self.full_graph, stream=stream_for_graph),
+            torch.cuda.graph(self.full_graph, stream=stream_for_graph, capture_error_mode="thread_local"),
         ):
             self._before_outer_loop()
 

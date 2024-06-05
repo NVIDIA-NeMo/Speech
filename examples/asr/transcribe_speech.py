@@ -164,9 +164,7 @@ class TranscriptionConfig:
 
     # Decoding strategy for RNNT models
     # enable CUDA graphs for transcription
-    rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(
-        fused_batch_size=-1, greedy=GreedyBatchedRNNTInferConfig(use_cuda_graph_decoder=True)
-    )
+    rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(fused_batch_size=-1)
 
     # Decoding strategy for AED models
     multitask_decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()

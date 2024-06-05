@@ -592,7 +592,7 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         preserve_frame_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         loop_labels: bool = True,
-        use_cuda_graph_decoder: bool = False,
+        use_cuda_graph_decoder: bool = True,
     ):
         super().__init__(
             decoder_model=decoder_model,
@@ -2360,7 +2360,7 @@ class GreedyBatchedRNNTInferConfig:
     tdt_include_duration_confidence: bool = False
     confidence_method_cfg: Optional[ConfidenceMethodConfig] = field(default_factory=lambda: ConfidenceMethodConfig())
     loop_labels: bool = True
-    use_cuda_graph_decoder: bool = False
+    use_cuda_graph_decoder: bool = True
 
     def __post_init__(self):
         # OmegaConf.structured ensures that post_init check is always executed
@@ -2712,7 +2712,7 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
         preserve_frame_confidence: bool = False,
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
-        use_cuda_graph_decoder: bool = False,
+        use_cuda_graph_decoder: bool = True,
     ):
         super().__init__(
             decoder_model=decoder_model,

@@ -1,0 +1,58 @@
+name: ~test template
+
+on:
+  workflow_call:
+    inputs:
+      RUNNER:
+        type: string
+        description: Runner to use for test
+        required: true
+      TIMEOUT:
+        type: number
+        description: Max runtime of test in minutes
+        required: false
+        default: 10
+      SCRIPT:
+        type: string
+        description: Test script to execute
+        required: true
+      AFTER_SCRIPT:
+        type: string
+        description: Script to run after main test
+        required: false
+        default: ":"
+      IS_OPTIONAL:
+        type: boolean
+        description: Failure will cancel all other tests if set to true
+        required: false
+        default: false
+    outputs:
+      conclusion:
+        description: Conclusion of main test step
+        value: ${{ jobs.main.outputs.conclusion }}
+
+jobs:
+  main:
+    runs-on: ${{ inputs.RUNNER }} 
+    timeout-minutes: ${{ inputs.TIMEOUT }}
+    outputs:
+      conclusion: ${{ steps.main.conclusion }}
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - id: main
+          run: ${{ inputs.SCRIPT }}
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: failure() && inputs.IS_OPTIONAL == false
+        - name: after_script
+          if: always() && inputs.AFTER_SCRIPT != ':'
+          run: ${{ inputs.AFTER_SCRIPT }}

@@ -758,7 +758,7 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |
         cd tools/ctc_segmentation && \
-        $=`date +"%Y-%m-%d-%T"` && \
+        TIME=`date +"%Y-%m-%d-%T"` && \
         /bin/bash run_segmentation.sh \
         --MODEL_NAME_OR_PATH="stt_en_citrinet_512_gamma_0_25" \
         --DATA_DIR=/home/TestData/ctc_segmentation/eng \

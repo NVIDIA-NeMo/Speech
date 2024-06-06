@@ -3006,6 +3006,68 @@ jobs:
   #       - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
   #         if: "failure()"
 
+  L2_RAG_Pipeline_Indexing:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    timeout-minutes: 10
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/rag/rag_indexing.py \
+            trainer.num_nodes=1 \
+            trainer.devices=1 \
+            trainer.precision='bf16-mixed' \
+            indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
+            indexing.embedder.embed_batch_size=128 \
+            indexing.data.data_path='/home/TestData/nlp/rag_pipeline/testing_data/corpus_data/sample_data' \
+            indexing.data.chunk_size=256 \
+            indexing.data.chunk_overlap=10 \
+            indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index'
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
+  L2_RAG_Pipeline_Generating:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    timeout-minutes: 10
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            python examples/nlp/rag/rag_generating.py \
+            trainer.devices=1 \
+            trainer.precision='bf16-mixed' \
+            indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
+            indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index' \
+            generating.llm.model_path='/home/TestData/nlp/rag_pipeline/testing_models/llms/megatron_gpt_125m.nemo' \
+            generating.inference.tokens_to_generate=50 \
+            generating.inference.greedy=False \
+            generating.inference.temperature=1.0 \
+            generating.query='Which art schools did I applied to?'
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
   L2_BioMegatron_Bert_NER_Task:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4923,6 +4985,8 @@ jobs:
       - L2_Megatron_Core_Bert_Pretraining_and_Resume_Training
       - L2_Legacy_Megatron_RETRO_Pretraining_and_Resume_Training
       - L2_Megatron_RETRO_Pretraining_and_Resume_Training
+      - L2_RAG_Pipeline_Indexing
+      - L2_RAG_Pipeline_Generating
       - L2_BioMegatron_Bert_NER_Task
       - L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2

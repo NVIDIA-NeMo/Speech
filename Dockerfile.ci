@@ -47,6 +47,7 @@ pip install --no-cache-dir --no-build-isolation --extra-index-url https://pypi.n
 "megatron_core @ git+https://github.com/NVIDIA/Megatron-LM.git@${MCORE_TAG}" \
 "nvidia-modelopt[torch]~=${MODELOPT_VERSION}" \
 "apex @ git+https://github.com/NVIDIA/apex.git@${APEX_TAG}" \
+"llama-index==0.10.43" \
 -r tools/ctc_segmentation/requirements.txt \
 ".[all]"
 

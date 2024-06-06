@@ -232,7 +232,7 @@ def get_buffered_pred_feat_multitaskAED(
 
 
 def wrap_transcription(hyps: List[str]) -> List[rnnt_utils.Hypothesis]:
-    """ Wrap transcription to the expected format in func write_transcription """
+    """Wrap transcription to the expected format in func write_transcription"""
     wrapped_hyps = []
     for hyp in hyps:
         hypothesis = rnnt_utils.Hypothesis(score=0.0, y_sequence=[], text=hyp)
@@ -241,7 +241,7 @@ def wrap_transcription(hyps: List[str]) -> List[rnnt_utils.Hypothesis]:
 
 
 def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, str]:
-    """ Setup model from cfg and return model and model name for next step """
+    """Setup model from cfg and return model and model name for next step"""
     if cfg.model_path is not None and cfg.model_path != "None":
         # restore model from .nemo file path
         model_cfg = ASRModel.restore_from(restore_path=cfg.model_path, return_config=True)
@@ -249,13 +249,15 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
         imported_class = model_utils.import_class_by_path(classpath)  # type: ASRModel
         logging.info(f"Restoring model : {imported_class.__name__}")
         asr_model = imported_class.restore_from(
-            restore_path=cfg.model_path, map_location=map_location,
+            restore_path=cfg.model_path,
+            map_location=map_location,
         )  # type: ASRModel
         model_name = os.path.splitext(os.path.basename(cfg.model_path))[0]
     else:
         # restore model by name
         asr_model = ASRModel.from_pretrained(
-            model_name=cfg.pretrained_name, map_location=map_location,
+            model_name=cfg.pretrained_name,
+            map_location=map_location,
         )  # type: ASRModel
         model_name = cfg.pretrained_name
 
@@ -269,7 +271,7 @@ def setup_model(cfg: DictConfig, map_location: torch.device) -> Tuple[ASRModel, 
 
 
 def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
-    """ Prepare audio data and decide whether it's partial_audio condition. """
+    """Prepare audio data and decide whether it's partial_audio condition."""
     # this part may need refactor alongsides with refactor of transcribe
     partial_audio = False
 
@@ -282,11 +284,20 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
             logging.error(f"The input dataset_manifest {cfg.dataset_manifest} is empty. Exiting!")
             return None
 
+        audio_key = cfg.get('audio_key', 'audio_filepath')
+
+        with open(cfg.dataset_manifest, "rt") as fh:
+            for line in fh:
+                item = json.loads(line)
+                item["audio_filepath"] = get_full_path(item["audio_filepath"], cfg.dataset_manifest)
+                if item.get("duration") is None and cfg.presort_manifest:
+                    raise ValueError(
+                        f"Requested presort_manifest=True, but line {line} in manifest {cfg.dataset_manifest} lacks a 'duration' field."
+                    )
         all_entries_have_offset_and_duration = True
         for item in read_and_maybe_sort_manifest(cfg.dataset_manifest, try_sort=cfg.presort_manifest):
             if not ("offset" in item and "duration" in item):
                 all_entries_have_offset_and_duration = False
-            audio_key = cfg.get('audio_key', 'audio_filepath')
             audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
             filepaths.append(audio_file)
         partial_audio = all_entries_have_offset_and_duration
@@ -322,7 +333,7 @@ def restore_transcription_order(manifest_path: str, transcriptions: list) -> lis
 
 
 def compute_output_filename(cfg: DictConfig, model_name: str) -> DictConfig:
-    """ Compute filename of output manifest and update cfg"""
+    """Compute filename of output manifest and update cfg"""
     if cfg.output_filename is None:
         # create default output filename
         if cfg.audio_dir is not None:
@@ -363,7 +374,7 @@ def write_transcription(
     compute_langs: bool = False,
     compute_timestamps: bool = False,
 ) -> Tuple[str, str]:
-    """ Write generated transcription to output file. """
+    """Write generated transcription to output file."""
     if cfg.append_pred:
         logging.info(f'Transcripts will be written in "{cfg.output_filename}" file')
         if cfg.pred_name_postfix is not None:
@@ -533,7 +544,11 @@ def transcribe_partial_audio(
                     lg = logits[idx][: logits_len[idx]]
                     hypotheses.append(lg)
             else:
-                current_hypotheses, _ = decode_function(logits, logits_len, return_hypotheses=return_hypotheses,)
+                current_hypotheses, _ = decode_function(
+                    logits,
+                    logits_len,
+                    return_hypotheses=return_hypotheses,
+                )
 
                 if return_hypotheses:
                     # dump log probs per file
@@ -567,10 +582,9 @@ def compute_metrics_per_sample(
     punctuation_marks: List[str] = [".", ",", "?"],
     output_manifest_path: str = None,
 ) -> dict:
-
     '''
     Computes metrics per sample for given manifest
-    
+
     Args:
         manifest_path: str, Required - path to dataset JSON manifest file (in NeMo format)
         reference_field: str, Optional - name of field in .json manifest with the reference text ("text" by default).
@@ -578,7 +592,7 @@ def compute_metrics_per_sample(
         metrics: list[str], Optional - list of metrics to be computed (currently supported "wer", "cer", "punct_er")
         punctuation_marks: list[str], Optional - list of punctuation marks for computing punctuation error rate ([".", ",", "?"] by default).
         output_manifest_path: str, Optional - path where .json manifest with calculated metrics will be saved.
-    
+
     Returns:
         samples: dict - Dict of samples with calculated metrics
     '''

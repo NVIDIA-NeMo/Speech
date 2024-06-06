@@ -669,7 +669,10 @@ class RelPositionMultiHeadAttentionLongformer(RelPositionMultiHeadAttention):
         global_attn_scores = global_attn_scores.view(batch_size * self.h, max_num_global_attn_indices, seq_len)
 
         # compute global attn probs
-        global_attn_probs_float = nn.functional.softmax(global_attn_scores, dim=-1, dtype=torch.float32)
+        if self.training:
+            global_attn_probs_float = nn.functional.softmax(global_attn_scores, dim=-1, dtype=torch.float32)
+        else:
+            global_attn_probs_float = nn.functional.softmax(global_attn_scores, dim=-1)
 
         global_attn_probs = self.dropout(global_attn_probs_float)
 
@@ -906,7 +909,7 @@ class PositionalEncoding(torch.nn.Module):
         else:
             self.dropout_emb = None
 
-    def create_pe(self, positions):
+    def create_pe(self, positions, dtype):
         pos_length = positions.size(0)
         pe = torch.zeros(pos_length, self.d_model, device=positions.device)
         div_term = torch.exp(
@@ -915,18 +918,18 @@ class PositionalEncoding(torch.nn.Module):
         )
         pe[:, 0::2] = torch.sin(positions * div_term)
         pe[:, 1::2] = torch.cos(positions * div_term)
-        pe = pe.unsqueeze(0)
+        pe = pe.unsqueeze(0).to(dtype)
         if hasattr(self, 'pe'):
             self.pe = pe
         else:
             self.register_buffer('pe', pe, persistent=False)
 
-    def extend_pe(self, length, device):
+    def extend_pe(self, length, device, dtype):
         """Reset and extend the positional encodings if needed."""
         if hasattr(self, 'pe') and self.pe.size(1) >= length:
             return
         positions = torch.arange(0, length, dtype=torch.float32, device=device).unsqueeze(1)
-        self.create_pe(positions=positions)
+        self.create_pe(positions=positions, dtype=dtype)
 
     def forward(self, x: torch.Tensor, cache_len=0):
         """Adds positional encoding.
@@ -958,7 +961,7 @@ class RelPositionalEncoding(PositionalEncoding):
         dropout_rate_emb (float): dropout rate for the positional embeddings
     """
 
-    def extend_pe(self, length, device):
+    def extend_pe(self, length, device, dtype):
         """Reset and extend the positional encodings if needed."""
         needed_size = 2 * length - 1
         if hasattr(self, 'pe') and self.pe.size(1) >= needed_size:
@@ -966,7 +969,7 @@ class RelPositionalEncoding(PositionalEncoding):
         # positions would be from negative numbers to positive
         # positive positions would be used for left positions and negative for right positions
         positions = torch.arange(length - 1, -length, -1, dtype=torch.float32, device=device).unsqueeze(1)
-        self.create_pe(positions=positions)
+        self.create_pe(positions=positions, dtype=dtype)
 
     def forward(self, x, cache_len=0):
         """Compute positional encoding.
@@ -1012,7 +1015,7 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
         self.left_context = att_context_size[0]
         self.right_context = att_context_size[1]
 
-    def extend_pe(self, length, device):
+    def extend_pe(self, length, device, dtype):
         """Reset and extend the positional encodings only at the beginning"""
         if hasattr(self, 'pe'):
             return
@@ -1020,7 +1023,7 @@ class LocalAttRelPositionalEncoding(PositionalEncoding):
         positions = torch.arange(
             self.left_context, -self.right_context - 1, -1, dtype=torch.float32, device=device
         ).unsqueeze(1)
-        self.create_pe(positions=positions)
+        self.create_pe(positions=positions, dtype=dtype)
 
     def forward(self, x, cache_len=0):
         """Compute positional encoding.

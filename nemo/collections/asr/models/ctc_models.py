@@ -668,7 +668,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
     def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
         super()._transcribe_on_begin(audio, trcfg)
 
-        # Freeze the encoder and decoure_exder modules
+        # Freeze the encoder and decoder modules
         self.encoder.freeze()
         self.decoder.freeze()
 
@@ -706,7 +706,11 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             logits_len = logits_len.cpu()
             # dump log probs per file
             for idx in range(logits_cpu.shape[0]):
-                current_hypotheses[idx].y_sequence = logits_cpu[idx][: logits_len[idx]]
+                # We clone because we don't want references to the
+                # cudaMallocHost()-allocated tensor to be floating
+                # around. Were that to be the case, then the pinned
+                # memory cache would always miss.
+                current_hypotheses[idx].y_sequence = logits_cpu[idx, : logits_len[idx]].clone()
                 if current_hypotheses[idx].alignments is None:
                     current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
             del logits_cpu

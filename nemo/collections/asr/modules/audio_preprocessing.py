@@ -39,7 +39,7 @@ from nemo.core.neural_types import (
 )
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 try:
     import torchaudio
@@ -85,11 +85,27 @@ class AudioPreprocessor(NeuralModule, ABC):
             None: torch.ones,
         }
 
+        # Normally, when you call to(dtype) on a torch.nn.Module, all
+        # floating point parameters and buffers will change to that
+        # dtype, rather than being float32. The AudioPreprocessor
+        # classes, uniquely, don't actually have any parameters or
+        # buffers from what I see. In addition, we want the input to
+        # the preprocessor to be float32, but need to create the
+        # output in appropriate precision. We have this empty tensor
+        # here just to detect which dtype tensor this module should
+        # output at the end of execution.
+        self.register_buffer("dtype_sentinel_tensor", torch.tensor((), dtype=torch.float32), persistent=False)
+
     @typecheck()
     @torch.no_grad()
     def forward(self, input_signal, length):
-        processed_signal, processed_length = self.get_features(input_signal, length)
-
+        if input_signal.dtype != torch.float32:
+            logging.warn(
+                f"AudioPreprocessor received an input signal of dtype {input_signal.dtype}, rather than torch.float32. In sweeps across multiple datasets, we have found that the preprocessor is not robust to low precision  mathematics. As such, it runs in float32. Your input will be cast to float32, but this is not necessarily enough to recovery full accuracy. For example, simply casting input_signal from torch.float32 to torch.bfloat16, then back to torch.float32 before running AudioPreprocessor causes drops in absolute WER of up to 0.1%. torch.bfloat16 simply does not have enough mantissa bits to represent enough values in the range [-1.0,+1.0] correctly.",
+                mode=logging_mode.ONCE,
+            )
+        processed_signal, processed_length = self.get_features(input_signal.to(torch.float32), length)
+        processed_signal = processed_signal.to(self.dtype_sentinel_tensor.dtype)
         return processed_signal, processed_length
 
     @abstractmethod

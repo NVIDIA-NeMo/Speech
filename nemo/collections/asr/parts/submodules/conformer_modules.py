@@ -377,7 +377,7 @@ class ConformerConvolution(nn.Module):
             x = self.pointwise_activation(x)
 
         if pad_mask is not None:
-            x = x.float().masked_fill(pad_mask.unsqueeze(1), 0.0)
+            x = x.masked_fill(pad_mask.unsqueeze(1), 0.0)
 
         x = self.depthwise_conv(x, cache=cache)
         if cache is not None:

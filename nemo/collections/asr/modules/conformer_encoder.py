@@ -679,7 +679,8 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         """
         self.max_audio_length = max_audio_length
         device = next(self.parameters()).device
-        self.pos_enc.extend_pe(max_audio_length, device)
+        dtype = next(self.parameters()).dtype
+        self.pos_enc.extend_pe(max_audio_length, device, dtype)
 
     def _create_masks(self, att_context_size, padding_length, max_audio_length, offset, device):
         if self.self_attention_model != "rel_pos_local_attn":

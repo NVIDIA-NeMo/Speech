@@ -181,7 +181,7 @@ class TranscriptionMixin(ABC):
 
     """
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def transcribe(
         self,
         audio: Union[str, List[str], np.ndarray, DataLoader],
@@ -381,7 +381,6 @@ class TranscriptionMixin(ABC):
                 for test_batch in tqdm(dataloader, desc="Transcribing", disable=not verbose):
                     # Move batch to device
                     test_batch = move_to_device(test_batch, transcribe_cfg._internal.device)
-
                     # Run forward pass
                     model_outputs = self._transcribe_forward(test_batch, transcribe_cfg)
                     processed_outputs = self._transcribe_output_processing(model_outputs, transcribe_cfg)

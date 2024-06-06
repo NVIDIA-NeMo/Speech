@@ -150,7 +150,7 @@ class TestASRAdapterModules:
         relpos_enc = adapter_modules.RelPositionalEncodingAdapter(d_model=50)
 
         pad_mask, att_mask = get_mask(lengths)
-        relpos_enc.extend_pe(lengths.max(), device='cpu')
+        relpos_enc.extend_pe(lengths.max(), device='cpu', dtype=torch.float32)
 
         with torch.no_grad():
             assert adapter.linear_out.weight.sum() == 0
@@ -171,7 +171,7 @@ class TestASRAdapterModules:
 
         relpos_enc = adapter_modules.PositionalEncodingAdapter(d_model=50)
 
-        relpos_enc.extend_pe(lengths.max(), device='cpu')
+        relpos_enc.extend_pe(lengths.max(), device='cpu', dtype=torch.float32)
 
         with torch.no_grad():
             out, pos_emb = relpos_enc(x)
@@ -187,7 +187,7 @@ class TestASRAdapterModules:
 
         relpos_enc = adapter_modules.RelPositionalEncodingAdapter(d_model=50)
 
-        relpos_enc.extend_pe(lengths.max(), device='cpu')
+        relpos_enc.extend_pe(lengths.max(), device='cpu', dtype=torch.float32)
 
         with torch.no_grad():
             out, pos_emb = relpos_enc(x)

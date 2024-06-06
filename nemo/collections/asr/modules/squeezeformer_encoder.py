@@ -99,8 +99,7 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return OrderedDict(
             {
                 "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
@@ -110,8 +109,7 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return OrderedDict(
             {
                 "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
@@ -253,7 +251,11 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
             # Chose same type of positional encoding as the originally determined above
             if self_attention_model == "rel_pos":
                 self.time_reduce_pos_enc = RelPositionalEncoding(
-                    d_model=d_model, dropout_rate=0.0, max_len=pos_emb_max_len, xscale=None, dropout_rate_emb=0.0,
+                    d_model=d_model,
+                    dropout_rate=0.0,
+                    max_len=pos_emb_max_len,
+                    xscale=None,
+                    dropout_rate_emb=0.0,
                 )
             else:
                 self.time_reduce_pos_enc = PositionalEncoding(
@@ -275,20 +277,21 @@ class SqueezeformerEncoder(NeuralModule, Exportable, AccessMixin):
         self.interctc_capture_at_layers = None
 
     def set_max_audio_length(self, max_audio_length):
-        """ Sets maximum input length.
-            Pre-calculates internal seq_range mask.
+        """Sets maximum input length.
+        Pre-calculates internal seq_range mask.
         """
         self.max_audio_length = max_audio_length
         device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
         seq_range = torch.arange(0, self.max_audio_length, device=device)
         if hasattr(self, 'seq_range'):
             self.seq_range = seq_range
         else:
             self.register_buffer('seq_range', seq_range, persistent=False)
-        self.pos_enc.extend_pe(max_audio_length, device)
+        self.pos_enc.extend_pe(max_audio_length, device, dtype)
 
         if self.time_reduce_pos_enc is not None:
-            self.time_reduce_pos_enc.extend_pe(max_audio_length, device)
+            self.time_reduce_pos_enc.extend_pe(max_audio_length, device, dtype)
 
     @typecheck()
     def forward(self, audio_signal, length=None):
@@ -434,7 +437,9 @@ class SqueezeformerEncoderAdapter(SqueezeformerEncoder, adapter_mixins.AdapterMo
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.d_model)
         return cfg
 
-    def get_accepted_adapter_types(self,) -> Set[type]:
+    def get_accepted_adapter_types(
+        self,
+    ) -> Set[type]:
         types = super().get_accepted_adapter_types()
 
         if len(types) == 0:

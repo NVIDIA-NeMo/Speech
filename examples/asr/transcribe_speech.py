@@ -16,6 +16,7 @@ import contextlib
 import glob
 import json
 import os
+import time
 from dataclasses import dataclass, field, is_dataclass
 from tempfile import NamedTemporaryFile
 from typing import List, Optional, Union
@@ -83,6 +84,8 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   clean_groundtruth_text: Bool to clean groundtruth text
   langid: Str used for convert_num_to_words during groundtruth cleaning
   use_cer: Bool to use Character Error Rate (CER)  or Word Error Rate (WER)
+
+  calculate_rtfx: Bool to calculate the RTFx throughput to transcribe the input dataset.
 
 # Usage
 ASR model can be specified by either "model_path" or "pretrained_name".
@@ -153,6 +156,7 @@ class TranscriptionConfig:
     allow_mps: bool = False  # allow to select MPS device (Apple Silicon M-series GPU)
     amp: bool = False
     amp_dtype: str = "float16"  # can be set to "float16" or "bfloat16" when using amp
+    compute_dtype: str = "float32"
     matmul_precision: str = "highest"  # Literal["highest", "high", "medium"]
     audio_type: str = "wav"
 
@@ -207,6 +211,8 @@ class TranscriptionConfig:
     # Your manifest input should have `offset` field to use transcribe_partial_audio()
     allow_partial_transcribe: bool = False
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
+
+    calculate_rtfx: bool = False
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
@@ -265,6 +271,14 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     trainer = pl.Trainer(devices=device, accelerator=accelerator)
     asr_model.set_trainer(trainer)
     asr_model = asr_model.eval()
+
+    if cfg.compute_dtype != "float32" and cfg.amp:
+        raise ValueError("amp=true is mutually exclusive with a compute_dtype other than float32")
+
+    amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
+
+    if cfg.compute_dtype != "float32":
+        asr_model.to(getattr(torch, cfg.compute_dtype))
 
     # we will adjust this flag if the model does not support it
     compute_timestamps = cfg.compute_timestamps
@@ -378,7 +392,7 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     else:
 
         @contextlib.contextmanager
-        def autocast(dtype=None):
+        def autocast(dtype=None, enabled=True):
             yield
 
     # Compute output filename
@@ -394,10 +408,22 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
 
     # transcribe audio
 
-    amp_dtype = torch.float16 if cfg.amp_dtype == "float16" else torch.bfloat16
+    if cfg.calculate_rtfx:
+        total_duration = 0.0
 
-    with autocast(dtype=amp_dtype):
+        with open(cfg.dataset_manifest, "rt") as fh:
+            for line in fh:
+                item = json.loads(line)
+                if "duration" not in item:
+                    raise ValueError(
+                        f"Requested calculate_rtfx=True, but line {line} in manifest {cfg.dataset_manifest} lacks a 'duration' field."
+                    )
+                total_duration += item["duration"]
+
+    with autocast(dtype=amp_dtype, enabled=cfg.amp):
         with torch.no_grad():
+            if cfg.calculate_rtfx:
+                start_time = time.time()
             if partial_audio:
                 transcriptions = transcribe_partial_audio(
                     asr_model=asr_model,
@@ -420,10 +446,13 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                 override_cfg.lang_field = cfg.gt_lang_attr_name
                 if hasattr(override_cfg, "prompt"):
                     override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
+
                 transcriptions = asr_model.transcribe(
                     audio=filepaths,
                     override_config=override_cfg,
                 )
+            if cfg.calculate_rtfx:
+                transcribe_time = time.time() - start_time
 
     if cfg.dataset_manifest is not None:
         logging.info(f"Finished transcribing from manifest file: {cfg.dataset_manifest}")
@@ -474,6 +503,9 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
         if output_manifest_w_wer:
             logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")
             logging.info(f"{total_res}")
+
+    if cfg.calculate_rtfx:
+        logging.info(f"Dataset RTFx {(total_duration/transcribe_time)}")
 
     return cfg
 

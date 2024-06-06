@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utilities for exporting a model to our custom format."""
 
 import numpy as np
 import torch
@@ -21,6 +20,15 @@ from tensorrt_llm._utils import torch_to_numpy
 # A global dicts to store exported weights.
 # This is set to be a global variable to avoid extra code modification from tensorrt_llm.
 weights_dict = {}
+
+
+DECODER_MODEL_TYPE = {
+    "gptj": 'GPTForCausalLM',
+    "gptnext": 'GPTForCausalLM',
+    "llama": 'LLaMAForCausalLM',
+    "gemma": 'GemmaForCausalLM',
+    "falcon": 'FalconForCausalLM',
+}
 
 
 def save_val(val, dir, key, tp_num=None):
@@ -396,3 +404,13 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
 
     global weights_dict
     return weights_dict
+
+
+def split(v, tp_size, idx, dim=0):
+    """Splits the np tensor v on dim and return the idx's slice."""
+    if tp_size == 1:
+        return v
+    if len(v.shape) == 1:
+        return np.ascontiguousarray(np.split(v, tp_size)[idx])
+    else:
+        return np.ascontiguousarray(np.split(v, tp_size, axis=dim)[idx])

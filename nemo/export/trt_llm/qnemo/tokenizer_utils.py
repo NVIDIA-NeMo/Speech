@@ -17,7 +17,7 @@ import os
 from omegaconf import OmegaConf
 from transformers import AutoTokenizer
 
-from nemo.export.trt_llm.nemo.sentencepiece_tokenizer import SentencePieceTokenizer
+from nemo.export.trt_llm.nemo_ckpt_loader.sentencepiece_tokenizer import SentencePieceTokenizer
 
 # TODO: use get_nmt_tokenizer helper below to instantiate tokenizer once environment / dependencies get stable
 # from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer

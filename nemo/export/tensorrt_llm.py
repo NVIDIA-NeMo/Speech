@@ -28,7 +28,8 @@ import wrapt
 
 from nemo.deploy import ITritonDeployable
 from nemo.export.tarutils import TarPath, unpack_tarball
-from nemo.export.trt_llm.nemo_utils import get_tokenzier, is_nemo_file, nemo_to_trtllm_config
+from nemo.export.trt_llm.converter.model_converter import model_to_trtllm_ckpt
+from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import get_tokenzier, is_nemo_file, load_nemo_model
 from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
 from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
@@ -225,15 +226,16 @@ class TensorRTLLM(ITritonDeployable):
                     lora_target_modules=lora_target_modules,
                 )
             else:
-                weights_dicts, model_configs, self.tokenizer = nemo_to_trtllm_config(
-                    in_file=nemo_checkpoint_path,
+                model, model_configs, self.tokenizer = load_nemo_model(nemo_checkpoint_path, nemo_export_dir)
+                weights_dicts, model_configs = model_to_trtllm_ckpt(
+                    model=model,
+                    nemo_model_config=model_configs,
+                    nemo_export_dir=nemo_export_dir,
                     decoder_type=model_type,
                     dtype=dtype,
                     tensor_parallel_size=tensor_parallel_size,
                     pipeline_parallel_size=pipeline_parallel_size,
                     use_parallel_embedding=use_parallel_embedding,
-                    nemo_export_dir=nemo_export_dir,
-                    save_nemo_model_config=save_nemo_model_config,
                 )
 
                 for weight_dict, model_config in zip(weights_dicts, model_configs):

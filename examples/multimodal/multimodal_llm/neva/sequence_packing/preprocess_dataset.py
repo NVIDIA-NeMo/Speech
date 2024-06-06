@@ -60,6 +60,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from nemo.collections.multimodal.data.neva.neva_dataset import make_supervised_data_module
+from nemo.collections.multimodal.parts.utils import create_image_processor
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.utils import logging
 
@@ -254,8 +255,14 @@ def main():
     nemo_config.model.data.conv_template = args.conv_template
     nemo_config.model.data.image_aspect_ratio = args.image_aspect_ratio
 
-    tokenizer = get_nmt_tokenizer(library="sentencepiece", tokenizer_model=args.tokenizer_path,)
-    train_ds = make_supervised_data_module(tokenizer=tokenizer, model_cfg=nemo_config.model)["train_dataset"]
+    tokenizer = get_nmt_tokenizer(
+        library="sentencepiece",
+        tokenizer_model=args.tokenizer_path,
+    )
+    image_processor = create_image_processor(nemo_config.model.mm_cfg)
+    train_ds = make_supervised_data_module(
+        tokenizer=tokenizer, image_processor=image_processor, model_cfg=nemo_config.model
+    )["train_dataset"]
     train_dl = DataLoader(train_ds, num_workers=32, collate_fn=None, shuffle=False)
     # Example shape: {'tokens': torch.Size([1, 344]), 'labels': torch.Size([1, 344]), 'image': torch.Size([1, 1, 3, 224, 224])}
 

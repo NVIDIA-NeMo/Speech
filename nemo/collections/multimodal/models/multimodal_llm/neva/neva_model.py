@@ -23,7 +23,7 @@ from einops import rearrange, repeat
 from omegaconf.dictconfig import DictConfig
 from pkg_resources import packaging
 from pytorch_lightning.trainer.trainer import Trainer
-from transformers import CLIPVisionModel
+from transformers import CLIPVisionModel, SiglipVisionModel
 
 from nemo.collections.common.parts.utils import extend_instance
 from nemo.collections.multimodal.data.neva.conversation import DEFAULT_IM_END_TOKEN, DEFAULT_IM_START_TOKEN
@@ -36,7 +36,7 @@ from nemo.collections.multimodal.models.vision_language_foundation.clip.megatron
     CLIPVisionTransformer,
     MegatronCLIPModel,
 )
-from nemo.collections.multimodal.parts.utils import load_nemo_model_weights
+from nemo.collections.multimodal.parts.utils import create_image_processor, load_nemo_model_weights
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import MegatronPretrainingSampler
 from nemo.collections.nlp.models.language_modeling.megatron.gpt_model import GPTModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel, get_specs
@@ -141,7 +141,7 @@ class NevaWordEmbeddingMixin(torch.nn.Module, adapter_mixins.AdapterModuleMixin)
         use_im_start_end=False,
     ):
         self.vision_encoder = vision_encoder
-        self.from_hf = isinstance(vision_encoder, CLIPVisionModel)
+        self.from_hf = isinstance(vision_encoder, CLIPVisionModel) or isinstance(vision_encoder, SiglipVisionModel)
         self.media_start_id = media_start_id
         self.media_end_id = media_end_id
         self.class_token_length = class_token_length
@@ -280,25 +280,7 @@ class NevaBaseModel:
         if mm_cfg.llm.freeze:
             self.freeze_llm(mm_cfg)
 
-        # Initialize vision encoder and freeze it
-        if mm_cfg.vision_encoder.from_hf:
-            vision_encoder = CLIPVisionModel.from_pretrained(
-                mm_cfg.vision_encoder.from_pretrained,
-                torch_dtype=torch.bfloat16,
-            ).cuda()
-            vision_encoder = vision_encoder.to(torch.bfloat16)
-            if mm_cfg.vision_encoder.freeze:
-                for param in vision_encoder.parameters():
-                    param.requires_grad = False
-                vision_encoder = vision_encoder.eval()
-        else:
-            vision_cfg = MegatronCLIPModel.restore_from(
-                mm_cfg.vision_encoder.from_pretrained, return_config=True
-            ).vision
-            vision_encoder = FrozenCLIPVisionTransformer(vision_cfg, self.config)
-            self.load_vision_encoder_weights(vision_encoder, mm_cfg.vision_encoder.from_pretrained)
-            if mm_cfg.vision_encoder.freeze:
-                vision_encoder.freeze()
+        vision_encoder, self.image_processor = self.create_vision_encoder_and_processor(mm_cfg)
 
         # Monkey patch embedding
         if kwargs.get("pre_process", True):
@@ -311,6 +293,44 @@ class NevaBaseModel:
                 class_token_length=mm_cfg.vision_encoder.get("class_token_length", 1),
                 use_im_start_end=mm_cfg.get("use_im_start_end", False),
             )
+
+    def create_vision_encoder_and_processor(self, mm_cfg):
+        # Initialize vision encoder and freeze it
+        if mm_cfg.vision_encoder.get("from_hf", False):
+            if "clip" in mm_cfg.vision_encoder.from_pretrained:
+                vision_encoder = CLIPVisionModel.from_pretrained(
+                    mm_cfg.vision_encoder.from_pretrained,
+                    torch_dtype=torch.bfloat16,
+                ).cuda()
+                vision_encoder = vision_encoder.to(torch.bfloat16)
+                if mm_cfg.vision_encoder.freeze:
+                    for param in vision_encoder.parameters():
+                        param.requires_grad = False
+                    vision_encoder = vision_encoder.eval()
+            elif "siglip" in mm_cfg.vision_encoder.from_pretrained:
+                vision_encoder = SiglipVisionModel.from_pretrained(
+                    mm_cfg.vision_encoder.from_pretrained,
+                    torch_dtype=torch.bfloat16,
+                ).cuda()
+                vision_encoder = vision_encoder.to(torch.bfloat16)
+                if mm_cfg.vision_encoder.freeze:
+                    for param in vision_encoder.parameters():
+                        param.requires_grad = False
+                    vision_encoder = vision_encoder.eval()
+            else:
+                raise (ValueError("Currently only support CLIPVisionModel and SigLipVisionModel from Huggingface"))
+        else:
+            vision_cfg = MegatronCLIPModel.restore_from(
+                mm_cfg.vision_encoder.from_pretrained, return_config=True
+            ).vision
+            vision_encoder = FrozenCLIPVisionTransformer(vision_cfg, self.config)
+            self.load_vision_encoder_weights(vision_encoder, mm_cfg.vision_encoder.from_pretrained)
+            if mm_cfg.vision_encoder.freeze:
+                vision_encoder.freeze()
+
+        image_processor = create_image_processor(mm_cfg)
+
+        return vision_encoder, image_processor
 
     def freeze_llm(self, mm_cfg):
         raise NotImplementedError
@@ -1028,16 +1048,22 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
         logging.info('Building Neva datasets.')
         if self.cfg.data.get("packed_sequence", False):
             assert self.cfg.micro_batch_size == 1, "Micro batch size must be 1 if using packed sequence"
-            self._train_ds = NevaPackedSeqDatatset(self.cfg.data.data_prefix, self.cfg.data.get("crop_size"))
-            self._validation_ds = NevaPackedSeqDatatset(self.cfg.data.data_prefix, self.cfg.data.get("crop_size"))
+            self._train_ds = NevaPackedSeqDatatset(
+                self.cfg.data.data_prefix, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+            )
+            self._validation_ds = NevaPackedSeqDatatset(
+                self.cfg.data.data_prefix, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+            )
         else:
             ds_dict = make_supervised_data_module(
                 tokenizer=self.tokenizer,
+                image_processor=(
+                    self.model.module.image_processor if hasattr(self.model, "module") else self.model.image_processor
+                ),
                 model_cfg=self.cfg,
             )
             self._train_ds = ds_dict["train_dataset"]
             self._validation_ds = ds_dict["eval_dataset"]
-
         return self._train_ds, self._validation_ds
 
     def build_pretraining_data_loader(

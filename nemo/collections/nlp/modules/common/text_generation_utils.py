@@ -203,7 +203,8 @@ def megatron_neva_generate(model, prompt_dict_list, length_params, sampling_para
                 clean_response = clean_response[last_match_end_position:]
             clean_response = clean_response.strip("<extra_id_1>")
         elif conv_template == 'nv_dpo':
-            clean_response = clean_response.split("<extra_id_1>")[-2][10:]  # [10:] for removing "Assistant\n"
+            clean_response = clean_response.split("<extra_id_1>Assistant\n")[-1]
+            clean_response = clean_response.strip("<extra_id_1>")
         elif conv_template == "llama_2":
             clean_response = clean_response.rsplit("[/INST] ", 1)[-1]
         elif conv_template == "llama_3":

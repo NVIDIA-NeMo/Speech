@@ -29,7 +29,7 @@ from einops import rearrange
 from omegaconf import DictConfig
 from PIL import Image
 from torch.utils.data import Dataset, default_collate
-from transformers import CLIPImageProcessor
+from transformers import CLIPImageProcessor, SiglipImageProcessor
 
 import nemo.collections.multimodal.data.neva.conversation as conversation_lib
 from nemo.collections.multimodal.data.clip.augmentations.augmentations import image_transform
@@ -294,6 +294,42 @@ def preprocess_multimodal(sources: dict, multimodal_cfg: dict, cur_token_len: in
     return sources
 
 
+def process_image(processor, image, image_aspect_ratio="square"):
+    if isinstance(processor, CLIPImageProcessor) or isinstance(processor, SiglipImageProcessor):
+        # image processor from HF
+        if image_aspect_ratio == 'keep':
+            max_hw, min_hw = max(image.size), min(image.size)
+            aspect_ratio = max_hw / min_hw
+            max_len, min_len = 448, 224
+            shortest_edge = int(min(max_len / aspect_ratio, min_len))
+            image = processor.preprocess(
+                image, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
+            )['pixel_values'][0]
+        elif image_aspect_ratio == 'pad':
+
+            def expand2square(pil_img, background_color):
+                width, height = pil_img.size
+                if width == height:
+                    return pil_img
+                elif width > height:
+                    result = Image.new(pil_img.mode, (width, width), background_color)
+                    result.paste(pil_img, (0, (width - height) // 2))
+                    return result
+                else:
+                    result = Image.new(pil_img.mode, (height, height), background_color)
+                    result.paste(pil_img, ((height - width) // 2, 0))
+                    return result
+
+            image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
+            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+        else:
+            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    else:
+        assert image_aspect_ratio == 'square', 'NeMo image transform with setting `image_aspect_ratio` to `square`.'
+        image = processor(image)
+    return image
+
+
 def preprocess_llama_3(
     sources: dict,
     tokenizer,
@@ -456,9 +492,11 @@ def preprocess_llama_2(
             parts[0] += sep
 
             round_len = len(tokenizer.text_to_ids(rou + conv.sep2))
+            instruction_len = len(tokenizer.text_to_ids(parts[0])) - 2
             if i > 0:
                 round_len -= 1  # Remove extra token added by sp tokenizer
-            instruction_len = len(tokenizer.text_to_ids(parts[0])) - 2
+            else:
+                instruction_len += 1
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
             cur_len += round_len
@@ -723,7 +761,11 @@ def preprocess_nv_dpo(
 
             if i % 2 == 1:
                 turn['from'] = conv.roles[1]
-                conv.append_message(turn['from'], turn['value'])
+                if "label" in turn:
+                    value = DEFAULT_LABELS_TOKEN + turn['label'] + '\n' + turn['value']
+                else:
+                    value = turn["value"]
+                conv.append_message(turn['from'], value)
                 if not turn["value"]:
                     strip_end_for_inference = (
                         True  # in inference, current turn is empty, thus end tokens need to striped.
@@ -765,7 +807,11 @@ def preprocess_nv_dpo(
             if len(parts) != 2:
                 break
 
-            instruction_len = len(tokenizer.text_to_ids(parts[0] + sep))
+            # handle label if exists
+            labels_match = re.search(rf"{re.escape(DEFAULT_LABELS_TOKEN)}.*?\n", parts[1])
+            instruction_len = len(
+                tokenizer.text_to_ids(parts[0] + sep + (parts[1][: labels_match.end()] if labels_match else ""))
+            )
             round_len = len(tokenizer.text_to_ids(rou + conv.sep))
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
@@ -886,40 +932,7 @@ class LazySupervisedDataset(Dataset):
                 image = self.image_loader.open_image(image_file)
                 if image is None:
                     logging.warning(f"Image {image_file} could not be found!")
-                if isinstance(self.processor, CLIPImageProcessor):
-                    # image processor from HF
-                    if self.multimodal_cfg['image_aspect_ratio'] == 'keep':
-                        max_hw, min_hw = max(image.size), min(image.size)
-                        aspect_ratio = max_hw / min_hw
-                        max_len, min_len = 448, 224
-                        shortest_edge = int(min(max_len / aspect_ratio, min_len))
-                        image = self.processor.preprocess(
-                            image, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
-                        )['pixel_values'][0]
-                    elif self.multimodal_cfg['image_aspect_ratio'] == 'pad':
-
-                        def expand2square(pil_img, background_color):
-                            width, height = pil_img.size
-                            if width == height:
-                                return pil_img
-                            elif width > height:
-                                result = Image.new(pil_img.mode, (width, width), background_color)
-                                result.paste(pil_img, (0, (width - height) // 2))
-                                return result
-                            else:
-                                result = Image.new(pil_img.mode, (height, height), background_color)
-                                result.paste(pil_img, ((height - width) // 2, 0))
-                                return result
-
-                        image = expand2square(image, tuple(int(x * 255) for x in self.processor.image_mean))
-                        image = self.processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-                    else:
-                        image = self.processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-                else:
-                    assert (
-                        self.multimodal_cfg['image_aspect_ratio'] == 'square'
-                    ), 'NeMo image transform with setting `image_aspect_ratio` to `square`.'
-                    image = self.processor(image)
+                image = process_image(self.processor, image, self.multimodal_cfg['image_aspect_ratio'])
                 images.append(image)
             media_tensors = torch.tensor([])
             if images:
@@ -1205,7 +1218,7 @@ class DataCollatorForSupervisedDataset(object):
         return batch
 
 
-def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
+def make_supervised_data_module(tokenizer, image_processor, model_cfg) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
     data_cfg = model_cfg.data
     mm_cfg = model_cfg.mm_cfg
@@ -1213,22 +1226,6 @@ def make_supervised_data_module(tokenizer, model_cfg) -> Dict:
     if getattr(model_cfg, 'no_seqlen_plus_one_input_tokens', False):
         add_extra_token = 0
     crop_size = mm_cfg.vision_encoder.get("crop_size", (224, 224))
-    if mm_cfg.vision_encoder.from_hf:
-        image_processor = CLIPImageProcessor.from_pretrained(
-            mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
-        )
-        assert crop_size == (
-            image_processor.crop_size['height'],
-            image_processor.crop_size['width'],
-        ), f"Crop size {crop_size} does not match the HuggingFace CLIP model's crop size {(image_processor.crop_size['height'], image_processor.crop_size['width'])}"
-    else:
-        # TODO(yuya): Fix this hard-code for our own CLIP
-        image_processor = image_transform(
-            crop_size,
-            is_train=False,
-            mean=None,
-            std=None,
-        )
 
     train_dataset = NevaDataset(
         tokenizer=tokenizer,

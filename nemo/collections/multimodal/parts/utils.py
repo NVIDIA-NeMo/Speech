@@ -22,8 +22,10 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from PIL import Image
 from pytorch_lightning import Trainer
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from transformers import CLIPImageProcessor
+from transformers import CLIPImageProcessor, SiglipImageProcessor
+from nemo.collections.multimodal.data.clip.augmentations.augmentations import image_transform
 
+from nemo.collections.multimodal.data.neva.neva_dataset import process_image
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
@@ -430,42 +432,17 @@ def create_neva_model_and_processor(cfg):
         else:
             image = maybe_image_path
 
-        if neva_cfg.mm_cfg.vision_encoder.from_hf:
-            processor = CLIPImageProcessor.from_pretrained(
-                neva_cfg.mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
-            )
+        processor = (
+            model.model.module.image_processor if hasattr(model.model, "module") else model.model.image_processor
+        )
+        image = process_image(processor, image, neva_cfg.data.image_aspect_ratio)
+        if neva_cfg.precision in [16, '16', '16-mixed']:
+            media = image.type(torch.float16)
+        elif neva_cfg.precision in [32, '32', '32-true']:
+            media = image.type(torch.float32)
         else:
-            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14", torch_dtype=torch.bfloat16)
+            media = image.type(torch.bfloat16)
 
-        if neva_cfg.data.image_aspect_ratio == 'keep':
-            max_hw, min_hw = max(image.size), min(image.size)
-            aspect_ratio = max_hw / min_hw
-            max_len, min_len = 448, 224
-            shortest_edge = int(min(max_len / aspect_ratio, min_len))
-            image = processor.preprocess(
-                image, return_tensors='pt', do_center_crop=False, size={"shortest_edge": shortest_edge}
-            )['pixel_values'][0]
-        elif neva_cfg.data.image_aspect_ratio == 'pad':
-
-            def expand2square(pil_img, background_color):
-                width, height = pil_img.size
-                if width == height:
-                    return pil_img
-                elif width > height:
-                    result = Image.new(pil_img.mode, (width, width), background_color)
-                    result.paste(pil_img, (0, (width - height) // 2))
-                    return result
-                else:
-                    result = Image.new(pil_img.mode, (height, height), background_color)
-                    result.paste(pil_img, ((height - width) // 2, 0))
-                    return result
-
-            image = expand2square(image, tuple(int(x * 255) for x in processor.image_mean))
-            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-        else:
-            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
-
-        media = image.type(torch_dtype_from_precision(neva_cfg.precision))
         return media.unsqueeze(dim=0).unsqueeze(dim=0).unsqueeze(dim=0)
 
     # add video processor for video neva
@@ -533,3 +510,35 @@ def create_neva_model_and_processor(cfg):
         return media_tensors.unsqueeze(dim=0).unsqueeze(dim=0)
 
     return model, image_processor, video_processor
+
+
+def create_image_processor(mm_cfg):
+    if mm_cfg.vision_encoder.get("from_hf", False):
+        if "clip" in mm_cfg.vision_encoder.from_pretrained:
+            image_processor = CLIPImageProcessor.from_pretrained(
+                mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
+            )
+        elif "siglip" in mm_cfg.vision_encoder.from_pretrained:
+            image_processor = SiglipImageProcessor.from_pretrained(
+                mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
+            )
+        else:
+            raise (ValueError("Currently only support CLIPImageProcessor and SiglipImageProcessor from Huggingface"))
+
+        crop_size = mm_cfg.vision_encoder.get("crop_size", (224, 224))
+        if hasattr(image_processor, 'crop_size'):
+            assert crop_size == (
+                image_processor.crop_size['height'],
+                image_processor.crop_size['width'],
+            ), f"Crop size {crop_size} does not match the HuggingFace CLIP model's crop size {(image_processor.crop_size['height'], image_processor.crop_size['width'])}"
+
+    else:
+        # Corresponds to MegatronCLIPModel
+        crop_size = mm_cfg.get("crop_size", (224, 224))
+        image_processor = image_transform(
+            crop_size,
+            is_train=False,
+            mean=None,
+            std=None,
+        )
+    return image_processor

@@ -1206,6 +1206,10 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             global_batch_per_gpu = tokens_enc.size(0)
             device = tokens_enc.device
             encoder_seq_length = tokens_enc.size(1)
+        elif encoder_input is not None:
+            global_batch_per_gpu = encoder_input.size(0)
+            device = encoder_input.device
+            encoder_seq_length = encoder_input.size(1)
         else:
             global_batch_per_gpu = enc_output.size(0)
             device = enc_output.device

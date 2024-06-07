@@ -1,0 +1,329 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: megatron_audio_gpt_bestow_lhotse
+
+trainer:
+  devices: 1
+  accelerator: gpu
+  num_nodes: 1
+  precision: 16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: 9999
+  max_steps: 1000000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  limit_train_batches : 1000
+  log_every_n_steps: 10 # frequency with which training steps are logged 
+  val_check_interval: 1000 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+
+model_target: nemo.collections.multimodal.speech_llm.models.modular_models.CrossAttendModularAudioGPTModel
+
+exp_manager:
+  # explicit_log_dir: null
+  exp_dir: null
+  name: ${name}
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: validation_${model.data.validation_ds.metric.name}
+    save_top_k: 1
+    mode: min
+    save_nemo_on_train_end: True
+    filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{epoch}'
+    model_parallel_size: ${model.tensor_model_parallel_size}
+    always_save_nemo: False
+    save_best_model: True
+  create_early_stopping_callback: False
+  early_stopping_callback_params:
+    monitor: "val_loss"
+    mode: "min"
+    min_delta: 0.001
+    patience: 10
+    verbose: True
+    strict: False # Should be False to avoid a runtime error where EarlyStopping says monitor is unavailable, which sometimes happens with resumed training.
+
+
+model:
+  seed: 1234
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  
+  pretrained_audio_model: stt_en_fastconformer_transducer_large
+  freeze_llm: True
+  freeze_audio_encoder: False
+  freeze_modality_adapter: False
+  load_audio_encoder: True
+
+  ## Legacy batch_size configuration
+  # When used with lhotse, the batch composition is decided by dataloader configs
+  # and batch size here is only used for deciding gradient accumulation.
+  # gradient accumulation = global_batch_size / micro_batch_size / data_parallel_size
+  # where data_parallel_size = num_nodes * num_gpus / TP_size
+  global_batch_size: 128
+  micro_batch_size: 4
+  restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  save_nemo_on_validation_end: False # Saves an inference ready .nemo file every time a checkpoint is saved during training. 
+  sync_batch_comm: False
+  megatron_amp_O2: False
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Activation Checkpoint 
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  activations_checkpoint_layers_per_pipeline: null
+  answer_only_loss: True
+  gradient_as_bucket_view: False
+
+  hidden_dropout: 0.0
+  attention_dropout: 0.0
+  ffn_dropout: 0.0
+
+  # use_am_tokenizer: True
+  # override_vocab_size: 1024
+
+  peft:
+    peft_scheme: "lora"  # can be either lora, adapter, ia3 or ptuning
+    restore_from_path: null
+    
+    # Used for adapter peft training
+    adapter_tuning:
+      type: 'parallel_adapter' # this should be either 'parallel_adapter' or 'linear_adapter'
+      adapter_dim: 32
+      adapter_dropout: 0.0
+      norm_position: 'pre' # This can be set to 'pre', 'post' or null, 'pre' is normally what is used.
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
+      layer_selection: null  # selects in which layers to add adapters, e.g. [1,12] will add adapters to layer 1 (lowest) and 12. null will apply adapters to all layers
+      weight_tying: False
+      position_embedding_strategy: null # used only when weight_tying is True
+
+    lora_tuning:
+      target_modules: ['attention_qkv','attention_dense','mlp_fc1','mlp_fc2'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
+      adapter_dim: 32
+      alpha: ${model.peft.lora_tuning.adapter_dim} 
+      adapter_dropout: 0.0
+      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+      layer_selection:  null  # selects in which layers to add lora adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
+      weight_tying: False
+      position_embedding_strategy: null # used only when weight_tying is True
+
+    # Used for p-tuning peft training
+    p_tuning:
+      virtual_tokens: 10  # The number of virtual tokens the prompt encoder should add at the start of the sequence
+      bottleneck_dim: 1024  # the size of the prompt encoder mlp bottleneck
+      embedding_dim: 1024  # the size of the prompt encoder embeddings
+      init_std: 0.023
+
+  perception:
+    target: nemo.collections.multimodal.speech_llm.modules.perception_modules.AudioPerceptionModule
+    use_multi_layer_feat: false
+    xattn:
+      target: nemo.collections.multimodal.speech_llm.modules.perception_modules.TransformerCrossAttention
+      num_attention_heads: 8
+      attn_score_dropout: 0.1
+      attn_layer_dropout: 0.1
+      ffn_dropout: 0.1
+      hidden_act: "relu"
+      pre_ln: true
+      pre_ln_final_layer_norm: true
+
+    multi_layer_feat:
+      layer_idx_list: [0,16]  # layer indices to extract features from
+      aggregator:
+        mode: "cat"  # ways to combine features from different layers, choices=['cat','sum','mean', 'max', 'min'], default to concat ('cat')
+        pooling: "avg"  # ways to pool features if they have different temporal lengths and align_mode=min, choices=['mean', 'max', 'min']
+        align_mode: "min"  # if features have different temporal lengths, set `min` to pool to the shortest length or `max` to repeat to the longest.
+
+    modality_adapter: 
+      _target_: nemo.collections.asr.modules.ConformerEncoder
+      feat_in: 1024
+      feat_out: -1 # you may set it if you need different output size other than the default d_model
+      n_layers: 2
+      d_model: 512
+
+      # Sub-sampling parameters
+      subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+      subsampling_factor: 8 # must be power of 2 for striding and vggnet
+      subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
+      causal_downsampling: false
+
+      # Reduction parameters: Can be used to add another subsampling layer at a given position.
+      # Having a 2x reduction will speedup the training and inference speech while keeping similar WER.
+      # Adding it at the end will give the best WER while adding it at the beginning will give the best speedup.
+      reduction: null # pooling, striding, or null
+      reduction_position: null # Encoder block index or -1 for subsampling at the end of encoder
+      reduction_factor: 1
+
+      # Feed forward module's params
+      ff_expansion_factor: 4
+
+      # Multi-headed Attention Module's params
+      self_attention_model: rel_pos # rel_pos or abs_pos
+      n_heads: 8 # may need to be lower for smaller d_models
+      # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+      att_context_size: [-1, -1] # -1 means unlimited context
+      att_context_style: regular # regular or chunked_limited
+      xscaling: true # scales up the input embeddings by sqrt(d_model)
+      untie_biases: true # unties the biases of the TransformerXL layers
+      pos_emb_max_len: 5000
+
+      # Convolution module's params
+      conv_kernel_size: 9
+      conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+      # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+      # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+      conv_context_size: null
+
+      ### regularization
+      dropout: 0.1 # The dropout used in most of the Conformer Modules
+      dropout_pre_encoder: 0.1 # The dropout used before the encoder
+      dropout_emb: 0.0 # The dropout used for embeddings
+      dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+      # set to non-zero to enable stochastic depth
+      stochastic_depth_drop_prob: 0.0
+      stochastic_depth_mode: linear  # linear or uniform
+      stochastic_depth_start_layer: 1
+
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      freq_masks: 2 # set to zero to disable it
+      time_masks: 10 # set to zero to disable it
+      freq_width: 27
+      time_width: 0.05
+
+    # the following are read from the pretrained AM:
+    # output_dim: null
+    # encoder: null
+    # preprocessor: null
+
+  data:
+    end_string: "[EOG]"
+    train_ds:
+      # Example of how to specify paths to multiple datasets
+      # manifest_filepath:
+      #   - /path/to/squad.jsonl
+      #   - /path/to/mnli.jsonl
+      #   - /path/to/boolq.jsonl
+      # Example of how each dataset is formatted
+      # {'audio_filepath': 'audio1.wav', 'offset': 0.0, 'duration': 12.3, 'question': 'transcribe this audio', 'answer': 'I have a dream...'}
+      # the 'answer' field can also be 'text', and a default 'question' field is added if missing in manigests, so as to work with ASR manifests
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: True
+      num_workers: 0
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: True
+      # Notably, the data weights are controlled by either bucketing_weights
+      # or concat_sampling_probabilities depending on the dataset type (tar and
+      # non-tar).
+      # See audio_text_qa_dataset.py for details.
+      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
+      context_key: 'context'
+      answer_key: 'answer'
+      add_eos: True
+      # add_eos: False
+      end_string: ${model.data.end_string}
+      add_sep: False
+      add_bos: False
+      separate_prompt_and_response_with_newline: False
+      truncation_field: "context" # Options: ['context', 'answer']
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: "[INST]\n<<SYS>>\nPlease answer the following based on the previous speech feature.\n<</SYS>>\n\n{context}[/INST] {answer}"
+      # ASR configs
+      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
+      max_duration: 24 # it is set for LibriSpeech, you may need to update it for your dataset
+      min_duration: 0.1
+      # tarred datasets
+      is_tarred: false
+      tarred_audio_filepaths: null
+      shuffle_n: 2048
+      # bucketing params
+      bucketing_strategy: "fully_randomized"
+      bucketing_batch_size: null
+      use_lhotse: True
+      text_field : "text"
+      batch_duration : 80  # 0
+      quadratic_duration : 30
+      num_buckets : 30
+      buffer_size : 10000
+      shuffle_buffer_size : 10000
+      duration_bins: null
+
+    validation_ds:
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: False
+      num_workers: 0
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      context_key: ${model.data.train_ds.context_key}
+      answer_key: ${model.data.train_ds.answer_key}
+      add_eos: ${model.data.train_ds.add_eos}
+      end_string: ${model.data.end_string}
+      add_sep: ${model.data.train_ds.add_sep}
+      add_bos: ${model.data.train_ds.add_bos}
+      separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: "context" # Options: ['context', 'answer']
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
+      tokens_to_generate: 128
+      # ASR configs
+      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
+
+      log_every_n_steps: 10
+      metric:
+        name: "wer" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null
+
+  optim:
+    name: fused_adam
+    lr: 1e-4
+    weight_decay: 0.01 
+    betas: 
+    - 0.9
+    - 0.98
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 50
+      min_lr: 0.0 # min_lr must be 0.0 for prompt learning when pipeline parallel > 1
+      constant_steps: 0 # Constant steps should also be 0 when min_lr=0
+      monitor: val_loss
+      reduce_on_plateau: false

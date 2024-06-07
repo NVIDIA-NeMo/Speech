@@ -132,3 +132,15 @@ class PoolingMLPConnectors(NeuralModule, Exportable, AccessMixin):
         outputs = self.mlp(outputs)
         outputs_len = torch.div(length, self.pooling_factor, rounding_mode='floor')
         return outputs.transpose(1, 2), outputs_len
+
+
+class IdentityConnectors(NeuralModule, Exportable, AccessMixin):
+    def __init__(
+        self,
+        *args,
+        **kwargs,
+    ):
+        super().__init__()
+
+    def forward(self, audio_signal, length=None, *args, **kwargs):
+        return audio_signal, length

@@ -23,11 +23,11 @@ from omegaconf import DictConfig
 from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.collections.asr.modules.conformer_encoder import ConformerEncoder, ConformerMultiLayerFeatureExtractor
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import align_feat_seq_list
+from nemo.collections.nlp.modules.common.transformer.transformer_decoders import TransformerDecoder
 from nemo.core.classes import Exportable, NeuralModule
 from nemo.core.classes.common import typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 from nemo.utils.decorators import experimental
-
 
 __all__ = ["AudioPerceptionModule", "MultiAudioPerceptionModule"]
 
@@ -70,6 +70,7 @@ class AudioPerceptionModule(NeuralModule, Exportable):
     def __init__(self, cfg: DictConfig):
         super().__init__()
         # Initialize components
+        self.cfg = cfg
         self.preprocessor = self.from_config_dict(cfg.preprocessor)
         self.encoder = self.from_config_dict(cfg.encoder)
 
@@ -429,3 +430,76 @@ class MultiAudioPerceptionModule(NeuralModule, Exportable):
         # b, c, t -> b, t, c
         encoded = self.proj(encoded.transpose(1, 2))
         return encoded, encoded_len
+
+
+def lens_to_mask(lens, max_length):
+    batch_size = lens.shape[0]
+    mask = torch.arange(max_length).repeat(batch_size, 1).to(lens.device) < lens[:, None]
+    return mask
+
+
+class TransformerCrossAttention(NeuralModule, Exportable):
+    """Transformer module for cross-attention between speech and text embeddings.
+    The module allows optional projection from the input embeddings to a lower dimension before feeding them to the transformer.
+    Args:
+        cfg: DictConfig, configuration object for the module which should include:
+            xattn: DictConfig, configuration object for the transformer decoder
+    """
+
+    def __init__(self, cfg: DictConfig, *args, **kwargs):
+        super().__init__()
+        xformer_num_layers = cfg.xattn.get('xformer_num_layers', 2)
+        xformer_dims = cfg.xattn.get('xformer_dims', cfg.output_dim)
+        self.cfg = cfg
+        cross_attn_cfg = cfg.xattn
+        if xformer_dims != cfg.output_dim:
+            self.input_proj1 = nn.Linear(cfg.output_dim, xformer_dims)
+            self.input_proj2 = nn.Linear(cfg.output_dim, xformer_dims)
+            self.output_proj = nn.Linear(xformer_dims, cfg.output_dim)
+        else:
+            self.input_proj1 = nn.Identity()
+            self.input_proj2 = nn.Identity()
+            self.output_proj = nn.Identity()
+        # causal attention decoder by default
+        self.xattn_decoder = TransformerDecoder(
+            hidden_size=xformer_dims,
+            num_layers=xformer_num_layers,
+            inner_size=1 * xformer_dims,
+            num_attention_heads=cross_attn_cfg.num_attention_heads,
+            ffn_dropout=cross_attn_cfg.ffn_dropout,
+            attn_score_dropout=cross_attn_cfg.attn_score_dropout,
+            attn_layer_dropout=cross_attn_cfg.attn_layer_dropout,
+            hidden_act=cross_attn_cfg.hidden_act,
+            pre_ln=cross_attn_cfg.pre_ln,
+            pre_ln_final_layer_norm=cross_attn_cfg.pre_ln_final_layer_norm,
+        )
+
+    def forward(
+        self,
+        encoder_states,
+        encoded_len,
+        input_embeds,
+        input_lengths,
+        decoder_mems_list=None,
+        return_mems=False,
+    ):
+        assert input_embeds.shape[-1] == encoder_states.shape[-1]
+        enc_mask = lens_to_mask(encoded_len, encoder_states.shape[1]).to(encoder_states.dtype)
+        dec_mask = lens_to_mask(input_lengths, input_embeds.shape[1]).to(input_lengths.dtype)
+        y = self.xattn_decoder(
+            decoder_states=self.input_proj1(input_embeds),
+            decoder_mask=dec_mask,
+            encoder_states=self.input_proj2(encoder_states),
+            encoder_mask=enc_mask,
+            decoder_mems_list=decoder_mems_list,
+            return_mems=return_mems,
+            return_mems_as_list=False,
+        )
+        if return_mems:
+            extra_outpus = {'decoder_mems_list': y}
+            y = y[-1][:, -input_embeds.shape[1] :]
+        else:
+            extra_outpus = {}
+        y = self.output_proj(y) + input_embeds
+        assert y.shape == input_embeds.shape
+        return y, extra_outpus

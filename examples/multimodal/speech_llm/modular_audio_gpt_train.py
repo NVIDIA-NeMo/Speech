@@ -18,7 +18,7 @@ from omegaconf.omegaconf import OmegaConf, open_dict
 from nemo.collections.multimodal.speech_llm.models.modular_models import ModularAudioGPTModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
 from nemo.core.config import hydra_runner
-from nemo.utils import logging
+from nemo.utils import logging, model_utils
 from nemo.utils.exp_manager import exp_manager
 
 mp.set_start_method("spawn", force=True)
@@ -61,7 +61,11 @@ def main(cfg) -> None:
     # update resume from checkpoint found by exp_manager
     logging.info(f'Resuming training from checkpoint: {trainer.ckpt_path}')
 
-    model = ModularAudioGPTModel.restore_from_pretrained_models(cfg, trainer=trainer)
+    if hasattr(cfg, 'model_target'):
+        imported_cls = model_utils.import_class_by_path(cfg.model_target)
+    else:
+        imported_cls = ModularAudioGPTModel
+    model = imported_cls.restore_from_pretrained_models(cfg, trainer=trainer)
 
     trainer.fit(model)
 

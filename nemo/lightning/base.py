@@ -1,15 +1,13 @@
 import gc
-import inspect
 import os
 from pathlib import Path
-from typing import Generic, Optional, Type, TypeVar
+from typing import Optional
 
 import torch
 import torch.distributed
-from pytorch_lightning import LightningModule, Trainer
+from pytorch_lightning import Trainer
 from torch import nn
 
-from nemo.lightning import io
 
 DEFAULT_NEMO_CACHE_HOME = Path.home() / ".cache" / "nemo"
 NEMO_CACHE_HOME = Path(os.getenv("NEMO_HOME", DEFAULT_NEMO_CACHE_HOME))
@@ -17,33 +15,6 @@ DEFAULT_NEMO_DATASETS_CACHE = NEMO_CACHE_HOME / "datasets"
 NEMO_DATASETS_CACHE = Path(os.getenv("NEMO_DATASETS_CACHE", DEFAULT_NEMO_DATASETS_CACHE))
 DEFAULT_NEMO_MODELS_CACHE = NEMO_CACHE_HOME / "models"
 NEMO_MODELS_CACHE = Path(os.getenv("NEMO_MODELS_CACHE", DEFAULT_NEMO_MODELS_CACHE))
-
-
-ModelT = TypeVar("ModelT", bound=LightningModule)
-
-
-class ModelConfig(Generic[ModelT], io.IOMixin):
-    def model_cls(self) -> Type[ModelT]:
-        raise NotImplementedError("Must be implemented by subclass")
-
-    @property
-    def model_type(self) -> Type[ModelT]:
-        return self.model_cls()
-
-    def init(self, *args, data=None, cpu: bool = False, **kwargs) -> ModelT:
-        model_cls = self.model_cls()
-        if data:
-            kwargs.update(data.model_kwargs())
-
-        signature = inspect.signature(model_cls.__init__)
-        filtered_kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
-
-        model = model_cls(self, *args, **filtered_kwargs)
-
-        if not cpu:
-            model.cuda(torch.cuda.current_device())
-
-        return model
 
 
 def get_vocab_size(

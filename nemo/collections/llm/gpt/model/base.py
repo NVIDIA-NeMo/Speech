@@ -8,7 +8,6 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.optim import Optimizer
 
 from nemo.lightning import get_vocab_size, io
-from nemo.lightning.base import ModelConfig
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 
 if TYPE_CHECKING:
@@ -18,7 +17,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class GPTConfig(TransformerConfig, ModelConfig):
+class GPTConfig(TransformerConfig):
     # From megatron.core.models.gpt.gpt_model.GPTModel
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True
@@ -125,9 +124,6 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin):
 
     def validation_loss_reduction(self) -> MaskedTokenLossReduction:
         return MaskedTokenLossReduction(validation_step=True)
-
-    def copy(self) -> "GPTModel":
-        return self.__class__(self.config, self.tokenizer)
 
 
 def gpt_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:

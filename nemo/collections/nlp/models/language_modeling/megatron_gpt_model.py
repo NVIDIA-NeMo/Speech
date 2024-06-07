@@ -343,7 +343,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     model_provider_func=self.model_provider_func,
                     wrap_with_ddp=False,
                     virtual_pipeline_model_parallel_size=self.cfg.get('virtual_pipeline_model_parallel_size', None),
-                    on_cpu=cfg.get('fsdp', False) and cfg.get('use_cpu_initialization', False),
+                    on_cpu=cfg.get('use_cpu_initialization', False),
                 )
 
         # if we're not using interleaved, then self.model is a module.
@@ -887,10 +887,18 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self.megatron_timer_stop('allreduce_first_last_embeddings')
 
         if self.log_memory_usage:
-            mem_reserved = torch.cuda.max_memory_reserved()
+            max_memory_reserved = torch.cuda.max_memory_reserved()
+            memory_allocated = torch.cuda.memory_allocated()
             self.log(
                 'peak_memory_usage',
-                mem_reserved,
+                max_memory_reserved,
+                prog_bar=True,
+                rank_zero_only=True,
+                batch_size=1,
+            )
+            self.log(
+                'memory_allocated',
+                memory_allocated,
                 prog_bar=True,
                 rank_zero_only=True,
                 batch_size=1,

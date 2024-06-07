@@ -60,8 +60,7 @@ os.makedirs(NEMO_NLP_TMP, exist_ok=True)
 
 
 class NLPModel(ModelPT, Exportable):
-    """Base class for NLP Models.
-    """
+    """Base class for NLP Models."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None, no_lm_init=False):
 
@@ -120,7 +119,11 @@ class NLPModel(ModelPT, Exportable):
             if cfg.get('language_model').get('config_file'):
                 config_file = self.register_artifact('language_model.config_file', cfg.language_model.config_file)
             bert_model = get_lm_model(
-                config_file=config_file, config_dict=config_dict, vocab_file=vocab_file, trainer=trainer, cfg=cfg,
+                config_file=config_file,
+                config_dict=config_dict,
+                vocab_file=vocab_file,
+                trainer=trainer,
+                cfg=cfg,
             )
             # set the tokenizer if it is not initialized explicitly
             if ((hasattr(self, 'tokenizer') and self.tokenizer is None) or not hasattr(self, 'tokenizer')) and hasattr(
@@ -146,16 +149,18 @@ class NLPModel(ModelPT, Exportable):
             self.register_bert_model()
 
     def register_artifact(
-        self, config_path: str, src: str, verify_src_exists: bool = False,
+        self,
+        config_path: str,
+        src: str,
+        verify_src_exists: bool = False,
     ):
-        """ Overrides ModelPT register_artifact default behavior.
+        """Overrides ModelPT register_artifact default behavior.
         NLP models usually need artifacts that are optional."""
         return super().register_artifact(config_path, src, verify_src_exists=verify_src_exists)
 
     @rank_zero_only
     def register_bert_model(self):
-        """Adds encoder config to .nemo archive for Jarvis.
-        """
+        """Adds encoder config to .nemo archive for Jarvis."""
         # check if there is an encoder, warn if not
         if self.bert_model is not None:
             # get encoder config and create source for artifact
@@ -462,6 +467,13 @@ class NLPModel(ModelPT, Exportable):
             save_restore_connector = NLPSaveRestoreConnector()
         if os.path.isdir(restore_path):
             save_restore_connector.model_extracted_dir = restore_path
+        if (
+            isinstance(override_config_path, DictConfig)
+            and override_config_path.get('use_cpu_initialization', False)
+            and map_location is None
+        ):
+            logging.info('use_cpu_initialization is True, loading checkpoint on CPU')
+            map_location = 'cpu'
         return super().restore_from(
             restore_path, override_config_path, map_location, strict, return_config, save_restore_connector, trainer
         )

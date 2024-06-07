@@ -464,7 +464,15 @@ class NLPAdapterModelMixin:
                             self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
                         parallel_state.set_virtual_pipeline_model_parallel_rank(0)
         else:
-            super().on_load_checkpoint(checkpoint)
+            cfg_peft = self.cfg.get('peft', None)
+            if cfg_peft and cfg_peft['peft_scheme'] == 'qlora':
+                from nemo.collections.nlp.modules.common.megatron.adapters.qlora import qlora_load_model
+
+                qlora_load_model(
+                    self.model.module if self.megatron_amp_O2 else self.model, self.cfg, checkpoint['state_dict']
+                )
+            else:
+                super().on_load_checkpoint(checkpoint)
 
     @classmethod
     def merge_cfg_with(cls, path: str, cfg: DictConfig) -> DictConfig:

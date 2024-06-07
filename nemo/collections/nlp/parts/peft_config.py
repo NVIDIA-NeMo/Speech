@@ -54,9 +54,16 @@ PEFT_MODULE_MAP = {
     "all": "all",
 }
 
+LORA_CONFIG_TO_MCORE_MAP = {
+    "attention_qkv": "linear_qkv",
+    "attention_dense": "linear_proj",
+    "mlp_fc1": "linear_fc1",
+    "mlp_fc2": "linear_fc2",
+}
 
-def get_target_modules(lora_cfg):
-    original_target_modules = lora_cfg.get("target_modules", ["attention_qkv"])
+
+def get_target_modules(lora_cfg, default=("attention_qkv",)):
+    original_target_modules = lora_cfg.get("target_modules", default)
     target_modules = []
 
     for module in original_target_modules:
@@ -251,6 +258,10 @@ class LoraPEFTConfig(PEFTConfig):
         return adapter_cfg
 
 
+class QLoraPEFTConfig(LoraPEFTConfig):
+    pass
+
+
 class IA3PEFTConfig(PEFTConfig):
     def __init__(self, cfg):
         mlp_infused_adapter_cfg = MLPInfusedAdapterConfig(
@@ -360,6 +371,7 @@ PEFT_CONFIG_MAP = {
     "ia3": IA3PEFTConfig,
     "ptuning": PtuningPEFTConfig,
     "lora": LoraPEFTConfig,
+    "qlora": QLoraPEFTConfig,
     "selective": SelectivePEFTConfig,
     'none': None,
     None: None,

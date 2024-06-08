@@ -64,9 +64,7 @@ def load_ckpt(path: Path) -> TrainerCheckpoint:
     return load(path, output_type=TrainerCheckpoint)
 
 
-def model_importer(
-    target: Type[ConnectorMixin], ext: str, default_path: Optional[str] = None
-) -> Callable[[Type[ConnT]], Type[ConnT]]:
+def model_importer(target: Type[ConnectorMixin], ext: str) -> Callable[[Type[ConnT]], Type[ConnT]]:
     """
     Registers an importer for a model with a specified file extension and an optional default path.
 
@@ -81,16 +79,14 @@ def model_importer(
         to the model class.
 
     Example:
-        @model_importer(MyModel, "hf", default_path="path/to/default")
+        @model_importer(MyModel, "hf")
         class MyModelHfImporter(io.ModelConnector):
             ...
     """
-    return target.register_importer(ext, default_path=default_path)
+    return target.register_importer(ext)
 
 
-def model_exporter(
-    target: Type[ConnectorMixin], ext: str, default_path: Optional[str] = None
-) -> Callable[[Type[ConnT]], Type[ConnT]]:
+def model_exporter(target: Type[ConnectorMixin], ext: str) -> Callable[[Type[ConnT]], Type[ConnT]]:
     """
     Registers an exporter for a model with a specified file extension and an optional default path.
 
@@ -105,11 +101,11 @@ def model_exporter(
         to the model class.
 
     Example:
-        @model_exporter(MyModel, "hf", default_path="path/to/default")
+        @model_exporter(MyModel, "hf")
         class MyModelHFExporter(io.ModelConnector):
             ...
     """
-    return target.register_exporter(ext, default_path=default_path)
+    return target.register_exporter(ext)
 
 
 def import_ckpt(
@@ -161,7 +157,7 @@ def import_ckpt(
 
     Example:
         model = Mistral7BModel()
-        imported_path = import_ckpt(model, "hf")
+        imported_path = import_ckpt(model, "hf://mistralai/Mistral-7B-v0.1")
     """
     if not isinstance(model, ConnectorMixin):
         raise ValueError("Model must be an instance of ConnectorMixin")

@@ -42,7 +42,7 @@ class Mistral7BModel(GPTModel):
         super().__init__(config or Mistral7BConfig(), _tokenizer)
 
 
-@io.model_importer(Mistral7BModel, "hf", default_path="mistralai/Mistral-7B-v0.1")
+@io.model_importer(Mistral7BModel, "hf")
 class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel]):
     def init(self) -> Mistral7BModel:
         return Mistral7BModel(self.config, tokenizer=self.tokenizer)

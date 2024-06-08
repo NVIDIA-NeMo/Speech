@@ -113,7 +113,7 @@ NVIDIA NeMo Framework is a scalable and cloud-native generative AI framework bui
 For technical documentation, please see the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/index.html>`_.
 
 LLMs and MMs Training, Alignment, and Customization
-###################################################
+---------------------------------------------------
 
 All NeMo models are trained with `Lightning <https://github.com/Lightning-AI/lightning>`_.
 Training is automatically scalable to 1000s of GPUs.
@@ -127,17 +127,17 @@ NeMo LLMs can be aligned with state-of-the-art methods such as SteerLM, Direct P
 In addition to supervised fine-tuning (SFT), NeMo also supports the latest parameter efficient fine-tuning (PEFT) techniques such as LoRA, P-Tuning, Adapters, and IA3. Refer to the `NeMo Framework User Guide <https://docs.nvidia.com/nemo-framework/user-guide/latest/sft_peft/index.html>`_ for the full list of supported models and techniques.
 
 LLMs and MMs Deployment and Optimization
-########################################
+----------------------------------------
 
 NeMo LLMs and MMs can be deployed and optimized with `NVIDIA NeMo Microservices <https://developer.nvidia.com/nemo-microservices-early-access>`_.
 
 Speech AI
-#########
+---------
 
 NeMo ASR and TTS models can be optimized for inference and deployed for production use cases with `NVIDIA Riva <https://developer.nvidia.com/riva>`_.
 
 NeMo Framework Launcher
-#######################
+-----------------------
 
 `NeMo Framework Launcher <https://github.com/NVIDIA/NeMo-Megatron-Launcher>`_ is a cloud-native tool that streamlines the NeMo Framework experience. It is used for launching end-to-end NeMo Framework training jobs on CSPs and Slurm clusters. 
 
@@ -213,7 +213,7 @@ The NeMo Framework can be installed in a variety of ways, depending on your need
 **Important: We strongly recommended that you start with a base NVIDIA PyTorch container: nvcr.io/nvidia/pytorch:24.02-py3.**
 
 Conda
-^^^^^^
+^^^^^
 
 Install NeMo in a fresh Conda environment:
 

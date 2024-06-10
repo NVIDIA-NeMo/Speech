@@ -85,13 +85,21 @@ class NLPAdapterModelMixin:
         if self.use_mcore_gpt:
             assert HAVE_MEGATRON_CORE, "You set `mcore_gpt` as True but megatron core is not found."
 
+    def _unwrap_model(self):
+        if not hasattr(self, "model"):
+            return None
+        elif isinstance(self.model, list):
+            return self.model[0]
+        else:
+            return self.model
+
     def first_stage_of_pipeline(self):
-        if hasattr(self, "model") and hasattr(self.model, "pre_process"):
-            return self.model.pre_process
-        elif hasattr(self, "model") and hasattr(self.model, "module") and hasattr(self.model.module, "pre_process"):
+        if hasattr(self._unwrap_model(), "pre_process"):
+            return self._unwrap_model().pre_process
+        elif hasattr(self._unwrap_model(), "module") and hasattr(self._unwrap_model().module, "pre_process"):
             # (guyueh1): this if condition is used to handle amp O2
             # when amp_O2 is on, self.model will be wrapped by the Float16Module class
-            return self.model.module.pre_process
+            return self._unwrap_model().module.pre_process
         logging.warning("no attribute named model or no model.pre_process found. Can not detect stage of pipeline...")
         return False
 
@@ -101,8 +109,12 @@ class NLPAdapterModelMixin:
         """
         Returns all the keys in the model
         """
-        k = [n for n, p in self.named_parameters()]
-        b = [n for n, p in self.named_buffers() if n.replace("model.module.", "model.", 1) in self.state_dict().keys()]
+        k = [n for n, p in self._unwrap_model().named_parameters()]
+        b = [
+            n
+            for n, p in self._unwrap_model().named_buffers()
+            if n.replace("model.module.", "model.", 1) in self._unwrap_model().state_dict().keys()
+        ]
         # we include buffers because ptuning representations are cached in a buffer and saved to state_dict for inference time use.
         return set(k + b)
 
@@ -131,6 +143,19 @@ class NLPAdapterModelMixin:
                     model_parallel_config=self.model_parallel_config,
                 )
 
+    def _get_layers_from_model(self, model):
+        if self.use_mcore_gpt:
+            if self.cfg.megatron_amp_O2:
+                layers = model.module.decoder.layers
+            else:
+                layers = model.decoder.layers
+        else:
+            if self.cfg.megatron_amp_O2:
+                layers = model.module.language_model.encoder.layers
+            else:
+                layers = model.language_model.encoder.layers
+        return layers
+
     def _check_and_add_peft_cfg(self, peft_cfg):
 
         layer_selection = peft_cfg.layer_selection
@@ -148,16 +173,8 @@ class NLPAdapterModelMixin:
                         f"Layer selection {layer_selection} is enabled for the current model ("
                         f"{self.__class__.__name__} + {adapter_name})"
                     )
-                if self.use_mcore_gpt:
-                    if self.cfg.megatron_amp_O2:
-                        layers = self.model.module.decoder.layers
-                    else:
-                        layers = self.model.decoder.layers
-                else:
-                    if self.cfg.megatron_amp_O2:
-                        layers = self.model.module.language_model.encoder.layers
-                    else:
-                        layers = self.model.language_model.encoder.layers
+
+                layers = self._get_layers_from_model(self._unwrap_model())
                 for layer in layers:
                     if layer.layer_number in (layer_selection or list(range(1, self.cfg.num_layers + 1))):
                         for name, module in layer.named_modules():
@@ -275,13 +292,13 @@ class NLPAdapterModelMixin:
             self.freeze(training=True)  # Freeze the entire model
             if not self.ptuning_only_and_non_first_stage:
                 opt_params = []
-                for _, module in self.named_modules():
+                for _, module in self._unwrap_model().named_modules():
                     if isinstance(module, AdapterModuleMixin) and module.is_adapter_available():
                         module.set_enabled_adapters(enabled=True)
                         module.unfreeze_enabled_adapters()  # selectively unfreeze the adapter modules.
                         opt_params += [p for p in module.parameters() if p.requires_grad]
 
-                for name, param in self.named_parameters():
+                for name, param in self._unwrap_model().named_parameters():
                     if name in self.tunable_base_param_keys:
                         param.requires_grad = True
                         opt_params += [param]
@@ -333,7 +350,7 @@ class NLPAdapterModelMixin:
                 '.nemo'
             ), "Inferring peft scheme is only supported for .nemo checkpoints. Please supply the `peft_cfgs` argument."
             peft_cfgs = [PEFT_CONFIG_MAP[conf.peft.peft_scheme](conf)]
-        if self.cfg.megatron_amp_O2:
+        if getattr(self, 'megatron_amp_O2', False):
             state_dict = {replace_prefix(k, 'model.', 'model.module.'): v for k, v in state_dict.items()}
         self.add_adapter(peft_cfgs)
         if not self.ptuning_only_and_non_first_stage:
@@ -351,16 +368,7 @@ class NLPAdapterModelMixin:
     def tie_weights(self, peft_cfg):
         pos_idx = 0
 
-        if self.use_mcore_gpt:
-            if self.cfg.megatron_amp_O2:
-                layers = self.model.module.decoder.layers
-            else:
-                layers = self.model.decoder.layers
-        else:
-            if self.cfg.megatron_amp_O2:
-                layers = self.model.module.language_model.encoder.layers
-            else:
-                layers = self.model.language_model.encoder.layers
+        layers = self._get_layers_from_model(self._unwrap_model())
 
         if isinstance(peft_cfg, LoraPEFTConfig):
             layer0 = layers[0].self_attention
@@ -389,11 +397,11 @@ class NLPAdapterModelMixin:
         """
         Gets the keys associated with the adapters only.
         """
-        state_dict = super().state_dict()
+        state_dict = self._unwrap_model().state_dict()
         peft_state_dict = {}
         for k in self.adapter_keys.union(self.tunable_base_param_keys):
             # state_dict keys needs to be in non-O2 format and will be corrected in PEFTSaveRestoreConnector if O2=True
-            new_k = k.replace("model.module.", "model.", 1)
+            new_k = k.replace("module.", "", 1)
             peft_state_dict[new_k] = state_dict[new_k]
         return peft_state_dict
 

@@ -317,15 +317,16 @@ class MegatronBaseModel(NLPModel):
         args.pop('module')
 
     def get_model_module_list(self):
+        def extract_module(model):
+            if isinstance(model, (McoreDDP, Float16Module, MCoreFloat16Module)):
+                return extract_module(model.module)
+            else:
+                return model
+
         if isinstance(self.model, list):
-            return [
-                model.module if isinstance(model, (Float16Module, MCoreFloat16Module, McoreDDP)) else model
-                for model in self.model
-            ]
-        elif isinstance(self.model, (Float16Module, MCoreFloat16Module)):
-            return [self.model.module]
+            return list(map(extract_module, self.model))
         else:
-            return [self.model]
+            return [extract_module(self.model)]
 
     def _reconfigure_limit_batches(self, limit_batches, dataloader, mode):
         """

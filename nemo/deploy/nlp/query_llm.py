@@ -37,7 +37,7 @@ class NemoQueryLLMBase(ABC):
         stop_words_list=None,
         bad_words_list=None,
         no_repeat_ngram_size=None,
-        max_output_token=512,
+        max_output_len=512,
         top_k=1,
         top_p=0.0,
         temperature=1.0,
@@ -81,7 +81,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
         stop_words_list=None,
         bad_words_list=None,
         no_repeat_ngram_size=None,
-        max_output_token=512,
+        max_output_len=512,
         top_k=1,
         top_p=0.0,
         temperature=1.0,
@@ -95,7 +95,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
 
         Args:
             prompts (List(str)): list of sentences.
-            max_output_token (int): max generated tokens.
+            max_output_len (int): max generated tokens.
             top_k (int): limits us to a certain number (K) of the top tokens to consider.
             top_p (float): limits us to the top tokens within a certain probability mass (p).
             temperature (float): A parameter of the softmax function, which is the last layer in the network.
@@ -110,8 +110,8 @@ class NemoQueryLLM(NemoQueryLLMBase):
         prompts = str_list2numpy(prompts)
         inputs = {"prompts": prompts}
 
-        if max_output_token is not None:
-            inputs["max_output_token"] = np.full(prompts.shape, max_output_token, dtype=np.int_)
+        if max_output_len is not None:
+            inputs["max_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
 
         if top_k is not None:
             inputs["top_k"] = np.full(prompts.shape, top_k, dtype=np.int_)
@@ -157,7 +157,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
         stop_words_list=None,
         bad_words_list=None,
         no_repeat_ngram_size=None,
-        max_output_token=512,
+        max_output_len=512,
         top_k=1,
         top_p=0.0,
         temperature=1.0,
@@ -171,7 +171,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
 
         Args:
             prompts (List(str)): list of sentences.
-            max_output_token (int): max generated tokens.
+            max_output_len (int): max generated tokens.
             top_k (int): limits us to a certain number (K) of the top tokens to consider.
             top_p (float): limits us to the top tokens within a certain probability mass (p).
             temperature (float): A parameter of the softmax function, which is the last layer in the network.
@@ -186,8 +186,8 @@ class NemoQueryLLM(NemoQueryLLMBase):
         prompts = str_list2numpy(prompts)
         inputs = {"prompts": prompts}
 
-        if max_output_token is not None:
-            inputs["max_output_token"] = np.full(prompts.shape, max_output_token, dtype=np.int_)
+        if max_output_len is not None:
+            inputs["max_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
 
         if top_k is not None:
             inputs["top_k"] = np.full(prompts.shape, top_k, dtype=np.int_)

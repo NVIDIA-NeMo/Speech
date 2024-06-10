@@ -34,7 +34,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["NV-GPT-8B-Base-4k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Base-4k"]["max_output_token"] = 128
+    test_data["NV-GPT-8B-Base-4k"]["max_output_len"] = 128
     test_data["NV-GPT-8B-Base-4k"]["max_batch_size"] = 10
 
     test_data["NV-GPT-8B-Base-16k"] = {}
@@ -51,7 +51,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["NV-GPT-8B-Base-16k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Base-16k"]["max_output_token"] = 128
+    test_data["NV-GPT-8B-Base-16k"]["max_output_len"] = 128
     test_data["NV-GPT-8B-Base-16k"]["max_batch_size"] = 20
 
     test_data["NV-GPT-8B-QA-4k"] = {}
@@ -68,7 +68,7 @@ def get_infer_test_data():
         "What is the fastest animal in the world?",
     ]
     test_data["NV-GPT-8B-QA-4k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-QA-4k"]["max_output_token"] = 96
+    test_data["NV-GPT-8B-QA-4k"]["max_output_len"] = 96
     test_data["NV-GPT-8B-QA-4k"]["max_batch_size"] = 20
 
     test_data["NV-GPT-8B-Chat-4k-SFT"] = {}
@@ -85,7 +85,7 @@ def get_infer_test_data():
         "What is the fastest animal in the world?",
     ]
     test_data["NV-GPT-8B-Chat-4k-SFT"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["max_output_token"] = 256
+    test_data["NV-GPT-8B-Chat-4k-SFT"]["max_output_len"] = 256
     test_data["NV-GPT-8B-Chat-4k-SFT"]["max_batch_size"] = 5
 
     test_data["NV-GPT-8B-Chat-4k-RLHF"] = {}
@@ -104,7 +104,7 @@ def get_infer_test_data():
         "What is the fastest animal in the world?",
     ]
     test_data["NV-GPT-8B-Chat-4k-RLHF"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["max_output_token"] = 128
+    test_data["NV-GPT-8B-Chat-4k-RLHF"]["max_output_len"] = 128
     test_data["NV-GPT-8B-Chat-4k-RLHF"]["max_batch_size"] = 10
 
     test_data["NV-GPT-8B-Chat-4k-SteerLM"] = {}
@@ -123,7 +123,7 @@ def get_infer_test_data():
         "What is the fastest animal in the world?",
     ]
     test_data["NV-GPT-8B-Chat-4k-SteerLM"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["max_output_token"] = 128
+    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["max_output_len"] = 128
     test_data["NV-GPT-8B-Chat-4k-SteerLM"]["max_batch_size"] = 10
 
     test_data["GPT-43B-Base"] = {}
@@ -138,7 +138,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["GPT-43B-Base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["GPT-43B-Base"]["max_output_token"] = 128
+    test_data["GPT-43B-Base"]["max_output_len"] = 128
     test_data["GPT-43B-Base"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-base"] = {}
@@ -155,7 +155,7 @@ def get_infer_test_data():
         "Fastest animal in the world",
     ]
     test_data["LLAMA2-7B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-7B-base"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base"]["max_output_len"] = 128
     test_data["LLAMA2-7B-base"]["max_batch_size"] = 10
 
     test_data["LLAMA2-13B-base"] = {}
@@ -173,7 +173,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-13B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-13B-base"]["max_output_token"] = 128
+    test_data["LLAMA2-13B-base"]["max_output_len"] = 128
     test_data["LLAMA2-13B-base"]["max_batch_size"] = 10
 
     test_data["LLAMA2-70B-base"] = {}
@@ -188,7 +188,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-70B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-70B-base"]["max_output_token"] = 128
+    test_data["LLAMA2-70B-base"]["max_output_len"] = 128
     test_data["LLAMA2-70B-base"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-code"] = {}
@@ -201,7 +201,7 @@ def get_infer_test_data():
         "You are an expert programmer that writes simple, concise code and explanations. Write a python function to generate the nth fibonacci number."
     ]
     test_data["LLAMA2-7B-code"]["expected_keyword"] = ["Here"]
-    test_data["LLAMA2-7B-code"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-code"]["max_output_len"] = 128
     test_data["LLAMA2-7B-code"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-base-fp8"] = {}
@@ -216,7 +216,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-7B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-7B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-fp8"]["max_output_len"] = 128
     test_data["LLAMA2-7B-base-fp8"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-base-int4"] = {}
@@ -231,7 +231,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-7B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-7B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-int4"]["max_output_len"] = 128
     test_data["LLAMA2-7B-base-int4"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-base-int8"] = {}
@@ -246,7 +246,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-7B-base-int8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-7B-base-int8"]["max_output_token"] = 128
+    test_data["LLAMA2-7B-base-int8"]["max_output_len"] = 128
     test_data["LLAMA2-7B-base-int8"]["max_batch_size"] = 10
 
     test_data["LLAMA2-13B-base-fp8"] = {}
@@ -261,7 +261,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-13B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-13B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-13B-base-fp8"]["max_output_len"] = 128
     test_data["LLAMA2-13B-base-fp8"]["max_batch_size"] = 10
 
     test_data["LLAMA2-13B-base-int4"] = {}
@@ -278,7 +278,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-13B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-13B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-13B-base-int4"]["max_output_len"] = 128
     test_data["LLAMA2-13B-base-int4"]["max_batch_size"] = 10
 
     test_data["LLAMA2-70B-base-fp8"] = {}
@@ -293,7 +293,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-70B-base-fp8"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-70B-base-fp8"]["max_output_token"] = 128
+    test_data["LLAMA2-70B-base-fp8"]["max_output_len"] = 128
     test_data["LLAMA2-70B-base-fp8"]["max_batch_size"] = 10
 
     test_data["LLAMA2-70B-base-int4"] = {}
@@ -310,7 +310,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["LLAMA2-70B-base-int4"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["LLAMA2-70B-base-int4"]["max_output_token"] = 128
+    test_data["LLAMA2-70B-base-int4"]["max_output_len"] = 128
     test_data["LLAMA2-70B-base-int4"]["max_batch_size"] = 10
 
     test_data["FALCON-7B-base"] = {}
@@ -325,7 +325,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["FALCON-7B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["FALCON-7B-base"]["max_output_token"] = 128
+    test_data["FALCON-7B-base"]["max_output_len"] = 128
     test_data["FALCON-7B-base"]["max_batch_size"] = 10
 
     test_data["FALCON-40B-base"] = {}
@@ -340,7 +340,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["FALCON-40B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["FALCON-40B-base"]["max_output_token"] = 128
+    test_data["FALCON-40B-base"]["max_output_len"] = 128
     test_data["FALCON-40B-base"]["max_batch_size"] = 10
 
     test_data["FALCON-180B-base"] = {}
@@ -355,7 +355,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["FALCON-180B-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["FALCON-180B-base"]["max_output_token"] = 128
+    test_data["FALCON-180B-base"]["max_output_len"] = 128
     test_data["FALCON-180B-base"]["max_batch_size"] = 10
 
     test_data["STARCODER1-15B-base"] = {}
@@ -366,7 +366,7 @@ def get_infer_test_data():
     test_data["STARCODER1-15B-base"]["checkpoint"] = "/opt/checkpoints/STARCODER1-15B-base/STARCODER1-15B-base-1.nemo"
     test_data["STARCODER1-15B-base"]["prompt_template"] = ["def fibonnaci(n"]
     test_data["STARCODER1-15B-base"]["expected_keyword"] = ["fibonnaci"]
-    test_data["STARCODER1-15B-base"]["max_output_token"] = 128
+    test_data["STARCODER1-15B-base"]["max_output_len"] = 128
     test_data["STARCODER1-15B-base"]["max_batch_size"] = 5
 
     test_data["GEMMA-base"] = {}
@@ -381,7 +381,7 @@ def get_infer_test_data():
         "Fastest animal in the world is",
     ]
     test_data["GEMMA-base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["GEMMA-base"]["max_output_token"] = 128
+    test_data["GEMMA-base"]["max_output_len"] = 128
     test_data["GEMMA-base"]["max_batch_size"] = 10
 
     return test_data

@@ -33,7 +33,7 @@ def get_args(argv):
     parser.add_argument("-swl", "--stop_words_list", type=str, help="Stop words list")
     parser.add_argument("-bwl", "--bad_words_list", type=str, help="Bad words list")
     parser.add_argument("-nrns", "--no_repeat_ngram_size", type=int, help="No repeat ngram size")
-    parser.add_argument("-mot", "--max_output_token", default=128, type=int, help="Max output token length")
+    parser.add_argument("-mol", "--max_output_len", default=128, type=int, help="Max output token length")
     parser.add_argument("-tk", "--top_k", default=1, type=int, help="top_k")
     parser.add_argument("-tpp", "--top_p", default=0.0, type=float, help="top_p")
     parser.add_argument("-t", "--temperature", default=1.0, type=float, help="temperature")
@@ -67,7 +67,7 @@ def query_llm(
     stop_words_list=None,
     bad_words_list=None,
     no_repeat_ngram_size=None,
-    max_output_token=128,
+    max_output_len=128,
     top_k=1,
     top_p=0.0,
     temperature=1.0,
@@ -79,8 +79,8 @@ def query_llm(
     prompts = str_list2numpy(prompts)
     inputs = {"prompts": prompts}
 
-    if max_output_token is not None:
-        inputs["max_output_token"] = np.full(prompts.shape, max_output_token, dtype=np.int_)
+    if max_output_len is not None:
+        inputs["max_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
 
     if top_k is not None:
         inputs["top_k"] = np.full(prompts.shape, top_k, dtype=np.int_)
@@ -131,7 +131,7 @@ def query_llm_streaming(
     stop_words_list=None,
     bad_words_list=None,
     no_repeat_ngram_size=None,
-    max_output_token=512,
+    max_output_len=512,
     top_k=1,
     top_p=0.0,
     temperature=1.0,
@@ -143,8 +143,8 @@ def query_llm_streaming(
     prompts = str_list2numpy(prompts)
     inputs = {"prompts": prompts}
 
-    if max_output_token is not None:
-        inputs["max_output_token"] = np.full(prompts.shape, max_output_token, dtype=np.int_)
+    if max_output_len is not None:
+        inputs["max_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
 
     if top_k is not None:
         inputs["top_k"] = np.full(prompts.shape, top_k, dtype=np.int_)
@@ -202,7 +202,7 @@ def query(argv):
             stop_words_list=None if args.stop_words_list is None else [args.stop_words_list],
             bad_words_list=None if args.bad_words_list is None else [args.bad_words_list],
             no_repeat_ngram_size=args.no_repeat_ngram_size,
-            max_output_token=args.max_output_token,
+            max_output_len=args.max_output_len,
             top_k=args.top_k,
             top_p=args.top_p,
             temperature=args.temperature,
@@ -232,7 +232,7 @@ def query(argv):
             stop_words_list=None if args.stop_words_list is None else [args.stop_words_list],
             bad_words_list=None if args.bad_words_list is None else [args.bad_words_list],
             no_repeat_ngram_size=args.no_repeat_ngram_size,
-            max_output_token=args.max_output_token,
+            max_output_len=args.max_output_len,
             top_k=args.top_k,
             top_p=args.top_p,
             temperature=args.temperature,

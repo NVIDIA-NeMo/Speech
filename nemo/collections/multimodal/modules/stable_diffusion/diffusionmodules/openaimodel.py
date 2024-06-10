@@ -1342,9 +1342,10 @@ class UNetModel(nn.Module):
             if context is not None:
                 context = context.type(torch.float16)
 
-        t_emb = timestep_embedding(
-            timesteps, self.model_channels, cached_embedding=self.time_embeddings.to(timesteps.device)
-        )
+        if self.time_embeddings.device != timesteps.device:
+            self.time_embeddings = self.time_embeddings.to(timesteps.device)
+
+        t_emb = timestep_embedding(timesteps, self.model_channels, cached_embedding=self.time_embeddings)
         emb = self.time_embed(t_emb)
         if self.num_classes is not None:
             assert y.shape[0] == x.shape[0]

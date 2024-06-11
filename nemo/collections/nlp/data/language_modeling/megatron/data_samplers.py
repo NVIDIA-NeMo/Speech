@@ -91,8 +91,7 @@ class BaseMegatronSampler:
             return (num_available_samples - 1) // self.micro_batch_times_data_parallel_size + 1
 
     @abc.abstractmethod
-    def __iter__(self):
-        ...
+    def __iter__(self): ...
 
 
 class MegatronPretrainingSampler(BaseMegatronSampler):
@@ -107,7 +106,7 @@ class MegatronPretrainingSampler(BaseMegatronSampler):
         indices = range(self.consumed_samples, self.total_samples)
         if (not self.drop_last) and self.pad_samples_to_global_batch_size:
             pad_samples_num = -len(indices) % self.global_batch_size
-            pad_indices = range(-1, -pad_samples_num - 1, -1)
+            pad_indices = [None] * pad_samples_num
             indices = chain(indices, pad_indices)
 
         for idx in indices:

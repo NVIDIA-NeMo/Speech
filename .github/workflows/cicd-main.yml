@@ -2398,6 +2398,7 @@ jobs:
             model.activations_checkpoint_method=block \
             model.activations_checkpoint_granularity=full \
             model.activations_checkpoint_num_layers=1 \
+            model.data.validation_drop_last=False \
             model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
             model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
 
@@ -2432,6 +2433,7 @@ jobs:
             model.activations_checkpoint_method=block \
             model.activations_checkpoint_granularity=full \
             model.activations_checkpoint_num_layers=1 \
+            model.data.validation_drop_last=False \
             model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
             model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
         

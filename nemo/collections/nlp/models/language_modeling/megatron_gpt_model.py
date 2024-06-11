@@ -1472,8 +1472,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # Where N_d is the total number of samples in a dataset (files), and N is the requested number of samples (provided for every split in the list below).
         # Setting N = 1 we force E to be 1 as well
         if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
-            train_valid_test_num_samples[1] = 1
-
+            train_valid_test_num_samples[1] = None
         # Add extra FIM tokens to tokenizer
         if self.cfg.data.get('add_fim', False) and self.cfg.tokenizer.library == 'megatron':
             fim_tokens = self.cfg.data.fim.extra_tokens
@@ -1498,6 +1497,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             is_dataset_built_on_rank = lambda: True
 
             mock_dataset = True if self.cfg.data.get("data_impl", "mmap") == "mock" else False
+            add_extra_token = not self.cfg.data.get("no_seqlen_plus_one_input_tokens", False)
             kwargs = {
                 "random_seed": self.cfg.seed,
                 "sequence_length": self.cfg.data.seq_length,
@@ -1508,6 +1508,8 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 "eod_mask_loss": self.eod_mask_loss,
                 "create_attention_mask": not self.get_attention_mask_from_fusion,
                 "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
+                "drop_last_partial_validation_sequence": self.cfg.data.get("validation_drop_last", True),
+                "add_extra_token_to_sequence": add_extra_token,
             }
 
             data_prefix = self.cfg.data.data_prefix

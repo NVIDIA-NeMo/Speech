@@ -26,6 +26,7 @@ quantization:
   calib_dataset: cnn_dailymail # wikitext, cnn_dailymail, or a local dataset
   num_calib_size: 512 # number of samples used for calibration
   awq_block_size: 128 # block size for scaling factors in AWQ algorithm
+  alpha: 1.0 # alpha parameter in SmoothQuant algorithm
 
 export:
   decoder_type: llama # gptnext, gpt2, llama

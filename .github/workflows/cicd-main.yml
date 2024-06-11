@@ -4284,12 +4284,68 @@ jobs:
       
       - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' }}
         run: |
-          source .github/scripts/slackHelper.sh
+          set -x
 
-          WEBHOOK_URL=${{ secrets.SLACK_WEBHOOK }}
+          PR_INFO=$(curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.number }}
+          )
+          PR_URL=$(echo -E $PR_INFO | jq '.html_url' | tr -d '"')
+          PR_TITLE=$(echo -E $PR_INFO | jq '.title' | tr -d '"')
+          
           PIPELINE_URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_MESSAGE='
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "🚨 *CI/CD failure at <'$PIPELINE_URL'|NeMo CI>*."
+                  }
+                }
+              ]
+            }
+          '
 
-          sendSlackMessage "$WEBHOOK_URL" "$PIPELINE_URL"
+          JOBS_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"  
+          SUMMARY="[]"
+          while IFS= read -r JOB; do
+            JOB_NAME="$(echo $JOB | jq '.key' | tr -d '"') / main"
+            JOB_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" $JOBS_URL | jq --arg job_name "$JOB_NAME" -r '.jobs[] | select(.name == $job_name) | .id')
+            JOB_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/job/$JOB_ID"
+
+            LOGS=$(echo $JOB | yq '(.value.outputs.log | @base64d)' | tr -d '"')
+
+            SUMMARY=$(echo "$SUMMARY" | jq \
+              --arg pr "<$PR_URL|$PR_TITLE>" \
+              --arg job "<$JOB_URL|$JOB_NAME>" \
+              --arg logs "$LOGS" \
+              --arg author "<https://github.com/${{ github.actor }}|${{ github.actor }}>" \
+              --arg branch "<https://github.com/${{ github.repository }}/tree/${{ github.head_ref || github.ref_name }}|${{ github.head_ref || github.ref_name }}>"\
+              '. += [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": (
+                    "PR: " + $pr
+                    + "\nJob: " + $job
+                    + "\nAuthor: " + $author
+                    + "\nBranch: " + $branch
+                    + "\nLogs:" 
+                    + "```\n" + $logs + "\n```" 
+                  )
+                }
+              }
+            ]')
+          done <<<$(echo '${{ toJSON(needs) }}' | jq -c 'to_entries | .[] | select(.value.outputs.conclusion == "failure")')
+
+          MESSAGE=$(echo $BASE_MESSAGE | jq -c --argjson summary "$SUMMARY" '.blocks += $summary')
+
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_WEBHOOK }}
 
       - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'false' }}
         run: |

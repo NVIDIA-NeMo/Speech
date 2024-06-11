@@ -116,6 +116,9 @@ class Quantizer:
                 "axis": None,
                 "enable": enable_quant_kv_cache,
             }
+            if quantization_config.algorithm == "int8_sq":
+                logging.info(f"Using int8_sq alpha = {quantization_config.alpha}")
+                quant_cfg["algorithm"] = {"method": "smoothquant", "alpha": quantization_config.alpha}
 
             self.quant_cfg = quant_cfg
         else:

@@ -1,4 +1,5 @@
 import functools
+import inspect
 import logging
 import shutil
 from collections import OrderedDict
@@ -90,7 +91,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.ckpt_include_optimizer = ckpt_include_optimizer
 
         if ddp == "megatron":
-            self.ddp_config = DistributedDataParallelConfig()
+            self.ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=True)
         elif isinstance(ddp, DistributedDataParallelConfig):
             self.ddp_config = ddp
         elif ddp == "pytorch":
@@ -165,18 +166,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
             trainer.fit_loop.epoch_loop.automatic_optimization = _MegatronAutomaticOptimization(trainer)
 
-            # set up optimizers after the wrapped module has been moved to the device
-            self.setup_optimizers(trainer)
-
-            # TODO: Throw an execption if we have a mcore optimizer and no ddp_config
-
-            if hasattr(self.precision_plugin, "convert_optimizer"):
-                _optimizers = [*self.optimizers]
-                _optimizers[0] = self.precision_plugin.convert_optimizer(self.optimizers[0])
-                self.optimizers = _optimizers
-
-            _optimizers_to_device(self.optimizers, self.root_device)
-
             import torch.distributed.algorithms.ddp_comm_hooks.post_localSGD_hook as post_localSGD
 
             if isinstance(self._ddp_comm_state, post_localSGD.PostLocalSGDState):
@@ -223,6 +212,25 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             cpu=isinstance(trainer.accelerator, CPUAccelerator),
             ddp_config=self.ddp_config,
         )
+
+        # check signature-def of self.model.configure_optimizers to check if there's an optional arg: megatron_parallel
+        sig = inspect.signature(self.model.configure_optimizers)
+        if "megatron_parallel" in sig.parameters:
+            self.model.configure_optimizers = functools.partial(
+                self.model.configure_optimizers, megatron_parallel=self.megatron_parallel
+            )
+
+        self.setup_optimizers(trainer)
+
+        # TODO: Throw an execption if we have a mcore optimizer and no ddp_config
+
+        if hasattr(self.precision_plugin, "convert_optimizer"):
+            _optimizers = [*self.optimizers]
+            _optimizers[0] = self.precision_plugin.convert_optimizer(self.optimizers[0])
+            self.optimizers = _optimizers
+
+        _optimizers_to_device(self.optimizers, self.root_device)
+
         self.model = self.megatron_parallel
         self.model.trainer = trainer
 

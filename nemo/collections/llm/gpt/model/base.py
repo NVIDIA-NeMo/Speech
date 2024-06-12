@@ -1,15 +1,18 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, Literal, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Literal, Optional, Union
 
 import pytorch_lightning as L
 import torch
 import torch.distributed
 from megatron.core.transformer.transformer_config import TransformerConfig
+from pytorch_lightning.utilities.types import OptimizerLRScheduler
+from torch import nn
 from torch.optim import Optimizer
 
 from nemo.collections.llm import fn
 from nemo.lightning import get_vocab_size, io
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
+from nemo.lightning.optim import MegatronOptim, OptimizerConfig
 
 if TYPE_CHECKING:
     from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
@@ -32,8 +35,6 @@ class GPTConfig(TransformerConfig):
 
     # TODO: Move this to better places?
     get_attention_mask_from_fusion: bool = False
-
-    optimizer_fn: Optional[Callable[["GPTModel"], Optimizer]] = None
 
     def configure_model(self, tokenizer) -> "MCoreGPTModel":
         vp_size = self.virtual_pipeline_model_parallel_size
@@ -69,20 +70,19 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         self,
         config: GPTConfig,
         # TODO: Add transformer_layer_spec when we update mcore
+        optim: Optional[Union[MegatronOptim, Callable[[nn.Module], OptimizerLRScheduler]]] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
     ):
         super().__init__()
         self.config = config
         self.tokenizer = tokenizer
+        self.optim = optim or MegatronOptim(config=OptimizerConfig(lr=1e-4, use_distributed_optimizer=True))
 
     def configure_model(self) -> None:
         self.module = self.config.configure_model(self.tokenizer)
 
-    def configure_optimizers(self) -> Optimizer:
-        if self.config.optimizer_fn is not None:
-            return self.config.optimizer_fn(self)
-
-        return gpt_default_optimizer(self)
+    def configure_optimizers(self, megatron_parallel=None):
+        return self.optim(megatron_parallel or self)
 
     def forward(
         self,
@@ -172,9 +172,13 @@ def gpt_forward_step(model, batch) -> torch.Tensor:
 
 
 def gpt_default_optimizer(module) -> Optimizer:
-    from apex.optimizers import FusedAdam
+    # from apex.optimizers import FusedAdam
 
-    return FusedAdam(module.parameters(), lr=1e-4)
+    from megatron.core.optimizer import OptimizerConfig
+
+    return OptimizerConfig(lr=1e-4)
+
+    # return FusedAdam(module.parameters(), lr=1e-4)
 
 
 def get_batch_on_this_context_parallel_rank(batch):

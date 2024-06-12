@@ -55,7 +55,7 @@ class TestMegatronParallel:
         mocker.patch('megatron.core.parallel_state.get_pipeline_model_parallel_world_size', return_value=1)
         mocker.patch('megatron.core.parallel_state.model_parallel_is_initialized', return_value=False)
 
-        megatron_parallel = mp.MegatronParallel(pipeline=mock_pipeline)
+        megatron_parallel = mp.MegatronParallel(pipeline=mock_pipeline, cpu=True)
 
         assert megatron_parallel.pipeline == mock_pipeline
         assert megatron_parallel.precision_plugin is None
@@ -85,6 +85,7 @@ class TestMegatronParallel:
             data_step=mock_data_step,
             forward_step=mock_forward_step,
             loss_reduction=mock_loss_reduction,
+            cpu=True,
         )
 
         assert megatron_parallel.pipeline == mock_pipeline

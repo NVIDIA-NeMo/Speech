@@ -63,26 +63,8 @@ jobs:
             ) 2> >(tee err.log)
 
             EXIT_CODE=$?
-            # Slack only allows 3000 chars per block.
-            # Since a block contains information about other
-            # metdata than the log, we prune the log to 2000
-            # chars.
-            min() {
-                if (( $1 > $2 )); then
-                    echo $2
-                else
-                    echo $1
-                fi
-            }
-
-            log=$(cat err.log)
-
-            MAX_LENGTH=$(echo $log | wc -m)
-            MAX_LENGTH=$(min $MAX_LENGTH 2000)
-            MAX_LENGTH=$(( $MAX_LENGTH - 1 ))
-
-            log=$(echo "${log: -${MAX_LENGTH}}" | base64 -w 0)
-            echo "log=$log" | tee -a "$GITHUB_OUTPUT"
+            
+            echo "log=$(tail -c 2000 err.log |  base64 -w 0)" >> "$GITHUB_OUTPUT"
             
             exit $EXIT_CODE
             

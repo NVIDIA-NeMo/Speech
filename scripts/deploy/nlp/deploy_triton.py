@@ -19,8 +19,8 @@ import sys
 from pathlib import Path
 
 from nemo.deploy import DeployPyTriton
+from nemo.deploy.nlp import MegatronLLMDeployable
 from nemo.export import TensorRTLLM
-
 
 LOGGER = logging.getLogger("NeMo")
 
@@ -31,6 +31,13 @@ def get_args(argv):
         description=f"Deploy nemo models to Triton",
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source .nemo file")
+    parser.add_argument(
+        "-dsn",
+        "--direct_serve_nemo",
+        default=False,
+        action='store_true',
+        help="Serve the nemo model directly instead of exporting to TRTLLM first. Will ignore other TRTLLM-specific arguments.",
+    )
     parser.add_argument(
         "-ptnc",
         "--ptuning_nemo_checkpoint",
@@ -146,18 +153,7 @@ def get_args(argv):
     return args
 
 
-def nemo_deploy(argv):
-    args = get_args(argv)
-
-    if args.debug_mode:
-        loglevel = logging.DEBUG
-    else:
-        loglevel = logging.INFO
-
-    LOGGER.setLevel(loglevel)
-    LOGGER.info("Logging level set to {}".format(loglevel))
-    LOGGER.info(args)
-
+def get_trtllm_deployable(args):
     if args.triton_model_repository is None:
         trt_llm_path = "/tmp/trt_llm_model_dir/"
         LOGGER.info(
@@ -170,28 +166,24 @@ def nemo_deploy(argv):
         trt_llm_path = args.triton_model_repository
 
     if args.nemo_checkpoint is None and args.triton_model_repository is None:
-        LOGGER.error(
+        raise ValueError(
             "The provided model repository is not a valid TensorRT-LLM model "
             "directory. Please provide a --nemo_checkpoint."
         )
-        return
 
     if args.nemo_checkpoint is None and not os.path.isdir(args.triton_model_repository):
-        LOGGER.error(
+        raise ValueError(
             "The provided model repository is not a valid TensorRT-LLM model "
             "directory. Please provide a --nemo_checkpoint."
         )
-        return
 
     if args.nemo_checkpoint is not None and args.model_type is None:
-        LOGGER.error("Model type is required to be defined if a nemo checkpoint is provided.")
-        return
+        raise ValueError("Model type is required to be defined if a nemo checkpoint is provided.")
 
     ptuning_tables_files = []
     if not args.ptuning_nemo_checkpoint is None:
         if args.max_prompt_embedding_table_size is None:
-            LOGGER.error("max_prompt_embedding_table_size parameter is needed for the prompt tuning table(s).")
-            return
+            raise ValueError("max_prompt_embedding_table_size parameter is needed for the prompt tuning table(s).")
 
         for pt_checkpoint in args.ptuning_nemo_checkpoint:
             ptuning_nemo_checkpoint_path = Path(pt_checkpoint)
@@ -199,19 +191,16 @@ def nemo_deploy(argv):
                 if ptuning_nemo_checkpoint_path.is_file():
                     ptuning_tables_files.append(pt_checkpoint)
                 else:
-                    LOGGER.error("Could not read the prompt tuning tables from {0}".format(pt_checkpoint))
-                    return
+                    raise IsADirectoryError("Could not read the prompt tuning tables from {0}".format(pt_checkpoint))
             else:
-                LOGGER.error("File or directory {0} does not exist.".format(pt_checkpoint))
-                return
+                raise FileNotFoundError("File or directory {0} does not exist.".format(pt_checkpoint))
 
         if args.task_ids is not None:
             if len(ptuning_tables_files) != len(args.task_ids):
-                LOGGER.error(
+                raise RuntimeError(
                     "Number of task ids and prompt embedding tables have to match. "
                     "There are {0} tables and {1} task ids.".format(len(ptuning_tables_files), len(args.task_ids))
                 )
-                return
 
     trt_llm_exporter = TensorRTLLM(
         model_dir=trt_llm_path,
@@ -245,8 +234,7 @@ def nemo_deploy(argv):
                 save_nemo_model_config=True,
             )
         except Exception as error:
-            LOGGER.error("An error has occurred during the model export. Error message: " + str(error))
-            return
+            raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))
 
     try:
         for i, prompt_embeddings_checkpoint_path in enumerate(ptuning_tables_files):
@@ -265,12 +253,35 @@ def nemo_deploy(argv):
                 prompt_embeddings_checkpoint_path=prompt_embeddings_checkpoint_path,
             )
     except Exception as error:
-        LOGGER.error("An error has occurred during adding the prompt embedding table(s). Error message: " + str(error))
-        return
+        raise RuntimeError(
+            "An error has occurred during adding the prompt embedding table(s). Error message: " + str(error)
+        )
+    return trt_llm_exporter
+
+
+def get_nemo_deployable(args):
+    if args.nemo_checkpoint is None:
+        raise ValueError("Direct serve requires a .nemo checkpoint")
+    return MegatronLLMDeployable(args.nemo_checkpoint, args.num_gpus)
+
+
+def nemo_deploy(argv):
+    args = get_args(argv)
+
+    if args.debug_mode:
+        loglevel = logging.DEBUG
+    else:
+        loglevel = logging.INFO
+
+    LOGGER.setLevel(loglevel)
+    LOGGER.info("Logging level set to {}".format(loglevel))
+    LOGGER.info(args)
+
+    triton_deployable = get_nemo_deployable(args) if args.direct_serve_nemo else get_trtllm_deployable(args)
 
     try:
         nm = DeployPyTriton(
-            model=trt_llm_exporter,
+            model=triton_deployable,
             triton_model_name=args.triton_model_name,
             triton_model_version=args.triton_model_version,
             max_batch_size=args.max_batch_size,

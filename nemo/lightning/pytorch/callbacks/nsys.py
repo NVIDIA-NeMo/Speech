@@ -1,0 +1,69 @@
+from typing import Any, List, Optional
+
+import torch
+from pytorch_lightning.callbacks.callback import Callback
+
+from nemo.utils import logging
+from nemo.utils.get_rank import get_rank
+
+
+class NsysCallback(Callback):
+
+    def __init__(
+        self,
+        start_step: int,
+        end_step: int,
+        ranks: List[int] = [0],
+        gen_shape: bool = False,
+    ):
+        """
+        Args:
+            start_step (int): Global batch to start profiling
+            end_step (int): Global batch to end profiling
+            ranks (List[int]): Global rank IDs to profile
+            gen_shape (bool): Generate model and kernel details including input shapes
+        """
+        assert type(start_step) == int, f'Nsys start_step must be of type int. Found: {type(start_step)}'
+        self._nsys_profile_start_step = start_step
+
+        assert type(end_step) == int, f'Nsys end_step must be of type int. Found: {type(start_step)}'
+        self._nsys_profile_end_step = end_step
+
+        assert (
+            self._nsys_profile_end_step >= self._nsys_profile_start_step
+        ), f'Nsys end_step must be greater than or equal to nsys start_step'
+
+        self._nsys_profile_ranks = ranks
+        self._nsys_profile_gen_shape = gen_shape
+
+        logging.info(
+            f'Nsys profiling setup with start_step: {self._nsys_profile_start_step},'
+            f'and end_step: {self._nsys_profile_end_step}'
+        )
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx: int) -> Optional[int]:
+        """PyTorch Lightning hook:
+        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-start
+        We use it here to enable nsys profiling.
+        """
+
+        device = trainer.strategy.root_device
+        if device.type == 'cuda':
+            if batch_idx == self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
+                logging.info("====== Start nsys profiling ======")
+                torch.cuda.cudart().cudaProfilerStart()
+                if self._nsys_profile_gen_shape:
+                    torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int) -> None:
+        """PyTorch Lightning hook:
+        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-train-batch-end
+        We use it here to enable nsys profiling.
+        """
+
+        device = trainer.strategy.root_device
+        if device.type == 'cuda':
+            print(f'batch idx: {batch_idx}')
+            if batch_idx == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
+                logging.info("====== End nsys profiling ======")
+                torch.cuda.cudart().cudaProfilerStop()

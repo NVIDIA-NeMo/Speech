@@ -72,8 +72,16 @@ def model_to_trtllm_ckpt(
     dtype: str = "bfloat16",
     tensor_parallel_size: int = 1,
     pipeline_parallel_size: int = 1,
+    gpus_per_node: int = None,
     use_parallel_embedding: bool = False,
+    use_embedding_sharing: bool = False,
 ) -> Tuple[List[Dict], List[PretrainedConfig]]:
+
+    if nemo_model_config.get("share_embeddings_and_output_weights", False) and not use_embedding_sharing:
+        LOGGER.info(
+            "Found share_embeddings_and_output_weights is True in NeMo config, set use_embedding_sharing = True"
+        )
+        use_embedding_sharing = True
 
     weights_dict = convert_model_to_trt_llm_ckpt(
         model=model,
@@ -88,12 +96,14 @@ def model_to_trtllm_ckpt(
 
     world_size = tensor_parallel_size * pipeline_parallel_size
 
-    lm_head_weight = weights_dict["lm_head.weight"]
+    has_lm_head = "lm_head.weight" in weights_dict
+    if has_lm_head:
+        lm_head_weight = weights_dict["lm_head.weight"]
 
     vocab_size = weights_dict["transformer.vocab_embedding.weight"].shape[0]
-    vocab_size_padded = pad_vocab_size(vocab_size, tensor_parallel_size)
+    vocab_size_padded = pad_vocab_size(vocab_size, tensor_parallel_size) if has_lm_head else vocab_size
 
-    if vocab_size_padded != vocab_size:
+    if has_lm_head and vocab_size_padded != vocab_size:
         pad_width = vocab_size_padded - vocab_size
         lm_head_weight = np.pad(lm_head_weight, ((0, pad_width), (0, 0)), "constant", constant_values=0)
 
@@ -120,7 +130,7 @@ def model_to_trtllm_ckpt(
         'hidden_act': hidden_act,
         'use_parallel_embedding': use_parallel_embedding,
         'embedding_sharding_dim': 0,
-        'share_embedding_table': False,
+        'share_embedding_table': use_embedding_sharing,
         'quantization': {
             'quant_algo': None,
             'kv_cache_quant_algo': None,
@@ -160,9 +170,15 @@ def model_to_trtllm_ckpt(
         "transformer.ln_f.bias",
     }
 
+    gpus_per_node = tensor_parallel_size if gpus_per_node is None else gpus_per_node
+
     for i in range(world_size):
         mapping = tensorrt_llm.Mapping(
-            world_size=world_size, rank=i, tp_size=tensor_parallel_size, pp_size=pipeline_parallel_size
+            world_size=world_size,
+            rank=i,
+            tp_size=tensor_parallel_size,
+            pp_size=pipeline_parallel_size,
+            gpus_per_node=gpus_per_node,
         )
         layers_range = mapping.pp_layers(num_layers)
 
@@ -174,6 +190,8 @@ def model_to_trtllm_ckpt(
             if new_key.endswith(".bin"):  # TP split
                 if new_key.endswith(f"{mapping.tp_rank}.bin"):
                     new_key = new_key.replace(f".{mapping.tp_rank}.bin", "")
+                else:
+                    continue
             if "layers" in new_key:  # PP
                 layer_num = int(new_key.split(".")[2])
                 if layer_num in layers_range:
@@ -202,15 +220,17 @@ def model_to_trtllm_ckpt(
                 weights_dict_local["transformer.position_embedding.weight"] = pos_embedding_weight
 
         if mapping.is_last_pp_rank():
-            weights_dict_local["lm_head.weight"] = np.ascontiguousarray(
-                split(lm_head_weight, mapping.tp_size, mapping.tp_rank)
-            )
+            if has_lm_head:
+                weights_dict_local["lm_head.weight"] = np.ascontiguousarray(
+                    split(lm_head_weight, mapping.tp_size, mapping.tp_rank)
+                )
             weights_dict_local["transformer.ln_f.weight"] = weights_dict["transformer.ln_f.weight"]
 
             ln_f_bias = weights_dict.get("transformer.ln_f.bias")
             if ln_f_bias is not None:
                 weights_dict_local["transformer.ln_f.bias"] = ln_f_bias
 
+        config["gpus_per_node"] = gpus_per_node
         model_config = PretrainedConfig(**config)
         model_config.mapping = mapping
         model_configs.append(model_config)

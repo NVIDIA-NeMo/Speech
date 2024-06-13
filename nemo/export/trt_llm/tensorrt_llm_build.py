@@ -19,7 +19,7 @@ from tensorrt_llm._common import check_max_num_tokens
 from tensorrt_llm.builder import BuildConfig, Builder
 from tensorrt_llm.commands.build import build as build_trtllm
 from tensorrt_llm.logger import logger
-from tensorrt_llm.lora_manager import LoraBuildConfig
+from tensorrt_llm.lora_manager import LoraConfig
 from tensorrt_llm.models.modeling_utils import add_lora, optimize_model, preprocess_weights
 from tensorrt_llm.plugin import PluginConfig
 
@@ -94,7 +94,7 @@ def build_and_save_engine(
 
     if use_lora_plugin is not None:
         build_config.plugin_config.set_lora_plugin(use_lora_plugin)
-        lora_config = LoraBuildConfig(
+        lora_config = LoraConfig(
             lora_dir=lora_ckpt_list,
             lora_ckpt_source='nemo',
             max_lora_rank=max_lora_rank,

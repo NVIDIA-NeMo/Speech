@@ -158,8 +158,6 @@ def convert_model_to_trt_llm_ckpt(
                 model_level_weights["transformer.position_embedding.weight"].append(val)
         if pp_idx == 0:
             val = model.get("state_dict", model)[get_layer_name("word_embedding", prefix)]
-            if embedding_scaling:
-                val = val * float(math.sqrt(hidden_size))
 
             vocab_size = val.shape[0]
             if use_parallel_embedding:
@@ -171,10 +169,6 @@ def convert_model_to_trt_llm_ckpt(
 
             val = torch_to_numpy(val.to(storage_type).cpu())
             model_level_weights["transformer.vocab_embedding.weight"].append(val)
-            if share_embeddings_and_output:
-                val = model.get("state_dict", model)[get_layer_name("word_embedding", prefix)]
-                val = torch_to_numpy(val.to(storage_type).cpu())
-                model_level_weights["lm_head.weight"].append(val)
         if has_lm_head and pp_idx == training_pp_size - 1:
             val = model.get("state_dict", model)[get_layer_name("output_layer", prefix)]
             val = torch_to_numpy(val.to(storage_type).cpu())

@@ -128,6 +128,7 @@ def run_trt_llm_inference(
     trt_llm_model_dir,
     n_gpu=1,
     max_batch_size=8,
+    use_embedding_sharing=False,
     max_input_len=128,
     max_output_len=128,
     ptuning=False,
@@ -216,6 +217,7 @@ def run_trt_llm_inference(
             lora_target_modules=lora_target_modules,
             max_num_tokens=int(max_input_len * max_batch_size * 0.2),
             opt_num_tokens=60,
+            use_embedding_sharing=use_embedding_sharing,
             save_nemo_model_config=True,
         )
 
@@ -236,6 +238,14 @@ def run_trt_llm_inference(
             streaming=streaming,
             stop_words_list=stop_words_list,
         )
+
+        if not use_lora_plugin and not ptuning:
+            test_cpp_runtime(
+                engine_path=trt_llm_model_dir,
+                prompt=prompt,
+                max_output_len=max_output_len,
+                debug=True,
+            )
 
         nq = None
         nm = None
@@ -290,6 +300,27 @@ def run_trt_llm_inference(
         raise Exception("Checkpoint {0} could not be found.".format(checkpoint_path))
 
 
+def test_cpp_runtime(
+    engine_path,
+    prompt,
+    max_output_len,
+    debug,
+):
+    trt_llm_exporter = TensorRTLLM(engine_path, load_model=True)
+    output = trt_llm_exporter.forward(
+        input_texts=prompt,
+        max_output_len=max_output_len,
+        top_k=1,
+        top_p=0.0,
+        temperature=1.0,
+    )
+
+    if debug:
+        print("")
+        print("--- Output deployed with cpp runtime: ", output)
+        print("")
+
+
 def run_existing_checkpoints(
     model_name,
     n_gpus,
@@ -332,6 +363,12 @@ def run_existing_checkpoints(
         else:
             raise Exception("There is not lora checkpoint path defined.")
 
+    if model_info["model_type"] == "gemma":
+        print("*********************")
+        use_embedding_sharing = True
+    else:
+        use_embedding_sharing = False
+
     return run_trt_llm_inference(
         model_name=model_name,
         model_type=model_info["model_type"],
@@ -340,6 +377,7 @@ def run_existing_checkpoints(
         trt_llm_model_dir=model_info["trt_llm_model_dir"],
         n_gpu=n_gpus,
         max_batch_size=model_info["max_batch_size"],
+        use_embedding_sharing=use_embedding_sharing,
         max_input_len=512,
         max_output_len=model_info["max_output_len"],
         ptuning=ptuning,

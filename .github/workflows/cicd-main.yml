@@ -4310,7 +4310,8 @@ jobs:
             }
           '
 
-          JOBS_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"  
+          # We are close to reaching 100 jobs: Once we break that barrier, we have to iterate pages
+          JOBS_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100"  
           SUMMARY="[]"
           while IFS= read -r JOB; do
             JOB_NAME="$(echo $JOB | jq '.key' | tr -d '"') / main"

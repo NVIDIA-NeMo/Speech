@@ -4,7 +4,7 @@ from typing import Callable, Optional
 import pytorch_lightning as pl
 
 from nemo.collections.llm.utils import task
-from nemo.lightning import MegatronStrategy, Trainer, io, teardown
+from nemo.lightning import MegatronStrategy, OptimizerModule, Trainer, io, teardown
 
 
 @task(namespace="llm")
@@ -12,6 +12,7 @@ def train(
     model: pl.LightningModule,
     data: pl.LightningDataModule,
     trainer: Trainer,
+    opt: Optional[OptimizerModule] = None,
     tokenizer: Optional[str] = None,
     source: Optional[str] = None,
     export: Optional[str] = None,
@@ -23,6 +24,8 @@ def train(
         model (pl.LightningModule): The model to be trained.
         data (pl.LightningDataModule): The data module containing training data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
+        opt (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
+            from the model will be used.
         tokenizer (Optional[str]): Tokenizer setting to be applied. Can be 'data' or 'model'.
         source (Optional[str]): Path to a checkpoint from which to continue training.
         export (Optional[str]): Filename to save the exported checkpoint after training.
@@ -57,6 +60,9 @@ def train(
         _use_tokenizer(model, data, tokenizer)
     if source:
         _add_ckpt_path(source, model, fit_kwargs)
+
+    if opt:
+        opt.connect(model)
 
     trainer.fit(model, data, **fit_kwargs)
 

@@ -212,6 +212,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             cpu=isinstance(trainer.accelerator, CPUAccelerator),
             ddp_config=self.ddp_config,
         )
+        self.megatron_parallel.trainer = trainer
 
         # check signature-def of self.model.configure_optimizers to check if there's an optional arg: megatron_parallel
         sig = inspect.signature(self.model.configure_optimizers)
@@ -232,15 +233,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         _optimizers_to_device(self.optimizers, self.root_device)
 
         self.model = self.megatron_parallel
-        self.model.trainer = trainer
 
         if hasattr(self.precision_plugin, "convert_module"):
             self.model = self.precision_plugin.convert_module(self.model)
         self.model.callbacks.add(getattr(trainer, "callbacks"))
-
-        if hasattr(self, "optimizers") and self.optimizers:
-            for optimizer in self.optimizers:
-                self.model.callbacks.add(optimizer)
 
         if self.data_sampler:
             self.model.callbacks.add(self.data_sampler)

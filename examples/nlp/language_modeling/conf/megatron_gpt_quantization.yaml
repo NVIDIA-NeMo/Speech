@@ -20,21 +20,26 @@ trainer:
   precision: bf16 # 16, 32, or bf16
   enable_checkpointing: false
 
+model:
+  tensor_model_parallel_size: 1
+  pipeline_model_parallel_size: 1
+  restore_from_path: llama2-7b-fp16.nemo # Nemo file path
+
+  ## Activation Checkpoint
+  activations_checkpoint_granularity: null # 'selective' or 'full'
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+
 quantization:
-  quantize_bmm1: false
-  algorithm: fp8 # int8_sq, fp8, int8, int4_awq, null
+  decoder_type: ${export.decoder_type} # gptnext, gpt2, llama
+  algorithm: fp8 # null, int8_sq, fp8, int4_awq
   calib_dataset: cnn_dailymail # wikitext, cnn_dailymail, or a local dataset
   num_calib_size: 512 # number of samples used for calibration
-  awq_block_size: 128 # block size for scaling factors in AWQ algorithm
-  alpha: 1.0 # alpha parameter in SmoothQuant algorithm
+  awq_block_size: 128 # block size for scaling factors (only used in AWQ algorithms)
+  sq_alpha: 1.0 # alpha parameter (only used in SmoothQuant algorithms)
 
 export:
   decoder_type: llama # gptnext, gpt2, llama
   inference_tensor_parallel: 1 # Default using 1 TP for inference
   inference_pipeline_parallel: 1 # Default using 1 PP for inference
-  dtype: bf16 # Default precision data type
-
-model_file: llama2-7b-fp16.nemo # Nemo file path
-model_save: llama2-7b-fp8.qnemo # Path where the quantized model will be saved
-tensor_model_parallel_size: 1
-pipeline_model_parallel_size: 1
+  dtype: ${trainer.precision} # Default precision data type
+  save_path: llama2-7b-${quantization.algorithm}.qnemo # Path where the quantized model will be saved

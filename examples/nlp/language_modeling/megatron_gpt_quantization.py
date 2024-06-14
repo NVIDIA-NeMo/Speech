@@ -15,9 +15,15 @@
 import torch
 import torch.multiprocessing as mp
 from datasets import load_dataset
+from omegaconf import OmegaConf
+from pytorch_lightning.trainer.trainer import Trainer
+from tqdm import tqdm
 
+from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
+from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.core.config import hydra_runner
 from nemo.export.quantize import Quantizer
+from nemo.utils.model_utils import load_config
 
 mp.set_start_method("spawn", force=True)
 
@@ -25,22 +31,22 @@ mp.set_start_method("spawn", force=True)
 Nemo quantization example script.
 
 Please consult nemo.export.quantize.Quantizer class
-and examples/nlp/language_modeling/conf/megatron_quantization.yaml config on available quantization methods,
+and examples/nlp/language_modeling/conf/megatron_gpt_quantization.yaml config on available quantization methods,
 models supported as well as how to set up data and inference for calibration (with defaults recommended).
 
 Example usage:
 ```
-python examples/nlp/language_modeling/megatron_quantization.py \
-    model_file=llama2-7b-fp16.nemo \
-    model_save=llama2-7b-fp8.qnemo \
+python examples/nlp/language_modeling/megatron_gpt_quantization.py \
+    model.restore_from_path=llama2-7b-fp16.nemo \
     quantization.algorithm=fp8 \
     export.decoder_type=llama \
     export.inference_tensor_parallel=1
+    export.save_path=llama2-7b-fp8.qnemo \
 ```
 """
 
 
-def get_calib_dataloader(data="cnn_dailymail", batch_size=64, calib_size=512, max_sequence_length=512):
+def get_calib_data_iter(data="cnn_dailymail", batch_size=64, calib_size=512, max_sequence_length=512):
     if data == "wikitext":
         dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
         text_column = "text"
@@ -59,31 +65,46 @@ def get_calib_dataloader(data="cnn_dailymail", batch_size=64, calib_size=512, ma
         yield batch
 
 
-@hydra_runner(config_path="conf", config_name="megatron_quantization")
+@hydra_runner(config_path="conf", config_name="megatron_gpt_quantization")
 def main(cfg) -> None:
     if not torch.cuda.is_available():
-        raise EnvironmentError("GPU is required for the inference.")
+        raise EnvironmentError("GPU is required for the quantization.")
 
-    quantizer = Quantizer(cfg.quantization, cfg.inference, cfg.export, cfg.trainer)
+    # Initialize quantizer
+    quantizer = Quantizer(cfg.quantization, cfg.export)
+
+    # Overwrite model config with the one from the model checkpoint and apply quantization modifications
+    model_cfg = load_config(cfg.model.restore_from_path)
+    model_cfg.update(cfg.model)
+    model_cfg = quantizer.modify_model_config(model_cfg)
+
+    trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
+    model = MegatronGPTModel.restore_from(
+        restore_path=cfg.model.restore_from_path, override_config_path=model_cfg, trainer=trainer
+    )
+    model.freeze()
 
     # Quantization algorithm can be set to None. This is useful for baseline precision
     # accuracy validation. In this case only weights export step will be performed:
     if cfg.quantization.algorithm is not None:
-        dataloader = get_calib_dataloader(
+        data_iter = get_calib_data_iter(
             cfg.quantization.calib_dataset,
             cfg.inference.batch_size,
             cfg.quantization.num_calib_size,
             cfg.inference.max_context_length,
         )
-        dataloader = [data for data in dataloader]
-    else:
-        dataloader = None
+        dataloader = [data for data in data_iter]
 
-    model = quantizer.quantize(
-        cfg.model_file, dataloader, cfg.tensor_model_parallel_size, cfg.pipeline_model_parallel_size
-    )
+        def forward_loop(model):
+            # NOTE: Alternatively you can also use `model.forward_bwd_step(data_iter, forward_only=True)`
+            # if your model is setup for training.
+            model.set_inference_config(OmegaConf.to_container(cfg.inference))
+            for i, batch in enumerate(tqdm(dataloader, desc="Calibrating")):
+                model.predict_step(batch, i)
 
-    quantizer.export(model, cfg.model_save)
+        model = quantizer.quantize(model, forward_loop)
+
+    quantizer.export(model)
 
 
 if __name__ == '__main__':

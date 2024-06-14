@@ -62,21 +62,21 @@ def gather_objects(partial_results_list, main_rank=None):
     """
     Collect objects (e.g., results) from all GPUs.
     Useful for inference over multiple GPUs with DDP.
-    
+
     Use main_rank to specify which rank will be used to gather results.
     This allows to continue execution on the main_rank only after the gather.
 
     Args:
         partial_results_list: list of partial results from each GPU
         main_rank: rank of the main process to collect results from all GPUs (useful for collecting results in a target rank)
-    
-    
+
+
     Example:
         predictions = gather_objects(predictions,main_rank=0)
         # all but rank 0 will return None
         if predictions is None:
             return
-        
+
         # from here only rank 0 should contiue
         pickle.dump(predictions, open(output_fname, "wb"))
     """
@@ -123,11 +123,13 @@ def temporary_directory():
     # We use barrier below to make sure that rank zero won't exit
     # and delete tmp_dir while other ranks may still use it
     dist.barrier()
+    if is_global_rank_zero():
+        tmp_dir[0].cleanup()
 
 
 def webdataset_split_by_workers(src):
     """
-    This is for latest webdataset>=0.2.6 
+    This is for latest webdataset>=0.2.6
     This function will make sure that each worker gets a different subset of the dataset.
     """
     # group = torch.distributed.group.WORLD

@@ -73,17 +73,17 @@ The script must be launched correctly with the number of processes equal to tens
 
 .. code-block:: bash
 
-    torchrun --nproc-per-node 8 examples/nlp/language_modeling/megatron_quantization.py \
-        model_file=llama2-70b-base-bf16.nemo \
-        tensor_model_parallel_size=8 \
-        pipeline_model_parallel_size=1 \
+    torchrun --nproc-per-node 8 examples/nlp/language_modeling/megatron_gpt_quantization.py \
+        model.restore_from_path=llama2-70b-base-bf16.nemo \
+        model.tensor_model_parallel_size=8 \
+        model.pipeline_model_parallel_size=1 \
         trainer.num_nodes=1 \
         trainer.devices=8 \
         trainer.precision=bf16 \
         quantization.algorithm=fp8 \
         export.decoder_type=llama \
         export.inference_tensor_parallel=2 \
-        model_save=llama2-70b-base-fp8-qnemo
+        export.save_path=llama2-70b-base-fp8-qnemo
 
 
 

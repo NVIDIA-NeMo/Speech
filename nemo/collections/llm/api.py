@@ -1,10 +1,11 @@
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import pytorch_lightning as pl
 
 from nemo.collections.llm.utils import task
-from nemo.lightning import MegatronStrategy, OptimizerModule, Trainer, io, teardown
+from nemo.lightning import AutoResume, MegatronStrategy, NeMoLogger, OptimizerModule, Trainer, io, teardown
+from nemo.lightning.resume import Resume
 
 
 @task(namespace="llm")
@@ -12,10 +13,11 @@ def train(
     model: pl.LightningModule,
     data: pl.LightningDataModule,
     trainer: Trainer,
+    log: NeMoLogger = NeMoLogger(),
+    resume: Optional[Union[AutoResume, Resume]] = AutoResume(),
     opt: Optional[OptimizerModule] = None,
     tokenizer: Optional[str] = None,
-    source: Optional[str] = None,
-    export: Optional[str] = None,
+    # TODO: Fix export export: Optional[str] = None,
 ) -> Path:
     """
     Trains a model using the specified data and trainer, with optional tokenizer, source, and export.
@@ -24,10 +26,11 @@ def train(
         model (pl.LightningModule): The model to be trained.
         data (pl.LightningDataModule): The data module containing training data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
+        log (NeMoLogger): A nemologger instance.
+        resume (Optional[Union[AutoResume, Resume]]): Resume training from a checkpoint.
         opt (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
             from the model will be used.
         tokenizer (Optional[str]): Tokenizer setting to be applied. Can be 'data' or 'model'.
-        source (Optional[str]): Path to a checkpoint from which to continue training.
         export (Optional[str]): Filename to save the exported checkpoint after training.
 
     Returns
@@ -49,32 +52,28 @@ def train(
     if not isinstance(trainer.strategy, MegatronStrategy):
         raise ValueError("Only MegatronStrategy is supported")
 
-    fit_kwargs = {}
-    run_dir = Path(trainer.logger.log_dir)
-    export_dir = run_dir / "export"
-
-    if hasattr(train, "__io__"):
-        _save_config_img(run_dir, train.__io__)
-
     if tokenizer:  # TODO: Improve this
         _use_tokenizer(model, data, tokenizer)
-    if source:
-        _add_ckpt_path(source, model, fit_kwargs)
 
+    app_state = log.setup(
+        trainer,
+        resume_if_exists=getattr(resume, "resume_if_exists", False),
+    )
+    if resume is not None:
+        resume.setup(model, trainer)
     if opt:
         opt.connect(model)
 
     trainer.fit(model, data, **fit_kwargs)
 
-    print(f"Saving checkpoint to: {export_dir}")
-    trainer.save_checkpoint(export_dir)
+    if hasattr(train, "__io__"):
+        _save_config_img(app_state.exp_dir, train.__io__)
 
-    if export and trainer.strategy.is_global_zero:
-        teardown(trainer, model=model)
-        print(f"Exporting checkpoint to: {export_dir / export}")
-        export_ckpt(export_dir, export)
+    trainer.fit(model, data)
 
-    return run_dir
+    log.teardown()
+
+    return app_state.exp_dir
 
 
 @task(namespace="llm")

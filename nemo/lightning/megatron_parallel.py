@@ -278,6 +278,12 @@ class MegatronParallel(nn.ModuleList):
         if loss_mean == []:
             loss_mean = None
 
+        ## TODO: is this where logging should go?
+        model = pipeline
+        if isinstance(pipeline, list):
+            model = pipeline[0]
+        pipeline.log('train_loss', loss_mean)
+
         return loss_mean
 
     def wrapped_forward_step(

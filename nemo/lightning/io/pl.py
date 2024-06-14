@@ -8,6 +8,7 @@ import torch
 from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from lightning_fabric.utilities.types import _PATH
+from megatron.core.dist_checkpointing.strategies import tensorstore
 from torch import nn
 from typing_extensions import Self, override
 
@@ -66,6 +67,13 @@ class MegatronCheckpointIO(CheckpointIO):
 
     """
 
+    def __init__(
+        self,
+        save_ckpt_format: str = 'zarr',
+    ):
+        self.save_ckpt_format = save_ckpt_format
+        self.save_sharded_strategy = self._determine_dist_ckpt_save_strategy()
+
     @override
     def save_checkpoint(self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None) -> None:
         """Save model/training states as a checkpoint file through state-dump and file-write.
@@ -95,7 +103,12 @@ class MegatronCheckpointIO(CheckpointIO):
             logging.info(f'Distributed checkpoint at path {checkpoint_dir} already exists, skipping saving')
             return
         fs.makedirs(checkpoint_dir, exist_ok=True)
-        dist_checkpointing.save(sharded_state_dict=checkpoint, checkpoint_dir=str(checkpoint_dir))
+
+        dist_checkpointing.save(
+            checkpoint,
+            checkpoint_dir=str(checkpoint_dir),
+            sharded_strategy=self.save_sharded_strategy,
+        )
 
     @override
     def load_checkpoint(
@@ -127,8 +140,6 @@ class MegatronCheckpointIO(CheckpointIO):
         if not fs.isdir(path):
             raise ValueError(f"Distributed checkpoints should be a directory. Found: {path}.")
 
-        # return pl_load(path, map_location=map_location)
-
         checkpoint = dist_checkpointing.load(sharded_state_dict=sharded_state_dict, checkpoint_dir=str(path))
         checkpoint = _fix_tensors_device(checkpoint)
 
@@ -146,6 +157,16 @@ class MegatronCheckpointIO(CheckpointIO):
         if fs.exists(path):
             fs.rm(path, recursive=True)
             log.debug(f"Removed checkpoint: {path}")
+
+    def _determine_dist_ckpt_save_strategy(self):
+        """Determine the saving strategy based on constructor args.
+        If self.async_save is True instantiates an async PyT Dist strategy,
+        otherwise relies on MCore to create a proper strategy based on ckpt format.
+        """
+        save_strategy = (self.save_ckpt_format, 1)
+
+        logging.info(f'Using {save_strategy} dist-ckpt save strategy.')
+        return save_strategy
 
 
 def _fix_tensors_device(ckpt: Dict) -> Dict:

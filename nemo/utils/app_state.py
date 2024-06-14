@@ -79,116 +79,122 @@ class AppState(metaclass=Singleton):
         self._model_restore_path = None
         self._all_model_restore_paths = []
         self._model_guid_map = {}  # type: Dict[str, ModelMetadataRegistry]
+        self._restore = False  # TODO: are this and _is_model_being_restored both needed?
+
+        # files to copy into log dir
+        self._files_to_copy = None
+        # command-ling arguments for run
+        self._cmd_args = None
 
     @property
     def device_id(self):
-        """ Property returns the device_id
-            Returns:
-                device_id
+        """Property returns the device_id
+        Returns:
+            device_id
         """
         return self._device_id
 
     @device_id.setter
     def device_id(self, id):
-        """ Property sets the device_id.
-            Args:
-                size (int): The device id. 
+        """Property sets the device_id.
+        Args:
+            size (int): The device id.
         """
         self._device_id = id
 
     @property
     def world_size(self):
-        """ Property returns the total number of GPUs.
-            Returns:
-                Total number of GPUs.
+        """Property returns the total number of GPUs.
+        Returns:
+            Total number of GPUs.
         """
         return self._world_size
 
     @world_size.setter
     def world_size(self, size):
-        """ Property sets the total number of GPUs.
-            Args:
-                size (int):  Total number of GPUs.
+        """Property sets the total number of GPUs.
+        Args:
+            size (int):  Total number of GPUs.
         """
         self._world_size = size
 
     @property
     def model_parallel_size(self):
-        """ Property returns the number of GPUs in each model parallel group.
-            Returns:
-                Number of GPUs in each model parallel group.
+        """Property returns the number of GPUs in each model parallel group.
+        Returns:
+            Number of GPUs in each model parallel group.
         """
         return self._model_parallel_size
 
     @model_parallel_size.setter
     def model_parallel_size(self, size):
-        """ Property sets the number of GPUs in each model parallel group.
-            Args:
-                size (int):  Number of GPUs in each model parallel group.
+        """Property sets the number of GPUs in each model parallel group.
+        Args:
+            size (int):  Number of GPUs in each model parallel group.
         """
         self._model_parallel_size = size
 
     @property
     def tensor_model_parallel_size(self):
-        """ Property returns the number of GPUs in each model parallel group.
-            Returns:
-                Number of GPUs in each model parallel group.
+        """Property returns the number of GPUs in each model parallel group.
+        Returns:
+            Number of GPUs in each model parallel group.
         """
         return self._tensor_model_parallel_size
 
     @tensor_model_parallel_size.setter
     def tensor_model_parallel_size(self, size):
-        """ Property sets the number of GPUs in each model parallel group.
-            Args:
-                size (int):  Number of GPUs in each model parallel group.
+        """Property sets the number of GPUs in each model parallel group.
+        Args:
+            size (int):  Number of GPUs in each model parallel group.
         """
         self._tensor_model_parallel_size = size
 
     @property
     def expert_model_parallel_rank(self):
-        """ Property returns the expert model parallel rank.
-            Returns:
-                Tensor model parallel rank.
+        """Property returns the expert model parallel rank.
+        Returns:
+            Tensor model parallel rank.
         """
         return self._expert_model_parallel_rank
 
     @expert_model_parallel_rank.setter
     def expert_model_parallel_rank(self, rank):
-        """ Property sets the expert model parallel rank.
-            Args:
-                rank (int):  Tensor model parallel rank.
+        """Property sets the expert model parallel rank.
+        Args:
+            rank (int):  Tensor model parallel rank.
         """
         self._expert_model_parallel_rank = rank
 
     @property
     def expert_model_parallel_size(self):
-        """ Property returns the number of GPUs in each expert parallel group.
-            Returns:
-                Number of GPUs in each expert parallel group.
+        """Property returns the number of GPUs in each expert parallel group.
+        Returns:
+            Number of GPUs in each expert parallel group.
         """
         return self._expert_model_parallel_size
 
     @expert_model_parallel_size.setter
     def expert_model_parallel_size(self, size):
-        """ Property sets the number of GPUs in each expert parallel group.
-            Args:
-                size (int):  Number of GPUs in each expert parallel group.
+        """Property sets the number of GPUs in each expert parallel group.
+        Args:
+            size (int):  Number of GPUs in each expert parallel group.
         """
         self._expert_model_parallel_size = size
 
     @property
     def pipeline_model_parallel_size(self):
-        """ Property returns the number of GPUs in each model parallel group.
-            Returns:
-                Number of GPUs in each model parallel group.
+        """Property returns the number of GPUs in each model parallel group.
+        Returns:
+            Number of GPUs in each model parallel group.
         """
         return self._pipeline_model_parallel_size
 
     @pipeline_model_parallel_size.setter
     def pipeline_model_parallel_size(self, size):
-        """ Property sets the number of GPUs in each model parallel group.
-            Args:
-                size (int):  Number of GPUs in each model parallel group.
+        """Property sets the number of GPUs in each model parallel group.
+        Args:
+            size (int):  Number of GPUs in each model parallel group.
         """
         self._pipeline_model_parallel_size = size
 
@@ -202,264 +208,263 @@ class AppState(metaclass=Singleton):
 
     @property
     def virtual_pipeline_model_parallel_size(self):
-        """ Property returns the number of GPUs in each model parallel group.
-            Returns:
-                Number of GPUs in each model parallel group.
+        """Property returns the number of GPUs in each model parallel group.
+        Returns:
+            Number of GPUs in each model parallel group.
         """
         return self._virtual_pipeline_model_parallel_size
 
     @virtual_pipeline_model_parallel_size.setter
     def virtual_pipeline_model_parallel_size(self, size):
-        """ Property sets the size of the virtual pipeline parallel model.
-            Args:
-                size (int):  Number of modules in each pipeline parallel model.
+        """Property sets the size of the virtual pipeline parallel model.
+        Args:
+            size (int):  Number of modules in each pipeline parallel model.
         """
         self._virtual_pipeline_model_parallel_size = size
 
     @property
     def data_parallel_size(self):
-        """ Property returns the number of GPUs in each data parallel group.
-            Returns:
-                Number of GPUs in each data parallel group.
+        """Property returns the number of GPUs in each data parallel group.
+        Returns:
+            Number of GPUs in each data parallel group.
         """
         return self._data_parallel_size
 
     @data_parallel_size.setter
     def data_parallel_size(self, size):
-        """ Property sets the number of GPUs in each data parallel group.
-            Args:
-                size (int):  Number of GPUs in each data parallel group.
+        """Property sets the number of GPUs in each data parallel group.
+        Args:
+            size (int):  Number of GPUs in each data parallel group.
         """
         self._data_parallel_size = size
 
     @property
     def local_rank(self):
-        """ Property returns the local rank.
-            Returns:
-                Local rank.
+        """Property returns the local rank.
+        Returns:
+            Local rank.
         """
         return self._local_rank
 
     @local_rank.setter
     def local_rank(self, rank):
-        """ Property sets the local rank.
-            Args:
-                rank (int):  Local rank.
+        """Property sets the local rank.
+        Args:
+            rank (int):  Local rank.
         """
         self._local_rank = rank
 
     @property
     def global_rank(self):
-        """ Property returns the global rank.
-            Returns:
-                Global rank.
+        """Property returns the global rank.
+        Returns:
+            Global rank.
         """
         return self._global_rank
 
     @global_rank.setter
     def global_rank(self, rank):
-        """ Property sets the global rank.
-            Args:
-                rank (int):  Global rank.
+        """Property sets the global rank.
+        Args:
+            rank (int):  Global rank.
         """
         self._global_rank = rank
 
     @property
     def tensor_model_parallel_rank(self):
-        """ Property returns the tensor model parallel rank.
-            Returns:
-                Tensor model parallel rank.
+        """Property returns the tensor model parallel rank.
+        Returns:
+            Tensor model parallel rank.
         """
         return self._tensor_model_parallel_rank
 
     @tensor_model_parallel_rank.setter
     def tensor_model_parallel_rank(self, rank):
-        """ Property sets the tensor model parallel rank.
-            Args:
-                rank (int):  Tensor model parallel rank.
+        """Property sets the tensor model parallel rank.
+        Args:
+            rank (int):  Tensor model parallel rank.
         """
         self._tensor_model_parallel_rank = rank
 
     @property
     def tensor_model_parallel_group(self):
-        """ Property returns the tensor model parallel group.
-            Returns:
-                Tensor model parallel group.
+        """Property returns the tensor model parallel group.
+        Returns:
+            Tensor model parallel group.
         """
         return self._tensor_model_parallel_group
 
     @tensor_model_parallel_group.setter
     def tensor_model_parallel_group(self, group):
-        """ Property sets the tensor model parallel group.
-            Args:
-                group:  Tensor model parallel group.
+        """Property sets the tensor model parallel group.
+        Args:
+            group:  Tensor model parallel group.
         """
         self._tensor_model_parallel_group = group
 
     @property
     def pipeline_model_parallel_rank(self):
-        """ Property returns the pipeline model parallel rank.
-            Returns:
-                Pipeline model parallel rank.
+        """Property returns the pipeline model parallel rank.
+        Returns:
+            Pipeline model parallel rank.
         """
         return self._pipeline_model_parallel_rank
 
     @pipeline_model_parallel_rank.setter
     def pipeline_model_parallel_rank(self, rank):
-        """ Property sets the pipeline model parallel rank.
-            Args:
-                rank (int):  Pipeline model parallel rank.
+        """Property sets the pipeline model parallel rank.
+        Args:
+            rank (int):  Pipeline model parallel rank.
         """
         self._pipeline_model_parallel_rank = rank
 
     @property
     def virtual_pipeline_model_parallel_rank(self):
-        """ Property returns the virtual pipeline parallel rank.
-            Returns:
-                Model parallel rank.
+        """Property returns the virtual pipeline parallel rank.
+        Returns:
+            Model parallel rank.
         """
         return self._virtual_pipeline_model_parallel_rank
 
     @virtual_pipeline_model_parallel_rank.setter
     def virtual_pipeline_model_parallel_rank(self, rank):
-        """ Property sets the virtual pipeline parallel rank.
-            Args:
-                rank (int):  Virtual pipeline parallel rank.
+        """Property sets the virtual pipeline parallel rank.
+        Args:
+            rank (int):  Virtual pipeline parallel rank.
         """
         self._virtual_pipeline_model_parallel_rank = rank
 
     @property
     def pipeline_model_parallel_split_rank(self):
-        """ Property returns the rank at which Encoder and Decoder are split into different pipelines for Megatrron Encoder-Decoder models.
-            Returns:
-                Pipeline model parallel split rank.
+        """Property returns the rank at which Encoder and Decoder are split into different pipelines for Megatrron Encoder-Decoder models.
+        Returns:
+            Pipeline model parallel split rank.
         """
         return self._pipeline_model_parallel_split_rank
 
     @pipeline_model_parallel_split_rank.setter
     def pipeline_model_parallel_split_rank(self, rank):
-        """ Property sets the rank at which Encoder and Decoder are split into different pipelines for Megatrron Encoder-Decoder models.
-            Args:
-                rank (int): Model parallel split rank.
+        """Property sets the rank at which Encoder and Decoder are split into different pipelines for Megatrron Encoder-Decoder models.
+        Args:
+            rank (int): Model parallel split rank.
         """
         self._pipeline_model_parallel_split_rank = rank
 
     @property
     def pipeline_model_parallel_group(self):
-        """ Property returns the pipeline model parallel group.
-            Returns:
-                Pipeline model parallel group.
+        """Property returns the pipeline model parallel group.
+        Returns:
+            Pipeline model parallel group.
         """
         return self._pipeline_model_parallel_group
 
     @pipeline_model_parallel_group.setter
     def pipeline_model_parallel_group(self, group):
-        """ Property sets the pipeline model parallel group.
-            Args:
-                group:  Pipeline model parallel group.
+        """Property sets the pipeline model parallel group.
+        Args:
+            group:  Pipeline model parallel group.
         """
         self._pipeline_model_parallel_group = group
 
     @property
     def data_parallel_rank(self):
-        """ Property returns the data parallel rank.
-            Returns:
-                Data parallel rank.
+        """Property returns the data parallel rank.
+        Returns:
+            Data parallel rank.
         """
         return self._data_parallel_rank
 
     @data_parallel_rank.setter
     def data_parallel_rank(self, rank):
-        """ Property sets the data parallel rank.
-            Args:
-                rank (int):  Data parallel rank.
+        """Property sets the data parallel rank.
+        Args:
+            rank (int):  Data parallel rank.
         """
         self._data_parallel_rank = rank
 
     @property
     def data_parallel_group(self):
-        """ Property returns the data parallel group.
-            Returns:
-                Data parallel group.
+        """Property returns the data parallel group.
+        Returns:
+            Data parallel group.
         """
         return self._data_parallel_group
 
     @data_parallel_group.setter
     def data_parallel_group(self, group):
-        """ Property sets the data parallel group.
-            Args:
-                group:  Data parallel group.
+        """Property sets the data parallel group.
+        Args:
+            group:  Data parallel group.
         """
         self._data_parallel_group = group
 
     @property
     def use_fp8(self):
-        """ Property returns the use of fp8 precision.
-            Returns:
-                Use of FP8.
+        """Property returns the use of fp8 precision.
+        Returns:
+            Use of FP8.
         """
         return self._use_fp8
 
     @use_fp8.setter
     def use_fp8(self, use_fp8):
-        """ Property sets the use of fp8 precision.
-            Args:
-                use_fp8:  Use of FP8.
+        """Property sets the use of fp8 precision.
+        Args:
+            use_fp8:  Use of FP8.
         """
         self._use_fp8 = use_fp8
 
     @property
     def context_parallel_size(self):
-        """ Property returns the number of GPUs in each context parallel group.
-            Returns:
-                Number of GPUs in each context parallel group.
+        """Property returns the number of GPUs in each context parallel group.
+        Returns:
+            Number of GPUs in each context parallel group.
         """
         return self._context_parallel_size
 
     @context_parallel_size.setter
     def context_parallel_size(self, size):
-        """ Property sets the number of GPUs in each context parallel group.
-            Args:
-                size (int):  Number of GPUs in each context parallel group.
+        """Property sets the number of GPUs in each context parallel group.
+        Args:
+            size (int):  Number of GPUs in each context parallel group.
         """
         self._context_parallel_size = size
 
     @property
     def init_mpi_proc_group(self):
-        """ Property sets the initialization of mpi process group.
-            Returns:
-                Initialize mpi process group.
+        """Property sets the initialization of mpi process group.
+        Returns:
+            Initialize mpi process group.
         """
         return self._init_mpi_proc_group
 
     @init_mpi_proc_group.setter
     def init_mpi_proc_group(self, init_mpi_proc_group):
-        """ Property sets the initialization of mpi process group.
-            Args:
-                init_mpi_proc_group:  Initialize mpi process group.
+        """Property sets the initialization of mpi process group.
+        Args:
+            init_mpi_proc_group:  Initialize mpi process group.
         """
         self._init_mpi_proc_group = init_mpi_proc_group
 
     @property
     def random_seed(self):
-        """ Property returns the random seed.
-            Returns:
-                Random seed.
+        """Property returns the random seed.
+        Returns:
+            Random seed.
         """
         return self._random_seed
 
     @random_seed.setter
     def random_seed(self, seed):
-        """ Property sets the random seed.
-            Args:
-                seed (int):  Random seed.
+        """Property sets the random seed.
+        Args:
+            seed (int):  Random seed.
         """
         self._random_seed = seed
 
     @property
     def log_dir(self):
-        """Returns the log_dir set by exp_manager.
-        """
+        """Returns the log_dir set by exp_manager."""
         return self._log_dir
 
     @log_dir.setter
@@ -473,8 +478,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def exp_dir(self):
-        """Returns the exp_dir set by exp_manager.
-        """
+        """Returns the exp_dir set by exp_manager."""
         return self._exp_dir
 
     @exp_dir.setter
@@ -488,8 +492,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def name(self):
-        """Returns the name set by exp_manager.
-        """
+        """Returns the name set by exp_manager."""
         return self._name
 
     @name.setter
@@ -503,8 +506,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def checkpoint_name(self):
-        """Returns the name set by exp_manager.
-        """
+        """Returns the name set by exp_manager."""
         return self._checkpoint_name
 
     @checkpoint_name.setter
@@ -518,8 +520,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def version(self):
-        """Returns the version set by exp_manager.
-        """
+        """Returns the version set by exp_manager."""
         return self._version
 
     @version.setter
@@ -533,8 +534,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def create_checkpoint_callback(self):
-        """Returns the create_checkpoint_callback set by exp_manager.
-        """
+        """Returns the create_checkpoint_callback set by exp_manager."""
         return self._create_checkpoint_callback
 
     @create_checkpoint_callback.setter
@@ -548,8 +548,7 @@ class AppState(metaclass=Singleton):
 
     @property
     def checkpoint_callback_params(self):
-        """Returns the version set by exp_manager.
-        """
+        """Returns the version set by exp_manager."""
         return self._checkpoint_callback_params
 
     @checkpoint_callback_params.setter
@@ -560,6 +559,35 @@ class AppState(metaclass=Singleton):
             params (dict): checkpoint_callback_params set by exp_manager.
         """
         self._checkpoint_callback_params = params
+
+    @property
+    def files_to_copy(self):
+        """Returns the list of files to copy into the log dir."""
+        return self._files_to_copy
+
+    @files_to_copy.setter
+    def files_to_copy(self, files):
+        """Sets the files_to_copy property.
+
+        Args:
+            files (list[str]): list of filenames to copy.
+        """
+        self._files_to_copy = files
+
+    @property
+    def cmd_args(self):
+        """Returns the command line arguments for the current run."""
+        return self._cmd_args
+
+    @cmd_args.setter
+    def cmd_args(self, args):
+        """Sets the cmd_args property.
+
+        Args:
+            args (list[str]): list of the command line arguments
+                used to run the experiment.
+        """
+        self._cmd_args = args
 
     @property
     def model_restore_path(self):
@@ -606,3 +634,11 @@ class AppState(metaclass=Singleton):
     @nemo_file_folder.setter
     def nemo_file_folder(self, path: str):
         self._nemo_file_folder = path
+
+    @property
+    def restore(self) -> bool:
+        return self._restore
+
+    @restore.setter
+    def restore(self, restore: bool):
+        self._restore = restore

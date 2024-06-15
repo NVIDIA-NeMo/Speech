@@ -182,14 +182,20 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         super().load_state_dict(state_dict)
         self._remove_invalid_entries_from_topk()
 
-    def setup(self, *args, **kwargs) -> None:
+    def setup(self, trainer, pl_module, stage: str) -> None:
         if is_global_rank_zero():
             logging.debug("Removing unfinished checkpoints if any...")
             NeMoModelCheckpoint._remove_unfinished_checkpoints(self.dirpath)
         # Ensure that all ranks continue with unfinished checkpoints removed
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
-        super().setup(*args, **kwargs)
+        super().setup(trainer, pl_module, stage)
+        # When using S3 checkpointing, only Rank 0 has the checkpoint and model path set in exp_manager.
+        # Sync the values across all ranks to ensure consistency.
+        path = trainer.strategy.broadcast(trainer.ckpt_path)
+        trainer.ckpt_path = path
+
+        self.last_model_path = trainer.strategy.broadcast(self.last_model_path)
 
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         output = super().on_save_checkpoint(trainer, pl_module, checkpoint)

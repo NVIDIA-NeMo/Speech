@@ -11,3 +11,4 @@ The common collection contains things that could be used across all collections.
    metrics
    tokenizers
    data
+   s3_checkpointing

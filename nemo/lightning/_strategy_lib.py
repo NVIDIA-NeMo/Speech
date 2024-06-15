@@ -16,12 +16,16 @@ if TYPE_CHECKING:
 
 
 class SharedStateDictProtocol(Protocol):
-    def sharded_state_dict(self, prefix=""):
-        ...
+    def sharded_state_dict(self, prefix=""): ...
 
 
 def init_parallel_ranks(
-    world_size: int, global_rank: int, local_rank: int, parallel_config: "ModelParallelConfig", seed=1234, fp8=False,
+    world_size: int,
+    global_rank: int,
+    local_rank: int,
+    parallel_config: "ModelParallelConfig",
+    seed=1234,
+    fp8=False,
 ) -> None:
     """
     Initializes the parallel ranks for distributed training.
@@ -161,7 +165,7 @@ class GradScaler(torch.cuda.amp.GradScaler):
 
     def __init__(
         self,
-        init_scale=2.0 ** 16,
+        init_scale=2.0**16,
         growth_factor=2.0,
         backoff_factor=0.5,
         growth_interval=2000,
@@ -193,7 +197,9 @@ class GradScaler(torch.cuda.amp.GradScaler):
 
         # Update across all model parallel instances.
         torch.distributed.all_reduce(
-            found_inf, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group(),
+            found_inf,
+            op=torch.distributed.ReduceOp.MAX,
+            group=parallel_state.get_model_parallel_group(),
         )
 
         if found_inf.item() == 0:
@@ -244,7 +250,9 @@ class GradScaler(torch.cuda.amp.GradScaler):
 
             # Update across all model parallel instances.
             torch.distributed.all_reduce(
-                found_inf_combined, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group(),
+                found_inf_combined,
+                op=torch.distributed.ReduceOp.MAX,
+                group=parallel_state.get_model_parallel_group(),
             )
 
             if len(found_infs) > 1:
@@ -252,7 +260,9 @@ class GradScaler(torch.cuda.amp.GradScaler):
                     found_inf = found_infs[i]
                     # Update across all model parallel instances.
                     torch.distributed.all_reduce(
-                        found_inf, op=torch.distributed.ReduceOp.MAX, group=parallel_state.get_model_parallel_group(),
+                        found_inf,
+                        op=torch.distributed.ReduceOp.MAX,
+                        group=parallel_state.get_model_parallel_group(),
                     )
                     found_inf_combined += found_inf
 
@@ -428,7 +438,8 @@ def optimizer_sharded_state_dict(model: SharedStateDictProtocol, optimizer: "Opt
             for param_id, fp32_param in zip(state_group["params"], fp32_group)
         ]
         for fp32_group, state_group in zip(
-            optimizer_state_dict["fp32_from_fp16_params"], optimizer_state_dict["optimizer"]["param_groups"],
+            optimizer_state_dict["fp32_from_fp16_params"],
+            optimizer_state_dict["optimizer"]["param_groups"],
         )
     ]
 

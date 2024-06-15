@@ -35,6 +35,8 @@ from pytorch_lightning.callbacks.timer import Interval, Timer
 from pytorch_lightning.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
 from pytorch_lightning.loops import _TrainingEpochLoop
 from pytorch_lightning.strategies.ddp import DDPStrategy
+from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
+
 
 from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
@@ -606,55 +608,93 @@ def check_resume(
     if not log_dir:
         raise ValueError(f"Resuming requires the log_dir {log_dir} to be passed to exp_manager")
 
+    # is_s3_url from here has no dependency requirements
+    from nemo.utils.s3_dirpath_utils import is_s3_url
+
+    try:
+        # when using an s3 dirpath, we rely on optional dependencies in the S3Utils class.
+        if dirpath is not None and is_s3_url(dirpath):
+            from nemo.utils.s3_utils import S3Utils
+    except ImportError as err:
+        return False, "Detected S3 dirpath while missing required dependencies.\n{}\n".format(
+            err.output.decode("utf-8")
+        )
+
     checkpoint = None
     if resume_from_checkpoint:
         checkpoint = resume_from_checkpoint
     if resume_if_exists:
-        # Use <log_dir>/checkpoints/ unless `dirpath` is set
-        checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
+        '''
+        attach valid checkpoint path to trainer if current rank is rank zero of any data parallel groups
+        this limit to only global rank 0 process calling s3, instead of all processes calling s3
+        '''
 
-        # when using distributed checkpointing, checkpoint_dir is a directory of directories
-        # we check for this here
-        dist_checkpoints = [d for d in list(checkpoint_dir.glob("*")) if d.is_dir()]
-        end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
-        last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
+        # If we are using S3 checkpointing, we want check_resume to only execute on a single rank to avoid throttling S3.
+        if is_global_rank_zero() or not is_s3_url(dirpath):
+            checkpoint_dir_exists = False
+            if is_s3_url(dirpath):
+                checkpoint_dir = dirpath
+                checkpoint_dir_exists = S3Utils.s3_path_exists(checkpoint_dir, match_directory=True)
 
-        end_checkpoints = end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.rglob("*end.ckpt"))
-        end_checkpoints = _filter_out_unfinished_checkpoints(end_checkpoints)
-        last_checkpoints = last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.rglob("*last.ckpt"))
-        last_checkpoints = _filter_out_unfinished_checkpoints(last_checkpoints)
+                if checkpoint_dir_exists:
+                    # max number of last.ckpt files: save_last_k_checkpoints * tp * pp = 5*8*40. If optim states is saved distributedly, multiply by dp_size
+                    all_keys = S3Utils.find_files_with_suffix(checkpoint_dir, suffix=None, return_key_only=False)
+                    end_checkpoints = [k for k in all_keys if k.endswith('end.ckpt')]
+                    last_checkpoints = [k for k in all_keys if k.endswith('last.ckpt')]
+                else:
+                    end_checkpoints = []
+                    last_checkpoints = []
+            else:  # default non-s3 implementation
+                # Use <log_dir>/checkpoints/ unless `dirpath` is set
+                checkpoint_dir = Path(dirpath) if dirpath else Path(Path(log_dir) / "checkpoints")
+                checkpoint_dir_exists = checkpoint_dir.exists()
 
-        if not checkpoint_dir.exists() or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
-            if resume_ignore_no_checkpoint:
-                warn = f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. "
-                if checkpoint is None:
-                    warn += "Training from scratch."
-                elif checkpoint == resume_from_checkpoint:
-                    warn += f"Training from {resume_from_checkpoint}."
-                logging.warning(warn)
-            else:
-                raise NotFoundError(
-                    f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. Cannot resume."
+                # when using distributed checkpointing, checkpoint_dir is a directory of directories
+                # we check for this here
+                dist_checkpoints = [d for d in list(checkpoint_dir.glob("*")) if d.is_dir()]
+                end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
+                last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
+
+                end_checkpoints = (
+                    end_dist_checkpoints if end_dist_checkpoints else list(checkpoint_dir.rglob("*end.ckpt"))
                 )
-        elif len(end_checkpoints) > 0:
-            if resume_past_end:
-                if len(end_checkpoints) > 1:
-                    if 'mp_rank' in str(end_checkpoints[0]):
-                        checkpoint = end_checkpoints[0]
-                    else:
-                        raise ValueError(f"Multiple checkpoints {end_checkpoints} that matches *end.ckpt.")
-            else:
-                raise ValueError(
-                    f"Found {end_checkpoints[0]} indicating that the last training run has already completed."
+                end_checkpoints = _filter_out_unfinished_checkpoints(end_checkpoints)
+                last_checkpoints = (
+                    last_dist_checkpoints if last_dist_checkpoints else list(checkpoint_dir.rglob("*last.ckpt"))
                 )
-        elif len(last_checkpoints) > 1:
-            if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
+                last_checkpoints = _filter_out_unfinished_checkpoints(last_checkpoints)
+
+            if not checkpoint_dir_exists or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
+                if resume_ignore_no_checkpoint:
+                    warn = f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. "
+                    if checkpoint is None:
+                        warn += "Training from scratch."
+                    elif checkpoint == resume_from_checkpoint:
+                        warn += f"Training from {resume_from_checkpoint}."
+                    logging.warning(warn)
+                else:
+                    raise NotFoundError(
+                        f"There were no checkpoints found in checkpoint_dir or no checkpoint folder at checkpoint_dir :{checkpoint_dir}. Cannot resume."
+                    )
+            elif len(end_checkpoints) > 0:
+                if resume_past_end:
+                    if len(end_checkpoints) > 1:
+                        if 'mp_rank' in str(end_checkpoints[0]):
+                            checkpoint = end_checkpoints[0]
+                        else:
+                            raise ValueError(f"Multiple checkpoints {end_checkpoints} that matches *end.ckpt.")
+                else:
+                    raise ValueError(
+                        f"Found {end_checkpoints[0]} indicating that the last training run has already completed."
+                    )
+            elif len(last_checkpoints) > 1:
+                if any([s for s in ['mp_rank', 'tp_rank', 'fsdp_shard'] if s in str(last_checkpoints[0])]):
+                    checkpoint = last_checkpoints[0]
+                    checkpoint = uninject_model_parallel_rank(checkpoint)
+                else:
+                    raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
+            else:
                 checkpoint = last_checkpoints[0]
-                checkpoint = uninject_model_parallel_rank(checkpoint)
-            else:
-                raise ValueError(f"Multiple checkpoints {last_checkpoints} that matches *last.ckpt.")
-        else:
-            checkpoint = last_checkpoints[0]
 
     # PTL 2.0 supports ckpt_path instead of resume_from_checkpoint as the trainer flag
     if checkpoint is not None:
@@ -912,6 +952,24 @@ def configure_loggers(
         logging.info("NeptuneLogger has been set up")
 
     trainer._logger_connector.configure_logger(logger_list)
+
+
+class NeMoCheckpointConnector(_CheckpointConnector):
+    """
+    Wrapper around Lightning's _CheckpointConnector to use broadcasted checkpoint path in
+    distributed training settings to pre-load checkpoint.
+    """
+
+    def resume_start(self, checkpoint_path=None) -> None:
+        checkpoint_path = self.trainer.ckpt_path
+        if checkpoint_path is not None:
+            logging.info(f'Resuming from checkpoint {checkpoint_path}, rank {torch.distributed.get_rank()}')
+        start_time = time.perf_counter()
+        super().resume_start(checkpoint_path)
+        if checkpoint_path is not None:
+            logging.info(
+                f'Time elapsed loading checkpoint/optimizer states: {(time.perf_counter() - start_time):.2f} seconds, rank {torch.distributed.get_rank()}'
+            )
 
 
 def configure_checkpointing(

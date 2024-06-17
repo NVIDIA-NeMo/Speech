@@ -24,13 +24,13 @@ from nemo.utils.get_rank import is_global_rank_zero
 
 
 try:
-    import ammo.torch.quantization as atq
+    import modelopt.torch.quantization as mtq
 
-    HAVE_AMMO = True
+    HAVE_MODELOPT = True
 
 except (ImportError, ModuleNotFoundError):
 
-    HAVE_AMMO = False
+    HAVE_MODELOPT = False
 
 if not torch.cuda.is_available():
     raise EnvironmentError("GPU is needed for the inference")
@@ -41,7 +41,9 @@ class RequestDataSet(Dataset):
         super().__init__()
         self.sentences = sentences
 
-    def __len__(self,):
+    def __len__(
+        self,
+    ):
         return len(self.sentences)
 
     def __getitem__(self, idx):
@@ -99,14 +101,14 @@ def main(cfg) -> None:
     )
 
     # =================== Start Quantization ====================
-    if HAVE_AMMO and cfg.quantization.enable == True:
+    if HAVE_MODELOPT and cfg.quantization.enable == True:
         print(f"Using quantization algorithm: {cfg.quantization.algorithm}")
         if cfg.quantization.algorithm == "int8_sq":
-            atq_config = atq.INT8_SMOOTHQUANT_CFG
+            mtq_config = mtq.INT8_SMOOTHQUANT_CFG
         elif cfg.quantization.algorithm == "fp8":
-            atq_config = atq.FP8_DEFAULT_CFG
+            mtq_config = mtq.FP8_DEFAULT_CFG
         elif cfg.quantization.algorithm == "awq":
-            atq_config = atq.INT4_AWQ_CFG
+            mtq_config = mtq.INT4_AWQ_CFG
         else:
             raise ValueError(f"Unsupported quantization algorithm: {cfg.quantization.algorithm}")
 
@@ -118,7 +120,7 @@ def main(cfg) -> None:
                 inference_config=cfg,
             )
 
-        atq.quantize(model, atq_config, forward_loop)
+        mtq.quantize(model, mtq_config, forward_loop)
 
         responses = model.generate(
             input_prompts=final_prompts,

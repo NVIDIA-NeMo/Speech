@@ -14,7 +14,7 @@
 
 import re
 import torch
-from ammo.torch.quantization.nn import QuantLinear, QuantLinearConvBase
+from modelopt.torch.quantization.nn import QuantLinear, QuantLinearConvBase
 
 from nemo.collections.multimodal.modules.stable_diffusion.attention import LinearWrapper
 from .plugin_calib import PercentileCalibrator
@@ -110,7 +110,7 @@ def get_int8_config(model, quant_level=3, alpha=0.8, percentile=1.0, num_inferen
 def quantize_lvl(unet, quant_level=2.5):
     """
     We should disable the unwanted quantizer when exporting the onnx
-    Because in the current ammo setting, it will load the quantizer amax for all the layers even
+    Because in the current ModelOpt setting, it will load the quantizer amax for all the layers even
     if we didn't add that unwanted layer into the config during the calibration
     """
     for name, module in unet.named_modules():

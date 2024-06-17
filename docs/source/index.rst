@@ -12,7 +12,7 @@ NVIDIA NeMo Framework is an end-to-end, cloud-native framework designed to build
 - Flash Attention
 - Activation Recomputation
 - Positional Embeddings and Positional Interpolation
-- Post-Training Quantization (PTQ) with Ammo
+- Post-Training Quantization (PTQ) with ModelOpt
 - Sequence Packing
 
 `NVIDIA NeMo Framework <https://github.com/NVIDIA/NeMo>`_ has separate collections for:

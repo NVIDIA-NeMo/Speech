@@ -14,8 +14,8 @@
 
 import torch
 
-from ammo.torch.quantization import utils as quant_utils
-from ammo.torch.quantization.calib.max import MaxCalibrator
+from modelopt.torch.quantization import utils as quant_utils
+from modelopt.torch.quantization.calib.max import MaxCalibrator
 
 
 class PercentileCalibrator(MaxCalibrator):

@@ -1,11 +1,11 @@
 Stable Diffusion XL Int8 Quantization
 =======================================
 
-This example shows how to use Ammo to calibrate and quantize the UNet part of the SDXL. The UNet part typically consumes
+This example shows how to use ModelOpt to calibrate and quantize the UNet part of the SDXL. The UNet part typically consumes
 >95% of the e2e Stable Diffusion latency.
 
 We also provide instructions on deploying and running E2E SDXL pipeline
-with Ammo quantized int8 UNet to generate images and measure latency on target GPUs.
+with ModelOpt quantized int8 UNet to generate images and measure latency on target GPUs.
 
 To get started, it is required to have a pretrained SDXL checkpoint in ``nemo`` format. The example training configs are provided in NeMo,
 which is located in ``NeMo/examples/multimodal/text2img/stable_diffusion``.
@@ -104,15 +104,15 @@ GPU: H100
 TRT int8 vs Framework fp16
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-+---------------------+------------+-------------+----------------+------------+---------+------------+
-| Pipeline            | Batch Size | Latency (ms)| Pipeline       | Batch Size | Latency | Speedup    |
-+=====================+============+=============+================+============+=========+============+
-| Framework fp16 base | 1          | 3056.01     | Ammo TRT Int8  | 1          | 1406.68 | 2.172498365|
-+---------------------+------------+-------------+----------------+------------+---------+------------+
-| Framework fp16 base | 2          | 4832.24     | Ammo TRT Int8  | 2          | 2403.29 | 2.01067703 |
-+---------------------+------------+-------------+----------------+------------+---------+------------+
-| Framework fp16 base | 4          | 8433.71     | Ammo TRT Int8  | 4          | 4252.6  | 1.983189108|
-+---------------------+------------+-------------+----------------+------------+---------+------------+
++---------------------+------------+-------------+--------------------+------------+---------+------------+
+| Pipeline            | Batch Size | Latency (ms)| Pipeline           | Batch Size | Latency | Speedup    |
++=====================+============+=============+====================+============+=========+============+
+| Framework fp16 base | 1          | 3056.01     | ModelOpt TRT Int8  | 1          | 1406.68 | 2.172498365|
++---------------------+------------+-------------+--------------------+------------+---------+------------+
+| Framework fp16 base | 2          | 4832.24     | ModelOpt TRT Int8  | 2          | 2403.29 | 2.01067703 |
++---------------------+------------+-------------+--------------------+------------+---------+------------+
+| Framework fp16 base | 4          | 8433.71     | ModelOpt TRT Int8  | 4          | 4252.6  | 1.983189108|
++---------------------+------------+-------------+--------------------+------------+---------+------------+
 
 
 
@@ -120,15 +120,15 @@ TRT int8 vs TRT fp16
 ^^^^^^^^^^^^^^^^^^^^^^^
 
 
-+-------------+------------+--------------+-----------+------------+------------+-------------+
-| Pipeline    | Batch Size | Latency (ms) | Precision | Batch Size | Latency    | Speedup     |
-+=============+============+==============+===========+============+============+=============+
-| fp16 base   | 1          | 1723.97      | Ammo Int8 | 1          | 1406.68    | 1.225559473 |
-+-------------+------------+--------------+-----------+------------+------------+-------------+
-| fp16 base   | 2          | 3004.47      | Ammo Int8 | 2          | 2403.29    | 1.250148754 |
-+-------------+------------+--------------+-----------+------------+------------+-------------+
-| fp16 base   | 4          | 5657.19      | Ammo Int8 | 4          | 4252.6     | 1.330289705 |
-+-------------+------------+--------------+-----------+------------+------------+-------------+
++-------------+------------+--------------+---------------+------------+------------+-------------+
+| Pipeline    | Batch Size | Latency (ms) | Precision     | Batch Size | Latency    | Speedup     |
++=============+============+==============+===============+============+============+=============+
+| fp16 base   | 1          | 1723.97      | ModelOpt Int8 | 1          | 1406.68    | 1.225559473 |
++-------------+------------+--------------+---------------+------------+------------+-------------+
+| fp16 base   | 2          | 3004.47      | ModelOpt Int8 | 2          | 2403.29    | 1.250148754 |
++-------------+------------+--------------+---------------+------------+------------+-------------+
+| fp16 base   | 4          | 5657.19      | ModelOpt Int8 | 4          | 4252.6     | 1.330289705 |
++-------------+------------+--------------+---------------+------------+------------+-------------+
 
 
 FP16 inference vs Int8 inference

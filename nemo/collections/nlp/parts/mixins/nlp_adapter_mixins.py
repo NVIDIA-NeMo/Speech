@@ -109,11 +109,11 @@ class NLPAdapterModelMixin:
         """
         Returns all the keys in the model
         """
-        k = [n for n, p in self._unwrap_model().named_parameters()]
+        k = [n for n, p in self._unwrap_model().named_parameters(prefix="model")]
         b = [
             n
-            for n, p in self._unwrap_model().named_buffers()
-            if n.replace("model.module.", "model.", 1) in self._unwrap_model().state_dict().keys()
+            for n, p in self._unwrap_model().named_buffers(prefix="model")
+            if n.replace("model.module.", "model.", 1) in self._unwrap_model().state_dict(prefix="model.").keys()
         ]
         # we include buffers because ptuning representations are cached in a buffer and saved to state_dict for inference time use.
         return set(k + b)
@@ -292,13 +292,13 @@ class NLPAdapterModelMixin:
             self.freeze(training=True)  # Freeze the entire model
             if not self.ptuning_only_and_non_first_stage:
                 opt_params = []
-                for _, module in self._unwrap_model().named_modules():
+                for _, module in self._unwrap_model().named_modules(prefix="model"):
                     if isinstance(module, AdapterModuleMixin) and module.is_adapter_available():
                         module.set_enabled_adapters(enabled=True)
                         module.unfreeze_enabled_adapters()  # selectively unfreeze the adapter modules.
                         opt_params += [p for p in module.parameters() if p.requires_grad]
 
-                for name, param in self._unwrap_model().named_parameters():
+                for name, param in self._unwrap_model().named_parameters(prefix="model"):
                     if name in self.tunable_base_param_keys:
                         param.requires_grad = True
                         opt_params += [param]
@@ -397,11 +397,11 @@ class NLPAdapterModelMixin:
         """
         Gets the keys associated with the adapters only.
         """
-        state_dict = self._unwrap_model().state_dict()
+        state_dict = self._unwrap_model().state_dict(prefix="model.")
         peft_state_dict = {}
         for k in self.adapter_keys.union(self.tunable_base_param_keys):
             # state_dict keys needs to be in non-O2 format and will be corrected in PEFTSaveRestoreConnector if O2=True
-            new_k = k.replace("module.", "", 1)
+            new_k = k.replace("model.module.", "model.", 1)
             peft_state_dict[new_k] = state_dict[new_k]
         return peft_state_dict
 

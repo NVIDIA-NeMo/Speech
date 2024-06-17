@@ -32,13 +32,6 @@ def get_args(argv):
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source .nemo file")
     parser.add_argument(
-        "-dsn",
-        "--direct_serve_nemo",
-        default=False,
-        action='store_true',
-        help="Serve the nemo model directly instead of exporting to TRTLLM first. Will ignore other TRTLLM-specific arguments.",
-    )
-    parser.add_argument(
         "-ptnc",
         "--ptuning_nemo_checkpoint",
         nargs='+',
@@ -146,6 +139,15 @@ def get_args(argv):
         default=False,
         action='store_true',
         help='Use TensorRT LLM C++ runtime',
+    )
+    parser.add_argument(
+        "-b",
+        '--backend',
+        nargs='?',
+        const=None,
+        default='TensorRT-LLM',
+        choices=['TensorRT-LLM', 'vLLM', 'In-Framework'],
+        help="Different options to deploy nemo model.",
     )
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
 
@@ -261,7 +263,8 @@ def get_trtllm_deployable(args):
 
 def get_nemo_deployable(args):
     if args.nemo_checkpoint is None:
-        raise ValueError("Direct serve requires a .nemo checkpoint")
+        raise ValueError("In-Framework deployment requires a .nemo checkpoint")
+
     return MegatronLLMDeployable(args.nemo_checkpoint, args.num_gpus)
 
 
@@ -277,7 +280,15 @@ def nemo_deploy(argv):
     LOGGER.info("Logging level set to {}".format(loglevel))
     LOGGER.info(args)
 
-    triton_deployable = get_nemo_deployable(args) if args.direct_serve_nemo else get_trtllm_deployable(args)
+    backend = args.backend.lower()
+    if backend == 'tensorrt-llm':
+        triton_deployable = get_trtllm_deployable(args)
+    elif backend == 'in-framework':
+        triton_deployable = get_nemo_deployable(args)
+    elif backend == 'vllm':
+        raise ValueError("vLLM will be supported in the next release.")
+    else:
+        raise ValueError("Backend: {0} is not supported.".format(backend))
 
     try:
         nm = DeployPyTriton(

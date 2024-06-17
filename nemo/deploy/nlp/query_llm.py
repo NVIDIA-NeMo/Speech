@@ -81,13 +81,20 @@ class NemoQueryLLM(NemoQueryLLMBase):
         stop_words_list=None,
         bad_words_list=None,
         no_repeat_ngram_size=None,
-        max_output_len=512,
-        top_k=1,
-        top_p=0.0,
-        temperature=1.0,
+        min_output_len=None,
+        max_output_len=None,
+        top_k=None,
+        top_p=None,
+        temperature=None,
         random_seed=None,
         task_id=None,
         lora_uids=None,
+        use_greedy: bool = None,
+        repetition_penalty: float = None,
+        add_BOS: bool = None,
+        all_probs: bool = None,
+        compute_logprob: bool = None,
+        end_strings=None,
         init_timeout=60.0,
     ):
         """
@@ -110,6 +117,9 @@ class NemoQueryLLM(NemoQueryLLMBase):
         prompts = str_list2numpy(prompts)
         inputs = {"prompts": prompts}
 
+        if min_output_len is not None:
+            inputs["min_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
+
         if max_output_len is not None:
             inputs["max_output_len"] = np.full(prompts.shape, max_output_len, dtype=np.int_)
 
@@ -127,6 +137,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
 
         if stop_words_list is not None:
             inputs["stop_words_list"] = str_list2numpy(stop_words_list)
+
         if bad_words_list is not None:
             inputs["bad_words_list"] = str_list2numpy(bad_words_list)
 
@@ -141,12 +152,37 @@ class NemoQueryLLM(NemoQueryLLMBase):
             lora_uids = np.char.encode(lora_uids, "utf-8")
             inputs["lora_uids"] = np.full((prompts.shape[0], len(lora_uids)), lora_uids)
 
+        if use_greedy is not None:
+            inputs["use_greedy"] = np.full(prompts.shape, use_greedy, dtype=np.bool_)
+
+        if repetition_penalty is not None:
+            inputs["repetition_penalty"] = np.full(prompts.shape, repetition_penalty, dtype=np.single)
+
+        if add_BOS is not None:
+            inputs["add_BOS"] = np.full(prompts.shape, add_BOS, dtype=np.bool_)
+
+        if all_probs is not None:
+            inputs["all_probs"] = np.full(prompts.shape, all_probs, dtype=np.bool_)
+
+        if compute_logprob is not None:
+            inputs["compute_logprob"] = np.full(prompts.shape, compute_logprob, dtype=np.bool_)
+
+        if end_strings is not None:
+            inputs["end_strings"] = str_list2numpy(end_strings)
+
         with ModelClient(self.url, self.model_name, init_timeout_s=init_timeout) as client:
             result_dict = client.infer_batch(**inputs)
             output_type = client.model_config.outputs[0].dtype
 
             if output_type == np.bytes_:
-                sentences = np.char.decode(result_dict["outputs"].astype("bytes"), "utf-8")
+                if "outputs" in result_dict.keys():
+                    output = result_dict["outputs"]
+                elif "sentences" in result_dict.keys():
+                    output = result_dict["sentences"]
+                else:
+                    return "Unknown output keyword."
+
+                sentences = np.char.decode(output.astype("bytes"), "utf-8")
                 return sentences
             else:
                 return result_dict["outputs"]

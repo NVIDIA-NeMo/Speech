@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, List, Optional
 
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from typing_extensions import Annotated
@@ -46,9 +47,7 @@ class Mistral7BModel(GPTModel):
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
     ):
-        _tokenizer = tokenizer or HFMistral7BImporter("mistralai/Mistral-7B-v0.1").tokenizer
-
-        super().__init__(config or Mistral7BConfig(), optim=optim, tokenizer=_tokenizer)
+        super().__init__(config or Mistral7BConfig(), optim=optim, tokenizer=tokenizer)
 
 
 @io.model_importer(Mistral7BModel, "hf")
@@ -71,6 +70,9 @@ class HFMistral7BImporter(io.ModelConnector["MistralForCausalLM", Mistral7BModel
         del trainer, target
 
         return output_path
+
+    def on_import_ckpt(self, model: pl.LightningModule):
+        model.tokenizer = self.tokenizer
 
     def convert_state(self, source, target):
         mapping = {

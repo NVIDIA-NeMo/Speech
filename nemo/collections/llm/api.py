@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, Optional
 
 import pytorch_lightning as pl
+from typing_extensions import Annotated
 
-from nemo.collections.llm.utils import task
+from nemo.collections.llm.utils import Config, task
 from nemo.lightning import AutoResume, MegatronStrategy, NeMoLogger, OptimizerModule, Trainer, io, teardown
-from nemo.lightning.resume import Resume
 
 
 @task(namespace="llm")
@@ -13,8 +13,8 @@ def train(
     model: pl.LightningModule,
     data: pl.LightningDataModule,
     trainer: Trainer,
-    log: NeMoLogger = NeMoLogger(),
-    resume: Optional[Union[AutoResume, Resume]] = AutoResume(),
+    log: Annotated[Optional[NeMoLogger], Config[NeMoLogger]] = None,
+    resume: Annotated[Optional[AutoResume], Config[AutoResume]] = None,
     opt: Optional[OptimizerModule] = None,
     tokenizer: Optional[str] = None,
     # TODO: Fix export export: Optional[str] = None,
@@ -52,10 +52,12 @@ def train(
     if not isinstance(trainer.strategy, MegatronStrategy):
         raise ValueError("Only MegatronStrategy is supported")
 
+    _log = log or NeMoLogger()
+
     if tokenizer:  # TODO: Improve this
         _use_tokenizer(model, data, tokenizer)
 
-    app_state = log.setup(
+    app_state = _log.setup(
         trainer,
         resume_if_exists=getattr(resume, "resume_if_exists", False),
     )
@@ -64,14 +66,14 @@ def train(
     if opt:
         opt.connect(model)
 
-    trainer.fit(model, data, **fit_kwargs)
+    trainer.fit(model, data)
 
     if hasattr(train, "__io__"):
         _save_config_img(app_state.exp_dir, train.__io__)
 
     trainer.fit(model, data)
 
-    log.teardown()
+    _log.teardown()
 
     return app_state.exp_dir
 

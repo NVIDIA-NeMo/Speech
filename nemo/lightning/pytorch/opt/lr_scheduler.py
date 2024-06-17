@@ -38,7 +38,7 @@ class WarmupPolicyScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = WarmupPolicy(
             optimizer,
             warmup_steps=self.warmup_steps,
@@ -81,7 +81,7 @@ class WarmupHoldPolicyScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = WarmupHoldPolicy(
             optimizer,
             warmup_steps=self.warmup_steps,
@@ -118,7 +118,7 @@ class SquareAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = SquareAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
@@ -147,7 +147,7 @@ class SquareRootAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = SquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
@@ -182,7 +182,7 @@ class NoamAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = NoamAnnealing(
             optimizer,
             d_model=self.d_model,
@@ -220,7 +220,7 @@ class NoamHoldAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = NoamHoldAnnealing(
             optimizer, max_steps=self.max_steps, decay_rate=self.decay_rate, min_lr=self.min_lr
         )
@@ -251,7 +251,7 @@ class WarmupAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = WarmupAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
@@ -280,7 +280,7 @@ class InverseSquareRootAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = InverseSquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
@@ -309,7 +309,7 @@ class T5InverseSquareRootAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = T5InverseSquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
@@ -342,7 +342,7 @@ class PolynomialDecayAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = PolynomialDecayAnnealing(
             optimizer, max_steps=self.max_steps, min_lr=self.min_lr, power=self.power, cycle=self.cycle
         )
@@ -377,7 +377,7 @@ class PolynomialHoldDecayAnnealingScheduler(LRSchedulerModule):
         self.frequency = frequency
         self.monitor = monitor
 
-    def scheduler(self, optimizer):
+    def scheduler(self, model, optimizer):
         lr_scheduler = PolynomialHoldDecayAnnealing(
             optimizer, max_steps=self.max_steps, min_lr=self.min_lr, power=self.power, cycle=self.cycle
         )
@@ -386,5 +386,53 @@ class PolynomialHoldDecayAnnealingScheduler(LRSchedulerModule):
             "scheduler": lr_scheduler,
             "interval": self.interval,
             "frequency": self.frequency,
+            "monitor": self.monitor,
+        }
+
+
+class CosineAnnealingScheduler(LRSchedulerModule):
+    def __init__(
+        self,
+        max_steps=10,
+        warmup_steps=750,
+        constant_steps=80000,
+        min_lr=int(6e-5),
+        interval="epoch",
+        frequency=1,
+        monitor="val_loss",
+    ):
+        super().__init__()
+        self.max_steps = max_steps
+        self.warmup_steps = warmup_steps
+        self.constant_steps = constant_steps
+        self.min_lr = min_lr
+        self.interval = interval
+        self.frequency = frequency
+        self.monitor = monitor
+
+    def scheduler(self, model, optimizer):
+        from nemo.core.optim.lr_scheduler import CosineAnnealing
+
+        lr_scheduler = CosineAnnealing(
+            optimizer,
+            max_steps=self.max_steps,
+            warmup_steps=self.warmup_steps,
+            constant_steps=self.constant_steps,
+            min_lr=self.min_lr,
+        )
+
+        return {
+            "optimizer": optimizer,
+            # REQUIRED: The scheduler instance
+            "scheduler": lr_scheduler,
+            # The unit of the scheduler's step size, could also be 'step'.
+            # 'epoch' updates the scheduler on epoch end whereas 'step'
+            # updates it after a optimizer update.
+            "interval": self.interval,
+            # How many epochs/steps should pass between calls to
+            # `scheduler.step()`. 1 corresponds to updating the learning
+            # rate after every epoch/step.
+            "frequency": self.frequency,
+            # Metric to to monitor for schedulers like `ReduceLROnPlateau`
             "monitor": self.monitor,
         }

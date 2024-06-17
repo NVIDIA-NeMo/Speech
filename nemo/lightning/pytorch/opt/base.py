@@ -34,7 +34,7 @@ class LRSchedulerModule(L.Callback, CallbackMethods, ABC):
         __call__(model, optimizers): Calls the setup and scheduler methods.
     """
 
-    def setup(self, model, optimizer) -> None:
+    def connect(self, model, optimizer) -> None:
         """Sets up the learning rate scheduler.
 
         Args:
@@ -67,7 +67,7 @@ class LRSchedulerModule(L.Callback, CallbackMethods, ABC):
             OptimizerLRScheduler: The learning rate scheduler.
         """
 
-        self.setup(model, optimizers)
+        self.connect(model, optimizers)
 
         self._scheduler = self.scheduler(model, optimizers)
 
@@ -130,14 +130,6 @@ class OptimizerModule(L.Callback, CallbackMethods, ABC):
 
         model.configure_optimizers = types.MethodType(custom_configure_optimizers, model)
 
-    def setup(self, model) -> None:
-        """Sets up the optimizer.
-
-        Args:
-            model: The model for which the optimizer is being set up.
-        """
-        ...
-
     @abstractmethod
     def optimizers(self, model) -> List[Optimizer]:
         """Abstract method to define the optimizers.
@@ -167,12 +159,12 @@ class OptimizerModule(L.Callback, CallbackMethods, ABC):
         if self.lr_scheduler is not None and self.lr_scheduler not in callbacks:
             callbacks.append(self.lr_scheduler)
 
-        self.setup(_model)
         self._optimizers = self.optimizers(_model)
 
+        _opt = self._optimizers[0] if len(self._optimizers) == 1 else self._optimizers
+
         if self.lr_scheduler is not None:
-            self.lr_scheduler.setup(_model, self._optimizers)
-            with_scheduler = self.lr_scheduler(_model, self._optimizers)
+            with_scheduler = self.lr_scheduler(_model, _opt)
 
             return with_scheduler
 

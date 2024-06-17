@@ -1,5 +1,6 @@
 from typing import Callable, List, Optional
 
+import pytorch_lightning as pl
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.utils import get_model_config
@@ -53,7 +54,7 @@ class MegatronOptimizerModule(OptimizerModule):
         self.scale_lr_cond = scale_lr_cond
         self.lr_mult = lr_mult
 
-    def setup(self, model):
+    def setup(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", stage: str):
         """We will add the finalize_model_grads function to the model config.
 
         Args:
@@ -63,7 +64,7 @@ class MegatronOptimizerModule(OptimizerModule):
         def finalize_model_grads_func(*args, **kwargs):
             return self.finalize_model_grads(*args, **kwargs)
 
-        get_model_config(model[0]).finalize_model_grads_func = finalize_model_grads_func
+        get_model_config(pl_module).finalize_model_grads_func = finalize_model_grads_func
 
     def optimizers(self, model: MegatronParallel) -> List[Optimizer]:
         """Defines the optimizers.

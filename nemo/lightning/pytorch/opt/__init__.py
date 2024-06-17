@@ -1,5 +1,6 @@
 from nemo.lightning.pytorch.opt.base import LRSchedulerModule, OptimizerModule
 from nemo.lightning.pytorch.opt.lr_scheduler import (
+    CosineAnnealingScheduler,
     InverseSquareRootAnnealingScheduler,
     NoamAnnealingScheduler,
     NoamHoldAnnealingScheduler,
@@ -29,4 +30,5 @@ __all__ = [
     "T5InverseSquareRootAnnealingScheduler",
     "PolynomialDecayAnnealingScheduler",
     "PolynomialHoldDecayAnnealingScheduler",
+    "CosineAnnealingScheduler",
 ]

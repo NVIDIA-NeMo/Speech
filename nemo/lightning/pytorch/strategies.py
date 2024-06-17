@@ -293,6 +293,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         kwargs = self._update_step_kwargs(dataloader_iter, kwargs, "training")
 
         with self.precision_plugin.train_step_context():  # TODO: Do we need this?
+            # Set grad to zero.
+            for model_chunk in self.model:
+                model_chunk.zero_grad_buffer()
+            for opt in self.optimizers:
+                opt.zero_grad()
+
             return self.model(dataloader_iter, forward_only=False, *args, **kwargs)
 
     @override

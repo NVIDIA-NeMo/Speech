@@ -515,7 +515,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         # Try to get git hash
         git_repo, git_hash = get_git_hash()
         if git_repo:
-            with open(log_dir / 'git-info.log', 'w', encoding='utf-8') as _file:
+            with open(log_dir / 'git-info.log', 'a', encoding='utf-8') as _file:
                 _file.write(f'commit hash: {git_hash}')
                 _file.write(get_git_diff())
 

@@ -47,6 +47,20 @@ Latest News
     <summary><b>Large Language Models and Multimodal</b></summary>
       <details>
         <summary>
+          <a href="https://huggingface.co/models?sort=trending&search=nvidia%2Fnemotron-4-340B">
+            NVIDIA releases 340B base, instruct, and reward models pretrained on a total of 9T tokens.
+          </a> (2024-06-18)
+        </summary>
+        See documentation and tutorials for SFT, PEFT, and PTQ with 
+        <a href="https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/nemotron/index.html">
+          Nemotron 340B 
+        </a>
+        in the NeMo Framework User Guide.
+        <br><br>
+      </details>
+
+      <details>
+        <summary>
           <a href="https://developer.nvidia.com/blog/nvidia-sets-new-generative-ai-performance-and-scale-records-in-mlperf-training-v4-0/">
             NVIDIA sets new generative AI performance and scale records in MLPerf Training v4.0
           </a> (2024/06/12)

@@ -217,4 +217,5 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
         return _base / str(self).replace("://", "/")
 
-    def on_import_ckpt(self, model: pl.LightningModule): ...
+    def on_import_ckpt(self, model: pl.LightningModule):
+        model.tokenizer = self.tokenizer

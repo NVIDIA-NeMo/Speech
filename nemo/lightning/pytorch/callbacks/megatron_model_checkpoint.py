@@ -82,11 +82,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
             log_dir = app_state.log_dir
 
             # Check to see if any files exist that need to be moved
-            files_to_move = []
-            if Path(log_dir).exists():
-                for child in Path(log_dir).iterdir():
-                    if child.is_file():
-                        files_to_move.append(child)
+            files_to_move = app_state.files_to_move
 
             if len(files_to_move) > 0:
                 # Move old files to a new folder
@@ -106,8 +102,9 @@ class ModelCheckpoint(PTLModelCheckpoint):
                     shutil.copy(Path(_file), log_dir)
 
             # Create files for cmd args and git info
-            with open(log_dir / 'cmd-args.log', 'w', encoding='utf-8') as _file:
-                _file.write(" ".join(app_state.cmd_args))
+            if app_state.cmd_args:
+                with open(log_dir / 'cmd-args.log', 'w', encoding='utf-8') as _file:
+                    _file.write(" ".join(app_state.cmd_args))
 
             # Try to get git hash
             git_repo, git_hash = get_git_hash()

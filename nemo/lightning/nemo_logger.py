@@ -100,6 +100,7 @@ class NeMoLogger:
                 "No version folders would be created under the log folder as 'resume_if_exists' is enabled."
             )
             version = None
+        trainer.logger._version = version or ""
         if version:
             if is_global_rank_zero():
                 os.environ[NEMO_ENV_VARNAME_VERSION] = version
@@ -160,6 +161,12 @@ class NeMoLogger:
         # This is set if the env var NEMO_TESTING is set to True.
         nemo_testing = get_envbool(NEMO_ENV_VARNAME_TESTING, False)
 
+        files_to_move = []
+        if Path(log_dir).exists():
+            for child in Path(log_dir).iterdir():
+                if child.is_file():
+                    files_to_move.append(child)
+
         # Handle logging to file
         log_file = log_dir / f'nemo_log_globalrank-{global_rank}_localrank-{local_rank}.txt'
         if self.log_local_rank_0_only is True and not nemo_testing:
@@ -174,6 +181,7 @@ class NeMoLogger:
 
         add_handlers_to_mcore_logger()
 
+        app_state.files_to_move = files_to_move
         app_state.files_to_copy = self.files_to_copy
         app_state.cmd_args = sys.argv
 

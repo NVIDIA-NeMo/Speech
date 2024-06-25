@@ -81,8 +81,10 @@ class AppState(metaclass=Singleton):
         self._model_guid_map = {}  # type: Dict[str, ModelMetadataRegistry]
         self._restore = False  # TODO: are this and _is_model_being_restored both needed?
 
+        # files from a previous run to move into a new directory
+        self.files_to_move = []
         # files to copy into log dir
-        self._files_to_copy = None
+        self._files_to_copy = []
         # command-ling arguments for run
         self._cmd_args = None
 
@@ -559,6 +561,20 @@ class AppState(metaclass=Singleton):
             params (dict): checkpoint_callback_params set by exp_manager.
         """
         self._checkpoint_callback_params = params
+
+    @property
+    def files_to_move(self):
+        """Returns the list of files to move into a separate directory."""
+        return self._files_to_move
+
+    @files_to_move.setter
+    def files_to_move(self, files):
+        """Sets the files_to_move property.
+
+        Args:
+            files (list[str]): list of filenames to move.
+        """
+        self._files_to_move = files
 
     @property
     def files_to_copy(self):

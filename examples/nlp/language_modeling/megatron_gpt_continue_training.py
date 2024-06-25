@@ -115,7 +115,11 @@ def load_from_checkpoint_dir(cls, cfg, trainer, modify_confg_fn):
     gpt_cfg = modify_confg_fn(hparams_file.cfg, cfg, add_cfg_to_tree=True)
     with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         OmegaConf.save(config=gpt_cfg, f=f.name)
-        model = cls.load_from_checkpoint(checkpoint_path=checkpoint_path, trainer=trainer, hparams_file=f.name,)
+        model = cls.load_from_checkpoint(
+            checkpoint_path=checkpoint_path,
+            trainer=trainer,
+            hparams_file=f.name,
+        )
         return model
 
 
@@ -141,11 +145,12 @@ def main(cfg) -> None:
         gradient_as_bucket_view=cfg.model.gradient_as_bucket_view,
         find_unused_parameters=False,
     )
+    precision = cfg.trainer.precision
     if cfg.trainer.precision in [16, '16', 'bf16', '16-mixed', 'bf16-mixed']:
         scaler = None
         if cfg.trainer.precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
+                init_scale=cfg.model.get('native_amp_init_scale', 2**32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 hysteresis=cfg.model.get('hysteresis', 2),
             )
@@ -156,7 +161,7 @@ def main(cfg) -> None:
             plugins.append(MegatronHalfPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
         else:
             plugins.append(PipelineMixedPrecisionPlugin(precision=plugin_precision, device='cuda', scaler=scaler))
-
+        cfg.trainer.precision = None
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
 
@@ -165,6 +170,7 @@ def main(cfg) -> None:
     if 'enable_progress_bar' not in cfg.trainer or cfg.trainer.enable_progress_bar:
         callbacks.append(CustomProgressBar())
     trainer = Trainer(plugins=plugins, strategy=strategy, **cfg.trainer, callbacks=callbacks)
+    cfg.trainer.precision = precision
 
     exp_manager(trainer, cfg.exp_manager)
 

@@ -44,6 +44,7 @@ def build_and_save_engine(
     enable_multi_block_mode: bool = False,
     paged_kv_cache: bool = True,
     remove_input_padding: bool = True,
+    paged_context_fmha: bool = False,
     max_num_tokens: int = None,
     opt_num_tokens: int = None,
     max_beam_width: int = 1,
@@ -65,6 +66,7 @@ def build_and_save_engine(
     else:
         plugin_config.paged_kv_cache = False
     plugin_config.remove_input_padding = remove_input_padding
+    plugin_config.use_paged_context_fmha = paged_context_fmha
 
     max_num_tokens, opt_num_tokens = check_max_num_tokens(
         max_num_tokens=max_num_tokens,

@@ -132,6 +132,7 @@ class TensorRTLLM(ITritonDeployable):
         use_embedding_sharing: bool = False,
         paged_kv_cache: bool = True,
         remove_input_padding: bool = True,
+        paged_context_fmha: bool = False,
         dtype: str = "bfloat16",
         load_model: bool = True,
         enable_multi_block_mode: bool = False,
@@ -162,6 +163,7 @@ class TensorRTLLM(ITritonDeployable):
             use_parallel_embedding (bool): whether to use parallel embedding feature of TRT-LLM or not
             use_embedding_sharing (bool):
             paged_kv_cache (bool): if True, uses kv cache feature of the TensorRT-LLM.
+            paged_context_fmha (bool): whether to use paged context fmha feature of TRT-LLM or not
             remove_input_padding (bool): enables removing input padding or not.
             dtype (str): Floating point type for model weights (Supports BFloat16/Float16).
             load_model (bool): load TensorRT-LLM model after the export.
@@ -295,6 +297,7 @@ class TensorRTLLM(ITritonDeployable):
                         enable_multi_block_mode=enable_multi_block_mode,
                         paged_kv_cache=paged_kv_cache,
                         remove_input_padding=remove_input_padding,
+                        paged_context_fmha=paged_context_fmha,
                         max_num_tokens=max_num_tokens,
                         opt_num_tokens=opt_num_tokens,
                     )

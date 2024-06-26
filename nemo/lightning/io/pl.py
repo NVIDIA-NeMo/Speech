@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Generic, Optional, Protocol, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, Optional, TypeVar, Union
 
 import pytorch_lightning as pl
 import torch
@@ -14,8 +14,6 @@ from typing_extensions import Self, override
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.mixin import IOMixin
 
-if TYPE_CHECKING:
-    from nemo.lightning.pytorch.strategies import MegatronStrategy
 
 log = logging.getLogger(__name__)
 
@@ -25,37 +23,27 @@ ModuleT = TypeVar("ModuleT", bound=nn.Module)
 
 
 @dataclass
-class TrainerCheckpoint(IOMixin, Generic[LightningModuleT]):
+class TrainerContext(IOMixin, Generic[LightningModuleT]):
     model: LightningModuleT
     trainer: pl.Trainer
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_strategy(cls, strategy: "MegatronStrategy") -> Self:
-        if not isinstance(strategy.trainer, IOProtocol):
+    def from_trainer(cls, trainer: pl.Trainer) -> Self:
+        if not hasattr(trainer, "__io__"):
             raise ValueError(f"Trainer must be an instance of {IOProtocol}. Please use the Trainer from nemo.")
-
-        if not isinstance(strategy.lightning_module, IOProtocol):
+        if not hasattr(trainer.lightning_module, "__io__"):
             raise ValueError("LightningModule must extend IOMixin.")
 
-        return cls(trainer=strategy.trainer, model=strategy.lightning_module, extra=cls.construct_extra(strategy))
+        return cls(trainer=trainer, model=trainer.lightning_module, extra=cls.construct_extra(trainer))
 
     @classmethod
-    def construct_extra(cls, strategy: "MegatronStrategy") -> Dict[str, Any]:
+    def construct_extra(cls, trainer: pl.Trainer) -> Dict[str, Any]:
         extra = {}
-        if hasattr(strategy.trainer, "datamodule") and isinstance(strategy.trainer.datamodule, IOProtocol):
-            extra["datamodule"] = strategy.trainer.datamodule.__io__
-
-        # TODO: Add optimizer to extra
+        if hasattr(trainer, "datamodule") and hasattr(trainer.datamodule, "__io__"):
+            extra["datamodule"] = trainer.datamodule.__io__
 
         return extra
-
-
-class TrainerCkptProtocol(Protocol):
-    @classmethod
-    def from_strategy(cls, strategy: "MegatronStrategy") -> Self: ...
-
-    def io_dump(self, output: Path): ...
 
 
 class MegatronCheckpointIO(CheckpointIO):

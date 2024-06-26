@@ -1,5 +1,5 @@
-from nemo.lightning.pytorch.opt.base import LRSchedulerModule, OptimizerModule
-from nemo.lightning.pytorch.opt.lr_scheduler import (
+from nemo.lightning.pytorch.optim.base import LRSchedulerModule, OptimizerModule
+from nemo.lightning.pytorch.optim.lr_scheduler import (
     CosineAnnealingScheduler,
     InverseSquareRootAnnealingScheduler,
     NoamAnnealingScheduler,
@@ -13,7 +13,7 @@ from nemo.lightning.pytorch.opt.lr_scheduler import (
     WarmupHoldPolicyScheduler,
     WarmupPolicyScheduler,
 )
-from nemo.lightning.pytorch.opt.megatron import MegatronOptimizerModule
+from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 
 __all__ = [
     "OptimizerModule",

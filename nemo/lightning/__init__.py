@@ -12,7 +12,7 @@ except ImportError:
 from nemo.lightning.base import get_vocab_size, teardown
 from nemo.lightning.nemo_logger import NeMoLogger
 from nemo.lightning.pytorch.callbacks.megatron_model_checkpoint import ModelCheckpoint
-from nemo.lightning.pytorch.opt import LRSchedulerModule, MegatronOptimizerModule, OptimizerModule
+from nemo.lightning.pytorch.optim import LRSchedulerModule, MegatronOptimizerModule, OptimizerModule
 from nemo.lightning.pytorch.plugins import MegatronDataSampler, MegatronMixedPrecision
 from nemo.lightning.pytorch.plugins import data_sampler as _data_sampler
 from nemo.lightning.pytorch.strategies import MegatronStrategy

@@ -16,7 +16,7 @@ class TestLoad:
             )
         )
 
-        ckpt = io.TrainerCheckpoint(model, trainer)
+        ckpt = io.TrainerContext(model, trainer)
         ckpt.io_dump(tmpdir)
         loaded = io.load_ckpt(tmpdir)
 

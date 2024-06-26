@@ -7,6 +7,7 @@ from typing import List, Optional, Union
 
 import lightning_fabric as fl
 import pytorch_lightning as pl
+from fiddle._src.experimental import serialization
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
 
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
@@ -48,11 +49,7 @@ class NeMoLogger:
                 f"Cannot set both log_local_rank_0_only and log_global_rank_0_only to True. Please set either one or neither."
             )
 
-    def setup(
-        self,
-        trainer: Union[pl.Trainer, fl.Fabric],
-        resume_if_exists: bool = False,
-    ):
+    def setup(self, trainer: Union[pl.Trainer, fl.Fabric], resume_if_exists: bool = False, task_config=None):
         """Setup the logger for the experiment.
 
         Args:
@@ -115,6 +112,12 @@ class NeMoLogger:
 
         os.makedirs(log_dir, exist_ok=True)  # Cannot limit creation to global zero as all ranks write to own log file
         logging.info(f'Experiments will be logged at {log_dir}')
+
+        if task_config and is_global_rank_zero():
+            task_config.save_config_img(log_dir / "task.png")
+            task_json = serialization.dump_json(task_config)
+            with open(log_dir / "task.json", "w") as f:
+                f.write(task_json)
 
         if isinstance(trainer, pl.Trainer):
             if self.ckpt:

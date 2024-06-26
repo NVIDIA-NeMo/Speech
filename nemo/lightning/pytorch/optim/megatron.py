@@ -7,7 +7,7 @@ from megatron.core.utils import get_model_config
 from torch.optim import Optimizer
 
 from nemo.lightning.megatron_parallel import MegatronParallel
-from nemo.lightning.pytorch.opt.base import LRSchedulerModule, OptimizerModule
+from nemo.lightning.pytorch.optim.base import LRSchedulerModule, OptimizerModule
 
 
 class MegatronOptimizerModule(OptimizerModule):

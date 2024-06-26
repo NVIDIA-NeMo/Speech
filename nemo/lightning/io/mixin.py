@@ -1,3 +1,4 @@
+import base64
 import functools
 import inspect
 from dataclasses import is_dataclass
@@ -5,13 +6,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Type, TypeVar, Union
 
 import fiddle as fdl
-from cloudpickle import dump
+import fiddle._src.experimental.dataclasses as fdl_dc
+from cloudpickle import dumps, loads
+from fiddle._src.experimental import serialization
 from typing_extensions import Self
 
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.connector import ModelConnector
+from nemo.lightning.io.fdl_torch import enable as _enable_ext
 
 ConnT = TypeVar('ConnT', bound=ModelConnector)
+_enable_ext()
 
 
 class IOMixin:
@@ -54,7 +59,7 @@ class IOMixin:
 
     """
 
-    __io__ = fdl.Config[Self]
+    __io__: fdl.Config[Self]
 
     def __new__(cls, *args, **kwargs):
         """
@@ -82,6 +87,14 @@ class IOMixin:
 
         return output
 
+    def __init_subclass__(cls):
+        serialization.register_node_traverser(
+            cls,
+            flatten_fn=_io_flatten_object,
+            unflatten_fn=_io_unflatten_object,
+            path_elements_fn=_io_path_elements_fn,
+        )
+
     def io_transform_args(self, init_fn, *args, **kwargs) -> Dict[str, Any]:
         """
         Transforms and captures the arguments passed to the `__init__` method, filtering out
@@ -106,10 +119,11 @@ class IOMixin:
         for key in config_kwargs:
             if isinstance(config_kwargs[key], IOProtocol):
                 config_kwargs[key] = config_kwargs[key].__io__
-            if is_dataclass(self):
+            if is_dataclass(config_kwargs[key]):
+                config_kwargs[key] = fdl_dc.convert_dataclasses_to_configs(config_kwargs[key], allow_post_init=True)
                 # Check if the arg is a factory (dataclasses.field)
-                if config_kwargs[key].__class__.__name__ == "_HAS_DEFAULT_FACTORY_CLASS":
-                    to_del.append(key)
+            if config_kwargs[key].__class__.__name__ == "_HAS_DEFAULT_FACTORY_CLASS":
+                to_del.append(key)
 
         for key in to_del:
             del config_kwargs[key]
@@ -137,9 +151,10 @@ class IOMixin:
         Args:
             output (Path): The path to the file where the configuration object will be serialized.
         """
-        config_path = Path(output) / "io.pkl"
-        with open(config_path, "wb") as f:
-            dump(self.__io__, f)
+        config_path = Path(output) / "io.json"
+        with open(config_path, "w") as f:
+            json = serialization.dump_json(self.__io__)
+            f.write(json)
 
 
 class ConnectorMixin:
@@ -321,3 +336,32 @@ class ConnectorMixin:
             return connector()
 
         return connector(_path)
+
+
+def _io_flatten_object(instance):
+    try:
+        serialization.dump_json(instance.__io__)
+    except serialization.UnserializableValueError as e:
+        pickled_data = dumps(instance.__io__)
+        encoded_data = base64.b64encode(pickled_data).decode('utf-8')
+        return (encoded_data,), None
+
+    return instance.__io__.__flatten__()
+
+
+def _io_unflatten_object(values, metadata):
+    if len(values) == 1:
+        encoded_data = values[0]
+        pickled_data = base64.b64decode(encoded_data.encode('utf-8'))
+        return loads(pickled_data)
+
+    return fdl.Config.__unflatten__(values, metadata)
+
+
+def _io_path_elements_fn(x):
+    try:
+        serialization.dump_json(x.__io__)
+    except serialization.UnserializableValueError:
+        return (serialization.IdentityElement(),)
+
+    return x.__io__.__path_elements__()

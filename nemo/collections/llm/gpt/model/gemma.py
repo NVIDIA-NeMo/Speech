@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
 import torch
 
+from nemo.collections.llm.fn.activation import openai_gelu
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
-from nemo.collections.nlp.modules.common.megatron.utils import openai_gelu
 from nemo.lightning import OptimizerModule, io, teardown
 
 if TYPE_CHECKING:

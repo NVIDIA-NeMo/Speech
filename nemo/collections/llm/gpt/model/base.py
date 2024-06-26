@@ -10,7 +10,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from nemo.collections.llm import fn
 from nemo.lightning import get_vocab_size, io
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
-from nemo.lightning.pytorch.opt import MegatronOptimizerModule, OptimizerModule
+from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModule
 
 if TYPE_CHECKING:
     from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class GPTConfig(TransformerConfig):
+class GPTConfig(TransformerConfig, io.IOMixin):
     # From megatron.core.models.gpt.gpt_model.GPTModel
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True
@@ -78,7 +78,8 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         self.optim.connect(self)  # This will bind the `configure_optimizers` method
 
     def configure_model(self) -> None:
-        self.module = self.config.configure_model(self.tokenizer)
+        if not hasattr(self, "module"):
+            self.module = self.config.configure_model(self.tokenizer)
 
     def forward(
         self,

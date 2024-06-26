@@ -26,6 +26,7 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLM
 from pytorch_lightning.callbacks.model_checkpoint import _is_local_file_protocol
 from pytorch_lightning.utilities import rank_zero_info
 
+from nemo.lightning.io.pl import TrainerContext
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import ckpt_to_dir
@@ -48,10 +49,12 @@ class ModelCheckpoint(PTLModelCheckpoint):
         train_time_interval: Optional[timedelta] = None,
         save_best_model: bool = False,
         save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
+        enable_nemo_ckpt_io: bool = True,
         **kwargs,
     ):
         self.save_best_model = save_best_model
         self.previous_best_path = ""
+        self.enable_nemo_ckpt_io = enable_nemo_ckpt_io
 
         # Call the parent class constructor with the remaining kwargs.
         super().__init__(
@@ -363,6 +366,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
         # if anything goes wrong during checkpointing, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
         ema_callback = self._ema_callback(trainer)
+
         if ema_callback is not None:
             with ema_callback.save_original_optimizer_state(trainer):
                 super()._save_checkpoint(trainer, filepath)
@@ -390,6 +394,11 @@ class ModelCheckpoint(PTLModelCheckpoint):
             logging.debug(f'Finalize callback called for step {global_step}, filepath {filepath}')
             self._last_global_step_saved = global_step
             self._last_checkpoint_saved = filepath
+
+            from nemo.utils.get_rank import is_global_rank_zero
+
+            if self.enable_nemo_ckpt_io and is_global_rank_zero():
+                TrainerContext.from_trainer(trainer).io_dump(ckpt_to_dir(filepath))
 
             # notify loggers
             if trainer.is_global_zero:

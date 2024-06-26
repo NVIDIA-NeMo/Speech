@@ -14,6 +14,7 @@ import torch.distributed
 from lightning_fabric.plugins import CheckpointIO, ClusterEnvironment
 from lightning_fabric.utilities.optimizer import _optimizers_to_device
 from megatron.core.distributed import DistributedDataParallelConfig
+from megatron.core.optimizer import OptimizerConfig
 from pytorch_lightning.accelerators import CPUAccelerator
 from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.loops import _AutomaticOptimization, evaluation_loop, fit_loop, prediction_loop
@@ -31,7 +32,7 @@ from torch.utils.data import DataLoader
 from typing_extensions import override
 
 from nemo.lightning import _strategy_lib, io
-from nemo.lightning.io.pl import MegatronCheckpointIO, TrainerCheckpoint, TrainerCkptProtocol
+from nemo.lightning.io.pl import MegatronCheckpointIO
 from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, _ModuleStepFunction
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar
 
@@ -99,8 +100,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         cluster_environment=None,  # TODO: Add type-hint
         checkpoint_io=None,  # TODO: Add type-hint
         find_unused_parameters: bool = False,
-        enable_nemo_ckpt_io: bool = True,
-        ckpt_type: TrainerCkptProtocol = TrainerCheckpoint,
         ckpt_include_optimizer: bool = False,
         ddp: Union[DDPLiteral, DistributedDataParallelConfig] = "megatron",
         lazy_init: bool = False,
@@ -124,8 +123,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.moe_extended_tp = moe_extended_tp
         self.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
         self.sequence_parallel = sequence_parallel
-        self.enable_nemo_ckpt_io = enable_nemo_ckpt_io
-        self.ckpt_type = ckpt_type
         self.lazy_init = lazy_init
         self.ckpt_include_optimizer = ckpt_include_optimizer
         self.pipeline_dtype = pipeline_dtype
@@ -133,7 +130,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
 
         if ddp == "megatron":
-            self.ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=True)
+            self.ddp_config = DistributedDataParallelConfig()
         elif isinstance(ddp, DistributedDataParallelConfig):
             self.ddp_config = ddp
         elif ddp == "pytorch":
@@ -166,6 +163,21 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             config.moe_extended_tp = self.moe_extended_tp
             config.sequence_parallel = self.sequence_parallel
             self._mcore_config = config
+
+        has_optim = getattr(model, "optim", None)
+        if has_optim:
+            opt_config = getattr(model.optim, "config", None)
+            if isinstance(opt_config, OptimizerConfig):
+                mcore_opt_config: OptimizerConfig = cast(OptimizerConfig, opt_config)
+                if not self.ddp_config:
+                    raise ValueError("PyTorch DDP is not enabled for mcore optimizer")
+                ddp_config = cast(DistributedDataParallelConfig, self.ddp_config)
+
+                if mcore_opt_config.use_distributed_optimizer != ddp_config.use_distributed_optimizer:
+                    from nemo.utils import logging
+
+                    logging.info("Fixing mis-match between ddp-config & mcore-optimizer config")
+                    ddp_config.use_distributed_optimizer = mcore_opt_config.use_distributed_optimizer
 
     @override
     def setup(self, trainer: pl.Trainer, setup_optimizers: bool = True) -> None:
@@ -477,12 +489,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     ) -> None:
         checkpoint["state_dict"] = OrderedDict([])  # remove device state_dict
         checkpoint["sharded_state_dict"] = self.megatron_parallel.sharded_state_dict()
-        if self.trainer.state.fn == TrainerFn.FITTING:
+        if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_include_optimizer:
             checkpoint["optimizer"] = [self.optimizer_sharded_state_dict()]
 
         self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)
-        if self.enable_nemo_ckpt_io and self.is_global_zero and self.ckpt_type:
-            self.ckpt_type.from_strategy(self).io_dump(ckpt_to_dir(filepath))
 
     @override
     def load_checkpoint(self, checkpoint_path: Union[str, Path]) -> Dict[str, Any]:

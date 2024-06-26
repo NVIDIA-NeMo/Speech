@@ -13,7 +13,7 @@ from nemo.core.optim.lr_scheduler import (
     WarmupHoldPolicy,
     WarmupPolicy,
 )
-from nemo.lightning.pytorch.opt.base import LRSchedulerModule
+from nemo.lightning.pytorch.optim.base import LRSchedulerModule
 
 
 class WarmupPolicyScheduler(LRSchedulerModule):

@@ -155,7 +155,7 @@ def get_specs(spec_name, num_experts=None, moe_grouped_gemm=False, use_te=True, 
         "te_gpt": get_gpt_layer_with_transformer_engine_spec(num_experts, moe_grouped_gemm),
         "megatron_falcon_gpt": get_falcon_layer_spec(),
         "megatron_gpt_full_te_layer_autocast": get_gpt_full_te_layer_autocast_spec(),
-        "modelopt": get_gpt_layer_modelopt_spec(),
+        "modelopt": get_gpt_layer_modelopt_spec(num_experts),
         "te_gpt_hyena": get_gpt_layer_with_te_and_hyena_spec(hyena_cfg),
     }
     if spec_name not in name_spec_dict:

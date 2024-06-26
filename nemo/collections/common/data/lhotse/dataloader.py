@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
@@ -319,6 +320,7 @@ def get_lhotse_dataloader_from_config(
             ReverbWithImpulseResponse(
                 rir_recordings=RecordingSet.from_file(config.rir_path) if config.rir_path is not None else None,
                 p=config.rir_prob,
+                randgen=random.Random(seed),
             )
         )
 

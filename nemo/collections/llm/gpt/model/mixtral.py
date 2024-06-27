@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class MixtralConfig(GPTConfig):
+class MixtralConfig8x7B(GPTConfig):
     """
     Config for Mixtral-8x7B model
     Official announcement: https://mistral.ai/news/mixtral-of-experts/
@@ -50,11 +50,11 @@ class MixtralConfig(GPTConfig):
 class MixtralModel(GPTModel):
     def __init__(
         self,
-        config: Optional[MixtralConfig] = None,
+        config: Optional[MixtralConfig8x7B] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
     ):
-        super().__init__(config or MixtralConfig(), optim=optim, tokenizer=tokenizer)
+        super().__init__(config or MixtralConfig8x7B(), optim=optim, tokenizer=tokenizer)
 
 
 @io.model_importer(MixtralModel, ext="hf")
@@ -99,11 +99,11 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
         return AutoTokenizer(str(self))
 
     @property
-    def config(self) -> MixtralConfig:
+    def config(self) -> MixtralConfig8x7B:
         from transformers import MixtralConfig as HfMixtralConfig
 
         config = HfMixtralConfig.from_pretrained(str(self))
-        return MixtralConfig(
+        return MixtralConfig8x7B(
             activation_func=F.silu,
             # network
             num_layers=config.num_hidden_layers,

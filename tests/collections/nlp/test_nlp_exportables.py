@@ -45,18 +45,21 @@ def classifier_export(obj):
 
 
 class TestExportableClassifiers:
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_token_classifier_export_to_onnx(self):
         for num_layers in [1, 2, 4]:
             classifier_export(TokenClassifier(hidden_size=256, num_layers=num_layers, num_classes=16))
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_bert_pretraining_export_to_onnx(self):
         for num_layers in [1, 2, 4]:
             classifier_export(TokenClassifier(hidden_size=256, num_layers=num_layers, num_classes=16))
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_sequence_token_classifier_export_to_onnx(self):
@@ -65,12 +68,14 @@ class TestExportableClassifiers:
                 SequenceTokenClassifier(hidden_size=256, num_slots=8, num_intents=8, num_layers=num_layers)
             )
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_sequence_classifier_export_to_onnx(self):
         for num_layers in [1, 2, 4]:
             classifier_export(SequenceClassifier(hidden_size=256, num_classes=16, num_layers=num_layers))
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_sequence_regression_export_to_onnx(self):
@@ -171,6 +176,7 @@ class TestExportableClassifiers:
             }
         )
 
+    @pytest.mark.pleasefixme
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
     def test_IntentSlotClassificationModel_export_to_onnx(self, dummy_data):
@@ -191,6 +197,7 @@ class TestExportableClassifiers:
             assert onnx_model.graph.output[0].name == 'intent_logits'
             assert onnx_model.graph.output[1].name == 'slot_logits'
 
+    @pytest.mark.pleasefixme
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -207,6 +214,7 @@ class TestExportableClassifiers:
             assert onnx_model.graph.input[2].name == 'token_type_ids'
             assert onnx_model.graph.output[0].name == 'logits'
 
+    @pytest.mark.pleasefixme
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit
@@ -224,6 +232,7 @@ class TestExportableClassifiers:
             assert onnx_model.graph.output[0].name == 'punct_logits'
             assert onnx_model.graph.output[1].name == 'capit_logits'
 
+    @pytest.mark.pleasefixme
     @pytest.mark.with_downloads()
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.unit

@@ -26,13 +26,14 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLM
 from pytorch_lightning.callbacks.model_checkpoint import _is_local_file_protocol
 from pytorch_lightning.utilities import rank_zero_info
 
+from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.io.pl import TrainerContext
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import ckpt_to_dir
 
 
-class ModelCheckpoint(PTLModelCheckpoint):
+class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
 
     UNFINISHED_CHECKPOINT_SUFFIX = "-unfinished"
 

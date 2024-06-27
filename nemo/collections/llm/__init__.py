@@ -4,6 +4,7 @@ try:
 except ImportError:
     pass
 
+from nemo.collections.llm import tokenizer
 from nemo.collections.llm.api import export_ckpt, import_ckpt, pretrain, train, validate
 from nemo.collections.llm.gpt.data import (
     DollyDataModule,
@@ -78,4 +79,5 @@ __all__ = [
     "export_ckpt",
     "pretrain",
     "validate",
+    "tokenizer",
 ]

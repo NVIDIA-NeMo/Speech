@@ -97,7 +97,14 @@ class SquareRootConstantPolicy(_LRScheduler):
     """
 
     def __init__(
-        self, optimizer, *, constant_steps=None, constant_ratio=None, max_steps=None, min_lr=0.0, last_epoch=-1
+        self,
+        optimizer,
+        *,
+        constant_steps=None,
+        constant_ratio=None,
+        max_steps=None,
+        min_lr=0.0,
+        last_epoch=-1,
     ):
         assert not (
             constant_steps is not None and constant_ratio is not None
@@ -114,7 +121,7 @@ class SquareRootConstantPolicy(_LRScheduler):
         else:
             self.constant_steps = 0
 
-        self.constant_lr = 1 / (constant_steps ** 0.5)
+        self.constant_lr = 1 / (constant_steps**0.5)
         self.min_lr = min_lr
         super().__init__(optimizer, last_epoch)
 
@@ -280,6 +287,16 @@ class WarmupAnnealHoldPolicy(_LRScheduler):
 
         step = self.last_epoch
 
+        # Reset learning rate
+        if 'reset_lr' in self.optimizer.param_groups[0].keys():
+            reset_lr = self.optimizer.param_groups[0]['reset_lr']
+            num_steps = reset_lr['num_steps']
+            step -= num_steps
+            if reset_lr['if_init_step'] and reset_lr['reset_lr_steps']:
+                self.decay_steps -= num_steps
+                self.max_steps -= num_steps
+                self.optimizer.param_groups[0]['reset_lr']['if_init_step'] = False
+
         # Warmup steps
         if self.warmup_steps > 0 and step <= self.warmup_steps:
             return self._get_warmup_lr(step)
@@ -364,7 +381,7 @@ def _poly_decay(initial_lr, step, decay_steps, power, min_lr, cycle):
 
 def _noam_hold_annealing(initial_lr, step, warmup_steps, hold_steps, decay_rate, min_lr):
     # hold_steps = total number of steps to hold the LR, not the warmup + hold steps.
-    T_warmup_decay = max(1, warmup_steps ** decay_rate)
+    T_warmup_decay = max(1, warmup_steps**decay_rate)
     T_hold_decay = max(1, (step - hold_steps) ** decay_rate)
     lr = (initial_lr * T_warmup_decay) / T_hold_decay
     lr = max(lr, min_lr)
@@ -453,7 +470,15 @@ class CosineAnnealing(WarmupAnnealHoldPolicy):
 
 class NoamAnnealing(_LRScheduler):
     def __init__(
-        self, optimizer, *, d_model, warmup_steps=None, warmup_ratio=None, max_steps=None, min_lr=0.0, last_epoch=-1
+        self,
+        optimizer,
+        *,
+        d_model,
+        warmup_steps=None,
+        warmup_ratio=None,
+        max_steps=None,
+        min_lr=0.0,
+        last_epoch=-1,
     ):
         self._normalize = d_model ** (-0.5)
         assert not (
@@ -593,7 +618,7 @@ class T5InverseSquareRootAnnealing(SquareRootConstantPolicy):
         super().__init__(optimizer=optimizer, max_steps=max_steps, **kwargs, last_epoch=last_epoch, min_lr=min_lr)
 
     def _get_lr(self, step):
-        return [1 / (step ** 0.5) for _ in self.base_lrs]
+        return [1 / (step**0.5) for _ in self.base_lrs]
 
 
 class PolynomialDecayAnnealing(WarmupPolicy):

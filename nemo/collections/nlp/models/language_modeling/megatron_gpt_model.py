@@ -397,6 +397,15 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
 
         self.inference_params = None
 
+        # Reset learning rate params
+        self.if_init_step = True
+        self.reset_lr = self.cfg.get('reset_lr', False)
+        self.reset_lr_steps = self.cfg.get('reset_lr_steps', False)
+        if self.reset_lr and (not self.with_distributed_adam or not self.megatron_amp_O2):
+            raise ValueError(
+                'Learning rate reset feature is only supported with the distributed optmizer and megatron_amp_O2 for now.'
+            )
+
         # default to false since this doesn't work with sequence parallelism currently
         self.use_loss_mask = self.cfg.get('use_loss_mask', False)
 
@@ -762,6 +771,20 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         # Initialize userbuffer communicators.
         if self.initialize_ub:
             self.initialize_ub_func()
+
+        # Reset learning rate
+        if self.if_init_step and self.reset_lr:
+            num_groups = len(self._optimizer.param_groups)
+            for group in range(num_groups):
+                self._optimizer.param_groups[group]['lr'] = (
+                    0.0 if self.cfg.optim.sched.warmup_steps > 0 else self.cfg.optim.lr
+                )
+            self._optimizer.param_groups[0]['reset_lr'] = {
+                'num_steps': self.trainer.global_step,
+                'reset_lr_steps': True if self.reset_lr_steps else False,
+                'if_init_step': self.if_init_step,
+            }
+            self.if_init_step = False
 
         if self.rampup_batch_size:
             num_microbatch_calculator = apex.transformer.pipeline_parallel.utils._GLOBAL_NUM_MICROBATCHES_CALCULATOR

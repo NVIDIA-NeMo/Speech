@@ -2630,6 +2630,89 @@ jobs:
     #    }
     #  }
 
+  L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2:
+    needs: [cicd-test-container-setup]
+    runs-on: self-hosted-azure
+    timeout-minutes: 10
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+           python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+           trainer.devices=2 \
+           trainer.accelerator=gpu \
+           trainer.log_every_n_steps=1 \
+           trainer.val_check_interval=3 \
+           trainer.limit_val_batches=2 \
+           trainer.accumulate_grad_batches=1 \
+           trainer.max_steps=3 \
+           trainer.precision=bf16 \
+           trainer.gradient_clip_val=1.0 \
+           exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+           model.tensor_model_parallel_size=2 \
+           model.megatron_amp_O2=True \
+           model.optim.name=distributed_fused_adam \
+           model.optim.lr=2e-4 \
+           model.optim.sched.warmup_steps=2 \
+           model.optim.sched.constant_steps=2 \
+           model.optim.sched.min_lr=8e-5 \
+           model.max_position_embeddings=128 \
+           model.encoder_seq_length=128 \
+           model.data.seq_length=128 \
+           model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+           model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+           model.num_layers=8 \
+           model.hidden_size=256 \
+           model.num_attention_heads=8 \
+           model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+           model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+        
+           python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+           trainer.devices=2 \
+           trainer.accelerator=gpu \
+           trainer.log_every_n_steps=1 \
+           trainer.val_check_interval=3 \
+           trainer.limit_val_batches=2 \
+           trainer.accumulate_grad_batches=1 \
+           trainer.max_steps=6 \
+           trainer.precision=bf16 \
+           trainer.gradient_clip_val=1.0 \
+           exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+           exp_manager.resume_if_exists=True \
+           model.reset_lr=True \
+           model.tensor_model_parallel_size=2 \
+           model.megatron_amp_O2=True \
+           model.optim.name=distributed_fused_adam \
+           model.optim.lr=2e-4 \
+           model.optim.sched.warmup_steps=2 \
+           model.optim.sched.constant_steps=2 \
+           model.optim.sched.min_lr=8e-5 \
+           model.max_position_embeddings=128 \
+           model.encoder_seq_length=128 \
+           model.data.seq_length=128 \
+           model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+           model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+           model.num_layers=8 \
+           model.hidden_size=256 \
+           model.num_attention_heads=8 \
+           model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+           model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+
+           rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+           rm -rf examples/nlp/language_modeling/gpt_index_mappings
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
+
   L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     runs-on: self-hosted-azure
@@ -4296,6 +4379,7 @@ jobs:
       - L2_BioMegatron_Bert_NER_Task
       - L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2
+      - L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2

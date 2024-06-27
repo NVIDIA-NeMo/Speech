@@ -846,7 +846,9 @@ class MegatronBaseModel(NLPModel):
             if hasattr(self._cfg.optim, 'sched'):
                 sched_config = self._cfg.optim.sched
                 self._scheduler = prepare_lr_scheduler(
-                    optimizer=self._optimizer, scheduler_config=sched_config, train_dataloader=self._train_dl
+                    optimizer=self._optimizer,
+                    scheduler_config=sched_config,
+                    train_dataloader=self._train_dl,
                 )
 
         if getattr(self._cfg.optim, 'sched', None) is not None and self._scheduler is None:

@@ -115,6 +115,14 @@ model:
   seq_len_interpolation_factor: null # RoPE Interpolation factor for sequence length. This is used to build long-context models with RoPE ex: https://arxiv.org/abs/2306.15595.
   num_query_groups: null # Number of query groups for group query attention. If None, normal attention is used.
 
+  ## Reset learning rate schedule.
+  # 1. reset_lr=True, reset_lr_steps=False. When pre-training an existing checkpoint "from scratch" on a different dataset.
+  # 2. reset_lr=True, reset_lr_steps=True. When continuing training from an existing checkpoint with the same configuration.
+  #    Learning rate's max_steps and decay_steps will be recalculated as follows: max_steps -= completed_steps, decay_steps -= completed_steps where completed_steps is the number of steps already completed at the checkpoint.
+  #    This will help to reach the min_lr value by the end of training without changing trainer.max_steps.
+  reset_lr: False # Set to True to reset learning rate to initial learning rate. Only supported with distributed optmizer and megatron_amp_O2.
+  reset_lr_steps: False # Set to True to adjust learning rate's max_steps and decay_steps by subtracting number of steps already completed at the checkpoint.
+
   tokenizer:
     library: 'megatron'
     type: 'GPT2BPETokenizer'

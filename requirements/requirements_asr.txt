@@ -2,14 +2,12 @@ braceexpand
 editdistance
 einops
 g2p_en
-ipywidgets
 jiwer
 kaldi-python-io
 kaldiio
-lhotse>=1.22.0
+lhotse>=1.24.2
 librosa>=0.10.0
 marshmallow
-matplotlib
 packaging
 pyannote.core
 pyannote.metrics

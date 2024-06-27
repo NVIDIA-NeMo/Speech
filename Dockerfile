@@ -167,12 +167,12 @@ COPY tutorials /workspace/nemo/tutorials
 RUN printf "#!/bin/bash\njupyter lab --no-browser --allow-root --ip=0.0.0.0" >> start-jupyter.sh && \
   chmod +x start-jupyter.sh
 
-# If required, install AIS CLI
-RUN if [ "${REQUIRE_AIS_CLI}" = true ]; then \
-  INSTALL_MSG=$(/bin/bash scripts/installers/install_ais_cli_latest.sh); INSTALL_CODE=$?; \
+# If required, install AIS CLI and Python AIS SDK
+RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_ais_cli_latest.sh && pip install aistore); INSTALL_CODE=$?; \
   echo ${INSTALL_MSG}; \
   if [ ${INSTALL_CODE} -ne 0 ]; then \
   echo "AIS CLI installation failed"; \
+  if [ "${REQUIRE_AIS_CLI}" = true ]; then \
   exit ${INSTALL_CODE}; \
-  else echo "AIS CLI installed successfully"; fi \
-  else echo "Skipping AIS CLI installation"; fi
+  else echo "Skipping AIS CLI installation"; fi \
+  else echo "AIS CLI installed successfully"; fi

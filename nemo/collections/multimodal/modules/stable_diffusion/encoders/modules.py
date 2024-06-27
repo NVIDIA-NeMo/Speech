@@ -298,7 +298,7 @@ class TransformerEmbedder(AbstractEncoder):
 
 
 class BERTTokenizer(AbstractEncoder):
-    """ Uses a pretrained BERT tokenizer by huggingface. Vocab size: 30522 (?)"""
+    """Uses a pretrained BERT tokenizer by huggingface. Vocab size: 30522 (?)"""
 
     def __init__(self, device="cuda", vq_interface=True, max_length=77):
         super().__init__()
@@ -530,7 +530,10 @@ class FrozenOpenCLIPEmbedder(AbstractEncoder):
         print(f"Downloading clip with", arch, version, cache_dir)
         self.device = device
         model, _, _ = open_clip.create_model_and_transforms(
-            arch, device=torch.device("cpu"), pretrained=version, cache_dir=cache_dir,
+            arch,
+            device=torch.device("cpu"),
+            pretrained=version,
+            cache_dir=cache_dir,
         )
         del model.visual
         self.model = model
@@ -669,7 +672,11 @@ class FrozenMegatronCLIPEmbedder(AbstractEmbModel):
             legacy=legacy,
         )
 
-        _, self.text_transform = get_preprocess_fns(cfg, self.tokenizer, is_train=False,)
+        _, self.text_transform = get_preprocess_fns(
+            cfg,
+            self.tokenizer,
+            is_train=False,
+        )
         self.max_length = cfg.text.get("max_position_embeddings")
 
     def load_model(self, cfg, state_dict):
@@ -699,8 +706,7 @@ class FrozenMegatronCLIPEmbedder(AbstractEmbModel):
     def _vocab_size_with_padding(self, orig_vocab_size, make_vocab_size_divisible_by, tensor_model_parallel_size):
         after = orig_vocab_size
         multiple = make_vocab_size_divisible_by * tensor_model_parallel_size
-        while (after % multiple) != 0:
-            after += 1
+        after = ((after + multiple - 1) // multiple) * multiple
         return after
 
     def forward(self, text):
@@ -765,7 +771,11 @@ class FrozenOpenCLIPEmbedder2(AbstractEmbModel):
         super().__init__()
         assert layer in self.LAYERS
         self.projection_dim = 1280
-        model, _, _ = open_clip.create_model_and_transforms(arch, device=torch.device("cpu"), pretrained=version,)
+        model, _, _ = open_clip.create_model_and_transforms(
+            arch,
+            device=torch.device("cpu"),
+            pretrained=version,
+        )
         del model.visual
         self.model = model
 

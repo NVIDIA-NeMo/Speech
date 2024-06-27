@@ -26,8 +26,7 @@ def get_vocab_size(
 
     after = vocab_size
     multiple = make_vocab_size_divisible_by * config.tensor_model_parallel_size
-    while (after % multiple) != 0:
-        after += 1
+    after = ((after + multiple - 1) // multiple) * multiple
     logging.info(
         f"Padded vocab_size: {after}, original vocab_size: {vocab_size}, dummy tokens:" f" {after - vocab_size}."
     )

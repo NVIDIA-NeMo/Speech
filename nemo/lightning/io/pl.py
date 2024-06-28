@@ -56,7 +56,7 @@ class MegatronCheckpointIO(CheckpointIO):
 
     def __init__(
         self,
-        save_ckpt_format: str = 'zarr',
+        save_ckpt_format: str = 'torch_dist',
     ):
         self.save_ckpt_format = save_ckpt_format
         self.save_sharded_strategy = self._determine_dist_ckpt_save_strategy()

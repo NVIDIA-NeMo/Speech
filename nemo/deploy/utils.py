@@ -16,6 +16,7 @@ import typing
 
 import numpy as np
 import torch
+from PIL import Image
 from pytriton.model_config import Tensor
 
 
@@ -62,6 +63,11 @@ def str_ndarray2list(str_ndarray: np.ndarray) -> typing.List[str]:
     str_ndarray = np.char.decode(str_ndarray, encoding="utf-8")
     str_ndarray = str_ndarray.squeeze(axis=-1)
     return str_ndarray.tolist()
+
+
+def ndarray2img(img_ndarray: np.ndarray) -> typing.List[Image.Image]:
+    img_list = [Image.fromarray(i) for i in img_ndarray]
+    return img_list
 
 
 def cast_output(data, required_dtype):

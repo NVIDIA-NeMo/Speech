@@ -203,6 +203,50 @@ file followed by a graceful exit from the run. The checkpoint saved upon preempt
 This feature is useful to increase utilization on clusters.
 The ``PreemptionCallback`` is enabled by default. To disable it simply add ``create_preemption_callback: False`` under exp_manager in the config YAML file. 
 
+Stragglers Detection
+----------------------
+
+.. _exp_manager_straggler_det_support-label:
+
+.. note::
+    Stragglers Detection feature is included in the optional NeMo resiliency package.
+
+Distributed training can be affected by stragglers, which are slow workers that slow down the overall training process. 
+NeMo provides a straggler detection feature that can identify slower GPUs.
+
+This feature is implemented in the ``StragglerDetectionCallback``, which is disabled by default.
+
+The callback computes normalized GPU performance scores, which are scalar values ranging from 0.0 (worst) to 1.0 (best). 
+A performance score can be interpreted as the ratio of current performance to reference performance.
+
+There are two types of performance scores provided by the callback:
+    - Relative GPU performance score: The best-performing GPU in the workload is used as a reference.
+    - Individual GPU performance score: The best historical performance of the GPU is used as a reference.
+
+Examples:
+    - If the relative performance score is 0.5, it means that a GPU is twice slower than the fastest GPU.
+    - If the individual performance score is 0.5, it means that a GPU is twice slower than its best observed performance.
+
+If a GPU performance score drops below the specified threshold, it is identified as a straggler.
+
+To enable straggler detection, add ``create_straggler_detection_callback: True`` under exp_manager in the config YAML file. 
+You might also want to adjust the callback parameters:
+
+.. code-block:: yaml
+
+    exp_manager:
+        ...
+        create_straggler_detection_callback: True
+        straggler_detection_callback_params:
+            report_time_interval: 300      # Interval [seconds] of the straggler check
+            calc_relative_gpu_perf: True   # Calculate relative GPU performance
+            calc_individual_gpu_perf: True # Calculate individual GPU performance
+            num_gpu_perf_scores_to_log: 5       # Log 5 best and 5 worst GPU performance scores, even if no stragglers are detected
+            gpu_relative_perf_threshold: 0.7    # Threshold for relative GPU performance scores
+            gpu_individual_perf_threshold: 0.7  # Threshold for individual GPU performance scores
+            stop_if_detected: True              # Terminate the workload if stragglers are detected
+
+Straggler detection might involve inter-rank synchronization, and should be invoked with reasonable frequency (e.g. every few minutes).
 
 .. _nemo_multirun-label:
 

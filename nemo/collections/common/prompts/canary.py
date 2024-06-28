@@ -16,9 +16,9 @@ class CanaryPromptFormatter(PromptFormatter):
             "template": f"{CANARY_BOS}|source_lang||task||target_lang||pnc|",
             "slots": {
                 "source_lang": Modality.Text,
-                "task": Modality.Text,
+                "task": Modality.TextLiteral("asr", "ast", "s2t_translation", "<|transcribe|>", "<|translate|>"),
                 "target_lang": Modality.Text,
-                "pnc": Modality.Text,
+                "pnc": Modality.TextLiteral("yes", "no", "<|pnc|>", "<|nopnc|>"),
             },
         },
         OUTPUT_ROLE: {

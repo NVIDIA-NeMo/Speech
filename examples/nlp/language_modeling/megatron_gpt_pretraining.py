@@ -13,6 +13,8 @@
 # limitations under the License.
 
 
+from pathlib import Path
+
 # To suppress BF16 compile related issue in the CI runs with turing/V100
 import torch._dynamo
 import torch.multiprocessing as mp
@@ -20,6 +22,7 @@ from omegaconf.omegaconf import OmegaConf, open_dict
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
@@ -37,7 +40,25 @@ def main(cfg) -> None:
     trainer = MegatronTrainerBuilder(cfg).create_trainer()
     exp_manager(trainer, cfg.exp_manager)
 
-    model = MegatronGPTModel(cfg.model, trainer)
+    # Continual training
+    if cfg.model.get("restore_from_path") is not None:
+        # Option 1: Restore only the model weights from a .nemo file
+        logging.info(f"Continual training: loading weights from {cfg.model.restore_from_path}")
+        model = MegatronGPTModel.restore_from(
+            restore_path=cfg.model.restore_from_path,
+            override_config_path=cfg.model,
+            trainer=trainer,
+            save_restore_connector=NLPSaveRestoreConnector(),
+        )
+    elif cfg.model.get("restore_from_ckpt") is not None:
+        # Option 2: Restore both model weights and optimizer states from a PTL checkpoint
+        logging.info(f"Continual training: loading weights and optimizer states from {cfg.model.restore_from_ckpt}")
+        trainer.ckpt_path = Path(cfg.model.restore_from_ckpt)
+        model = MegatronGPTModel(cfg.model, trainer)
+
+    # Start new pretraining or resume from a checkpoint if it exists
+    else:
+        model = MegatronGPTModel(cfg.model, trainer)
 
     trainer.fit(model)
 

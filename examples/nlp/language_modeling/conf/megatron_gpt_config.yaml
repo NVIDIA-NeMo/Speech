@@ -3,7 +3,6 @@ defaults:
   - optional tp_overlap@model.ub_tp_comm_overlap_cfg:
 
 name: megatron_gpt
-restore_from_path: null # used when starting from a .nemo file
 
 trainer:
   devices: 1
@@ -66,6 +65,10 @@ exp_manager:
     async_save: False # Set to True to enable async checkpoint save. Currently works only with distributed checkpoints
 
 model:
+  # The following two settings are used for continual training:
+  restore_from_path: null # Set this to a .nemo file path to restore only the model weights
+  restore_from_ckpt: null # Set this to a training ckpt path to restore both model weights and optimizer states
+
   # use GPTModel from megatron.core
   mcore_gpt: True
 

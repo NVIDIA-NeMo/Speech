@@ -22,6 +22,7 @@ from omegaconf import DictConfig
 from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
 from nemo.collections.asr.parts.submodules import multitask_beam_decoding as beam_decode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
+from nemo.collections.common.prompts.canary import CanaryPromptFormatter
 from nemo.collections.common.tokenizers import CanaryTokenizer
 
 
@@ -274,6 +275,51 @@ class TestEncDecMultiTaskModel:
         asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
         assert isinstance(asr_model.decoding.decoding, beam_decode.TransformerAEDBeamInfer)
         assert asr_model.decoding.decoding.search_type == "default"
+
+    @pytest.mark.unit
+    def test_prompt_change(self, asr_model):
+        assert asr_model.prompt_format == 'canary'
+        assert isinstance(asr_model.prompt, CanaryPromptFormatter)
+
+        # Default change prompt
+        asr_model.change_prompt()
+        assert asr_model.cfg.prompt_defaults is None
+
+        prompt_defaults = asr_model.prompt.get_default_dialog_slots()
+        prompt_defaults[0]['slots']['pnc'] = 'no'
+        asr_model.change_prompt(prompt_defaults=prompt_defaults)
+
+        assert asr_model.cfg.prompt_defaults[0]['slots']['pnc'] == 'no'
+
+    @pytest.mark.unit
+    def test_prompt_change_subclass(self, asr_model):
+        assert asr_model.prompt_format == 'canary'
+        assert isinstance(asr_model.prompt, CanaryPromptFormatter)
+
+        class CanaryPromptFormatterSubclass(CanaryPromptFormatter):
+            NAME = "canary2"
+
+        # Default change prompt
+        asr_model.change_prompt()
+        assert asr_model.cfg.prompt_defaults is None
+
+        prompt_defaults = asr_model.prompt.get_default_dialog_slots()
+        prompt_defaults[0]['slots']['pnc'] = 'no'
+        asr_model.change_prompt(prompt_format='canary2', prompt_defaults=prompt_defaults)
+
+        assert asr_model.cfg.prompt_format == 'canary2'
+        assert asr_model.cfg.prompt_defaults[0]['slots']['pnc'] == 'no'
+        assert isinstance(asr_model.prompt, CanaryPromptFormatterSubclass)
+
+        user_prompt = asr_model.prompt.get_default_dialog_slots()[0]
+        slots = user_prompt['slots']
+        slots['source_lang'] = 'en'
+        slots['target_lang'] = 'en'
+        slots['task'] = 'asr'
+        slots['pnc'] = 'no'
+        ans = asr_model.prompt.encode_dialog([user_prompt])
+        recovered = asr_model.tokenizer.ids_to_text(ans["input_ids"])
+        assert recovered == "<|startoftranscript|><|en|><|transcribe|><|en|><|nopnc|>"
 
     @pytest.mark.unit
     def test_transcribe_single_file(self, asr_model, test_data_dir):

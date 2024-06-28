@@ -14,13 +14,14 @@
 
 import os
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from math import ceil
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
-from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
 from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
@@ -386,6 +387,59 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
             self.cfg.prompt_format = prompt_format
 
         logging.info(f"Changed decoder to output to {vocabulary} vocabulary.")
+
+    def change_prompt(
+        self, prompt_format: Optional[str] = None, prompt_defaults: Optional[List[Dict[str, Any]]] = None
+    ):
+        """
+        Changes the prompt format used during Multi Task decoding process.
+
+        Args:
+            prompt_format: A string alias of the object that represents the prompt structure.
+                If not None, it will be used to update the prompt format.
+            prompt_defaults: A dictionary of default values for the prompt format.
+        """
+        if prompt_format is not None:
+            self.prompt_format = prompt_format
+
+        if prompt_defaults is not None:
+            # Perform some assertions on the prompt defaults contents
+            # Must be a list-like object
+            if not isinstance(prompt_defaults, Sequence):
+                raise ValueError("`prompt_defaults` must be a list of dictionaries")
+
+            # Must contain dict-like objects
+            for item in prompt_defaults:
+                if not isinstance(item, Mapping):
+                    raise ValueError("`prompt_defaults` must be a list of dictionaries")
+
+                # Each dict item must have a `role` key
+                if 'role' not in item:
+                    raise ValueError(
+                        "`prompt_defaults` must have a `role` key for each item in the list of dictionaries"
+                    )
+
+                if 'slots' not in item:
+                    raise ValueError(
+                        "`prompt_defaults` must have a `slots` key for each item in the list of dictionaries"
+                    )
+
+            # Cast to OmegaConf if not already
+            if not isinstance(prompt_defaults, ListConfig):
+                prompt_defaults = OmegaConf.create(prompt_defaults)
+
+        prompt_cls = PromptFormatter.resolve(self.prompt_format)
+        self.prompt = prompt_cls(
+            tokenizer=self.tokenizer,
+            defaults=OmegaConf.to_container(pd) if (pd := self.cfg.prompt_defaults) is not None else None,
+        )
+
+        # Update config
+        with open_dict(self.cfg):
+            self.cfg.prompt_format = self.prompt_format
+            self.cfg.prompt_defaults = prompt_defaults
+
+        logging.info(f"Changed prompt format to `{self.prompt_format}`")
 
     @torch.no_grad()
     def transcribe(

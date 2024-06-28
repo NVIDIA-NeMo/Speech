@@ -20,22 +20,38 @@ BOS_SLOT = "|bos|"
 EOS_SLOT = "|eos|"
 
 
-class Modality(Enum):
+class BaseModalityType:
+    @staticmethod
+    def matches(value: Any) -> bool:
+        raise NotImplementedError
+
+
+class Text(BaseModalityType):
+    """Modality for text values."""
+
+    @staticmethod
+    def matches(value: str) -> bool:
+        return isinstance(value, str)
+
+
+class TextLiteral(BaseModalityType):
+    def __init__(self, *items):
+        self.allowed_values = items
+
+    def matches(self, value: str) -> bool:
+        return isinstance(value, str) and value in self.allowed_values
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.allowed_values})"
+
+
+class Modality:
     """
     Modalities supported as PromptFormatter slot values.
     """
 
-    Text = "text"
-
-    def matches(self, value: Any) -> bool:
-        """
-        Checks if the provided value is compatible with an instance of Modality.
-        """
-        match self:
-            case Modality.Text:
-                return isinstance(value, str)
-            case _:
-                return False
+    Text = Text
+    TextLiteral = TextLiteral
 
 
 class PromptFormatter(ABC):

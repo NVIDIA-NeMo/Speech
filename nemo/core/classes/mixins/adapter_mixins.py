@@ -15,7 +15,7 @@
 import inspect
 from abc import ABC
 from dataclasses import dataclass, is_dataclass
-from typing import List, Optional, Set, Tuple, Union
+from typing import Iterable, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -123,8 +123,72 @@ def _prepare_default_adapter_config(*, global_key: str, meta_key: str, cfg: Dict
     return cfg
 
 
+def update_module_class_with_adapter_class(
+    module: nn.Module, cfg: DictConfig, update_config: bool = True, verbose: bool = True
+):
+    """
+    Recursively walks through the module and its children, checking if the class is registered in the adapter registry.
+    If it is, the module's class is swapped with the registered adapter class.
+    Also updates the config with the adapter classpath, if required.
+
+    Args:
+        module: torch.nn.Module to recurse through.
+        cfg: DictConfig object or dict that contains the config of the module.
+        update_config: Bool, whether to update the config with the adapter classpath.
+        verbose: Bool, whether to log the changes made to the module and config.
+    """
+
+    def inplace_recursive_walk_dict(d: Union[dict, DictConfig], base_class_path: str, adapter_class_path: str):
+        """
+        Utility function to recursively walk through a dictionary and update the classpath if required.
+        Update is done inplace
+
+        Args:
+            d: Dict to recurse through.
+            base_class_path: The str classpath of the base class.
+            adapter_class_path: The str classpath of the adapter class.
+        """
+        for k, v in d.items():  # Loop through all k, v pairs
+            if isinstance(v, (dict, DictConfig)):  # If value is a dict, recurse through it
+                inplace_recursive_walk_dict(v, base_class_path, adapter_class_path)
+
+            # If key is target and value is base class, update the value to adapter class
+            elif k in ('target', '_target_') and isinstance(v, str) and v == base_class_path:
+                if verbose:
+                    logging.info(
+                        f"Updating config from {v} (base class) to {adapter_class_path} (adapter compatible " f"class)"
+                    )
+
+                # Update the value inplace
+                d[k] = adapter_class_path
+
+    if not isinstance(module, AdapterModuleMixin):
+        info = get_registered_adapter(module.__class__)
+        if info is not None:
+            if verbose:
+                logging.info(
+                    f"Swapping class {info.base_class_path} with adapter compatible class: "
+                    f"{info.adapter_class_path}"
+                )
+
+            # Swap the registered class with its registered adapter class.
+            # Due to direct inheritance of the Adapter subclass from the original class,
+            # the module's class container will be replaced with the adapter class.
+
+            adapter_cls = info.adapter_class
+            module.__class__ = adapter_cls
+
+            if update_config:
+                # Update the adapter config with the registered adapter config
+                # Find the location where the original module was registered in config
+                # and replace it with the adapter classpath.
+                original_classpath = info.base_class_path
+                adapter_classpath = info.adapter_class_path
+                inplace_recursive_walk_dict(cfg, original_classpath, adapter_classpath)
+
+
 class AdapterModuleMixin(ABC):
-    """ Generic Adapter Mixin that can augment any torch.nn.Module with Adapter module support.
+    """Generic Adapter Mixin that can augment any torch.nn.Module with Adapter module support.
 
     This mixin class adds a hierarchical way to add any type of Adapter modules to a pre-existing module.
     Since Models are inherently also nn.Module, this mixin can be attached to any Model or Module.
@@ -171,21 +235,7 @@ class AdapterModuleMixin(ABC):
             cfg = DictConfig(cfg)
 
         adapter_types = self.get_accepted_adapter_types()
-        _pass_types = False
-        if len(adapter_types) > 0:
-            test = model_utils.import_class_by_path(cfg._target_)
-            for _type in adapter_types:
-                # TODO: (@adithyare) should revisit if subclass is the best check...
-                if issubclass(test, _type):
-                    _pass_types = True
-                    break
-            if not _pass_types:
-                raise ValueError(
-                    f"Config: \n{OmegaConf.to_yaml(cfg)}\n"
-                    f"It creates adapter class {test} \n"
-                    f"that is not in the list of accepted adapter types.\n"
-                    f"Accepted adapters: {[t for t in adapter_types]}"
-                )
+        self.check_supported_adapter_type_(cfg, adapter_types)
 
         # Convert to DictConfig from dict or Dataclass
         if is_dataclass(cfg):
@@ -363,7 +413,9 @@ class AdapterModuleMixin(ABC):
 
         self._accepted_adapter_types = set(types)
 
-    def get_accepted_adapter_types(self,) -> Set[type]:
+    def get_accepted_adapter_types(
+        self,
+    ) -> Set[type]:
         """
         Utility function to get the set of all classes that are accepted by the module.
 
@@ -543,9 +595,38 @@ class AdapterModuleMixin(ABC):
         output = adapter_strategy(input, adapter_module, module=self)
         return output
 
+    def check_supported_adapter_type_(
+        self, adapter_cfg: DictConfig, supported_adapter_types: Optional[Iterable[type]] = None
+    ):
+        """
+        Utility method to check if the adapter module is a supported type by the module.
+
+        This method should be called by the subclass to ensure that the adapter module is a supported type.
+        """
+        _pass_types = False
+
+        if supported_adapter_types is None:
+            supported_adapter_types = self.get_accepted_adapter_types()
+
+        if len(supported_adapter_types) > 0:
+            test = model_utils.import_class_by_path(adapter_cfg['_target_'])
+            for _type in supported_adapter_types:
+                # TODO: (@adithyare) should revisit if subclass is the best check...
+                if issubclass(test, _type):
+                    _pass_types = True
+                    break
+
+            if not _pass_types:
+                raise ValueError(
+                    f"Config: \n{OmegaConf.to_yaml(adapter_cfg)}\n"
+                    f"It creates adapter class {test} \n"
+                    f"that is not in the list of accepted adapter types.\n"
+                    f"Accepted adapters: {[t for t in supported_adapter_types]}"
+                )
+
 
 class AdapterModelPTMixin(AdapterModuleMixin):
-    """ Adapter Mixin that can augment a ModelPT subclass with Adapter support.
+    """Adapter Mixin that can augment a ModelPT subclass with Adapter support.
 
     This mixin class should be used only with a top level ModelPT subclass.
     This mixin class adds several utility methods which should be subclassed and overriden to
@@ -641,7 +722,9 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                 self.cfg.adapters = OmegaConf.create({})
 
             self.cfg.adapters = _prepare_default_adapter_config(
-                global_key=self.adapter_global_cfg_key, meta_key=self.adapter_metadata_cfg_key, cfg=self.cfg.adapters,
+                global_key=self.adapter_global_cfg_key,
+                meta_key=self.adapter_metadata_cfg_key,
+                cfg=self.cfg.adapters,
             )
 
             # If the adapter is not being restored, force unique name to be provided for all adapters.
@@ -970,6 +1053,19 @@ class AdapterModelPTMixin(AdapterModuleMixin):
             if isinstance(module, AdapterModuleMixin):
                 module.adapter_cfg = cfg
 
+    def replace_adapter_compatible_modules(self, update_config: bool = True, verbose: bool = True):
+        """
+        Utility method to replace all child modules with Adapter variants, if they exist.
+        Does NOT recurse through children of children modules (only immediate children).
+
+        Args:
+            update_config: A flag that determines if the config should be updated or not.
+            verbose: A flag that determines if the method should log the changes made or not.
+        """
+        # Update the given module itself, and then all its children modules
+        for name, mod in self.named_modules():
+            update_module_class_with_adapter_class(mod, cfg=self.cfg, update_config=update_config, verbose=verbose)
+
     @property
     def adapter_module_names(self) -> List[str]:
         """
@@ -982,6 +1078,22 @@ class AdapterModelPTMixin(AdapterModuleMixin):
 
         Returns:
             A list of str, one for each of the adapter modules that are supported. By default, the subclass
-            should support the "global adapter" ('').
+            should support the "default adapter" ('').
         """
         return ['']
+
+    @property
+    def default_adapter_module_name(self) -> Optional[str]:
+        """
+        Name of the adapter module that is used as "default" if a name of '' is provided.
+
+        .. note::
+
+            Subclasses should override this property and return a str name of the module
+            that they wish to denote as the default.
+
+        Returns:
+            A str name of a module, which is denoted as 'default' adapter or None. If None, then no default
+            adapter is supported.
+        """
+        return None

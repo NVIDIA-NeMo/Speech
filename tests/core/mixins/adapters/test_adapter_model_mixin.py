@@ -14,12 +14,12 @@
 import os
 import shutil
 import tempfile
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 import pytest
 import torch
 from hydra.utils import instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.core import ModelPT, NeuralModule
 from nemo.core.classes.mixins import adapter_mixin_strategies, adapter_mixins
@@ -28,7 +28,7 @@ from nemo.utils import logging, logging_mode
 
 
 class DefaultModule(NeuralModule):
-    """ Define a default neural module (without adapter support)"""
+    """Define a default neural module (without adapter support)"""
 
     def __init__(self):
         super().__init__()
@@ -51,7 +51,7 @@ class DefaultModule(NeuralModule):
 
 
 class DefaultModuleAdapter(DefaultModule, AdapterModuleMixin):
-    """ Subclass the DefaultModule, adding adapter module support"""
+    """Subclass the DefaultModule, adding adapter module support"""
 
     def forward(self, x):
         x = super(DefaultModuleAdapter, self).forward(x)
@@ -66,7 +66,7 @@ class DefaultModuleAdapter(DefaultModule, AdapterModuleMixin):
 
 
 class DefaultModelAdapterMixin(AdapterModelPTMixin):
-    """ Mixin class that implements this model's specific overrides to AdapterModelPTMixin
+    """Mixin class that implements this model's specific overrides to AdapterModelPTMixin
     It will container two modules, an encoder and a decoder, and both can have adapters.
     By default, encoder adapters are enabled, and decoder adapters are diabled. Decoder adapters
     can be enabled via the global_cfg in model.cfg.adapters.
@@ -79,13 +79,13 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
     def setup_adapters(self):
         supports_adapters = False
 
-        # Check the inheriting class' modules supports adapters or not
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            supports_adapters |= True
+        # At least the encoder must extend AdapterModuleMixin
+        valid_adapter_names = [x for x in self.adapter_module_names if x != '']
+        for module_name in valid_adapter_names:
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                supports_adapters |= True
 
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            supports_adapters |= True
-
+        # If adapters are supported, setup the adapter config + any modules (pre-existing adapter modules)
         if supports_adapters:
             super().setup_adapters()
 
@@ -96,66 +96,98 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
         # Resolve module name and adapter name
         module_name, adapter_name = self.resolve_adapter_module_name_(name)
 
-        # Try to retrieve global adapter config
-        global_config = self._get_global_cfg()
+        # Use + as a splitter, in order to share one name across multiple modules
+        if '+' in module_name:
+            module_names = module_name.split('+')
+        else:
+            module_names = [module_name]
 
-        # forward the method call to the individual modules
-        # If module name is empty, it is a global adapter, otherwise it is a local adapter
-        if (module_name == '' and global_config.get('encoder_adapter', True)) or (module_name == 'encoder'):
-            if hasattr(self, 'encoder'):
-                self.encoder.add_adapter(name, cfg)
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+        default_module_name = self.default_adapter_module_name
 
-        if (module_name == '' and global_config.get('decoder_adapter', False)) or (module_name == 'decoder'):
-            if hasattr(self, 'decoder'):
-                self.decoder.add_adapter(name, cfg)
+        # Update the model.cfg with information about the new adapter from cfg
+        for module_name in module_names:
+            # Check if encoder adapters should be added
+            if module_name == '':
+                for default in default_module_name:  # This model has multiple default modules
+                    if hasattr(self, default):
+                        # Dispatch the call to the default model.
+                        getattr(self, default).add_adapter(name=name, cfg=cfg)
+
+            elif module_name in valid_module_names:
+                # Check if module exists
+                if hasattr(self, module_name):
+                    # Dispatch the call to the module.
+                    getattr(self, module_name).add_adapter(name=name, cfg=cfg)
 
     def set_enabled_adapters(self, name=None, enabled: bool = True):
         # check if valid model with some adapter support
         super().set_enabled_adapters(name, enabled)
 
-        # Resolve module name and adapter name
+        # Resolve the module name and adapter name
         if name is not None:
             module_name, _ = self.resolve_adapter_module_name_(name)
         else:
             module_name = None
 
-        # Try to retrieve global adapter config
-        global_config = self._get_global_cfg()
+        # Use + as a splitter, in order to share one name across multiple modules
+        if module_name is not None and '+' in module_name:
+            module_names = module_name.split('+')
+        else:
+            module_names = [module_name]
 
-        # Forward the method call to the individual modules
-        if name is None or global_config.get('encoder_adapter', True) or module_name in ('', 'encoder'):
-            if hasattr(self, 'encoder') and self.encoder.is_adapter_available():
-                self.encoder.set_enabled_adapters(name, enabled)
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+        default_module_name = self.default_adapter_module_name
 
-        if name is None or global_config.get('decoder_adapter', False) or module_name == 'decoder':
-            if hasattr(self, 'decoder') and self.decoder.is_adapter_available():
-                self.decoder.set_enabled_adapters(name, enabled)
+        # Check if default module name is None or not
+        if default_module_name is None:
+            raise ValueError(
+                f"Default module name is None. Class {self.__class__.__name__} must implement "
+                f"`default_adapter_module_name`"
+            )
+
+        # Forward the method call to the individual modules if they exist
+        for module_name in module_names:
+            # Check if encoder adapters should be used
+
+            if module_name == '':
+                for default in default_module_name:
+                    if hasattr(self, default) and isinstance(getattr(self, default), AdapterModuleMixin):
+                        if getattr(self, default).is_adapter_available():
+                            # Dispatch the call to the default model.
+                            getattr(self, default).set_enabled_adapters(name=name, enabled=enabled)
+
+            elif module_name in valid_module_names:
+                if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                    if getattr(self, module_name).is_adapter_available():
+                        # Dispatch the call to the module.
+                        getattr(self, module_name).set_enabled_adapters(name=name, enabled=enabled)
 
     def get_enabled_adapters(self) -> list:
         enabled_adapters = super().get_enabled_adapters()
 
-        # Forward the method call to the individual modules
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            encoder_adapters = self.encoder.get_enabled_adapters()
-            enabled_adapters.extend(encoder_adapters)
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
 
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            decoder_adapters = self.decoder.get_enabled_adapters()
-            enabled_adapters.extend(decoder_adapters)
+        # Check if encoder adapters should be used or are enabled
+        for module_name in valid_module_names:
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                enabled_adapters.extend(getattr(self, module_name).get_enabled_adapters())
+
+        enabled_adapters = list(sorted(list(set(enabled_adapters))))
 
         return enabled_adapters
 
     def is_adapter_available(self) -> bool:
         adapters_available = super().is_adapter_available()
 
-        # Try to retrieve global adapter config
-        # Forward the method call to the individual modules
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            print("Encoder is adapter available", self.encoder.is_adapter_available())
-            adapters_available |= self.encoder.is_adapter_available()
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
 
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            adapters_available |= self.decoder.is_adapter_available()
+        # Forward the method call to the individual modules
+        for module_name in valid_module_names:
+            print("Module name", module_name)
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                adapters_available |= getattr(self, module_name).is_adapter_available()
+                print("Adapter available for module", module_name, getattr(self, module_name).is_adapter_available())
 
         return adapters_available
 
@@ -197,6 +229,19 @@ class DefaultModelAdapterMixin(AdapterModelPTMixin):
     def adapter_module_names(self) -> list:
         valid_adapter_modules = ['', 'encoder', 'decoder']
         return valid_adapter_modules
+
+    @property
+    def default_adapter_module_name(self) -> Optional[List[str]]:
+        global_config = self._get_global_cfg()
+        default_modules = []
+        encoder_adapter = global_config.get('encoder_adapter', True)
+        decoder_adapter = global_config.get('decoder_adapter', False)
+
+        if encoder_adapter:
+            default_modules.append('encoder')
+        if decoder_adapter:
+            default_modules.append('decoder')
+        return default_modules
 
 
 class DefaultAdapterModel(ModelPT, DefaultModelAdapterMixin):
@@ -301,6 +346,23 @@ class TestAdapterModelMixin:
 
         logging._logger.propagate = False
         logging.set_verbosity(original_verbosity)
+
+    @pytest.mark.unit
+    def test_base_model_replace_adapter_compatible_modules(self, caplog):
+        cfg = get_model_config(in_features=50, update_adapter_cfg=False)
+        model = DefaultAdapterModel(cfg)
+
+        with pytest.raises(AttributeError):
+            model.add_adapter(name='adapter_0', cfg=get_adapter_cfg())
+
+        # Replace the modules of the model dynamically to support adapters
+        model.replace_adapter_compatible_modules()
+
+        assert isinstance(model.encoder, AdapterModuleMixin)
+        assert model.encoder.is_adapter_available() is False
+
+        model.add_adapter(name='encoder:adapter_0', cfg=get_adapter_cfg())
+        assert model.encoder.is_adapter_available() is True
 
     @pytest.mark.unit
     def test_single_adapter(self):
@@ -934,8 +996,18 @@ class TestAdapterModelMixin:
             assert (original_state_dict[ogkey] - restored_state_dict[newkey]).abs().mean() < 1e-6
 
     @pytest.mark.unit
-    @pytest.mark.parametrize("decoder", ["adapter_0",])  # "decoder:adapter_0"
-    @pytest.mark.parametrize("encoder", ["adapter_1",])  # "encoder:adapter_1"
+    @pytest.mark.parametrize(
+        "decoder",
+        [
+            "adapter_0",
+        ],
+    )  # "decoder:adapter_0"
+    @pytest.mark.parametrize(
+        "encoder",
+        [
+            "adapter_1",
+        ],
+    )  # "encoder:adapter_1"
     def test_multiple_save_load_adapter_with_multiple_load(self, decoder, encoder):
         # create a model config, but do not add global_cfg to it
         # we want to test just module level adapter

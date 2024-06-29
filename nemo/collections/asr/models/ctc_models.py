@@ -880,6 +880,10 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         return results
 
     @property
+    def adapter_module_names(self) -> List[str]:
+        return ['', 'encoder', 'decoder']
+
+    @property
     def wer(self):
         return self._wer
 

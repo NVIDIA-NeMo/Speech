@@ -16,14 +16,13 @@ import torch
 from torch import nn as nn
 from torch.nn import LayerNorm
 
+from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
 from nemo.collections.asr.parts.submodules.conformer_modules import ConformerConvolution, ConformerFeedForward
 from nemo.collections.asr.parts.submodules.multi_head_attention import (
     MultiHeadAttention,
     RelPositionMultiHeadAttention,
 )
-from nemo.collections.common.parts import adapter_modules
 from nemo.core.classes.mixins import AccessMixin
-from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 
 __all__ = ['SqueezeformerLayer', 'ConformerFeedForward', 'SqueezeformerLayer']
 
@@ -57,7 +56,7 @@ class ScaleBiasLayer(torch.nn.Module):
         return x * scale + bias
 
 
-class SqueezeformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
+class SqueezeformerLayer(torch.nn.Module, AttentionAdapterModuleMixin, AccessMixin):
     """A single block of the Squeezeformer encoder.
 
     Args:
@@ -196,64 +195,6 @@ class SqueezeformerLayer(torch.nn.Module, AdapterModuleMixin, AccessMixin):
             self.register_accessible_tensor(name='encoder', tensor=x)
 
         return x
-
-    def forward_single_enabled_adapter_(
-        self,
-        input: dict,
-        adapter_module: torch.nn.Module,
-        *,
-        adapter_name: str,
-        adapter_strategy: 'nemo.core.classes.mixins.adapter_mixin_strategies.AbstractAdapterStrategy',
-    ):
-        """
-        Perform the forward step of a single adapter module on some input data.
-
-        **Note**: Subclasses can override this method to accommodate more complicate adapter forward steps.
-
-        Args:
-            input: Dictionary of packed tensors. The dict should contain at least
-                `x`: output tensor
-                `loc`: Semantic location in module where this adapter was called
-                `att_mask`: Optional, Attention mask
-                `pos_emb`: Optional, Positional Embedding for Relative Positional Encoding.
-                The output tensor of the calling module is the input to the first adapter, whose output
-                is then chained to the next adapter until all adapters are consumed.
-            adapter_module: The adapter module that is currently required to perform the forward pass.
-            adapter_name: The resolved name of the adapter that is undergoing the current forward pass.
-            adapter_strategy: A subclass of `AbstractAdapterStrategy`, that determines how the
-                output of the adapter should be merged with the input, or if it should be merged at all.
-
-        Returns:
-            The result tensor, after the current active adapter has finished its forward pass.
-        """
-        # (input: torch.Tensor, adapter: torch.nn.Module, *, module: 'AdapterModuleMixin')
-        x = input['x']
-        loc = input['loc']
-        att_mask = input.get('att_mask', None)
-        pos_emb = input.get('pos_emb', None)
-
-        if isinstance(adapter_module, adapter_modules.LinearAdapter) and loc == 'post':
-            output = adapter_strategy(x, adapter_module, module=self)
-
-        elif isinstance(adapter_module, MultiHeadAttention) and loc == 'mha':
-            if self.self_attention_model == 'rel_pos':
-                x = dict(query=x, key=x, value=x, mask=att_mask, pos_emb=pos_emb)
-                output = adapter_strategy(x, adapter_module, module=self)
-
-            elif self.self_attention_model == 'abs_pos':
-                x = dict(query=x, key=x, value=x, mask=att_mask)
-                output = adapter_strategy(x, adapter_module, module=self)
-
-            else:
-                raise ValueError(f"Unsupported value of self_attention_model , provided {self.self_attention_model}!")
-
-        else:
-            # No adapter compatible, skip
-            output = x
-
-        input['x'] = output
-
-        return input
 
     def reset_parameters(self):
         # Used for Squeezeformer initialization only

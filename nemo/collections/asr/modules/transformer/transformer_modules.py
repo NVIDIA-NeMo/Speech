@@ -65,7 +65,9 @@ class FixedPositionalEncoding(nn.Module):
                 f'Max position id {max_pos_id} is greater than max sequence length {self._max_sequence_length}. Expanding position embeddings just for this batch. This is not expected to work very well. Consider chunking your input into smaller sequences.'
             )
             self._build_pos_enc(
-                hidden_size=self._hidden_size, max_sequence_length=max_pos_id + 1, device=position_ids.device,
+                hidden_size=self._hidden_size,
+                max_sequence_length=max_pos_id + 1,
+                device=position_ids.device,
             )
 
         embeddings = torch.embedding(self.pos_enc, position_ids)
@@ -203,8 +205,9 @@ class MultiHeadAttention(nn.Module):
         attention_probs = self.attn_dropout(attention_probs)
 
         context = torch.matmul(attention_probs, value)
+        context_hidden_size = context.size()[-1] * self.num_attention_heads
         context = context.permute(0, 2, 1, 3).contiguous()
-        new_context_shape = context.size()[:-2] + (self.hidden_size,)
+        new_context_shape = context.size()[:-2] + (context_hidden_size,)
         context = context.view(*new_context_shape)
 
         # output projection

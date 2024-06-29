@@ -113,6 +113,7 @@ def get_nemo_transformer(
         else:
             raise ValueError(f"Unknown arch = {arch}")
     else:
+
         model = TransformerDecoderNM(
             vocab_size=cfg.get('vocab_size'),
             hidden_size=cfg.get('hidden_size'),

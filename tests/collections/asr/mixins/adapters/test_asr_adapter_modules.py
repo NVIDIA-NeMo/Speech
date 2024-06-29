@@ -112,6 +112,22 @@ class TestASRAdapterModules:
         assert dataclass_subset is None
 
     @pytest.mark.unit
+    def test_transformer_mha_adapter_config(self):
+        IGNORED_ARGS = ['_target_']
+
+        result = config_utils.assert_dataclass_signature_match(
+            adapter_modules.TransformerMultiHeadAttentionAdapter,
+            adapter_modules.TransformerMultiHeadAttentionAdapterConfig,
+            ignore_args=IGNORED_ARGS,
+        )
+
+        signatures_match, cls_subset, dataclass_subset = result
+
+        assert signatures_match
+        assert cls_subset is None
+        assert dataclass_subset is None
+
+    @pytest.mark.unit
     @pytest.mark.parametrize('n_head', [1, 2, 10])
     @pytest.mark.parametrize('proj_dim', [None, -1])
     def test_mha_adapter_init(self, n_head, proj_dim):
@@ -195,6 +211,31 @@ class TestASRAdapterModules:
             assert out.shape == x.shape
 
     @pytest.mark.unit
+    @pytest.mark.parametrize('n_head', [1, 2, 10])
+    @pytest.mark.parametrize('proj_dim', [None, -1])
+    def test_transformer_mha_adapter_init(self, n_head, proj_dim):
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 32, 50)
+        lengths = torch.randint(1, x.size(1), size=(x.size(0),))
+        lengths[torch.randint(0, x.size(0), size=(1,))[0]] = x.size(1)
+
+        adapter = adapter_modules.TransformerMultiHeadAttentionAdapter(
+            num_attention_heads=n_head, hidden_size=50, attn_layer_dropout=0.0, proj_dim=proj_dim
+        )
+
+        pad_mask, att_mask = get_mask(lengths)
+        att_mask = att_mask.unsqueeze(1)
+
+        with torch.no_grad():
+            assert adapter.out_projection.weight.sum() == 0
+            if hasattr(adapter.out_projection, 'bias') and adapter.out_projection.bias is not None:
+                assert adapter.out_projection.bias.sum() == 0
+
+            out = adapter(x, x, x, att_mask)
+            assert out.sum().abs() <= 1e-8
+            assert out.shape == x.shape
+
+    @pytest.mark.unit
     def test_mha_adapter_strategy(self):
         adapter = adapter_modules.MultiHeadAttentionAdapter(n_head=1, n_feat=50, dropout_rate=0.0)
         assert hasattr(adapter, 'adapter_strategy')
@@ -225,3 +266,13 @@ class TestASRAdapterModules:
         assert adapter.adapter_strategy is not None
         # assert default strategy is set
         assert isinstance(adapter.adapter_strategy, adapter_mixin_strategies.ReturnResultAdapterStrategy)
+
+    @pytest.mark.unit
+    def test_transformer_mha_adapter_strategy(self):
+        adapter = adapter_modules.TransformerMultiHeadAttentionAdapter(
+            num_attention_heads=1, hidden_size=50, attn_layer_dropout=0.0
+        )
+        assert hasattr(adapter, 'adapter_strategy')
+        assert adapter.adapter_strategy is not None
+        # assert default strategy is set
+        assert isinstance(adapter.adapter_strategy, adapter_modules.MHAResidualAddAdapterStrategy)

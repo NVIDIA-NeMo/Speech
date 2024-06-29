@@ -31,7 +31,7 @@ from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
 )
 from nemo.collections.asr.metrics import BLEU, WER
 from nemo.collections.asr.models.asr_model import ASRModel, ExportableEncDecModel
-from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRTranscriptionMixin
+from nemo.collections.asr.parts.mixins import ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin
 from nemo.collections.asr.parts.mixins.transcription import (
     GenericTranscriptionType,
     InternalTranscribeConfig,
@@ -115,7 +115,7 @@ class MultiTaskTranscriptionConfig(TranscribeConfig):
         self.prompt = parse_multitask_prompt(self.prompt)
 
 
-class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTranscriptionMixin):
+class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModuleMixin, ASRTranscriptionMixin):
     """Base class for AED multi-task models"""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
@@ -224,6 +224,9 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         self.bleu = BLEU(
             self.decoding, tokenize=self.cfg.get('bleu_tokenizer', "13a"), log_prediction=False
         )  # Wer is handling logging
+
+        # Setup encoder adapters (from ASRAdapterModelMixin)
+        self.setup_adapters()
 
     def change_decoding_strategy(self, decoding_cfg: DictConfig):
         """
@@ -1056,6 +1059,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
 
         text = [self.decoding.strip_special_tokens(t) for t in text]
         return text
+
+    @property
+    def adapter_module_names(self) -> List[str]:
+        return ['', 'encoder', 'transf_encoder', 'transf_decoder']
 
 
 def parse_multitask_prompt(prompt: dict | None) -> list[dict]:

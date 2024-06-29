@@ -13,17 +13,22 @@
 # limitations under the License.
 
 import copy
+from typing import List, Optional, Set
 
 import torch
 import torch.nn as nn
+from omegaconf import DictConfig
 
 from nemo.collections.asr.modules.transformer.transformer_modules import MultiHeadAttention, PositionWiseFF
+from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
+from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.collections.common.parts import form_attention_mask
+from nemo.core.classes.mixins import adapter_mixins
 
 __all__ = ["TransformerDecoder"]
 
 
-class TransformerDecoderBlock(nn.Module):
+class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
     """
     Building block of Transformer decoder.
 
@@ -63,6 +68,9 @@ class TransformerDecoderBlock(nn.Module):
         self.layer_norm_3 = nn.LayerNorm(hidden_size, eps=1e-5)
         self.third_sub_layer = PositionWiseFF(hidden_size, inner_size, ffn_dropout, hidden_act)
 
+        # Information for the adapter module mixin
+        self.self_attention_model = "transf_abs"
+
     def forward_preln(self, decoder_query, decoder_mask, decoder_keys, encoder_states, encoder_mask):
         """
         Pre-LayerNorm block
@@ -74,6 +82,17 @@ class TransformerDecoderBlock(nn.Module):
         self_attn_output = self.first_sub_layer(decoder_query, decoder_keys, decoder_keys, decoder_mask)
         self_attn_output += residual
 
+        if self.is_adapter_available():
+            # Call the MHA adapters
+            pack_input = {
+                'x': self_attn_output,
+                'loc': 'mha',
+                'att_mask': decoder_mask,
+                'pos_emb': None,
+            }
+            pack_input = self.forward_enabled_adapters(pack_input)
+            self_attn_output = pack_input['x']
+
         residual = self_attn_output
         self_attn_output = self.layer_norm_2(self_attn_output)
         enc_dec_attn_output = self.second_sub_layer(self_attn_output, encoder_states, encoder_states, encoder_mask)
@@ -84,6 +103,15 @@ class TransformerDecoderBlock(nn.Module):
         output_states = self.third_sub_layer(enc_dec_attn_output)
         output_states += residual
 
+        if self.is_adapter_available():
+            # Call the Linear adapters
+            pack_input = {
+                'x': output_states,
+                'loc': 'post',
+            }
+            pack_input = self.forward_enabled_adapters(pack_input)
+            output_states = pack_input['x']
+
         return output_states
 
     def forward_postln(self, decoder_query, decoder_mask, decoder_keys, encoder_states, encoder_mask):
@@ -93,6 +121,18 @@ class TransformerDecoderBlock(nn.Module):
         """
         self_attn_output = self.first_sub_layer(decoder_query, decoder_keys, decoder_keys, decoder_mask)
         self_attn_output += decoder_query
+
+        if self.is_adapter_available():
+            # Call the MHA adapters
+            pack_ip = {
+                'x': self_attn_output,
+                'loc': 'mha',
+                'att_mask': decoder_mask,
+                'pos_emb': None,
+            }
+            pack_ip = self.forward_enabled_adapters(pack_ip)
+            self_attn_output = pack_ip['x']
+
         self_attn_output = self.layer_norm_1(self_attn_output)
 
         enc_dec_attn_output = self.second_sub_layer(self_attn_output, encoder_states, encoder_states, encoder_mask)
@@ -101,6 +141,16 @@ class TransformerDecoderBlock(nn.Module):
 
         output_states = self.third_sub_layer(enc_dec_attn_output)
         output_states += enc_dec_attn_output
+
+        if self.is_adapter_available():
+            # Call the linear adapters
+            pack_ip = {
+                'x': output_states,
+                'loc': 'post',
+            }
+            pack_ip = self.forward_enabled_adapters(pack_ip)
+            output_states = pack_ip['x']
+
         return self.layer_norm_3(output_states)
 
     def forward(self, decoder_query, decoder_mask, decoder_keys, encoder_states, encoder_mask):
@@ -108,6 +158,19 @@ class TransformerDecoderBlock(nn.Module):
             return self.forward_preln(decoder_query, decoder_mask, decoder_keys, encoder_states, encoder_mask)
         else:
             return self.forward_postln(decoder_query, decoder_mask, decoder_keys, encoder_states, encoder_mask)
+
+    def get_accepted_adapter_types(self) -> Set[type]:
+        types = super().get_accepted_adapter_types()
+
+        if len(types) == 0:
+            self.set_accepted_adapter_types(
+                [
+                    adapter_utils.LINEAR_ADAPTER_CLASSPATH,
+                    adapter_utils.TRANSFORMER_MHA_ADAPTER_CLASSPATH,
+                ]
+            )
+            types = self.get_accepted_adapter_types()
+        return types
 
 
 class TransformerDecoder(nn.Module):
@@ -130,6 +193,8 @@ class TransformerDecoder(nn.Module):
             self.final_layer_norm = nn.LayerNorm(hidden_size, eps=1e-5)
         else:
             self.final_layer_norm = None
+
+        self.d_model = hidden_size
 
         layer = TransformerDecoderBlock(
             hidden_size,
@@ -219,3 +284,38 @@ class TransformerDecoder(nn.Module):
         input_ids = torch.randint(low=0, high=2048, size=(max_batch, max_dim, 1024), device=sample.device)
         encoder_mask = torch.randint(low=0, high=1, size=(max_batch, max_dim), device=sample.device)
         return tuple([input_ids, encoder_mask, input_ids, encoder_mask])
+
+
+class TransformerDecoderAdapter(TransformerDecoder, adapter_mixins.AdapterModuleMixin):
+
+    # Higher level forwarding
+    def add_adapter(self, name: str, cfg: dict):
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        for transformer_layer in self.layers:  # type: adapter_mixins.AdapterModuleMixin
+            transformer_layer.add_adapter(name, cfg)
+
+    def is_adapter_available(self) -> bool:
+        return any([transformer_layer.is_adapter_available() for transformer_layer in self.layers])
+
+    def set_enabled_adapters(self, name: Optional[str] = None, enabled: bool = True):
+        for transformer_layer in self.layers:  # type: adapter_mixins.AdapterModuleMixin
+            transformer_layer.set_enabled_adapters(name=name, enabled=enabled)
+
+    def get_enabled_adapters(self) -> List[str]:
+        names = set([])
+        for transformer_layer in self.layers:  # type: adapter_mixins.AdapterModuleMixin
+            names.update(transformer_layer.get_enabled_adapters())
+
+        names = sorted(list(names))
+        return names
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self.d_model)
+        return cfg
+
+
+"""
+Register any additional information
+"""
+if adapter_mixins.get_registered_adapter(TransformerDecoder) is None:
+    adapter_mixins.register_adapter(base_class=TransformerDecoder, adapter_class=TransformerDecoderAdapter)

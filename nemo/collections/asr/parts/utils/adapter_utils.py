@@ -21,6 +21,8 @@ from nemo.utils import logging
 
 # Constants
 LINEAR_ADAPTER_CLASSPATH = "nemo.collections.common.parts.adapter_modules.LinearAdapter"
+
+# Conformer Adapters
 MHA_ADAPTER_CLASSPATH = (
     "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.MultiHeadAttentionAdapter"
 )
@@ -31,6 +33,9 @@ POS_ENCODING_ADAPTER_CLASSPATH = (
 REL_POS_ENCODING_ADAPTER_CLASSPATH = (
     "nemo.collections.asr.parts.submodules.adapters.multi_head_attention_adapter_module.RelPositionalEncodingAdapter"
 )
+
+# Transformer Adapters
+TRANSFORMER_MHA_ADAPTER_CLASSPATH = "nemo.collections.asr.parts.submodules.adapters.transformer_multi_head_attention_adapter_module.TransformerMultiHeadAttentionAdapter"
 
 
 def convert_adapter_cfg_to_dict_config(cfg: DictConfig):
@@ -58,7 +63,7 @@ def update_adapter_cfg_input_dim(module: torch.nn.Module, cfg: DictConfig, *, mo
     """
     cfg = convert_adapter_cfg_to_dict_config(cfg)
 
-    input_dim_valid_keys = ['in_features', 'n_feat']
+    input_dim_valid_keys = ['in_features', 'n_feat', 'hidden_size']
     input_key = None
 
     for key in input_dim_valid_keys:

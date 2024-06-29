@@ -383,14 +383,13 @@ class GreedyRNNTInfer(_GreedyRNNTInfer):
 
             hypotheses = []
             # Process each sequence independently
-            with self.decoder.as_frozen(), self.joint.as_frozen():
-                for batch_idx in range(encoder_output.size(0)):
-                    inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                    logitlen = encoded_lengths[batch_idx]
+            for batch_idx in range(encoder_output.size(0)):
+                inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
+                logitlen = encoded_lengths[batch_idx]
 
-                    partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                    hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                    hypotheses.append(hypothesis)
+                partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
+                hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
+                hypotheses.append(hypothesis)
 
             # Pack results into Hypotheses
             packed_result = pack_hypotheses(hypotheses, encoded_lengths)
@@ -720,12 +719,11 @@ class GreedyBatchedRNNTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             self.decoder.eval()
             self.joint.eval()
 
-            with self.decoder.as_frozen(), self.joint.as_frozen():
-                inseq = encoder_output  # [B, T, D]
+            inseq = encoder_output  # [B, T, D]
 
-                hypotheses = self._greedy_decode(
-                    inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
-                )
+            hypotheses = self._greedy_decode(
+                inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
+            )
 
             # Pack the hypotheses results
             packed_result = pack_hypotheses(hypotheses, logitlen)
@@ -2487,14 +2485,13 @@ class GreedyTDTInfer(_GreedyRNNTInfer):
 
             hypotheses = []
             # Process each sequence independently
-            with self.decoder.as_frozen(), self.joint.as_frozen():
-                for batch_idx in range(encoder_output.size(0)):
-                    inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
-                    logitlen = encoded_lengths[batch_idx]
+            for batch_idx in range(encoder_output.size(0)):
+                inseq = encoder_output[batch_idx, :, :].unsqueeze(1)  # [T, 1, D]
+                logitlen = encoded_lengths[batch_idx]
 
-                    partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
-                    hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
-                    hypotheses.append(hypothesis)
+                partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
+                hypothesis = self._greedy_decode(inseq, logitlen, partial_hypotheses=partial_hypothesis)
+                hypotheses.append(hypothesis)
 
             # Pack results into Hypotheses
             packed_result = pack_hypotheses(hypotheses, encoded_lengths)
@@ -2775,11 +2772,10 @@ class GreedyBatchedTDTInfer(_GreedyRNNTInfer, WithOptionalCudaGraphs):
             self.decoder.eval()
             self.joint.eval()
 
-            with self.decoder.as_frozen(), self.joint.as_frozen():
-                inseq = encoder_output  # [B, T, D]
-                hypotheses = self._greedy_decode(
-                    inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
-                )
+            inseq = encoder_output  # [B, T, D]
+            hypotheses = self._greedy_decode(
+                inseq, logitlen, device=inseq.device, partial_hypotheses=partial_hypotheses
+            )
 
             # Pack the hypotheses results
             packed_result = pack_hypotheses(hypotheses, logitlen)

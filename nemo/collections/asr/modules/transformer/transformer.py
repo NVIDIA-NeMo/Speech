@@ -13,18 +13,21 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import torch
-from omegaconf.omegaconf import MISSING
+from omegaconf.omegaconf import MISSING, DictConfig
 
 from nemo.collections.asr.modules.transformer.decoder_module import DecoderModule
 from nemo.collections.asr.modules.transformer.encoder_module import EncoderModule
-from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder
+from nemo.collections.asr.modules.transformer.transformer_decoders import TransformerDecoder, TransformerDecoderAdapter
 from nemo.collections.asr.modules.transformer.transformer_encoders import TransformerEncoder
 from nemo.collections.asr.modules.transformer.transformer_modules import TransformerEmbedding
+from nemo.collections.asr.parts.submodules.adapters.attention_adapter_mixin import AttentionAdapterModuleMixin
+from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
+from nemo.core.classes.mixins import adapter_mixins
 from nemo.core.neural_types import ChannelType, NeuralType
 
 
@@ -155,6 +158,8 @@ class TransformerEncoderNM(EncoderModule, Exportable):
 
 
 class TransformerDecoderNM(DecoderModule, Exportable):
+    DECODER_TYPE: type = TransformerDecoder
+
     def __init__(
         self,
         vocab_size: int,
@@ -192,7 +197,7 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             learn_positional_encodings=learn_positional_encodings,
         )
 
-        self._decoder = TransformerDecoder(
+        self._decoder = self.DECODER_TYPE(
             hidden_size=self.hidden_size,
             num_layers=num_layers,
             inner_size=inner_size,
@@ -207,7 +212,12 @@ class TransformerDecoderNM(DecoderModule, Exportable):
 
     @typecheck()
     def forward(
-        self, input_ids, decoder_mask, encoder_embeddings, encoder_mask, decoder_mems=None,
+        self,
+        input_ids,
+        decoder_mask,
+        encoder_embeddings,
+        encoder_mask,
+        decoder_mems=None,
     ):
         start_pos = 0
         if decoder_mems is not None:
@@ -274,3 +284,36 @@ class TransformerDecoderNM(DecoderModule, Exportable):
             return {"last_hidden_states": NeuralType(('B', 'D', 'T', 'D'), ChannelType())}
         else:
             return {"last_hidden_states": NeuralType(('B', 'T', 'D'), ChannelType())}
+
+
+class TransformerDecoderNMAdapter(TransformerDecoderNM, adapter_mixins.AdapterModuleMixin):
+    DECODER_TYPE: type = TransformerDecoderAdapter
+
+    # Higher level forwarding
+    def add_adapter(self, name: str, cfg: dict):
+        cfg = self._update_adapter_cfg_input_dim(cfg)
+        self._decoder.add_adapter(name, cfg)  # type: adapter_mixins.AdapterModuleMixin
+
+    def is_adapter_available(self) -> bool:
+        return self._decoder.is_adapter_available()  # type: adapter_mixins.AdapterModuleMixin
+
+    def set_enabled_adapters(self, name: Optional[str] = None, enabled: bool = True):
+        self._decoder.set_enabled_adapters(name=name, enabled=enabled)  # # type: adapter_mixins.AdapterModuleMixin
+
+    def get_enabled_adapters(self) -> List[str]:
+        names = set([])
+        names.update(self._decoder.get_enabled_adapters())  # type: adapter_mixins.AdapterModuleMixin
+
+        names = sorted(list(names))
+        return names
+
+    def _update_adapter_cfg_input_dim(self, cfg: DictConfig):
+        cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=self._hidden_size)
+        return cfg
+
+
+"""
+Register any additional information
+"""
+if adapter_mixins.get_registered_adapter(TransformerDecoderNM) is None:
+    adapter_mixins.register_adapter(base_class=TransformerDecoderNM, adapter_class=TransformerDecoderNMAdapter)

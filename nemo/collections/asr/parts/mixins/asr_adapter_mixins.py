@@ -21,7 +21,7 @@ from nemo.utils import logging, logging_mode
 
 
 class ASRAdapterModelMixin(AdapterModelPTMixin):
-    """ ASR Adapter Mixin that can augment any Encoder module with Adapter module support.
+    """ASR Adapter Mixin that can augment any Encoder module with Adapter module support.
 
     This mixin class should be used only with a top level ModelPT subclass, that includes an `encoder` submodule.
     This mixin class adds several utility methods which are propagated to the `encoder`.
@@ -54,14 +54,10 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         supports_adapters = False
 
         # At least the encoder must extend AdapterModuleMixin
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            supports_adapters |= True
-
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            supports_adapters |= True
-
-        if hasattr(self, 'joint') and isinstance(self.joint, AdapterModuleMixin):
-            supports_adapters |= True
+        valid_adapter_names = [x for x in self.adapter_module_names if x != '']
+        for module_name in valid_adapter_names:
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                supports_adapters |= True
 
         # If adapters are supported, setup the adapter config + any modules (pre-existing adapter modules)
         if supports_adapters:
@@ -87,24 +83,30 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         else:
             module_names = [module_name]
 
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+        default_module_name = self.default_adapter_module_name
+
+        # Check if default module name is None or not
+        if default_module_name is None:
+            raise ValueError(
+                f"Default module name is None. Class {self.__class__.__name__} must implement "
+                f"`default_adapter_module_name`"
+            )
+
         # Update the model.cfg with information about the new adapter from cfg
         with open_dict(self.cfg):
             for module_name in module_names:
                 # Check if encoder adapters should be added
-                if module_name in ('', 'encoder'):
-                    # Dispatch the call to the encoder.
-                    self.encoder.add_adapter(name=name, cfg=cfg)
+                if module_name == '':
+                    if hasattr(self, default_module_name):
+                        # Dispatch the call to the default model.
+                        getattr(self, default_module_name).add_adapter(name=name, cfg=cfg)
 
-                # Check if decoder adapters should be added
-                if module_name == 'decoder':
-                    # Dispatch call to the decoder.
-                    self.decoder.add_adapter(name=name, cfg=cfg)
-
-                # Check if joint adapters should be added;
-                # Note: We need additional check if joint even exists in model (for CTC models)
-                if hasattr(self, 'joint') and module_name == 'joint':
-                    # Dispatch call to the joint.
-                    self.joint.add_adapter(name=name, cfg=cfg)
+                elif module_name in valid_module_names:
+                    # Check if module exists
+                    if hasattr(self, module_name):
+                        # Dispatch the call to the module.
+                        getattr(self, module_name).add_adapter(name=name, cfg=cfg)
 
     def is_adapter_available(self) -> bool:
         """
@@ -116,15 +118,12 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         """
         config_contains_adapter = super().is_adapter_available()
 
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+
         # Forward the method call to the individual modules
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            config_contains_adapter |= self.encoder.is_adapter_available()
-
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            config_contains_adapter |= self.decoder.is_adapter_available()
-
-        if hasattr(self, 'joint') and isinstance(self.joint, AdapterModuleMixin):
-            config_contains_adapter |= self.joint.is_adapter_available()
+        for module_name in valid_module_names:
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                config_contains_adapter |= getattr(self, module_name).is_adapter_available()
 
         return config_contains_adapter
 
@@ -160,23 +159,29 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         else:
             module_names = [module_name]
 
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+        default_module_name = self.default_adapter_module_name
+
+        # Check if default module name is None or not
+        if default_module_name is None:
+            raise ValueError(
+                f"Default module name is None. Class {self.__class__.__name__} must implement "
+                f"`default_adapter_module_name`"
+            )
+
+        # Forward the method call to the individual modules if they exist
         for module_name in module_names:
             # Check if encoder adapters should be used
-            # Dispatch the call to the encoder.
-            if name is None or module_name in ('', 'encoder'):
-                if self.encoder.is_adapter_available():
-                    self.encoder.set_enabled_adapters(name=name, enabled=enabled)
 
-            # Dispatch the call to the decoder.
-            if name is None or module_name == 'decoder':
-                if self.decoder.is_adapter_available():
-                    self.decoder.set_enabled_adapters(name=name, enabled=enabled)
+            if module_name == '':
+                if hasattr(self, default_module_name):
+                    # Dispatch the call to the default model.
+                    getattr(self, default_module_name).set_enabled_adapters(name=name, enabled=enabled)
 
-            # Dispatch the call to the joint.
-            # Note: We need additional check for joint, since it may not exist (CTC models).
-            if name is None or module_name == 'joint':
-                if hasattr(self, 'joint') and self.joint.is_adapter_available():
-                    self.joint.set_enabled_adapters(name=name, enabled=enabled)
+            elif module_name in valid_module_names:
+                if hasattr(self, module_name):
+                    # Dispatch the call to the module.
+                    getattr(self, module_name).set_enabled_adapters(name=name, enabled=enabled)
 
     def get_enabled_adapters(self) -> List[str]:
         """
@@ -187,15 +192,12 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         """
         enabled_adapters = super().get_enabled_adapters()
 
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
+
         # Check if encoder adapters should be used or are enabled
-        if hasattr(self, 'encoder') and isinstance(self.encoder, AdapterModuleMixin):
-            enabled_adapters.extend(self.encoder.get_enabled_adapters())
-
-        if hasattr(self, 'decoder') and isinstance(self.decoder, AdapterModuleMixin):
-            enabled_adapters.extend(self.decoder.get_enabled_adapters())
-
-        if hasattr(self, 'joint') and isinstance(self.joint, AdapterModuleMixin):
-            enabled_adapters.extend(self.joint.get_enabled_adapters())
+        for module_name in valid_module_names:
+            if hasattr(self, module_name) and isinstance(getattr(self, module_name), AdapterModuleMixin):
+                enabled_adapters.extend(getattr(self, module_name).get_enabled_adapters())
 
         enabled_adapters = list(sorted(list(set(enabled_adapters))))
 
@@ -208,44 +210,19 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
         # Obtain the global adapter config if possible, otherwise use sensible defaults.
         global_cfg = self._get_global_cfg()
 
-        # Test whether the encoder supports adapters
-        use_encoder_adapter = global_cfg.get('check_encoder_adapter', True)
-        if use_encoder_adapter:
-            if not hasattr(self, 'encoder'):
-                logging.warning(
-                    "Cannot add adapter to this object as it does not have an `encoder` sub-module!",
-                    mode=logging_mode.ONCE,
-                )
+        valid_module_names = [x for x in self.adapter_module_names if x != '']
 
-            if hasattr(self, 'encoder') and not isinstance(self.encoder, AdapterModuleMixin):
-                logging.warning(
-                    f'{self.encoder.__class__.__name__} does not implement `AdapterModuleMixin`',
-                    mode=logging_mode.ONCE,
-                )
+        for module_name in valid_module_names:
+            check_adapter_support = global_cfg.get(f'check_{module_name}_adapter', True)
 
-        # Test whether the decoder supports adapters
-        use_decoder_adapter = global_cfg.get('check_decoder_adapter', True)
-        if use_decoder_adapter:
-            if not hasattr(self, 'decoder'):
-                logging.warning(
-                    "Cannot add adapter to this object as it does not have an `decoder` sub-module!",
-                    mode=logging_mode.ONCE,
-                )
-
-            if hasattr(self, 'decoder') and not isinstance(self.decoder, AdapterModuleMixin):
-                logging.warning(
-                    f'{self.decoder.__class__.__name__} does not implement `AdapterModuleMixin`',
-                    mode=logging_mode.ONCE,
-                )
-
-        # Test whether the joint supports adapters
-        use_joint_adapter = global_cfg.get('check_joint_adapter', True)
-        if use_joint_adapter:
-            # Joint is only for RNNT models, skip assertion that it must always exist.
-            if hasattr(self, 'joint') and not isinstance(self.joint, AdapterModuleMixin):
-                logging.warning(
-                    f'{self.joint.__class__.__name__} does not implement `AdapterModuleMixin`', mode=logging_mode.ONCE
-                )
+            if check_adapter_support:
+                # Test whether the module supports adapters
+                if hasattr(self, module_name) and not isinstance(getattr(self, module_name), AdapterModuleMixin):
+                    logging.warning(
+                        f'Module `{module_name}` exists, but {getattr(self, module_name).__class__.__name__} '
+                        f'does not implement `AdapterModuleMixin`',
+                        mode=logging_mode.ONCE,
+                    )
 
     def resolve_adapter_module_name_(self, name: str) -> Tuple[str, str]:
         """
@@ -293,3 +270,7 @@ class ASRAdapterModelMixin(AdapterModelPTMixin):
     def adapter_module_names(self) -> List[str]:
         valid_module_names = ['', 'encoder', 'decoder', 'joint']
         return valid_module_names
+
+    @property
+    def default_adapter_module_name(self) -> str:
+        return 'encoder'

@@ -201,8 +201,7 @@ class BeamRNNTInfer(Typing):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return {
             "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
             "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
@@ -211,8 +210,7 @@ class BeamRNNTInfer(Typing):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return {"predictions": [NeuralType(elements_type=HypothesisType())]}
 
     def __init__(
@@ -369,7 +367,7 @@ class BeamRNNTInfer(Typing):
             return_hat_ilm_default = self.joint.return_hat_ilm
             self.joint.return_hat_ilm = self.hat_subtract_ilm
 
-        with torch.no_grad():
+        with torch.inference_mode():
             # Apply optional preprocessing
             encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
 
@@ -384,38 +382,34 @@ class BeamRNNTInfer(Typing):
                 unit='sample',
             ) as idx_gen:
 
-                # Freeze the decoder and joint to prevent recording of gradients
-                # during the beam loop.
-                with self.decoder.as_frozen(), self.joint.as_frozen():
+                _p = next(self.joint.parameters())
+                dtype = _p.dtype
 
-                    _p = next(self.joint.parameters())
-                    dtype = _p.dtype
+                # Decode every sample in the batch independently.
+                for batch_idx in idx_gen:
+                    inseq = encoder_output[batch_idx : batch_idx + 1, : encoded_lengths[batch_idx], :]  # [1, T, D]
+                    logitlen = encoded_lengths[batch_idx]
 
-                    # Decode every sample in the batch independently.
-                    for batch_idx in idx_gen:
-                        inseq = encoder_output[batch_idx : batch_idx + 1, : encoded_lengths[batch_idx], :]  # [1, T, D]
-                        logitlen = encoded_lengths[batch_idx]
+                    if inseq.dtype != dtype:
+                        inseq = inseq.to(dtype=dtype)
 
-                        if inseq.dtype != dtype:
-                            inseq = inseq.to(dtype=dtype)
+                    # Extract partial hypothesis if exists
+                    partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
 
-                        # Extract partial hypothesis if exists
-                        partial_hypothesis = partial_hypotheses[batch_idx] if partial_hypotheses is not None else None
+                    # Execute the specific search strategy
+                    nbest_hyps = self.search_algorithm(
+                        inseq, logitlen, partial_hypotheses=partial_hypothesis
+                    )  # sorted list of hypothesis
 
-                        # Execute the specific search strategy
-                        nbest_hyps = self.search_algorithm(
-                            inseq, logitlen, partial_hypotheses=partial_hypothesis
-                        )  # sorted list of hypothesis
+                    # Prepare the list of hypotheses
+                    nbest_hyps = pack_hypotheses(nbest_hyps)
 
-                        # Prepare the list of hypotheses
-                        nbest_hyps = pack_hypotheses(nbest_hyps)
-
-                        # Pack the result
-                        if self.return_best_hypothesis:
-                            best_hypothesis = nbest_hyps[0]  # type: Hypothesis
-                        else:
-                            best_hypothesis = NBestHypotheses(nbest_hyps)  # type: NBestHypotheses
-                        hypotheses.append(best_hypothesis)
+                    # Pack the result
+                    if self.return_best_hypothesis:
+                        best_hypothesis = nbest_hyps[0]  # type: Hypothesis
+                    else:
+                        best_hypothesis = NBestHypotheses(nbest_hyps)  # type: NBestHypotheses
+                    hypotheses.append(best_hypothesis)
 
         self.decoder.train(decoder_training_state)
         self.joint.train(joint_training_state)
@@ -639,7 +633,10 @@ class BeamRNNTInfer(Typing):
 
                 # keep those hypothesis that have scores greater than next search generation
                 hyps_max = float(max(hyps, key=lambda x: x.score).score)
-                kept_most_prob = sorted([hyp for hyp in kept_hyps if hyp.score > hyps_max], key=lambda x: x.score,)
+                kept_most_prob = sorted(
+                    [hyp for hyp in kept_hyps if hyp.score > hyps_max],
+                    key=lambda x: x.score,
+                )
 
                 # If enough hypothesis have scores greater than next search generation,
                 # stop beam search.

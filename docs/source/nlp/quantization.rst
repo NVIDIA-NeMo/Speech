@@ -55,6 +55,10 @@ Table below presents verified model support matrix for popular LLM architectures
      - ✅
      - ✅
      - ✅
+   * - `Nemotron-4 340b <https://huggingface.co/nvidia/Nemotron-4-340B-Base>`_  (Base, Instruct, Reward)
+     - ✅
+     - ✅
+     - ✅
    * - StarCoder 2
      - ✅
      - ✅
@@ -67,14 +71,14 @@ Table below presents verified model support matrix for popular LLM architectures
 
 Example
 ^^^^^^^
-The example below shows how to quantize the Llama2 70b model into FP8 precision, using tensor parallelism of 8 on a single DGX H100 node. The quantized model is designed for serving using 2 GPUs specified with the ``export.inference_tensor_parallel`` parameter.
+The example below shows how to quantize the Llama3 70b model into FP8 precision, using tensor parallelism of 8 on a single DGX H100 node. The quantized model is designed for serving using 2 GPUs specified with the ``export.inference_tensor_parallel`` parameter.
 
 The script must be launched correctly with the number of processes equal to tensor parallelism. This is achieved with the ``torchrun`` command below:
 
 .. code-block:: bash
 
-    torchrun --nproc-per-node 8 examples/nlp/language_modeling/megatron_gpt_quantization.py \
-        model.restore_from_path=llama2-70b-base-bf16.nemo \
+    torchrun --nproc-per-node 8 examples/nlp/language_modeling/megatron_gpt_ptq.py \
+        model.restore_from_path=llama3-70b-base-bf16.nemo \
         model.tensor_model_parallel_size=8 \
         model.pipeline_model_parallel_size=1 \
         trainer.num_nodes=1 \
@@ -83,15 +87,15 @@ The script must be launched correctly with the number of processes equal to tens
         quantization.algorithm=fp8 \
         export.decoder_type=llama \
         export.inference_tensor_parallel=2 \
-        export.save_path=llama2-70b-base-fp8-qnemo
+        export.save_path=llama3-70b-base-fp8-qnemo
 
-
+For large models, the command can be used in multi-node setting. For example, this can be done with `NeMo Framework Launcher <https://github.com/NVIDIA/NeMo-Framework-Launcher>`_ using Slurm.
 
 The output directory stores the following files:
 
 .. code-block:: bash
 
-    llama2-70b-base-fp8-qnemo/
+    llama3-70b-base-fp8-qnemo/
     ├── config.json
     ├── rank0.safetensors
     ├── rank1.safetensors
@@ -108,7 +112,7 @@ The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` 
 
     trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")
     trt_llm_exporter.export(
-        nemo_checkpoint_path="llama2-70b-base-fp8-qnemo",
+        nemo_checkpoint_path="llama3-70b-base-fp8-qnemo",
         model_type="llama",
     )
     trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
@@ -119,7 +123,7 @@ Alternatively, it can also be built directly using ``trtllm-build`` command, see
 .. code-block:: bash
 
     trtllm-build \
-        --checkpoint_dir llama2-70b-base-fp8-qnemo \
+        --checkpoint_dir llama3-70b-base-fp8-qnemo \
         --output_dir /path/to/trt_llm_engine_folder \
         --max_batch_size 8 \
         --max_input_len 2048 \
@@ -129,8 +133,7 @@ Alternatively, it can also be built directly using ``trtllm-build`` command, see
 
 Known issues
 ^^^^^^^^^^^^
-* Currently in NeMo, quantizing and building TensorRT-LLM engines is limited to single-node use cases.
-* The supported and tested model family is Llama2. Quantizing other model types is experimental and may not be fully supported.
+* Currently with ``nemo.export`` module building TensorRT-LLM engines for quantized "qnemo" models is limited to single-node deployments.
 
 
 Please refer to the following papers for more details on quantization techniques.

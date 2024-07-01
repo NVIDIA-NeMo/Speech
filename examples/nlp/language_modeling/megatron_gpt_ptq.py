@@ -31,12 +31,12 @@ mp.set_start_method("spawn", force=True)
 Nemo quantization example script.
 
 Please consult nemo.export.quantize.Quantizer class
-and examples/nlp/language_modeling/conf/megatron_gpt_quantization.yaml config on available quantization methods,
+and examples/nlp/language_modeling/conf/megatron_gpt_ptq.yaml config on available quantization methods,
 models supported as well as how to set up data and inference for calibration (with defaults recommended).
 
 Example usage:
 ```
-python examples/nlp/language_modeling/megatron_gpt_quantization.py \
+python examples/nlp/language_modeling/megatron_gpt_ptq.py \
     model.restore_from_path=llama2-7b-fp16.nemo \
     quantization.algorithm=fp8 \
     export.decoder_type=llama \
@@ -65,7 +65,7 @@ def get_calib_data_iter(data="cnn_dailymail", batch_size=64, calib_size=512, max
         yield batch
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_quantization")
+@hydra_runner(config_path="conf", config_name="megatron_gpt_ptq")
 def main(cfg) -> None:
     if not torch.cuda.is_available():
         raise EnvironmentError("GPU is required for the quantization.")

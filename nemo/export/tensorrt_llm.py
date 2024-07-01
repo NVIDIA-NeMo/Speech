@@ -116,7 +116,7 @@ class TensorRTLLM(ITritonDeployable):
     def export(
         self,
         nemo_checkpoint_path: str,
-        model_type: str,
+        model_type: Optional[str] = None,
         delete_existing_files: bool = True,
         n_gpus: int = 1,
         tensor_parallelism_size: int = 1,
@@ -141,15 +141,14 @@ class TensorRTLLM(ITritonDeployable):
         max_lora_rank: int = 64,
         max_num_tokens: int = None,
         opt_num_tokens: int = None,
-        save_nemo_model_config: bool = False,
     ):
         """
         Exports nemo checkpoints to TensorRT-LLM.
 
         Args:
             nemo_checkpoint_path (str): path for the nemo checkpoint.
-            model_type (str): type of the model. Currently, "llama", "gptnext", "falcon", and "starcoder" are supported.
-            delete_existing_files (bool): if Truen, deletes all the files in model_dir.
+            model_type (str): type of the model (optional for quantized checkpoints).
+            delete_existing_files (bool): if True, deletes all the files in model_dir.
             n_gpus (int): number of GPUs to use for inference.
             tensor_parallelism_size (int): tensor parallelism.
             pipeline_parallelism_size (int): pipeline parallelism.
@@ -173,7 +172,6 @@ class TensorRTLLM(ITritonDeployable):
             max_lora_rank (int): maximum lora rank.
             max_num_tokens (int):
             opt_num_tokens (int):
-            save_nemo_model_config (bool):
         """
 
         if n_gpus is not None:
@@ -184,18 +182,6 @@ class TensorRTLLM(ITritonDeployable):
                 stacklevel=2,
             )
             tensor_parallelism_size = n_gpus
-
-        if model_type not in self.get_supported_models_list:
-            raise Exception(
-                "Model {0} is not currently a supported model type. "
-                "Supported model types are llama, gptnext, falcon, and starcoder.".format(model_type)
-            )
-
-        if model_type == "gpt" or model_type == "starcoder":
-            model_type = "gptnext"
-
-        if model_type == "mixtral":
-            model_type = "llama"
 
         gpus_per_node = tensor_parallelism_size if gpus_per_node is None else gpus_per_node
 
@@ -268,6 +254,21 @@ class TensorRTLLM(ITritonDeployable):
                     opt_num_tokens=opt_num_tokens,
                 )
             else:
+                if model_type is None:
+                    raise Exception("model_type needs to be specified, got None.")
+
+                if model_type not in self.get_supported_models_list:
+                    raise Exception(
+                        "Model {0} is not currently a supported model type. "
+                        "Supported model types are: {1}.".format(model_type, self.get_supported_models_list)
+                    )
+
+                if model_type == "gpt" or model_type == "starcoder":
+                    model_type = "gptnext"
+
+                if model_type == "mixtral":
+                    model_type = "llama"
+
                 model, model_configs, self.tokenizer = load_nemo_model(nemo_checkpoint_path, nemo_export_dir)
                 weights_dicts, model_configs = model_to_trtllm_ckpt(
                     model=model,

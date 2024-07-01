@@ -153,7 +153,6 @@ def nemo_export_trt_llm(argv):
             use_lora_plugin=args.use_lora_plugin,
             lora_target_modules=args.lora_target_modules,
             max_lora_rank=args.max_lora_rank,
-            save_nemo_model_config=True,
         )
 
         LOGGER.info("Export is successful.")

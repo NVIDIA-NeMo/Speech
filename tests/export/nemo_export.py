@@ -285,7 +285,6 @@ def run_inference(
                 max_num_tokens=int(max_input_len * max_batch_size * 0.2),
                 opt_num_tokens=60,
                 use_embedding_sharing=use_embedding_sharing,
-                save_nemo_model_config=True,
             )
 
         if ptuning:

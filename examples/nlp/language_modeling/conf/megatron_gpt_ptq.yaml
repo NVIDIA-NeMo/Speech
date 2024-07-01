@@ -36,6 +36,7 @@ quantization:
   num_calib_size: 512 # number of samples used for calibration
   awq_block_size: 128 # block size for scaling factors (only used in AWQ algorithms)
   sq_alpha: 1.0 # alpha parameter (only used in SmoothQuant algorithms)
+  enable_kv_cache: null # Enable FP8 KV cache quantization. Set to null for automatic selection.
 
 export:
   decoder_type: llama # gptnext, gpt2, llama

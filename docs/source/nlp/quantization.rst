@@ -136,15 +136,61 @@ Known issues
 * Currently with ``nemo.export`` module building TensorRT-LLM engines for quantized "qnemo" models is limited to single-node deployments.
 
 
-Please refer to the following papers for more details on quantization techniques.
+Quantization-Aware Training (QAT)
+---------------------------------
+
+QAT is the technique of fine-tuning a quantized model to recover model quality degradation due to quantization.
+During QAT, the quantization scaling factors computed during PTQ are frozen and the model weights are fine-tuned.
+While QAT requires much more compute resources than PTQ, it is highly effective in recovering model quality.
+To perform QAT on a calibrated model from PTQ, you need to further fine-tune the model on a downstream task using a small dataset before exporting to TensorRT-LLM.
+You can reuse your training pipeline for QAT.
+As a rule of thumb, we recommend QAT for 1-10% original training duration and a small learning rate, e.g. 1e-5 for Adam optimizer.
+If you are doing QAT on an SFT model where learning rates and finetuning dataset size are already small, you can continue using the same SFT learning rate and dataset size as a starting point for QAT.
+Since QAT is done after PTQ, the supported model families are the same as for PTQ.
+
+
+Example
+^^^^^^^
+
+The example below shows how to perform PTQ and QAT on a Supervised Finetuned Llama2 7B model to INT4 precision.
+The script is tested using tensor parallelism of 8 on 8x RTX 6000 Ada 48GB GPUs. Alternatively, a single DGX A100 node with 8x 40GB GPUs can be used for the same purpose.
+For bigger models like Llama2 70B, you may need to use one or more DGX H100 nodes with 8x 80GB GPUs each.
+
+The example is a modified version of the `SFT with Llama 2 playbook <https://docs.nvidia.com/nemo-framework/user-guide/latest/playbooks/llama2sft.html>`_.
+Please refer to the playbook for more details on setting up a BF16 NeMo model and the ``databricks-dolly-15k`` instruction dataset.
+
+First we will run the SFT example command from the playbook as-is to train a Llama2 7B SFT model for 100 steps.
+Make sure to change ``trainer.max_steps=50`` to ``trainer.max_steps=100`` for the ``examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py`` script.
+This will take ~2 hours to produce a model checkpoint with validation loss approximately ``1.15`` that we will use for PTQ and QAT next.
+
+For Quantization, we use a modified version of the sft script and config file which includes the quantization and TensorRT-LLM export support.
+Along with the new parameters, make sure to pass the same parameters you passed for SFT training except the model restore path will be the SFT output ``.nemo`` file.
+The below example command will perform PTQ on the SFT model checkpoint followed by SFT again (QAT) which can then be exported for TensorRT-LLM inference. The script will take ~2-3 hours to complete.
+
+.. code-block:: bash
+
+    torchrun --nproc-per-node 8 examples/nlp/language_modeling/tuning/megatron_gpt_qat.py \
+        trainer.num_nodes=1 \
+        trainer.devices=8 \
+        trainer.precision=bf16 \
+        trainer.max_steps=100 \
+        model.restore_from_path=<llama2-7b-sft-nemo-path> \
+        model.global_batch_size=128 \
+        quantization.algorithm=int4 \
+        # other parameters from sft training
+
+As you can see from the logs, the INT4 PTQ model has a validation loss of approximately ``1.31`` and the QAT model has a validation loss of approximately ``1.17`` which is very close to the BF16 model loss of ``1.15``.
+This script will produce a quantized ``.nemo`` checkpoint at the experiment manager log directory (in the config yaml file) that can be used for further training.
+It can also optionally produce an exported TensorRT-LLM engine directory or a ``.qnemo`` file that can be used for inference by setting the ``export`` parameters similar to the PTQ example.
+Note that you may tweak the QAT trainer steps and learning rate if needed to achieve better model quality.
+
 
 References
 ----------
 
-`Integer Quantization for Deep Learning Inference: Principles and Empirical Evaluation, 2020 <https://arxiv.org/abs/2004.09602>`_
+Please refer to the following papers for more details on quantization techniques:
 
-`FP8 Formats for Deep Learning, 2022 <https://arxiv.org/abs/2209.05433>`_
-
-`SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models, 2022 <https://arxiv.org/abs/2211.10438>`_
-
-`AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration, 2023 <https://arxiv.org/abs/2306.00978>`_
+* `Integer Quantization for Deep Learning Inference: Principles and Empirical Evaluation, 2020 <https://arxiv.org/abs/2004.09602>`_
+* `FP8 Formats for Deep Learning, 2022 <https://arxiv.org/abs/2209.05433>`_
+* `SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models, 2022 <https://arxiv.org/abs/2211.10438>`_
+* `AWQ: Activation-aware Weight Quantization for LLM Compression and Acceleration, 2023 <https://arxiv.org/abs/2306.00978>`_

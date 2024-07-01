@@ -86,6 +86,7 @@ class Quantizer:
             - decoder_type: str
             - awq_block_size: int (only for awq algorithms)
             - sq_alpha: float (only for smooth quant algorithms)
+            - enable_kv_cache: bool (default: None i.e. auto-detect based on algorithm and decoder_type)
 
         Expected keys in `export_config`:
             - dtype: str/int
@@ -116,9 +117,11 @@ class Quantizer:
             # Always turn on FP8 kv cache to save memory footprint.
             # For int8_sq, we use int8 kv cache.
             # TODO: Investigate why enabling FP8 kv cache will cause accuracy regressions for Nemotron.
-            enable_quant_kv_cache = (
-                "int8" not in quantization_config.algorithm and quantization_config.decoder_type != "gptnext"
-            )
+            enable_quant_kv_cache = quantization_config.get("enable_kv_cache", None)
+            if enable_quant_kv_cache is None:
+                enable_quant_kv_cache = (
+                    "int8" not in quantization_config.algorithm and quantization_config.decoder_type != "gptnext"
+                )
             logging.info(f'{"Enabled" if enable_quant_kv_cache else "Disabled"} KV cache quantization')
             quant_cfg["quant_cfg"]["*output_quantizer"] = {
                 "num_bits": 8 if quantization_config.algorithm == "int8_sq" else (4, 3),

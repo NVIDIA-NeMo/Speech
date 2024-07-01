@@ -1,0 +1,206 @@
+name: llama2-7b
+
+trainer:
+  devices: 1
+  accelerator: gpu
+  num_nodes: 1
+  precision: bf16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: 9999
+  max_steps: 100 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10 # frequency with which training steps are logged
+  val_check_interval: 0.25 # If is an int n > 1, will run val every n training steps, if a float 0.0 - 1.0 will run val every epoch fraction, e.g. 0.25 will run val every quarter epoch
+  gradient_clip_val: 1.0
+
+exp_manager:
+  explicit_log_dir: ${name}-${trainer.precision}-sft-${quantization.algorithm} # Path to the directory where logs and checkpoints will be saved
+  exp_dir: null
+  name: ${name}
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: validation_${model.data.validation_ds.metric.name}
+    save_top_k: 1
+    mode: min
+    save_nemo_on_train_end: True
+    filename: "${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{consumed_samples}"
+    model_parallel_size: ${model.tensor_model_parallel_size}
+    always_save_nemo: False
+    save_best_model: False
+  create_early_stopping_callback: True
+  early_stopping_callback_params:
+    monitor: "val_loss"
+    mode: "min"
+    min_delta: 0.001
+    patience: 10
+    verbose: True
+    strict: False # Should be False to avoid a runtime error where EarlyStopping says monitor is unavailable, which sometimes happens with resumed training.
+
+model:
+  seed: 1234
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+
+  global_batch_size: 128
+  micro_batch_size: 1
+  restore_from_path: ??? # Path to an existing .nemo model you wish to quantize
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  save_nemo_on_validation_end: False # Saves an inference ready .nemo file every time a checkpoint is saved during training.
+  sync_batch_comm: False
+  megatron_amp_O2: True
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Activation Checkpoint
+  activations_checkpoint_granularity: selective # 'selective' or 'full'
+  activations_checkpoint_method: uniform # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  activations_checkpoint_layers_per_pipeline: null
+  answer_only_loss: True
+  gradient_as_bucket_view: False
+
+  hidden_dropout: 0.0
+  attention_dropout: 0.0
+  ffn_dropout: 0.0
+
+  # FSDP
+  fsdp: False # Enable training with torch FSDP.
+  fsdp_sharding_strategy: "full" # Method to shard model states. Available options are 'full', 'hybrid', and 'grad'.
+  fsdp_grad_reduce_dtype: "fp32" # Gradient reduction data type.
+  fsdp_sharded_checkpoint: False # Store and load FSDP shared checkpoint.
+  fsdp_use_orig_params: False # Set to True to use FSDP for specific peft scheme.
+
+  peft:
+    peft_scheme: "none" # Should be none for QAT as we are doing SFT on all parameters
+
+  data:
+    train_ds:
+      # Example of how to specify paths to multiple datasets
+      # file_names:
+      #   - /path/to/squad.jsonl
+      #   - /path/to/mnli.jsonl
+      #   - /path/to/boolq.jsonl
+      # Example of how each dataset is formatted
+      # {'input': 'John von Neumann\nVon Neumann made fundamental contributions .... Q: What did the math of artificial viscosity do?', 'output': 'smoothed the shock transition without sacrificing basic physics'}
+      file_names: ??? # Path to a list of JSONL files corresponding to the source data.
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: True
+      num_workers: 0
+      memmap_workers: 2
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: True
+      # Example of how to specify concat_sampling_probabilities
+      # concat_sampling_probabilities:
+      #   - 0.5
+      #   - 0.25
+      #   - 0.25
+      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
+      label_key: "output"
+      add_eos: True
+      add_sep: False
+      add_bos: False
+      truncation_field: "input" # # Can be multiple keys separated with ',' Options: keys in prompt_template
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: "{input} {output}" # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
+      truncation_method: "right" # Truncation from which position, Options: ['left', 'right']
+    validation_ds:
+      file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      names: null # Names of the corresponding datasets used to log metrics.
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: False
+      num_workers: 0
+      memmap_workers: ${model.data.train_ds.memmap_workers}
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      label_key: ${model.data.train_ds.label_key}
+      add_eos: ${model.data.train_ds.add_eos}
+      add_sep: ${model.data.train_ds.add_sep}
+      add_bos: ${model.data.train_ds.add_bos}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
+      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
+      truncation_method: "right" # Truncation from which position, Options: ['left', 'right']
+      metric:
+        name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null
+    test_ds:
+      file_names: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      names: null # Names of the corresponding datasets used to log metrics.
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: False
+      num_workers: 0
+      memmap_workers: ${model.data.train_ds.memmap_workers}
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      label_key: ${model.data.train_ds.label_key}
+      add_eos: ${model.data.train_ds.add_eos}
+      add_sep: ${model.data.train_ds.add_sep}
+      add_bos: ${model.data.train_ds.add_bos}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: ${model.data.train_ds.truncation_field} # Options: keys in prompt_template
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      prompt_template: ${model.data.train_ds.prompt_template}
+      tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
+      truncation_method: "right" # Truncation from which position, Options: ['left', 'right']
+      metric:
+        name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+        average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+        num_classes: null
+
+  optim:
+    name: distributed_fused_adam
+    lr: 5e-6
+    weight_decay: 0.01
+    betas:
+      - 0.9
+      - 0.98
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 50
+      min_lr: 0.0 # min_lr must be 0.0 for prompt learning when pipeline parallel > 1
+      constant_steps: 0 # Constant steps should also be 0 when min_lr=0
+      monitor: val_loss
+      reduce_on_plateau: false
+
+quantization:
+  decoder_type: ${export.decoder_type} # gptnext, gpt2, llama
+  algorithm: int4 # null, int8_sq, fp8, int4_awq, int4
+  num_calib_size: 512 # number of samples used for calibration
+  awq_block_size: 128 # block size for scaling factors (only used in AWQ algorithms)
+  sq_alpha: 1.0 # alpha parameter (only used in SmoothQuant algorithms)
+  enable_kv_cache: false # Enable FP8 KV cache quantization. Set to null for automatic selection.
+
+export:
+  decoder_type: llama # gptnext, gpt2, llama
+  inference_tensor_parallel: 1 # Default using 1 TP for inference
+  inference_pipeline_parallel: 1 # Default using 1 PP for inference
+  dtype: ${trainer.precision} # Default precision data type
+  save_path: ${exp_manager.explicit_log_dir}/${name}-sft-${quantization.algorithm}.qnemo # Path where the quantized model will be saved
+  compress: false # Wheter save_path should be a tarball or a directory

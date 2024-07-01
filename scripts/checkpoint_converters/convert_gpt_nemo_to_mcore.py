@@ -88,6 +88,9 @@ def get_mcore_model_from_nemo_file(nemo_restore_from_path, cpu_only=False):
     model_cfg.mcore_gpt = True
     model_cfg.use_cpu_initialization = cpu_only
 
+    # The key mappings use TE spec, hence set the TE flag to True
+    model_cfg.transformer_engine = True
+
     logging.info("*** initializing mcore model with the following config")
     logging.info(OmegaConf.to_yaml(model_cfg))
     trainer = Trainer(devices=1, accelerator='cpu', strategy=NLPDDPStrategy())
@@ -125,9 +128,9 @@ def build_key_mapping(nemo_cfg):
         f"{model_str}.decoder.final_layernorm.weight": "model.language_model.encoder.final_layernorm.weight",
     }
     if has_layernorm_bias:
-        mcore_to_nemo_mapping[
-            f"{model_str}.decoder.final_layernorm.bias"
-        ] = "model.language_model.encoder.final_layernorm.bias"
+        mcore_to_nemo_mapping[f"{model_str}.decoder.final_layernorm.bias"] = (
+            "model.language_model.encoder.final_layernorm.bias"
+        )
 
     if not nemo_cfg.get("share_embeddings_and_output_weights", True):
         mcore_to_nemo_mapping[f"{model_str}.output_layer.weight"] = "model.language_model.output_layer.weight"
@@ -135,9 +138,9 @@ def build_key_mapping(nemo_cfg):
     if nemo_cfg.get("position_embedding_type", 'learned_absolute') == 'rope':
         mcore_to_nemo_mapping[f"{model_str}.rotary_pos_emb.inv_freq"] = "model.language_model.rotary_pos_emb.inv_freq"
     else:
-        mcore_to_nemo_mapping[
-            f"{model_str}.embedding.position_embeddings.weight"
-        ] = "model.language_model.embedding.position_embeddings.weight"
+        mcore_to_nemo_mapping[f"{model_str}.embedding.position_embeddings.weight"] = (
+            "model.language_model.embedding.position_embeddings.weight"
+        )
 
     nemo_prefix = "model.language_model.encoder.layers"
     mcore_prefix = f"{model_str}.decoder.layers"
@@ -335,5 +338,7 @@ if __name__ == '__main__':
     try:
         run_sanity_checks(input_nemo_file, output_nemo_file, cpu_only=cpu_only, ignore_if_missing=ignore_if_missing)
     except torch.cuda.OutOfMemoryError:
-        logging.info("✅ Conversion was successful, but could not run sanity check due to torch.cuda.OutOfMemoryError.")
+        logging.info(
+            "✅ Conversion was successful, but could not run sanity check due to torch.cuda.OutOfMemoryError."
+        )
         logging.info("Please run the script with the same command again to run sanity check.")

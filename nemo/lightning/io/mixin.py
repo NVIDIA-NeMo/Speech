@@ -357,6 +357,9 @@ def track_io(target, artifacts: Optional[List[Artifact]] = None):
 
     def _add_io_to_class(cls):
         if inspect.isclass(cls) and hasattr(cls, '__init__') and not hasattr(cls, '__io__'):
+            if cls in [str, int, float, tuple, list, dict, bool, type(None)]:
+                return cls
+
             cls = _io_wrap_init(cls)
             _io_register_serialization(cls)
             cls.__io_artifacts__ = artifacts or []
@@ -462,14 +465,14 @@ def _io_register_serialization(cls):
 def _io_flatten_object(instance):
     try:
         serialization.dump_json(instance.__io__)
-    except serialization.UnserializableValueError as e:
+    except (serialization.UnserializableValueError, AttributeError) as e:
         if not hasattr(_thread_local, "artifacts_dir"):
             raise e
 
         artifact_dir = _thread_local.artifacts_dir
-        artifact_path = artifact_dir / f"{uuid.uuid4()}.pkl"
+        artifact_path = artifact_dir / f"{uuid.uuid4()}"
         with open(artifact_path, "wb") as f:
-            dump(instance.__io__, f)
+            dump(getattr(instance, "__io__", instance), f)
         return (str(artifact_path),), None
 
     return instance.__io__.__flatten__()
@@ -487,7 +490,7 @@ def _io_unflatten_object(values, metadata):
 def _io_path_elements_fn(x):
     try:
         serialization.dump_json(x.__io__)
-    except serialization.UnserializableValueError:
+    except (serialization.UnserializableValueError, AttributeError) as e:
         return (serialization.IdentityElement(),)
 
     return x.__io__.__path_elements__()

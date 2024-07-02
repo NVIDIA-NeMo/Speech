@@ -283,7 +283,6 @@ def run_inference(
                 use_lora_plugin=use_lora_plugin,
                 lora_target_modules=lora_target_modules,
                 max_num_tokens=int(max_input_len * max_batch_size * 0.2),
-                opt_num_tokens=60,
                 use_embedding_sharing=use_embedding_sharing,
             )
 

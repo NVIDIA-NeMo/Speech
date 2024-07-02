@@ -118,7 +118,7 @@ class TensorRTLLM(ITritonDeployable):
         nemo_checkpoint_path: str,
         model_type: Optional[str] = None,
         delete_existing_files: bool = True,
-        n_gpus: int = 1,
+        n_gpus: int = None,
         tensor_parallelism_size: int = 1,
         pipeline_parallelism_size: int = 1,
         gpus_per_node: int = None,

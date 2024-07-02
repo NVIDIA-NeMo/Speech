@@ -47,7 +47,7 @@ def load(path: Path, output_type: Type[CkptType] = Any) -> CkptType:
     return fdl.build(config)
 
 
-def load_ckpt(path: Path) -> TrainerContext:
+def load_context(path: Path) -> TrainerContext:
     """
     Loads a TrainerContext from a json-file or directory.
 
@@ -167,7 +167,7 @@ def import_ckpt(
 
 
 def load_connector_from_trainer_ckpt(path: Path, target: str) -> ModelConnector:
-    model: pl.LightningModule = load_ckpt(path).model
+    model: pl.LightningModule = load_context(path).model
 
     if not isinstance(model, ConnectorMixin):
         raise ValueError("Model must be an instance of ConnectorMixin")

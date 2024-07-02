@@ -172,11 +172,11 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
 
     @property
     def tokenizer(self):
-        return io.load_ckpt(str(self)).model.tokenizer.tokenizer
+        return io.load_context(str(self)).model.tokenizer.tokenizer
 
     @property
     def config(self) -> "GemmaConfig":
-        source: GemmaConfig = io.load_ckpt(str(self)).model.config
+        source: GemmaConfig = io.load_context(str(self)).model.config
 
         from transformers import GemmaConfig as HFGemmaConfig
 

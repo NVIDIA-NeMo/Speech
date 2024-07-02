@@ -1,4 +1,4 @@
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Callable, List, Optional
 
 import pytorch_lightning as pl
 from megatron.core.distributed import finalize_model_grads

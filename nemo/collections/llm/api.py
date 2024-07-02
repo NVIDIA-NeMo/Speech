@@ -122,7 +122,7 @@ def import_ckpt(
 
 
 def load_connector_from_trainer_ckpt(path: Path, target: str) -> io.ModelConnector:
-    return io.load_ckpt(path).model.exporter(target, path)
+    return io.load_context(path).model.exporter(target, path)
 
 
 @task(name="export", namespace="llm")
@@ -139,8 +139,12 @@ def export_ckpt(
 def _use_tokenizer(model: pl.LightningModule, data: pl.LightningDataModule, tokenizer: str) -> None:
     if tokenizer == "data":
         model.tokenizer = data.tokenizer
+        if hasattr(model, "__io__"):
+            model.__io__.tokenizer = data.tokenizer
     elif tokenizer == "model":
         data.tokenizer = model.tokenizer
+        if hasattr(data, "__io__"):
+            data.__io__.tokenizer = model.tokenizer
 
 
 def _add_ckpt_path(source, model, kwargs) -> None:

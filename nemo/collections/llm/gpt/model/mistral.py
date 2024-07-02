@@ -159,11 +159,11 @@ class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
 
     @property
     def tokenizer(self):
-        return io.load_ckpt(str(self)).model.tokenizer.tokenizer
+        return io.load_context(str(self)).model.tokenizer.tokenizer
 
     @property
     def config(self) -> "MistralConfig":
-        source: MistralConfig7B = io.load_ckpt(str(self)).model.config
+        source: MistralConfig7B = io.load_context(str(self)).model.config
 
         from transformers import MistralConfig as HfMistralConfig
 

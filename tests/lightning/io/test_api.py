@@ -28,7 +28,7 @@ class TestLoad:
 
         ckpt = io.TrainerContext(model, trainer)
         ckpt.io_dump(tmpdir)
-        loaded = io.load_ckpt(tmpdir)
+        loaded = io.load_context(tmpdir)
 
         assert loaded.model.config.seq_length == ckpt.model.config.seq_length
         assert loaded.model.__io__.tokenizer.vocab_file.startswith(str(tmpdir))

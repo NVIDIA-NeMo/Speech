@@ -184,9 +184,9 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
             Tuple[pl.LightningModule, pl.Trainer]: The loaded model and the trainer configured with the model.
         """
         from nemo.lightning import MegatronStrategy, Trainer, _strategy_lib
-        from nemo.lightning.io.api import load_ckpt
+        from nemo.lightning.io.api import load_context
 
-        model = load_ckpt(path).model
+        model = load_context(path).model
         _trainer = trainer or Trainer(
             devices=1, accelerator="cpu" if cpu else "gpu", strategy=MegatronStrategy(ddp="pytorch")
         )
@@ -218,4 +218,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         return _base / str(self).replace("://", "/")
 
     def on_import_ckpt(self, model: pl.LightningModule):
-        model.tokenizer = self.tokenizer
+        if hasattr(self, "tokenizer"):
+            model.tokenizer = self.tokenizer
+            if hasattr(model, "__io__"):
+                model.__io__.tokenizer = self.tokenizer

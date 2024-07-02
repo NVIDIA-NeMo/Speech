@@ -193,7 +193,7 @@ class ConnectorMixin:
             Self: An instance of the model initialized from the imported data.
         """
         output = cls._get_connector(path).init()
-        output.ckpt_path = output.import_ckpt_path(path)
+        output.ckpt_path = output.import_ckpt(path)
 
         return output
 

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any, Callable, Generator, List, Literal, Tuple, TypeVar, Union
 
 import pytorch_lightning as pl
@@ -40,26 +39,6 @@ class MegatronMixedPrecision(MixedPrecision):
             scaler = GradScaler(init_scale=2**32, growth_interval=1000, hysteresis=2)
 
         super().__init__(precision, device, scaler)
-
-        # MixedPrecisionPlugin class in PTL >= 2.0 takes only "16-mixed" or "bf16-mixed" for precision arg
-        if precision == "16-mixed":
-            dtype = torch.float16
-
-            def float16_convertor(val):
-                return val.half()
-
-        elif precision == "bf16-mixed":
-            dtype = torch.bfloat16
-
-            def float16_convertor(val):
-                return val.bfloat16()
-
-        else:
-            raise ValueError("precision must be '16-mixed' or 'bf16-mixed'")
-
-        self.dtype = dtype
-        # torch.set_autocast_gpu_dtype(dtype)
-        self.float16_convertor = float16_convertor
         self.amp_O2 = amp_O2
 
     def connect(
@@ -90,7 +69,8 @@ class MegatronMixedPrecision(MixedPrecision):
             config = get_model_config(module.module)
             config.fp16 = self.precision == "16-mixed"
             config.bf16 = self.precision == "bf16-mixed"
-            module.module = Float16Module(config, module.module)
+            if not isinstance(module.module, Float16Module):
+                module.module = Float16Module(config, module.module)
 
         return module
 
@@ -120,10 +100,6 @@ class MegatronMixedPrecision(MixedPrecision):
         """
         return data
 
-        from megatron.core.transformer.module import fp32_to_float16
-
-        return fp32_to_float16(data, self.float16_convertor)
-
     def convert_output(self, data: AnyT) -> AnyT:
         """Convert outputs to the floating point precision type expected after model's forward.
 
@@ -132,10 +108,6 @@ class MegatronMixedPrecision(MixedPrecision):
 
         """
         return data
-
-        from megatron.core.transformer.module import float16_to_fp32
-
-        return float16_to_fp32(data)
 
     def optimizer_step(
         self,

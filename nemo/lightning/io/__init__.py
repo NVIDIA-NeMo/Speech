@@ -1,4 +1,4 @@
-from nemo.lightning.io.api import export_ckpt, import_ckpt, load, load_ckpt, model_exporter, model_importer
+from nemo.lightning.io.api import export_ckpt, import_ckpt, load, load_context, model_exporter, model_importer
 from nemo.lightning.io.capture import reinit
 from nemo.lightning.io.connector import Connector, ModelConnector
 from nemo.lightning.io.mixin import ConnectorMixin, IOMixin, track_io
@@ -16,7 +16,7 @@ __all__ = [
     "is_distributed_ckpt",
     "export_ckpt",
     "load",
-    "load_ckpt",
+    "load_context",
     "ModelConnector",
     "model_importer",
     "model_exporter",

@@ -53,12 +53,18 @@ class MockDataModule(pl.LightningDataModule):
         self._test_ds = _MockGPTDataset(self.tokenizer, "test", self.num_test_samples, self.seq_length)
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
+        if not hasattr(self, "_train_ds"):
+            self.setup()
         return self._create_dataloader(self._train_ds)
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
+        if not hasattr(self, "_validation_ds"):
+            self.setup()
         return self._create_dataloader(self._validation_ds)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
+        if not hasattr(self, "_test_ds"):
+            self.setup()
         return self._create_dataloader(self._test_ds)
 
     def _create_dataloader(self, dataset, **kwargs) -> DataLoader:

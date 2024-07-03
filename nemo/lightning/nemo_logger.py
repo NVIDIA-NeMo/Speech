@@ -134,14 +134,14 @@ class NeMoLogger:
                 loggers = [trainer.logger] + loggers
             trainer._logger_connector.configure_logger(loggers)
 
-        if trainer.logger is not None and self.update_logger_directory:
-            logging.warning(
-                f'"update_logger_directory" is True. Overwriting logger "save_dir" to {dir} and "name" to {self.name}'
-            )
-            trainer.logger._root_dir = dir
-            trainer.logger._name = self.name
-
-        trainer.logger._version = version or ""
+        if trainer.logger is not None:
+            trainer.logger._version = version or ""
+            if self.update_logger_directory:
+                logging.warning(
+                    f'"update_logger_directory" is True. Overwriting logger "save_dir" to {dir} and "name" to {self.name}'
+                )
+                trainer.logger._root_dir = dir
+                trainer.logger._name = self.name
 
     def _setup_trainer_model_checkpoint(self, trainer, log_dir, ckpt=None):
         if ckpt:

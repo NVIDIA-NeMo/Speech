@@ -48,9 +48,11 @@ class WarmupPolicyScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -93,9 +95,11 @@ class WarmupHoldPolicyScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -122,9 +126,11 @@ class SquareAnnealingScheduler(LRSchedulerModule):
         lr_scheduler = SquareAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -151,9 +157,11 @@ class SquareRootAnnealingScheduler(LRSchedulerModule):
         lr_scheduler = SquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -193,9 +201,11 @@ class NoamAnnealingScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -226,9 +236,11 @@ class NoamHoldAnnealingScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -255,9 +267,11 @@ class WarmupAnnealingScheduler(LRSchedulerModule):
         lr_scheduler = WarmupAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -284,9 +298,11 @@ class InverseSquareRootAnnealingScheduler(LRSchedulerModule):
         lr_scheduler = InverseSquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -313,9 +329,11 @@ class T5InverseSquareRootAnnealingScheduler(LRSchedulerModule):
         lr_scheduler = T5InverseSquareRootAnnealing(optimizer, max_steps=self.max_steps, min_lr=self.min_lr)
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -348,9 +366,11 @@ class PolynomialDecayAnnealingScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -383,9 +403,11 @@ class PolynomialHoldDecayAnnealingScheduler(LRSchedulerModule):
         )
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
-            "interval": self.interval,
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                "scheduler": lr_scheduler,
+                "interval": self.interval,
+                "frequency": self.frequency,
+            },
             "monitor": self.monitor,
         }
 
@@ -423,16 +445,19 @@ class CosineAnnealingScheduler(LRSchedulerModule):
 
         return {
             "optimizer": optimizer,
-            # REQUIRED: The scheduler instance
             "scheduler": lr_scheduler,
-            # The unit of the scheduler's step size, could also be 'step'.
-            # 'epoch' updates the scheduler on epoch end whereas 'step'
-            # updates it after a optimizer update.
-            "interval": self.interval,
-            # How many epochs/steps should pass between calls to
-            # `scheduler.step()`. 1 corresponds to updating the learning
-            # rate after every epoch/step.
-            "frequency": self.frequency,
+            "lr_scheduler": {
+                # REQUIRED: The scheduler instance
+                "scheduler": lr_scheduler,
+                # The unit of the scheduler's step size, could also be 'step'.
+                # 'epoch' updates the scheduler on epoch end whereas 'step'
+                # updates it after a optimizer update.
+                "interval": self.interval,
+                # How many epochs/steps should pass between calls to
+                # `scheduler.step()`. 1 corresponds to updating the learning
+                # rate after every epoch/step.
+                "frequency": self.frequency,
+            },
             # Metric to to monitor for schedulers like `ReduceLROnPlateau`
             "monitor": self.monitor,
         }

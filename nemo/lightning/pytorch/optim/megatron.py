@@ -54,7 +54,7 @@ class MegatronOptimizerModule(OptimizerModule):
         self.scale_lr_cond = scale_lr_cond
         self.lr_mult = lr_mult
 
-    def setup(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", stage: str):
+    def on_fit_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
         """We will add the finalize_model_grads function to the model config.
 
         Args:

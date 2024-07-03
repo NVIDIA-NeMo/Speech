@@ -48,7 +48,9 @@ class NemoLLMEngine(LLMEngine):
                 )
 
                 # Update the HF config fields that come from the tokenizer in NeMo
-                self.model_config.hf_config.vocab_size = tokenizer_group.tokenizer.vocab_size
+                self.model_config.hf_config.vocab_size = len(
+                    tokenizer_group.tokenizer.vocab
+                )  # this may be greater than vocab_size
                 self.model_config.hf_config.bos_token_id = tokenizer_group.tokenizer.bos_token_id
                 self.model_config.hf_config.eos_token_id = tokenizer_group.tokenizer.eos_token_id
                 self.model_config.hf_config.pad_token_id = tokenizer_group.tokenizer.pad_token_id

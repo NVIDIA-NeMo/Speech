@@ -24,7 +24,10 @@ from tensorrt_llm.functional import non_gated_version
 from tensorrt_llm.layers import MoeConfig
 from tensorrt_llm.models.modeling_utils import PretrainedConfig
 
-from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import convert_model_to_trt_llm_ckpt
+from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import (
+    convert_model_to_trt_llm_ckpt,
+    dist_model_to_trt_llm_ckpt,
+)
 from nemo.export.trt_llm.converter.utils import DECODER_MODEL_TYPE, split
 
 LOGGER = logging.getLogger("NeMo")
@@ -75,6 +78,9 @@ def model_to_trtllm_ckpt(
     gpus_per_node: int = None,
     use_parallel_embedding: bool = False,
     use_embedding_sharing: bool = False,
+    use_distributed_convert: bool = False,
+    model_parallel_rank: int = None,
+    vocab_size: int = None,
 ) -> Tuple[List[Dict], List[PretrainedConfig]]:
 
     if nemo_model_config.get("share_embeddings_and_output_weights", False) and not use_embedding_sharing:
@@ -83,30 +89,40 @@ def model_to_trtllm_ckpt(
         )
         use_embedding_sharing = True
 
-    weights_dict = convert_model_to_trt_llm_ckpt(
-        model=model,
-        nemo_model_config=nemo_model_config,
-        nemo_export_dir=nemo_export_dir,
-        inference_tp_size=tensor_parallel_size,
-        processes=1,
-        storage_type=dtype,
-        use_parallel_embedding=use_parallel_embedding,
-        decoder_type=decoder_type,
-    )
+    # If the model has been sharded with model parallelism, convert the model in a gpu-distributed manner
+    if use_distributed_convert:
+        weights_dict = dist_model_to_trt_llm_ckpt(
+            model=model,
+            nemo_model_config=nemo_model_config,
+            inference_tp_size=tensor_parallel_size,
+            inference_pp_size=pipeline_parallel_size,
+            tokenizer_vocab_size=vocab_size,
+        )
+        vocab_size_padded = vocab_size
+    else:
+        weights_dict = convert_model_to_trt_llm_ckpt(
+            model=model,
+            nemo_model_config=nemo_model_config,
+            nemo_export_dir=nemo_export_dir,
+            inference_tp_size=tensor_parallel_size,
+            processes=1,
+            storage_type=dtype,
+            use_parallel_embedding=use_parallel_embedding,
+            decoder_type=decoder_type,
+        )
+
+        has_lm_head = "lm_head.weight" in weights_dict
+        if has_lm_head:
+            lm_head_weight = weights_dict["lm_head.weight"]
+        if vocab_size is None:
+            vocab_size = weights_dict["transformer.vocab_embedding.weight"].shape[0]
+        vocab_size_padded = pad_vocab_size(vocab_size, tensor_parallel_size) if has_lm_head else vocab_size
+
+        if has_lm_head and vocab_size_padded != vocab_size:
+            pad_width = vocab_size_padded - vocab_size
+            lm_head_weight = np.pad(lm_head_weight, ((0, pad_width), (0, 0)), "constant", constant_values=0)
 
     world_size = tensor_parallel_size * pipeline_parallel_size
-
-    has_lm_head = "lm_head.weight" in weights_dict
-    if has_lm_head:
-        lm_head_weight = weights_dict["lm_head.weight"]
-
-    vocab_size = weights_dict["transformer.vocab_embedding.weight"].shape[0]
-    vocab_size_padded = pad_vocab_size(vocab_size, tensor_parallel_size) if has_lm_head else vocab_size
-
-    if has_lm_head and vocab_size_padded != vocab_size:
-        pad_width = vocab_size_padded - vocab_size
-        lm_head_weight = np.pad(lm_head_weight, ((0, pad_width), (0, 0)), "constant", constant_values=0)
-
     hidden_act = nemo_model_config.get('activation')
     hidden_act = (
         hidden_act.split("-")[-1] if nemo_model_config.get('num_moe_experts', 0) else non_gated_version(hidden_act)
@@ -150,7 +166,6 @@ def model_to_trtllm_ckpt(
         'tp_size': tensor_parallel_size,
         'pp_size': pipeline_parallel_size,
     }
-
     model_configs = []
     weights_dicts = []
     num_layers = nemo_model_config.get('num_layers')
@@ -161,6 +176,18 @@ def model_to_trtllm_ckpt(
         config["parallel_attention"] = True
     if rotary_scaling is not None:
         config["rotary_scaling"] = {"type": "linear", "factor": float(rotary_scaling)}
+
+    if use_distributed_convert:
+        config["gpus_per_node"] = gpus_per_node
+        model_configs.append(PretrainedConfig(**config))
+        model_configs[0].mapping = tensorrt_llm.Mapping(
+            world_size=world_size,
+            rank=model_parallel_rank,
+            tp_size=tensor_parallel_size,
+            pp_size=pipeline_parallel_size,
+        )
+        weights_dicts.append(weights_dict)
+        return weights_dicts, model_configs
 
     pp_key = {
         "transformer.vocab_embedding.weight",

@@ -431,6 +431,7 @@ class MegatronBaseModel(NLPModel):
             special_tokens=self.cfg.tokenizer.get('special_tokens', None),
             trust_remote_code=self.cfg.tokenizer.get('trust_remote_code', False),
             legacy=legacy,
+            chat_template=getattr(self._cfg.tokenizer, "chat_template", None),
         )
 
         if self._cfg.tokenizer.get('additional_special_tokens', None) is not None:

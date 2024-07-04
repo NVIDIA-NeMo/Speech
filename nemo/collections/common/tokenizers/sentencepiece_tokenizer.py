@@ -20,13 +20,14 @@ import sentencepiece
 import torch
 
 from nemo.collections.common.parts.utils import if_exist
+from nemo.collections.common.tokenizers.chat_template_mixin import ChatTemplateMixin
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging
 
 __all__ = ['SentencePieceTokenizer', 'create_spt_model']
 
 
-class SentencePieceTokenizer(TokenizerSpec):
+class SentencePieceTokenizer(TokenizerSpec, ChatTemplateMixin):
     """
     Sentencepiecetokenizer https://github.com/google/sentencepiece.
 
@@ -38,8 +39,13 @@ class SentencePieceTokenizer(TokenizerSpec):
     """
 
     def __init__(
-        self, model_path: str, special_tokens: Optional[Union[Dict[str, str], List[str]]] = None, legacy: bool = False
+        self,
+        model_path: str,
+        special_tokens: Optional[Union[Dict[str, str], List[str]]] = None,
+        legacy: bool = False,
+        chat_template: Optional[Dict] = None,
     ):
+        self.chat_template = chat_template
         if not model_path or not os.path.exists(model_path):
             raise ValueError(f"model_path: {model_path} is invalid")
         self.tokenizer = sentencepiece.SentencePieceProcessor()
@@ -89,6 +95,14 @@ class SentencePieceTokenizer(TokenizerSpec):
         return self.tokenizer.encode_as_pieces(text)
 
     def text_to_ids(self, text, sample_alpha=None):
+        if isinstance(text, str):
+            return self._text_to_ids(text, sample_alpha)
+        elif isinstance(text, list):
+            return self.apply_chat_template(text)
+        else:
+            raise ValueError(f"Expected either str or list input, but got {type(text)}")
+
+    def _text_to_ids(self, text, sample_alpha=None):
         if self.legacy:
             ids = []
             idx = 0

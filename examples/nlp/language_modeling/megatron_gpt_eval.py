@@ -14,6 +14,7 @@
 
 import asyncio
 import datetime
+import json
 import os
 import threading
 from functools import partial
@@ -166,20 +167,7 @@ def remove_padded_prompts(response, nb_paddings):
     return result
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_inference")
-def main(cfg) -> None:
-
-    callbacks = []
-    # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False, CustomProgressBar is not appended to callbacks
-    if 'enable_progress_bar' not in cfg.trainer or cfg.trainer.enable_progress_bar:
-        callbacks.append(CustomProgressBar())
-    # trainer required for restoring model parallel models
-    trainer = Trainer(
-        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)),
-        **cfg.trainer,
-        callbacks=callbacks,
-    )
-
+def load_model_from_config(trainer, cfg):
     if cfg.gpt_model_file is not None:
         if (
             cfg.tensor_model_parallel_size < 0
@@ -285,7 +273,50 @@ def main(cfg) -> None:
         model = MegatronGPTModel.load_from_checkpoint(checkpoint_path, hparams_file=cfg.hparams_file, trainer=trainer)
     else:
         raise ValueError("need at least a nemo file or checkpoint dir")
+    return model
 
+
+def load_prompts(cfg):
+    prompts = []
+    if (cfg_prompts := getattr(cfg, 'prompts', None)) is not None:
+        prompts = OmegaConf.to_container(cfg_prompts)
+    if (prompts_jsonl := getattr(cfg, 'prompts_jsonl', None)) is not None:
+        with open(prompts_jsonl, 'rt') as fp:
+            try:
+                prompts += list(map(json.loads, map(str.rstrip, fp)))
+            except:
+                prompts += list(map(str.rstrip, fp))
+    # Make sure non-empty input
+    assert len(prompts) > 0, "Expected at least one prompt"
+    # Make sure all have the same type
+    assert all(
+        map(lambda x: isinstance(x, type(prompts[0])), prompts)
+    ), "Expected all prompts to have the same datatype"
+    return prompts
+
+
+def round_to_mult(n, mult=8):
+    """
+    Rounds number n to be a multiple of mult
+    """
+    return ((n + mult - 1) // mult) * mult
+
+
+@hydra_runner(config_path="conf", config_name="megatron_gpt_inference")
+def main(cfg) -> None:
+
+    callbacks = []
+    # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False, CustomProgressBar is not appended to callbacks
+    if 'enable_progress_bar' not in cfg.trainer or cfg.trainer.enable_progress_bar:
+        callbacks.append(CustomProgressBar())
+    # trainer required for restoring model parallel models
+    trainer = Trainer(
+        strategy=NLPDDPStrategy(timeout=datetime.timedelta(seconds=18000)),
+        **cfg.trainer,
+        callbacks=callbacks,
+    )
+
+    model = load_model_from_config(trainer, cfg)
     model.freeze()
 
     # Have to turn off activations_checkpoint_method for inference
@@ -311,17 +342,17 @@ def main(cfg) -> None:
         "end_strings": cfg.inference.end_strings,
     }
 
+    prompts = load_prompts(cfg)
+
     fp8_enabled = hasattr(model.cfg, "fp8") and (model.cfg.fp8 == True)
-    if fp8_enabled:
-        nb_paddings = 0
-        while len(cfg.prompts) % 8 != 0:
-            cfg.prompts.append("")
-            nb_paddings += 1
+    if fp8_enabled and len(prompts) > 0:
+        padded_len = round_to_mult(len(prompts), 8)
+        nb_paddings = padded_len - len(prompts)
+        if nb_paddings > 0:
+            nb_paddings += [''] * nb_paddings
 
     # First method of running text generation, call model.generate method
-    response = model.generate(
-        inputs=OmegaConf.to_container(cfg.prompts), length_params=length_params, sampling_params=sampling_params
-    )
+    response = model.generate(inputs=prompts, length_params=length_params, sampling_params=sampling_params)
 
     if fp8_enabled:
         response = remove_padded_prompts(response, nb_paddings)
@@ -331,7 +362,7 @@ def main(cfg) -> None:
 
     # Second method of running text generation, call trainer.predict [recommended]
     bs = 8 if fp8_enabled else 2
-    ds = RequestDataSet(OmegaConf.to_container(cfg.prompts))
+    ds = RequestDataSet(prompts)
     request_dl = DataLoader(dataset=ds, batch_size=bs)
     config = OmegaConf.to_container(cfg.inference)
     model.set_inference_config(config)

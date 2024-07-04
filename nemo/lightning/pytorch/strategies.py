@@ -352,6 +352,11 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 batch_size=1,
             )
 
+            self.lightning_module.log(
+                'step',
+                self.trainer.global_step,
+            )
+
             if self.log_memory_usage:
                 max_memory_reserved = torch.cuda.max_memory_reserved()
                 memory_allocated = torch.cuda.memory_allocated()

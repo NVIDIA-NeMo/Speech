@@ -156,7 +156,6 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
 
     def training_step(self, batch, batch_idx=None) -> torch.Tensor:
         # In mcore the loss-function is part of the forward-pass (when labels are provided)
-
         return self.forward_step(batch)
 
     def validation_step(self, batch, batch_idx=None) -> torch.Tensor:

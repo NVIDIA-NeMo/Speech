@@ -50,11 +50,17 @@ torch.set_grad_enabled(False)
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--input_name_or_path", type=str, default=None, required=True, help="Path to Huggingface Mixtral checkpoints",
+        "--input_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to Huggingface Mixtral checkpoints",
     )
     parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to output .nemo file.")
-    valid_precision_values = [16, '16', 'bf16', '16-mixed', 'bf16-mixed', 32, '32']
-    parser.add_argument("--precision", type=str, default="32", choices=valid_precision_values, help="Model precision")
+    valid_precision_values = [16, '16', 'bf16', '16-mixed', 'bf16-mixed']
+    parser.add_argument(
+        "--precision", type=str, default="bf16", choices=valid_precision_values, help="Model precision"
+    )
     parser.add_argument('--low-ram', action='store_true')
     parser.add_argument('--tmp-dir', default='/tmp/mixtral_ckpt_parts/')
     args = parser.parse_args()
@@ -185,7 +191,7 @@ def make_trainer(args, nemo_config):
         scaler = None
         if precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=nemo_config.get('native_amp_init_scale', 2 ** 32),
+                init_scale=nemo_config.get('native_amp_init_scale', 2**32),
                 growth_interval=nemo_config.get('native_amp_growth_interval', 1000),
                 hysteresis=nemo_config.get('hysteresis', 2),
             )

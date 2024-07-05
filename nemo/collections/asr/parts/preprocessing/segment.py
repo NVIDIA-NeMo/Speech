@@ -50,6 +50,10 @@ HAVE_PYDUB = True
 try:
     from pydub import AudioSegment as Audio
     from pydub.exceptions import CouldntDecodeError
+
+    # FFMPEG for some formats needs explicitly defined coding-decoding strategy
+    ffmpeg_codecs = {'opus': 'opus'}
+
 except ModuleNotFoundError:
     HAVE_PYDUB = False
 
@@ -342,14 +346,14 @@ class AudioSegment(object):
 
         if HAVE_PYDUB and samples is None:
             try:
-                samples = Audio.from_file(audio_file)
+                samples = Audio.from_file(audio_file, codec=ffmpeg_codecs.get(os.path.splitext(audio_file)[-1]))
                 sample_rate = samples.frame_rate
                 num_channels = samples.channels
                 if offset > 0:
                     # pydub does things in milliseconds
                     seconds = offset * 1000
                     samples = samples[int(seconds) :]
-                if duration > 0:
+                if duration is not None and duration > 0:
                     seconds = duration * 1000
                     samples = samples[: int(seconds)]
                 samples = np.array(samples.get_array_of_samples())

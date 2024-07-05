@@ -702,18 +702,23 @@ class SpeechLabel(_Collection):
         output_type = self.OUTPUT_TYPE
         data, duration_filtered = [], 0.0
         total_duration = 0.0
+        duration_undefined = True
+
         for audio_file, duration, command, offset in zip(audio_files, durations, labels, offsets):
             # Duration filters.
-            if min_duration is not None and duration < min_duration:
+            if duration is not None and min_duration is not None and duration < min_duration:
                 duration_filtered += duration
                 continue
 
-            if max_duration is not None and duration > max_duration:
+            if duration is not None and max_duration is not None and duration > max_duration:
                 duration_filtered += duration
                 continue
 
             data.append(output_type(audio_file, duration, command, offset))
-            total_duration += duration
+
+            if duration is not None:
+                total_duration += duration
+                duration_undefined = False
 
             if index_by_file_id:
                 file_id, _ = os.path.splitext(os.path.basename(audio_file))
@@ -729,8 +734,14 @@ class SpeechLabel(_Collection):
             else:
                 data.sort(key=lambda entity: entity.duration)
 
-        logging.info(f"Filtered duration for loading collection is {duration_filtered / 3600: .2f} hours.")
-        logging.info(f"Dataset loaded with {len(data)} items, total duration of {total_duration / 3600: .2f} hours.")
+        if duration_undefined:
+            logging.info(f"Dataset loaded with {len(data)} items. The durations were not provided.")
+        else:
+            logging.info(f"Filtered duration for loading collection is {duration_filtered / 3600: .2f} hours.")
+            logging.info(
+                f"Dataset successfully loaded with {len(data)} items and total duration provided from manifest is {total_duration / 3600: .2f} hours."
+            )
+
         self.uniq_labels = sorted(set(map(lambda x: x.label, data)))
         logging.info("# {} files loaded accounting to # {} labels".format(len(data), len(self.uniq_labels)))
 

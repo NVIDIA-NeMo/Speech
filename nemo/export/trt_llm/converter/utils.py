@@ -439,14 +439,14 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
         split_w3s = np.split(w3, split_factor, axis=1)
 
         split_vals = [np.concatenate(item, axis=1) for item in zip(split_w3s, split_w1s)]
-        key = f'{layer_prefix}.mlp.experts_weight_1'
+        key = f'{layer_prefix}.mlp.fc.weight'
         save_expert_split(split_vals, saved_dir, key, tp_rank, split_factor)
 
     elif "experts.linear_fc2.weight" in key:
         cat_dim = -1
         val = np.concatenate(vals, axis=cat_dim)
         split_vals = np.split(val, split_factor, axis=cat_dim)
-        key = f'{layer_prefix}.mlp.experts_weight_2'
+        key = f'{layer_prefix}.mlp.proj.weight'
         save_expert_split(split_vals, saved_dir, key, tp_rank, split_factor)
     else:
         print(f"[WARNING] {key} not handled by converter")

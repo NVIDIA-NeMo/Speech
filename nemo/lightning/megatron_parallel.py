@@ -49,7 +49,7 @@ def default_data_step(dataloader_iter: Iterator[DataT]) -> DataT:
         batch = batch[0]
 
     if isinstance(batch, dict):
-        batch = {k: v.cuda() for k, v in batch.items()}
+        batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
 
     return batch
 
@@ -182,7 +182,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
         for i, model_module in enumerate(_pipeline):
             if not cpu:
-                model_module.cuda(torch.cuda.current_device())
+                model_module.cuda(torch.cuda.current_device(), non_blocking=True)
 
             for param in model_module.parameters():
                 set_defaults_if_not_set_tensor_model_parallel_attributes(param)
@@ -300,7 +300,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             if forward_only:
                 loss_mean = cast(torch.Tensor, [])
             else:
-                loss_mean = torch.tensor(0.0).cuda()
+                loss_mean = torch.tensor(0.0, device=torch.cuda.current_device())
 
         self.callbacks.event("on_megatron_log_step_end", **context)
         self.callbacks.event("on_megatron_step_end", **context)
@@ -1018,7 +1018,7 @@ class MaskedTokenLossReduction(MegatronLossReduction):
             loss_sum_and_ub_size_all_gpu = torch.cat(
                 [
                     loss_sum_for_ub.clone().detach().view(1),
-                    torch.tensor([num_valid_tokens_in_ub]).cuda().clone().detach(),
+                    torch.tensor([num_valid_tokens_in_ub], device=torch.cuda.current_device()).clone().detach(),
                 ]
             )
             torch.distributed.all_reduce(loss_sum_and_ub_size_all_gpu, group=parallel_state.get_data_parallel_group())
@@ -1045,11 +1045,11 @@ class MaskedTokenLossReduction(MegatronLossReduction):
             loss_sum = (
                 torch.vstack(loss_sum_tensors_list).sum(dim=0)
                 if len(loss_sum_tensors_list) > 0
-                else torch.tensor([0.0, 0.0]).cuda()
+                else torch.tensor([0.0, 0.0], device=torch.cuda.current_device())
             )
             return loss_sum
 
-        return torch.tensor(0.0).cuda()
+        return torch.tensor(0.0, device=torch.cuda.current_device())
 
 
 def masked_token_loss(tensor: Tensor, mask: Tensor):

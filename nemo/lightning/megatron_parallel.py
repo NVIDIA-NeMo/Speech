@@ -182,7 +182,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
         for i, model_module in enumerate(_pipeline):
             if not cpu:
-                model_module.cuda(torch.cuda.current_device(), non_blocking=True)
+                model_module.cuda(torch.cuda.current_device())
 
             for param in model_module.parameters():
                 set_defaults_if_not_set_tensor_model_parallel_attributes(param)

@@ -392,13 +392,6 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
             pkl.dump(self.embeddings, open(self._embeddings_file, 'wb'))
             logging.info("Saved embedding files to {}".format(embedding_dir))
 
-    def path2audio_files_to_manifest(self, paths2audio_files, manifest_filepath):
-        with open(manifest_filepath, 'w', encoding='utf-8') as fp:
-            for audio_file in paths2audio_files:
-                audio_file = audio_file.strip()
-                entry = {'audio_filepath': audio_file, 'offset': 0.0, 'duration': None, 'text': '-', 'label': 'infer'}
-                fp.write(json.dumps(entry) + '\n')
-
     def diarize(self, paths2audio_files: List[str] = None, batch_size: int = 0):
         """
         Diarize files provided through paths2audio_files or manifest file

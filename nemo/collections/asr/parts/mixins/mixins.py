@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import shutil
 import tarfile
@@ -31,7 +32,7 @@ from nemo.utils import app_state, logging
 
 
 class ASRBPEMixin(ABC):
-    """ ASR BPE Mixin class that sets up a Tokenizer via a config
+    """ASR BPE Mixin class that sets up a Tokenizer via a config
 
     This mixin class adds the method `_setup_tokenizer(...)`, which can be used by ASR models
     which depend on subword tokenization.
@@ -204,7 +205,12 @@ class ASRBPEMixin(ABC):
         tokenizers_dict = {}
         # init each of the monolingual tokenizers found in the config and assemble into  AggregateTokenizer
         for lang, tokenizer_config in self.tokenizer_cfg[self.AGGREGATE_TOKENIZERS_DICT_PREFIX].items():
-            (tokenizer, model_path, vocab_path, spe_vocab_path,) = self._make_tokenizer(tokenizer_config, lang)
+            (
+                tokenizer,
+                model_path,
+                vocab_path,
+                spe_vocab_path,
+            ) = self._make_tokenizer(tokenizer_config, lang)
 
             tokenizers_dict[lang] = tokenizer
             if hasattr(self, 'cfg'):
@@ -845,7 +851,23 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                 streaming_buffer.reset_buffer()
 
 
-class DiarizationMixin(ABC):
+class VerificationMixin(ABC):
+    @staticmethod
+    def path2audio_files_to_manifest(paths2audio_files, manifest_filepath):
+        """
+        Takes paths to audio files and manifest filepath and creates manifest file with the audios
+        Args:
+            paths2audio_files: paths to audio fragment to be verified
+            manifest_filepath: path to manifest file to bre created
+        """
+        with open(manifest_filepath, 'w', encoding='utf-8') as fp:
+            for audio_file in paths2audio_files:
+                audio_file = audio_file.strip()
+                entry = {'audio_filepath': audio_file, 'offset': 0.0, 'duration': None, 'text': '-', 'label': 'infer'}
+                fp.write(json.dumps(entry) + '\n')
+
+
+class DiarizationMixin(VerificationMixin):
     @abstractmethod
     def diarize(self, paths2audio_files: List[str], batch_size: int = 1) -> List[str]:
         """

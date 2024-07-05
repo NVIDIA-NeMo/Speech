@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from omegaconf import MISSING
 
@@ -46,6 +46,7 @@ class EncDecClassificationDatasetConfig(nemo.core.classes.dataset.DatasetConfig)
     max_duration: Optional[float] = None
     min_duration: Optional[float] = None
     cal_labels_occurrence: Optional[bool] = False
+    channel_selector: Optional[Union[str, int, List[int]]] = None
 
     # VAD Optional
     vad_stream: Optional[bool] = None

@@ -1007,7 +1007,7 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                         model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
                     model.trainer.strategy.setup_environment()
                 sharded_state_dict = model.sharded_state_dict()
-                checkpoint_io = DistributedCheckpointIO(model.cfg.get('dist_ckpt_format', 'zarr'))
+                checkpoint_io = DistributedCheckpointIO.from_config(model.cfg, async_save=False)
                 checkpoint_io.save_checkpoint(sharded_state_dict, dist_ckpt_dir)
 
                 if HAVE_MODELOPT and hasattr(model, "get_model_module_list"):

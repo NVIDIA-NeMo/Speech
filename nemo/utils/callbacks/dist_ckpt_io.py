@@ -32,16 +32,29 @@ try:
     from megatron.core import dist_checkpointing
     from megatron.core.dist_checkpointing.dict_utils import extract_matching_values
     from megatron.core.dist_checkpointing.mapping import ShardedBase
+    from megatron.core.dist_checkpointing.serialization import (
+        get_default_load_sharded_strategy,
+        get_default_save_sharded_strategy,
+    )
     from megatron.core.dist_checkpointing.strategies import tensorstore
-
-    from nemo.utils.callbacks.torch_dist_async import AsyncCallsQueue, AsyncRequest, TorchDistAsyncSaveShardedStrategy
+    from megatron.core.dist_checkpointing.strategies.async_utils import AsyncCallsQueue, AsyncRequest
+    from megatron.core.dist_checkpointing.strategies.base import SaveShardedStrategy
+    from megatron.core.dist_checkpointing.strategies.fully_parallel import (
+        FullyParallelLoadStrategyWrapper,
+        FullyParallelSaveStrategyWrapper,
+    )
+    from megatron.core.dist_checkpointing.strategies.torch import TorchDistSaveShardedStrategy
+    from megatron.core.parallel_state import get_data_parallel_group
 
     HAVE_MEGATRON_CORE = True
 
-except (ImportError, ModuleNotFoundError) as IMPORT_ERROR_EXC:
+except (ImportError, ModuleNotFoundError) as e:
 
     HAVE_MEGATRON_CORE = False
-    IMPORT_ERROR = "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+    IMPORT_ERROR = (
+        "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        f" Exact error: {e}"
+    )
 
 
 @contextmanager
@@ -87,7 +100,7 @@ class AsyncFinalizableCheckpointIO(_WrappingCheckpointIO):
 
     def __init__(self, checkpoint_io: AsyncCompatibleCheckpointIO) -> None:
         if not HAVE_MEGATRON_CORE:
-            raise ImportError(IMPORT_ERROR) from IMPORT_ERROR_EXC
+            raise ImportError(IMPORT_ERROR)
         if not isinstance(checkpoint_io, AsyncCompatibleCheckpointIO):
             raise ValueError(f'Incompatible wrapped checkpoint_io type: {type(checkpoint_io)}')
 
@@ -177,6 +190,12 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             always loads on device). Defaults to True.
         async_save (bool): whether to save asynchronously. Should be set to True if
             this class will be wrapped with AsyncFinalizableCheckpointIO.
+        torch_dist_multiproc (int, optional): number of extra processes per rank
+            used during ckpt save with PyTorch distributed format. Defaults, to None
+            which means using an MCore default (2).
+        parallel_save (bool): parallelizes the save across ranks. Defaults to True
+        parallel_load (bool): parallelizes the load across ranks (followed by params all gather).
+            Defaults to False due to some extra memory usage requirement.
     """
 
     def __init__(
@@ -184,15 +203,25 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         save_ckpt_format: str,
         load_directly_on_device: bool = True,
         async_save: bool = False,
+        torch_dist_multiproc: Optional[int] = None,
+        assume_constant_structure: bool = False,
+        parallel_save: bool = True,
+        parallel_load: bool = False,
     ):
         super().__init__()
         if not HAVE_MEGATRON_CORE:
-            raise ImportError(IMPORT_ERROR) from IMPORT_ERROR_EXC
+            raise ImportError(IMPORT_ERROR)
 
         self.save_ckpt_format = save_ckpt_format
         self.load_directly_on_device = load_directly_on_device
         self.async_save = async_save
-        self.save_sharded_strategy = self._determine_dist_ckpt_save_strategy()
+        self.torch_dist_multiproc = torch_dist_multiproc
+        self.assume_constant_structure = assume_constant_structure
+        self.parallel_save = parallel_save
+        self.parallel_load = parallel_load
+
+        self._save_sharded_strategy = None
+        self.validated_consistency = False
 
     @classmethod
     def from_config(cls, model_cfg: dict, async_save: bool = False):
@@ -208,6 +237,9 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             save_ckpt_format=model_cfg.get('dist_ckpt_format', 'zarr'),
             load_directly_on_device=model_cfg.get('dist_ckpt_load_on_device', True),
             async_save=async_save,
+            torch_dist_multiproc=model_cfg.get('dist_ckpt_torch_dist_multiproc', None),
+            parallel_save=model_cfg.get('dist_ckpt_parallel_save', True),
+            parallel_load=model_cfg.get('dist_ckpt_parallel_load', False),
         )
 
     @_debug_time('DistributedCheckpointIO.save_checkpoint')
@@ -224,16 +256,15 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         fs = get_filesystem(path)
         fs.makedirs(path, exist_ok=True)
 
-        dist_checkpointing.save(
-            sharded_state_dict=checkpoint, checkpoint_dir=path, sharded_strategy=self.save_sharded_strategy
+        validate_sharding_integrity = not (self.validated_consistency and self.assume_constant_structure)
+        self.validated_consistency = True
+        return dist_checkpointing.save(
+            sharded_state_dict=checkpoint,
+            checkpoint_dir=path,
+            sharded_strategy=self.save_sharded_strategy,
+            validate_access_integrity=validate_sharding_integrity,
+            async_sharded_save=self.async_save,
         )
-        if not self.async_save:
-            return None
-        # NOTE: this logic will be simplified in MCore v0.7
-        assert self.save_sharded_strategy.async_request is not None
-        async_request = self.save_sharded_strategy.async_request
-        self.save_sharded_strategy.async_request = None
-        return async_request
 
     @_debug_time('DistributedCheckpointIO.load_checkpoint')
     def load_checkpoint(
@@ -266,6 +297,16 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             sharded_strategy = tensorstore.TensorStoreLoadShardedStrategy(load_directly_on_device=True)
         else:
             sharded_strategy = None
+
+        if self.parallel_load:
+            if sharded_strategy is None:
+                sharded_strategy = get_default_load_sharded_strategy(path)
+            sharded_strategy = FullyParallelLoadStrategyWrapper(
+                sharded_strategy, get_data_parallel_group(with_context_parallel=True)
+            )
+
+        if sharded_strategy is not None:
+            logging.info(f'Using {sharded_strategy} dist-ckpt load strategy.')
 
         if not strict:
             sharded_state_dict = self.adjust_non_strict_load(path, sharded_state_dict)
@@ -309,17 +350,36 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         """
         shutil.rmtree(path, ignore_errors=True)
 
+    @property
+    def save_sharded_strategy(self) -> 'SaveShardedStrategy':
+        if self._save_sharded_strategy is None:
+            self._save_sharded_strategy = self._determine_dist_ckpt_save_strategy()
+        return self._save_sharded_strategy
+
     def _determine_dist_ckpt_save_strategy(self):
         """Determine the saving strategy based on constructor args.
 
-        If self.async_save is True instantiates an async PyT Dist strategy,
-        otherwise relies on MCore to create a proper strategy based on ckpt format.
+        Relies on the default MCore strategy unless extra PyT Distributed format arguments
+        are passed in config or in case of a fully parallel save in which case
+        a parallelization wrapper is applied.
         """
-        save_strategy = (self.save_ckpt_format, 1)
-        if self.async_save:
-            if save_strategy[0] != 'torch_dist':
-                raise ValueError('Async dist-ckpt save supported only for torch_dist format')
-            save_strategy = TorchDistAsyncSaveShardedStrategy('torch_dist', 1)
+        if self.async_save and self.save_ckpt_format != 'torch_dist':
+            raise ValueError('Async dist-ckpt save supported only for torch_dist format')
+
+        torch_dist_kwargs = {} if self.torch_dist_multiproc is None else dict(thread_count=self.torch_dist_multiproc)
+        if self.save_ckpt_format == 'torch_dist' and torch_dist_kwargs:
+            save_strategy = TorchDistSaveShardedStrategy(self.save_ckpt_format, 1, **torch_dist_kwargs)
+        else:
+            save_strategy = get_default_save_sharded_strategy(self.save_ckpt_format, 1)
+
+        # MCore v0.8 introduces `use_cached_ckpt_structure` attribute
+        if hasattr(save_strategy, 'use_cached_ckpt_structure'):
+            save_strategy.use_cached_ckpt_structure = self.assume_constant_structure
+
+        if self.parallel_save:
+            save_strategy = FullyParallelSaveStrategyWrapper(
+                save_strategy, get_data_parallel_group(with_context_parallel=True), self.assume_constant_structure
+            )
 
         logging.info(f'Using {save_strategy} dist-ckpt save strategy.')
         return save_strategy

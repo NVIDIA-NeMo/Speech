@@ -58,9 +58,7 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
     def sharded_state_dict(
         self, model_sharded_state_dict, optimizer_state_dict=None, is_loading=False, dist_ckpt_parallel_save=False
     ):
-        # TODO(@akoumparouli, @mikolajblaz): switch to sharding_type once support for fully_sharded_model_space merged in mcore.
-        # sharding_type = 'fully_sharded_model_space' if dist_ckpt_parallel_save else 'dp_zero_gather_scatter'
-        sharding_type = 'dp_zero_gather_scatter'
+        sharding_type = 'fully_sharded_model_space' if dist_ckpt_parallel_save else 'dp_zero_gather_scatter'
         return self.mcore_optimizer.sharded_state_dict(
             model_sharded_state_dict, is_loading=is_loading, sharding_type=sharding_type
         )

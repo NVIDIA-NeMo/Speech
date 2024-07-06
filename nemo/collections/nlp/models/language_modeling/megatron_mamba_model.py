@@ -13,9 +13,8 @@
 # limitations under the License.
 
 import torch
-
-# from megatron.core.models.mamba import MambaModel
-# from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec
+from megatron.core.models.mamba import MambaModel
+from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
@@ -46,16 +45,15 @@ class MegatronMambaModel(MegatronGPTModel):
         self.transformer_config.layernorm_epsilon = self.cfg.get('layernorm_epsilon', 1e-5)
 
         # TODO @ataghibakhsh: add mamba_ssm_ngroups=self.cfg.get('mamba_ssm_ngroups', 8) once MLM MR merged
-        # TODO @ataghibakhsh: add the following
-        '''MambaModel(
+
+        model = MambaModel(
             config=self.transformer_config,
             max_sequence_length=self.cfg.get('encoder_seq_length', 4096),
             vocab_size=self.cfg.get('vocab_size', 65536),
+            mamba_ssm_ngroups=self.cfg.get('mamba_ssm_ngroups', 8),
             mamba_stack_spec=mamba_stack_spec,
             hybrid_override_pattern=self.hybrid_override_pattern,
-        )'''
-        # after package mismatch is resovled
-        model = None
+        )
 
         return model
 

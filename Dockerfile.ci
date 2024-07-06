@@ -32,9 +32,9 @@ EOF
 WORKDIR /workspace
 
 # Install NeMo requirements
-ARG TE_TAG=bfe21c3d68b0a9951e5716fb520045db53419c5e
+ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
 ARG MODELOPT_VERSION=0.13.0
-ARG MCORE_TAG=0ab8dd4c7520408683fdb9f8ac119eff7d38fc0e
+ARG MCORE_TAG=0bc3547702464501feefeb5523b7a17e591b21fa
 ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
 RUN \
 --mount=type=bind,source=requirements,target=requirements \
@@ -61,6 +61,22 @@ git checkout ${MCORE_TAG} && \
   popd && \
 popd
 export PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
+
+# Mamba dependancy installation
+git clone https://github.com/state-spaces/mamba.git && \
+  cd mamba && \
+  git checkout v2.0.3 && \
+  python setup.py install && \
+  cd .. && \
+  rm -rf mamba 
+
+git clone https://github.com/Dao-AILab/causal-conv1d && \
+  cd causal-conv1d && \
+  git checkout v1.2.2.post1 && \
+  python setup.py install && \
+  cd .. && \
+  rm -rf causal-conv1d 
+
 EOF
 
 # Copy over NeMo code

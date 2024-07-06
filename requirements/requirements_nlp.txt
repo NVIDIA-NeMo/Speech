@@ -1,6 +1,5 @@
 accelerated-scan
 boto3
-causal-conv1d==1.2.0.post2
 einops
 faiss-cpu
 fasttext
@@ -10,7 +9,6 @@ gdown
 h5py
 ijson
 jieba
-mamba-ssm==1.2.0.post1
 markdown2
 matplotlib>=3.3.2
 #megatron_core>0.6.0 # add back once mcore on pypi is compatible again

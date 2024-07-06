@@ -29,8 +29,9 @@ Example
 CUDA_VISIBLE_DEVICES="0" python /NeMo/scripts/checkpoint_converters/convert_mamba2_pyt_to_nemo.py \
                                 --input_name_or_path <path to the source pytorch model> \
                                 --output_path <path to target .nemo model> \
-                                --ngroups_mamba 8 \
-                                --precision bf16
+                                --mamba_ssm_ngroups 8 \
+                                --precision bf16 \
+                                --tokenizer_model_dir <path to tokenizer.model, only set for 8b models, otherwise defaults to None>
 '''
 
 
@@ -49,9 +50,12 @@ def get_args():
         type=str,
         required=True,
     )
-    parser.add_argument("--ngroups_mamba", type=int, default=8, help="ngroups for Mamba model")
+    parser.add_argument("--mamba_ssm_ngroups", type=int, default=8, help="ngroups for Mamba model")
     parser.add_argument(
         "--precision", type=str, default="bf16", choices=["bf16", "32"], help="Precision for checkpoint weights saved"
+    )
+    parser.add_argument(
+        "--tokenizer_model_dir", type=str, default=None, help="Path to the tokenizer.model, required for 8b models"
     )
     args = parser.parse_args()
     return args
@@ -59,7 +63,7 @@ def get_args():
 
 def convert(args):
 
-    checkpoint_weights = torch.load(args.input_name_or_path, map_location='cpu')['model']
+    checkpoint_weights = torch.load(args.input_name_or_path, map_location='cpu')
     new_state_dict = {}
 
     if 'backbone' in list(checkpoint_weights.keys())[0]:
@@ -95,6 +99,11 @@ def convert(args):
                 old_key = f'backbone.layers.{i}.{attr}'
                 new_state_dict[new_key] = checkpoint_weights[old_key]
 
+        # Tokenizer settings
+        tokenizer_library = 'huggingface'
+        tokenizer_type = 'EleutherAI/gpt-neox-20b'
+        tokenizer_model = None
+
     else:
 
         layer_keys = [key for key in checkpoint_weights.keys() if re.match(r'decoder\.layers\.\d+\.', key)]
@@ -102,6 +111,11 @@ def convert(args):
         num_layers = max(layer_numbers) + 1
 
         new_state_dict = {"model." + key: value for key, value in checkpoint_weights.items()}
+
+        # Tokenizer settings
+        tokenizer_library = 'megatron'
+        tokenizer_type = 'GPTSentencePieceTokenizer'
+        tokenizer_model = args.tokenizer_model_dir
 
     layers = defaultdict(list)
 
@@ -131,7 +145,10 @@ def convert(args):
     ].shape
     nemo_config.model.num_layers = num_layers
     nemo_config.model.hybrid_override_pattern = layer_pattern
-    nemo_config.model.ngroups_mamba = args.ngroups_mamba
+    nemo_config.model.mamba_ssm_ngroups = args.mamba_ssm_ngroups
+    nemo_config.model.tokenizer.library = tokenizer_library
+    nemo_config.model.tokenizer.type = tokenizer_type
+    nemo_config.model.tokenizer.model = tokenizer_model
 
     if "-" in layer_pattern:
         nemo_config.model.ffn_hidden_size = new_state_dict[

@@ -39,113 +39,39 @@ exp_manager:
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
 model:
-  restore_from_path: null
-  # model parallelism 
-  mcore_gpt: True
-  micro_batch_size: 2
-  global_batch_size: 2
-  tensor_model_parallel_size: 1
-  pipeline_model_parallel_size: 1
-  virtual_pipeline_model_parallel_size: null
-  expert_model_parallel_size: 1 # expert model parallelism
-  hybrid_override_pattern: null
-  vocab_size: 65536
-  # model architecture
-  encoder_seq_length: 4096
-  max_position_embeddings: ${.encoder_seq_length}
-  position_embedding_type: 'none' # Position embedding type. Options ['learned_absolute', 'rope', 'alibi', 'kerple' , 'xpos', 'sandwich'] xpos and sandwich are experimental.
-  num_layers: 64
-  gated_linear_unit: False
-  num_query_groups: 8
-  ngroups_mamba: 8
-  attention_dropout: 0.0
-  hidden_dropout: 0.0
-  hidden_size: 4096
-  ffn_hidden_size: 14336 # Transformer FFN hidden size. Usually 4 * hidden_size.
-  num_attention_heads: 32
-  transformer_block_type: pre_ln
-  init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
-  kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
-  apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
-  normalization: RMSNorm
-  layernorm_epsilon: 1e-5
-  num_moe_experts: 16
-  moe_router_topk: 2
-  moe_aux_loss_coeff: 0.001
-  make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
-  pre_process: True # add embedding
-  post_process: True # add pooler
-  megatron_legacy: False
-  persist_layer_norm: True
-  add_bias_linear: False
-
-  answer_only_loss: True
-
-  tokenizer:
-    library: 'huggingface'
-    type: 'EleutherAI/gpt-neox-20b' 
-    model: null 
-    vocab_file: null
-    merge_file: null 
-    sentencepiece_legacy: False
-    use_fast: True
-
-
-  # precision
-  native_amp_init_scale: 4294967296 # 2 ** 32
-  native_amp_growth_interval: 1000
-  fp32_residual_connection: False # Move residual connections to fp32
-  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
-
-  # Megatron O2-style half-precision
-  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
-  grad_allreduce_chunk_size_mb: 125
-
-  # Fusion
-  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce. Only used with O2 and no pipeline parallelism..
-  gradient_accumulation_fusion: True # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism and O2.
-  bias_activation_fusion: False # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.
-  bias_dropout_add_fusion: True # Use a kernel that fuses the bias addition, dropout and residual connection addition.
-  masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
-  get_attention_mask_from_fusion: True # When using fused softmax it will create the attention mask so we won't copy it to the pipeline stages.
-  apply_rope_fusion: True # Use a kernel to add rotary positional embeddings. Only used if position_embedding_type=rope
-
-
-  # miscellaneous
   seed: 1234
-  use_cpu_initialization: False # Init weights on the CPU (slow for large models)
-  onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
-  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
-  
-  ## Activation Checkpointing
-  # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
-  # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+
+  encoder_seq_length: 1024
+  global_batch_size: 8
+  micro_batch_size: 1
+  restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
+  resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+  save_nemo_on_validation_end: False # Saves an inference ready .nemo file every time a checkpoint is saved during training.
+  sync_batch_comm: False
+  megatron_amp_O2: False
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
   # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
-  # 'full' will checkpoint the entire transformer layer.
-  activations_checkpoint_granularity: null # 'selective' or 'full' 
-  activations_checkpoint_recurrent: False # If set to True, the checkpointing is only done for rglru and conv1d and not for attention and mlp layers
-  activations_checkpoint_method: null # 'uniform', 'block'
-  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
-  # of each chunk at the specified granularity. When used with 'selective', 'uniform' checkpoints all attention blocks in the model.
-  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
-  activations_checkpoint_num_layers: null
-  # when using 'uniform' this creates groups of transformer layers to checkpoint. Usually set to 1. Increase to save more memory.
-  # when using 'block' this this will checkpoint the first activations_checkpoint_num_layers per pipeline stage.
-  num_micro_batches_with_partial_activation_checkpoints: null
-  # This feature is valid only when used with pipeline-model-parallelism.
-  # When an integer value is provided, it sets the number of micro-batches where only a partial number of Transformer layers get checkpointed
-  # and recomputed within a window of micro-batches. The rest of micro-batches in the window checkpoint all Transformer layers. The size of window is
-  # set by the maximum outstanding micro-batch backpropagations, which varies at different pipeline stages. The number of partial layers to checkpoint
-  # per micro-batch is set by 'activations_checkpoint_num_layers' with 'activations_checkpoint_method' of 'block'.
-  # This feature enables using activation checkpoint at a fraction of micro-batches up to the point of full GPU memory usage.
-  activations_checkpoint_layers_per_pipeline: null
-  # This feature is valid only when used with pipeline-model-parallelism.
-  # When an integer value (rounded down when float is given) is provided, it sets the number of Transformer layers to skip checkpointing at later
-  # pipeline stages. For example, 'activations_checkpoint_layers_per_pipeline' of 3 makes pipeline stage 1 to checkpoint 3 layers less than
-  # stage 0 and stage 2 to checkpoint 6 layers less stage 0, and so on. This is possible because later pipeline stage
-  # uses less GPU memory with fewer outstanding micro-batch backpropagations. Used with 'num_micro_batches_with_partial_activation_checkpoints',
-  # this feature removes most of activation checkpoints at the last pipeline stage, which is the critical execution path.
   sequence_parallel: False
+
+  ## Activation Checkpoint
+  activations_checkpoint_granularity: null # 'selective' or 'full'
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  activations_checkpoint_layers_per_pipeline: null
+  answer_only_loss: True
+  gradient_as_bucket_view: False
+
+  hidden_dropout: 0.0
+  attention_dropout: 0.0
+  ffn_dropout: 0.0
+  
   
   peft:
     peft_scheme: null  # can be either adapter,ia3, lora, or ptuning

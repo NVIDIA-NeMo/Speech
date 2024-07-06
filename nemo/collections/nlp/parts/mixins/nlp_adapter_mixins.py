@@ -127,14 +127,15 @@ class NLPAdapterModelMixin:
                     f'model.{mcore_target}',
                     f'model.module.{mcore_target}',
                 ]:  # simple string match for now
-                    swap_mcore_mixin(module, mcore_mixin)
-                    if model_utils.import_class_by_path(peft_cfg._target_) in module.get_accepted_adapter_types():
-                        module.add_adapter(
-                            name=peft_name,
-                            cfg=peft_cfg,
-                            base_model_cfg=self.cfg,
-                            model_parallel_config=self.model_parallel_config,
-                        )
+                    if not isinstance(module, IdentityOp):
+                        swap_mcore_mixin(module, mcore_mixin)
+                        if model_utils.import_class_by_path(peft_cfg._target_) in module.get_accepted_adapter_types():
+                            module.add_adapter(
+                                name=peft_name,
+                                cfg=peft_cfg,
+                                base_model_cfg=self.cfg,
+                                model_parallel_config=self.model_parallel_config,
+                            )
         elif isinstance(module, AdapterModuleMixin):
             if model_utils.import_class_by_path(peft_cfg._target_) in module.get_accepted_adapter_types():
                 module.add_adapter(

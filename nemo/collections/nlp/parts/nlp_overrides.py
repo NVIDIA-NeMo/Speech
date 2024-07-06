@@ -573,8 +573,8 @@ class NLPDDPStrategy(DDPStrategy):
             ]['optimizer']['param_groups']
         else:
             checkpoint['optimizer_states'][0]['param_groups'] = original_checkpoint['optimizer_states'][0][
-                'optimizer'
-            ]['param_groups']
+                'param_groups'
+            ]
 
         return checkpoint
 

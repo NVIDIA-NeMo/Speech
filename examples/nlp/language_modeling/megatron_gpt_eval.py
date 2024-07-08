@@ -31,6 +31,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 from nemo.collections.nlp.parts.nlp_overrides import CustomProgressBar, NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 from nemo.utils.app_state import AppState
 from nemo.utils.model_utils import inject_model_parallel_rank
 
@@ -168,6 +169,7 @@ def remove_padded_prompts(response, nb_paddings):
 
 
 def load_model_from_config(trainer, cfg):
+
     if cfg.gpt_model_file is not None:
         if (
             cfg.tensor_model_parallel_size < 0
@@ -306,6 +308,7 @@ def round_to_mult(n, mult=8):
 def main(cfg) -> None:
 
     callbacks = []
+    logging.warning("This file will be depreacted soon. Use the megatron_gpt_mcore_batch_eval.py file instead.")
     # enable_progress_bar is True by default. If cfg.trainer.enable_progress_bar=False, CustomProgressBar is not appended to callbacks
     if 'enable_progress_bar' not in cfg.trainer or cfg.trainer.enable_progress_bar:
         callbacks.append(CustomProgressBar())

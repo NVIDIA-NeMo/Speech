@@ -1,0 +1,29 @@
+common_inference_params:
+  top_k: 1  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.0 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  tokens_to_generate: 30 # The minimum length of the sequence to be generated.
+  return_log_probs: False  # whether return the log prob for the sampled tokens
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: 16 # 16, 32, or bf16
+  use_distributed_sampler: False
+  
+tensor_model_parallel_size: -1
+pipeline_model_parallel_size: -1
+inference_batch_times_seq_len_threshold: 1000 # If batch_size * sequence-length is smaller than this threshold we will not use pipelining, otherwise we will.
+max_batch_size: 4 # Input prompts are batched using max_batch_size and sent to inference
+
+megatron_amp_O2: False  # Enable O2-level automatic mixed precision to save memory
+gpt_model_file: null  # GPT nemo file path
+checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
+checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
+hparams_file: null # model configuration file, only used for PTL checkpoint loading
+prompts: # prompts for GPT inference
+  - "Q: How are you?"
+  - "Q: How big is the universe?"

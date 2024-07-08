@@ -30,6 +30,7 @@ from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.io.pl import TrainerContext
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
+from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.model_utils import ckpt_to_dir
 
 
@@ -51,12 +52,19 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         save_best_model: bool = False,
         save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
         enable_nemo_ckpt_io: bool = True,
+        async_save: bool = False,
         try_restore_best_ckpt: bool = True,
         **kwargs,
     ):
         self.save_best_model = save_best_model
         self.previous_best_path = ""
         self.enable_nemo_ckpt_io = enable_nemo_ckpt_io
+        self.async_save = async_save
+        # Checkpoints which removal is deferred until async save is done.
+        # Each element of `deferred_ckpts_to_remove` is a growing list
+        # that `self._remove_checkpoint` adds to. Once `self._save_checkpoint`
+        # is called, the last element is frozen and a new element is added.
+        self.deferred_ckpts_to_remove: List[List[str]] = []
         self.try_restore_best_ckpt = try_restore_best_ckpt
 
         # Call the parent class constructor with the remaining kwargs.
@@ -234,13 +242,7 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
             return None
 
         # check if we need to save a last checkpoint manually as validation isn't always run based on the interval
-        ## TODO: there is some sort of bug in this code.
-        ## this is what is causing the failure with async checkpointing when "epoch" is part of the ckpt name
-        ## I think this is unnecessary because we will automatically save a final checkpoint
-        ## during on_train_batch_end
-        ## see https://github.com/Lightning-AI/pytorch-lightning/blob/f6fd046552a1504023cb3386a8a0df418a810e4f/src/lightning/pytorch/callbacks/model_checkpoint.py#L315
-        ## we should change the logic to only save a final checkpoint if it wasn't just saveds
-        '''if self.save_last and trainer.val_check_interval != 0:
+        if self.save_last and trainer.val_check_interval != 0:
             should_save_last_checkpoint = False
             if isinstance(trainer.val_check_interval, float) and trainer.val_check_interval % trainer.global_step != 0:
                 should_save_last_checkpoint = True
@@ -251,7 +253,7 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
                 if self.last_model_path == self.format_checkpoint_name(monitor_candidates, self.CHECKPOINT_NAME_LAST):
                     logging.debug(f'Last checkpoint {self.last_model_path} already saved')
                 else:
-                    super()._save_last_checkpoint(trainer, monitor_candidates)'''
+                    super()._save_last_checkpoint(trainer, monitor_candidates)
         # Call parent on_train_end() to save the -last checkpoint
         super().on_train_end(trainer, pl_module)
 
@@ -380,6 +382,8 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         ema_callback = self._ema_callback(trainer)
 
         if ema_callback is not None:
+            if self.async_save:
+                raise ValueError('async_save with EMA not supported')
             with ema_callback.save_original_optimizer_state(trainer):
                 super()._save_checkpoint(trainer, filepath)
 
@@ -392,10 +396,23 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
                 super()._save_checkpoint(trainer, filepath)
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
         else:
+            # Async save passes the finalization function to checkpoint_io,
+            # sync save calls the finalization function immediately after save.
             finalize_fn = self._get_finalize_save_checkpoint_callback(trainer, filepath, trainer.global_step)
-            storage_options = None
+            if self.async_save:
+                checkpoint_io = trainer.strategy.checkpoint_io
+                if not isinstance(checkpoint_io, AsyncFinalizableCheckpointIO):
+                    raise ValueError('Async save requires async compatible CheckpointIO')
+                storage_options = dict(finalize_fn=finalize_fn)
+                # Each upcoming ckpt removal request will be executed as part of this save finalization
+                self.deferred_ckpts_to_remove.append([])
+            else:
+                storage_options = None
             trainer.save_checkpoint(filepath, self.save_weights_only, storage_options=storage_options)
-            finalize_fn()
+            if self.async_save:
+                logging.info(f'Scheduled async checkpoint save for {filepath}')
+            else:
+                finalize_fn()
 
     def _get_finalize_save_checkpoint_callback(
         self, trainer: 'pytorch_lightning.Trainer', filepath: str, global_step: int
@@ -421,10 +438,32 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
             # we don't want to remove the marker until all checkpointing is done.
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
 
+            if not self.async_save:
+                return
+
+            logging.info(f'Async checkpoint save for step {global_step} ({filepath}) finalized successfully.')
+
+            # Remove checkpoints marked for removal by `self._remove_checkpoint`
+            # For each finalization there is exactly one entry in self.deferred_ckpts_to_remove
+            assert self.deferred_ckpts_to_remove
+            ckpts_to_remove = self.deferred_ckpts_to_remove.pop(0)
+            logging.debug(f'Checkpoints to remove: {ckpts_to_remove}')
+            for ckpt_to_remove in ckpts_to_remove:
+                self._remove_checkpoint(trainer, ckpt_to_remove, override_async=True)
+
         return _cb
 
     def _remove_checkpoint(self, trainer: "pytorch_lightning.Trainer", filepath: str, override_async=False) -> None:
-        """Performs checkpoint removal."""
+        """Performs checkpoint removal.
+
+        With async save, `self._remove_checkpoint` is called before the checkpoint
+        is actually finished so we can't remove it. Instead we add it to
+        `self.deferred_ckpts_to_remove` for future removal.
+        """
+        if self.async_save and not override_async:
+            # Register checkpoint removal in the last (active) checkpoint removal list
+            self.deferred_ckpts_to_remove[-1].append(filepath)
+            return
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.
         # if anything goes wrong during removal, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
@@ -432,6 +471,7 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         ema_callback = self._ema_callback(trainer)
         if ema_callback is not None:
             # remove EMA copy of the state dict as well.
+
             filepath = self._ema_format_filepath(filepath)
             super()._remove_checkpoint(trainer, filepath)
         # barrier_before=True, so all ranks synchronize before removing the unfinished checkpoint marker

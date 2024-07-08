@@ -34,6 +34,7 @@ from nemo.lightning import _strategy_lib, io
 from nemo.lightning.io.pl import MegatronCheckpointIO
 from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, _ModuleStepFunction
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ModelTransform
+from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO, AsyncFinalizerCallback
 
 if TYPE_CHECKING:
     from nemo.lightning.pytorch.plugins.data_sampler import DataSampler
@@ -103,6 +104,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         ddp: Union[DDPLiteral, DistributedDataParallelConfig] = "megatron",
         lazy_init: bool = False,
         pipeline_dtype: Optional[torch.dtype] = None,
+        save_ckpt_format='torch_dist',
+        ckpt_torch_dist_multiproc=None,  ## TODO(ashors): put elsewhere?
+        ckpt_assume_constant_structure=False,
+        ckpt_parallel_save=True,
+        ckpt_parallel_load=False,
+        ckpt_parallel_save_optim=True,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -127,6 +134,13 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.pipeline_dtype = pipeline_dtype
         self.log_train_loss = bool(int(os.getenv("NEMO_LOG_TRAIN_LOSS", 1)))
         self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
+
+        self.save_ckpt_format = save_ckpt_format
+        self.torch_dist_multiproc = ckpt_torch_dist_multiproc
+        self.assume_constant_structure = ckpt_assume_constant_structure
+        self.parallel_save = ckpt_parallel_save
+        self.parallel_load = ckpt_parallel_load
+        self.parallel_save_optim = ckpt_parallel_save_optim
 
         self._ddp = ddp
         if ddp == "megatron":
@@ -483,8 +497,11 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         # TODO: Fix when MainParamsOptimizerWrapper is not used
 
         optimizer = self.lightning_module.optimizers(use_pl_optimizer=False)
+        sharding_type = 'fully_sharded_model_space' if self.parallel_save_optim else 'dp_zero_gather_scatter'
 
-        return _strategy_lib.optimizer_sharded_state_dict(self.megatron_parallel, optimizer, is_loading=is_loading)
+        return _strategy_lib.optimizer_sharded_state_dict(
+            self.megatron_parallel, optimizer, is_loading=is_loading, sharding_type=sharding_type
+        )
 
     @override
     def save_checkpoint(
@@ -541,7 +558,27 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @override
     def checkpoint_io(self) -> CheckpointIO:
         if self._checkpoint_io is None:
-            self._checkpoint_io = MegatronCheckpointIO()
+            checkpoint_callback = self.trainer.checkpoint_callback
+            async_save = getattr(checkpoint_callback, "async_save", False)
+            self._checkpoint_io = MegatronCheckpointIO(
+                save_ckpt_format=self.save_ckpt_format,
+                async_save=async_save,
+                torch_dist_multiproc=self.torch_dist_multiproc,
+                assume_constant_structure=self.assume_constant_structure,
+                parallel_save=self.parallel_save,
+                parallel_load=self.parallel_load,
+            )
+            if async_save:
+                self._checkpoint_io = AsyncFinalizableCheckpointIO(self._checkpoint_io)
+                have_async_callback = False
+                for callback in self.trainer.callbacks:
+                    if isinstance(callback, AsyncFinalizerCallback):
+                        have_async_callback = True
+                        break
+                if not have_async_callback:
+                    self.trainer.callbacks.append(AsyncFinalizerCallback())
+        elif isinstance(self._checkpoint_io, _WrappingCheckpointIO):
+            self._checkpoint_io.checkpoint_io = MegatronCheckpointIO()
 
         return self._checkpoint_io
 

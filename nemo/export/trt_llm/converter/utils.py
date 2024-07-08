@@ -388,6 +388,16 @@ def split_and_save_weight(tp_rank, saved_dir, split_factor, key, vals, storage_t
 
             # Split the QKV to separate variables.
             qkv = np.split(val, [q_num, q_num + 1], axis=2)
+
+            query_groups_shape = qkv[0].shape
+            if len(query_groups_shape) > 1:
+                if (query_groups_shape[1] % split_factor) != 0:
+                    raise Exception(
+                        "Number of query groups of the models is {0}. Please select tensor parallelism size "
+                        "that can split the number of query groups to equal number of query matrices in the "
+                        "each GPU.".format(query_groups_shape[1])
+                    )
+
             q_split = np.split(qkv[0], split_factor, axis=1)
             k_split = np.split(qkv[1], split_factor, axis=1)
             v_split = np.split(qkv[2], split_factor, axis=1)

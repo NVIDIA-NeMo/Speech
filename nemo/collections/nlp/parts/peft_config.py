@@ -170,7 +170,7 @@ class LoraPEFTConfig(PEFTConfig):
 
             elif module == PEFT_MODULE_MAP["dense_module"]:
                 adapter_cfg = self._create_lora_config(
-                    cfg, lora_cfg, cfg.hidden_size, cfg.hidden_size, LoraDenseAttentionAdapterConfig
+                    cfg, lora_cfg, projection_size, cfg.hidden_size, LoraDenseAttentionAdapterConfig
                 )
                 name_key_to_cfg[AdapterName.LORA_DENSE_ATTENTION_ADAPTER] = adapter_cfg
                 name_key_to_mcore_mixins[AdapterName.LORA_DENSE_ATTENTION_ADAPTER] = [

@@ -205,7 +205,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         async_save: bool = False,
         torch_dist_multiproc: Optional[int] = None,
         assume_constant_structure: bool = False,
-        parallel_save: bool = True,
+        parallel_save: bool = False,
         parallel_load: bool = False,
     ):
         super().__init__()
@@ -238,7 +238,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             load_directly_on_device=model_cfg.get('dist_ckpt_load_on_device', True),
             async_save=async_save,
             torch_dist_multiproc=model_cfg.get('dist_ckpt_torch_dist_multiproc', None),
-            parallel_save=model_cfg.get('dist_ckpt_parallel_save', True),
+            parallel_save=model_cfg.get('dist_ckpt_parallel_save', False),
             parallel_load=model_cfg.get('dist_ckpt_parallel_load', False),
         )
 

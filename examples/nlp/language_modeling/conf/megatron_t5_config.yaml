@@ -43,6 +43,10 @@ exp_manager:
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
 model:
+  # use T5 model from megatron.core
+  mcore_t5: False
+  transformer_engine: False
+
   # model parallelism 
   micro_batch_size: 4
   global_batch_size: 8 # will use more micro batches to reach global batch size

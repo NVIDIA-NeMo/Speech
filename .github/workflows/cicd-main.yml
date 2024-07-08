@@ -3488,6 +3488,80 @@ jobs:
         rm -rf examples/nlp/language_modeling/t5_pretrain_results
         rm -rf examples/nlp/language_modeling/t5_index_mappings
 
+  L2_Megatron_Core_T5_Pretraining_and_Resume_Training_TP2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_t5_pretraining.py \
+        trainer.devices=2 \
+        trainer.log_every_n_steps=1 \
+        trainer.max_epochs=null \
+        trainer.max_steps=10 \
+        trainer.val_check_interval=10 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        exp_manager.exp_dir=examples/nlp/language_modeling/t5_pretrain_results \
+        model.mcore_t5=True \
+        model.transformer_engine=True \
+        model.tensor_model_parallel_size=2 \
+        model.micro_batch_size=4 \
+        model.global_batch_size=4 \
+        model.seq_length=128 \
+        model.encoder.num_layers=4 \
+        model.encoder.hidden_size=64 \
+        model.encoder.num_attention_heads=8 \
+        model.decoder.num_layers=4 \
+        model.decoder.hidden_size=64 \
+        model.decoder.num_attention_heads=8 \
+        model.encoder.transformer_block_type='pre_ln' \
+        model.decoder.transformer_block_type='pre_ln' \
+        model.data.data_prefix=[.5,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src,.5,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/t5_index_mappings \
+        model.data.data_impl=text_mmap \
+        +model.data.data_impl_kwargs.newline_int=10 \
+        +model.data.data_impl_kwargs.header_lines=0 \
+        +model.data.data_impl_kwargs.workers=null \
+        +model.data.data_impl_kwargs.sort_dataset_paths=False
+
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_t5_pretraining.py \
+        trainer.devices=2 \
+        trainer.log_every_n_steps=1 \
+        trainer.max_epochs=null \
+        trainer.max_steps=10 \
+        trainer.val_check_interval=10 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        exp_manager.exp_dir=examples/nlp/language_modeling/t5_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.mcore_t5=True \
+        model.transformer_engine=True \
+        model.tensor_model_parallel_size=2 \
+        model.micro_batch_size=4 \
+        model.global_batch_size=4 \
+        model.seq_length=128 \
+        model.encoder.num_layers=4 \
+        model.encoder.hidden_size=64 \
+        model.encoder.num_attention_heads=8 \
+        model.decoder.num_layers=4 \
+        model.decoder.hidden_size=64 \
+        model.decoder.num_attention_heads=8 \
+        model.encoder.transformer_block_type='pre_ln' \
+        model.decoder.transformer_block_type='pre_ln' \
+        model.data.data_prefix=[.5,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.src,.5,/home/TestData/nlp/nmt/toy_data/wmt14-de-en.ref] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/t5_index_mappings \
+        model.data.data_impl=text_mmap \
+        +model.data.data_impl_kwargs.newline_int=10 \
+        +model.data.data_impl_kwargs.header_lines=0 \
+        +model.data.data_impl_kwargs.workers=null \
+        +model.data.data_impl_kwargs.sort_dataset_paths=False
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/t5_pretrain_results
+        rm -rf examples/nlp/language_modeling/t5_index_mappings
+
   L2_Megatron_T5_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4433,6 +4507,7 @@ jobs:
       - L2_Megatron_Change_Partitions_Reduce_TP_Num_Partitions_-2_to_1-_and_PP_Num_Partitions_-1_to_2
       - L2_Megatron_Change_Partitions_Increase_TP_Num_Partitions_-2_to_4-_and_PP_Num_Partitions_-1_to_2
       - L2_Megatron_T5_Pretraining_and_Resume_Training_TP2
+      - L2_Megatron_Core_T5_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_T5_with_ALiBi_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_T5_with_KERPLE_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_T5_Pretraining_and_Resume_Training_PP2

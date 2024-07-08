@@ -165,14 +165,6 @@ def convert(local_rank, rank, world_size, args):
         model = MegatronControlNet.load_from_checkpoint(
             checkpoint_path, hparams_file=args.hparams_file, trainer=trainer
         )
-    elif args.model_type == 'kosmos':
-        model = MegatronKosmosModel.load_from_checkpoint(
-            checkpoint_path, hparams_file=args.hparams_file, trainer=trainer
-        )
-    elif args.model_type == 'neva':
-        model = MegatronNevaModel.load_from_checkpoint(
-            checkpoint_path, hparams_file=args.hparams_file, trainer=trainer
-        )
     else:
         raise ValueError(f"Unrecognized model_type {args.model_type}.")
 

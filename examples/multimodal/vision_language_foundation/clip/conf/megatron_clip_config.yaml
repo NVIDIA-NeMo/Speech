@@ -68,6 +68,8 @@ model:
   #  numerical results as the naïve method.
   local_loss: False # calculate loss w/ local features @ global (instead of realizing full global @ global matrix)
   gather_with_grad: True # enable full distributed gradient for feature gather, set this to False may cause convergence issue
+  mcore_gpt: True
+  transformer_engine: True
 
   vision:
     precision: ${trainer.precision}
@@ -183,7 +185,6 @@ model:
     bias_activation_fusion: False
     megatron_legacy: False
 
-    transformer_engine: False
     fp8: False # enables fp8 in TransformerLayer forward
     fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3
     fp8_hybrid: False # sets fp8_format = recipe.Format.HYBRID

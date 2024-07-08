@@ -34,14 +34,14 @@ from pytorch_lightning.trainer.trainer import Trainer
 from sklearn.metrics import classification_report, confusion_matrix
 from torch import Tensor
 
-from nemo.collections.nlp.modules.common.megatron.utils import erf_gelu
+from nemo.collections.nlp.modules.common.megatron.utils import ApproxGELUActivation, erf_gelu
 from nemo.collections.nlp.modules.common.megatron.utils import openai_gelu as openai_gelu_func
 from nemo.collections.nlp.modules.common.megatron.utils import squared_relu
 from nemo.utils import logging
 
 
 def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Optional[bool] = None) -> torch.dtype:
-    """ Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
+    """Mapping from PTL precision types to corresponding PyTorch parameter datatype."""
     if megatron_amp_O2 is not None and megatron_amp_O2 is False:
         return torch.float32
 
@@ -56,12 +56,12 @@ def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: Opti
 
 
 def list2str(l: List[int]) -> str:
-    """ Converts list to a string"""
+    """Converts list to a string"""
     return ' '.join([str(x) for x in l])
 
 
 def tensor2list(tensor: Tensor) -> List[Union[int, float]]:
-    """ Converts tensor to a list """
+    """Converts tensor to a list"""
     return tensor.detach().cpu().tolist()
 
 
@@ -168,13 +168,13 @@ def get_last_rank():
 
 
 def activation_to_func(activation: str, openai_gelu: bool = False, onnx_safe: bool = False) -> Callable:
-    """ Converts an activation function represented as a string to a function.
+    """Converts an activation function represented as a string to a function.
 
     Args:
         activation (str): string representation of an activation function, typically gotten from the model config.
         openai_gelu (bool): whether to use the OpenAI GELU implementation. Used with HF compatibility.
         onnx_safe (bool): whether to use the ONNX-compatible implementation of GELU.
-    
+
     Returns:
         Callable: the activation function.
     """
@@ -188,6 +188,7 @@ def activation_to_func(activation: str, openai_gelu: bool = False, onnx_safe: bo
         'fast-geglu',
         'fast-swiglu',
         'fast-reglu',
+        'approx-gelu',
     ]
 
     if activation not in supported_activations:
@@ -208,6 +209,8 @@ def activation_to_func(activation: str, openai_gelu: bool = False, onnx_safe: bo
         activation_func = F.silu
     elif activation == 'squared-relu':
         activation_func = squared_relu
+    elif activation == 'approx-gelu':
+        activation_func = ApproxGELUActivation
 
     return activation_func
 

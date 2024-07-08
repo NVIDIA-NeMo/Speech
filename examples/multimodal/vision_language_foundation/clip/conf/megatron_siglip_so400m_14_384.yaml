@@ -49,32 +49,31 @@ model:
   precision: 32
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
-  micro_batch_size: 64 # limited by GPU memory
-  global_batch_size: 2048 # will use more micro batches to reach global batch size
+  micro_batch_size: 1 # limited by GPU memory
+  global_batch_size: 1 # will use more micro batches to reach global batch size
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
   virtual_pipeline_model_parallel_size: null # interleaved pipeline
 
   restore_from_pretrained: null # used in fine-tuning
   # multimodal configs
-  output_dim: 768
+  output_dim: 1152
   #  As the number of devices used to train increases, so does the space complexity of
   #  the logit matrix. Using a naïve all-gather scheme, space complexity will be
   #  `O(n^2)`. Instead, complexity may become effectively linear if the flags
   #  `--gather-with-grad` and `--local-loss` are used. This alteration results in one-to-one
   #  numerical results as the naïve method.
-  local_loss: False # calculate loss w/ local features @ global (instead of realizing full global @ global matrix)
-  gather_with_grad: True # enable full distributed gradient for feature gather, set this to False may cause convergence issue
 
-  mcore_gpt: False
-  transformer_engine: False
+  use_siglip: True
+  mcore_gpt: True
+  transformer_engine: True
 
   vision:
     precision: 32
     # vision configs
     patch_dim: 14
-    img_h: 224
-    img_w: 224
+    img_h: 378
+    img_w: 378
     image_mean: null
     image_std: null
     num_channels: 3
@@ -82,16 +81,16 @@ model:
     drop_path_rate: 0.0
     global_average_pool: False
     output_dim: ${model.output_dim}
-    class_token_length: 1
+    class_token_length: 0
     preprocess_layernorm: True # apply layer norm to embedded tokens
 
     # model architecture
     encoder_seq_length: 196
     max_position_embeddings: ${.encoder_seq_length}
-    position_embedding_type: learned_parameters
-    num_layers: 24
-    hidden_size: 1024
-    ffn_hidden_size: 4096 # Transformer FFN hidden size. Usually 4 * hidden_size.
+    position_embedding_type: learned_absolute
+    num_layers: 27
+    hidden_size: 1152
+    ffn_hidden_size: 4304 # Transformer FFN hidden size. Usually 4 * hidden_size.
     num_attention_heads: 16
     init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
     use_scaled_init_method: True # use scaled residuals initialization
@@ -126,7 +125,7 @@ model:
     use_cpu_initialization: False # Init weights on the CPU (slow for large models)
     onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
     gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
-    openai_gelu: False
+    openai_gelu: True
     bias_activation_fusion: False
     megatron_legacy: True
     activation: approx-gelu
@@ -139,13 +138,13 @@ model:
     output_dim: ${model.output_dim}
 
     # model architecture
-    encoder_seq_length: 77
+    encoder_seq_length: 64
     max_position_embeddings: ${.encoder_seq_length}
-    position_embedding_type: learned_parameters
-    num_layers: 12
-    hidden_size: 768
-    ffn_hidden_size: 3072 # Transformer FFN hidden size. Usually 4 * hidden_size.
-    num_attention_heads: 12
+    position_embedding_type: learned_absolute
+    num_layers: 27
+    hidden_size: 1152
+    ffn_hidden_size: 4304 # Transformer FFN hidden size. Usually 4 * hidden_size.
+    num_attention_heads: 16
     init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
     use_scaled_init_method: True # use scaled residuals initialization
     hidden_dropout: 0. # Dropout probability for hidden state transformer.
@@ -181,7 +180,7 @@ model:
     use_cpu_initialization: False # Init weights on the CPU (slow for large models)
     onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
     gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
-    openai_gelu: False
+    openai_gelu: True
     bias_activation_fusion: False
     megatron_legacy: True
 
@@ -208,7 +207,7 @@ model:
 
   tokenizer:
     library: 'huggingface'
-    type: 'openai/clip-vit-large-patch14'
+    type: 'google/siglip-so400m-patch14-384'
     model: null
     vocab_file: null
     merge_file: null

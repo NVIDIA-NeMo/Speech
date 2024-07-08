@@ -283,6 +283,7 @@ def convert(local_rank, rank, world_size, args):
 
 
 if __name__ == '__main__':
+    logging.warning("This script is going to be deprecated soon. Please use ")
     args = get_args()
     local_rank, rank, world_size = initialize_distributed(args)
     convert(local_rank, rank, world_size, args)

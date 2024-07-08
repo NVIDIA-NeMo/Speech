@@ -484,7 +484,7 @@ class MegatronBaseModel(NLPModel):
         activation = self.cfg.get('activation', 'gelu')
         gated_linear_unit = activation.endswith('glu')
         # TODO: need to check which activation functions are supported in mcore
-        activation_func = activation_to_func(activation)
+        activation_func = activation_to_func(activation, openai_gelu=self.cfg.get("openai_gelu", False))
 
         normalization = self.cfg.get('normalization', 'LayerNorm')
 

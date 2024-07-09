@@ -2391,7 +2391,7 @@ jobs:
 
   L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
+    runs-on: self-hosted-azure-gpus-2-h100
     timeout-minutes: 10
     container:
       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
@@ -2403,6 +2403,21 @@ jobs:
         --env TRANSFORMERS_OFFLINE=0 
         --env HYDRA_FULL_ERROR=1
         --volume /mnt/datadrive/TestData:/home/TestData
+    env:
+      # This is to improve p2p overlap on H100
+      NVTE_FWD_LAYERNORM_SM_MARGIN: 8
+      NVTE_BWD_LAYERNORM_SM_MARGIN: 8
+      TORCH_NCCL_AVOID_RECORD_STREAMS: 1
+      NCCL_MIN_NCHANNELS: 4
+      # TP overlap is not supported in docker environment
+      #NVTE_UB_SPLIT_RS: 0
+      #NVTE_UB_ATOMIC_GEMM_RS: 1
+      #NVTE_RS_STRIDED_ATOMIC: 1
+      #NVTE_UB_FP8_RS: 1
+      # Increase p2p chunksize to 2MB
+      NCCL_P2P_NET_CHUNKSIZE: 2097152
+      # Disable gc when switching to/from validation steps
+      NEMO_MANUAL_GC_IN_VALIDATION: 0
     steps:
         - name: Checkout repository
           uses: actions/checkout@v4
@@ -2417,8 +2432,17 @@ jobs:
             trainer.max_steps=3 \
             trainer.gradient_clip_val=1.0 \
             exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+            ++model.transformer_engine=True \
+            ++model.fp8=True \
+            ++model.fp8_hybrid=True \
+            ++model.fp8_amax_history_len=1024 \
+            ++model.fp8_amax_compute_algo=max \
+            ++model.reduce_amax=True \
+            ++model.use_te_rng_tracker=True \
+            ++model.name=megatron_gpt_full_te_layer_autocast \
+            model.ub_tp_comm_overlap=False \
             model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
+            model.optim.name=distributed_fused_adam \
             model.optim.lr=2e-4 \
             model.optim.sched.warmup_steps=1 \
             model.optim.sched.constant_steps=1 \
@@ -2452,8 +2476,17 @@ jobs:
             trainer.gradient_clip_val=1.0 \
             exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
             exp_manager.resume_if_exists=True \
+            ++model.transformer_engine=True \
+            ++model.fp8=True \
+            ++model.fp8_hybrid=True \
+            ++model.fp8_amax_history_len=1024 \
+            ++model.fp8_amax_compute_algo=max \
+            ++model.reduce_amax=True \
+            ++model.use_te_rng_tracker=True \
+            ++model.name=megatron_gpt_full_te_layer_autocast \
+            model.ub_tp_comm_overlap=False \
             model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
+            model.optim.name=distributed_fused_adam \
             model.optim.lr=2e-4 \
             model.optim.sched.warmup_steps=2 \
             model.optim.sched.constant_steps=2 \
@@ -2945,10 +2978,11 @@ jobs:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     with:
-      RUNNER: self-hosted-azure
+      RUNNER: self-hosted-azure-gpus-2-h100
       SCRIPT: |
         python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
         trainer.devices=2 \
+        trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=2 \
         trainer.limit_val_batches=2 \
@@ -2957,6 +2991,15 @@ jobs:
         trainer.precision=bf16 \
         trainer.gradient_clip_val=1.0 \
         exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        ++model.transformer_engine=True \
+        ++model.fp8=True \
+        ++model.fp8_hybrid=True \
+        ++model.fp8_amax_history_len=1024 \
+        ++model.fp8_amax_compute_algo=max \
+        ++model.reduce_amax=True \
+        ++model.use_te_rng_tracker=True \
+        ++model.name=megatron_gpt_full_te_layer_autocast \
+        model.ub_tp_comm_overlap=False \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         model.mcore_gpt=True \
@@ -2981,12 +3024,15 @@ jobs:
         model.hidden_size=256 \
         model.num_attention_heads=8 \
         model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
         model.activations_checkpoint_num_layers=1 \
+        model.data.validation_drop_last=False \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
         model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
 
         python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
         trainer.devices=2 \
+        trainer.accelerator=gpu \
         trainer.log_every_n_steps=1 \
         trainer.val_check_interval=2 \
         trainer.limit_val_batches=2 \
@@ -2998,6 +3044,15 @@ jobs:
         model.megatron_amp_O2=True \
         exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
         exp_manager.resume_if_exists=True \
+        ++model.transformer_engine=True \
+        ++model.fp8=True \
+        ++model.fp8_hybrid=True \
+        ++model.fp8_amax_history_len=1024 \
+        ++model.fp8_amax_compute_algo=max \
+        ++model.reduce_amax=True \
+        ++model.use_te_rng_tracker=True \
+        ++model.name=megatron_gpt_full_te_layer_autocast \
+        model.ub_tp_comm_overlap=False \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         model.optim.name=distributed_fused_adam \
@@ -3020,7 +3075,9 @@ jobs:
         model.hidden_size=256 \
         model.num_attention_heads=8 \
         model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
         model.activations_checkpoint_num_layers=1 \
+        model.data.validation_drop_last=False \
         model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
         model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
       AFTER_SCRIPT: |

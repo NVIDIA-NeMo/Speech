@@ -701,6 +701,7 @@ class NLPFSDPStrategy(FSDPStrategy):
         nccl_communicator_config_path: Optional[str] = None,
         sharp: bool = False,
         set_buffer_dtype: Optional[str] = None,
+        extra_fsdp_wrap_module: Optional[set] = None,
         **kwargs: Union[Any, Dict[str, Any]],
     ) -> None:
         if not HAVE_APEX:
@@ -730,6 +731,11 @@ class NLPFSDPStrategy(FSDPStrategy):
             ParallelTransformerLayer,
             BasicTransformerBlock,
         }
+
+        # if extra wrap modules are provided, use them
+        if extra_fsdp_wrap_module is not None:
+            self.fsdp_wrap_module.update(extra_fsdp_wrap_module)
+
         kwargs['auto_wrap_policy'] = functools.partial(
             transformer_auto_wrap_policy, transformer_layer_cls=self.fsdp_wrap_module
         )

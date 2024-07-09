@@ -33,13 +33,18 @@ class Denoiser(nn.Module, Serialization):
     def w(self, sigma):
         return self.weighting(sigma)
 
-    def __call__(self, network, input, sigma, cond):
+    def __call__(self, network, input, sigma, cond, return_noise=False):
         sigma = self.possibly_quantize_sigma(sigma)
         sigma_shape = sigma.shape
         sigma = append_dims(sigma, input.ndim)
         c_skip, c_out, c_in, c_noise = self.scaling(sigma)
         c_noise = self.possibly_quantize_c_noise(c_noise.reshape(sigma_shape))
-        return network(input * c_in, c_noise, cond) * c_out + input * c_skip
+        # predict noise from network
+        noise_pred = network(input * c_in, c_noise, cond)
+        denoised = noise_pred * c_out + input * c_skip
+        if return_noise:
+            return denoised, noise_pred
+        return denoised
 
 
 class DiscreteDenoiser(Denoiser):

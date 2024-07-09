@@ -17,7 +17,6 @@ trainer:
   enable_model_summary: True
   limit_val_batches: 0
 
-
 exp_manager:
   exp_dir: null
   name: ${name}

@@ -391,6 +391,14 @@ class AdapterModuleMixin(ABC):
             return self.adapter_layer[name] if name in self.adapter_layer else None
         return None
 
+    def get_adapter_cfg(self, name: str):
+        """Same logic as `get_adapter_module` but to get the config"""
+        _, name = self.resolve_adapter_module_name_(name)
+
+        if hasattr(self, "adapter_cfg"):
+            return self.adapter_cfg[name] if name in self.adapter_cfg else None
+        return None
+
     def set_accepted_adapter_types(self, adapter_types: List[Union[type, str]]) -> None:
         """
         The module with this mixin can define a list of adapter names that it will accept.

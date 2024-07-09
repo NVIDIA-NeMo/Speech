@@ -41,7 +41,10 @@ class MegatronStableDiffusionTrainerBuilder(MegatronTrainerBuilder):
         _IS_INTERACTIVE = hasattr(sys, "ps1") or bool(sys.flags.interactive)
         if _IS_INTERACTIVE and self.cfg.trainer.devices == 1:
             logging.info("Detected interactive environment, using NLPDDPStrategyNotebook")
-            return NLPDDPStrategyNotebook(no_ddp_communication_hook=True, find_unused_parameters=False,)
+            return NLPDDPStrategyNotebook(
+                no_ddp_communication_hook=True,
+                find_unused_parameters=False,
+            )
 
         if self.cfg.model.get('fsdp', False):
             assert (
@@ -81,9 +84,7 @@ def main(cfg) -> None:
     model = MegatronDiffusionEngine(cfg.model, trainer)
 
     if cfg.model.get('peft', None):
-
         peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
-
         if cfg.model.peft.restore_from_path is not None:
             # initialize peft weights from a checkpoint instead of randomly
             # This is not the same as resume training because optimizer states are not restored.

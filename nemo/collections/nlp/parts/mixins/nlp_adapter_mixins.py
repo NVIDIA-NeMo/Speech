@@ -161,7 +161,6 @@ class NLPAdapterModelMixin:
     def _check_and_add_peft_cfg(self, peft_cfg):
 
         layer_selection = peft_cfg.layer_selection
-
         assert not self.use_mcore_gpt or hasattr(
             peft_cfg, 'name_key_to_mcore_mixins'
         ), f"{peft_cfg.__class__.__name__} is not supported in megatron core mode yet."

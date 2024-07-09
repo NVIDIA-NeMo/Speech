@@ -31,9 +31,9 @@ infer:
 sampling:
   base:
     sampler: EulerEDMSampler
-    width: 256
-    height: 256
-    steps: 40
+    width: 512
+    height: 512
+    steps: 50
     discretization: "LegacyDDPMDiscretization"
     guider: "VanillaCFG"
     thresholder: "None"
@@ -48,8 +48,8 @@ sampling:
     s_noise: 1.0
     eta: 1.0
     order: 4
-    orig_width: 1024
-    orig_height: 1024
+    orig_width: 512
+    orig_height: 512
     crop_coords_top: 0
     crop_coords_left: 0
     aesthetic_score: 5.0

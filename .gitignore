@@ -3,6 +3,7 @@
 *.pkl
 #*.ipynb
 output
+output_2048
 result
 *.pt
 tests/data/asr
@@ -179,3 +180,4 @@ examples/neural_graphs/*.yml
 .hydra/
 nemo_experiments/
 
+slurm*.out

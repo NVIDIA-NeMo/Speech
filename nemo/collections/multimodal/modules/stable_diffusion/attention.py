@@ -227,6 +227,10 @@ class LinearWrapper(nn.Linear, adapter_mixins.AdapterModuleMixin):
     def forward(self, x):
         mixed_x = super().forward(x)
         if self.is_adapter_available():
+            # return this output if lora is not enabled
+            cfg = self.get_adapter_cfg(AdapterName.PARALLEL_LINEAR_ADAPTER)
+            if not cfg['enabled']:
+                return mixed_x
             lora_linear_adapter = self.get_adapter_module(AdapterName.PARALLEL_LINEAR_ADAPTER)
             lora_mixed_x = lora_linear_adapter(x)
             # This value has the same meaning as the `--network_alpha` option in the kohya-ss trainer script.

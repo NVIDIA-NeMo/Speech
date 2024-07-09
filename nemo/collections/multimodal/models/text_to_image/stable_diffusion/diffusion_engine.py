@@ -119,7 +119,9 @@ class DiffusionEngine(nn.Module, Serialization):
         self._init_first_stage(first_stage_config)
         self.model_type = None
 
-        self.rng = torch.Generator(device=torch.cuda.current_device(),)
+        self.rng = torch.Generator(
+            device=torch.cuda.current_device(),
+        )
 
         self.use_ema = False  # TODO use_ema need to switch to NeMo style
         if self.use_ema:
@@ -158,6 +160,13 @@ class DiffusionEngine(nn.Module, Serialization):
             out = self.first_stage_model.decode(z)
         return out
 
+    # same as above but differentiable
+    def differentiable_decode_first_stage(self, z):
+        z = 1.0 / self.scale_factor * z
+        with torch.autocast("cuda", enabled=not self.disable_first_stage_autocast):
+            out = self.first_stage_model.decode(z)
+        return out
+
     @torch.no_grad()
     def encode_first_stage(self, x):
         with torch.autocast("cuda", enabled=not self.disable_first_stage_autocast):
@@ -185,7 +194,12 @@ class DiffusionEngine(nn.Module, Serialization):
         self.log_dict(loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         self.log(
-            "global_step", self.global_step, prog_bar=True, logger=True, on_step=True, on_epoch=False,
+            "global_step",
+            self.global_step,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=False,
         )
 
         if self.scheduler_config is not None:
@@ -231,7 +245,11 @@ class DiffusionEngine(nn.Module, Serialization):
             scheduler = DiffusionEngine.from_config_dict(self.scheduler_config)
             print("Setting up LambdaLR scheduler...")
             scheduler = [
-                {"scheduler": LambdaLR(opt, lr_lambda=scheduler.schedule), "interval": "step", "frequency": 1,}
+                {
+                    "scheduler": LambdaLR(opt, lr_lambda=scheduler.schedule),
+                    "interval": "step",
+                    "frequency": 1,
+                }
             ]
             return [opt], scheduler
         return opt
@@ -291,7 +309,14 @@ class DiffusionEngine(nn.Module, Serialization):
         pass
 
     @torch.no_grad()
-    def log_images(self, batch: Dict, N: int = 8, sample: bool = True, ucg_keys: List[str] = None, **kwargs,) -> Dict:
+    def log_images(
+        self,
+        batch: Dict,
+        N: int = 8,
+        sample: bool = True,
+        ucg_keys: List[str] = None,
+        **kwargs,
+    ) -> Dict:
         conditioner_input_keys = [e.input_key for e in self.conditioner.embedders]
         if ucg_keys:
             assert all(map(lambda x: x in conditioner_input_keys, ucg_keys)), (
@@ -305,7 +330,8 @@ class DiffusionEngine(nn.Module, Serialization):
         x = self.get_input(batch)
 
         c, uc = self.conditioner.get_unconditional_conditioning(
-            batch, force_uc_zero_embeddings=ucg_keys if len(self.conditioner.embedders) > 0 else [],
+            batch,
+            force_uc_zero_embeddings=ucg_keys if len(self.conditioner.embedders) > 0 else [],
         )
 
         sampling_kwargs = {}
@@ -400,7 +426,10 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
         # handle asynchronous grad reduction
         no_sync_func = None
         if not forward_only and self.with_distributed_adam:
-            no_sync_func = partial(self._optimizer.no_sync, greedy_grad_copy=self.megatron_amp_O2,)
+            no_sync_func = partial(
+                self._optimizer.no_sync,
+                greedy_grad_copy=self.megatron_amp_O2,
+            )
 
         # pipeline schedules will get these from self.model.config
         for module in self.get_module_list():
@@ -438,12 +467,12 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
 
     def training_step(self, dataloader_iter):
         """
-            Our dataloaders produce a micro-batch and then we fetch
-            a number of microbatches depending on the global batch size and model parallel size
-            from the dataloader to produce a list of microbatches.
-            Batch should be a list of microbatches and those microbatches should on CPU.
-            Microbatches are then moved to GPU during the pipeline.
-            The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
+        Our dataloaders produce a micro-batch and then we fetch
+        a number of microbatches depending on the global batch size and model parallel size
+        from the dataloader to produce a list of microbatches.
+        Batch should be a list of microbatches and those microbatches should on CPU.
+        Microbatches are then moved to GPU during the pipeline.
+        The list of microbatches is then piped through the pipeline using Apex fwd/bwd functions.
         """
         self._optimizer.zero_grad()
 
@@ -491,20 +520,20 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
         return loss_mean
 
     def backward(self, *args, **kwargs):
-        """ LightningModule hook to do backward.
-            We want this to do nothing since we run backward in the fwd/bwd functions from apex.
-            No need to call it here.
+        """LightningModule hook to do backward.
+        We want this to do nothing since we run backward in the fwd/bwd functions from apex.
+        No need to call it here.
         """
         pass
 
     def optimizer_zero_grad(self, *args, **kwargs):
-        """ LightningModule hook to zero grad.
-            We want this to do nothing as we are zeroing grads during the training_step.
+        """LightningModule hook to zero grad.
+        We want this to do nothing as we are zeroing grads during the training_step.
         """
         pass
 
     def _append_sequence_parallel_module_grads(self, module, grads):
-        """ Helper method for allreduce_sequence_parallel_gradients"""
+        """Helper method for allreduce_sequence_parallel_gradients"""
 
         for param in module.parameters():
             sequence_parallel_param = getattr(param, 'sequence_parallel', False)
@@ -517,12 +546,13 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
 
     def get_forward_output_and_loss_func(self):
         def process_batch(batch):
-            """ Prepares the global batch for apex fwd/bwd functions.
-                Global batch is a list of micro batches.
+            """Prepares the global batch for apex fwd/bwd functions.
+            Global batch is a list of micro batches.
             """
             # SD has more dedicated structure for encoding, so we enable autocasting here as well
             with torch.cuda.amp.autocast(
-                self.autocast_dtype in (torch.half, torch.bfloat16), dtype=self.autocast_dtype,
+                self.autocast_dtype in (torch.half, torch.bfloat16),
+                dtype=self.autocast_dtype,
             ):
                 if self.model.precache_mode == 'both':
                     x = batch[self.model.input_key].to(torch.cuda.current_device())
@@ -565,7 +595,7 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
         return loss
 
     def setup(self, stage=None):
-        """ PTL hook that is executed after DDP spawns.
+        """PTL hook that is executed after DDP spawns.
             We setup datasets here as megatron datasets require DDP to instantiate.
             See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
         Args:
@@ -678,20 +708,23 @@ class MegatronDiffusionEngine(NLPAdapterModelMixin, MegatronBaseModel):
                 f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
             )
             self._test_dl = torch.utils.data.DataLoader(
-                self._test_ds, batch_size=self._micro_batch_size, num_workers=cfg.num_workers, pin_memory=True,
+                self._test_ds,
+                batch_size=self._micro_batch_size,
+                num_workers=cfg.num_workers,
+                pin_memory=True,
             )
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """ PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
-            When using pipeline parallelism, we need the global batch to remain on the CPU,
-            since the memory overhead will be too high when using a large number of microbatches.
-            Microbatches are transferred from CPU to GPU inside the pipeline.
+        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        When using pipeline parallelism, we need the global batch to remain on the CPU,
+        since the memory overhead will be too high when using a large number of microbatches.
+        Microbatches are transferred from CPU to GPU inside the pipeline.
         """
         return batch
 
     def _validate_trainer(self):
-        """ Certain trainer configurations can break training.
-            Here we try to catch them and raise an error.
+        """Certain trainer configurations can break training.
+        Here we try to catch them and raise an error.
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(

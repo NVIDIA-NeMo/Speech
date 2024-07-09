@@ -125,7 +125,6 @@ model:
       target: torch.nn.Identity
 
 
-
   conditioner_config:
     _target_: nemo.collections.multimodal.modules.stable_diffusion.encoders.modules.GeneralConditioner
     emb_models:

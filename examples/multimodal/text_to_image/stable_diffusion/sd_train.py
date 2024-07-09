@@ -74,7 +74,11 @@ def main(cfg) -> None:
             n, c, h = cfg.model.micro_batch_size, cfg.model.channels, cfg.model.image_size
             x = torch.randn((n, c, h, h), dtype=torch.float32, device="cuda")
             t = torch.randint(77, (n,), device="cuda")
-            cc = torch.randn((n, 77, cfg.model.unet_config.context_dim), dtype=torch.float32, device="cuda",)
+            cc = torch.randn(
+                (n, 77, cfg.model.unet_config.context_dim),
+                dtype=torch.float32,
+                device="cuda",
+            )
             if cfg.model.precision in [16, '16']:
                 x = x.type(torch.float16)
                 cc = cc.type(torch.float16)
@@ -93,9 +97,7 @@ def main(cfg) -> None:
                 model.zero_grad()
 
     if cfg.model.get('peft', None):
-
         peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
-
         if cfg.model.peft.restore_from_path is not None:
             # initialize peft weights from a checkpoint instead of randomly
             # This is not the same as resume training because optimizer states are not restored.

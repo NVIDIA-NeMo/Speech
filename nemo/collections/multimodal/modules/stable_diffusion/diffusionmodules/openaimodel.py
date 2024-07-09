@@ -789,6 +789,7 @@ class UNetModel(nn.Module):
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
+
             if level != len(channel_mult) - 1:
                 out_ch = ch
                 self.input_blocks.append(
@@ -954,6 +955,7 @@ class UNetModel(nn.Module):
             )
 
         if from_pretrained is not None:
+            logging.info(f"Attempting to load pretrained unet from {from_pretrained}")
             if from_pretrained.endswith('safetensors'):
                 from safetensors.torch import load_file as load_safetensors
 
@@ -1021,6 +1023,16 @@ class UNetModel(nn.Module):
                     .replace('conv2', 'out_layers.3')
                     .replace('conv_shortcut', 'skip_connection')
                 )
+                ## Rohit: I've changed this to make sure it is compatible
+                # post_fix = (
+                #     key_[25:]
+                #     .replace('time_emb_proj', 'emb_layers.1')
+                #     .replace('norm1', 'in_layers.0')
+                #     .replace('norm2', 'out_layers.0')
+                #     .replace('conv1', 'in_layers.1')
+                #     .replace('conv2', 'out_layers.2')
+                #     .replace('conv_shortcut', 'skip_connection')
+                # )
                 res_dict["input_blocks." + str(target_id) + '.0.' + post_fix] = value_
             elif "attentions" in key_:
                 id_1 = int(key_[26])
@@ -1168,7 +1180,7 @@ class UNetModel(nn.Module):
         return new_state_dict
 
     def _state_key_mapping(self, state_dict: dict):
-
+        # state_dict is a HF model
         res_dict = {}
         input_dict = {}
         mid_dict = {}

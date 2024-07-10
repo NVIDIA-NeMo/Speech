@@ -25,11 +25,9 @@ from typing import (
 
 import torch
 import torch.distributed
-from megatron.core import parallel_state
 from megatron.core.distributed import DistributedDataParallel as McoreDDP
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.transformer.transformer_config import TransformerConfig
-from pytorch_lightning.utilities import move_data_to_device
 from torch import Tensor, nn
 from typing_extensions import override
 
@@ -45,43 +43,15 @@ class PrecisionPluginProtocol(Protocol[DataT]):
 
 
 def default_data_step(dataloader_iter: Iterator[DataT]) -> DataT:
-    """
-    Moves the data to a device.
+    batch = next(dataloader_iter)
 
-    In this case we utilize the match function to unpack the dataloader iterator. There may be a wrapper on the dataloader
-    iter from here: https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/fabric/strategies.py#L441.
+    if isinstance(batch, tuple) and len(batch) == 3:
+        batch = batch[0]
 
-    This will not subset the data for your with context parallel so please override this function if you
-    want to use context parallel.
+    if isinstance(batch, dict):
+        batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
 
-    Examples:
-        If the dataloader_iter returns: [Tuple[<tensor>, <int>, <int>]] -> move to device
-        If the dataloader_iter returns: [<tensor>, <tensor>] -> move to device
-
-    Returns:
-        DataT: The data moved to the device.
-    """
-    if parallel_state.get_context_parallel_world_size() > 1:
-        raise ValueError(
-            "Default data step is being used in a context parallel environment."
-            "Please define your own data step that appropriately slices the data for context parallel."
-        )
-
-    match next(dataloader_iter):
-        # If its wrapped in a tuple, unpack it.
-        case (batch, int(_), int(_)):
-            pass
-        # Canonical case.
-        case batch:
-            pass
-        # If the dataloader_iter is empty, return a ValueError.
-        case _:
-            batch = None
-
-    if batch is not None:
-        return move_data_to_device(batch, torch.cuda.current_device())
-    else:
-        raise ValueError("None returned from dataloader.")
+    return batch
 
 
 def default_forward_step(model: nn.Module, batch, *args, **kwargs) -> torch.Tensor:

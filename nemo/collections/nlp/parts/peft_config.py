@@ -24,6 +24,7 @@ try:
         MCoreMLPMixin,
         MCoreSelfAttentionMixin,
         MCoreSequentialMLPMixin,
+        MCoreTransformerBlockMixin,
         MCoreTransformerLayerMixin,
     )
 except (ImportError, ModuleNotFoundError):
@@ -41,6 +42,7 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraMoeHto4HAdapterConfig,
     LoraUnfusedHto4HAdapterConfig,
     LoraUnfusedKQVAdapterConfig,
+    MLPHeadAdapterConfig,
     MLPInfusedAdapterConfig,
     ParallelLinearAdapterConfig,
     ParallelLinearAdapterWeightTyingConfig,
@@ -125,6 +127,21 @@ class SelectivePEFTConfig(PEFTConfig):
         selective_cfg = cfg.peft.selective_tuning
         super().__init__(selective_cfg, name_key_to_cfg={})
         self.tunable_base_param_names = selective_cfg.get("tunable_base_param_names", [])
+
+
+class MLPHeadPEFTConfig(PEFTConfig):
+    def __init__(self, cfg):
+        config_args = {"in_features": cfg.hidden_size, "out_features": cfg.peft.mlp_head_tuning.out_features}
+        mlp_head_cfg = MLPHeadAdapterConfig(**config_args)
+
+        name_key_to_cfg = {
+            AdapterName.MLP_HEAD_ADAPTER: mlp_head_cfg,
+        }
+        self.name_key_to_mcore_mixins = {
+            AdapterName.MLP_HEAD_ADAPTER: [("decoder", MCoreTransformerBlockMixin)],
+        }
+
+        super().__init__(cfg.peft.mlp_head_tuning, name_key_to_cfg)
 
 
 class LoraPEFTConfig(PEFTConfig):
@@ -401,6 +418,7 @@ PEFT_CONFIG_MAP = {
     "ia3": IA3PEFTConfig,
     "ptuning": PtuningPEFTConfig,
     "lora": LoraPEFTConfig,
+    "mlp_head": MLPHeadPEFTConfig,
     "qlora": QLoraPEFTConfig,
     "selective": SelectivePEFTConfig,
     'none': None,

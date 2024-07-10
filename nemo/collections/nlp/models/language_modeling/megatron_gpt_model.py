@@ -391,7 +391,6 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
         self.loss_broadcast_src_rank = None
         data_cfg = cfg.get('data', {})
-        self.return_output_tensors = data_cfg.get('return_output_tensors', False)
         self.validation_drop_last = data_cfg.get('validation_drop_last', True)
         self.sample_weight = data_cfg.get('sample_weight', 'token')
         self.validation_param_sync_overlap = self.cfg.get('validation_param_sync_overlap', False)
@@ -1275,24 +1274,47 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # Loss for a micro-batch (ub)
                 loss_for_ub = self.loss_func(batch['loss_mask'], batch['num_valid_tokens_in_ub'], output_tensor)
                 cp_size = parallel_state.get_context_parallel_world_size()
-                if self.return_output_tensors:
+                if isinstance(loss_for_ub, dict):
                     # TODO: need a better way to check if loss_func is returning more stuff than just loss... (@adithyare)
-                    loss_for_ub, q_hs, d_hs, pos_cs, neg_cs, diff_cs = loss_for_ub
-                    reduced_loss = average_losses_across_data_parallel_group([loss_for_ub])
-                    pos_cs = average_losses_across_data_parallel_group([pos_cs])
-                    neg_cs = average_losses_across_data_parallel_group([neg_cs])
-                    diff_cs = average_losses_across_data_parallel_group([diff_cs])
-                    return (
-                        loss_for_ub * cp_size,
-                        {
-                            'avg': reduced_loss,
-                            'query_hs': q_hs,
-                            'doc_hs': d_hs,
-                            'avg_pos_cs': pos_cs,
-                            'avg_neg_cs': neg_cs,
-                            'diff_cs': diff_cs,
-                        },
-                    )
+
+                    if set(loss_for_ub.keys()) == set(
+                        ["loss", "query_hs", "pos_doc_hs", "pos_cs", "neg_cs", "diff_cs"]
+                    ):  # (adithyare) this check will be True for GPT Embedding models
+                        loss = loss_for_ub['loss']
+                        reduced_loss = average_losses_across_data_parallel_group([loss])
+                        pos_cs = average_losses_across_data_parallel_group([loss_for_ub['pos_cs']])
+                        neg_cs = average_losses_across_data_parallel_group([loss_for_ub['neg_cs']])
+                        diff_cs = average_losses_across_data_parallel_group([loss_for_ub['diff_cs']])
+                        return (
+                            loss * cp_size,
+                            {
+                                'avg': reduced_loss,
+                                'query_hs': loss_for_ub['query_hs'],
+                                'doc_hs': loss_for_ub['pos_doc_hs'],
+                                'avg_pos_cs': pos_cs,
+                                'avg_neg_cs': neg_cs,
+                                'diff_cs': diff_cs,
+                            },
+                        )
+                    elif set(loss_for_ub.keys()) == set(
+                        ["loss", "query_pos_doc_logit", "query_neg_doc_logit", "logit_diff"]
+                    ):  # (adithyare) this check will be True for GPT Reranker models
+
+                        loss = loss_for_ub['loss']
+                        reduced_loss = average_losses_across_data_parallel_group([loss])
+                        logit_diff = average_losses_across_data_parallel_group([loss_for_ub['logit_diff']])
+                        return (
+                            loss * cp_size,
+                            {
+                                'avg': reduced_loss,
+                                'query_pos_doc_logit': loss_for_ub['query_pos_doc_logit'],
+                                'query_neg_doc_logit': loss_for_ub['query_neg_doc_logit'],
+                                'logit_diff': logit_diff,
+                            },
+                        )
+                    else:
+                        raise RuntimeError(f"Dict loss_for_ub has unknown key set {loss_for_ub.keys()}")
+
                 elif validation_step and not self.validation_drop_last:
                     num_valid_tokens_in_ub = batch['num_valid_tokens_in_ub']
                     if loss_for_ub.isnan():

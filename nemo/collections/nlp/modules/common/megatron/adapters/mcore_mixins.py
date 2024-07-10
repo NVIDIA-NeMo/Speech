@@ -14,17 +14,21 @@
 
 import torch
 import torch.nn.functional as F
+from megatron.core import InferenceParams
 from megatron.core.fusions.fused_bias_geglu import bias_geglu_impl
 from megatron.core.fusions.fused_bias_gelu import bias_gelu_impl
 from megatron.core.fusions.fused_bias_swiglu import bias_swiglu_impl
 from megatron.core.models.common.embeddings.language_model_embedding import LanguageModelEmbedding
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
+from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.attention import SelfAttention
 from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.mlp import MLP
 from megatron.core.transformer.moe.experts import SequentialMLP
+from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_layer import TransformerLayer
 from megatron.core.utils import make_viewless_tensor
+from torch import Tensor
 
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
     AdapterName,
@@ -37,6 +41,7 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     LoraMoeHto4HAdapterConfig,
     LoraUnfusedHto4HAdapterConfig,
     LoraUnfusedKQVAdapterConfig,
+    MLPHeadAdapterConfig,
     MLPInfusedAdapterConfig,
     ParallelLinearAdapterConfig,
     PromptEncoderAdapterConfig,
@@ -59,6 +64,34 @@ class MCoreAdapterModuleMixin(adapter_mixins.AdapterModuleMixin):
         Must use self.set_accepted_adapter_types([<NeMo adapter config>_target_]) to register adapter.
         """
         raise NotImplementedError("Mcore mixins should implement setup_adapters on a subclass of MyBase")
+
+
+class MCoreTransformerBlockMixin(TransformerBlock, MCoreAdapterModuleMixin):
+    def mcore_register_adapters(self):
+        """
+        Setup NeMo (canonical) Adapter to this MCore layer.
+        """
+        self.set_accepted_adapter_types([MLPHeadAdapterConfig._target_])
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        attention_mask: Tensor,
+        context: Tensor = None,
+        context_mask: Tensor = None,
+        rotary_pos_emb: Tensor = None,
+        inference_params: InferenceParams = None,
+        packed_seq_params: PackedSeqParams = None,
+    ):
+        hidden_states = super().forward(
+            hidden_states, attention_mask, context, context_mask, rotary_pos_emb, inference_params, packed_seq_params
+        )
+
+        mlp_head_adapter = self.get_adapter_module(AdapterName.MLP_HEAD_ADAPTER)
+        if mlp_head_adapter and self.adapter_cfg[AdapterName.MLP_HEAD_ADAPTER]['enabled']:
+            hidden_states = mlp_head_adapter(hidden_states)
+
+        return hidden_states
 
 
 class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):

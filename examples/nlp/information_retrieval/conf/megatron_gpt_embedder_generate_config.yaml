@@ -120,7 +120,6 @@ model:
       tunable_base_param_names: ["self_attention", "word_embeddings"]  # TODO: regex support @adithyre
 
   data:
-    return_output_tensors: True
     test_ds:
       query_file_names: ??? # Path to a list of JSONL files corresponding to the query data. Data format is identical to validation_ds.
       doc_file_names: ??? # Path to a list of JSONL files corresponding to the doc data. Data format is identical to validation_ds.

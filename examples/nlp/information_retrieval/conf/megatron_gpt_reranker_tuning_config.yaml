@@ -1,4 +1,4 @@
-name: megatron_gpt_peft_${model.peft.peft_scheme}_tuning
+name: megatron_gpt_peft_reranker_tuning
 
 trainer:
   devices: 1
@@ -79,15 +79,14 @@ model:
   num_soft_negatives: 0 # Number of soft negatives to use for contrastive loss,it should be max(batch_size - 1), 0 means use hard negatives only
   use_all_possible_negatives: False # If True, use all possible negatives for contrastive loss, otherwise use num_soft_negatives, if num_soft_negatives is 0, use hard negatives only
   post_process: False # should be False.
+  apply_rope_fusion: False
   transformer_engine: True # required to be True for newer versions of Megatron-LM based models
   mcore_gpt: True # required to be True for newer versions of Megatron-LM based models
   use_flash_attention: True
   precision: bf16
-  apply_rope_fusion: False
-  reward_model_loss: False  # Set this to true to perform RLHF style reward model loss -log(sigmoid(accept_logit - reject_logit))
 
   peft:
-    peft_scheme: "lora"  # can be either adapter,ia3, or ptuning
+    peft_scheme: "mlp_head,lora"  # can be either adapter,ia3, or ptuning
     restore_from_path: null
 
     # Used for adapter peft training
@@ -119,6 +118,10 @@ model:
       bottleneck_dim: 1024  # the size of the prompt encoder mlp bottleneck
       embedding_dim: 1024  # the size of the prompt encoder embeddings
       init_std: 0.023
+    
+    # Instead of using the GPT LM Head, we can use a custom head for the reranking task
+    mlp_head_tuning:
+      out_features: 1
 
     ia3_tuning:
       layer_selection:  null  # selects in which layers to add ia3 adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
@@ -158,9 +161,8 @@ model:
       index_mapping_dir: null # Path to a directory to write index mapping files.
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right'] 
     validation_ds:
-      query_file_names: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
-      doc_file_names: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
-      names: ["queries", "doc"] # Names of the corresponding datasets used to log metrics.
+      file_names: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      names: ["validation"] # Names of the corresponding datasets used to log metrics.
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
       shuffle: False
@@ -174,7 +176,7 @@ model:
       add_eos: ${model.data.train_ds.add_eos}
       add_bos: ${model.data.train_ds.add_bos}
       write_embeddings_to_file: False
-      output_file_path_prefix: "validation_embeddings" # Prefix of the file to write predictions to.
+      output_file_path_prefix: "validation_rankings" # Prefix of the file to write predictions to.
       index_mapping_dir: null # Path to a directory to write index mapping files.
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
       metric:

@@ -36,11 +36,6 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
-try:
-
-    HAVE_APEX = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
 
 
 def listify(tensor):
@@ -50,6 +45,17 @@ def listify(tensor):
             r = t[rid, :].unsqueeze(0).cpu()
             l_tensor.append(r)
     return l_tensor
+
+
+def _gather_global_inbatch_representations(local_eos_tensor):
+    local_eos_tensor = local_eos_tensor.contiguous()
+    global_eos_tensors = [
+        torch.zeros_like(local_eos_tensor) for _ in range(parallel_state.get_data_parallel_world_size())
+    ]
+    torch.distributed.all_gather(global_eos_tensors, local_eos_tensor, group=parallel_state.get_data_parallel_group())
+    global_eos_tensors[parallel_state.get_data_parallel_rank()] = local_eos_tensor
+    global_eos_tensors = torch.cat(global_eos_tensors, dim=0)
+    return global_eos_tensors
 
 
 class MegatronGPTEmbeddingModel(MegatronGPTSFTModel):
@@ -412,25 +418,20 @@ class MegatronGPTEmbeddingModel(MegatronGPTSFTModel):
         hs = eos_tensors
         hs = torch.nn.functional.normalize(hs, dim=1)
         _blank = torch.zeros(1, device=hs.device, dtype=hs.dtype)[0]
-        return _blank, hs, hs, _blank, _blank, _blank
-
-    def _gather_global_inbatch_representations(self, local_eos_tensor):
-        local_eos_tensor = local_eos_tensor.contiguous()
-        global_eos_tensors = [
-            torch.zeros_like(local_eos_tensor) for _ in range(parallel_state.get_data_parallel_world_size())
-        ]
-        torch.distributed.all_gather(
-            global_eos_tensors, local_eos_tensor, group=parallel_state.get_data_parallel_group()
-        )
-        global_eos_tensors[parallel_state.get_data_parallel_rank()] = local_eos_tensor
-        global_eos_tensors = torch.cat(global_eos_tensors, dim=0)
-        return global_eos_tensors
+        return {
+            "loss": _blank,
+            "query_hs": hs,
+            "pos_doc_hs": hs,
+            "pos_cs": _blank,
+            "neg_cs": _blank,
+            "diff_cs": _blank,
+        }
 
     def loss_func(self, loss_mask, num_valid_tokens_in_ub, output_tensor):
         idx = torch.arange(output_tensor.shape[1], device=output_tensor.device)
         eos_tensors = output_tensor[loss_mask, idx, :]
         if self.global_inbatch_negatives and self.trainer.training:
-            eos_tensors = self._gather_global_inbatch_representations(eos_tensors)
+            eos_tensors = _gather_global_inbatch_representations(eos_tensors)
         if not self.trainer.training:
             return self.inference_loss_func(loss_mask, num_valid_tokens_in_ub, eos_tensors)
         bs = eos_tensors.shape[0] // 3
@@ -464,4 +465,11 @@ class MegatronGPTEmbeddingModel(MegatronGPTSFTModel):
         query_hs = query_hs.clone().detach()
         pos_doc_hs = pos_doc_hs.clone().detach()
         diff_cs = pos_cs - neg_cs
-        return loss, query_hs, pos_doc_hs, pos_cs, neg_cs, diff_cs
+        return {
+            "loss": loss,
+            "query_hs": query_hs,
+            "pos_doc_hs": pos_doc_hs,
+            "pos_cs": pos_cs,
+            "neg_cs": neg_cs,
+            "diff_cs": diff_cs,
+        }

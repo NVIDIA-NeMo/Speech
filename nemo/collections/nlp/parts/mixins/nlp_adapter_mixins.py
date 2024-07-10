@@ -30,8 +30,13 @@ except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
 
 
-from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import PromptEncoderAdapterConfig
+from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import (
+    MLPHeadAdapterConfig,
+    PromptEncoderAdapterConfig,
+)
+
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
+
 from nemo.collections.nlp.parts.peft_config import (
     PEFT_CONFIG_MAP,
     CanonicalAdaptersPEFTConfig,
@@ -168,7 +173,11 @@ class NLPAdapterModelMixin:
 
         for adapter_name, adapter_cfg in peft_cfg.get_config_dict().items():
             # self.mcore_gpt means is GPT and not T5
-            if hasattr(self, 'mcore_gpt') and not isinstance(adapter_cfg, PromptEncoderAdapterConfig):
+            if (
+                hasattr(self, 'mcore_gpt')
+                and not isinstance(adapter_cfg, PromptEncoderAdapterConfig)
+                and not isinstance(adapter_cfg, MLPHeadAdapterConfig)
+            ):
                 if layer_selection is not None:
                     logging.info(
                         f"Layer selection {layer_selection} is enabled for the current model ("
@@ -351,8 +360,10 @@ class NLPAdapterModelMixin:
             assert filepath.endswith(
                 '.nemo'
             ), "Inferring peft scheme is only supported for .nemo checkpoints. Please supply the `peft_cfgs` argument."
-            peft_cfgs = [PEFT_CONFIG_MAP[conf.peft.peft_scheme](conf)]
+            peft_cfg_cls_lst = [PEFT_CONFIG_MAP[s] for s in conf.peft.peft_scheme.split(",")]
+            peft_cfgs = [_peft_cfg(conf) for _peft_cfg in peft_cfg_cls_lst]
         if getattr(self, 'megatron_amp_O2', False):
+
             state_dict = {replace_prefix(k, 'model.', 'model.module.'): v for k, v in state_dict.items()}
         self.add_adapter(peft_cfgs)
         if not self.ptuning_only_and_non_first_stage:

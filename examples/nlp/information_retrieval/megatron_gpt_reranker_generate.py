@@ -1,4 +1,4 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import torch
 import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf, open_dict
 
-from nemo.collections.nlp.models.information_retrieval.megatron_gpt_embedding_model import MegatronGPTEmbeddingModel
+from nemo.collections.nlp.models.information_retrieval.megatron_gpt_reranker_model import MegatronGPTRerankerModel
 from nemo.collections.nlp.modules.common.text_generation_server import MegatronServer
 from nemo.collections.nlp.modules.common.text_generation_utils import generate
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
@@ -83,26 +83,28 @@ def use_inference_server(cfg, model, trainer):
             generate(model.cuda())
 
 
-@hydra_runner(config_path="conf", config_name="megatron_gpt_embedder_generate_config")
+@hydra_runner(config_path="conf", config_name="megatron_gpt_reranker_generate_config")
 def main(cfg) -> None:
     logging.info("\n\n************** Experiment configuration ***********")
     logging.info(f"\n{OmegaConf.to_yaml(cfg)}")
     trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
 
     if cfg.model.peft.restore_from_path:
-        model_cfg = MegatronGPTEmbeddingModel.merge_inference_cfg(cfg.model.peft.restore_from_path, cfg)
+        model_cfg = MegatronGPTRerankerModel.merge_inference_cfg(cfg.model.peft.restore_from_path, cfg)
     else:
-        model_cfg = MegatronGPTEmbeddingModel.merge_inference_cfg(cfg.model.restore_from_path, cfg)
+        model_cfg = MegatronGPTRerankerModel.merge_inference_cfg(cfg.model.restore_from_path, cfg)
 
     with open_dict(model_cfg):
         model_cfg.post_process = False
 
-    model = MegatronGPTEmbeddingModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
+    model = MegatronGPTRerankerModel.restore_from(cfg.model.restore_from_path, model_cfg, trainer=trainer)
 
     if cfg.model.peft.restore_from_path:
         model.load_adapters(cfg.model.peft.restore_from_path)
     elif cfg.model.peft.restore_from_ckpt.checkpoint_dir and cfg.model.peft.restore_from_ckpt.checkpoint_name:
-        peft_cfg_cls = PEFT_CONFIG_MAP[cfg.model.peft.peft_scheme]
+        peft_cfg_cls_lst = [PEFT_CONFIG_MAP[s] for s in cfg.model.peft.peft_scheme.split(",")]
+        peft_cfg_cls = [_peft_cfg(model_cfg) for _peft_cfg in peft_cfg_cls_lst]
+
         checkpoint_path = os.path.join(
             cfg.model.peft.restore_from_ckpt.checkpoint_dir, cfg.model.peft.restore_from_ckpt.checkpoint_name
         )
@@ -114,7 +116,7 @@ def main(cfg) -> None:
                     cfg.model.peft.restore_from_ckpt.checkpoint_dir, cfg.model.peft.restore_from_ckpt.checkpoint_name
                 )
             )
-            model.load_adapters(checkpoint_path, peft_cfgs=peft_cfg_cls(model_cfg))
+            model.load_adapters(checkpoint_path, peft_cfgs=peft_cfg_cls)
         else:
             raise NotImplementedError("distributed checkpointing of PEFT weights is not supported")
 

@@ -77,6 +77,7 @@ class AdapterName(str, enum.Enum):
     PTUNING_ADAPTER = "ptuning_adapter"
     LORA_KQV_ADAPTER = "lora_kqv_adapter"
     LORA_UNFUSED_KQV_ADAPTER = "lora_unfused_kqv_adapter"
+    MLP_HEAD_ADAPTER = "mlp_head_adapter"
     LORA_KV_ADAPTER = "lora_kv_adapter"
     LORA_Q_ADAPTER = "lora_q_adapter"
     MM_LINEAR_ADAPTER = "mm_linear_adapter"
@@ -386,6 +387,57 @@ class ParallelLinearAdapterConfig(AdapterConfig):
     network_alpha: int | None = None
     a2a_experimental: bool = False
     _target_: str = "{0}.{1}".format(ParallelLinearAdapter.__module__, ParallelLinearAdapter.__name__)
+
+
+class MLPHeadAdapter(nn.Module, AdapterModuleUtil):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        input_is_parallel: bool = False,
+        model_parallel_config: Optional[ModelParallelConfig] = None,
+        **kwargs,
+    ):
+        super().__init__()
+        if model_parallel_config is None:
+            model_parallel_config = ModelParallelConfig()
+        self._sequence_parallel = model_parallel_config.sequence_parallel
+        model_parallel_config.sequence_parallel = False  # SP is irrelevant for the lora linear layer
+
+        if input_is_parallel:
+            self.linear = RowParallelLinear(
+                in_features,
+                out_features,
+                config=model_parallel_config,
+                input_is_parallel=True,
+                skip_bias_add=True,
+                bias=False,
+                init_method=init.xavier_normal_,
+            )
+        else:
+            self.linear = ColumnParallelLinear(
+                in_features,
+                out_features,
+                config=model_parallel_config,
+                bias=False,
+                gather_output=True,
+                init_method=init.xavier_normal_,
+                disable_grad_reduce=self._sequence_parallel,
+            )
+
+        # Setup adapter strategy
+        self.setup_adapter_strategy(adapter_mixin_strategies.ReturnResultAdapterStrategy())
+
+    def forward(self, x):
+        x, _ = self.linear(x)
+        return x
+
+
+@dataclass
+class MLPHeadAdapterConfig(AdapterConfig):
+    in_features: int
+    out_features: int
+    _target_: str = "{0}.{1}".format(MLPHeadAdapter.__module__, MLPHeadAdapter.__name__)
 
 
 class LoraKQVAdapter(ParallelLinearAdapter):
@@ -777,14 +829,21 @@ class PromptEncoderAdapter(nn.Module, AdapterModuleUtil):
         self.is_inference_ready = True
         return True
 
-    def clear_inference_table(self):
+    def clear_inference_table(
+        self,
+    ):
         self.inference_table.fill_(0.0)
         self.is_inference_ready = False
 
-    def get_inference_table(self):
+    def get_inference_table(
+        self,
+    ):
         return self.inference_table.data
 
-    def inner_forward(self):
+    def inner_forward(
+        self,
+    ):
+
         input_embeds = self.embedding(self.indices).unsqueeze(0)
         intermediate_parallel, bias_parallel = self.first(input_embeds)
         intermediate_parallel = fused_bias_gelu(intermediate_parallel, bias_parallel)

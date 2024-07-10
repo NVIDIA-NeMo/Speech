@@ -27,7 +27,7 @@ from nemo.collections.nlp.data.language_modeling.text_memmap_dataset import JSON
 from nemo.core.classes import Dataset
 from nemo.utils import logging
 
-__all__ = ['GPTEmbeddingDataset']
+__all__ = ['GPTEmbeddingDataset', 'GPTRerankerDataset']
 
 
 class GPTEmbeddingDataset(Dataset):
@@ -49,7 +49,7 @@ class GPTEmbeddingDataset(Dataset):
         data_type: str = 'train',  # train, query or doc
     ):
         """
-        file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format. 
+        file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format.
         tokenizer: Tokenizer for the dataset. Instance of a class that inherits TokenizerSpec (ex: YTTM, SentencePiece).
         max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
         min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
@@ -257,6 +257,141 @@ class GPTEmbeddingDataset(Dataset):
                 max_length = max(max_length, len(item['pos_doc']))
             else:
                 raise ValueError(f"Invalid data type: {self.data_type}")
+
+        max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
+        assert max_length <= self.max_seq_length
+
+        attention_mask = [self._create_attention_mask(max_length) for _ in input_ids]
+        attention_mask = torch.stack(attention_mask)
+        position_ids = [list(range(max_length)) for _ in input_ids]
+        position_ids = torch.LongTensor(position_ids)
+        input_ids = torch.LongTensor(
+            self._collate_item(input_ids, max_length=max_length, pad_id=self.tokenizer.eos_id)
+        )
+        lengths = torch.LongTensor(lengths) - 1  # subtract 1 to account for the eos token
+
+        processed_batch = {
+            'tokens': input_ids,
+            'attention_mask': attention_mask,
+            'loss_mask': lengths,
+            'position_ids': position_ids,
+            'metadata': metadata,
+        }
+
+        return processed_batch
+
+
+class GPTRerankerDataset(GPTEmbeddingDataset):
+    def __init__(
+        self,
+        file_path: str,
+        tokenizer: TokenizerSpec,
+        max_seq_length: int = 1024,
+        min_seq_length: int = 1,
+        add_bos: bool = False,
+        add_eos: bool = True,
+        max_num_samples: int = None,
+        seed: int = 1234,
+        index_mapping_dir: str = None,
+        virtual_tokens: int = 0,
+        memmap_workers: Optional[int] = None,
+        truncation_method: str = 'right',
+        special_tokens: Optional[Mapping[str, str]] = None,  # special tokens, a dictory of {token_type: token}
+        data_type: str = 'train',  # train, query or doc
+    ):
+        """
+        file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format.
+        tokenizer: Tokenizer for the dataset. Instance of a class that inherits TokenizerSpec (ex: YTTM, SentencePiece).
+        max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
+        min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
+        add_bos (bool): Whether to add a beginning of sentence token to each data example
+        add_eos (bool): Whether to add an end of sentence token to each data example
+        seed: Random seed for data shuffling.
+        max_num_samples: Maximum number of samples to load. This can be > dataset length if you want to oversample data. If None, all samples will be loaded.
+        index_mapping_dir: Directory to save the index mapping to. If None, will write to the same folder as the dataset.
+        truncation_method: Truncation from which position. Options: ['left', 'right']
+        special_tokens: special tokens for the chat prompts, a dictionary of {token_type: token}. Default: {'system_turn_start': '<extra_id_0>', 'turn_start': '<extra_id_1>', 'label_start': '<extra_id_2>', 'end_of_turn': '\n', "end_of_name": "\n"}
+        """
+        super().__init__(
+            file_path=file_path,
+            tokenizer=tokenizer,
+            max_seq_length=max_seq_length,
+            min_seq_length=min_seq_length,
+            add_bos=add_bos,
+            add_eos=add_eos,
+            max_num_samples=max_num_samples,
+            seed=seed,
+            index_mapping_dir=index_mapping_dir,
+            virtual_tokens=virtual_tokens,
+            memmap_workers=memmap_workers,
+            truncation_method=truncation_method,
+            special_tokens=special_tokens,
+            data_type=data_type,
+        )
+
+    def _process_example(self, example):
+        """
+        Create an example by concatenating text and answer.
+        Truncation is carried out when needed, but it is performed only on the prompt side.
+        BOS, EOS, and SEP, are added if specified.
+        """
+        metadata = {k: v for k, v in example.items()}
+        if self.data_type == 'train':
+            qd = self.tokenizer.text_to_ids(
+                "query: " + example['query'].strip() + " passage: " + example['pos_doc'].strip()
+            )
+            qnd = self.tokenizer.text_to_ids(
+                "query: " + example['query'].strip() + " passage: " + example['neg_doc'].strip()
+            )
+        else:
+            qd = self.tokenizer.text_to_ids(
+                "query: " + example['query'].strip() + " passage: " + example['pos_doc'].strip()
+            )
+            qnd = []
+
+        if self.virtual_tokens:
+            # (@adithyare) we are going to insert "pad/eos" tokens in the beginning of the text and context
+            # these pad/eos tokens are placeholders for virtual tokens for ptuning (if used)
+            qd = [self.tokenizer.eos_id] * self.virtual_tokens + qd  # type: ignore
+            qnd = [self.tokenizer.eos_id] * self.virtual_tokens + qnd  # type: ignore
+
+        if self.add_bos:
+            qd = [self.tokenizer.bos_id] + qd  # type: ignore
+            qnd = [self.tokenizer.bos_id] + qnd  # type: ignore
+
+        # TODO: (@adithyare) should probably add a warning before truncation
+        qd = qd[: self.max_seq_length - 1]
+        qnd = qnd[: self.max_seq_length - 1]
+
+        if self.add_eos:
+            qd = qd + [self.tokenizer.eos_id]  # type: ignore
+            qnd = qnd + [self.tokenizer.eos_id]  # type: ignore
+
+        processed_example = {
+            'query_pos_doc': qd,
+            'query_neg_doc': qnd,
+            'metadata': metadata,
+        }
+
+        return processed_example
+
+    def collate_fn(self, batch):
+        input_ids = []
+        metadata = []
+        lengths = []
+        max_length = -1
+        for item in batch:
+            metadata.append(item['metadata'])
+            if self.data_type == 'train':
+                input_ids.append(item['query_pos_doc'])
+                lengths.append(len(item['query_pos_doc']))
+                input_ids.append(item['query_neg_doc'])
+                lengths.append(len(item['query_neg_doc']))
+                max_length = max(max_length, len(item['query_pos_doc']), len(item['query_neg_doc']))
+            else:
+                input_ids.append(item['query_pos_doc'])
+                lengths.append(len(item['query_pos_doc']))
+                max_length = max(max_length, len(item['query_pos_doc']))
 
         max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
         assert max_length <= self.max_seq_length

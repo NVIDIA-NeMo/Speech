@@ -136,6 +136,7 @@ def set_model_parallel_attributes(model, parallelism):
         config.expert_model_parallel_size = parallelism.expert_model_parallel_size
         config.moe_extended_tp = parallelism.moe_extended_tp
         config.sequence_parallel = parallelism.sequence_parallel
+        config.pipeline_dtype = parallelism.pipeline_dtype
 
         return config
 

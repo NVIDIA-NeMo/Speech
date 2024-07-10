@@ -16,12 +16,6 @@ import os
 from typing import List, Optional
 
 from transformers import (
-    ALBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-    BERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-    CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-    DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST,
-    GPT2_PRETRAINED_MODEL_ARCHIVE_LIST,
-    ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST,
     AlbertConfig,
     AutoModel,
     BertConfig,
@@ -40,6 +34,74 @@ from nemo.collections.nlp.modules.common.huggingface.roberta import RobertaEncod
 from nemo.utils import logging
 
 __all__ = ["get_huggingface_lm_model", "get_huggingface_pretrained_lm_models_list", "VOCAB_FILE_NAME"]
+
+# Manually specify the model archive lists since these are now removed in HF
+# https://github.com/huggingface/transformers/blob/v4.40-release/src/transformers/models/deprecated/_archive_maps.py
+ALBERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "albert/albert-base-v1",
+    "albert/albert-large-v1",
+    "albert/albert-xlarge-v1",
+    "albert/albert-xxlarge-v1",
+    "albert/albert-base-v2",
+    "albert/albert-large-v2",
+    "albert/albert-xlarge-v2",
+    "albert/albert-xxlarge-v2",
+]
+
+BERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "google-bert/bert-base-uncased",
+    "google-bert/bert-large-uncased",
+    "google-bert/bert-base-cased",
+    "google-bert/bert-large-cased",
+    "google-bert/bert-base-multilingual-uncased",
+    "google-bert/bert-base-multilingual-cased",
+    "google-bert/bert-base-chinese",
+    "google-bert/bert-base-german-cased",
+    "google-bert/bert-large-uncased-whole-word-masking",
+    "google-bert/bert-large-cased-whole-word-masking",
+    "google-bert/bert-large-uncased-whole-word-masking-finetuned-squad",
+    "google-bert/bert-large-cased-whole-word-masking-finetuned-squad",
+    "google-bert/bert-base-cased-finetuned-mrpc",
+    "google-bert/bert-base-german-dbmdz-cased",
+    "google-bert/bert-base-german-dbmdz-uncased",
+    "cl-tohoku/bert-base-japanese",
+    "cl-tohoku/bert-base-japanese-whole-word-masking",
+    "cl-tohoku/bert-base-japanese-char",
+    "cl-tohoku/bert-base-japanese-char-whole-word-masking",
+    "TurkuNLP/bert-base-finnish-cased-v1",
+    "TurkuNLP/bert-base-finnish-uncased-v1",
+    "wietsedv/bert-base-dutch-cased",
+]
+CAMEMBERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "almanach/camembert-base",
+    "Musixmatch/umberto-commoncrawl-cased-v1",
+    "Musixmatch/umberto-wikipedia-uncased-v1",
+]
+
+DISTILBERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "distilbert-base-uncased",
+    "distilbert-base-uncased-distilled-squad",
+    "distilbert-base-cased",
+    "distilbert-base-cased-distilled-squad",
+    "distilbert-base-german-cased",
+    "distilbert-base-multilingual-cased",
+    "distilbert-base-uncased-finetuned-sst-2-english",
+]
+GPT2_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "openai-community/gpt2",
+    "openai-community/gpt2-medium",
+    "openai-community/gpt2-large",
+    "openai-community/gpt2-xl",
+    "distilbert/distilgpt2",
+]
+ROBERTA_PRETRAINED_MODEL_ARCHIVE_LIST = [
+    "FacebookAI/roberta-base",
+    "FacebookAI/roberta-large",
+    "FacebookAI/roberta-large-mnli",
+    "distilbert/distilroberta-base",
+    "openai-community/roberta-base-openai-detector",
+    "openai-community/roberta-large-openai-detector",
+]
 
 
 HUGGINGFACE_MODELS = {
@@ -94,7 +156,9 @@ VOCAB_FILE_NAME = {
 
 
 def get_huggingface_lm_model(
-    pretrained_model_name: str, config_dict: Optional[dict] = None, config_file: Optional[str] = None,
+    pretrained_model_name: str,
+    config_dict: Optional[dict] = None,
+    config_file: Optional[str] = None,
 ):
     """
     Returns lm model instantiated with Huggingface
@@ -135,7 +199,9 @@ def get_huggingface_lm_model(
         raise ValueError(f"Use HuggingFace API directly in NeMo for {pretrained_model_name}")
 
 
-def get_huggingface_pretrained_lm_models_list(include_external: bool = False,) -> List[str]:
+def get_huggingface_pretrained_lm_models_list(
+    include_external: bool = False,
+) -> List[str]:
     """
     Returns the list of pretrained HuggingFace language models
 

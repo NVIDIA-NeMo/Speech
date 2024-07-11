@@ -1,0 +1,96 @@
+inference:
+  greedy: False # Whether or not to use sampling ; use greedy decoding otherwise
+  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
+  temperature: 1.0 # sampling temperature
+  add_BOS: True # add the bos token at the begining of the prompt
+  tokens_to_generate: 30 # The minimum length of the sequence to be generated.
+  all_probs: False  # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
+  compute_logprob: False  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  end_strings: ["<|endoftext|>"]  # generation will stop when one of these tokens is generated
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  logger: False # logger provided by exp_manager
+  precision: bf16 # 16, 32, or bf16
+  use_distributed_sampler: False
+  
+
+tensor_model_parallel_size: 1
+pipeline_model_parallel_size: 1
+pipeline_model_parallel_split_rank: 0 # used for encoder and decoder model (0 for others)
+megatron_amp_O2: False  # Enable O2-level automatic mixed precision to save memory
+mamba_model_file: null  # Mamba nemo file path
+checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the Mamba training
+checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
+hparams_file: null # model configuration file, only used for PTL checkpoint loading
+prompts: # prompts for Mamba inference
+  - "Q: How are you?"
+  - "Q: How big is the universe?"
+prompts_jsonl: null
+server: False  # whether launch the API server
+port: 5555 # the port number for the inference server
+web_server: False # whether launch the web inference server
+share: False  # whether create a public URL
+username: test # user name for web client
+password: test2  # password for web client
+web_port: 9889 # the port number of the web server
+chat: False # use the chat interface
+chatbot_config:
+  value: False   # whether to inject the value attributes
+  attributes:
+    - name: Quality
+      min: 0
+      max: 4
+      key: quality
+      type: int
+      default: 4
+    - name: Toxicity
+      min: 0
+      max: 4
+      key: toxcity
+      type: int
+      default: 0
+    - name: Humor
+      min: 0
+      max: 4
+      key: humor
+      type: int
+      default: 0
+    - name: Creativity
+      min: 0
+      max: 4
+      key: creativity
+      type: int
+      default: 0
+    - name: Violence
+      min: 0
+      max: 4
+      key: violence
+      type: int
+      default: 0
+    - name: Helpfulness
+      min: 0
+      max: 4
+      key: helpfulness
+      type: int
+      default: 4
+    - name: Not_Appropriate
+      min: 0
+      max: 4
+      key: not_appropriate
+      type: int
+      default: 0
+    - name: Language
+      choices: ['ar', 'bg', 'bn', 'ca', 'cs', 'da', 'de', 'el', 'en', 'eo', 'es', 'eu', 'fa', 'fi', 'fr', 'gl', 'he', 'hu', 'id', 'it', 'ja', 'ko', 'nb', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sv', 'th', 'tr', 'uk', 'vi', 'zh']
+      key: lang
+      type: list
+      default: en
+   
+  user: User
+  assistant: Assistant
+  system: "A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions.\n\n"

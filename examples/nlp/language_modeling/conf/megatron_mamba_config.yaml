@@ -71,9 +71,6 @@ model:
   apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
   normalization: RMSNorm
   layernorm_epsilon: 1e-5
-  num_moe_experts: 16
-  moe_router_topk: 2
-  moe_aux_loss_coeff: 0.001
   make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
   pre_process: True # add embedding
   post_process: True # add pooler

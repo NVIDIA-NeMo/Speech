@@ -21,7 +21,7 @@ exp_manager:
   explicit_log_dir: null
   exp_dir: null
   name: ${name}
-  create_wandb_logger: True
+  create_wandb_logger: False
   wandb_logger_kwargs:
     project: griffin
     name: sft-test
@@ -82,7 +82,7 @@ model:
   ffn_dropout: 0.0
   
   peft:
-    peft_scheme: "lora"  # can be either adapter,ia3, lora, or ptuning
+    peft_scheme: "none"  # can be either adapter,ia3, lora, or ptuning
     restore_from_path: null
 
     # Used for adapter peft training

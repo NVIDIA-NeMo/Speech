@@ -95,8 +95,12 @@ def convert(args):
 
         for i in range(num_layers):
             for attr in layer_attributes:
-                new_key = f'model.decoder.layers.{i}.{attr}'
-                old_key = f'backbone.layers.{i}.{attr}'
+                if attr == 'norm.weight':
+                    new_key = f'model.decoder.layers.{i}.mixer.in_proj.layer_norm_weight'
+                    old_key = f'backbone.layers.{i}.norm.weight'
+                else:
+                    new_key = f'model.decoder.layers.{i}.{attr}'
+                    old_key = f'backbone.layers.{i}.{attr}'
                 new_state_dict[new_key] = checkpoint_weights[old_key]
 
         # Tokenizer settings
@@ -110,7 +114,15 @@ def convert(args):
         layer_numbers = set(int(re.search(r'decoder\.layers\.(\d+)\.', key).group(1)) for key in layer_keys)
         num_layers = max(layer_numbers) + 1
 
-        new_state_dict = {"model." + key: value for key, value in checkpoint_weights.items()}
+        for key, value in checkpoint_weights.items():
+            if '.norm.weight' in key and 'mixer' not in key:
+                key = key[:-11] + 'mixer.in_proj.layer_norm_weight'
+            new_state_dict["model." + key] = value
+
+        # Tokenizer settings
+        tokenizer_library = 'megatron'
+        tokenizer_type = 'GPTSentencePieceTokenizer'
+        tokenizer_model = args.tokenizer_model_dir
 
         # Tokenizer settings
         tokenizer_library = 'megatron'
@@ -164,7 +176,9 @@ def convert(args):
     trainer = MegatronLMPPTrainerBuilder(nemo_config).create_trainer()
     nemo_model_from_pyt = MegatronMambaModel(nemo_config.model, trainer)
 
-    nemo_model_from_pyt.load_state_dict(new_state_dict, strict=True)
+    # Setting strict=False for the _extra_state
+
+    nemo_model_from_pyt.load_state_dict(new_state_dict, strict=False)
     dtype = torch_dtype_from_precision(args.precision)
     nemo_model_from_pyt = nemo_model_from_pyt.to(dtype=dtype)
     nemo_model_from_pyt.save_to(args.output_path)

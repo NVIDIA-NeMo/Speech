@@ -265,6 +265,7 @@ jobs:
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
+      TIMEOUT: 15
       SCRIPT: |
         python examples/nlp/language_modeling/megatron_gpt_ptq.py \
         model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \

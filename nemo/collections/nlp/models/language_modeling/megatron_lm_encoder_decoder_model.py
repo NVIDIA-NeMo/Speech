@@ -439,8 +439,6 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             for module in modules:
                 if isinstance(module, (Float16Module, MCoreFloat16Module)):
                     module = module.module
-                if not self.mcore_t5:
-                    module = module.language_model
                 if hasattr(module, 'embedding'):
                     for param in module.embedding.parameters():
                         param.data_ptr()

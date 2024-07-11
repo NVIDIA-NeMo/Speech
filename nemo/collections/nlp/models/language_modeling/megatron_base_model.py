@@ -303,9 +303,12 @@ class MegatronBaseModel(NLPModel):
         if type(self).__name__ == 'MegatronGPTModel':
             nemo_args['share_token_embeddings'] = self.cfg.get('share_embeddings_and_output_weights', True)
 
-        mcore_args = {
-            'config': self.transformer_config,
-        }
+        if is_mcore_model:
+            mcore_args = {
+                'config': self.transformer_config,
+            }
+        else:
+            mcore_args = None
 
         args = mcore_args if is_mcore_model else nemo_args
         # Model wrapper to convert both model and inputs to half precision

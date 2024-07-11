@@ -7,8 +7,6 @@ To harness the strengths of both approaches, SSM-Hybrid models incorporate MLP, 
 
 The Mamba2 models discussed in the `Transformers are SSMs <https://arxiv.org/pdf/2405.21060>`__ paper are available in five different sizes: 130 million, 370 million, 780 million, 1.3 billion, and 2.7 billion parameters. The Mamba2-Hybrid models, along with their Mamba2 baseline as released by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__, are provided in an 8 billion parameter size.
 
-`Low-Rank Adaptation (LoRA) <https://arxiv.org/pdf/2106.09685>`__ has emerged as a popular Parameter Efficient Fine-Tuning (PEFT) technique that tunes a very small number of additional parameters as compared to full fine-tuning, thereby reducing the compute required. LoRA tuning can be applied to the linear layers in the Transformer and MLP blocks for the Mamba2-Hybrid models. 
-
 `NVIDIA NeMo
 Framework <https://docs.nvidia.com/nemo-framework/user-guide/latest/overview.html>`__ provides tools to perform Fine-tuning on Mamba2 and Mamba2-Hybrid to fit your use case.
 
@@ -26,10 +24,6 @@ In order to proceed, ensure that you have met the following requirements:
 
     * Large models (8b)
         * Access to at least 2 NVIDIA GPUs with a cumulative memory of at least 80GB, for example: 2 x H100-80GB or 2 x A100-80GB.
-
-* LoRA Fine-Tuning (Mamba2-Hybrid only) System Configuration
-    * Access to at least 1 NVIDIA GPU with a cumulative memory of at least 80GB, for example: 1 x H100-80GB or 1 x A100-80GB.
-
 
 
 * A Docker-enabled environment, with `NVIDIA Container Runtime <https://developer.nvidia.com/container-runtime>`_ installed, which will make the container GPU-aware.
@@ -82,6 +76,7 @@ The HuggingFace checkpoint for the 8b model is for TP of size 1, and so is the `
           --tensor_model_parallel_size=1 \
           --target_tensor_model_parallel_size=4 \
           --precision=bf16 \
+          --tokenizer_path=<path to tokenizer.model>
 
 After running this script, a ``.nemo`` model along with the TP-size number of folders (4 in this example) will be generated in the target path. The folders for each rank will be displayed as ``mp_rank_00`` to ``mp_rank_03`` in this example. 
 
@@ -103,41 +98,12 @@ Run Fine-Tuning
     SP=True # True only if TP>1 otherwise False
     SEQ_LEN=2048
     NUM_DEVICES=2
-    MODEL="8b-hybrid"
     PATH_TO_NEMO_MODEL=<path to .nemo file>
     TRAIN_DATASET_PATH=<path to training dataset file>
     VAL_DATASET_PATH=<path to validation dataset file>
     CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/conf/"
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
-    TOKENIZER_MODEL=<path to tokenizer model> # Only for the 8b models, for other models, set to null
-
-    declare -A MODEL_CONFIGS
-    MODEL_CONFIGS[130m]="24 768 768 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[370m]="48 1024 1024 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[780m]="48 1536 1536 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[1_3b]="48 2048 2048 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[2_7b]="64 2560 2560 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[8b]="56 4096 16384 256000 8 megatron GPTSentencePieceTokenizer" 
-    MODEL_CONFIGS[8b-hybrid]="56 4096 16384 256000 8 megatron GPTSentencePieceTokenizer" 
-
-    if [ "$MODEL" = "8b-hybrid" ]; then
-        export HYBRID_PATTERN='M-M-M--M-M*-M-M-M-M--M*-M-M-M-M-M*--M-M-M-M-M*-M--M-M-M-'
-    else
-        export HYBRID_PATTERN=''
-    fi
-
-    set_model_params() {
-        local config=(${MODEL_CONFIGS[$MODEL]})
-        NUM_LAYERS=${config[0]}
-        DIM=${config[1]}
-        FFN_DIM=${config[2]}
-        VOCAB_SIZE=${config[3]}
-        NGROUP=${config[4]}
-        TOKENIZER_LIB=${config[5]}
-        TOKENIZER_TYPE=${config[6]}
-    }
-    set_model_params
 
     export NVTE_FUSED_ATTN=1
     export NVTE_FLASH_ATTN=0
@@ -160,17 +126,8 @@ Run Fine-Tuning
             exp_manager.resume_if_exists=True \
             exp_manager.create_checkpoint_callback=True \
             exp_manager.create_wandb_logger=True \
-            model.hybrid_override_pattern=${HYBRID_PATTERN} \
-            model.ngroups_mamba=${NGROUP} \
             model.tensor_model_parallel_size=${TP} \
             model.sequence_parallel=$SP \
-            model.tokenizer.library=${TOKENIZER_LIB} \
-            model.tokenizer.type=${TOKENIZER_TYPE} \
-            model.tokenizer.model=${TOKENIZER_MODEL} \
-            model.vocab_size=${VOCAB_SIZE} \
-            model.num_layers=${NUM_LAYERS} \
-            model.hidden_size=${DIM} \
-            model.ffn_hidden_size=${FFN_DIM} \
             model.peft.peft_scheme='none' \
             model.megatron_amp_O2=True \
             model.encoder_seq_length=${SEQ_LEN} \
@@ -190,8 +147,6 @@ Run Fine-Tuning
 
 * Note: The tokenizer for 8b models (Mamba2 8b and MAmba2-Hybrid 8b) can be found in the `HuggingFace repository <https://huggingface.co/collections/nvidia/ssms-666a362c5c3bb7e4a6bcfb9c>`__. Download it a set its path to ``TOKENIZER_MODEL`` (the tokenizer model file is under the name of ```mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model```). For other models, set ``TOKENIZER_MODEL=null`` since it will be downloaded from HuggingFace at the time of run.
 
-3. For LoRA PEFT-Tuning (only for the 8b-hybrid model), use the script above but change the ```model.peft.peft_scheme``` to ```lora``` and ```model.optim.name``` to ``fused_adam``.
-
 
 Evaluating the Fine-Tuned Model
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -206,41 +161,12 @@ Evaluating the Fine-Tuned Model
     SP=True # True only if TP>1 otherwise False
     SEQ_LEN=2048
     NUM_DEVICES=2
-    MODEL="8b-hybrid"
     PATH_TO_NEMO_MODEL=<path to .nemo file>
     TRAIN_DATASET_PATH=<path to training dataset file>
     VAL_DATASET_PATH=<path to validation dataset file>
     CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/tuning/conf/"
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
-    TOKENIZER_MODEL=<path to tokenizer model> # Only for the 8b models, for other models, set to null
-
-    declare -A MODEL_CONFIGS
-    MODEL_CONFIGS[130m]="24 768 768 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[370m]="48 1024 1024 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[780m]="48 1536 1536 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[1_3b]="48 2048 2048 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[2_7b]="64 2560 2560 50288 1 huggingface EleutherAI/gpt-neox-20b" 
-    MODEL_CONFIGS[8b]="56 4096 16384 256000 8 megatron GPTSentencePieceTokenizer" 
-    MODEL_CONFIGS[8b-hybrid]="56 4096 16384 256000 8 megatron GPTSentencePieceTokenizer" 
-
-    if [ "$MODEL" = "8b-hybrid" ]; then
-        export HYBRID_PATTERN='M-M-M--M-M*-M-M-M-M--M*-M-M-M-M-M*--M-M-M-M-M*-M--M-M-M-'
-    else
-        export HYBRID_PATTERN=''
-    fi
-
-    set_model_params() {
-        local config=(${MODEL_CONFIGS[$MODEL]})
-        NUM_LAYERS=${config[0]}
-        DIM=${config[1]}
-        FFN_DIM=${config[2]}
-        VOCAB_SIZE=${config[3]}
-        NGROUP=${config[4]}
-        TOKENIZER_LIB=${config[5]}
-        TOKENIZER_TYPE=${config[6]}
-    }
-    set_model_params
 
     export NVTE_FUSED_ATTN=1
     export NVTE_FLASH_ATTN=0
@@ -270,7 +196,6 @@ Evaluating the Fine-Tuned Model
             model.peft.restore_from_path=False \
             +model.peft.restore_from_ckpt.checkpoint_dir=False \
             +model.peft.restore_from_ckpt.checkpoint_name=False \
-            model.hybrid_override_pattern=${HYBRID_PATTERN} \
             model.tensor_model_parallel_size=${TP} \
             model.sequence_parallel=$SP \
             model.micro_batch_size=${MBS} \
@@ -281,13 +206,6 @@ Evaluating the Fine-Tuned Model
             model.data.test_ds.micro_batch_size=${MBS} \
             model.data.test_ds.tokens_to_generate=30 \
             model.answer_only_loss=True \
-            model.tokenizer.library=${TOKENIZER_LIB} \
-            model.tokenizer.type=${TOKENIZER_TYPE} \
-            model.tokenizer.model=${TOKENIZER_MODEL} \
-            model.vocab_size=${VOCAB_SIZE} \
-            model.num_layers=${NUM_LAYERS} \
-            model.hidden_size=${DIM} \
-            model.ffn_hidden_size=${FFN_DIM} \
             inference.greedy=True \
             exp_manager.checkpoint_callback_params.monitor=validation_loss \
             ++inference.verbose=True \
@@ -299,3 +217,23 @@ Evaluating the Fine-Tuned Model
             && cat ${SAVE_DIR}/shorteval_test_squad_inputs_preds_labels.score
 
 
+Inference
+^^^^^^^^^
+
+For running inference on a Mamba model, one should use ``megatron_mamba_eval.py`` script. For example:
+
+.. code:: bash
+
+    #!/bin/bash
+
+    CUDA_VISIBLE_DEVICES="0" torchrun --nproc_per_node=1 /opt/NeMo/examples/nlp/language_modeling/megatron_mamba_eval.py \
+            mamba_model_file=<path to .nemo checkpoint> \
+            inference.greedy=True \
+            inference.add_BOS=True \
+            trainer.devices=1 \
+            trainer.num_nodes=1 \
+            tensor_model_parallel_size=1 \
+            pipeline_model_parallel_size=1 \
+            inference.min_tokens_to_generate=64 \
+            inference.tokens_to_generate=128 \
+            prompts=["Why must not we look directly at the sun during a solar eclipse?"]

@@ -135,10 +135,10 @@ model:
       output_file_path_prefix: null # Prefix of the file to write predictions to.
       truncation_field: "input" # Options: keys in prompt_template
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: "{input} {output}"
+      prompt_template: "{input} {output}" # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       tokens_to_generate: 32 # decide how many tokens we want to generate to evaluate performance with string metrics
       truncation_method: 'right' # Truncation from which position, Options: ['left', 'right']
-      ceil_to_power_2: True
+      ceil_to_power_2: False
       get_attention_mask_from_fusion: True
       pad_to_max_length: True
 

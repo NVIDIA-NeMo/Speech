@@ -466,7 +466,6 @@ def create_neva_model_and_processor(cfg):
     def video_processor(maybe_video_path):
 
         if isinstance(maybe_video_path, str):
-            decord.bridge.set_bridge("torch")
             vr = decord.VideoReader(maybe_video_path)
             if neva_cfg.data.splice_single_frame == 'first':
                 frames = [Image.fromarray(vr[0].asnumpy()).convert('RGB')]
@@ -480,19 +479,23 @@ def create_neva_model_and_processor(cfg):
                 else:
                     num_frames = min(len(vr), neva_cfg.data.num_frames)
                     indices = np.linspace(0, len(vr) - 1, num_frames, dtype=int)
-                    frames = vr.get_batch(indices)
-
+                    frames = [Image.fromarray(vr[i].asnumpy()).convert('RGB') for i in indices]
                     while len(frames) < neva_cfg.data.num_frames:
                         frames.append(frames[-1])
         else:
             frames = maybe_video_path
 
-        if neva_cfg.mm_cfg.vision_encoder.from_hf:
-            processor = CLIPImageProcessor.from_pretrained(
-                neva_cfg.mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
-            )
+        if neva_cfg.mm_cfg.vision_encoder.get("from_hf", False):
+            if (
+                "siglip" in neva_cfg.mm_cfg.vision_encoder.from_pretrained
+                or "siglip" in neva_cfg.mm_cfg.vision_encoder.get("model_type", "")
+            ):
+                processor = SiglipImageProcessor.from_pretrained(neva_cfg.mm_cfg.vision_encoder.from_pretrained)
+            else:
+                # for clip and vit model
+                processor = CLIPImageProcessor.from_pretrained(neva_cfg.mm_cfg.vision_encoder.from_pretrained)
         else:
-            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14", torch_dtype=torch.bfloat16)
+            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
 
         # support single video inference
         if neva_cfg.data.image_aspect_ratio == 'keep':
@@ -518,7 +521,7 @@ def create_neva_model_and_processor(cfg):
                     result.paste(pil_img, ((height - width) // 2, 0))
                     return result
 
-            frames = [expand2square(frame, tuple(int(x * 255) for x in self.processor.image_mean)) for frame in frames]
+            frames = [expand2square(frame, tuple(int(x * 255) for x in processor.image_mean)) for frame in frames]
             frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']
         else:
             frames = processor.preprocess(frames, return_tensors='pt')['pixel_values']
@@ -531,11 +534,17 @@ def create_neva_model_and_processor(cfg):
 
 def create_image_processor(mm_cfg):
     if mm_cfg.vision_encoder.get("from_hf", False):
-        if "clip" in mm_cfg.vision_encoder.from_pretrained:
+        if (
+            "clip" in mm_cfg.vision_encoder.from_pretrained
+            or "vit" in mm_cfg.vision_encoder.from_pretrained
+            or "clip" in mm_cfg.vision_encoder.get("model_type", "")
+        ):
             image_processor = CLIPImageProcessor.from_pretrained(
                 mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
             )
-        elif "siglip" in mm_cfg.vision_encoder.from_pretrained:
+        elif "siglip" in mm_cfg.vision_encoder.from_pretrained or "siglip" in mm_cfg.vision_encoder.get(
+            "model_type", ""
+        ):
             image_processor = SiglipImageProcessor.from_pretrained(
                 mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
             )

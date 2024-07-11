@@ -14,3 +14,4 @@ This repository contains the following resources:
 * [Train And Infer Stable Diffusion Model](./Stable%20Diffusion%20Tutorial.ipynb)
 * [Train DreanBooth Model](./DreamBooth%20Tutorial.ipynb)
 * [Train Neva Model](./NeVA%20Tutorial.ipynb)
+* [LITA Tutorial](./LITA%20Tutorial.ipynb)

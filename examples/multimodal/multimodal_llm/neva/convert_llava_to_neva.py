@@ -13,15 +13,22 @@
 # limitations under the License.
 
 r"""
-Script to convert HuggingFace LLaVA checkpoints into .nemo file.
-  Example to run this conversion script:
-    python convert_hf_llava_to_neva.py \
-     --in-file <path_to_hf_checkpoints_folder> \
-     --out-file <path_to_output_nemo_file> \
-     --tokenizer-model <path_to_sp_tokenizer_model> \
-     --conv-template llama_2 # nvgpt, llama_2, v1 (vicuna)
+Script to convert LLaVA checkpoints into .nemo file.
+This script depend on llava github project: 
+https://github.com/haotian-liu/LLaVA/tree/main
+
+If you want to convert huggingface LLaVA checkpoint such as llava-hf/llava-1.5-7b-hf,
+you should check `NeMo/scripts/checkpoint_converters/convert_llava_hf_to_nemo.py`
+
+Example to run this conversion script:
+  python convert_hf_llava_to_neva.py \
+   --in-file <path_to_hf_checkpoints_folder> \
+   --out-file <path_to_output_nemo_file> \
+   --tokenizer-model <path_to_sp_tokenizer_model> \
+   --conv-template llama_2 # nvgpt, llama_2, v1, llama_3 (vicuna)
 """
 
+import json
 import os
 from argparse import ArgumentParser
 from collections import OrderedDict
@@ -31,6 +38,7 @@ from llava import LlavaLlamaForCausalLM
 from omegaconf import OmegaConf
 from pytorch_lightning.core.saving import _load_state as ptl_load_state
 from pytorch_lightning.trainer.trainer import Trainer
+from safetensors import safe_open
 from transformers import LlamaTokenizer
 
 from nemo.collections.multimodal.models.multimodal_llm.neva.neva_model import MegatronNevaModel
@@ -47,7 +55,11 @@ from nemo.utils import logging
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--in-file", type=str, default=None, required=True, help="Path to Huggingface LLaMA checkpoints",
+        "--in-file",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to LLaVA checkpoints",
     )
     parser.add_argument("--out-file", type=str, default=None, required=True, help="Path to output .nemo file.")
     parser.add_argument(
@@ -61,6 +73,16 @@ def get_args():
         "--tokenizer-model", type=str, default=None, required=False, help="Path to sentencepiece tokenizer model."
     )
     parser.add_argument("--precision", type=str, default="32", help="Model precision")
+    parser.add_argument("--config-file", type=str, default="llava_config.yaml")
+    parser.add_argument(
+        "--mm-projector-ckpt-dir",
+        type=str,
+        default=None,
+        help="Path to multimodal projector checkpoint directory \
+                        This will overlap the projector weights in in-file hf checkpoint",
+    )
+    parser.add_argument("--mm-vision-tower", type=str, default=None)
+    parser.add_argument("--model-type", type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -110,13 +132,32 @@ def load_model(cls, checkpoint, strict, **kwargs):
 
 
 def load_config(args, llava_config):
-    nemo_config = OmegaConf.load(os.path.join(os.path.dirname(__file__), 'conf/llava_config.yaml')).model
+    nemo_config = OmegaConf.load(os.path.join(os.path.dirname(__file__), 'conf', args.config_file)).model
     nemo_config.mm_cfg.mm_mlp_adapter_type = llava_config.get('mm_projector_type', 'linear')
-    nemo_config.mm_cfg.vision_encoder.from_pretrained = llava_config.get(
-        'mm_vision_tower', 'openai/clip-vit-large-patch14'
-    )
-    if '336' in nemo_config.mm_cfg.vision_encoder.from_pretrained:
-        nemo_config.data.image_token_len = 576
+
+    mm_vision_tower = llava_config.get('mm_vision_tower', 'openai/clip-vit-large-patch14')
+
+    if args.mm_vision_tower is not None:
+        mm_vision_tower = args.mm_vision_tower
+
+    nemo_config.mm_cfg.vision_encoder.from_pretrained = mm_vision_tower
+    if args.mm_vision_tower is not None:
+        config_file = os.path.join(args.mm_vision_tower, "config.json")
+        if os.path.exists(config_file):
+            with open(config_file, "r") as f:
+                vision_model_config = json.load(f)
+                nemo_config.mm_cfg.vision_encoder["model_type"] = vision_model_config.get("model_type", 'clip')
+                crop_size = vision_model_config.get("image_size", 224)
+                nemo_config.mm_cfg.vision_encoder.crop_size = [crop_size, crop_size]
+    else:
+        if '336' in mm_vision_tower:
+            nemo_config.data.image_token_len = 576
+            nemo_config.mm_cfg.vision_encoder.crop_size = [336, 336]
+        else:
+            nemo_config.data.image_token_len = 256
+            nemo_config.mm_cfg.vision_encoder.crop_size = [224, 224]
+        nemo_config.mm_cfg.vision_encoder.patch_dim = 14
+
     nemo_config.encoder_seq_length = llava_config['max_position_embeddings']
     nemo_config.num_layers = int(llava_config['num_hidden_layers'])
     nemo_config.hidden_size = llava_config['hidden_size']
@@ -130,16 +171,34 @@ def load_config(args, llava_config):
     nemo_config.use_cpu_initialization = True
     nemo_config.activation = 'fast-swiglu'
     nemo_config.data.conv_template = args.conv_template
-    nemo_config.mm_cfg.model_type = args.conv_template
-    if args.tokenizer_model is None:
-        nemo_config.tokenizer.model = llava_config['tokenizer_model']
+    nemo_config.data.image_aspect_ratio = llava_config.get('image_aspect_ratio', 'square')
+    if args.model_type is None:
+        nemo_config.mm_cfg.model_type = args.conv_template
     else:
-        nemo_config.tokenizer.model = args.tokenizer_model
+        nemo_config.mm_cfg.model_type = args.model_type
+    if args.tokenizer_model is None:
+        if 'tokenizer_model' in llava_config:
+            nemo_config.tokenizer.library = 'sentencepiece'
+            nemo_config.tokenizer.model = llava_config['tokenizer_model']
+        else:
+            # Llama3 uses converted TikToken Tokenizer
+            tokenizer_dict = {'library': 'huggingface', 'type': args.in_file, 'use_fast': True, 'model': None}
+            nemo_config.tokenizer.update(tokenizer_dict)
+    else:
+        # if tokenizer_model is directory
+        if os.path.isdir(args.tokenizer_model):
+            tokenizer_dict = {'library': 'huggingface', 'type': args.tokenizer_model, 'use_fast': True, 'model': None}
+            nemo_config.tokenizer.update(tokenizer_dict)
+        else:
+            nemo_config.tokenizer.library = 'sentencepiece'
+            nemo_config.tokenizer.model = args.tokenizer_model
     if llava_config['rope_scaling'] is not None:
         if llava_config['rope_scaling']['type'] == 'linear':
             nemo_config['seq_len_interpolation_factor'] = llava_config['rope_scaling']['factor']
         else:
             raise ValueError("Only linear rope scaling type is supported now")
+    if llava_config.get('rope_theta', None):
+        nemo_config['rotary_base'] = llava_config['rope_theta']
 
     base = 128
     while llava_config['vocab_size'] % base != 0:
@@ -152,16 +211,15 @@ def load_config(args, llava_config):
 def convert(args):
     logging.info(f"loading checkpoint {args.in_file}")
     model = LlavaLlamaForCausalLM.from_pretrained(args.in_file)
-    tokenizer = LlamaTokenizer.from_pretrained(args.in_file)
     hf_config = vars(model.config)
-    hf_config['tokenizer_model'] = str(tokenizer.vocab_file)
-    print(f"hf_config: {hf_config}")
-    print("named parameters:")
+    if os.path.exists(f'{args.in_file}/tokenizer.model'):
+        tokenizer = LlamaTokenizer.from_pretrained(args.in_file)
+        hf_config['tokenizer_model'] = str(tokenizer.vocab_file)
+
     for name, param in model.named_parameters():
         print(f"- {name}")
 
     nemo_config = load_config(args, hf_config)
-    print(nemo_config)
 
     if args.precision in ["32", "16"]:
         precision = int(float(args.precision))
@@ -179,7 +237,7 @@ def convert(args):
         scaler = None
         if precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=nemo_config.get('native_amp_init_scale', 2 ** 32),
+                init_scale=nemo_config.get('native_amp_init_scale', 2**32),
                 growth_interval=nemo_config.get('native_amp_growth_interval', 1000),
                 hysteresis=nemo_config.get('hysteresis', 2),
             )
@@ -235,10 +293,42 @@ def convert(args):
     for key in model.state_dict():
         if 'mm_projector' in key:
             mm_projection_layer_suffix = key.split('mm_projector')[1]
-            checkpoint['state_dict'][
-                f'{mm_projection_layer_base_name}{mm_projection_layer_suffix}'
-            ] = param_to_weights(model.state_dict()[key])
+            checkpoint['state_dict'][f'{mm_projection_layer_base_name}{mm_projection_layer_suffix}'] = (
+                param_to_weights(model.state_dict()[key])
+            )
 
+    # Replace or add the projection weights
+    proj_ckpt = None
+    if args.mm_projector_ckpt_dir is not None:
+        if os.path.exists(args.mm_projector_ckpt_dir):
+            ckpt_path = os.path.join(args.mm_projector_ckpt_dir, "mm_projector.bin")
+            if os.path.exists(ckpt_path):
+                proj_ckpt = torch.load(ckpt_path)
+            else:
+                ckpt_path = os.path.join(args.mm_projector_ckpt_dir, "model.safetensors")
+                proj_ckpt = {}
+                with safe_open(ckpt_path, framework="pt", device="cuda") as f:
+                    for key in f.keys():
+                        new_key = key.replace("layers.", "mm_projector.")
+                        proj_ckpt[new_key] = f.get_tensor(key)
+        else:
+            raise FileNotFoundError(f"mm_projector_ckpt_dir {args.mm_projector_ckpt_dir} does not exist.")
+        for key in proj_ckpt.keys():
+            if 'mm_projector' in key:
+                mm_projection_layer_suffix = key.split('mm_projector')[1]
+                checkpoint['state_dict'][f'{mm_projection_layer_base_name}{mm_projection_layer_suffix}'] = (
+                    param_to_weights(proj_ckpt[key])
+                )
+
+        proj_conf_file = open(os.path.join(args.mm_projector_ckpt_dir, "config.json"))
+
+        proj_conf = json.load(proj_conf_file)
+        if proj_conf['mm_projector_type'] != nemo_config.mm_cfg.mm_mlp_adapter_type:
+            logging.warning(
+                f"Overriding mm_projector_type from {nemo_config.mm_cfg.mm_mlp_adapter_type} to {proj_conf['mm_projector_type']}"
+            )
+            nemo_config.mm_cfg.mm_mlp_adapter_type = proj_conf['mm_projector_type']
+        proj_conf_file.close()
     embed_weight = model.state_dict()[f'model.embed_tokens.weight']
     if mcore_gpt:
         embed_weights_base_name = f'model.embedding.word_embeddings.weight'

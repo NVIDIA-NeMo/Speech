@@ -179,7 +179,28 @@ jobs:
           rm -f /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/megatron_gpt/falcon-ci-hf/model_weights
-        
+  
+  # L2: Community llava multimodal Checkpoints tests
+  L2_Community_vita_Checkpoints_tests_Llama3:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        export PYTHONPATH=/home/TestData/multimodal/video_neva/LLaVA:$PYTHONPATH
+        CUDA_VISIBLE_DEVICES=0 python examples/multimodal/multimodal_llm/neva/convert_llava_to_neva.py \
+          --in-file /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/llm \
+          --mm-projector-ckpt-dir /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/mm_projector \
+          --mm-vision-tower /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/vision_tower \
+          --tokenizer-model /home/TestData/multimodal/video_neva/vita-tokenizer/ \
+          --config-file vita_config.yaml \
+          --out-file=/home/TestData/multimodal/video_neva/llama3-ci-hf/llama3_ci.nemo \
+          --model-type VITA \
+          --conv-template llama_3
+      AFTER_SCRIPT: |
+        rm -f /home/TestData/multimodal/video_neva/llama3-ci-hf/llama3_ci.nemo
+        rm -rf /home/TestData/multimodal/video_neva/llama3-ci-hf/model_weights
+
   # this test is using a 7B model which is too large for GitHub CI
   # replace the model in this test with a toy model or move the test
   # to the nightly CI
@@ -4535,6 +4556,7 @@ jobs:
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder
       - L2_Community_LLM_Checkpoints_tests_Falcon
+      - L2_Community_vita_Checkpoints_tests_Llama3
       #- OPTIONAL_L2_Community_LLM_Checkpoints_tests_Baichuan2
       - ASR_dev_run_Speech_to_Text
       - ASR_dev_run_Speech_to_Text_WPE_-_CitriNet

@@ -1,0 +1,231 @@
+name: nemo_video_lita_neva
+restore_from_path: null # used when starting from a .nemo file
+
+trainer:
+  devices: 8
+  num_nodes: 1
+  accelerator: gpu
+  precision: bf16
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first.
+  max_steps: 10000  # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10
+  val_check_interval: 100
+  check_val_every_n_epoch: null
+  limit_val_batches: 50
+  limit_test_batches: 500
+  accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
+  gradient_clip_val: 1.0
+  benchmark: False
+  enable_model_summary: False # default PTL callback for this does not support model parallelism, instead we log manually
+
+exp_manager:
+  explicit_log_dir: null
+  exp_dir: null
+  name: nemo_video_neva_lita
+  create_wandb_logger: True
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  resume_from_checkpoint: ${model.resume_from_checkpoint}
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: val_loss
+    save_top_k: 5
+    mode: min
+    always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
+    save_nemo_on_train_end: True # not recommended when training large models on clusters with short time limits
+    filename: 'megatron_clip--{val_loss:.2f}-{step}-{consumed_samples}'
+    model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
+  ema:
+    enable: False
+    decay: 0.9999
+    validate_original_weights: False
+    every_n_steps: 1
+    cpu_offload: False
+
+model:
+  precision: ${trainer.precision}
+
+  # specify micro_batch_size, global_batch_size, and model parallelism
+  # gradient accumulation will be done automatically based on data_parallel_size
+
+  # Batch size guideline for different types of dataset
+  micro_batch_size: 1 # limited by GPU memory
+  global_batch_size: 128 # will use more micro batches to reach global batch size
+
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  context_parallel_size: 1 # kqv model parallelism
+  virtual_pipeline_model_parallel_size: null # interleaved pipeline
+
+  restore_from_path: null # used in fine-tuning
+
+  # Multimodal configs
+  mm_cfg:
+    llm:
+      from_pretrained: null #path to nemo checkpoint
+      freeze: False
+      model_type: vita
+    vision_encoder:
+      from_pretrained: null # path or name
+      model_type: null
+      from_hf: True
+      crop_size: [384, 384]
+      patch_dim: 14
+      hidden_size: 1152 # could be found from model but tricky in code
+      vision_select_layer: -2   # default to the last layer
+      vision_select_feature: 'cls_patch' # default is patch
+      class_token_length: 1
+      freeze: True
+    lita:
+      lita_video_arch: 'temporal_all_resolution' # ['temporal_spatial_pool', 'temporal_spatial', 'temporal_all_resolution']
+      visual_token_format: 'im_vid_start_end'  #  ["v1", "im_vid_start_end"]   v1 means do nothing, im_vid_start_end means add image and video start and end tokens around spatial and temporal tokens
+      sample_frames: 4  # for lita 1.5 sample_frames are used for spatial tokens, and spatial tokens will no longer do pooling and instead, it will use full tokens
+    use_lita: True
+    pretrain_mm_mlp_adapter: null # path to pretrained mm adapter
+    mm_mlp_adapter_type: mlp_downsample  # ['linear', 'mlp2x_gelu', 'mlp_downsample']
+    
+    use_im_start_end: False
+
+
+  # LLM configs
+  # use GPTModel from megatron.core
+  mcore_gpt: True
+
+  # model architecture
+  encoder_seq_length: 8192
+  max_position_embeddings: ${.encoder_seq_length}
+  position_embedding_type: rope
+  num_layers: 32
+  hidden_size: 4096
+  ffn_hidden_size: 14336 # Transformer FFN hidden size. Usually 4 * hidden_size.
+  num_attention_heads: 32
+  init_method_std: 0.014 # Standard deviation of the zero mean normal distribution used for weight initialization.')
+  use_scaled_init_method: True # use scaled residuals initialization
+  hidden_dropout: 0.0 # Dropout probability for hidden state transformer.
+  attention_dropout: 0.0 # Dropout probability for attention
+  ffn_dropout: 0.0 # Dropout probability in the feed-forward layer.
+  kv_channels: null # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null
+  apply_query_key_layer_scaling: True # scale Q * K^T by 1 / layer-number.
+  normalization: 'rmsnorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
+  layernorm_epsilon: 1e-5
+  do_layer_norm_weight_decay: False # True means weight decay on all params
+  make_vocab_size_divisible_by: 16 # Pad the vocab size to be divisible by this value for computation efficiency.
+  pre_process: True # add embedding
+  post_process: True # add pooler
+  persist_layer_norm: True # Use of persistent fused layer norm kernel.
+  bias: False # Whether to use bias terms in all weight matrices.
+  activation: 'fast-swiglu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu', 'fast-geglu', 'fast-swiglu', 'fast-reglu']
+  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
+  transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
+  normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.
+  rotary_percentage: 1.0 # If using position_embedding_type=rope, then the per head dim is multiplied by this.
+  rotary_base: 500000.0 # default is 10000
+  attention_type: 'multihead' # Attention type. Options ['multihead']
+  share_embeddings_and_output_weights: False # Share embedding and output layer weights.
+  overlap_p2p_comm: False # Overlap p2p communication with computes. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
+  batch_p2p_comm: True # Batch consecutive inter-peer send/recv operations. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
+  seq_len_interpolation_factor: null # RoPE Interpolation factor for sequence length. This is used to build long-context models with RoPE ex: https://arxiv.org/abs/2306.15595.
+  num_query_groups: 8 # Number of query groups for group query attention. If None, normal attention is used.
+
+  ## Activation Checkpointing
+  activations_checkpoint_granularity: null # 'selective' or 'full'
+  activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
+  activations_checkpoint_num_layers: null # not used with 'selective'
+  num_micro_batches_with_partial_activation_checkpoints: null
+  activations_checkpoint_layers_per_pipeline: null
+  sequence_parallel: False
+
+  # precision
+  native_amp_init_scale: 4294967296 # 2 ** 32
+  native_amp_growth_interval: 1000
+  hysteresis: 2 # Gradient scale hysteresis
+  fp32_residual_connection: False # Move residual connections to fp32
+  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
+
+  # model fusions
+  masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
+  bias_dropout_add_fusion: False # Use a kernel that fuses the bias addition, dropout and residual connection addition.
+
+  use_cpu_initialization: False # Init weights on the CPU (slow for large models)
+  onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
+  gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism.
+  openai_gelu: False
+  bias_activation_fusion: False
+  megatron_legacy: False
+
+  transformer_engine: True
+  fp8: False # enables fp8 in TransformerLayer forward
+  fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3
+  fp8_hybrid: False # sets fp8_format = recipe.Format.HYBRID
+  fp8_margin: 0 # scaling margin
+  fp8_interval: 1 # scaling update interval
+  fp8_amax_history_len: 1 # Number of steps for which amax history is recorded per tensor
+  fp8_amax_compute_algo: most_recent # 'most_recent' or 'max'. Algorithm for computing amax from history
+  use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
+
+  # Megatron O2-style half-precision
+  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
+  async_grad_allreduce: False
+  grad_allreduce_chunk_size_mb: 125
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce
+
+  # miscellaneous
+  seed: 1234
+  resume_from_checkpoint: null # manually set the checkpoint file to load from
+  apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
+  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+
+  tokenizer:
+    library: 'huggingface'
+    type: /ws/converted_models/tokenizer # set huggingface tokenizer here; And check `LITA Tutorial.ipynb` for how to add time tokens to tokenizer
+    model: null              # set sentencepiece model path here if tokenizer is sentencepiece
+    vocab_file: null
+    merge_file: null
+    delimiter: null # only used for tabular tokenizer
+    sentencepiece_legacy: False # Legacy=True allows you to add special tokens to sentencepiece tokenizers.
+    additional_special_tokens: null # ["<extra_id_0>", "<extra_id_1>", "<extra_id_2>", "<extra_id_3>", "<extra_id_4>", "<extra_id_5>"]
+
+  data:
+    packed_sequence: False
+    num_workers: 8
+    dataloader_type: cyclic
+    data_path: null
+    lazy_preprocess: True
+    is_multimodal: True
+    media_type: video # currently supported: image or video
+    splice_single_frame: null # 'first', 'middle', 'last' will represent video as first / middle / last frame only, all other frames discarded.
+    num_frames: 256 # selects the number of frames to use from the video
+    sep_token_between_frames: False # TODO: allow usage of separator tokens between frames
+    sep_image_conv_front: False
+    image_token_len: 784 # 28x28
+    conv_template: llama_3 # check `nemo/collections/multimodal/data/neva/conversation.py`
+    image_folder: null
+    video_folder: null
+    image_aspect_ratio: 'pad'  # in vila, it's `resize`
+
+  # Nsys profiling options
+  nsys_profile:
+    enabled: False
+    start_step: 10  # Global batch to start profiling
+    end_step: 10 # Global batch to end profiling
+    ranks: [ 0 ] # Global rank IDs to profile
+    gen_shape: False # Generate model and kernel details including input shapes
+
+  optim:
+    name: fused_adam
+    lr: 2e-5
+    weight_decay: 0.
+    betas:
+      - 0.9
+      - 0.95
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 140
+      constant_steps: 0
+      min_lr: 2e-7

@@ -584,6 +584,7 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
             media_type=getattr(self.data_cfg, 'media_type', 'image'),
             num_frames=getattr(self.data_cfg, 'num_frames', 1),
             mm_mlp_adapter_type=getattr(self.cfg.mm_cfg, 'mm_mlp_adapter_type', 'linear'),
+            use_lita=getattr(self.cfg.mm_cfg, 'use_lita', False),
         )
         if self.multimodal_cfg['crop_size'] is None:
             image_processor = CLIPImageProcessor.from_pretrained(
@@ -605,6 +606,21 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
                 width_num_patches += 1
 
         self.num_media_latents = height_num_patches * width_num_patches
+        # add config for lita
+        if self.multimodal_cfg['use_lita']:
+            if self.cfg.mm_cfg.get('lita'):
+                lita = {
+                    'lita_video_arch': getattr(self.cfg.mm_cfg.lita, 'lita_video_arch', 'temporal_spatial_pool'),
+                    'visual_token_format': getattr(self.cfg.mm_cfg.lita, 'visual_token_format', 'v1'),
+                    'sample_frames': getattr(self.cfg.mm_cfg.lita, 'sample_frames', 1),
+                }
+                self.multimodal_cfg['lita'] = lita
+            else:
+                self.multimodal_cfg['use_lita'] = False
+                raise Warning(
+                    'Use lita has been set True but Lita config not found in the config file'
+                    'LITA will be disabled for this run.'
+                )
 
     def clip_max_len(self, maxlen: int) -> int:
         """clip the max len based on the LM model max sequence length"""
@@ -687,6 +703,7 @@ class NevaModelTextGenerationStrategy(TextGenerationStrategy):
             # not using type2use. uncomment it if it is used
             # if type_ids is not None:
             #     types2use = type_ids[:, context_length - 1].view(batch_size, -1)
+            media = None
 
         """Prepare batch for each of the inference steps"""
         attention_mask_repeat = None

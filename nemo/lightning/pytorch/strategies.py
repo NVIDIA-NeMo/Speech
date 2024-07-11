@@ -108,6 +108,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         ckpt_torch_dist_multiproc=None,  ## TODO(ashors): put elsewhere?
         ckpt_assume_constant_structure=False,
         ckpt_parallel_save=True,
+        ckpt_parallel_save_within_dp=False,
         ckpt_parallel_load=False,
         ckpt_parallel_save_optim=True,
         **kwargs,
@@ -139,6 +140,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.torch_dist_multiproc = ckpt_torch_dist_multiproc
         self.assume_constant_structure = ckpt_assume_constant_structure
         self.parallel_save = ckpt_parallel_save
+        self.parallel_save_within_dp = ckpt_parallel_save_within_dp
         self.parallel_load = ckpt_parallel_load
         self.parallel_save_optim = ckpt_parallel_save_optim
 
@@ -566,6 +568,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 torch_dist_multiproc=self.torch_dist_multiproc,
                 assume_constant_structure=self.assume_constant_structure,
                 parallel_save=self.parallel_save,
+                parallel_save_within_dp=self.parallel_save_within_dp,
                 parallel_load=self.parallel_load,
             )
             if async_save:

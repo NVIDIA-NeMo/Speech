@@ -77,6 +77,7 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
         torch_dist_multiproc: Optional[int] = None,
         assume_constant_structure: bool = False,
         parallel_save: bool = True,
+        parallel_save_within_dp: bool = False,
         parallel_load: bool = False,
     ):
         self.save_ckpt_format = save_ckpt_format
@@ -85,6 +86,7 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
         self.torch_dist_multiproc = torch_dist_multiproc
         self.assume_constant_structure = assume_constant_structure
         self.parallel_save = parallel_save
+        self.parallel_save_within_dp = parallel_save_within_dp
         self.parallel_load = parallel_load
 
         self._save_sharded_strategy = None
@@ -216,8 +218,11 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
             save_strategy.use_cached_ckpt_structure = self.assume_constant_structure
 
         if self.parallel_save:
+            parallelization_group = (
+                get_data_parallel_group(with_context_parallel=True) if self.parallel_save_within_dp else None
+            )
             save_strategy = FullyParallelSaveStrategyWrapper(
-                save_strategy, get_data_parallel_group(with_context_parallel=True), self.assume_constant_structure
+                save_strategy, parallelization_group, self.assume_constant_structure
             )
 
         logging.info(f'Using {save_strategy} dist-ckpt save strategy.')

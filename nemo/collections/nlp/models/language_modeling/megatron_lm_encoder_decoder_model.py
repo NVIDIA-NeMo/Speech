@@ -268,7 +268,7 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
         if parallel_state.get_pipeline_model_parallel_world_size() > 1 and self.cfg.encoder.arch == 'perceiver':
             raise ValueError(f"Perceivers with pipeline parallel > 1 is not supported yet.")
 
-        if hasattr(self, 'mcore_t5') and self.mcore_t5:
+        if getattr(self, 'mcore_t5', False):
             assert HAVE_MEGATRON_CORE, "Cannot use MCore T5 since Megatron Core is not found"
             assert self.cfg.get(
                 'share_token_embeddings', True
@@ -797,9 +797,76 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
                 batch = next(dataloader_iter)
             batch = [x.cuda(non_blocking=True) if torch.is_tensor(x) else x for x in batch]
 
-            # map batch and shared args into forward args
-            args = self._build_forward_args_from_kwargs(args_name=arg_names, args=batch, **kwargs)
-            output = model(*args).contiguous()
+            # processing forward args for mcore T5
+            if self.mcore_t5:
+                # when run encoding
+                if output_name == "hiddens":
+                    (
+                        encoder_input_ids,
+                        encoder_attn_mask,
+                    ) = batch
+
+                    # attn mask logic follows megatron.data.t5_dataset.py in Megatron-LM
+                    encoder_attn_mask_3d = build_attention_mask_3d(
+                        encoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
+                    )
+
+                    output = model(
+                        encoder_input_ids=encoder_input_ids,
+                        decoder_input_ids=None,
+                        encoder_attn_mask=encoder_attn_mask_3d,
+                        decoder_attn_mask=None,
+                        encoder_decoder_attn_mask=None,
+                        lm_labels=None,
+                        encoder_hidden_states=None,
+                        output_encoder_hidden_only=True,
+                    ).contiguous()
+
+                # when run decoding
+                elif output_name == "logits":
+                    (
+                        encoder_hidden_states,
+                        encoder_attn_mask,
+                        decoder_input_ids,
+                        decoder_attn_mask,
+                    ) = batch
+
+                    # attn mask logic follows megatron.data.t5_dataset.py in Megatron-LM
+                    encoder_attn_mask_3d = build_attention_mask_3d(
+                        encoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
+                    )
+                    decoder_attn_mask_3d = build_attention_mask_3d(
+                        decoder_attn_mask, decoder_attn_mask, AttnMaskType.causal
+                    )
+                    enc_dec_attn_mask_3d = build_attention_mask_3d(
+                        decoder_attn_mask, encoder_attn_mask, AttnMaskType.padding
+                    )
+
+                    # re-transpose encoder_hidden_states from [batch, seq_len, hidden] to [seq_len, batch, hidden]
+                    encoder_hidden_states = encoder_hidden_states.transpose(1, 0)
+
+                    output = model(
+                        encoder_input_ids=None,
+                        decoder_input_ids=decoder_input_ids,
+                        encoder_attn_mask=encoder_attn_mask_3d,
+                        decoder_attn_mask=decoder_attn_mask_3d,
+                        encoder_decoder_attn_mask=enc_dec_attn_mask_3d,
+                        lm_labels=None,
+                        encoder_hidden_states=encoder_hidden_states,
+                        output_encoder_hidden_only=False,
+                    ).contiguous()
+
+                else:
+                    assert output_name in [
+                        "hiddens",
+                        "logits",
+                    ], "output_name argument must be either 'hiddens' or 'logits'"
+
+            else:
+                # map batch and shared args into forward args
+                args = self._build_forward_args_from_kwargs(args_name=arg_names, args=batch, **kwargs)
+
+                output = model(*args).contiguous()
 
             def id_func(output_tensor):
                 if isinstance(output_tensor, dict):
@@ -1189,8 +1256,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
         # build input arguments description
         if tokens_enc is not None:
-            batch_for_pipeline = [tokens_enc, enc_mask, batch_data]
-            arg_names = ['enc_input_ids', 'enc_attn_mask', 'batch_data']
+            if self.mcore_t5 is True:
+                batch_for_pipeline = [tokens_enc, enc_mask]
+                arg_names = []
+            else:
+                batch_for_pipeline = [tokens_enc, enc_mask, batch_data]
+                arg_names = ['enc_input_ids', 'enc_attn_mask', 'batch_data']
         else:
             if encoder_input is None:
                 raise ValueError("At least one of tokens_enc and encoder_input must be provided with not None value")
@@ -1202,10 +1273,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             batch_for_pipeline.append(encoder_input)
             arg_names.append('enc_input')
 
-        forward_step_func = self._get_forward_output_only_func(
-            arg_names=arg_names, output_name="hiddens", output_enc_hidden_only=True
-        )
-
+        if self.mcore_t5:
+            forward_step_func = self._get_forward_output_only_func(arg_names=arg_names, output_name="hiddens")
+        else:
+            forward_step_func = self._get_forward_output_only_func(
+                arg_names=arg_names, output_name="hiddens", output_enc_hidden_only=True
+            )
         fwd_bwd_func = get_forward_backward_func()
 
         # Counter intuitively, we need to set decoder_sequence_length=encoder_seq_length
@@ -1380,8 +1453,12 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
             dec_mask = predicted_tokens_dec != tokenizer.pad_id
             dec_mask[:, 0] = 1  # Make sure you never mask the first token even if it is <pad>.
 
-            batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask, batch_data]
-            arg_names = ['enc_output', 'enc_output_attn_mask', 'dec_input_ids', 'dec_attn_mask', 'batch_data']
+            if self.mcore_t5:
+                batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask]
+                arg_names = []
+            else:
+                batch_for_pipeline = [enc_output, enc_output_attn_mask, predicted_tokens_dec, dec_mask, batch_data]
+                arg_names = ['enc_output', 'enc_output_attn_mask', 'dec_input_ids', 'dec_attn_mask', 'batch_data']
 
             forward_step_func = self._get_forward_output_only_func(arg_names=arg_names, output_name="logits")
             fwd_bwd_func = get_forward_backward_func()

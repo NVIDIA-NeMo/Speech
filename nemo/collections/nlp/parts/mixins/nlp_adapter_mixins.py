@@ -87,9 +87,11 @@ class NLPAdapterModelMixin:
         self.ptuning_only_and_non_first_stage = False
         super().__init__(*args, **kwargs)
 
-        self.use_mcore_gpt = hasattr(self, 'mcore_gpt') and self.mcore_gpt
-        if self.use_mcore_gpt:
-            assert HAVE_MEGATRON_CORE, "You set `mcore_gpt` as True but megatron core is not found."
+        self.use_mcore_gpt = getattr(self, 'mcore_gpt', False)
+        self.use_mcore_t5 = getattr(self, 'mcore_t5', False)
+
+        if self.use_mcore_gpt or self.use_mcore_t5:
+            assert HAVE_MEGATRON_CORE, "You set `mcore_gpt` or `mcore_t5` as True but megatron core is not found."
 
     def _unwrap_model(self):
         if not hasattr(self, "model"):
@@ -131,6 +133,8 @@ class NLPAdapterModelMixin:
                     mcore_target,
                     f'model.{mcore_target}',
                     f'model.module.{mcore_target}',
+                    f'enc_dec_model.{mcore_target}',
+                    f'enc_dec_model.module.{mcore_target}',
                 ]:  # simple string match for now
                     if not isinstance(module, IdentityOp):
                         swap_mcore_mixin(module, mcore_mixin)
@@ -156,6 +160,11 @@ class NLPAdapterModelMixin:
                 layers = model.module.decoder.layers
             else:
                 layers = model.decoder.layers
+        elif self.use_mcore_t5:
+            if self.cfg.megatron_amp_O2:
+                layers = model.module.encoder.layers + model.module.decoder.layers
+            else:
+                layers = model.encoder.layers + model.decoder.layers
         else:
             if self.cfg.megatron_amp_O2:
                 layers = model.module.language_model.encoder.layers
@@ -169,12 +178,14 @@ class NLPAdapterModelMixin:
         assert not self.use_mcore_gpt or hasattr(
             peft_cfg, 'name_key_to_mcore_mixins'
         ), f"{peft_cfg.__class__.__name__} is not supported in megatron core mode yet."
-        name_key_to_mcore_mixins = peft_cfg.name_key_to_mcore_mixins if self.use_mcore_gpt else None
+        name_key_to_mcore_mixins = (
+            peft_cfg.name_key_to_mcore_mixins if (self.use_mcore_gpt or self.use_mcore_t5) else None
+        )
 
         for adapter_name, adapter_cfg in peft_cfg.get_config_dict().items():
-            # self.mcore_gpt means is GPT and not T5
+            # mixin for mcore models
             if (
-                hasattr(self, 'mcore_gpt')
+                (hasattr(self, 'mcore_gpt') or getattr(self, 'mcore_t5', False))
                 and not isinstance(adapter_cfg, PromptEncoderAdapterConfig)
                 and not isinstance(adapter_cfg, MLPHeadAdapterConfig)
             ):
@@ -431,8 +442,8 @@ class NLPAdapterModelMixin:
             return super().state_dict()
 
     def sharded_state_dict(self, prefix: str = ''):
-        use_mcore_gpt = hasattr(self, 'mcore_gpt') and self.mcore_gpt
-        if not use_mcore_gpt or (self.use_peft and self.setup_complete):
+        use_mcore = (getattr(self, 'mcore_gpt', False)) or (getattr(self, 'mcore_t5', False))
+        if not use_mcore or (self.use_peft and self.setup_complete):
             return None
         else:
             return super().sharded_state_dict(prefix=prefix)
@@ -460,7 +471,8 @@ class NLPAdapterModelMixin:
             if not self.ptuning_only_and_non_first_stage:
                 # same as super().on_load_checkpoint() but strict=False and only check unexpected keys
                 # mcore uses distributed checkpointing
-                if hasattr(self, 'mcore_gpt') and self.mcore_gpt:
+                use_mcore = (getattr(self, 'mcore_gpt', False)) or (getattr(self, 'mcore_t5', False))
+                if use_mcore:
                     for index, module in enumerate(self.get_model_module_list()):
                         if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
                             checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']

@@ -17,7 +17,7 @@ import shutil
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from time import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import pytorch_lightning as pl
 from lightning_fabric.plugins import CheckpointIO
@@ -44,6 +44,7 @@ try:
         FullyParallelSaveStrategyWrapper,
     )
     from megatron.core.dist_checkpointing.strategies.torch import TorchDistSaveShardedStrategy
+    from megatron.core.dist_checkpointing.validation import StrictHandling
     from megatron.core.parallel_state import get_data_parallel_group
 
     HAVE_MEGATRON_CORE = True
@@ -188,6 +189,9 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         load_directly_on_device (bool, optional): if True, loads the weights directly
             on GPU. Has effect only for `zarr` based checkpoints (PyT Distributed
             always loads on device). Defaults to True.
+        load_strictness (StrictHandling, optional): defines loading strictness.
+            If not None, overwrites the `strict` flag passed to `load_checkpoint`.
+            Defaults to None.
         async_save (bool): whether to save asynchronously. Should be set to True if
             this class will be wrapped with AsyncFinalizableCheckpointIO.
         torch_dist_multiproc (int, optional): number of extra processes per rank
@@ -202,6 +206,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         self,
         save_ckpt_format: str,
         load_directly_on_device: bool = True,
+        load_strictness: Optional['StrictHandling'] = None,
         async_save: bool = False,
         torch_dist_multiproc: Optional[int] = None,
         assume_constant_structure: bool = False,
@@ -215,6 +220,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
 
         self.save_ckpt_format = save_ckpt_format
         self.load_directly_on_device = load_directly_on_device
+        self.load_strictness = load_strictness
         self.async_save = async_save
         self.torch_dist_multiproc = torch_dist_multiproc
         self.assume_constant_structure = assume_constant_structure
@@ -238,6 +244,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         return cls(
             save_ckpt_format=model_cfg.get('dist_ckpt_format', 'zarr'),
             load_directly_on_device=model_cfg.get('dist_ckpt_load_on_device', True),
+            load_strictness=model_cfg.get('dist_ckpt_load_strictness', None),
             async_save=async_save,
             torch_dist_multiproc=model_cfg.get('dist_ckpt_torch_dist_multiproc', None),
             parallel_save=model_cfg.get('dist_ckpt_parallel_save', False),
@@ -275,7 +282,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         path: _PATH,
         map_location: Optional[Any] = None,
         sharded_state_dict: Dict[str, Any] = None,
-        strict: Optional[bool] = True,
+        strict: Union[None, bool, 'StrictHandling'] = None,
         validate_access_integrity: Optional[bool] = True,
     ) -> Dict[str, Any]:
         """Loads a distributed checkpoint.
@@ -287,6 +294,10 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
                 defines the loading procedure for the distributed checkpoint.
                 Defaults to None to comply with the CheckpointIO interface,
                 but it's a required argument.
+            strict (bool, StrictHandling, optional): adjust load strictness. bool value
+                is translated to StrictHandling instance. Gets overwritten by
+                `self.load_strictness`. Defaults to None. If `self.load_strictness`
+                is also None, strict becomes StrictHandling.ASSUME_OK_UNEXPECTED.
 
         Returns:
             Dist[str, Any]: loaded checkpoint.
@@ -311,39 +322,22 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         if sharded_strategy is not None:
             logging.info(f'Using {sharded_strategy} dist-ckpt load strategy.')
 
-        if not strict:
-            sharded_state_dict = self.adjust_non_strict_load(path, sharded_state_dict)
+        if isinstance(strict, bool):
+            strict = StrictHandling.ASSUME_OK_UNEXPECTED if strict else StrictHandling.LOG_ALL
+        if self.load_strictness is not None:
+            # Overwrites function argument
+            strict = self.load_strictness
+        if strict is None:
+            # Default behavior
+            strict = StrictHandling.ASSUME_OK_UNEXPECTED
 
         return dist_checkpointing.load(
             sharded_state_dict=sharded_state_dict,
             checkpoint_dir=path,
             sharded_strategy=sharded_strategy,
             validate_access_integrity=validate_access_integrity,
+            strict=strict,
         )
-
-    def adjust_non_strict_load(self, path: _PATH, sharded_state_dict: Dict[str, Any]):
-        ckpt_sharded_metadata = dist_checkpointing.load_tensors_metadata(path)
-        loaded_keys = []
-        missing_keys = []
-        unexpected_keys = []
-
-        def should_remove_missing_sharded_base(x: Any):
-            if isinstance(x, ShardedBase):
-                if x.key in ckpt_sharded_metadata:
-                    loaded_keys.append(x.key)
-                    return False
-                else:
-                    unexpected_keys.append(x.key)
-                    return True
-            return False
-
-        _, sharded_state_dict = extract_matching_values(sharded_state_dict, should_remove_missing_sharded_base)
-        logging.info(f'The following keys are not in the checkpoint and will not be loaded: {unexpected_keys}')
-
-        # TODO: compute missing_keys by:
-        #  1. all_gather_object of loaded_keys
-        #  2. missing_keys = ckpt_sharded_metadata.keys() - loaded_keys
-        return sharded_state_dict
 
     @_debug_time('DistributedCheckpointIO.remove_checkpoint')
     def remove_checkpoint(self, path: _PATH) -> None:

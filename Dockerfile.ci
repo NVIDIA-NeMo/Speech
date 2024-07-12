@@ -34,7 +34,7 @@ WORKDIR /workspace
 # Install NeMo requirements
 ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
 ARG MODELOPT_VERSION=0.13.0
-ARG MCORE_TAG=de1b7c223303f6ba21e0540f27361334116efcbc
+ARG MCORE_TAG=c0164bcfd4f8213a10a6b1e47ef80721a68b4fb6
 ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
 RUN \
 --mount=type=bind,source=requirements,target=requirements \
@@ -69,14 +69,14 @@ git clone https://github.com/state-spaces/mamba.git && \
   git checkout v2.0.3 && \
   python setup.py install && \
   cd .. && \
-  rm -rf mamba 
+  rm -rf mamba
 
 git clone https://github.com/Dao-AILab/causal-conv1d && \
   cd causal-conv1d && \
   git checkout v1.2.2.post1 && \
   python setup.py install && \
   cd .. && \
-  rm -rf causal-conv1d 
+  rm -rf causal-conv1d
 
 EOF
 

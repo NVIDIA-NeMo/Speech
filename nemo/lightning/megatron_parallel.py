@@ -25,9 +25,11 @@ from typing import (
 
 import torch
 import torch.distributed
+from megatron.core import parallel_state
 from megatron.core.distributed import DistributedDataParallel as McoreDDP
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.transformer.transformer_config import TransformerConfig
+from pytorch_lightning.utilities import move_data_to_device
 from torch import Tensor, nn
 from typing_extensions import override
 
@@ -43,15 +45,35 @@ class PrecisionPluginProtocol(Protocol[DataT]):
 
 
 def default_data_step(dataloader_iter: Iterator[DataT]) -> DataT:
+    """
+    Moves the data to a device.
+
+    In this case we unpack the dataloader iterator. There may be a wrapper on the dataloader
+    iter from here: https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/fabric/strategies.py#L441.
+
+    This will not subset the data for your with context parallel so please override this function if you
+    want to use context parallel.
+
+    Examples:
+        If the dataloader_iter returns: [Tuple[<tensor>, <int>, <int>]] -> move to device
+        If the dataloader_iter returns: [<tensor>, <tensor>] -> move to device
+
+    Returns:
+        DataT: The data moved to the device.
+    """
+    if parallel_state.get_context_parallel_world_size() > 1:
+        raise ValueError(
+            "Default data step is being used in a context parallel environment."
+            "Please define your own data step that appropriately slices the data for context parallel."
+        )
+
     batch = next(dataloader_iter)
 
+    # If its wrapped in a tuple, unpack it.
     if isinstance(batch, tuple) and len(batch) == 3:
         batch = batch[0]
 
-    if isinstance(batch, dict):
-        batch = {k: v.cuda(non_blocking=True) for k, v in batch.items()}
-
-    return batch
+    return move_data_to_device(batch, torch.cuda.current_device())
 
 
 def default_forward_step(model: nn.Module, batch, *args, **kwargs) -> torch.Tensor:

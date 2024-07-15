@@ -139,7 +139,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         from nemo.lightning import MegatronStrategy, Trainer
 
         _trainer = trainer or Trainer(
-            devices=1, accelerator="cpu", strategy=MegatronStrategy(store_optimizer_states=False, ddp="pytorch")
+            devices=1, accelerator="cpu", strategy=MegatronStrategy(store_optimizer_states=False)
         )
 
         _trainer.strategy.connect(model)
@@ -161,6 +161,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
             trainer (pl.Trainer): The trainer with the strategy to save the model.
         """
         trainer.strategy._setup_optimizers = False
+        trainer.strategy._init_model_parallel = False
         trainer.strategy.setup(trainer)
         trainer.save_checkpoint(output_path)
 

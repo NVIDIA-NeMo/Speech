@@ -7,6 +7,7 @@ import pytorch_lightning as pl
 import torch.nn as nn
 from lightning_fabric.utilities.types import _PATH
 from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
+from pytorch_lightning.trainer.states import TrainerFn
 from typing_extensions import override
 
 from nemo.lightning.io.pl import ckpt_to_dir
@@ -102,13 +103,26 @@ class PEFT(ABC, ModelTransform):
             logging.info("Initializing model parallel")
             trainer.strategy.init_model_parallel()
 
-        logging.info("Setting up optimizers")
-        trainer.strategy.setup_optimizers(trainer)
+        if trainer.state.fn == TrainerFn.FITTING:
+            logging.info("Setting up optimizers")
+            trainer.strategy.setup_optimizers(trainer)
 
-    def on_load_checkpoint(
+    def on_save_checkpoint(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: Dict[str, Any]
     ) -> None:
-        pl_module.strict_loading = False
+        # Filter out non-trainable parameters
+        trainable_params = set(name for name, param in pl_module.named_parameters() if param.requires_grad)
+        filtered_state_dict = {}
+        for name, value in checkpoint['state_dict'].items():
+            if name in trainable_params:
+                filtered_state_dict[name] = value
+            elif self.adapter_key_filter(name):  # Include all adapter-related parameters
+                filtered_state_dict[name] = value
+
+        checkpoint['state_dict'] = filtered_state_dict
+
+    def adapter_key_filter(self, key: str) -> bool:
+        return ".adapter." in key or key.endswith(".adapters")
 
 
 class AdapterWrapper(nn.Module):
@@ -231,9 +245,6 @@ class WrappedAdapterIO(_WrappingCheckpointIO):
     @override
     def save_checkpoint(self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None) -> None:
         assert self.checkpoint_io is not None
-
-        key = "sharded_state_dict" if "sharded_state_dict" in checkpoint else "state_dict"
-        checkpoint[key] = dict(filter(lambda x: ".adapter." in x[0], checkpoint[key].items()))
 
         self.checkpoint_io.save_checkpoint(checkpoint, path, storage_options=storage_options)
 

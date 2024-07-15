@@ -794,6 +794,9 @@ def generate(
     if random_seed is not None:
         seed_everything(random_seed)
 
+    if hasattr(model, 'get_attention_mask_from_fusion') and model.get_attention_mask_from_fusion:
+        compute_attention_mask = False
+
     output = synced_generate(
         model,
         inference_strategy,

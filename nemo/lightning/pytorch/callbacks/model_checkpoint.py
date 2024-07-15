@@ -17,7 +17,7 @@ import re
 import shutil
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import pytorch_lightning
 import torch
@@ -30,7 +30,6 @@ from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.io.pl import TrainerContext
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
-from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.model_utils import ckpt_to_dir
 
 
@@ -401,6 +400,8 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
             finalize_fn = self._get_finalize_save_checkpoint_callback(trainer, filepath, trainer.global_step)
             if self.async_save:
                 checkpoint_io = trainer.strategy.checkpoint_io
+                from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
+
                 if not isinstance(checkpoint_io, AsyncFinalizableCheckpointIO):
                     raise ValueError('Async save requires async compatible CheckpointIO')
                 storage_options = dict(finalize_fn=finalize_fn)

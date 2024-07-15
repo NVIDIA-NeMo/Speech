@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Generic, Optional, TypeVar, Union
 
 import pytorch_lightning as pl
 import torch
+from lightning_fabric.plugins import CheckpointIO
 from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
 from lightning_fabric.utilities.cloud_io import get_filesystem
 from lightning_fabric.utilities.types import _PATH
@@ -12,10 +13,6 @@ from megatron.core.dist_checkpointing.serialization import (
     get_default_load_sharded_strategy,
     get_default_save_sharded_strategy,
 )
-
-# from nemo.utils.callbacks.torch_dist_async import TorchDistAsyncSaveShardedStrategy
-from megatron.core.dist_checkpointing.strategies import tensorstore
-from megatron.core.dist_checkpointing.strategies.async_utils import AsyncCallsQueue, AsyncRequest
 from megatron.core.dist_checkpointing.strategies.base import SaveShardedStrategy
 from megatron.core.dist_checkpointing.strategies.fully_parallel import (
     FullyParallelLoadStrategyWrapper,
@@ -28,7 +25,12 @@ from typing_extensions import Self, override
 
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.mixin import IOMixin
-from nemo.utils.callbacks.dist_ckpt_io import AsyncCompatibleCheckpointIO
+
+try:
+    from nemo.utils.callbacks.dist_ckpt_io import AsyncCompatibleCheckpointIO
+except ImportError:
+    AsyncCompatibleCheckpointIO = CheckpointIO
+
 
 log = logging.getLogger(__name__)
 
@@ -163,7 +165,9 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
             raise ValueError(f"Distributed checkpoints should be a directory. Found: {path}.")
 
         if self.save_ckpt_format == 'zarr' and self.load_directly_on_device:
-            sharded_strategy = tensorstore.TensorStoreLoadShardedStrategy(load_directly_on_device=True)
+            from megatron.core.dist_checkpointing.strategies.tensorstore import TensorStoreLoadShardedStrategy
+
+            sharded_strategy = TensorStoreLoadShardedStrategy(load_directly_on_device=True)
         else:
             sharded_strategy = None
 

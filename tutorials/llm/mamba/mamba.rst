@@ -28,9 +28,7 @@ In order to proceed, ensure that you have met the following requirements:
 
 * A Docker-enabled environment, with `NVIDIA Container Runtime <https://developer.nvidia.com/container-runtime>`_ installed, which will make the container GPU-aware.
 
-
-* `Authenticate with NVIDIA NGC <https://docs.nvidia.com/nim/large-language-models/latest/getting-started.html#ngc-authentication>`_, and download `NGC CLI Tool <https://docs.nvidia.com/nim/large-language-models/latest/getting-started.html#ngc-cli-tool>`_.
-
+* `Authenticate with NVIDIA NGC <https://docs.nvidia.com/nim/large-language-models/latest/getting-started.html#ngc-authentication>`_, generate API KEY from `NGC <https://org.ngc.nvidia.com/setup >`__, add the key to your credentials following instructions in `this guide <https://docs.nvidia.com/launchpad/ai/base-command-coe/latest/bc-coe-docker-basics-step-02.html>`__, and get into NVIDIA NeMo dev container ``nvcr.io/nvidia/nemo:dev``.
 
 Step-by-step Guide for Fine-Tuning 
 ----------------------------------

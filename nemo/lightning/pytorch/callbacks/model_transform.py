@@ -65,7 +65,10 @@ class ModelTransform(pl.Callback, IOMixin):
 
     def _maybe_apply_transform(self, trainer):
         if self._needs_to_call:
-            self.model_transform(trainer.model)
+            self.apply_transform(trainer)
+
+    def apply_transform(self, trainer):
+        self.model_transform(trainer.model)
 
     @property
     def _needs_to_call(self) -> bool:

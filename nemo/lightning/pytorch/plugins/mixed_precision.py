@@ -61,7 +61,6 @@ class MegatronMixedPrecision(MixedPrecision):
         This is optional and depends on the precision limitations during optimization.
 
         """
-        from megatron.core.distributed import DistributedDataParallel
         from megatron.core.transformer.module import Float16Module
         from megatron.core.utils import get_model_config
 
@@ -69,7 +68,10 @@ class MegatronMixedPrecision(MixedPrecision):
             config = get_model_config(module.module)
             config.fp16 = self.precision == "16-mixed"
             config.bf16 = self.precision == "bf16-mixed"
-            if not isinstance(module.module, Float16Module):
+            if isinstance(module.module, Float16Module):
+                new_float16_module = Float16Module(config, module.module.module)
+                module.module = new_float16_module
+            else:
                 module.module = Float16Module(config, module.module)
 
         return module

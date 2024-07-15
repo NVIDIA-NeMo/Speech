@@ -445,7 +445,6 @@ class CosineAnnealingScheduler(LRSchedulerModule):
 
         return {
             "optimizer": optimizer,
-            "scheduler": lr_scheduler,
             "lr_scheduler": {
                 # REQUIRED: The scheduler instance
                 "scheduler": lr_scheduler,

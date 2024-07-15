@@ -279,7 +279,7 @@ def _setup(
     model_transform: Optional[Union[PEFT, ModelTransform, Callable]],
 ) -> Any:  # Return type is Any because app_state's type is not specified
     _log = log or NeMoLogger()
-    if resume and resume.adapter_path and _log.ckpt:
+    if resume and isinstance(model_transform, PEFT) and _log.ckpt:
         logging.info("Disabling try_restore_best_ckpt restoration for adapters")
         _log.ckpt.try_restore_best_ckpt = False
 

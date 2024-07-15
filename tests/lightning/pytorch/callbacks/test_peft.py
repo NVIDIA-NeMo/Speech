@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import torch.nn as nn
 from nemo.collections.llm import fn
@@ -54,8 +54,22 @@ class TestPEFT:
         peft.wrapped_io.load_checkpoint.return_value = {"dummy_state": "dummy_value"}
         peft.on_train_epoch_start(trainer, pl_module)
 
-        mock_logging.info.assert_called_once_with("Loading adapters from dummy_path")
+        # Check for all expected log messages
+        mock_logging.info.assert_has_calls(
+            [
+                call("Loading adapters from dummy_path"),
+                call("Initializing model parallel"),
+                call("Setting up optimizers"),
+            ],
+            any_order=True,
+        )
+
+        # Verify the number of calls
+        assert mock_logging.info.call_count == 3
+
         trainer.strategy.load_model_state_dict.assert_called_once_with({"dummy_state": "dummy_value"}, strict=False)
+        trainer.strategy.init_model_parallel.assert_called_once()
+        trainer.strategy.setup_optimizers.assert_called_once_with(trainer)
 
     def test_peft_on_load_checkpoint(self):
         peft = self.DummyPEFT()

@@ -2,6 +2,7 @@ from torch import nn
 from typing_extensions import Self
 
 from nemo.collections.llm.fn import base as fn
+from nemo.utils import logging
 
 
 class FNMixin:
@@ -114,8 +115,12 @@ class FNMixin:
         """
         assert isinstance(self, nn.Module), "self is not a nn.Module"
 
-        for param in self.parameters():
-            param.requires_grad = False
+        params = list(self.parameters())
+        if not params:
+            logging.info(f"No parameters found in module {self.__class__.__name__}")
+        else:
+            for param in params:
+                param.requires_grad = False
 
     def unfreeze(self) -> None:
         """
@@ -124,5 +129,9 @@ class FNMixin:
         """
         assert isinstance(self, nn.Module), "self is not a nn.Module"
 
-        for param in self.parameters():
-            param.requires_grad = True
+        params = list(self.parameters())
+        if not params:
+            logging.info(f"No parameters found in module {self.__class__.__name__}")
+        else:
+            for param in params:
+                param.requires_grad = True

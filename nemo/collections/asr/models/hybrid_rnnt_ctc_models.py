@@ -157,7 +157,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         super()._transcribe_on_end(trcfg)
 
         if hasattr(self, 'ctc_decoder'):
-            self.ctc_decoder.unfreeze()
+            self.ctc_decoder.unfreeze(partial=True)
 
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         if self.cur_decoder == "rnnt":

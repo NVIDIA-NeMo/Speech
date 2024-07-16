@@ -770,13 +770,13 @@ class ASRTranscriptionMixin(TranscriptionMixin):
 
         # Unfreeze the encoder and decoder modules
         if hasattr(self, 'encoder'):
-            self.encoder.unfreeze()
+            self.encoder.unfreeze(partial=True)
 
         if hasattr(self, 'decoder'):
-            self.decoder.unfreeze()
+            self.decoder.unfreeze(partial=True)
 
         if hasattr(self, 'joint'):
-            self.joint.unfreeze()
+            self.joint.unfreeze(partial=True)
 
     @classmethod
     def get_transcribe_config(cls) -> TranscribeConfig:

@@ -25,6 +25,9 @@ class BaseModalityType:
     def matches(value: Any) -> bool:
         raise NotImplementedError
 
+    def __repr__(self):
+        return f"Modality.{self.__class__.__name__}()"
+
 
 class Text(BaseModalityType):
     """Modality for text values."""
@@ -42,7 +45,7 @@ class TextLiteral(BaseModalityType):
         return isinstance(value, str) and value in self.allowed_values
 
     def __repr__(self):
-        return f"{self.__class__.__name__}({self.allowed_values})"
+        return f"Modality.{self.__class__.__name__}(allowed_values={self.allowed_values})"
 
 
 class Modality:

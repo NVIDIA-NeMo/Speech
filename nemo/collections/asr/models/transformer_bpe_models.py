@@ -633,4 +633,4 @@ class EncDecTransfModelBPE(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRTran
         super()._transcribe_on_end(trcfg)
 
         # Unfreeze the encoder and decoder modules
-        self.transf_decoder.unfreeze()
+        self.transf_decoder.unfreeze(partial=True)

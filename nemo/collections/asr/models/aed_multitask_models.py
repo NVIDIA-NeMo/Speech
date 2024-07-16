@@ -434,7 +434,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         prompt_cls = PromptFormatter.resolve(self.prompt_format)
         self.prompt = prompt_cls(
             tokenizer=self.tokenizer,
-            defaults=OmegaConf.to_container(pd) if (pd := self.cfg.prompt_defaults) is not None else None,
+            defaults=OmegaConf.to_container(pd) if (pd := self.cfg.get('prompt_defaults')) is not None else None,
         )
 
         # Update config
@@ -979,7 +979,7 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
         """
         super()._transcribe_on_end(trcfg)
 
-        self.transf_decoder.unfreeze()
+        self.transf_decoder.unfreeze(partial=True)
 
     def _may_be_make_dict_and_fix_paths(self, json_items, manifest_path, trcfg: MultiTaskTranscriptionConfig):
         """

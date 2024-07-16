@@ -665,20 +665,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
 
     """ Transcription related methods """
 
-    def _transcribe_on_begin(self, audio, trcfg: TranscribeConfig):
-        super()._transcribe_on_begin(audio, trcfg)
-
-        # Freeze the encoder and decoder modules
-        self.encoder.freeze()
-        self.decoder.freeze()
-
-    def _transcribe_on_end(self, trcfg: TranscribeConfig):
-        super()._transcribe_on_end(trcfg)
-
-        # Unfreeze the encoder and decoder modules
-        self.encoder.unfreeze()
-        self.decoder.unfreeze()
-
     def _transcribe_forward(self, batch: Any, trcfg: TranscribeConfig):
         logits, logits_len, greedy_predictions = self.forward(input_signal=batch[0], input_signal_length=batch[1])
         output = dict(logits=logits, logits_len=logits_len)

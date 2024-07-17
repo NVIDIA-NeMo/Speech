@@ -1,0 +1,58 @@
+# Regularly updates the CI container
+name: MCore Tag Bump Bot
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: 0 0 * * *
+
+jobs:
+  main:
+    runs-on: ubuntu-latest
+    environment: main
+    steps:
+      - name: Checkout NVIDIA/Megatron-LM
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA/Megatron-LM
+          ref: main
+          path: ${{ github.run_id }}
+
+      - name: Get latest mcore commit
+        id: ref
+        run: |
+          cd ${{ github.run_id }}      
+          sha=$(git rev-parse origin/main)
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date +%F)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+          token: ${{ secrets.PAT }}
+
+      - name: Bump MCORE_TAG
+        run: |
+          cd ${{ github.run_id }}     
+          sed -i 's/^ARG MCORE_TAG=.*$/ARG MCORE_TAG=${{ steps.ref.outputs.sha }}/' Dockerfile.ci
+
+      - name: Create Bump PR
+        uses: peter-evans/create-pull-request@v6
+        id: create-pull-request
+        with:
+          path: ${{ github.run_id }}
+          branch: bump-ci-container-${{ steps.ref.outputs.date }}
+          base: main
+          title: 'Bump `Dockerfile.ci` (${{ steps.ref.outputs.date }})'
+          body: |
+            🚀 PR to Bump `Dockerfile.ci`.  
+
+            📝 Please remember the following to-do's before merge: 
+            - [ ] Verify the presubmit CI  
+
+            🙏 Please merge this PR only if the CI workflow completed successfully.
+          commit-message: "[🤠]: Howdy folks, let's bump `Dockerfile.ci` to ${{ steps.ref.outputs.short_sha }} !"
+          signoff: true
+          reviewers: 'ko3n1g,pablo-garay'
+          labels: 'Run CICD'

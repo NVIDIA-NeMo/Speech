@@ -55,5 +55,5 @@ jobs:
             🙏 Please merge this PR only if the CI workflow completed successfully.
           commit-message: "[🤠]: Howdy folks, let's bump `Dockerfile.ci` to ${{ steps.ref.outputs.short_sha }} !"
           signoff: true
-          reviewers: 'ko3n1g,pablo-garay'
+          reviewers: 'pablo-garay'
           labels: 'Run CICD'

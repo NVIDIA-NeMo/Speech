@@ -5,7 +5,9 @@ in codegen, graphviz, and other debugging functions.
 """
 
 import types
+from functools import partial
 
+import fiddle as fdl
 import libcst as cst
 import torch
 import torch.nn as nn
@@ -110,6 +112,8 @@ def enable():
     def _modified_serialize(self, value, current_path, all_paths=None):
         if isinstance(value, types.BuiltinFunctionType):
             return self._pyref(value, current_path)
+        if isinstance(value, partial):
+            value = fdl.Partial(value.func, *value.args, **value.keywords)
         return self._original_serialize(value, current_path, all_paths)
 
     serialization.Serialization._original_serialize = serialization.Serialization._serialize

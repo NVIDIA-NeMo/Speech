@@ -1,0 +1,179 @@
+name: "NeMo Code release"
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs: 
+  main:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/release-please') &&
+      contains(fromJSON('["ko3n1g"]'), github.actor)
+    runs-on: ubuntu-latest
+    environment: 
+      name: main
+    steps:  
+      - name: Update PR issue comment
+        shell: bash
+        env:
+          message: ${{ github.event.comment.body }}
+        run: |
+          message="$message
+
+          ---
+
+          Releasebot 🤖: Release processes started...
+          "
+          message="${message//$'\n'/<br>}"
+
+          curl -L \
+            -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }} \
+            -d '{"body":"'"$message"'"}'
+
+      - name: Get PR number
+        shell: bash
+        id: get-pr-num
+        run: |
+          PR_URL="${{ github.event.issue.pull_request.url }}"
+          PR_NUM=${PR_URL##*/}
+          echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+
+      - name: Get Pull Request Information
+        uses: actions/github-script@v6
+        id: get-pr-branch
+        with:
+          result-encoding: string
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ steps.get-pr-num.outputs.pr_number }}
+            });
+            console.log('Pull Request Information:', pr.data);
+            return pr.data.head.ref;
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+          ref: ${{ steps.get-pr-branch.outputs.result }}
+
+      - name: Get version number
+        id: version-number
+        run: |
+          cd ${{ github.run_id }}
+          VERSION=$(python -c "import nemo; print(nemo.__version__)")
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog
+        id: extract-changelog
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ steps.get-pr-num.outputs.pr_number }}
+          body-includes: '# Detailed Changelogs'
+      
+      - name: Extract summary
+        id: extract-summary
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ steps.get-pr-num.outputs.pr_number }}
+          body-includes: '# Highlights'
+        
+      - name: Create Release doc
+        id: create-release-doc
+        env:
+          SUMMARY: ${{ steps.extract-summary.outputs.comment-body }}
+          CHANGELOG: ${{ steps.extract-changelog.outputs.comment-body }}
+        run: |
+          
+          echo "TITLE<<EOF" >> $GITHUB_ENV
+          echo "NVIDIA Neural Modules ${{ steps.version-number.outputs.VERSION }}" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          echo "BODY<<EOF" >> $GITHUB_ENV
+          echo "$SUMMARY" >> $GITHUB_ENV
+          echo "$CHANGELOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.TITLE }}
+          tag_name: ${{ steps.version-number.outputs.VERSION }}
+          body: ${{ env.BODY }}
+      
+      - name: Build, test, and release wheel
+        env:
+          TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
+          TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
+        run: |
+          cd ${{ github.run_id }}
+          python3 -m pip install --upgrade build
+          python3 -m build
+
+          pip install dist/*.whl
+
+          cd ../
+
+          INSTALLED_VERSION=$(python -c 'import nemo; print(nemo.__version__)')
+          EXPECTED_VERSION=${{ steps.version-number.outputs.VERSION }}
+          
+          if [[ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
+            echo 'Wheel has an outdated version, mission abort immediately!'
+            exit 1
+          fi
+
+          echo Proceed with uploading wheel...
+          cd ${{ github.run_id }}
+          python3 -m pip install --upgrade twine
+          python3 -m twine upload --repository pypi dist/*
+
+      - name: Update PR issue comment
+        shell: bash
+        env:
+          message: ${{ github.event.comment.body }}
+        run: |
+          message="$message
+
+          ---
+
+          Releasebot 🤖: Release done 🎉
+          "
+          message="${message//$'\n'/<br>}"
+
+          curl -L \
+            -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }} \
+            -d '{"body":"'"$message"'"}'
+
+      - name: Close Pull
+        run: |
+          cd ${{ github.run_id }}
+          gh pr close --comment "Releasebot 🤖: Closing PR" "${{ steps.get-pr-num.outputs.pr_number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: notify
+        run: |
+          MESSAGE='{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "Releasebot 🤖: NeMo Toolkit released `${{ steps.version-number.outputs.VERSION }}` 🚀"
+                }
+              }
+            ]
+          }'
+
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_RELEASE_ENDPOINT }}

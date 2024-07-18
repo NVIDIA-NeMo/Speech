@@ -12,8 +12,9 @@
 import json
 import os
 from pathlib import Path
+import requests
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
@@ -33,6 +34,7 @@ class TritonSettings(BaseSettings):
                 self._triton_service_port = config_json["triton_service_port"]
                 self._triton_service_ip = config_json["triton_service_ip"]
                 self._triton_request_timeout = config_json["triton_request_timeout"]
+                self._openai_format_response = config_json["openai_format_response"]
         except Exception as error:
             print("An exception occurred:", error)
             return
@@ -48,6 +50,14 @@ class TritonSettings(BaseSettings):
     @property
     def triton_request_timeout(self):
         return self._triton_request_timeout
+
+    @property
+    def openai_format_response(self):
+        """
+        Retuns the response from Triton server in OpenAI compatible formar if set to True,
+        default set in config.json is false.
+        """
+        return self._openai_format_response
 
 
 app = FastAPI()
@@ -66,6 +76,23 @@ class CompletionRequest(BaseModel):
     frequency_penalty: float = 1.0
 
 
+@app.get("/triton_health")
+async def check_triton_health():
+    """
+    This method exposes endpoint "/triton_health" which can be used to verify if Triton server is accessible while running the REST or FastAPI application.
+    Verify by running: curl http://service_http_address:service_port/triton_health and the returned status should inform if the server is accessible.
+    """
+    triton_url = f"triton_settings.triton_service_ip:str(triton_settings.triton_service_port)/v2/health/ready"
+    try:
+        response = requests.get(triton_url, timeout=5)
+        if response.status_code == 200:
+            return {"status": "Triton server is reachable and ready"}
+        else:
+            raise HTTPException(status_code=503, detail="Triton server is not ready")
+    except requests.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Cannot reach Triton server: {str(e)}")
+
+
 @app.post("/v1/completions/")
 def completions_v1(request: CompletionRequest):
     try:
@@ -78,10 +105,14 @@ def completions_v1(request: CompletionRequest):
             top_p=request.top_p,
             temperature=request.temperature,
             init_timeout=triton_settings.triton_request_timeout,
+            openai_format_response=triton_settings.openai_format_response,
         )
-        return {
-            "output": output[0][0],
-        }
+        if triton_settings.openai_format_response:
+            return output
+        else:
+            return {
+                "output": output[0][0],
+            }
     except Exception as error:
         print("An exception occurred:", error)
         return {"error": "An exception occurred"}

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -172,6 +173,7 @@ class NemoQueryLLM(NemoQueryLLMBase):
         compute_logprob: bool = None,
         end_strings=None,
         init_timeout=60.0,
+        openai_format_response: bool = False,
     ):
         """
         Query the Triton server synchronously and return a list of responses.
@@ -259,7 +261,17 @@ class NemoQueryLLM(NemoQueryLLMBase):
                     return "Unknown output keyword."
 
                 sentences = np.char.decode(output.astype("bytes"), "utf-8")
-                return sentences
+                if openai_format_response:
+                    openai_response = {
+                        "id": f"cmpl-{int(time.time())}",
+                        "object": "text_completion",
+                        "created": int(time.time()),
+                        "model": self.model_name,
+                        "choices": [{"text": str(sentences)}],
+                    }
+                    return openai_response
+                else:
+                    return sentences
             else:
                 return result_dict["outputs"]
 

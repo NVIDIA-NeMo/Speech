@@ -383,6 +383,7 @@ def read_nemo_manifest(config, is_tarred: bool) -> CutSet:
         "lang_field": config.lang_field,
         "shuffle_shards": config.shuffle,
         "shard_seed": config.shard_seed,
+        "extra_fields": config.get("extra_fields", None),
     }
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,

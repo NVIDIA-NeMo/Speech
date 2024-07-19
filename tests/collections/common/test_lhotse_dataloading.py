@@ -1575,3 +1575,146 @@ def test_dataloader_with_synth_rir(cutset_path: Path):
         assert tfnm["name"] == "ReverbWithImpulseResponse"
     else:  # lhotse>=1.24.0
         assert isinstance(tfnm, ReverbWithImpulseResponse)
+
+
+@pytest.fixture(scope="session")
+def questions_path(tmp_path_factory) -> Path:
+    """A text file with 10 lines containing question values"""
+    qdir = tmp_path_factory.mktemp("questions")
+    path = qdir / "questions.txt"
+    path.write_text("\n".join(f"some question number {i}" for i in range(10)))
+    return path
+
+
+def test_dataloader_from_nemo_nontarred_manifest_with_extra_questions_field_iter(
+    nemo_manifest_path: Path, questions_path: Path
+):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "manifest_filepath": nemo_manifest_path,
+                    "type": "nemo",
+                    "extra_fields": [
+                        {
+                            "type": "text_iter",
+                            "name": "question",
+                            "path": questions_path,
+                        }
+                    ],
+                },
+            ],
+            "sample_rate": 16000,
+            "shuffle": False,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 2,
+            "use_bucketing": False,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    b = next(iter(dl))
+    c = b[0]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 0"
+    c = b[1]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 1"
+
+
+def test_dataloader_from_nemo_manifest_with_extra_questions_field_iter(
+    nemo_tarred_manifest_path: tuple, questions_path: Path
+):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "manifest_filepath": nemo_tarred_manifest_path[0],
+                    "tarred_audio_filepaths": nemo_tarred_manifest_path[1],
+                    "type": "nemo_tarred",
+                    "extra_fields": [
+                        {
+                            "type": "text_iter",
+                            "name": "question",
+                            "path": questions_path,
+                        }
+                    ],
+                },
+            ],
+            "sample_rate": 16000,
+            "shuffle": False,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 2,
+            "use_bucketing": False,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    b = next(iter(dl))
+    c = b[0]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 0"
+    c = b[1]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 1"
+
+
+def test_dataloader_from_nemo_manifest_with_extra_questions_field_sample(
+    nemo_tarred_manifest_path: tuple, questions_path: Path
+):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "manifest_filepath": nemo_tarred_manifest_path[0],
+                    "tarred_audio_filepaths": nemo_tarred_manifest_path[1],
+                    "type": "nemo_tarred",
+                    "extra_fields": [
+                        {
+                            "type": "text_sample",
+                            "name": "question",
+                            "path": questions_path,
+                        }
+                    ],
+                },
+            ],
+            "sample_rate": 16000,
+            "shuffle": False,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 5,
+            "seed": 0,
+            "shard_seed": 0,
+            "use_bucketing": False,
+        }
+    )
+
+    # Note: despite shuffle=True, it is sampling lines from questions_path because of type: "text_sample"
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    b = next(iter(dl))
+    c = b[0]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 6"
+    c = b[1]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 6"
+    c = b[2]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 0"
+    c = b[3]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 4"
+    c = b[4]
+    assert isinstance(c, MonoCut)
+    assert hasattr(c, "question")
+    assert c.question == "some question number 8"

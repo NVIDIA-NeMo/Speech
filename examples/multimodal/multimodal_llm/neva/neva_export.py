@@ -27,6 +27,7 @@ def main(cfg):
         tensor_parallel_size=cfg.infer.tensor_parallelism,
         max_input_len=cfg.infer.max_input_len,
         max_output_len=cfg.infer.max_output_len,
+        vision_max_batch_size=cfg.infer.vision_max_batch_size,
         max_batch_size=cfg.infer.max_batch_size,
         max_multimodal_len=cfg.infer.max_multimodal_len,
         dtype=cfg.model.precision,

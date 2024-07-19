@@ -6,10 +6,11 @@ infer:
   max_input_len: 4096
   max_output_len: 256
   max_multimodal_len: 3072
+  vision_max_batch_size: 1 #256 for lita/vita when inference with video dataset
 
 model:
-  type: neva
+  type: neva #neva, video-neva, lita, vila, vita
   precision: bfloat16
   visual_model_path: /path/to/visual.nemo
   llm_model_path: /path/to/llm.nemo
-  llm_model_type: llama
+  llm_model_type: llama 

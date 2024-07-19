@@ -48,8 +48,8 @@ def get_args(argv):
         "--model_type",
         type=str,
         required=True,
-        choices=["neva", "video-neva"],
-        help="Type of the model. neva and video-neva are only supported.",
+        choices=["neva", "video-neva", "lita", "vila", "vita"],
+        help="Type of the model that is supported.",
     )
     parser.add_argument(
         "-lmt",
@@ -82,8 +82,15 @@ def get_args(argv):
     )
     parser.add_argument("-mil", "--max_input_len", default=4096, type=int, help="Max input length of the model")
     parser.add_argument("-mol", "--max_output_len", default=256, type=int, help="Max output length of the model")
-    parser.add_argument("-mbs", "--max_batch_size", default=1, type=int, help="Max batch size of the model")
+    parser.add_argument("-mbs", "--max_batch_size", default=1, type=int, help="Max batch size of the llm model")
     parser.add_argument("-mml", "--max_multimodal_len", default=3072, type=int, help="Max length of multimodal input")
+    parser.add_argument(
+        "-vmb",
+        "--vision_max_batch_size",
+        default=1,
+        type=int,
+        help="Max batch size of the visual inputs, for lita/vita model with video inference, this should be set to 256",
+    )
     args = parser.parse_args(argv)
     return args
 
@@ -131,6 +138,7 @@ def get_trt_deployable(args):
                 tensor_parallel_size=args.num_gpus,
                 max_input_len=args.max_input_len,
                 max_output_len=args.max_output_len,
+                vision_max_batch_size=args.vision_max_batch_size,
                 max_batch_size=args.max_batch_size,
                 max_multimodal_len=args.max_multimodal_len,
                 dtype=args.dtype,

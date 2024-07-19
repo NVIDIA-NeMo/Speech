@@ -240,9 +240,10 @@ class vLLMExporter(ITritonDeployable):
             device_config=device_config,
             load_config=load_config,
             lora_config=None,
-            vision_language_config=None,
+            multimodal_config=None,
             speculative_config=None,
             decoding_config=None,
+            observability_config=None,
             executor_class=executor_class,
             log_stats=log_stats,
         )

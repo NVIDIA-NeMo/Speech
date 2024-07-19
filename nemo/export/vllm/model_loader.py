@@ -22,7 +22,7 @@ import safetensors.torch
 import tensorstore  # needed to register 'bfloat16' dtype with numpy for zarr compatibility
 import torch
 import zarr
-from vllm.config import CacheConfig, DeviceConfig, LoRAConfig, ParallelConfig, SchedulerConfig, VisionLanguageConfig
+from vllm.config import CacheConfig, DeviceConfig, LoRAConfig, MultiModalConfig, ParallelConfig, SchedulerConfig
 from vllm.model_executor.model_loader.loader import BaseModelLoader, _initialize_model
 from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 
@@ -74,7 +74,7 @@ class NemoModelLoader(BaseModelLoader):
         model_config: NemoModelConfig,
         device_config: DeviceConfig,
         lora_config: Optional[LoRAConfig],
-        vision_language_config: Optional[VisionLanguageConfig],
+        multimodal_config: Optional[MultiModalConfig],
         parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
@@ -88,9 +88,7 @@ class NemoModelLoader(BaseModelLoader):
 
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(
-                    model_config, self.load_config, lora_config, vision_language_config, cache_config
-                )
+                model = _initialize_model(model_config, self.load_config, lora_config, multimodal_config, cache_config)
 
             weights_iterator = model_config.model_converter.convert_weights(model_config.nemo_model_config, state_dict)
 

@@ -75,7 +75,7 @@ from tqdm import tqdm
 
 from nemo.collections.audio.data import audio_to_audio_dataset
 from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTargetDataset
-from nemo.collections.audio.metrics.audio import AudioMetricWrapper
+from nemo.collections.audio.metrics import AudioMetricWrapper, SquimMOSMetric, SquimObjectiveMetric
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing import manifest
 from nemo.core.config import hydra_runner
@@ -128,7 +128,17 @@ def get_evaluation_dataloader(config):
 
 def get_metrics(cfg: AudioEvaluationConfig):
     """Prepare a dictionary with metrics."""
-    available_metrics = ['sdr', 'sisdr', 'stoi', 'estoi', 'pesq']
+    available_metrics = [
+        'sdr',
+        'sisdr',
+        'stoi',
+        'estoi',
+        'pesq',
+        'squim_mos',
+        'squim_stoi',
+        'squim_pesq',
+        'squim_si_sdr',
+    ]
 
     metrics = dict()
     for name in sorted(set(cfg.metrics)):
@@ -143,6 +153,14 @@ def get_metrics(cfg: AudioEvaluationConfig):
             metric = AudioMetricWrapper(metric=ShortTimeObjectiveIntelligibility(fs=cfg.sample_rate, extended=True))
         elif name == 'pesq':
             metric = AudioMetricWrapper(metric=PerceptualEvaluationSpeechQuality(fs=cfg.sample_rate, mode='wb'))
+        elif name == 'squim_mos':
+            metric = AudioMetricWrapper(metric=SquimMOSMetric(fs=cfg.sample_rate))
+        elif name == 'squim_stoi':
+            metric = AudioMetricWrapper(metric=SquimObjectiveMetric(metric='stoi', fs=cfg.sample_rate))
+        elif name == 'squim_pesq':
+            metric = AudioMetricWrapper(metric=SquimObjectiveMetric(metric='pesq', fs=cfg.sample_rate))
+        elif name == 'squim_si_sdr':
+            metric = AudioMetricWrapper(metric=SquimObjectiveMetric(metric='si_sdr', fs=cfg.sample_rate))
         else:
             raise ValueError(f'Unexpected metric: {name}. Currently available metrics: {available_metrics}')
 

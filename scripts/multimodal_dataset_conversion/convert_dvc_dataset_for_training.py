@@ -126,7 +126,8 @@ caption_prompts = [
 
 event_prompts = [
     "What is the action performed in this video?",
-    "Can you highlight the action performed in this video?" "What is the main event or action captured in this video?",
+    "Can you highlight the action performed in this video?",
+    "What is the main event or action captured in this video?",
     "Could you summarize the sequence of events depicted in this video?",
 ]
 

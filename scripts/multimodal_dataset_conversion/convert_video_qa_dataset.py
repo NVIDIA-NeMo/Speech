@@ -120,7 +120,7 @@ def process(value, duration: float, num_time_tokens: int = 100):
         return time_to_string(value) + f"<!|t{value}t|!>"
 
     value = re.sub(r"<([\d.]{1,20})s>", repl, value)
-    value = re.sub(r"\s([\d.]{1,20})s[\s|\.|,|>]", repl, value)
+    value = re.sub(r"\s([\d.]{1,20})s[\s\.,>]", repl, value)
     value = re.sub(r"\s([\d.]{1,20}) seconds", repl, value)
     value = re.sub(r"\s([\d.]{1,20}) second", repl, value)
 

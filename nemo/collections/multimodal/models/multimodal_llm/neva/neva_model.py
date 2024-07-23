@@ -395,8 +395,8 @@ class LitaWordEmbeddingMixin(NevaWordEmbeddingMixin):
                 t_token_start, t_token_end = start, start + T
                 s_token_start, s_token_end = start + T, start + T + M
                 assert s_token_end == end + 1, "Token replacement error"
-                inputs_embeds[idx, t_token_start:t_token_end] = temporal_tokens[idx]
-                inputs_embeds[idx, s_token_start:s_token_end] = spatial_tokens[idx]
+                inputs_embeds[idx, t_token_start:t_token_end] = t_tokens[idx]
+                inputs_embeds[idx, s_token_start:s_token_end] = s_tokens[idx]
             elif self.visual_token_format == 'im_vid_start_end':  # v1.5 lita
                 if not self.use_media_start_end:
                     # replace the media start and media end embedding with

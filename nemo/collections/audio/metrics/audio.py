@@ -21,6 +21,7 @@ from torchmetrics.audio.pit import PermutationInvariantTraining
 from torchmetrics.audio.sdr import ScaleInvariantSignalDistortionRatio, SignalDistortionRatio
 from torchmetrics.audio.snr import ScaleInvariantSignalNoiseRatio, SignalNoiseRatio
 from torchmetrics.audio.stoi import ShortTimeObjectiveIntelligibility
+from nemo.collections.audio.metrics.squim import SquimMOSMetric, SquimObjectiveMetric
 
 from nemo.utils import logging
 
@@ -34,6 +35,8 @@ __VERIFIED_METRICS__ = [
     SignalNoiseRatio,
     PerceptualEvaluationSpeechQuality,
     ShortTimeObjectiveIntelligibility,
+    SquimMOSMetric,
+    SquimObjectiveMetric,
 ]
 
 

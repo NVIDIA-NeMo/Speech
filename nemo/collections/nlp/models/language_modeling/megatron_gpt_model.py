@@ -1549,6 +1549,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 "create_attention_mask": not self.get_attention_mask_from_fusion,
                 "mmap_bin_files": self.cfg.data.get("mmap_bin_files", True),
                 "drop_last_partial_validation_sequence": self.cfg.data.get("validation_drop_last", True),
+                "num_dataset_builder_threads": self.cfg.data.get("num_dataset_builder_threads", 1),
                 "add_extra_token_to_sequence": add_extra_token,
             }
 
@@ -1682,6 +1683,12 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             self._reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_dl, 'train')
             # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
             self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_dl, 'val')
+
+        # Data cache generation only
+        # Stops script execution after creating a data cache
+        if self.cfg.data.get('data_cache_generation_only', False):
+            self.trainer.num_sanity_val_steps = 0
+            self.trainer.should_stop = True
 
         if stage == 'fit':
             self.initialize_last_rank_embeddings()

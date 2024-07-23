@@ -276,6 +276,7 @@ model:
     seq_length: ${model.encoder_seq_length}
     skip_warmup: True
     num_workers: 2
+    num_dataset_builder_threads: 1
     dataloader_type: single # cyclic
     reset_position_ids: False # Reset position ids after end-of-document token
     reset_attention_mask: False # Reset attention mask after end-of-document token
@@ -284,7 +285,8 @@ model:
     no_seqlen_plus_one_input_tokens: False # Set to True to disable fetching (sequence length + 1) input tokens, instead get (sequence length) input tokens and mask the last token
     pad_samples_to_global_batch_size: False # Set to True if you want to pad the last partial batch with -1's to equal global batch size
     shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
-    exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem 
+    exchange_indices_distributed: False # Set to True to exchange indices via torch.distributed instead of filesystem
+    data_cache_generation_only: False # Set to True to generate only the data cache and stop the training script
 
   # Nsys profiling options
   nsys_profile:

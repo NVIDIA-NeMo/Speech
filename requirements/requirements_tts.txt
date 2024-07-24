@@ -1,5 +1,7 @@
 attrdict
+cutlet
 einops
+janome
 jieba
 kornia
 librosa

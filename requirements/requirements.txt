@@ -1,5 +1,5 @@
 fiddle
-huggingface_hub>=0.20.3,<0.24.0
+huggingface_hub>=0.24
 numba
 numpy>=1.22
 onnx>=1.7.0

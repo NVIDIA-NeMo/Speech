@@ -15,7 +15,7 @@
 
 # fmt: off
 
-SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP"]
+SUPPORTED_LOCALES = ["en-US", "de-DE", "es-ES", "it-IT", "fr-FR"]
 
 DEFAULT_PUNCTUATION = (
     ',', '.', '!', '?', '-',
@@ -104,17 +104,6 @@ IPA_CHARACTER_SETS = {
         'ɽ','ʂ','ʈ','ʧ','ʉ','ʋ','ⱱ','ɤ','ʍ','χ','ʏ','ʑ','ʐ',
         'ʔ','ʡ','ʕ','ʢ','ǀ','ǁ','ǂ','ᵻ', 'ʃ','ː',
     ),
-    "ja-JP": (
-        'a', 'i', 'u', 'e', 'o', 'ɯ', 'I', 'ɑ' , 'ɨ ', 'ɒ',  
-        'ɔ', 'iᵑ', 'eᵑ', 'a', 'ʊ', 'ə', 'eᵝ', 'ɐ', 'ɛ',
-        'w', 'k', 'ɾ', 's', 't', 'ʃ', 'r', 'h', 'n', 'nʲ', 
-        'ɲ', 'ç', 'b', 'm', 'j', 'ɸ', 'z', 'p', 'd', 'N',
-        'ʒ', 'ŋ', 'g', 'f', 'ʔ', 'y', 'ɟ', 'v', 'ɥ', 'ɰ',
-        'ɰᵝ', 'ɣ', 'ʄ', 'ʑ', 'c', 'ɕ', 'ɠ', 'x', 'l', 'β',
-        'ð', 'ø', 'ʁ', 'ts', 'tʃ', 'dʒ', 'y', 'dʑ', 't͡s',
-        'ɑ̃', 'ĩ', 'ũ', 'ẽ', 'õ', 'ɑ̃', 'ĩ', 'ũ', 'w̃',  
-        'ẽ', 'õ', 'hʲ', 'ɪ', 'ː', 'o̞', 'e̞', 
-    ),
 }
 
 GRAPHEME_CHARACTER_CASES = ["upper", "lower", "mixed"]
@@ -168,7 +157,7 @@ def get_ipa_punctuation_list(locale):
     punct_set = set(DEFAULT_PUNCTUATION)
     # TODO @xueyang: verify potential mismatches with locale-specific punctuation sets used
     #  in nemo_text_processing.text_normalization.en.taggers.punctuation.py
-    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR", "ja-JP"]:
+    if locale in ["de-DE", "es-ES", "it-IT", "fr-FR"]:
         # ref: https://en.wikipedia.org/wiki/Guillemet#Uses
         punct_set.update(['«', '»', '‹', '›'])
     if locale == "de-DE":
@@ -229,48 +218,6 @@ def get_ipa_punctuation_list(locale):
                 '̧',  # combining cedilla, U+0327, decimal 807
             ]
         )
-    elif locale == "ja-JP":
-        # ref: https://en.wikipedia.org/wiki/List_of_Japanese_typographic_symbols
-        punct_set.update(
-            [
-                '【',
-                '】',
-                '…',
-                '‥',
-                '「',
-                '」',
-                '『',
-                '』',
-                '〜',
-                '。',
-                '、',
-                'ー',
-                '・・・',
-                '〃',
-                '〔',
-                '〕',
-                '｟',
-                '｠',
-                '〈',
-                '〉',
-                '《',
-                '》',
-                '〖',
-                '〗',
-                '〘',
-                '〙',
-                '〚',
-                '〛',
-                '•',
-                '◦',
-                '﹅',
-                '﹆',
-                '※',
-                '＊',
-                '〽',
-                '〓',
-                '〒',
-            ]
-        )
+
     punct_list = sorted(list(punct_set))
     return punct_list

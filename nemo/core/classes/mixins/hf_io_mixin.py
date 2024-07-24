@@ -14,9 +14,9 @@
 
 from abc import ABC
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
-from huggingface_hub import HfApi, ModelCard, ModelCardData, ModelFilter
+from huggingface_hub import HfApi, ModelCard, ModelCardData
 from huggingface_hub import get_token as get_hf_token
 from huggingface_hub.hf_api import ModelInfo
 from huggingface_hub.utils import SoftTemporaryDirectory
@@ -35,31 +35,35 @@ class HuggingFaceFileIO(ABC):
     """
 
     @classmethod
-    def get_hf_model_filter(cls) -> ModelFilter:
+    def get_hf_model_filter(cls) -> Dict[str, Any]:
         """
         Generates a filter for HuggingFace models.
 
-        Additionally includes default values of some metadata about results returned by the Hub.
+        Additionaly includes default values of some metadata about results returned by the Hub.
 
         Metadata:
             resolve_card_info: Bool flag, if set, returns the model card metadata. Default: False.
             limit_results: Optional int, limits the number of results returned.
 
         Returns:
-            A Hugging Face Hub ModelFilter object.
+            A dict representing the arguments passable to huggingface list_models().
         """
-        model_filter = ModelFilter(library='nemo')
-
-        # Attach some additional info
-        model_filter.resolve_card_info = False
-        model_filter.limit_results = None
+        model_filter = dict(
+            author=None,
+            library='nemo',
+            language=None,
+            model_name=None,
+            task=None,
+            tags=None,
+            limit=None,
+            full=None,
+            cardData=False,
+        )
 
         return model_filter
 
     @classmethod
-    def search_huggingface_models(
-        cls, model_filter: Optional[Union[ModelFilter, List[ModelFilter]]] = None
-    ) -> List['ModelInfo']:
+    def search_huggingface_models(cls, model_filter: Optional[Dict[str, Any]] = None) -> Iterable['ModelInfo']:
         """
         Should list all pre-trained models available via Hugging Face Hub.
 
@@ -75,16 +79,16 @@ class HuggingFaceFileIO(ABC):
             # You can replace <DomainSubclass> with any subclass of ModelPT.
             from nemo.core import ModelPT
 
-            # Get default ModelFilter
+            # Get default filter dict
             filt = <DomainSubclass>.get_hf_model_filter()
 
             # Make any modifications to the filter as necessary
-            filt.language = [...]
-            filt.task = ...
-            filt.tags = [...]
+            filt['language'] = [...]
+            filt['task'] = ...
+            filt['tags'] = [...]
 
-            # Add any metadata to the filter as needed
-            filt.limit_results = 5
+            # Add any metadata to the filter as needed (kwargs to list_models)
+            filt['limit'] = 5
 
             # Obtain model info
             model_infos = <DomainSubclass>.search_huggingface_models(model_filter=filt)
@@ -96,10 +100,9 @@ class HuggingFaceFileIO(ABC):
             model = ModelPT.from_pretrained(card.modelId)
 
         Args:
-            model_filter: Optional ModelFilter or List[ModelFilter] (from Hugging Face Hub)
+            model_filter: Optional Dictionary (for Hugging Face Hub kwargs)
                 that filters the returned list of compatible model cards, and selects all results from each filter.
                 Users can then use `model_card.modelId` in `from_pretrained()` to restore a NeMo Model.
-                If no ModelFilter is provided, uses the classes default filter as defined by `get_hf_model_filter()`.
 
         Returns:
             A list of ModelInfo entries.
@@ -107,23 +110,6 @@ class HuggingFaceFileIO(ABC):
         # Resolve model filter if not provided as argument
         if model_filter is None:
             model_filter = cls.get_hf_model_filter()
-
-        # If single model filter, wrap into list
-        if not isinstance(model_filter, Iterable):
-            model_filter = [model_filter]
-
-        # Inject `nemo` library filter
-        for mfilter in model_filter:
-            if isinstance(mfilter.library, str) and mfilter.library != 'nemo':
-                logging.warning(f"Model filter's `library` tag updated be `nemo`. Original value: {mfilter.library}")
-                mfilter.library = "nemo"
-
-            elif isinstance(mfilter, Iterable) and 'nemo' not in mfilter.library:
-                logging.warning(
-                    f"Model filter's `library` list updated to include `nemo`. Original value: {mfilter.library}"
-                )
-                mfilter.library = list(mfilter)
-                mfilter.library.append('nemo')
 
         # Check if api token exists, use if it does
         hf_token = get_hf_token()
@@ -134,24 +120,11 @@ class HuggingFaceFileIO(ABC):
         # Setup extra arguments for model filtering
         all_results = []  # type: List[ModelInfo]
 
-        for mfilter in model_filter:
-            cardData = None
-            limit = None
+        results = api.list_models(
+            token=hf_token, sort="lastModified", direction=-1, **model_filter
+        )  # type: Iterable[ModelInfo]
 
-            if hasattr(mfilter, 'resolve_card_info') and mfilter.resolve_card_info is True:
-                cardData = True
-
-            if hasattr(mfilter, 'limit_results') and mfilter.limit_results is not None:
-                limit = mfilter.limit_results
-
-            results = api.list_models(
-                filter=mfilter, token=hf_token, sort="lastModified", direction=-1, cardData=cardData, limit=limit,
-            )  # type: Iterable[ModelInfo]
-
-            for result in results:
-                all_results.append(result)
-
-        return all_results
+        return results
 
     def push_to_hf_hub(
         self,
@@ -284,7 +257,10 @@ class HuggingFaceFileIO(ABC):
             A HuggingFace ModelCard object that can be converted to a model card string.
         """
         card_data = ModelCardData(
-            library_name='nemo', tags=['pytorch', 'NeMo'], license='cc-by-4.0', ignore_metadata_errors=True,
+            library_name='nemo',
+            tags=['pytorch', 'NeMo'],
+            license='cc-by-4.0',
+            ignore_metadata_errors=True,
         )
 
         if 'card_data' not in template_kwargs:

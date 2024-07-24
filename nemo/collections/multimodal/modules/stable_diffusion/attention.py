@@ -56,10 +56,9 @@ def check_cuda():
     dprops = torch.cuda.get_device_properties(cur_device)
 
     is_sm75 = dprops.major == 7 and dprops.minor == 5
-    is_sm8x = dprops.major == 8 and dprops.minor >= 0
-    is_sm90 = dprops.major == 9 and dprops.minor >= 0
+    is_sm8x_or_later = dprops.major >= 8
 
-    return is_sm8x or is_sm75 or is_sm90
+    return is_sm75 or is_sm8x_or_later
 
 
 try:

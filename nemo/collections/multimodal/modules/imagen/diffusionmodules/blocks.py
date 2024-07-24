@@ -58,10 +58,9 @@ def check_cuda():
     dprops = th.cuda.get_device_properties(cur_device)
 
     is_sm75 = dprops.major == 7 and dprops.minor == 5
-    is_sm8x = dprops.major == 8 and dprops.minor >= 0
-    is_sm90 = dprops.major == 9 and dprops.minor >= 0
+    is_sm8x_or_later = dprops.major >= 8
 
-    return is_sm8x or is_sm75 or is_sm90
+    return is_sm75 or is_sm8x_or_later
 
 
 try:
@@ -154,7 +153,9 @@ class ResBlock(TimestepBlock):
         self.use_scale_shift_norm = use_scale_shift_norm
 
         self.in_layers = nn.Sequential(
-            normalization(channels), nn.SiLU(), conv_nd(dims, channels, self.out_channels, 3, padding=1),
+            normalization(channels),
+            nn.SiLU(),
+            conv_nd(dims, channels, self.out_channels, 3, padding=1),
         )
 
         self.updown = up or down
@@ -173,7 +174,11 @@ class ResBlock(TimestepBlock):
             self.h_upd = self.x_upd = nn.Identity()
 
         self.emb_layers = nn.Sequential(
-            nn.SiLU(), linear(emb_channels, 2 * self.out_channels if use_scale_shift_norm else self.out_channels,),
+            nn.SiLU(),
+            linear(
+                emb_channels,
+                2 * self.out_channels if use_scale_shift_norm else self.out_channels,
+            ),
         )
         self.out_layers = nn.Sequential(
             normalization(self.out_channels),
@@ -263,7 +268,11 @@ class EfficientResBlock(TimestepBlock):
         )
 
         self.emb_layers = nn.Sequential(
-            nn.SiLU(), nn.Linear(emb_channels, 2 * out_channels if use_scale_shift_norm else out_channels,),
+            nn.SiLU(),
+            nn.Linear(
+                emb_channels,
+                2 * out_channels if use_scale_shift_norm else out_channels,
+            ),
         )
 
         self.out_layers = nn.Sequential(

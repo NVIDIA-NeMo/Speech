@@ -30,6 +30,7 @@ from nemo.collections.common.tokenizers.text_to_speech.tokenizer_utils import (
     english_text_preprocessing,
     french_text_preprocessing,
     italian_text_preprocessing,
+    japanese_text_preprocessing,
     spanish_text_preprocessing,
 )
 from nemo.utils import logging
@@ -245,7 +246,12 @@ class SpanishCharsTokenizer(BaseCharsTokenizer):
     PUNCT_LIST = get_ipa_punctuation_list("es-ES")
 
     def __init__(
-        self, punct=True, apostrophe=True, add_blank_at=None, pad_with_space=False, non_default_punct_list=None,
+        self,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=None,
     ):
         """Spanish grapheme tokenizer.
         Args:
@@ -274,7 +280,12 @@ class FrenchCharsTokenizer(BaseCharsTokenizer):
     PUNCT_LIST = get_ipa_punctuation_list("fr-FR")
 
     def __init__(
-        self, punct=True, apostrophe=True, add_blank_at=None, pad_with_space=False, non_default_punct_list=None,
+        self,
+        punct=True,
+        apostrophe=True,
+        add_blank_at=None,
+        pad_with_space=False,
+        non_default_punct_list=None,
     ):
         """French grapheme tokenizer.
         Args:
@@ -896,6 +907,117 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
                 ps.append(p)
             # Add next phoneme or tone or ascii letter or apostrophe.
             elif (p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and p in tokens:
+                ps.append(p)
+            # Add punctuation
+            elif (p in self.PUNCT_LIST) and self.punct:
+                ps.append(p)
+            # Warn about unknown char/phoneme
+            elif p != space:
+                message = f"Text: [{' '.join(g2p_text)}] contains unknown char/phoneme: [{p}]."
+                if raw_text is not None:
+                    message += f"Original text: [{raw_text}]. Symbol will be skipped."
+                logging.warning(message)
+
+        # Remove trailing spaces
+        if ps:
+            while ps[-1] == space:
+                ps.pop()
+
+        if self.pad_with_space:
+            ps = [space] + ps + [space]
+
+        return [self._token2id[p] for p in ps]
+
+
+class JapanesePhonemeTokenizer(BaseTokenizer):
+
+    JA_PUNCT_LIST = get_ipa_punctuation_list("ja-JP")
+
+    def __init__(
+        self,
+        g2p,
+        punct=True,
+        non_default_punct_list=None,
+        *,
+        space=' ',
+        silence=None,
+        apostrophe=True,
+        sep='|',  # To be able to distinguish between 2/3 letters codes.
+        add_blank_at=None,
+        pad_with_space=False,
+        text_preprocessing_func=japanese_text_preprocessing,
+    ):
+        """Japanese phoneme-based tokenizer.
+        Note: This tokenizer for now covers Japanese phonemes
+        Args:
+            g2p: Grapheme to phoneme module.
+            punct: Whether to reserve grapheme for basic punctuation or not.
+            non_default_punct_list: List of punctuation marks which will be used instead default.
+            space: Space token as string.
+            silence: Silence token as string (will be disabled if it is None).
+            apostrophe: Whether to use apostrophe or not.
+            sep: Separation token as string.
+            add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
+             if None then no blank in labels.
+            pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
+            text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
+             Basically, it replaces all non-unicode characters with unicode ones.
+             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
+        """
+        tokens = []
+        self.space, tokens = len(tokens), tokens + [space]  # Space
+
+        if silence is not None:
+            self.silence, tokens = len(tokens), tokens + [silence]  # Silence
+
+        self.phoneme_list = g2p.phoneme_list
+        self.ascii_letter_list = g2p.ascii_letter_list
+
+        tokens.extend(self.phoneme_list)
+        tokens.extend(self.ascii_letter_list)
+
+        self.text_preprocessing_func = text_preprocessing_func
+
+        if apostrophe:
+            tokens.append("'")  # Apostrophe
+
+        if punct:
+            if non_default_punct_list is not None:
+                self.PUNCT_LIST = non_default_punct_list
+            else:
+                self.PUNCT_LIST = list(self.JA_PUNCT_LIST)
+            tokens.extend(self.PUNCT_LIST)
+
+        super().__init__(tokens, sep=sep, add_blank_at=add_blank_at)
+
+        self.punct = punct
+        self.pad_with_space = pad_with_space
+        self.g2p = g2p
+
+    def encode(self, text: str) -> List[int]:
+        """See base class for more information."""
+        text = self.text_preprocessing_func(text)
+        g2p_text = self.g2p(text)
+        return self.encode_from_g2p(g2p_text, text)
+
+    def encode_from_g2p(self, g2p_text: List[str], raw_text: Optional[str] = None):
+        """
+        Encodes text that has already been run through G2P.
+        Called for encoding to tokens after text preprocessing and G2P.
+
+        Args:
+            g2p_text: G2P's output, could be a mixture of Chinese phonemes and English letters.
+            raw_text: original raw input
+        """
+        ps, space, tokens = [], self.tokens[self.space], set(self.tokens)
+        for p in g2p_text:  # noqa
+            # Add space if last one isn't one
+            if p == space and len(ps) > 0 and ps[-1] != space:
+                ps.append(p)
+            # Add next phoneme or tone or ascii letter or apostrophe.
+            elif (
+                p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list
+            ) and p in tokens:
                 ps.append(p)
             # Add punctuation
             elif (p in self.PUNCT_LIST) and self.punct:

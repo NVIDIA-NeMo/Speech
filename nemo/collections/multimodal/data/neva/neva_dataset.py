@@ -20,7 +20,6 @@ import tarfile
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple, Union
 
-import decord
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -49,6 +48,11 @@ from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_an
 
 MAX_NUM_IMAGES = 1
 IGNORE_INDEX = -1
+
+try:
+    import decord
+except Exception:
+    logging.warning("The package `decord` was not installed in this environment.")
 
 try:
     from megatron.core.datasets.indexed_dataset import IndexedDataset

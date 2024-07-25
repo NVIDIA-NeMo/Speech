@@ -15,7 +15,6 @@ import os
 import tempfile
 from typing import Any, Callable, Tuple
 
-import decord
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
@@ -32,6 +31,11 @@ from nemo.collections.nlp.parts.peft_config import PEFT_CONFIG_MAP
 from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 from nemo.utils import AppState, logging
 from nemo.utils.model_utils import inject_model_parallel_rank
+
+try:
+    import decord
+except Exception:
+    logging.warning("The package `decord` was not installed in this environment.")
 
 try:
     from megatron.core import dist_checkpointing

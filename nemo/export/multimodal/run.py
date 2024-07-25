@@ -16,7 +16,13 @@
 import json
 import os
 
-import decord
+try:
+    import decord
+except Exception:
+    import logging
+
+    logging.warning("The package `decord` was not installed in this environment.")
+
 import einops
 import numpy as np
 import tensorrt as trt

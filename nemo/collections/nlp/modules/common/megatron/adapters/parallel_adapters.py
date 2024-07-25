@@ -257,7 +257,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
 
             te_version = packaging.version.Version(version("transformer-engine"))
             if te_version >= packaging.version.Version("1.5.0dev") and (
-                not self.input_is_parallel and model_parallel_config.tp_comm_disable_qkv
+                not self.input_is_parallel and getattr(model_parallel_config, "tp_comm_overlap_disable_qkv", False)
             ):
                 # TE 1.5 introduces the option `return_layernorm_output_gathered`, so the all gather
                 # in the forward method is not needed, so set self._sequence_parallel to False

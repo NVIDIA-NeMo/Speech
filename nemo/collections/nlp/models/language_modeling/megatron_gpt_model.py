@@ -816,7 +816,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             ignore_virtual=True
         ):
             if (
-                self.cfg.get('defer_embedding_wgrad_compute', False) and self.mcore_gpt
+                self.cfg.get('defer_embedding_wgrad_compute', False)
+                and self.mcore_gpt
+                and not self.use_mcore_dist_optim
             ):  # Silently ignore the optimization if MCORE is not used
                 module_list = self.get_model_module_list()
                 if len(module_list) > 1:
@@ -839,7 +841,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             ignore_virtual=True
         ):
             if (
-                self.cfg.get('defer_embedding_wgrad_compute', False) and self.mcore_gpt
+                self.cfg.get('defer_embedding_wgrad_compute', False)
+                and self.mcore_gpt
+                and not self.use_mcore_dist_optim
             ):  # Silently ignore the optimization if MCORE is not used
                 module_list = self.get_model_module_list()
                 if len(module_list) > 1:

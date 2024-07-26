@@ -24,6 +24,7 @@ __all__ = [
     "english_text_preprocessing",
     "any_locale_text_preprocessing",
     "spanish_text_preprocessing",
+    "vietnamese_text_preprocessing",
     "italian_text_preprocessing",
     "any_locale_word_tokenize",
     "english_word_tokenize",
@@ -200,4 +201,8 @@ def chinese_text_preprocessing(text: str) -> str:
 
 
 def french_text_preprocessing(text: str) -> str:
+    return text.lower()
+
+
+def vietnamese_text_preprocessing(text: str) -> str:
     return text.lower()

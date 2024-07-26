@@ -62,23 +62,28 @@ RUN apt-get update && \
   rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/
+
+ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
+ARG MCORE_TAG=338af51452a53982d202e8386db6233adad1ce86
+ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
 # Install megatron core, this can be removed once 0.3 pip package is released
 # We leave it here in case we need to work off of a specific commit in main
 RUN git clone https://github.com/NVIDIA/Megatron-LM.git && \
   cd Megatron-LM && \
-  git checkout c7a1f82d761577e6ca0338d3521eac82f2aa0904 && \
+  git checkout ${MCORE_TAG} && \
   pip install .
 
 # Performance optimizations for distributed optimizer: https://github.com/NVIDIA/apex/pull/1771
 RUN git clone https://github.com/NVIDIA/apex.git && \
   cd apex && \
-  git checkout f058162b215791b15507bb542f22ccfde49c872d && \
-  pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" ./
+  git checkout ${APEX_TAG} && \
+  pip install -v --no-build-isolation --disable-pip-version-check --no-cache-dir \
+    --config-settings "--build-option=--cpp_ext --cuda_ext --fast_layer_norm --distributed_adam --deprecated_fused_adam" ./
 
 # Transformer Engine 1.2.0
 RUN git clone https://github.com/NVIDIA/TransformerEngine.git && \
   cd TransformerEngine && \
-  git fetch origin da30634a6c9ccdbb6c587b6c93b1860e4b038204 && \
+  git fetch origin ${TE_TAG} && \
   git checkout FETCH_HEAD && \
   git submodule init && git submodule update && \
   NVTE_FRAMEWORK=pytorch NVTE_WITH_USERBUFFERS=1 MPI_HOME=/usr/local/mpi pip install .
@@ -126,7 +131,9 @@ RUN INSTALL_MSG=$(/bin/bash /tmp/nemo/scripts/installers/install_k2.sh); INSTALL
 WORKDIR /tmp/nemo
 ENV LHOTSE_REQUIRE_TORCHAUDIO=0
 COPY requirements .
-RUN for f in $(ls requirements*.txt); do pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
+# exclude requirements_vllm.txt, since `vllm==0.5.x` breaks the container due to hardcoded requirements `torch==2.3.0`
+RUN for f in $(ls requirements*.txt | grep -v 'requirements_vllm.txt'); do \
+    pip3 install --disable-pip-version-check --no-cache-dir -r $f; done
 
 # install flash attention
 RUN pip install flash-attn
@@ -151,7 +158,12 @@ RUN /usr/bin/test -n "$NEMO_VERSION" && \
 RUN --mount=from=nemo-src,target=/tmp/nemo,rw cd /tmp/nemo && pip install ".[all]"
 
 # Check install
-RUN python -c "import nemo.collections.nlp as nemo_nlp" && \
+# NB: adjusting LD_LIBRARY_PATH (only here, should not be persistent!) is a temporary hack
+# to avoid failure if CUDA is unavailable (`docker build` does not expose GPUs)
+# The error is raised in NeMo Core, and the main reason is reinstalled Transformer-Engine;
+RUN export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CUDA_HOME}/compat/lib.real && \
+  python -c "import nemo.collections.asr as nemo_asr" && \
+  python -c "import nemo.collections.nlp as nemo_nlp" && \
   python -c "import nemo.collections.tts as nemo_tts" && \
   python -c "import nemo_text_processing.text_normalization as text_normalization"
 

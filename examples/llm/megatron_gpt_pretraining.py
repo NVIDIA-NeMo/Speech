@@ -92,6 +92,7 @@ if __name__ == '__main__':
         logger=loggers,
         callbacks=callbacks,
         log_every_n_steps=1,
+        limit_val_batches=2,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed", amp_O2=False),
     )
 

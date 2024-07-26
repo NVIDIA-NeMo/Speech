@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -17,8 +18,7 @@ if TYPE_CHECKING:
 class PreTrainingDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        paths: Path | List[Path],
-        weights: Optional[List[float]] = None,
+        paths: Path | List | Dict[str, List],
         seq_length: int = 2048,
         tokenizer: Optional["TokenizerSpec"] = None,
         micro_batch_size: int = 4,
@@ -38,16 +38,30 @@ class PreTrainingDataModule(pl.LightningDataModule):
         index_mapping_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
-        if not isinstance(paths, (list, tuple)):
+        if not isinstance(paths, (list, tuple, dict)):
             paths = [paths]
-        if weights is not None:
-            assert len(weights) == len(paths)
-            if len(weights) == 1:
-                # weights must be None if there is only one dataset
-                weights = None
 
-        self.paths = paths
-        self.weights = weights
+        from megatron.core.datasets.utils import get_blend_from_list
+
+        build_kwargs = {}
+        if isinstance(paths, dict):
+            if split is not None:
+                warnings.warn(
+                    f"{split=} will be ignored since datasets are being created " f"from 3 separate distributions."
+                )
+            build_kwargs["blend_per_split"] = [
+                get_blend_from_list(paths["train"]),
+                get_blend_from_list(paths["validation"]),
+                get_blend_from_list(paths["test"]),
+            ]
+        else:
+            paths, weights = get_blend_from_list(paths)
+            if len(paths) == 1:
+                weights = None
+            build_kwargs["blend"] = [paths, weights]
+            build_kwargs["split"] = split
+
+        self.build_kwargs = build_kwargs
         self.seq_length = seq_length
         self.tokenizer = tokenizer
         self.num_train_samples = num_train_samples
@@ -92,8 +106,19 @@ class PreTrainingDataModule(pl.LightningDataModule):
         num_test_samples = int(test_iters * self.data_sampler.global_batch_size)
 
         if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
+            assert "blend" not in self.build_kwargs, (
+                "When using a single data distribution, limit_val_batches <= 1.0 is not supported. If you'd "
+                "like to run with a fractional value of limit_val_batches, please pass in separate datasets for "
+                "the train, validation, and test datasets by providing a dictionary of paths, e.g.: \n"
+                "    paths={ \n "
+                "        'train': [PATHS FOR TRAIN], \n "
+                "        'validation': [PATHS FOR VALIDATION], \n "
+                "        'test' :[PATHS FOR TEST],  \n"
+                "    }"
+            )
+
             # This is to make sure we only have one epoch on every validation iteration
-            num_val_samples = None if self.weights is None else 1
+            num_val_samples = None
 
         train_valid_test_num_samples = [num_train_samples, num_val_samples, num_test_samples]
         self._train_ds, self._validation_ds, self._test_ds = BlendedMegatronDatasetBuilder(
@@ -147,15 +172,14 @@ class PreTrainingDataModule(pl.LightningDataModule):
         from megatron.core.datasets.gpt_dataset import GPTDatasetConfig
 
         return GPTDatasetConfig(
-            blend=[[str(path) for path in self.paths], self.weights],
             random_seed=self.seed,
             sequence_length=self.seq_length,
             tokenizer=self.tokenizer,
-            split=self.split,
             path_to_cache=self.index_mapping_dir,
             reset_position_ids=self.reset_position_ids,
             reset_attention_mask=self.reset_attention_mask,
             eod_mask_loss=self.eod_mask_loss,
+            **self.build_kwargs,
         )
 
     def state_dict(self) -> Dict[str, Any]:

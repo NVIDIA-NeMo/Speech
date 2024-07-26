@@ -1,5 +1,6 @@
 attrdict
 einops
+janome
 jieba
 kornia
 librosa

@@ -207,6 +207,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         if not self.data_sampler and hasattr(datamodule, "data_sampler"):
             self.data_sampler = datamodule.data_sampler
             self.data_sampler.setup(self.cluster_environment.global_rank())
+            datamodule.reconfigure_limit_batches()
 
         if self.data_sampler:
             self.data_sampler.connect(trainer)

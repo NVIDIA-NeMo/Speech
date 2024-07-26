@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 import pytorch_lightning as pl
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.utils import data
-from torch.utils.data import DataLoader
+from nemo.lightning.data import WrappedDataLoader
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
@@ -121,24 +121,26 @@ class PreTrainingDataModule(pl.LightningDataModule):
     #     ).build()
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return self._create_dataloader(self._train_ds)
+        return self._create_dataloader(self._train_ds, mode='train')
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
-        return self._create_dataloader(self._validation_ds)
+        return self._create_dataloader(self._validation_ds, mode='validation')
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
-        return self._create_dataloader(self._test_ds)
+        return self._create_dataloader(self._test_ds, mode='test')
 
-    def _create_dataloader(self, dataset, **kwargs) -> DataLoader:
+    def _create_dataloader(self, dataset, mode, **kwargs) -> WrappedDataLoader:
         self.init_global_step = self.trainer.global_step
-        return DataLoader(
-            dataset,
+        dataloader = WrappedDataLoader(
+            mode=mode,
+            dataset=dataset,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             persistent_workers=self.persistent_workers,
             collate_fn=getattr(dataset, 'collate_fn', data.dataloader.default_collate),
             **kwargs,
         )
+        return dataloader
 
     @property
     def gpt_dataset_config(self) -> "GPTDatasetConfig":
@@ -185,11 +187,53 @@ class PreTrainingDataModule(pl.LightningDataModule):
             consistency_check=False,
         )
         current_global_batch_size = num_microbatch_calculator.current_global_batch_size
-        '''pl_module.log(
-            "global_batch_size",
-            current_global_batch_size,
-            prog_bar=True,
-            rank_zero_only=True,
-            batch_size=1,
-        )'''
-        self.if_first_step = 1
+        self.data_sampler.if_first_step = 1
+
+    def reconfigure_limit_batches(self):
+        # Override limit_train_batches in terms of num of microbatches
+        self._reconfigure_limit_batches(self.trainer.limit_train_batches, self._train_ds, 'train')
+        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+        self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_ds, 'val')
+
+    def _reconfigure_limit_batches(self, limit_batches, dataloader, mode):
+        """
+        Reconfigure trainer.limit_val_batches for pretraining
+        """
+        # Override limit_batches in terms of num microbatches and so there are limit_batches//num_micro_batches num of global batches
+        from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+        if isinstance(limit_batches, int):
+            limit_batches *= get_num_microbatches()
+        else:
+            assert isinstance(limit_batches, float)
+            # Don't reconfigure if limit_batches is 0.0 or if there's no dataloader
+            if limit_batches == 0.0 or dataloader is None:
+                return
+            # len(dataloader) returns len as num of microbatches
+            dl_len_in_micro_batches = len(dataloader)
+            if len(dataloader) != float("inf"):
+                if limit_batches == 1.0:
+                    limit_batches = dl_len_in_micro_batches
+                else:
+                    limit_micro_batches = int(dl_len_in_micro_batches * limit_batches)
+                    if limit_micro_batches == 0 and limit_batches > 0.0:
+                        min_percentage = 1.0 / len(dataloader)
+                        raise MisconfigurationException(
+                            f"You requested to check {limit_batches} of the val_dataloader but"
+                            f" {limit_batches} * {len(dataloader)} < 1. Please increase the"
+                            f" `limit_val_batches` argument. Try at least"
+                            f" `limit_val_batches={min_percentage}`"
+                        )
+                    # Make sure trainer.limit_val_batches is a multiple of num of microbatches
+                    if limit_micro_batches < get_num_microbatches():
+                        limit_batches = get_num_microbatches()
+                    else:
+                        limit_batches = limit_batches - limit_batches % get_num_microbatches()
+
+        if mode == 'train':
+            self.trainer.limit_train_batches = limit_batches
+        else:
+            self.trainer.limit_val_batches = limit_batches
+
+        # Override num sanity steps to be a multiple of num of microbatches
+        self.trainer.num_sanity_val_steps *= get_num_microbatches()

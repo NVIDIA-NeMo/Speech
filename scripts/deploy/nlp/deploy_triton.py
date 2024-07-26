@@ -80,7 +80,7 @@ def get_args(argv):
     parser.add_argument(
         "-tmr", "--triton_model_repository", default=None, type=str, help="Folder for the trt-llm conversion"
     )
-    parser.add_argument("-ng", "--num_gpus", default=1, type=int, help="Number of GPUs for the deployment")
+    parser.add_argument("-ng", "--num_gpus", default=None, type=int, help="Number of GPUs for the deployment")
     parser.add_argument("-tps", "--tensor_parallelism_size", default=1, type=int, help="Tensor parallelism size")
     parser.add_argument("-pps", "--pipeline_parallelism_size", default=1, type=int, help="Pipeline parallelism size")
     parser.add_argument(
@@ -95,7 +95,13 @@ def get_args(argv):
     parser.add_argument("-mol", "--max_output_len", default=256, type=int, help="Max output length of the model")
     parser.add_argument("-mbs", "--max_batch_size", default=8, type=int, help="Max batch size of the model")
     parser.add_argument("-mnt", "--max_num_tokens", default=None, type=int, help="Max number of tokens")
+    parser.add_argument("-msl", "--max_seq_len", default=None, type=int, help="Maximum number of sequence length")
+    parser.add_argument("-mp", "--multiple_profiles", default=False, action='store_true', help="Multiple profiles")
     parser.add_argument("-ont", "--opt_num_tokens", default=None, type=int, help="Optimum number of tokens")
+    parser.add_argument(
+        "-gap", "--gpt_attention_plugin", default="auto", type=str, help="dtype of gpt attention plugin"
+    )
+    parser.add_argument("-gp", "--gemm_plugin", default="auto", type=str, help="dtype of gpt plugin")
     parser.add_argument(
         "-mpet", "--max_prompt_embedding_table_size", default=None, type=int, help="Max prompt embedding table size"
     )
@@ -284,6 +290,7 @@ def get_trtllm_deployable(args):
                 max_batch_size=args.max_batch_size,
                 max_num_tokens=args.max_num_tokens,
                 opt_num_tokens=args.opt_num_tokens,
+                max_seq_len=args.max_seq_len,
                 use_parallel_embedding=args.use_parallel_embedding,
                 max_prompt_embedding_table_size=args.max_prompt_embedding_table_size,
                 paged_kv_cache=(not args.no_paged_kv_cache),
@@ -293,6 +300,9 @@ def get_trtllm_deployable(args):
                 use_lora_plugin=args.use_lora_plugin,
                 lora_target_modules=args.lora_target_modules,
                 max_lora_rank=args.max_lora_rank,
+                multiple_profiles=args.multiple_profiles,
+                gpt_attention_plugin=args.gpt_attention_plugin,
+                gemm_plugin=args.gemm_plugin,
             )
         except Exception as error:
             raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))

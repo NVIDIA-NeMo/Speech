@@ -38,16 +38,24 @@ from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import (
     is_nemo_file,
     load_nemo_model,
 )
-from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
-from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
-from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
 from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load, load_distributed, refit
+
+LOGGER = logging.getLogger("NeMo")
+
+use_model_opt = True
+try:
+    from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
+    from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
+    from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
+except Exception as e:
+    LOGGER.warning(f"Cannot import the Model Optimizer, it will not be available. {type(e).__name__}: {e}")
+    use_model_opt = False
 
 use_deploy = True
 try:
     from nemo.deploy.utils import cast_output, str_ndarray2list
-except Exception:
+except Exception as e:
     use_deploy = False
 
 
@@ -66,8 +74,6 @@ try:
     from pytriton.model_config import Tensor
 except Exception:
     use_pytriton = False
-
-LOGGER = logging.getLogger("NeMo")
 
 
 class TensorRTLLM(ITritonDeployable):
@@ -95,6 +101,8 @@ class TensorRTLLM(ITritonDeployable):
         lora_ckpt_list: List[str] = None,
         load_model: bool = True,
         use_python_runtime: bool = True,
+        enable_chunked_context: bool = None,
+        max_tokens_in_paged_kv_cache: int = None,
     ):
         """
         Args:
@@ -104,9 +112,19 @@ class TensorRTLLM(ITritonDeployable):
             use_python_runtime (bool): whether to use python or c++ runtime.
         """
 
+        if use_python_runtime:
+            if enable_chunked_context is not None or max_tokens_in_paged_kv_cache is not None:
+                raise Exception(
+                    "enable_chunked_context and max_tokens_in_paged_kv_cache options "
+                    "work only with the TensorRT-LLM C++ runtime. Please set "
+                    "use_python_runtime=False to use these options."
+                )
+
         self.model_dir = model_dir
         self.lora_ckpt_list = lora_ckpt_list
         self.use_python_runtime = use_python_runtime
+        self.enable_chunked_context = enable_chunked_context if enable_chunked_context is not None else False
+        self.max_tokens_in_paged_kv_cache = max_tokens_in_paged_kv_cache
         self.model = None
         self.tokenizer = None
         self.n_gpus = None
@@ -148,6 +166,10 @@ class TensorRTLLM(ITritonDeployable):
         max_lora_rank: int = 64,
         max_num_tokens: int = None,
         opt_num_tokens: int = None,
+        max_seq_len: int = None,
+        multiple_profiles: bool = False,
+        gpt_attention_plugin: str = "auto",
+        gemm_plugin: str = "auto",
     ):
         """
         Exports nemo checkpoints to TensorRT-LLM.
@@ -179,6 +201,10 @@ class TensorRTLLM(ITritonDeployable):
             max_lora_rank (int): maximum lora rank.
             max_num_tokens (int):
             opt_num_tokens (int):
+            max_seq_len (int):
+            multiple_profiles: (bool): enables multiple profiles feature of TRT-LLM. Default = False
+            gpt_attention_plugin (str): enable the gpt attention plugin. Default = "auto"
+            gemm_plugin (str): enable the gpt plugin. Default = "auto"
         """
 
         if n_gpus is not None:
@@ -233,7 +259,12 @@ class TensorRTLLM(ITritonDeployable):
             tmp_dir = tempfile.TemporaryDirectory()
             nemo_export_dir = Path(tmp_dir.name)
 
-            if is_qnemo_checkpoint(nemo_checkpoint_path):
+            is_qnemo_ckpt = False
+            if use_model_opt:
+                if is_qnemo_checkpoint(nemo_checkpoint_path):
+                    is_qnemo_ckpt = True
+
+            if is_qnemo_ckpt:
                 if os.path.isdir(nemo_checkpoint_path):
                     nemo_export_dir = nemo_checkpoint_path
                 else:
@@ -310,6 +341,10 @@ class TensorRTLLM(ITritonDeployable):
                         paged_context_fmha=paged_context_fmha,
                         max_num_tokens=max_num_tokens,
                         opt_num_tokens=opt_num_tokens,
+                        max_seq_len=max_seq_len,
+                        multiple_profiles=multiple_profiles,
+                        gpt_attention_plugin=gpt_attention_plugin,
+                        gemm_plugin=gemm_plugin,
                     )
 
             tokenizer_path = os.path.join(nemo_export_dir, "tokenizer.model")
@@ -838,6 +873,8 @@ class TensorRTLLM(ITritonDeployable):
                         engine_dir=self.model_dir,
                         lora_ckpt_list=self.lora_ckpt_list,
                         use_python_runtime=self.use_python_runtime,
+                        enable_chunked_context=self.enable_chunked_context,
+                        max_tokens_in_paged_kv_cache=self.max_tokens_in_paged_kv_cache,
                     )
                     self._load_prompt_tables()
                 except Exception as error:

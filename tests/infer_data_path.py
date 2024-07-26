@@ -19,125 +19,22 @@ from pathlib import Path
 def get_infer_test_data():
     test_data = {}
 
-    test_data["NV-GPT-8B-Base-4k"] = {}
-    test_data["NV-GPT-8B-Base-4k"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-Base-4k"]["min_tps"] = 1
-    test_data["NV-GPT-8B-Base-4k"]["location"] = "Local"
-    test_data["NV-GPT-8B-Base-4k"]["model_dir"] = "/tmp/NV-GPT-8B-Base-4k/nv-gpt-8b-base-4k_v1.0/"
-    test_data["NV-GPT-8B-Base-4k"][
+    test_data["Nemotron3-22B-base-32k"] = {}
+    test_data["Nemotron3-22B-base-32k"]["model_type"] = "gptnext"
+    test_data["Nemotron3-22B-base-32k"]["min_tps"] = 2
+    test_data["Nemotron3-22B-base-32k"]["location"] = "Local"
+    test_data["Nemotron3-22B-base-32k"]["model_dir"] = "/tmp/Nemotron3-22B-base-32k/"
+    test_data["Nemotron3-22B-base-32k"][
         "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-Base-4k/nv-gpt-8b-base-4k_v1.0/NV-GPT-8B-Base-4k.nemo"
-    test_data["NV-GPT-8B-Base-4k"]["p_tuning_checkpoint"] = "/opt/checkpoints/NV-GPT-8B-PTuning/nv-gpt-8B-ptuning.nemo"
-    test_data["NV-GPT-8B-Base-4k"]["prompt_template"] = [
+    ] = "/opt/checkpoints/nemotron-3-22b-base-32k_v1.0/mcore-gpt3-22b-3_8T-pi32k-3_5T-cont-10k.nemo"
+    test_data["Nemotron3-22B-base-32k"]["prompt_template"] = [
         "The capital of France is",
         "Largest animal in the sea is",
         "Fastest animal in the world is",
     ]
-    test_data["NV-GPT-8B-Base-4k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Base-4k"]["max_output_len"] = 128
-    test_data["NV-GPT-8B-Base-4k"]["max_batch_size"] = 10
-
-    test_data["NV-GPT-8B-Base-16k"] = {}
-    test_data["NV-GPT-8B-Base-16k"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-Base-16k"]["min_tps"] = 1
-    test_data["NV-GPT-8B-Base-16k"]["location"] = "Local"
-    test_data["NV-GPT-8B-Base-16k"]["model_dir"] = "/tmp/NV-GPT-8B-Base-16k/nv-gpt-8b-base-16k_v1.0/"
-    test_data["NV-GPT-8B-Base-16k"][
-        "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-Base-16k/nv-gpt-8b-base-16k_v1.0/NV-GPT-8B-Base-16k.nemo"
-    test_data["NV-GPT-8B-Base-16k"]["prompt_template"] = [
-        "The capital of France is",
-        "Largest animal in the sea is",
-        "Fastest animal in the world is",
-    ]
-    test_data["NV-GPT-8B-Base-16k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Base-16k"]["max_output_len"] = 128
-    test_data["NV-GPT-8B-Base-16k"]["max_batch_size"] = 20
-
-    test_data["NV-GPT-8B-QA-4k"] = {}
-    test_data["NV-GPT-8B-QA-4k"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-QA-4k"]["min_tps"] = 1
-    test_data["NV-GPT-8B-QA-4k"]["location"] = "Local"
-    test_data["NV-GPT-8B-QA-4k"]["model_dir"] = "/tmp/NV-GPT-8B-QA-4k/nv-gpt-8b-qa-4k_v1.0/"
-    test_data["NV-GPT-8B-QA-4k"][
-        "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-QA-4k/nv-gpt-8b-qa-4k_v1.0/NV-GPT-8B-QA-4k.nemo"
-    test_data["NV-GPT-8B-QA-4k"]["prompt_template"] = [
-        "What is the capital of France?",
-        "What is the largest animal in the sea?",
-        "What is the fastest animal in the world?",
-    ]
-    test_data["NV-GPT-8B-QA-4k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-QA-4k"]["max_output_len"] = 96
-    test_data["NV-GPT-8B-QA-4k"]["max_batch_size"] = 20
-
-    test_data["NV-GPT-8B-Chat-4k-SFT"] = {}
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["min_tps"] = 1
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["location"] = "Local"
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["model_dir"] = "/tmp/NV-GPT-8B-Chat-4k-SFT/nv-gpt-8b-chat-4k-sft_v1.0/"
-    test_data["NV-GPT-8B-Chat-4k-SFT"][
-        "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-Chat-4k-SFT/nv-gpt-8b-chat-4k-sft_v1.0/NV-GPT-8B-Chat-4k-SFT.nemo"
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["prompt_template"] = [
-        "What is the capital of France?",
-        "What is the largest animal in the sea?",
-        "What is the fastest animal in the world?",
-    ]
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["max_output_len"] = 256
-    test_data["NV-GPT-8B-Chat-4k-SFT"]["max_batch_size"] = 5
-
-    test_data["NV-GPT-8B-Chat-4k-RLHF"] = {}
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["min_tps"] = 1
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["location"] = "Local"
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["model_dir"] = "/tmp/NV-GPT-8B-Chat-4k-RLHF/nv-gpt-8b-chat-4k-rlhf_v1.0/"
-    test_data["NV-GPT-8B-Chat-4k-RLHF"][
-        "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-Chat-4k-RLHF/nv-gpt-8b-chat-4k-rlhf_v1.0/NV-GPT-8B-Chat-4k-RLHF.nemo"
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["prompt_template"] = [
-        "What is the capital of France?",
-        "What is the largest animal in the sea?",
-        "What is the fastest animal in the world?",
-    ]
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["max_output_len"] = 128
-    test_data["NV-GPT-8B-Chat-4k-RLHF"]["max_batch_size"] = 10
-
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"] = {}
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["model_type"] = "gptnext"
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["min_tps"] = 1
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["location"] = "Local"
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"][
-        "model_dir"
-    ] = "/tmp/NV-GPT-8B-Chat-4k-SteerLM/nv-gpt-8b-chat-4k-steerlm_v1.0/"
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"][
-        "checkpoint"
-    ] = "/opt/checkpoints/NV-GPT-8B-Chat-4k-SteerLM/nv-gpt-8b-chat-4k-steerlm_v1.0/NV-GPT-8B-Chat-4k-SteerLM.nemo"
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["prompt_template"] = [
-        "What is the capital of France?",
-        "What is the largest animal in the sea?",
-        "What is the fastest animal in the world?",
-    ]
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["max_output_len"] = 128
-    test_data["NV-GPT-8B-Chat-4k-SteerLM"]["max_batch_size"] = 10
-
-    test_data["GPT-43B-Base"] = {}
-    test_data["GPT-43B-Base"]["model_type"] = "gptnext"
-    test_data["GPT-43B-Base"]["min_tps"] = 2
-    test_data["GPT-43B-Base"]["location"] = "Local"
-    test_data["GPT-43B-Base"]["model_dir"] = "/tmp/GPT-43B-Base/gpt-43B-base/"
-    test_data["GPT-43B-Base"]["checkpoint"] = "/opt/checkpoints/GPT-43B-Base/gpt-43B-base.nemo"
-    test_data["GPT-43B-Base"]["prompt_template"] = [
-        "The capital of France is",
-        "Largest animal in the sea is",
-        "Fastest animal in the world is",
-    ]
-    test_data["GPT-43B-Base"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
-    test_data["GPT-43B-Base"]["max_output_len"] = 128
-    test_data["GPT-43B-Base"]["max_batch_size"] = 10
+    test_data["Nemotron3-22B-base-32k"]["expected_keyword"] = ["Paris", "Whale", "Cheetah"]
+    test_data["Nemotron3-22B-base-32k"]["max_output_len"] = 128
+    test_data["Nemotron3-22B-base-32k"]["max_batch_size"] = 10
 
     test_data["LLAMA2-7B-base"] = {}
     test_data["LLAMA2-7B-base"]["model_type"] = "llama"
@@ -366,6 +263,17 @@ def get_infer_test_data():
     test_data["STARCODER1-15B-base"]["expected_keyword"] = ["fibonnaci"]
     test_data["STARCODER1-15B-base"]["max_output_len"] = 128
     test_data["STARCODER1-15B-base"]["max_batch_size"] = 5
+
+    test_data["STARCODER2-15B-base"] = {}
+    test_data["STARCODER2-15B-base"]["model_type"] = "starcoder"
+    test_data["STARCODER2-15B-base"]["min_tps"] = 1
+    test_data["STARCODER2-15B-base"]["location"] = "Local"
+    test_data["STARCODER2-15B-base"]["model_dir"] = "/tmp/STARCODER2-15B-base/trt_llm_model-1/"
+    test_data["STARCODER2-15B-base"]["checkpoint"] = "/opt/checkpoints/starcoder-2_15b_4k_vfinal/4194b.nemo"
+    test_data["STARCODER2-15B-base"]["prompt_template"] = ["def fibonnaci(n"]
+    test_data["STARCODER2-15B-base"]["expected_keyword"] = ["fibonnaci"]
+    test_data["STARCODER2-15B-base"]["max_output_len"] = 128
+    test_data["STARCODER2-15B-base"]["max_batch_size"] = 5
 
     test_data["GEMMA-base"] = {}
     test_data["GEMMA-base"]["model_type"] = "gemma"

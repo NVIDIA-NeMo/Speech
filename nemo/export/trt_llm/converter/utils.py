@@ -26,7 +26,7 @@ weights_dict = {}
 DECODER_MODEL_TYPE = {
     "gptj": 'GPTForCausalLM',
     "gptnext": 'GPTForCausalLM',
-    "llama": 'LLaMAForCausalLM',
+    "llama": 'LlamaForCausalLM',
     "gemma": 'GemmaForCausalLM',
     "falcon": 'FalconForCausalLM',
 }

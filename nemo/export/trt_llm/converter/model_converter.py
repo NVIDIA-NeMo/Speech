@@ -22,6 +22,8 @@ import tensorrt_llm
 from tensorrt_llm._utils import pad_vocab_size
 from tensorrt_llm.functional import non_gated_version
 from tensorrt_llm.layers import MoeConfig
+from tensorrt_llm.models.gpt.config import GPTConfig
+from tensorrt_llm.models.llama.config import LLaMAConfig
 from tensorrt_llm.models.modeling_utils import PretrainedConfig
 
 from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import (
@@ -31,6 +33,15 @@ from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import (
 from nemo.export.trt_llm.converter.utils import DECODER_MODEL_TYPE, split
 
 LOGGER = logging.getLogger("NeMo")
+
+
+def get_config(decoder_type, config):
+    if decoder_type == "llama":
+        return LLaMAConfig(**config)
+    elif decoder_type == "gpt" or decoder_type == "gptnext":
+        return GPTConfig(**config)
+    else:
+        return PretrainedConfig(**config)
 
 
 def prompt_convert(prompt_config, prompt_weights):
@@ -156,11 +167,13 @@ def model_to_trtllm_ckpt(
         'rotary_pct': nemo_model_config.get('rotary_percentage', 1.0),
         'rotary_base': nemo_model_config.get('rotary_base', 10000),
         'moe_num_experts': nemo_model_config.get('num_moe_experts', 0),
-        'moe_top_k': nemo_model_config.get('moe_router_topk'),
+        'moe_top_k': nemo_model_config.get('moe_router_topk', 0),
         'moe_normalization_mode': nemo_model_config.get(
             'moe_renorm_mode', MoeConfig.ExpertScaleNormalizationMode.RENORMALIZE
         ),
-        'moe_tp_mode': nemo_model_config.get('moe_tp_mode', MoeConfig.ParallelismMode.TENSOR_PARALLEL),
+        'moe_tp_mode': nemo_model_config.get(
+            'moe_tp_mode', 2
+        ),  # change MoeConfig.ParallelismMode.TENSOR_PARALLEL to 2
         'logits_dtype': 'float32',
         'world_size': world_size,
         'tp_size': tensor_parallel_size,
@@ -179,7 +192,7 @@ def model_to_trtllm_ckpt(
 
     if use_distributed_convert:
         config["gpus_per_node"] = gpus_per_node
-        model_configs.append(PretrainedConfig(**config))
+        model_configs.append(get_config(decoder_type, config))
         model_configs[0].mapping = tensorrt_llm.Mapping(
             world_size=world_size,
             rank=model_parallel_rank,
@@ -258,7 +271,7 @@ def model_to_trtllm_ckpt(
                 weights_dict_local["transformer.ln_f.bias"] = ln_f_bias
 
         config["gpus_per_node"] = gpus_per_node
-        model_config = PretrainedConfig(**config)
+        model_config = get_config(decoder_type, config)
         model_config.mapping = mapping
         model_configs.append(model_config)
         weights_dicts.append(weights_dict_local)

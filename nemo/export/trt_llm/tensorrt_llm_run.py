@@ -26,14 +26,25 @@ import numpy as np
 import tensorrt_llm
 import torch
 from mpi4py.futures import MPIPoolExecutor
-from tensorrt_llm.bindings import GptJsonConfig, GptSession, GptSessionConfig, KvCacheConfig, WorldConfig
 from tensorrt_llm.lora_manager import LoraManager
 from tensorrt_llm.quantization import QuantMode
 from tensorrt_llm.runtime import ModelConfig, ModelRunner, ModelRunnerCpp, SamplingConfig
-from tensorrt_llm.runtime.model_runner_cpp import ModelRunnerCppGptSession
+
 from transformers import PreTrainedTokenizer
 
 LOGGER = logging.getLogger("NeMo")
+
+use_trtllm_bindings = True
+try:
+    from tensorrt_llm.bindings import GptJsonConfig, GptSession, GptSessionConfig, KvCacheConfig, WorldConfig
+except Exception as e:
+    use_trtllm_bindings = False
+
+use_cpp_gpt_session = True
+try:
+    from tensorrt_llm.runtime.model_runner_cpp import ModelRunnerCppGptSession
+except Exception as e:
+    use_cpp_gpt_session = False
 
 
 @dataclass
@@ -131,6 +142,8 @@ def _load(
     lora_ckpt_list=None,
     num_beams=1,
     use_python_runtime: bool = True,
+    enable_chunked_context: bool = False,
+    max_tokens_in_paged_kv_cache: int = None,
 ):
     """The impl of `load` API for on a single GPU worker."""
     try:
@@ -145,7 +158,7 @@ def _load(
 
         max_batch_size = config["build_config"]["max_batch_size"]
         max_input_len = config["build_config"]["max_input_len"]
-        max_output_len = config["build_config"]["max_output_len"]
+        # max_output_len = config["build_config"]["max_output_len"]
         max_beam_width = config["build_config"]["max_beam_width"]
 
         runtime_rank = tensorrt_llm.mpi_rank()
@@ -166,8 +179,10 @@ def _load(
                 rank=runtime_rank,
                 max_batch_size=max_batch_size,
                 max_input_len=max_input_len,
-                max_output_len=max_output_len,
+                # max_output_len=max_output_len,
                 max_beam_width=max_beam_width,
+                enable_chunked_context=enable_chunked_context,
+                max_tokens_in_paged_kv_cache=max_tokens_in_paged_kv_cache,
                 debug_mode=False,
             )
 
@@ -279,6 +294,8 @@ def load(
     lora_ckpt_list: List[str] = None,
     num_beams: int = 1,
     use_python_runtime: bool = True,
+    enable_chunked_context: bool = False,
+    max_tokens_in_paged_kv_cache: int = None,
 ) -> TensorrtLLMHostContext:
     """Loaded the compiled LLM model and run it.
 
@@ -290,17 +307,42 @@ def load(
         config = json.load(f)
     world_size = config["pretrained_config"]["mapping"]["world_size"]
     if world_size == 1:
-        _load(tokenizer, engine_dir, lora_ckpt_list, num_beams, use_python_runtime)
+        _load(
+            tokenizer,
+            engine_dir,
+            lora_ckpt_list,
+            num_beams,
+            use_python_runtime,
+            enable_chunked_context,
+            max_tokens_in_paged_kv_cache,
+        )
         executor = None
     elif tensorrt_llm.mpi_world_size() > 1:
-        _load(tokenizer, engine_dir, lora_ckpt_list, num_beams, use_python_runtime)
+        _load(
+            tokenizer,
+            engine_dir,
+            lora_ckpt_list,
+            num_beams,
+            use_python_runtime,
+            enable_chunked_context,
+            max_tokens_in_paged_kv_cache,
+        )
         executor = None
         tensorrt_llm.mpi_barrier()
     else:
         executor = MPIPoolExecutor(max_workers=world_size)
         futures = []
         for _ in range(world_size):
-            future = executor.submit(_load, tokenizer, engine_dir, lora_ckpt_list, num_beams, use_python_runtime)
+            future = executor.submit(
+                _load,
+                tokenizer,
+                engine_dir,
+                lora_ckpt_list,
+                num_beams,
+                use_python_runtime,
+                enable_chunked_context,
+                max_tokens_in_paged_kv_cache,
+            )
             futures.append(future)
         for future in futures:
             future.result()

@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 
+## TODO: remove? unused
 def create_dataloader(
     dataset: "Dataset", drop_last: bool = True, pad_samples_to_global_batch_size=False, **kwargs
 ) -> DataLoader:
@@ -125,6 +126,14 @@ def add_megatron_sampler(
         persistent_workers=dataloader.persistent_workers,
         collate_fn=dataloader.collate_fn,
     )
+
+
+class WrappedDataLoader(DataLoader):
+    """Wrapper around torch DataLoader which stores the dataloader mode"""
+
+    def __init__(self, mode="train", **dataloader_kwargs):
+        super().__init__(**dataloader_kwargs)
+        self.mode = mode
 
 
 # TODO: Replace this with megatron.core.data.data_samplers after we upgrade

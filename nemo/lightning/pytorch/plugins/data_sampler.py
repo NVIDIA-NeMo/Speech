@@ -43,12 +43,13 @@ class MegatronDataSampler(DataSampler):
     def transform_dataloader(self, dataloader: DataLoader, consumed_samples: int = 0) -> DataLoader:
         from nemo.lightning.data import add_megatron_sampler
 
+        mode = getattr(dataloader, 'mode', 'train')
         return add_megatron_sampler(
             dataloader,
             micro_batch_size=self.micro_batch_size,
             global_batch_size=self.global_batch_size,
             rampup_batch_size=self.rampup_batch_size,
-            consumed_samples=self.init_consumed_samples,
+            consumed_samples=self.init_consumed_samples if mode == 'train' else 0,
             dataloader_type=self.dataloader_type,
         )
 

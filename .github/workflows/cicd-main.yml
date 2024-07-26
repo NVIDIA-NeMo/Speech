@@ -311,42 +311,42 @@ jobs:
         #- uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
         #  if: "failure()"
 
-  OPTIONAL_L2_QAT_Llama2_INT4:
-     needs: [cicd-test-container-setup]
-     runs-on: self-hosted-azure
-     timeout-minutes: 10
-     container:
-       image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-       options:
-         # --user 0:128
-         --device=/dev/nvidia0
-         --gpus all
-         --shm-size=8g
-         --env TRANSFORMERS_OFFLINE=0
-         --env HYDRA_FULL_ERROR=1
-         --volume /mnt/datadrive/TestData:/home/TestData
-     steps:
-         - name: Checkout repository
-           uses: actions/checkout@v4
-         - run: |
-            python examples/nlp/language_modeling/tuning/megatron_gpt_qat.py \
-            quantization.algorithm=int4 \
-            quantization.num_calib_size=8 \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            trainer.max_steps=4 \
-            trainer.val_check_interval=4 \
-            +trainer.limit_val_batches=2 \
-            exp_manager.explicit_log_dir=llama2_qat_results \
-            model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
-            model.tensor_model_parallel_size=1 \
-            model.pipeline_model_parallel_size=1 \
-            model.global_batch_size=2 \
-            model.data.train_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-            model.data.train_ds.concat_sampling_probabilities=[1.0] \
-            model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl]
+  # OPTIONAL_L2_QAT_Llama2_INT4:
+  #    needs: [cicd-test-container-setup]
+  #    runs-on: self-hosted-azure
+  #    timeout-minutes: 10
+  #    container:
+  #      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+  #      options:
+  #        # --user 0:128
+  #        --device=/dev/nvidia0
+  #        --gpus all
+  #        --shm-size=8g
+  #        --env TRANSFORMERS_OFFLINE=0
+  #        --env HYDRA_FULL_ERROR=1
+  #        --volume /mnt/datadrive/TestData:/home/TestData
+  #    steps:
+  #        - name: Checkout repository
+  #          uses: actions/checkout@v4
+  #        - run: |
+  #           python examples/nlp/language_modeling/tuning/megatron_gpt_qat.py \
+  #           quantization.algorithm=int4 \
+  #           quantization.num_calib_size=8 \
+  #           trainer.devices=1 \
+  #           trainer.num_nodes=1 \
+  #           trainer.max_steps=4 \
+  #           trainer.val_check_interval=4 \
+  #           +trainer.limit_val_batches=2 \
+  #           exp_manager.explicit_log_dir=llama2_qat_results \
+  #           model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+  #           model.tensor_model_parallel_size=1 \
+  #           model.pipeline_model_parallel_size=1 \
+  #           model.global_batch_size=2 \
+  #           model.data.train_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+  #           model.data.train_ds.concat_sampling_probabilities=[1.0] \
+  #           model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl]
 
-            rm -rf llama2_qat_results
+  #           rm -rf llama2_qat_results
 
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:

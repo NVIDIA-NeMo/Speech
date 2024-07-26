@@ -739,8 +739,7 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
                 config=self.transformer_config,
                 transformer_layer_spec=get_specs(
                     self.spec_name,
-                    self.transformer_config.num_moe_experts,
-                    self.transformer_config.moe_grouped_gemm,
+                    self.transformer_config,
                     self.transformer_engine,
                 ),
                 vocab_size=self.cfg.get('override_vocab_size', self.padded_vocab_size),

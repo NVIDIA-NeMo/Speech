@@ -501,8 +501,7 @@ class CLIPModel(MegatronModule):
                 add_class_token = True
             vision_layer_spec = get_specs(
                 model_cfg.text.get('name', ''),
-                vision_transformer_config.num_moe_experts,
-                vision_transformer_config.moe_grouped_gemm,
+                vision_transformer_config,
                 model_cfg.get('transformer_engine', True),
             )
             vision_layer_spec.submodules.self_attention.params['attn_mask_type'] = MCoreAttnMaskType.no_mask
@@ -527,8 +526,7 @@ class CLIPModel(MegatronModule):
                 config=text_transformer_config,
                 transformer_layer_spec=get_specs(
                     model_cfg.text.get('name', ''),
-                    text_transformer_config.num_moe_experts,
-                    text_transformer_config.moe_grouped_gemm,
+                    text_transformer_config,
                     model_cfg.get('transformer_engine', True),
                 ),
                 vocab_size=model_cfg.text.get('override_vocab_size', padded_vocab_size),

@@ -37,18 +37,36 @@ Step-by-step Guide for Fine-Tuning
 Checkpoints from HuggingFace
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Obtain the desired checkpoint from HuggigFace. 
+Obtain the desired checkpoint from HuggigFace. The checkpoints below have different arrangement and there are a few preprocessing step for each.
 
-* `Repository <https://huggingface.co/state-spaces>`__  for the Mamba2 models from the `Transformers are SSMs paper <https://arxiv.org/pdf/2405.21060>`__.
-* `Repository <https://huggingface.co/collections/nvidia/ssms-666a362c5c3bb7e4a6bcfb9c>`__  for the Mamba2 and Mamba2-Hybrid models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__.
+1. `Repository <https://huggingface.co/collections/nvidia/ssms-666a362c5c3bb7e4a6bcfb9c>`__  for the Mamba2 and Mamba2-Hybrid models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__.
+   The checkpoint from this repository is located in files tab under ``release/mp_rank_00/model_optim_rng.pt``. The tokenizer is under files tab and is named ``mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model``. You need both of these for conversion to ``.nemo`` checkpoint.
+
+2. `Repository <https://huggingface.co/state-spaces>`__  for the Mamba2 models from the `Transformers are SSMs paper <https://arxiv.org/pdf/2405.21060>`__.
+    For checkpoints from this repository, run the following python script to convert the pytorch checkpoint (`pytorch_model.bin` in the HuggingFace model card) to a format similar to the 8b models:
+
+    .. code:: python
+        
+        import torch
+        import os
+
+        ckpt_path = "/path/to/pytorch_model.bin"
+        pyt_checkpoint = torch.load(ckpt_path)
+        new_ckpt_path = os.path.join(os.path.dirname(ckpt_path), f"wrapped_{os.path.basename(ckpt_path)}")
+        
+        # Save the new checkpoint which will be used as the input to the conversion script
+        torch.save({"model": pyt_checkpoint}, new_ckpt_path)
+
+    You will use this ``wrapped_pytorch_model.bin`` for the conversion to ``.nemo`` in the next step.
+
 
 
 Convert the Pytorch Checkpoint to a NeMo Checkpoint
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-1. Get into NVIDIA Container 
+1. Get into the NVIDIA dev container from `NGC <https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo/tags>`_, or the 24.07 container (once released).
 
-2. Run the conversion script from <SCRIPT-PATH>. For this conversion script, you should provide the PyTorch state dictionary of the model for ``input_name_or_path``, i.e. this argument only accepts a single ``state_dict``.
+2. Run the conversion script from <SCRIPT-PATH>. For this conversion script, you should provide the checkpoint (and tokenizer in the case of 8b models) from the previous step for ``input_name_or_path``.
 
 .. code:: bash
 
@@ -56,7 +74,9 @@ Convert the Pytorch Checkpoint to a NeMo Checkpoint
                                     --input_name_or_path <path to the source pytorch model> \
                                     --output_path <path to target .nemo model> \
                                     --mamba_ssm_ngroups 8 \
-                                    --precision bf16
+                                    --precision bf16 \
+                                    --tokenizer_path=<path to tokenizer.model>
+                                    
 
 * Note: the ``mamba_ssm_ngroups`` parameter should be 1 for the Mamba2 models from the `Transformers are SSMs paper <https://arxiv.org/pdf/2405.21060>`__ (130m, 370m, 780m, 1.3b, and 2.7b) and 8 for the Mamba2 and Mamba2-Hybrid models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__ (both 8b).
 
@@ -69,7 +89,7 @@ The HuggingFace checkpoint for the 8b model is for TP of size 1, and so is the `
 
 .. code:: bash
    
-   python /opt/NeMo/examples/nlp/language_modeling/mamba_change_num_partition.py \
+   CUDA_VISIBLE_DEVICES="0" python /opt/NeMo/examples/nlp/language_modeling/mamba_change_num_partition.py \
           --model_file=<path to source .nemo model> \
           --target_file=<path to target .nemo model> \
           --tensor_model_parallel_size=1 \
@@ -79,7 +99,7 @@ The HuggingFace checkpoint for the 8b model is for TP of size 1, and so is the `
 
 After running this script, a ``.nemo`` model along with the TP-size number of folders (4 in this example) will be generated in the target path. The folders for each rank will be displayed as ``mp_rank_00`` to ``mp_rank_03`` in this example. 
 
-* Note: You can only use Tensor Parallelism for the 8b models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__ (Mamba2 8b and Mamba2-Hybrid 8b). This is due to the fact that the ``nroups`` parameter in the model architecture should be divisible by TP size. ``nroups`` parameter is 8 for NVIDIA models and 1 for other models in the list.
+* Note: You can only use Tensor Parallelism for the 8b models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__ (Mamba2 8b and Mamba2-Hybrid 8b). This is due to the fact that the ``mamba_ssm_ngroups`` parameter in the model architecture should be divisible by TP size. ``mamba_ssm_ngroups`` parameter is 8 for NVIDIA models and 1 for other models in the list.
 
 Run Fine-Tuning
 ^^^^^^^^^^^^^^^
@@ -93,21 +113,21 @@ Run Fine-Tuning
 
     MBS=4
     GBS=128
-    TP=2 # According to the saved checkpoint
+    TP=4 # According to the saved checkpoint
     SP=True # True only if TP>1 otherwise False
     SEQ_LEN=2048
-    NUM_DEVICES=2
+    NUM_DEVICES=8
     PATH_TO_NEMO_MODEL=<path to .nemo file>
     TRAIN_DATASET_PATH=<path to training dataset file>
     VAL_DATASET_PATH=<path to validation dataset file>
-    CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/conf/"
+    CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/tuning/conf/"
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
 
     export NVTE_FUSED_ATTN=1
     export NVTE_FLASH_ATTN=0
 
-    torchrun --nproc_per_node=${NUM_DEVICES} 
+    torchrun --nproc_per_node=${NUM_DEVICES} \
             /opt/NeMo/examples/nlp/language_modeling/tuning/megatron_mamba_finetuning.py \
             --config-path=${CONFIG_PATH} \
             --config-name=${CONFIG_NAME} \
@@ -135,7 +155,6 @@ Run Fine-Tuning
             model.optim.name="distributed_fused_adam" \
             model.data.train_ds.max_seq_length=${SEQ_LEN} \
             model.data.validation_ds.max_seq_length=${SEQ_LEN} \
-            model.mcore_gpt=True \
             model.micro_batch_size=${MBS} \
             model.global_batch_size=${GBS} \
             model.restore_from_path=${PATH_TO_NEMO_MODEL} \
@@ -143,8 +162,6 @@ Run Fine-Tuning
             model.data.validation_ds.file_names=[${VAL_DATASET_PATH}] \
             model.optim.lr=5e-6 \
             model.optim.sched.min_lr=1e-7
-
-* Note: The tokenizer for 8b models (Mamba2 8b and MAmba2-Hybrid 8b) can be found in the `HuggingFace repository <https://huggingface.co/collections/nvidia/ssms-666a362c5c3bb7e4a6bcfb9c>`__. Download it a set its path to ``TOKENIZER_MODEL`` (the tokenizer model file is under the name of ```mt_nlg_plus_multilingual_ja_zh_the_stack_frac_015_256k.model```). For other models, set ``TOKENIZER_MODEL=null`` since it will be downloaded from HuggingFace at the time of run.
 
 
 Evaluating the Fine-Tuned Model
@@ -156,13 +173,12 @@ Evaluating the Fine-Tuned Model
 
     MBS=32
     GBS=64
-    TP=2 # According to the fine-tuned checkpoint
+    TP=4 # According to the fine-tuned checkpoint
     SP=True # True only if TP>1 otherwise False
     SEQ_LEN=2048
-    NUM_DEVICES=2
+    NUM_DEVICES=8
     PATH_TO_NEMO_MODEL=<path to .nemo file>
-    TRAIN_DATASET_PATH=<path to training dataset file>
-    VAL_DATASET_PATH=<path to validation dataset file>
+    TEST_DATASET="[<path to test datasets (list)>]"
     CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/tuning/conf/"
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
@@ -170,12 +186,11 @@ Evaluating the Fine-Tuned Model
     export NVTE_FUSED_ATTN=1
     export NVTE_FLASH_ATTN=0
 
-    TEST_DATASET="[<path to test datasets (list)>]"
 
     CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/tuning/conf/"
     CONFIG_NAME="megatron_mamba_generate_config"
 
-    MASTER_PORT=15008 torchrun --nproc_per_node=${NUM_DEVICES}  /opt/NeMo/examples/nlp/language_modeling/tuning/megatron_mamba_generate.py \
+    torchrun --nproc_per_node=${NUM_DEVICES}  /opt/NeMo/examples/nlp/language_modeling/tuning/megatron_mamba_generate.py \
             --config-path=${CONFIG_PATH} \
             --config-name=${CONFIG_NAME} \
             trainer.devices=${NUM_DEVICES} \
@@ -196,11 +211,11 @@ Evaluating the Fine-Tuned Model
             +model.peft.restore_from_ckpt.checkpoint_dir=False \
             +model.peft.restore_from_ckpt.checkpoint_name=False \
             model.tensor_model_parallel_size=${TP} \
-            model.sequence_parallel=$SP \
             model.micro_batch_size=${MBS} \
             model.global_batch_size=${GBS} \
             model.restore_from_path=${PATH_TO_NEMO_MODEL} \
             model.data.test_ds.file_names=${TEST_DATASET} \
+            model.data.test_ds.names=["squad"] \
             model.data.test_ds.global_batch_size=${GBS} \
             model.data.test_ds.micro_batch_size=${MBS} \
             model.data.test_ds.tokens_to_generate=30 \
@@ -219,7 +234,7 @@ Evaluating the Fine-Tuned Model
 Inference
 ^^^^^^^^^
 
-For running inference on a Mamba model, one should use ``megatron_mamba_eval.py`` script. For example:
+For running inference on a Mamba model, one should use ``megatron_mamba_eval.py`` script. This evaluation script currently requires tensor/model parallel (TP1) of size one. If your checkpoint has TP>1, use the TP conversion step from above and set ``target_tensor_model_parallel_size=1``. The following is an example for using evaluation script:
 
 .. code:: bash
 

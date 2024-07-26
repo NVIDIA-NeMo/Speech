@@ -75,7 +75,7 @@ Convert the Pytorch Checkpoint to a NeMo Checkpoint
                                     --output_path <path to target .nemo model> \
                                     --mamba_ssm_ngroups 8 \
                                     --precision bf16 \
-                                    --tokenizer_path=<path to tokenizer.model>
+                                    --tokenizer_model_dir=<path to tokenizer.model> # Remove this line (or set it to None) for 130m, 370m, 780m, 1.3b, and 2.7b models.
                                     
 
 * Note: the ``mamba_ssm_ngroups`` parameter should be 1 for the Mamba2 models from the `Transformers are SSMs paper <https://arxiv.org/pdf/2405.21060>`__ (130m, 370m, 780m, 1.3b, and 2.7b) and 8 for the Mamba2 and Mamba2-Hybrid models by `NVIDIA <https://arxiv.org/pdf/2406.07887>`__ (both 8b).

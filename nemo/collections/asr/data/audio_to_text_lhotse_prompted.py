@@ -173,7 +173,7 @@ def canary(
                     role="assistant",
                     slots={
                         "text": ' '.join(s.text for s in cut.supervisions),
-                        formatter.PROMPT_LANGUAGE_SLOT: cut.custom["target_lang"],
+                        formatter.PROMPT_LANGUAGE_SLOT: cut.supervisions[0].language,
                     },
                 ),
             ]

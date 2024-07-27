@@ -34,12 +34,12 @@ def move_dimension_to_the_front(tensor, dim_index):
 # TODO: Add documentation
 class BLEU(SacreBLEUScore):
     """
-    This metric computes numerator, denominator, hypotheses lengths, and target lengths for Overall Bilingual Evaluation Understudy (BLEU) 
-    between prediction and reference texts. When doing distributed training/evaluation the result of 
+    This metric computes numerator, denominator, hypotheses lengths, and target lengths for Overall Bilingual Evaluation Understudy (BLEU)
+    between prediction and reference texts. When doing distributed training/evaluation the result of
     ``res=BLEU.(predictions, predictions_lengths, targets, target_lengths)``
     calls will be all-reduced between all workers using SUM operations.
 
-    If used with PytorchLightning LightningModule, include bleu_num bleur_den, bleu_pred_len, and bleu_target_len values inside 
+    If used with PytorchLightning LightningModule, include bleu_num bleur_den, bleu_pred_len, and bleu_target_len values inside
     validation_step results. Then aggregate (sum) then at the end of validation epoch to correctly compute validation BLEUR.
 
     Example:
@@ -99,7 +99,6 @@ class BLEU(SacreBLEUScore):
             smooth=smooth,
             dist_sync_on_step=dist_sync_on_step,
         )
-        self.has_spl_tokens = False
         self.decoding = decoding
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
@@ -113,7 +112,6 @@ class BLEU(SacreBLEUScore):
                 fold_consecutive=self.fold_consecutive,
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
-            self.has_spl_tokens = True
             self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids, targets: self.decoding.decode_predictions_tensor(
                 encoder_hidden_states=predictions,
                 encoder_input_mask=predictions_mask,
@@ -165,10 +163,6 @@ class BLEU(SacreBLEUScore):
                 references.append(reference)
             hypotheses, _ = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
 
-            if self.has_spl_tokens:
-                hypotheses = [self.decoding.strip_special_tokens(hyp) for hyp in hypotheses]
-                references = [self.decoding.strip_special_tokens(ref) for ref in references]
-
         if self.log_prediction:
             logging.info(f"\n")
             logging.info(f"reference:{references[0]}")
@@ -185,7 +179,7 @@ class BLEU(SacreBLEUScore):
                 only BLEU. Default: True.
             prefix: str to prepend to metric value keys.
             suffix: str to append to metric value keys.
-        
+
         Returns:
             Dict: key-value pairs of BLEU metrics and values. Keys are prepended and appended with prefix
                 and suffix flags, respectively.
@@ -205,7 +199,11 @@ class BLEU(SacreBLEUScore):
 
     # Adding wrapper to avoid imports and extra variables over the namespace
     def _compute_bleu(
-        self, predictions_lengths, targets_lengths, numerator, denominator,
+        self,
+        predictions_lengths,
+        targets_lengths,
+        numerator,
+        denominator,
     ):
         return _bleu_score_compute(
             predictions_lengths, targets_lengths, numerator, denominator, self.n_gram, self.weights, self.smooth

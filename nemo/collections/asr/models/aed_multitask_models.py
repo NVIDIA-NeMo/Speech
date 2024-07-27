@@ -918,19 +918,6 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             return_hypotheses=trcfg.return_hypotheses,
         )
 
-        if trcfg.return_hypotheses:
-            for hyp in best_hypotheses:
-                hyp.text = self.decoding.strip_special_tokens(hyp.text)
-            if all_hypotheses is not None:
-                for i in range(len(all_hypotheses)):
-                    for j in range(len(all_hypotheses[i])):
-                        all_hypotheses[i][j].text = self.decoding.strip_special_tokens(all_hypotheses[i][j].text)
-        else:
-            best_hypotheses = [self.decoding.strip_special_tokens(text) for text in best_hypotheses]
-            if all_hypotheses is not None:
-                for i in range(len(all_hypotheses)):
-                    all_hypotheses[i] = [self.decoding.strip_special_tokens(text) for text in all_hypotheses[i]]
-
         del enc_states, enc_mask, decoder_input_ids
         if all_hypotheses is None:
             return best_hypotheses

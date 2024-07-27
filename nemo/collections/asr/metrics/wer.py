@@ -148,8 +148,8 @@ def word_error_rate_detail(
 def word_error_rate_per_utt(hypotheses: List[str], references: List[str], use_cer=False) -> Tuple[List[float], float]:
     """
     Computes Word Error Rate per utterance and the average WER
-    between two texts represented as corresponding lists of string. 
-    
+    between two texts represented as corresponding lists of string.
+
     Hypotheses and references must have same length.
 
     Args:
@@ -263,7 +263,6 @@ class WER(Metric):
         self.fold_consecutive = fold_consecutive
         self.batch_dim_index = batch_dim_index
 
-        self.has_spl_tokens = False
         self.decode = None
         if isinstance(self.decoding, AbstractRNNTDecoding):
             self.decode = lambda predictions, predictions_lengths, predictions_mask, input_ids, targets: self.decoding.rnnt_decoder_predictions_tensor(
@@ -276,7 +275,6 @@ class WER(Metric):
                 fold_consecutive=self.fold_consecutive,
             )
         elif isinstance(self.decoding, AbstractMultiTaskDecoding):
-            self.has_spl_tokens = True
             self.decode = lambda predictions, prediction_lengths, predictions_mask, input_ids, targets: self.decoding.decode_predictions_tensor(
                 encoder_hidden_states=predictions,
                 encoder_input_mask=predictions_mask,
@@ -325,10 +323,6 @@ class WER(Metric):
                 reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
             hypotheses, _ = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
-
-            if self.has_spl_tokens:
-                hypotheses = [self.decoding.strip_special_tokens(hyp) for hyp in hypotheses]
-                references = [self.decoding.strip_special_tokens(ref) for ref in references]
 
         if self.log_prediction:
             logging.info(f"\n")

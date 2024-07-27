@@ -295,17 +295,6 @@ class AbstractMultiTaskDecoding(ABC):
         """
         raise NotImplementedError()
 
-    def strip_special_tokens(self, text: str):
-        """
-        assuming all special tokens are of format <token>
-        Note that if any label/pred is of format <token>, it will be stripped
-        """
-        assert isinstance(text, str), f"Expected str, got {type(text)}"
-        text = re.sub(r'<[^>]+>', '', text)
-        # strip spaces at the beginning and end;
-        # this is training data artifact, will be fixed in future (@kpuvvada)
-        return text.strip()
-
 
 class MultiTaskDecoding(AbstractMultiTaskDecoding):
     """

@@ -16,9 +16,13 @@ class CanaryPromptFormatter(PromptFormatter):
             "template": f"{CANARY_BOS}|source_lang||task||target_lang||pnc|",
             "slots": {
                 "source_lang": Modality.Text,
-                "task": Modality.TextLiteral("asr", "ast", "s2t_translation", "<|transcribe|>", "<|translate|>"),
+                "task": Modality.TextLiteral(
+                    "asr", "ast", "translate", "transcribe", "s2t_translation", "<|transcribe|>", "<|translate|>"
+                ),
                 "target_lang": Modality.Text,
-                "pnc": Modality.TextLiteral("yes", "no", "<|pnc|>", "<|nopnc|>"),
+                "pnc": Modality.TextLiteral(
+                    "yes", "no", "true", "True", "false", "False", "1", "0", "pnc", "nopnc", "<|pnc|>", "<|nopnc|>"
+                ),
             },
         },
         OUTPUT_ROLE: {
@@ -54,13 +58,18 @@ def map_manifest_values_to_special_tokens(slot_values: dict[str, str]) -> dict[s
 
     k = "pnc"
     if k in slot_values and slot_values[k] not in (CANARY_PNC, CANARY_NOPNC):
-        slot_values[k] = CANARY_PNC if slot_values[k] in ("yes", "1", "True", "true") else CANARY_NOPNC
+        slot_values[k] = CANARY_PNC if slot_values[k] in ("yes", "1", "True", "true", "pnc") else CANARY_NOPNC
         any_special_token_present = True
 
     # Note: we re-map 'taskname' to 'task' for compatibility with earlier versions of Canary training.
     for k in ("task", "taskname"):
         if k in slot_values and slot_values[k] not in ("<|transcribe|>", "<|translate|>"):
-            slot_values["task"] = "<|transcribe|>" if slot_values[k] == "asr" else "<|translate|>"
+            if slot_values[k] in {"translate", "ast", "s2t_translation"}:
+                slot_values["task"] = "<|translate|>"
+            elif slot_values[k] in {"transcribe", "asr"}:
+                slot_values["task"] = "<|transcribe|>"
+            else:
+                assert False, f"Task {slot_values[k]} invalid task for slot {k}"
             any_special_token_present = True
 
     # Auto-inject which tokenizer to look up in CanaryTokenizer if not provided,

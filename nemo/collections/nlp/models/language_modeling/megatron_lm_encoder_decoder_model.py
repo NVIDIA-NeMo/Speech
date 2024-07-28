@@ -274,8 +274,18 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
             en_block_spec = enc_dec_spec_fns[0](self.cfg.encoder.num_layers)
             de_block_spec = enc_dec_spec_fns[1](self.cfg.decoder.num_layers)
+
+            encoder_config = copy.deepcopy(self.transformer_config)
+            encoder_config.num_layers = self.cfg.encoder.num_layers
+            if self.cfg.pipeline_model_parallel_size > 1:
+                assert (
+                    self.cfg.pipeline_model_parallel_split_rank is not None
+                ), "Need to know how to shard the encoder & decoder."
+                encoder_config.pipeline_model_parallel_size = self.cfg.pipeline_model_parallel_split_rank
+
             model = MCoreT5Model(
                 config=self.transformer_config,
+                encoder_config=encoder_config,
                 transformer_encoder_layer_spec=en_block_spec,
                 transformer_decoder_layer_spec=de_block_spec,
                 vocab_size=self.padded_vocab_size,
@@ -1787,6 +1797,9 @@ class MegatronLMEncoderDecoderModel(MegatronBaseModel):
 
                     # addressing the current T5 mcore version's implementation of sharded_state_dict
                     checkpoint_state_dict['lm_head.output_layer.bias'] = checkpoint_state_dict['output_layer.bias']
+                    checkpoint_state_dict['position_embeddings.weight'] = checkpoint_state_dict[
+                        'embedding.position_embeddings.weight'
+                    ]
 
                     module.load_state_dict(checkpoint_state_dict, strict=True)
             else:

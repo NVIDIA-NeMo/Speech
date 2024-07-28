@@ -3858,7 +3858,7 @@ jobs:
         trainer.precision=16 \
         trainer.gradient_clip_val=1.0 \
         exp_manager.exp_dir=examples/nlp/language_modeling/t5_pretrain_results \
-        model.pipeline_model_parallel_split_rank=1 \
+        model.pipeline_model_parallel_split_rank=0 \
         model.seq_length=256 \
         model.encoder.num_layers=4 \
         model.decoder.num_layers=1 \

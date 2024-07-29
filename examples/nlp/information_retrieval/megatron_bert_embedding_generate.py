@@ -36,10 +36,6 @@ def main(cfg) -> None:
 
     model_cfg = MegatronBertEmbeddingModel.merge_cfg_with(cfg.restore_from_path, cfg)
 
-    assert (
-        model_cfg.micro_batch_size * cfg.trainer.devices * cfg.trainer.num_nodes == model_cfg.global_batch_size
-    ), "Gradiant accumulation is not supported for contrastive learning yet"
-
     OmegaConf.set_struct(model_cfg, True)
     with open_dict(model_cfg):
         model_cfg.precision = trainer.precision
@@ -53,7 +49,7 @@ def main(cfg) -> None:
         strict=True,
     )
 
-    trainer.fit(model)
+    trainer.test(model)
 
 
 if __name__ == '__main__':

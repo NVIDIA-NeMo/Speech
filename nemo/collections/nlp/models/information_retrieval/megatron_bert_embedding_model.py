@@ -13,6 +13,9 @@
 # limitations under the License.
 
 import logging
+import os
+
+import numpy as np
 
 try:
     from megatron.core import parallel_state
@@ -29,6 +32,8 @@ from megatron.core.models.bert.bert_layer_specs import bert_layer_with_transform
 from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
+from torch.distributed import all_gather as all_gather_no_backprop
+from torch.distributed.nn.functional import all_gather as all_gather_with_backprop
 
 from nemo.collections.nlp.data.information_retrieval.bert_embedding_dataset import BertEmbeddingDataset
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
@@ -62,6 +67,14 @@ except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE = False
 
 
+def listify(tensor):
+    l_tensor = []
+    for t in tensor:
+        r = t[:].unsqueeze(0).cpu()
+        l_tensor.append(r)
+    return l_tensor
+
+
 class MegatronBertEmbeddingModel(MegatronBertModel):
     """
     Megatron Bert pretraining.
@@ -74,6 +87,10 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
         self.cross_entropy_loss = torch.nn.CrossEntropyLoss(label_smoothing=cfg.get('label_smoothing', 0.0))
         softmax_temp = cfg.get('softmax_temp', 0.05)
         self.scale = 1.0 / softmax_temp
+        self.hard_negatives_to_train = self.cfg.data.get("hard_negatives_to_train", 4)
+        self.global_inbatch_negatives = self.cfg.get("global_inbatch_negatives", True)
+        self.backprop_type = self.cfg.get("backprop_type", "local")
+        assert self.backprop_type in ["local", "global"], "Backprop type must be `local` or `global`"
 
     def model_provider_func(self, pre_process, post_process):
         cfg = self.cfg
@@ -141,34 +158,61 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
 
         return model
 
-    def build_train_valid_test_datasets(self):
+    def build_train_valid_test_datasets(self, is_train=True):
 
         self._train_ds = None
         self._validation_ds = None
         self._test_ds = None
 
-        self._train_ds = BertEmbeddingDataset(
-            self.cfg.data.data_train,
-            tokenizer=self.tokenizer,
-            add_bos=True,
-            num_hard_negatives=self.cfg.data.get("hard_negatives_to_train", 4),
-            max_seq_length=self.cfg.encoder_seq_length,
-        )
-        if self.cfg.data.data_validation:
-            self._validation_ds = BertEmbeddingDataset(
-                self.cfg.data.data_validation,
+        if is_train:
+            self._train_ds = BertEmbeddingDataset(
+                self.cfg.data.data_train,
                 tokenizer=self.tokenizer,
                 add_bos=True,
                 num_hard_negatives=self.cfg.data.get("hard_negatives_to_train", 4),
                 max_seq_length=self.cfg.encoder_seq_length,
             )
+            if self.cfg.data.data_validation:
+                self._validation_ds = BertEmbeddingDataset(
+                    self.cfg.data.data_validation,
+                    tokenizer=self.tokenizer,
+                    add_bos=True,
+                    num_hard_negatives=self.cfg.data.get("hard_negatives_to_train", 4),
+                    max_seq_length=self.cfg.encoder_seq_length,
+                )
+
+        else:
+            logging.info(f'Building test dataset')
+            if self.cfg.data.data_test.query_file_names is None or self.cfg.data.data_test.doc_file_names is None:
+                return []
+
+            query_dataset = BertEmbeddingDataset(
+                file_path=self.cfg.data.data_test.query_file_names[0],
+                tokenizer=self.tokenizer,
+                max_seq_length=self.cfg.encoder_seq_length,
+                add_bos=True,
+                add_eos=True,
+                data_type="query",
+            )
+            doc_dataset = BertEmbeddingDataset(
+                file_path=self.cfg.data.data_test.doc_file_names[0],
+                tokenizer=self.tokenizer,
+                max_seq_length=self.cfg.encoder_seq_length,
+                add_bos=True,
+                add_eos=True,
+                data_type="doc",
+            )
+
+            self._test_ds = [query_dataset, doc_dataset]
 
         if self._train_ds is not None:
             logging.info(f'Length of train dataset: {len(self._train_ds)}')
         if self._validation_ds is not None:
             logging.info(f'Length of val dataset: {len(self._validation_ds)}')
         if self._test_ds is not None:
-            logging.info(f'Length of test dataset: {len(self._test_ds)}')
+            logging.info(f'Length of test query dataset: {len(self._test_ds[0])}')
+            logging.info(f'Length of test doc dataset: {len(self._test_ds[1])}')
+
         logging.info(f'Finished building SBert datasets.')
 
         return self._train_ds, self._validation_ds, self._test_ds
@@ -202,6 +246,9 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
 
         if stage == 'predict':
             return
+        elif stage == 'test':
+            self.build_train_valid_test_datasets(is_train=False)
+            self.setup_test_data(self.cfg.data)
         else:
             # TODO: consider adding a ModelPT guard to check if model is being restored.
             # allowing restored models to optionally setup datasets
@@ -292,7 +339,8 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                     global_batch_size=self.cfg.global_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
-                    drop_last=self.cfg.get('drop_last', True),
+                    drop_last=self.cfg.get('drop_last', False),
+                    pad_samples_to_global_batch_size=not self.cfg.get('drop_last', False),
                 )
             elif self.cfg.data.dataloader_type == 'cyclic':
                 batch_sampler = MegatronPretrainingRandomSampler(
@@ -301,7 +349,8 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                     micro_batch_size=self.cfg.micro_batch_size,
                     data_parallel_rank=parallel_state.get_data_parallel_rank(),
                     data_parallel_size=parallel_state.get_data_parallel_world_size(),
-                    drop_last=self.cfg.get('drop_last', True),
+                    drop_last=self.cfg.get('drop_last', False),
+                    pad_samples_to_global_batch_size=not self.cfg.get('drop_last', False),
                 )
             else:
                 raise ValueError('cfg.data.dataloader_type must be "single" or "cyclic"')
@@ -336,6 +385,24 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                 f'Setting up validation dataloader with len(len(self._validation_ds)): {len(self._validation_ds)} and consumed samples: {consumed_samples}'
             )
             self._validation_dl = self.build_pretraining_data_loader(self._validation_ds, consumed_samples)
+
+    def setup_eval_dataloader(self, datasets):
+        dataloaders = []
+        for dataset in datasets:
+            eval_dl = self.build_pretraining_data_loader(
+                dataset=dataset,
+                consumed_samples=0,
+            )
+            dataloaders.append(eval_dl)
+        return dataloaders
+
+    def setup_test_data(self, cfg):
+        if self._test_ds:
+            logging.info(
+                f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds[0])}, {len(self._test_ds[1])}'
+            )
+            self._test_dl = self.setup_eval_dataloader(self._test_ds)
+            return
 
     def training_step(self, dataloader_iter):
 
@@ -437,7 +504,8 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
     def get_forward_output_and_loss_func(self):
         def fwd_output_and_loss_func(dataloader_iter, model, checkpoint_activations_all_layers=None):
 
-            batches = next(dataloader_iter)[0]
+            batches, _, dl_idx = next(dataloader_iter)
+            metadata = batches.pop('metadata')
             batches = {k: v.cuda(non_blocking=True) for k, v in batches.items()}
 
             if self.mcore_bert:
@@ -461,15 +529,170 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
                     loss = lm_loss
                     reduced_loss = average_losses_across_data_parallel_group([loss, lm_loss])
 
-                return loss, {'loss': reduced_loss}
+                if 'hs' in loss_dict:
+                    # metadata = batches.get('metadata', [{}] * len(batches['input_ids']))
+                    return loss, {
+                        'loss': reduced_loss,
+                        'd_hs': loss_dict['hs'],
+                        'q_hs': loss_dict['hs'],
+                        'metadata': metadata,
+                        'dl_idx': dl_idx,
+                    }
+                else:
+                    return loss, {'loss': reduced_loss}
 
             return output_tensor, loss_func
 
         return fwd_output_and_loss_func
 
-    def loss_func(self, output_tensor):
+    def validation_step(self, dataloader_iter):
+        prefix = "test" if self.trainer.testing else "val"
+        if self.cfg.data.dataloader_type == "LDDL":
+            seq_length = dataloader_iter.iterator.get_seqlen()
+        else:
+            seq_length = self.cfg.encoder_seq_length
 
-        chunks = output_tensor.chunk(self.cfg.micro_batch_size)
+        fwd_bwd_function = get_forward_backward_func()
+
+        losses_reduced_per_micro_batch = fwd_bwd_function(
+            forward_step_func=self.get_forward_output_and_loss_func(),
+            data_iterator=self._make_data_iterator_list(dataloader_iter),
+            model=self.model,
+            num_microbatches=get_num_microbatches(),
+            forward_only=True,
+            seq_length=seq_length,
+            micro_batch_size=self.cfg.micro_batch_size,
+        )
+
+        if losses_reduced_per_micro_batch:
+            loss_tensors_list = [loss_reduced['loss'] for loss_reduced in losses_reduced_per_micro_batch]
+            loss_tensor = torch.vstack(loss_tensors_list)
+            loss_mean = loss_tensor.mean(axis=0)
+        else:
+            loss_mean = torch.tensor([0.0]).cuda()
+
+        loss = loss_mean[0]
+        if prefix == 'val':
+            self.validation_step_outputs.append(loss)
+        else:
+            assert len(losses_reduced_per_micro_batch) == 1
+            dataloader_idx = losses_reduced_per_micro_batch[0]['dl_idx']
+            self.test_step_outputs[dataloader_idx].append(losses_reduced_per_micro_batch[0])
+        return loss
+
+    def on_test_epoch_end(self):
+        for dataloader_idx, output in enumerate(self.test_step_outputs):
+            self.gather_and_maybe_write_predictions(output, self.cfg.data.data_test, 'test', dataloader_idx)
+
+    def gather_and_maybe_write_predictions(self, output, data_cfg, mode, dataloader_idx=0):
+        if not data_cfg.get("write_embeddings_to_file", False):
+            return True
+        gathered_output_batches = [None for _ in range(parallel_state.get_data_parallel_world_size())]
+        torch.distributed.all_gather_object(
+            gathered_output_batches,
+            [
+                {
+                    'q_hs': batch['q_hs'],
+                    'd_hs': batch['d_hs'],
+                    'metadata': batch['metadata'],
+                }
+                for batch in output
+            ],
+            group=parallel_state.get_data_parallel_group(),
+        )
+
+        # Remove duplicate examples due to distributed sampler.
+        deduplicated_outputs = {
+            'q_hs': [],
+            'd_hs': [],
+            'metadata': [],
+        }
+        total_size, skipped = 0, 0
+        for rank in range(0, parallel_state.get_data_parallel_world_size()):
+            for batch in gathered_output_batches[rank]:
+                l_q_hs = listify(batch['q_hs'])
+                l_d_hs = listify(batch['d_hs'])
+                l_m = batch['metadata']
+                assert len(l_m) == len(l_q_hs) == len(l_d_hs)
+                for q_hs, d_hs, metadata in zip(
+                    l_q_hs,
+                    l_d_hs,
+                    l_m,
+                ):
+                    total_size += 1
+                    if not metadata.get("__AUTOGENERATED__", False):
+                        deduplicated_outputs['q_hs'].append(q_hs)
+                        deduplicated_outputs['d_hs'].append(d_hs)
+                        deduplicated_outputs['metadata'].append(metadata)
+                    else:
+                        skipped += 1
+
+        logging.info(
+            f"{total_size-skipped} deduplicated outputs in dataloader:{dataloader_idx}, (skipped {skipped} autogenerated examples)."
+        )
+
+        # Write predictions to file
+        if self.global_rank == 0 and data_cfg.get("write_embeddings_to_file", False):
+            logging.info(
+                f"Total deduplicated inference data size: {total_size} to {len(deduplicated_outputs['metadata'])}"
+            )
+
+            # Check if the user provided a prefix path to the file(s) they want to write.
+            if not hasattr(data_cfg, "output_file_path_prefix") or data_cfg.output_file_path_prefix is None:
+                raise ValueError(
+                    f"Cannot write predictions to file when output_file_path_prefix is not set or present in the yaml config file."
+                )
+            filename_log_key = f"{mode}_{data_cfg.names[dataloader_idx]}"
+            consumed_samples = self._compute_consumed_samples_after_training_step()
+            fldr_path = f"{data_cfg.output_file_path_prefix}/consumed_samples{consumed_samples}/{filename_log_key}"
+            self.write_embeddings_to_file(deduplicated_outputs, fldr_path, dataloader_idx)
+        return deduplicated_outputs, total_size
+
+    def write_embeddings_to_file(self, outputs, output_file_path, d_idx):
+        emb_type = 'query' if d_idx == 0 else 'doc'
+        hs = torch.cat(outputs['q_hs' if d_idx == 0 else 'd_hs'], dim=0)
+        hs_npy = hs.float().numpy()
+        emb_fldr = f"{output_file_path}"
+        os.makedirs(emb_fldr, exist_ok=True)
+        with open(f"{output_file_path}/{emb_type}.ids", "w") as f:
+            for m in outputs['metadata']:
+                f.write(m[f"{emb_type}_id"] + "\n")
+        np.save(f"{emb_fldr}/{emb_type}.npy", hs_npy)
+        return True
+
+    def inference_loss_func(self, eos_tensors):
+        hs = eos_tensors
+        _blank = torch.zeros(1, device=hs.device, dtype=hs.dtype)[0]
+        return {
+            'hs': eos_tensors,
+            'lm loss': _blank,
+        }
+
+    def _gather_global_inbatch_representations(self, local_tensor):
+        local_tensor = local_tensor.contiguous()
+        if self.backprop_type == 'local':
+            global_tensors = [
+                torch.zeros_like(local_tensor) for _ in range(parallel_state.get_data_parallel_world_size())
+            ]
+            all_gather_no_backprop(global_tensors, local_tensor, group=parallel_state.get_data_parallel_group())
+            global_tensors[parallel_state.get_data_parallel_rank()] = local_tensor
+            global_tensors = torch.cat(global_tensors, dim=0)
+
+        else:
+            global_tensors = all_gather_with_backprop(local_tensor)
+            global_tensors = torch.cat(global_tensors, dim=0)
+
+        return global_tensors
+
+    def loss_func(self, output_tensor):
+        if self.global_inbatch_negatives and self.trainer.training:
+            output_tensor = self._gather_global_inbatch_representations(output_tensor)
+        if self.trainer.testing:
+            return self.inference_loss_func(output_tensor)
+
+        num_tensors_per_example = 2 + self.hard_negatives_to_train
+        bs = output_tensor.shape[0] // num_tensors_per_example
+        chunks = output_tensor.chunk(bs)
         queries = torch.stack([item[0] for item in chunks])  # shape (bs, embedding_dim)
         positives = torch.stack([item[1] for item in chunks])  # shape (bs, embedding_dim)
 
@@ -478,8 +701,7 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
         )  # shape (bs, bs); each positive is negative for other queries.
 
         hard_negs = [
-            torch.stack([item[i + 2] for item in chunks])
-            for i in range(self.cfg.data.get("hard_negatives_to_train", 4))
+            torch.stack([item[i + 2] for item in chunks]) for i in range(self.hard_negatives_to_train)
         ]  # List of length "num_negatives", each tensor of shape (bs, embedding_dim)
 
         hard_negs_scores = (
@@ -493,6 +715,7 @@ class MegatronBertEmbeddingModel(MegatronBertModel):
 
         scores = torch.cat([pos_inbatch_negs_scores, hard_negs_scores], axis=1)
 
+        scores = scores.clamp(-1.0, 1.0)
         scores *= self.scale
 
         labels = torch.tensor(

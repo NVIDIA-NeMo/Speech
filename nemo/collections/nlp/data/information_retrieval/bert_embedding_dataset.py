@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from random import choices, sample
 from typing import Mapping, Optional
 
 import datasets
@@ -50,7 +51,7 @@ class BertEmbeddingDataset(Dataset):
         num_hard_negatives: int = 4,
     ):
         """
-        file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format. 
+        file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format.
         tokenizer: Tokenizer for the dataset. Instance of a class that inherits TokenizerSpec (ex: YTTM, SentencePiece).
         max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
         min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
@@ -132,7 +133,10 @@ class BertEmbeddingDataset(Dataset):
             if isinstance(idx, np.uint32):
                 idx = idx.item()
 
-        assert idx < len(self.indexed_dataset)
+        if idx is not None:
+            assert idx < len(self.indexed_dataset)
+        else:
+            idx = -1
         # idx may < 0 because we pad_samples_to_global_batch_size, e.g. id = -1
         if idx < 0:
             idx = len(self) + idx
@@ -159,10 +163,16 @@ class BertEmbeddingDataset(Dataset):
         if self.data_type == 'train':
             q = self.tokenizer.text_to_ids("query: " + example['query'].strip())
             d = self.tokenizer.text_to_ids("passage: " + example['pos_doc'].strip())
-            nd = [
-                self.tokenizer.text_to_ids("passage: " + example['neg_doc'][i].strip())
-                for i in range(self.num_hard_negatives)
-            ]
+            # handle cases where the required number of hard negatives are not present
+            if len(example['neg_doc']) < self.num_hard_negatives:
+                nd = example['neg_doc']
+                # sample rest with replacement
+                nd = nd + choices(example['neg_doc'], k=self.num_hard_negatives - len(example['neg_doc']))
+            else:
+                # sample without replacement
+                nd = sample(example['neg_doc'], k=self.num_hard_negatives)
+            assert len(nd) == self.num_hard_negatives, "Error in sampling required number of hard negatives"
+            nd = [self.tokenizer.text_to_ids("passage: " + ex.strip()) for ex in nd]
 
         elif self.data_type == 'query':
             q = self.tokenizer.text_to_ids("query: " + example['query'].strip())
@@ -292,6 +302,7 @@ class BertEmbeddingDataset(Dataset):
             'input_ids': input_ids,
             'token_type_ids': torch.zeros_like(input_ids),
             'attention_mask': attention_mask,
+            'metadata': metadata,
         }
 
         return processed_batch

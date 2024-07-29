@@ -77,6 +77,11 @@ model:
     vocab_file: null
     merge_file: null 
 
+  # embedding-specific arguemnts
+  softmax_temp: 0.02 # softmax temp for contrastive loss
+  global_inbatch_negatives: True # whether to use in-batch negatives from other ranks during training
+  backprop_type: 'global' # whether to use `global` or `local` backpropagation during training. Refer to Flava paper for details. 
+  
   # precision
   native_amp_init_scale: 4294967296 # 2 ** 32
   native_amp_growth_interval: 1000
@@ -93,7 +98,7 @@ model:
   use_cpu_initialization: False # Init weights on the CPU (slow for large models)
   onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
-  
+
   ## Activation Checkpointing
   # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
   # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
@@ -127,7 +132,7 @@ model:
     # Path to data must be specified by the user.
     data_train: null
     data_validation: null
-    hard_negatives_to_train: 4
+    hard_negatives_to_train: 4 # number of hard negatives to use per example for training
     index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
     data_impl: mmap
     splits_string: 900,50,50

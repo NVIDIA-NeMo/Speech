@@ -124,3 +124,6 @@ class SquadDataModule(FineTuningDataModule):
                     shutil.rmtree(p)
                 elif '.jsonl' not in str(p.name):
                     p.unlink()
+
+    def reconfigure_limit_batches(self):
+        return

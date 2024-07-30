@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar, Union, overload
 
 import numpy as np
+import torch
 from torch import nn
 
 SourceModuleT = TypeVar("SourceModuleT", bound=nn.Module)
@@ -19,11 +20,12 @@ class TransformCTX:
     target_state: dict
 
 
+@torch.no_grad
 def apply_transforms(
     source: nn.Module,
     target: TargetModuleT,
     mapping: Dict[str, str],
-    transforms: Optional[List[Callable[[TransformCTX], TransformCTX]]] = None,
+    transforms: Optional[List[Callable[[TransformCTX], TransformCTX]]] = [],
 ) -> TargetModuleT:
     """
     Applies a series of transformations to adapt the state dictionary of a source module to
@@ -101,9 +103,8 @@ def apply_transforms(
     for key, val in mapping.items():
         ctx = StateDictTransform(key, val)(ctx)
 
-    if transforms:
-        for transform in transforms:
-            ctx = transform(ctx)
+    for transform in transforms:
+        ctx = transform(ctx)
 
     _params: Dict[str, nn.Parameter] = {}
     for name, param in _target.named_parameters():
@@ -144,9 +145,9 @@ def apply_transforms(
 
         _module.register_buffer(_key, val)
 
-    keys = [name for name in list(target_state.keys()) if not name.endswith("_extra_state")]
+    keys = list(filter(lambda x: x is not None and not x.endswith("_extra_state"), target_state.keys()))
     if len(keys) != 0:
-        raise RuntimeError(f"Additional keys: {target_state.keys()} in checkpoint but not in model.")
+        raise RuntimeError(f"Additional keys: {keys} in checkpoint but not in model.")
 
     # TODO: Is this correct?
     # for key in target.state_dict():
@@ -165,7 +166,7 @@ def apply_transforms(
 
 
 def _default_transform(inp):
-    return inp.float()
+    return inp
 
 
 class StateDictTransform(Generic[F]):
@@ -324,7 +325,7 @@ def _match_keys(keys: List[str], pattern: str) -> np.ndarray:
     regex_pattern = re.compile("^" + pattern.replace("*", "(.*)") + "$")
     wildcard_matches = [[] for _ in range(pattern.count("*"))]
 
-    for key in keys:
+    for key in filter(lambda x: x is not None, keys):
         match = regex_pattern.match(key)
         if match:
             for i, group in enumerate(match.groups()):
@@ -342,7 +343,7 @@ def _match_keys(keys: List[str], pattern: str) -> np.ndarray:
     output_array = np.empty(shape, dtype=object)
 
     # Populate the array with the keys, now that we have the correct shape and ordering
-    for key in keys:
+    for key in filter(lambda x: x is not None, keys):
         match = regex_pattern.match(key)
         if match:
             # Convert match groups to indices based on their position in wildcard_matches

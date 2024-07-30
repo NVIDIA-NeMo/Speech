@@ -47,6 +47,8 @@ class MixtralConfig8x7B(GPTConfig):
     # rotary
     rotary_percent: float = 0.5
     rotary_base: float = 10000
+    bf16: bool = True
+    params_dtype: torch.dtype = torch.bfloat16
 
 
 class MixtralModel(GPTModel):
@@ -70,7 +72,7 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
     def apply(self, output_path: Path) -> Path:
         from transformers import MixtralForCausalLM
 
-        source = MixtralForCausalLM.from_pretrained(str(self))
+        source = MixtralForCausalLM.from_pretrained(str(self), torch_dtype='auto', use_safetensors=True)
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -109,6 +111,7 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
 
         config = HfMixtralConfig.from_pretrained(str(self))
         return MixtralConfig8x7B(
+            bf16=getattr(config, "torch_dtype", None) == torch.bfloat16,
             activation_func=F.silu,
             # network
             num_layers=config.num_hidden_layers,
@@ -132,6 +135,10 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
             gated_linear_unit=True,
             # Vocab
             make_vocab_size_divisible_by=128,
+            # CPU init
+            use_cpu_initialization=True,
+            perform_initialization=False,
+            params_dtype=getattr(config, "torch_dtype", torch.bfloat16),
         )
 
 

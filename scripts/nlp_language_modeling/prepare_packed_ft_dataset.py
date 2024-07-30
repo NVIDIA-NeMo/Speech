@@ -105,6 +105,7 @@ def tokenize_dataset(cfg: 'DictConfig'):
         tokens_to_generate=data_cfg.get('tokens_to_generate', 0),
         memmap_workers=data_cfg.get('memmap_workers', None),
         hf_dataset=data_cfg.get('hf_dataset', False),
+        global_sample_mapping=data_cfg.get('global_sample_mapping', False),
         truncation_method=data_cfg.get('truncation_method', 'right'),
         special_tokens=data_cfg.get('chat_prompt_tokens', None),
         is_test=True,

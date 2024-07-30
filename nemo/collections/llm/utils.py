@@ -42,9 +42,8 @@ def factory(*args: Any, **kwargs: Any) -> Union[Callable[[T], T], T]:
     try:
         import nemo_sdk as sdk
 
-        if not args and not kwargs:
-            # Used as @factory without arguments
-            return sdk.factory()
+        if not args:
+            return sdk.factory(**kwargs)
         else:
             # Used as @factory(*args, **kwargs)
             return sdk.factory(*args, **kwargs)

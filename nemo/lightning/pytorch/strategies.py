@@ -105,6 +105,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         lazy_init: bool = False,
         pipeline_dtype: Optional[torch.dtype] = None,
         save_ckpt_format='torch_dist',
+        ckpt_async_save=False,
         ckpt_torch_dist_multiproc=None,  ## TODO(ashors): put elsewhere?
         ckpt_assume_constant_structure=False,
         ckpt_parallel_save=True,
@@ -142,6 +143,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.log_memory_usage = bool(int(os.getenv("NEMO_LOG_MEMORY_USAGE", 0)))
 
         self.save_ckpt_format = save_ckpt_format
+        self.async_save = ckpt_async_save
         self.torch_dist_multiproc = ckpt_torch_dist_multiproc
         self.assume_constant_structure = ckpt_assume_constant_structure
         self.parallel_save = ckpt_parallel_save
@@ -252,6 +254,16 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             # we need to manually synchronize the module's states since we aren't using the DDP wrapper
             assert self.model is not None
             _sync_module_states(self.model)
+
+        ## add AsyncFinalizerCallback if using async
+        if self.async_save:
+            have_async_callback = False
+            for callback in self.trainer.callbacks:
+                if isinstance(callback, AsyncFinalizerCallback):
+                    have_async_callback = True
+                    break
+            if not have_async_callback:
+                self.trainer.callbacks.append(AsyncFinalizerCallback())
 
     @override
     def setup_distributed(self) -> None:
@@ -577,11 +589,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @override
     def checkpoint_io(self) -> CheckpointIO:
         if self._checkpoint_io is None:
-            checkpoint_callback = self.trainer.checkpoint_callback
-            async_save = getattr(checkpoint_callback, "async_save", False)
             self._checkpoint_io = MegatronCheckpointIO(
                 save_ckpt_format=self.save_ckpt_format,
-                async_save=async_save,
+                async_save=self.async_save,
                 torch_dist_multiproc=self.torch_dist_multiproc,
                 assume_constant_structure=self.assume_constant_structure,
                 parallel_save=self.parallel_save,
@@ -589,15 +599,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 parallel_load=self.parallel_load,
                 load_directly_on_device=self.load_directly_on_device,
             )
-            if async_save:
+            if self.async_save:
                 self._checkpoint_io = AsyncFinalizableCheckpointIO(self._checkpoint_io)
-                have_async_callback = False
-                for callback in self.trainer.callbacks:
-                    if isinstance(callback, AsyncFinalizerCallback):
-                        have_async_callback = True
-                        break
-                if not have_async_callback:
-                    self.trainer.callbacks.append(AsyncFinalizerCallback())
         elif isinstance(self._checkpoint_io, _WrappingCheckpointIO):
             self._checkpoint_io.checkpoint_io = MegatronCheckpointIO()
 

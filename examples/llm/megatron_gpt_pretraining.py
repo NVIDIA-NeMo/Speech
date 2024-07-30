@@ -65,7 +65,6 @@ if __name__ == '__main__':
     checkpoint_callback = ModelCheckpoint(
         every_n_train_steps=5000,
         enable_nemo_ckpt_io=False,
-        async_save=False,
     )
     callbacks = [checkpoint_callback]
 

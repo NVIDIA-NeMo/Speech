@@ -51,14 +51,12 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         save_best_model: bool = False,
         save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
         enable_nemo_ckpt_io: bool = True,
-        async_save: bool = False,
         try_restore_best_ckpt: bool = True,
         **kwargs,
     ):
         self.save_best_model = save_best_model
         self.previous_best_path = ""
         self.enable_nemo_ckpt_io = enable_nemo_ckpt_io
-        self.async_save = async_save
         # Checkpoints which removal is deferred until async save is done.
         # Each element of `deferred_ckpts_to_remove` is a growing list
         # that `self._remove_checkpoint` adds to. Once `self._save_checkpoint`
@@ -221,7 +219,7 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         super().load_state_dict(state_dict)
         self._remove_invalid_entries_from_topk()
 
-    def setup(self, *args, **kwargs) -> None:
+    def setup(self, trainer, *args, **kwargs) -> None:
         from nemo.utils.get_rank import is_global_rank_zero
 
         if is_global_rank_zero():
@@ -230,7 +228,9 @@ class ModelCheckpoint(PTLModelCheckpoint, IOMixin):
         # Ensure that all ranks continue with unfinished checkpoints removed
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
-        super().setup(*args, **kwargs)
+
+        self.async_save = getattr(trainer.strategy, "async_save", False)
+        super().setup(trainer, *args, **kwargs)
 
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         output = super().on_save_checkpoint(trainer, pl_module, checkpoint)

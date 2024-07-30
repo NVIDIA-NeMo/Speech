@@ -95,18 +95,22 @@ def load_model(cls, checkpoint, strict, **kwargs):
     return model
 
 
-def load_config(mistral_config, tokenizer_path):
+def load_config(mistral_config, tokenizer, config_path):
     nemo_config = OmegaConf.load(
         os.path.join(os.path.dirname(__file__), '../../examples/nlp/language_modeling/conf/megatron_llama_config.yaml')
     ).model
     # akoumparouli: verify this.
-    nemo_config.encoder_seq_length = mistral_config['sliding_window']
+    if mistral_config.get('sliding_window', None) is not None:
+        nemo_config.encoder_seq_length = mistral_config['sliding_window']
+    else:
+        nemo_config.encoder_seq_length = mistral_config['max_position_embeddings']
     nemo_config.num_layers = int(mistral_config['num_hidden_layers'])
     nemo_config.hidden_size = mistral_config['hidden_size']
     nemo_config.ffn_hidden_size = mistral_config['intermediate_size']
     nemo_config.num_attention_heads = mistral_config['num_attention_heads']
     nemo_config.max_position_embeddings = mistral_config['max_position_embeddings']
-    nemo_config.window_size = [mistral_config['sliding_window'], 0]
+    if mistral_config.get('sliding_window', None) is not None:
+        nemo_config.window_size = [mistral_config['sliding_window'], 0]
     nemo_config.init_method_std = mistral_config['initializer_range']
     # RMSNorm's epsilon.
     nemo_config.layernorm_epsilon = mistral_config['rms_norm_eps']
@@ -118,7 +122,34 @@ def load_config(mistral_config, tokenizer_path):
     # Mistral uses SiLU, but it is the same as swish with beta = 1.
     nemo_config.activation = 'fast-swiglu'
 
-    nemo_config.tokenizer.model = tokenizer_path
+    # Tokenizer config
+    if hasattr(tokenizer, 'vocab_file'):
+        nemo_config.tokenizer.model = tokenizer.vocab_file
+    else:
+        # Load tekken.json, extract the 'vocab' field & write it to file.
+        vocab_path = os.path.join(config_path, 'tekken.json')
+        assert os.path.exists(vocab_path), f"Expected {vocab_path} to exist"
+        with open(vocab_path, 'rt') as fp:
+            tok_vocab = json.load(fp)
+        vocab_output_path = '/tmp/tekken.json'
+        if os.path.exists(vocab_output_path):
+            os.remove(vocab_output_path)
+        with open(vocab_output_path, 'wt') as fp:
+            json.dump(tok_vocab['vocab'], fp)
+        assert os.path.exists(vocab_output_path), f"Expected {vocab_output_path} to exist"
+        assert os.path.getsize(vocab_output_path) > 0, f"Expected {vocab_output_path} to be non-empty"
+
+        tokenizer_dict = {
+            'library': 'tiktoken',
+            'type': 'tiktoken',
+            'vocab_file': vocab_output_path,
+            'model': None,
+            'merge_file': None,
+            'delimiter': None,
+            'sentencepiece_legacy': False,
+        }
+        nemo_config.tokenizer = tokenizer_dict
+
     # TODO(@akoumparouli): rope_scaling.
     nemo_config['rotary_base'] = mistral_config['rope_theta']
 
@@ -148,7 +179,7 @@ def convert(args):
     logging.info(f"loading checkpoint {args.input_name_or_path}")
 
     model_args, ckpt, tokenizer = load_mistral_ckpt(args.input_name_or_path)
-    nemo_config = load_config(model_args, os.path.join(args.input_name_or_path, 'tokenizer.model'))
+    nemo_config = load_config(model_args, tokenizer, args.input_name_or_path)
     logging.info(f"loaded checkpoint {args.input_name_or_path}")
 
     if args.precision in ["32", "16"]:
@@ -197,7 +228,9 @@ def convert(args):
 
     hidden_size = nemo_config.hidden_size
     head_num = nemo_config.num_attention_heads
-    head_size = hidden_size // head_num
+    head_size = model_args.get('head_dim', hidden_size // head_num)
+    # Set this explictly because 2407 does not use hidden_size // num_attention_heads
+    nemo_config.kv_channels = head_size
     num_layers = nemo_config.num_layers
 
     mcore_gpt = nemo_config.mcore_gpt

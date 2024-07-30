@@ -1870,250 +1870,210 @@ jobs:
         
   L2_Megatron_Bert_Pretraining_and_Resume_Training_with_Pipeline_Parallelism:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=10 \
-            trainer.precision=bf16 \
-            model.megatron_amp_O2=True \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=10 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
 
-            NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=20 \
-            trainer.precision=bf16 \
-            model.megatron_amp_O2=True \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            exp_manager.resume_if_exists=True \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=20 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
 
   L2_Megatron_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=10 \
-            trainer.precision=bf16 \
-            model.megatron_amp_O2=True \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.sequence_parallel=True \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=10 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.sequence_parallel=True \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
 
-            NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=20 \
-            trainer.precision=bf16 \
-            model.megatron_amp_O2=True \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            exp_manager.resume_if_exists=True \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
-
-            rm -rf examples/nlp/language_modeling/bert_pretrain_results
-            rm -rf examples/nlp/language_modeling/bert_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=10 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=20 \
+        trainer.precision=bf16 \
+        model.megatron_amp_O2=True \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/bert_pretrain_results
+        rm -rf examples/nlp/language_modeling/bert_index_mappings
 
   L2_Megatron_Core_Bert_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=10 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            model.mcore_bert=True \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.sequence_parallel=True \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method='block' \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+          trainer.devices=2 \
+          trainer.accelerator=gpu \
+          trainer.log_every_n_steps=1 \
+          trainer.val_check_interval=10 \
+          trainer.limit_val_batches=2 \
+          trainer.accumulate_grad_batches=1 \
+          trainer.max_steps=10 \
+          trainer.gradient_clip_val=1.0 \
+          exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+          model.mcore_bert=True \
+          model.tensor_model_parallel_size=2 \
+          model.optim.name=fused_adam \
+          model.optim.lr=2e-4 \
+          model.sequence_parallel=True \
+          model.optim.sched.warmup_steps=2 \
+          model.optim.sched.constant_steps=2 \
+          model.optim.sched.min_lr=8e-5 \
+          model.max_position_embeddings=128 \
+          model.encoder_seq_length=128 \
+          model.data.seq_length=128 \
+          model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+          model.num_layers=8 \
+          model.hidden_size=256 \
+          model.num_attention_heads=8 \
+          model.activations_checkpoint_method='block' \
+          model.activations_checkpoint_num_layers=1 \
+          model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+          model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
 
-            NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=10 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=20 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
-            exp_manager.resume_if_exists=True \
-            model.mcore_bert=True \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method='block' \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
-
-            rm -rf examples/nlp/language_modeling/bert_pretrain_results
-            rm -rf examples/nlp/language_modeling/bert_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+          NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 python examples/nlp/language_modeling/megatron_bert_pretraining.py \
+          trainer.devices=2 \
+          trainer.accelerator=gpu \
+          trainer.log_every_n_steps=1 \
+          trainer.val_check_interval=10 \
+          trainer.limit_val_batches=2 \
+          trainer.accumulate_grad_batches=1 \
+          trainer.max_steps=20 \
+          trainer.gradient_clip_val=1.0 \
+          exp_manager.exp_dir=examples/nlp/language_modeling/bert_pretrain_results \
+          exp_manager.resume_if_exists=True \
+          model.mcore_bert=True \
+          model.tensor_model_parallel_size=2 \
+          model.optim.name=fused_adam \
+          model.optim.lr=2e-4 \
+          model.optim.sched.warmup_steps=2 \
+          model.optim.sched.constant_steps=2 \
+          model.optim.sched.min_lr=8e-5 \
+          model.max_position_embeddings=128 \
+          model.encoder_seq_length=128 \
+          model.data.seq_length=128 \
+          model.tokenizer.vocab_file=/home/TestData/nlp/megatron_bert/data/bert/vocab.txt \
+          model.num_layers=8 \
+          model.hidden_size=256 \
+          model.num_attention_heads=8 \
+          model.activations_checkpoint_method='block' \
+          model.activations_checkpoint_num_layers=1 \
+          model.data.data_prefix=[.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence,.5,/home/TestData/nlp/megatron_bert/data/bert/simple_wiki_bert_preproc_text_sentence] \
+          model.data.index_mapping_dir=examples/nlp/language_modeling/bert_index_mappings
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/bert_pretrain_results
+        rm -rf examples/nlp/language_modeling/bert_index_mappings
 
   L2_Megatron_RETRO_Pretraining_and_Resume_Training:
     needs: [cicd-test-container-setup]
@@ -2337,65 +2297,37 @@ jobs:
 
   L2_RAG_Pipeline_Indexing:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/rag/rag_indexing.py \
-            trainer.num_nodes=1 \
-            trainer.devices=1 \
-            trainer.precision='bf16-mixed' \
-            indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
-            indexing.embedder.embed_batch_size=128 \
-            indexing.data.data_path='/home/TestData/nlp/rag_pipeline/testing_data/corpus_data/sample_data' \
-            indexing.data.chunk_size=256 \
-            indexing.data.chunk_overlap=10 \
-            indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index'
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/rag/rag_indexing.py \
+        trainer.num_nodes=1 \
+        trainer.devices=1 \
+        trainer.precision='bf16-mixed' \
+        indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
+        indexing.embedder.embed_batch_size=128 \
+        indexing.data.data_path='/home/TestData/nlp/rag_pipeline/testing_data/corpus_data/sample_data' \
+        indexing.data.chunk_size=256 \
+        indexing.data.chunk_overlap=10 \
+        indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index'
 
   L2_RAG_Pipeline_Generating:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/rag/rag_generating.py \
-            trainer.devices=1 \
-            trainer.precision='bf16-mixed' \
-            indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
-            indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index' \
-            generating.llm.model_path='/home/TestData/nlp/rag_pipeline/testing_models/llms/megatron_gpt_125m.nemo' \
-            generating.inference.tokens_to_generate=50 \
-            generating.inference.greedy=False \
-            generating.inference.temperature=1.0 \
-            generating.query='Which art schools did I applied to?'
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/rag/rag_generating.py \
+        trainer.devices=1 \
+        trainer.precision='bf16-mixed' \
+        indexing.embedder.model_path='/home/TestData/nlp/rag_pipeline/testing_models/embedders/sbert_nemo.nemo' \
+        indexing.index_path='/home/TestData/nlp/rag_pipeline/testing_data/saved_index/sample_index' \
+        generating.llm.model_path='/home/TestData/nlp/rag_pipeline/testing_models/llms/megatron_gpt_125m.nemo' \
+        generating.inference.tokens_to_generate=50 \
+        generating.inference.greedy=False \
+        generating.inference.temperature=1.0 \
+        generating.query='Which art schools did I applied to?'
 
   L2_BioMegatron_Bert_NER_Task:
     needs: [cicd-test-container-setup]
@@ -2414,191 +2346,163 @@ jobs:
 
   L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=2 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=3 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=1 \
-            model.optim.sched.constant_steps=1 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.bias=False \
-            model.bias_activation_fusion=False \
-            model.bias_dropout_add_fusion=False \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_granularity=full \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.validation_drop_last=False \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=2 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=3 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=1 \
+        model.optim.sched.constant_steps=1 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.bias=False \
+        model.bias_activation_fusion=False \
+        model.bias_dropout_add_fusion=False \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.validation_drop_last=False \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
 
-            python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=2 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=6 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            exp_manager.resume_if_exists=True \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=2 \
-            model.optim.sched.constant_steps=2 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.bias=False \
-            model.bias_activation_fusion=False \
-            model.bias_dropout_add_fusion=False \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_granularity=full \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.validation_drop_last=False \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-        
-            rm -rf examples/nlp/language_modeling/gpt_pretrain_results
-            rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=2 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=6 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.bias=False \
+        model.bias_activation_fusion=False \
+        model.bias_dropout_add_fusion=False \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.validation_drop_last=False \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+        rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
   L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-           python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-           trainer.devices=2 \
-           trainer.accelerator=gpu \
-           trainer.log_every_n_steps=1 \
-           trainer.val_check_interval=2 \
-           trainer.limit_val_batches=2 \
-           trainer.accumulate_grad_batches=1 \
-           trainer.max_steps=3 \
-           trainer.gradient_clip_val=1.0 \
-           exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-           model.tensor_model_parallel_size=2 \
-           model.optim.name=fused_adam \
-           model.optim.lr=2e-4 \
-           model.optim.sched.warmup_steps=1 \
-           model.optim.sched.constant_steps=1 \
-           model.optim.sched.min_lr=8e-5 \
-           model.max_position_embeddings=128 \
-           model.encoder_seq_length=128 \
-           model.data.seq_length=128 \
-           model.position_embedding_type=rope \
-           model.rotary_percentage=0.5 \
-           model.bias=False \
-           model.bias_activation_fusion=False \
-           model.bias_dropout_add_fusion=False \
-           model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-           model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-           model.num_layers=8 \
-           model.hidden_size=256 \
-           model.num_attention_heads=8 \
-           model.activations_checkpoint_method=block \
-           model.activations_checkpoint_granularity=full \
-           model.activations_checkpoint_num_layers=1 \
-           model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-           model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-        
-            #  commented out to save time on github ci @adithyare
-            # python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            # trainer.devices=2 \
-            # trainer.accelerator=gpu \
-            # trainer.log_every_n_steps=1 \
-            # trainer.val_check_interval=2 \
-            # trainer.limit_val_batches=1 \
-            # trainer.accumulate_grad_batches=1 \
-            # trainer.max_steps=6 \
-            # trainer.gradient_clip_val=1.0 \
-            # exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            # exp_manager.resume_if_exists=True \
-            # model.tensor_model_parallel_size=2 \
-            # model.optim.name=fused_adam \
-            # model.optim.lr=2e-4 \
-            # model.optim.sched.warmup_steps=2 \
-            # model.optim.sched.constant_steps=2 \
-            # model.optim.sched.min_lr=8e-5 \
-            # model.max_position_embeddings=128 \
-            # model.encoder_seq_length=128 \
-            # model.data.seq_length=128 \
-            # model.position_embedding_type=rope \
-            # model.rotary_percentage=0.5 \
-            # model.normalization=rmsnorm \
-            # model.bias=False \
-            # model.bias_activation_fusion=False \
-            # model.bias_dropout_add_fusion=False \
-            # model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            # model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            # model.num_layers=8 \
-            # model.hidden_size=256 \
-            # model.num_attention_heads=8 \
-            # model.activations_checkpoint_method=block \
-            # model.activations_checkpoint_granularity=full \
-            # model.activations_checkpoint_num_layers=1 \
-            # model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            # model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
-
-           rm -rf examples/nlp/language_modeling/gpt_pretrain_results
-           rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=2 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=3 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=1 \
+        model.optim.sched.constant_steps=1 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.position_embedding_type=rope \
+        model.rotary_percentage=0.5 \
+        model.bias=False \
+        model.bias_activation_fusion=False \
+        model.bias_dropout_add_fusion=False \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+    
+        #  commented out to save time on github ci @adithyare
+        # python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        # trainer.devices=2 \
+        # trainer.accelerator=gpu \
+        # trainer.log_every_n_steps=1 \
+        # trainer.val_check_interval=2 \
+        # trainer.limit_val_batches=1 \
+        # trainer.accumulate_grad_batches=1 \
+        # trainer.max_steps=6 \
+        # trainer.gradient_clip_val=1.0 \
+        # exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        # exp_manager.resume_if_exists=True \
+        # model.tensor_model_parallel_size=2 \
+        # model.optim.name=fused_adam \
+        # model.optim.lr=2e-4 \
+        # model.optim.sched.warmup_steps=2 \
+        # model.optim.sched.constant_steps=2 \
+        # model.optim.sched.min_lr=8e-5 \
+        # model.max_position_embeddings=128 \
+        # model.encoder_seq_length=128 \
+        # model.data.seq_length=128 \
+        # model.position_embedding_type=rope \
+        # model.rotary_percentage=0.5 \
+        # model.normalization=rmsnorm \
+        # model.bias=False \
+        # model.bias_activation_fusion=False \
+        # model.bias_dropout_add_fusion=False \
+        # model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        # model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        # model.num_layers=8 \
+        # model.hidden_size=256 \
+        # model.num_attention_heads=8 \
+        # model.activations_checkpoint_method=block \
+        # model.activations_checkpoint_granularity=full \
+        # model.activations_checkpoint_num_layers=1 \
+        # model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        # model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+        rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
     #  This test requires Ampere but some of the test GPUs are Volta
     #  Need to add a check for compute capability before uncommenting this test
@@ -2694,275 +2598,233 @@ jobs:
 
   L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-           python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-           trainer.devices=2 \
-           trainer.accelerator=gpu \
-           trainer.log_every_n_steps=1 \
-           trainer.val_check_interval=3 \
-           trainer.limit_val_batches=2 \
-           trainer.accumulate_grad_batches=1 \
-           trainer.max_steps=3 \
-           trainer.precision=bf16 \
-           trainer.gradient_clip_val=1.0 \
-           exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-           model.tensor_model_parallel_size=2 \
-           model.megatron_amp_O2=True \
-           model.optim.name=distributed_fused_adam \
-           model.optim.lr=2e-4 \
-           model.optim.sched.warmup_steps=2 \
-           model.optim.sched.constant_steps=2 \
-           model.optim.sched.min_lr=8e-5 \
-           model.max_position_embeddings=128 \
-           model.encoder_seq_length=128 \
-           model.data.seq_length=128 \
-           model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-           model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-           model.num_layers=8 \
-           model.hidden_size=256 \
-           model.num_attention_heads=8 \
-           model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-           model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-        
-           python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-           trainer.devices=2 \
-           trainer.accelerator=gpu \
-           trainer.log_every_n_steps=1 \
-           trainer.val_check_interval=3 \
-           trainer.limit_val_batches=2 \
-           trainer.accumulate_grad_batches=1 \
-           trainer.max_steps=6 \
-           trainer.precision=bf16 \
-           trainer.gradient_clip_val=1.0 \
-           exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-           exp_manager.resume_if_exists=True \
-           model.reset_lr=True \
-           model.tensor_model_parallel_size=2 \
-           model.megatron_amp_O2=True \
-           model.optim.name=distributed_fused_adam \
-           model.optim.lr=2e-4 \
-           model.optim.sched.warmup_steps=2 \
-           model.optim.sched.constant_steps=2 \
-           model.optim.sched.min_lr=8e-5 \
-           model.max_position_embeddings=128 \
-           model.encoder_seq_length=128 \
-           model.data.seq_length=128 \
-           model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-           model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-           model.num_layers=8 \
-           model.hidden_size=256 \
-           model.num_attention_heads=8 \
-           model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-           model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-
-           rm -rf examples/nlp/language_modeling/gpt_pretrain_results
-           rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=3 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=3 \
+        trainer.precision=bf16 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.megatron_amp_O2=True \
+        model.optim.name=distributed_fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+    
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=3 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=6 \
+        trainer.precision=bf16 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        exp_manager.resume_if_exists=True \
+        model.reset_lr=True \
+        model.tensor_model_parallel_size=2 \
+        model.megatron_amp_O2=True \
+        model.optim.name=distributed_fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=2 \
+        model.optim.sched.constant_steps=2 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+        rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
   L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=2 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=3 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=1 \
-            model.optim.sched.constant_steps=1 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.position_embedding_type=alibi \
-            model.bias=False \
-            model.bias_activation_fusion=False \
-            model.bias_dropout_add_fusion=False \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_granularity=full \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-        
-            # not testing resume functionality to save time on ci @adithyare
-            #python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            #trainer.devices=2 \
-            #trainer.accelerator=gpu \
-            #trainer.log_every_n_steps=1 \
-            #trainer.val_check_interval=2 \
-            #trainer.limit_val_batches=1 \
-            #trainer.accumulate_grad_batches=1 \
-            #trainer.max_steps=6 \
-            #trainer.gradient_clip_val=1.0 \
-            #exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            #exp_manager.resume_if_exists=True \
-            #model.tensor_model_parallel_size=2 \
-            #model.optim.name=fused_adam \
-            #model.optim.lr=2e-4 \
-            #model.optim.sched.warmup_steps=2 \
-            #model.optim.sched.constant_steps=2 \
-            #model.optim.sched.min_lr=8e-5 \
-            #model.max_position_embeddings=128 \
-            #model.encoder_seq_length=128 \
-            #model.data.seq_length=128 \
-            #model.position_embedding_type=alibi \
-            #model.normalization=rmsnorm \
-            #model.bias=False \
-            #model.bias_activation_fusion=False \
-            #model.bias_dropout_add_fusion=False \
-            #model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            #model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            #model.num_layers=8 \
-            #model.hidden_size=256 \
-            #model.num_attention_heads=8 \
-            #model.activations_checkpoint_method=block \
-            #model.activations_checkpoint_granularity=full \
-            #model.activations_checkpoint_num_layers=1 \
-            #model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            #model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
-        
-            rm -rf examples/nlp/language_modeling/gpt_pretrain_results
-            rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=2 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=3 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=1 \
+        model.optim.sched.constant_steps=1 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.position_embedding_type=alibi \
+        model.bias=False \
+        model.bias_activation_fusion=False \
+        model.bias_dropout_add_fusion=False \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+    
+        # not testing resume functionality to save time on ci @adithyare
+        #python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        #trainer.devices=2 \
+        #trainer.accelerator=gpu \
+        #trainer.log_every_n_steps=1 \
+        #trainer.val_check_interval=2 \
+        #trainer.limit_val_batches=1 \
+        #trainer.accumulate_grad_batches=1 \
+        #trainer.max_steps=6 \
+        #trainer.gradient_clip_val=1.0 \
+        #exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        #exp_manager.resume_if_exists=True \
+        #model.tensor_model_parallel_size=2 \
+        #model.optim.name=fused_adam \
+        #model.optim.lr=2e-4 \
+        #model.optim.sched.warmup_steps=2 \
+        #model.optim.sched.constant_steps=2 \
+        #model.optim.sched.min_lr=8e-5 \
+        #model.max_position_embeddings=128 \
+        #model.encoder_seq_length=128 \
+        #model.data.seq_length=128 \
+        #model.position_embedding_type=alibi \
+        #model.normalization=rmsnorm \
+        #model.bias=False \
+        #model.bias_activation_fusion=False \
+        #model.bias_dropout_add_fusion=False \
+        #model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        #model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        #model.num_layers=8 \
+        #model.hidden_size=256 \
+        #model.num_attention_heads=8 \
+        #model.activations_checkpoint_method=block \
+        #model.activations_checkpoint_granularity=full \
+        #model.activations_checkpoint_num_layers=1 \
+        #model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        #model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+        rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
   L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            trainer.devices=2 \
-            trainer.accelerator=gpu \
-            trainer.log_every_n_steps=1 \
-            trainer.val_check_interval=2 \
-            trainer.limit_val_batches=2 \
-            trainer.accumulate_grad_batches=1 \
-            trainer.max_steps=3 \
-            trainer.gradient_clip_val=1.0 \
-            exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            model.tensor_model_parallel_size=2 \
-            model.optim.name=fused_adam \
-            model.optim.lr=2e-4 \
-            model.optim.sched.warmup_steps=1 \
-            model.optim.sched.constant_steps=1 \
-            model.optim.sched.min_lr=8e-5 \
-            model.max_position_embeddings=128 \
-            model.encoder_seq_length=128 \
-            model.data.seq_length=128 \
-            model.position_embedding_type=kerple \
-            model.bias=False \
-            model.bias_activation_fusion=False \
-            model.bias_dropout_add_fusion=False \
-            model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            model.num_layers=8 \
-            model.hidden_size=256 \
-            model.num_attention_heads=8 \
-            model.activations_checkpoint_method=block \
-            model.activations_checkpoint_granularity=full \
-            model.activations_checkpoint_num_layers=1 \
-            model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
-            
-            # commented out to save time on github ci @adithyare
-            #python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
-            #trainer.devices=2 \
-            #trainer.accelerator=gpu \
-            #trainer.log_every_n_steps=1 \
-            #trainer.val_check_interval=2 \
-            #trainer.limit_val_batches=1 \
-            #trainer.accumulate_grad_batches=1 \
-            #trainer.max_steps=6 \
-            #trainer.precision=16 \
-            #trainer.gradient_clip_val=1.0 \
-            #exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
-            #exp_manager.resume_if_exists=True \
-            #model.tensor_model_parallel_size=2 \
-            #model.optim.name=fused_adam \
-            #model.optim.lr=2e-4 \
-            #model.optim.sched.warmup_steps=2 \
-            #model.optim.sched.constant_steps=2 \
-            #model.optim.sched.min_lr=8e-5 \
-            #model.max_position_embeddings=128 \
-            #model.encoder_seq_length=128 \
-            #model.data.seq_length=128 \
-            #model.position_embedding_type=kerple \
-            #model.normalization=rmsnorm \
-            #model.bias=False \
-            #model.bias_activation_fusion=False \
-            #model.bias_dropout_add_fusion=False \
-            #model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            #model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            #model.num_layers=8 \
-            #model.hidden_size=256 \
-            #model.num_attention_heads=8 \
-            #model.activations_checkpoint_method=block \
-            #model.activations_checkpoint_granularity=full \
-            #model.activations_checkpoint_num_layers=1 \
-            #model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
-            #model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
-            
-            rm -rf examples/nlp/language_modeling/gpt_pretrain_results
-            rm -rf examples/nlp/language_modeling/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        trainer.devices=2 \
+        trainer.accelerator=gpu \
+        trainer.log_every_n_steps=1 \
+        trainer.val_check_interval=2 \
+        trainer.limit_val_batches=2 \
+        trainer.accumulate_grad_batches=1 \
+        trainer.max_steps=3 \
+        trainer.gradient_clip_val=1.0 \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        model.tensor_model_parallel_size=2 \
+        model.optim.name=fused_adam \
+        model.optim.lr=2e-4 \
+        model.optim.sched.warmup_steps=1 \
+        model.optim.sched.constant_steps=1 \
+        model.optim.sched.min_lr=8e-5 \
+        model.max_position_embeddings=128 \
+        model.encoder_seq_length=128 \
+        model.data.seq_length=128 \
+        model.position_embedding_type=kerple \
+        model.bias=False \
+        model.bias_activation_fusion=False \
+        model.bias_dropout_add_fusion=False \
+        model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        model.num_layers=8 \
+        model.hidden_size=256 \
+        model.num_attention_heads=8 \
+        model.activations_checkpoint_method=block \
+        model.activations_checkpoint_granularity=full \
+        model.activations_checkpoint_num_layers=1 \
+        model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings
+        
+        # commented out to save time on github ci @adithyare
+        #python examples/nlp/language_modeling/megatron_gpt_pretraining.py \
+        #trainer.devices=2 \
+        #trainer.accelerator=gpu \
+        #trainer.log_every_n_steps=1 \
+        #trainer.val_check_interval=2 \
+        #trainer.limit_val_batches=1 \
+        #trainer.accumulate_grad_batches=1 \
+        #trainer.max_steps=6 \
+        #trainer.precision=16 \
+        #trainer.gradient_clip_val=1.0 \
+        #exp_manager.exp_dir=examples/nlp/language_modeling/gpt_pretrain_results \
+        #exp_manager.resume_if_exists=True \
+        #model.tensor_model_parallel_size=2 \
+        #model.optim.name=fused_adam \
+        #model.optim.lr=2e-4 \
+        #model.optim.sched.warmup_steps=2 \
+        #model.optim.sched.constant_steps=2 \
+        #model.optim.sched.min_lr=8e-5 \
+        #model.max_position_embeddings=128 \
+        #model.encoder_seq_length=128 \
+        #model.data.seq_length=128 \
+        #model.position_embedding_type=kerple \
+        #model.normalization=rmsnorm \
+        #model.bias=False \
+        #model.bias_activation_fusion=False \
+        #model.bias_dropout_add_fusion=False \
+        #model.tokenizer.vocab_file=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        #model.tokenizer.merge_file=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        #model.num_layers=8 \
+        #model.hidden_size=256 \
+        #model.num_attention_heads=8 \
+        #model.activations_checkpoint_method=block \
+        #model.activations_checkpoint_granularity=full \
+        #model.activations_checkpoint_num_layers=1 \
+        #model.data.data_prefix=[.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document,.5,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+        #model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings"
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_pretrain_results
+        rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
   L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2:
     needs: [cicd-test-container-setup]
@@ -3120,49 +2982,35 @@ jobs:
 
   L2_Megatron_GPT_Finetuning_StarCoder_PP1:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure-gpus-1
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            trainer.precision=bf16 \
-            trainer.max_steps=4 \
-            trainer.val_check_interval=4 \
-            trainer.enable_checkpointing=False \
-            +trainer.limit_val_batches=2 \
-            +trainer.limit_test_batches=2 \
-            exp_manager.checkpoint_callback_params.save_best_model=False \
-            exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
-            model.peft.peft_scheme=none \
-            model.optim.name=distributed_fused_adam \
-            model.restore_from_path=/home/TestData/nlp/megatron_gpt/starcoder-ci-nemo/megatron_starcoder_tp1_pp1.nemo \
-            model.tensor_model_parallel_size=1 \
-            model.pipeline_model_parallel_size=1 \
-            model.data.train_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-            model.data.train_ds.num_workers=0 \
-            model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-            model.data.validation_ds.num_workers=0 \
-            model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
-            model.data.test_ds.num_workers=0 \
-            model.data.train_ds.concat_sampling_probabilities=[1.0]
-        
-            rm -rf examples/nlp/language_modeling/gpt_sft_results
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      SCRIPT: |
+        python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
+        trainer.devices=1 \
+        trainer.num_nodes=1 \
+        trainer.precision=bf16 \
+        trainer.max_steps=4 \
+        trainer.val_check_interval=4 \
+        trainer.enable_checkpointing=False \
+        +trainer.limit_val_batches=2 \
+        +trainer.limit_test_batches=2 \
+        exp_manager.checkpoint_callback_params.save_best_model=False \
+        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
+        model.peft.peft_scheme=none \
+        model.optim.name=distributed_fused_adam \
+        model.restore_from_path=/home/TestData/nlp/megatron_gpt/starcoder-ci-nemo/megatron_starcoder_tp1_pp1.nemo \
+        model.tensor_model_parallel_size=1 \
+        model.pipeline_model_parallel_size=1 \
+        model.data.train_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.train_ds.num_workers=0 \
+        model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.validation_ds.num_workers=0 \
+        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
+        model.data.test_ds.num_workers=0 \
+        model.data.train_ds.concat_sampling_probabilities=[1.0]
+      AFTER_SCRIPT: |
+        rm -rf examples/nlp/language_modeling/gpt_sft_results
   
   L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]
@@ -4575,45 +4423,33 @@ jobs:
 
   L2_NeMo_2_GPT_Pretraining_no_transformer_engine:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options:
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            pip uninstall -y apex ## TODO: remove when apex is no longer a dependency
-            pip uninstall -y transformer_engine
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        pip uninstall -y apex ## TODO: remove when apex is no longer a dependency
+        pip uninstall -y transformer_engine
 
-            python examples/llm/megatron_gpt_pretraining.py \
-            --devices=2 \
-            --max-steps=3 \
-            --experiment-dir=examples/llm/gpt_pretrain_results \
-            --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-            --index-mapping-dir=examples/llm/gpt_index_mappings
+        python examples/llm/megatron_gpt_pretraining.py \
+        --devices=2 \
+        --max-steps=3 \
+        --experiment-dir=examples/llm/gpt_pretrain_results \
+        --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --index-mapping-dir=examples/llm/gpt_index_mappings
 
-            python examples/llm/megatron_gpt_pretraining.py \
-            --devices=2 \
-            --max-steps=6 \
-            --experiment-dir=examples/llm/gpt_pretrain_results \
-            --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
-            --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
-            --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
-            --index-mapping-dir=examples/llm/gpt_index_mappings
-
-            rm -rf examples/llm/gpt_pretrain_results
-            rm -rf examples/llm/gpt_index_mappings
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        python examples/llm/megatron_gpt_pretraining.py \
+        --devices=2 \
+        --max-steps=6 \
+        --experiment-dir=examples/llm/gpt_pretrain_results \
+        --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+        --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+        --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --index-mapping-dir=examples/llm/gpt_index_mappings
+      AFTER_SCRIPT: |
+        rm -rf examples/llm/gpt_pretrain_results
+        rm -rf examples/llm/gpt_index_mappings
 
   Nemo_CICD_Test:
     needs: 

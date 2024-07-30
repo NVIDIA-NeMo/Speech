@@ -256,6 +256,7 @@ jobs:
           quantization.num_calib_size=8 \
           inference.batch_size=2 \
           export.inference_tensor_parallel=2 \
+          export.sample_output=False \
           export.save_path=/home/TestData/nlp/megatron_llama/ci_fp8.qnemo
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/megatron_llama/ci_fp8.qnemo
@@ -268,12 +269,13 @@ jobs:
       TIMEOUT: 15
       SCRIPT: |
         python examples/nlp/language_modeling/megatron_gpt_ptq.py \
-        model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
-        quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
-        quantization.algorithm=int8_sq \
-        quantization.num_calib_size=8 \
-        inference.batch_size=2 \
-        export.save_path=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
+          model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+          quantization.calib_dataset=/home/TestData/nlp/test_quantization/test.json \
+          quantization.algorithm=int8_sq \
+          quantization.num_calib_size=8 \
+          inference.batch_size=2 \
+          export.sample_output=False \
+          export.save_path=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
       AFTER_SCRIPT: |
         rm -rf /home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
       IS_OPTIONAL: true

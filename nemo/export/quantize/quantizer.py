@@ -225,7 +225,8 @@ class Quantizer:
         assert self.export_config is not None, "Export config is not set"
         torch_dtype = torch_dtype_from_precision(self.export_config.dtype)
 
-        self._sample_output(model)
+        if self.export_config.get("sample_output", True):
+            self._sample_output(model)
 
         if model.cfg.megatron_amp_O2:
             model.model = unwrap_model(model.model, Float16Module)

@@ -153,8 +153,6 @@ class BaseMegatronSampler:
         # Sanity checks.
         if total_samples <= 0:
             raise RuntimeError(f"no sample to consume: {total_samples}")
-        if consumed_samples >= total_samples:
-            raise RuntimeError(f"no samples left to consume: {consumed_samples}, {total_samples}")
         if micro_batch_size <= 0:
             raise RuntimeError(f"micro_batch_size size must be greater than 0, but {micro_batch_size}")
         if data_parallel_size <= 0:
@@ -209,6 +207,32 @@ class BaseMegatronSampler:
 
 
 class MegatronPretrainingSampler(BaseMegatronSampler):
+    def __init__(
+        self,
+        total_samples: int,
+        consumed_samples: int,
+        micro_batch_size: int,
+        data_parallel_rank: int,
+        data_parallel_size: int,
+        drop_last: bool = True,
+        global_batch_size: Optional[int] = None,
+        rampup_batch_size: Optional[list] = None,
+        pad_samples_to_global_batch_size: Optional[bool] = False,
+    ):
+        super().__init__(
+            total_samples=total_samples,
+            consumed_samples=consumed_samples,
+            micro_batch_size=micro_batch_size,
+            data_parallel_rank=data_parallel_rank,
+            data_parallel_size=data_parallel_size,
+            drop_last=drop_last,
+            global_batch_size=global_batch_size,
+            rampup_batch_size=rampup_batch_size,
+            pad_samples_to_global_batch_size=pad_samples_to_global_batch_size,
+        )
+        if consumed_samples >= total_samples:
+            raise RuntimeError(f"no samples left to consume: {consumed_samples}, {total_samples}")
+
     def get_start_end_idx(self):
         start_idx = self.data_parallel_rank * self.micro_batch_size
         end_idx = start_idx + self.micro_batch_size

@@ -3,12 +3,11 @@ from typing import List, Optional
 import torch
 from pytorch_lightning.callbacks.callback import Callback
 
-from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging
 from nemo.utils.get_rank import get_rank
 
 
-class NsysCallback(Callback, IOMixin):
+class NsysCallback(Callback):
     """
     A PyTorch Lightning callback for NVIDIA Nsight Systems (Nsys) profiling.
 

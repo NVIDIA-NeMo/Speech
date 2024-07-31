@@ -1,11 +1,13 @@
+import json
 from pathlib import Path
+from pydoc import locate
 from typing import Any, Callable, Optional, Type, TypeVar
 
 import fiddle as fdl
 import pytorch_lightning as pl
 from fiddle._src.experimental import serialization
 
-from nemo.lightning.io.mixin import ConnectorMixin, ConnT, ModelConnector
+from nemo.lightning.io.mixin import ConnectorMixin, ConnT, ModelConnector, track_io
 from nemo.lightning.io.pl import TrainerContext
 
 CkptType = TypeVar("CkptType")
@@ -40,6 +42,14 @@ def load(path: Path, output_type: Type[CkptType] = Any) -> CkptType:
 
     if not _path.is_file():
         raise FileNotFoundError(f"No such file: '{_path}'")
+
+    ## add IO functionality to custom objects present in the json file
+    with open(_path) as f:
+        j = json.load(f)
+        for obj, val in j["objects"].items():
+            clss = ".".join([val["type"]["module"], val["type"]["name"]])
+            if not serialization.find_node_traverser(locate(clss)):
+                track_io(locate(clss))
 
     with open(_path, "rb") as f:
         config = serialization.load_json(f.read())

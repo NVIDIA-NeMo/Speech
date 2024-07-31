@@ -17,6 +17,10 @@ class Trainer(pl.Trainer, IOMixin):
         for val in cfg_kwargs.values():
             if not serialization.find_node_traverser(type(val)):
                 track_io(type(val))
+            elif isinstance(val, list):
+                for v in val:
+                    if not serialization.find_node_traverser(type(v)):
+                        track_io(type(v))
 
         return fdl.Config(type(self), **cfg_kwargs)
 

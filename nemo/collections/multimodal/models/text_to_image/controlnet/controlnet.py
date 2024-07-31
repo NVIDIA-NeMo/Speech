@@ -550,11 +550,18 @@ class ControlNet(nn.Module):
             print("Loading unet blocks from sd")
 
             state_dict = torch.load(from_pretrained_unet, map_location='cpu')
-            state_dict = state_dict['state_dict']
+            if 'state_dict' in state_dict.keys():
+                state_dict = state_dict['state_dict']
             model_state_dict = self.state_dict()
+            model_state_keys = model_state_dict.keys()
 
             re_state_dict = {}
             for key_, value_ in state_dict.items():
+                # check if key is a raw parameter
+                if key_ in model_state_keys:
+                    re_state_dict[key_] = value_
+                    continue
+                # prune from model prefix
                 if key_.startswith('model.model.diffusion_model'):
                     re_state_dict[key_.replace('model.model.diffusion_model.', '')] = value_
                 if key_.startswith('model.diffusion_model'):

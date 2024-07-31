@@ -163,7 +163,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
             if index != len(self.monitor):
                 match = re.search('[A-z]', checkpoint[index:])
                 if match:
-                    value = checkpoint[index : index + match.start() - 1]  # -1 due to separator hypen
+                    value = checkpoint[index : index + match.start() - 1]  # -1 due to separator hyphen
                     self.best_k_models[checkpoint] = float(value)
         if len(self.best_k_models) < 1:
             return  # No saved checkpoints yet

@@ -7,6 +7,7 @@ from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADER
 from torch.utils import data
 from nemo.lightning.data import WrappedDataLoader
 
+from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
 if TYPE_CHECKING:
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
-class PreTrainingDataModule(pl.LightningDataModule):
+class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
     def __init__(
         self,
         paths: Path | List | Dict[str, List],

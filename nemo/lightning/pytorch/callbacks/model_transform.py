@@ -4,11 +4,10 @@ from typing import Any, Callable, Optional, TypeVar
 import pytorch_lightning as pl
 from torch import nn
 
-from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging
 
 
-class ModelTransform(pl.Callback, IOMixin):
+class ModelTransform(pl.Callback):
     """
     A PyTorch Lightning callback that applies a model transformation function at the start of fitting or validation.
 

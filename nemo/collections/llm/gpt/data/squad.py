@@ -6,13 +6,14 @@ from datasets import DatasetDict, load_dataset
 
 from nemo.collections.llm.gpt.data.core import get_dataset_root
 from nemo.collections.llm.gpt.data.fine_tuning import FineTuningDataModule
+from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.common.tokenizers import TokenizerSpec
 
 
-class SquadDataModule(FineTuningDataModule):
+class SquadDataModule(FineTuningDataModule, IOMixin):
     """A data module for fine-tuning on the Squad dataset.
 
     This class inherits from the `FineTuningDataModule` class and is specifically designed for fine-tuning models on the

@@ -56,12 +56,12 @@ class ExampleModel(ModelPT):
         rank = torch.distributed.get_rank()
 
     def train_dataloader(self):
-        dataset = OnesDataset(128)
-        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=8)
+        dataset = OnesDataset(1024 * 1024)
+        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=2)
 
     def val_dataloader(self):
-        dataset = OnesDataset(128)
-        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=8)
+        dataset = OnesDataset(128 * 1024)
+        return torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=2)
 
     def forward(self, batch):
         output = self.l1(batch)

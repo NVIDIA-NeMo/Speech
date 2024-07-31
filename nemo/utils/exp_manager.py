@@ -165,6 +165,7 @@ class FaultToleranceParams:
     initial_rank_heartbeat_timeout: Optional[float] = 60.0 * 60.0
     rank_heartbeat_timeout: Optional[float] = 45.0 * 60.0
     calculate_timeouts: bool = True
+    safety_factor: float = 5.0
     rank_termination_signal: signal.Signals = signal.SIGKILL
     log_level: str = 'INFO'
     max_rank_restarts: int = 0
@@ -558,7 +559,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         if HAVE_STRAGGLER_DET:
             logging.info("Enabling straggler detection...")
             straggler_det_args_dict = dict(cfg.straggler_detection_params)
-            straggler_det_callback = StragglerDetectionCallback(**straggler_det_args_dict, logger=logging)
+            straggler_det_callback = StragglerDetectionCallback(**straggler_det_args_dict)
             trainer.callbacks.append(straggler_det_callback)
         else:
             raise ValueError(
@@ -573,6 +574,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
             # here we only need to know if the autoresume is enabled.
             ft_use_autoresume = ft_params.max_subsequent_job_failures > 0
             fault_tol_callback = FaultToleranceCallback(
+                exp_dir=Path(log_dir).parent,  # log_dir is "<run name>/results/"
                 autoresume=ft_use_autoresume,
                 calculate_timeouts=ft_params.calculate_timeouts,
                 simulated_fault_params=ft_params.simulated_fault,

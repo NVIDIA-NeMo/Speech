@@ -66,7 +66,6 @@ try:
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
     from megatron.core.models.vision.clip_vit_model import CLIPViTModel
-    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.attention import CrossAttention, CrossAttentionSubmodules
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -95,6 +94,13 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
 try:
     import transformer_engine

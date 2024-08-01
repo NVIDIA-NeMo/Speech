@@ -47,36 +47,73 @@ def setup_microbatch_calculator(
     from nemo.lightning._strategy_lib import NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE
     from nemo.utils import AppState
 
+    try:
+        from megatron.core.num_microbatches_calculator import (
+            ConstantNumMicroBatchesCalculator,
+            get_current_global_batch_size,
+            get_micro_batch_size,
+            get_num_microbatches,
+            init_num_microbatches_calculator,
+        )
+
+        MCORE_MB_CALCULATOR = True
+
+    except (ImportError, ModuleNotFoundError):
+        logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+        from apex.transformer.microbatches import ConstantNumMicroBatches as ConstantNumMicroBatchesCalculator
+        from apex.transformer.pipeline_parallel.utils import (
+            get_current_global_batch_size,
+            get_micro_batch_size,
+            get_num_microbatches,
+        )
+        from apex.transformer.pipeline_parallel.utils import (
+            setup_microbatch_calculator as init_num_microbatches_calculator,
+        )
+
+        MCORE_MB_CALCULATOR = False
+
     app_state = AppState()
 
     if os.environ.get(NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE, "false").lower() == "true":
         init_global_rank = app_state.global_rank
     else:
         init_global_rank = global_rank
+    if MCORE_MB_CALCULATOR:
+        from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
 
-    from megatron.core.num_microbatches_calculator import (
-        _GLOBAL_NUM_MICROBATCHES_CALCULATOR,
-        ConstantNumMicroBatchesCalculator,
-        init_num_microbatches_calculator,
-    )
-
-    if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
-        init_num_microbatches_calculator(
-            rank=init_global_rank,
-            global_batch_size=global_batch_size,
-            micro_batch_size=micro_batch_size,
-            data_parallel_size=app_state.data_parallel_size,
-            rampup_batch_size=rampup_batch_size,
-        )
-    else:
-        if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
-            assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.current_global_batch_size == global_batch_size
-            assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.micro_batch_size == micro_batch_size
-            assert _GLOBAL_NUM_MICROBATCHES_CALCULATOR.num_micro_batches == global_batch_size // (
-                micro_batch_size * app_state.data_parallel_size
+        if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
+            init_num_microbatches_calculator(
+                rank=init_global_rank,
+                global_batch_size=global_batch_size,
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=app_state.data_parallel_size,
+                rampup_batch_size=rampup_batch_size,
             )
         else:
-            raise Exception("Microbatch calculator already initialized.")
+            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
+                assert get_current_global_batch_size() == global_batch_size
+                assert get_micro_batch_size() == micro_batch_size
+                assert get_num_microbatches() == global_batch_size // (micro_batch_size * app_state.data_parallel_size)
+            else:
+                raise Exception("Microbatch calculator already initialized.")
+    else:
+        from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
+        if _GLOBAL_NUM_MICROBATCHES_CALCULATOR is None:
+            init_num_microbatches_calculator(
+                rank=init_global_rank,
+                global_batch_size=global_batch_size,
+                micro_batch_size=micro_batch_size,
+                data_parallel_size=app_state.data_parallel_size,
+                rampup_batch_size=rampup_batch_size,
+            )
+        else:
+            if isinstance(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, ConstantNumMicroBatchesCalculator):
+                assert get_current_global_batch_size() == global_batch_size
+                assert get_micro_batch_size() == micro_batch_size
+                assert get_num_microbatches() == global_batch_size // (micro_batch_size * app_state.data_parallel_size)
+            else:
+                raise Exception("Microbatch calculator already initialized.")
 
 
 def add_megatron_sampler(

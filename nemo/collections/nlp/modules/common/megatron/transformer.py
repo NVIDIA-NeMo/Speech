@@ -1525,7 +1525,12 @@ class ParallelTransformer(MegatronModule):
         It indicates if the current step in the forward pass is the first in a gradient accumulation cycle.
         If set, FP8 weights are cached and some minor optimizations are applied to fuse_wgrad_accumulation
         """
-        from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+        try:
+            from megatron.core.num_microbatches_calculator import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
+
+        except (ImportError, ModuleNotFoundError):
+            logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+            from apex.transformer.pipeline_parallel.utils import _GLOBAL_NUM_MICROBATCHES_CALCULATOR
 
         num_micro_batches = getattr(_GLOBAL_NUM_MICROBATCHES_CALCULATOR, 'num_micro_batches', 1)
 

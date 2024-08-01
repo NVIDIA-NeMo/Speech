@@ -26,9 +26,9 @@ from nemo.collections.common.tokenizers.chat_template_mixin import explode_chat_
 from nemo.collections.nlp.modules.common.lm_utils import pad_batch
 from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
+from nemo.utils import logging
 
 try:
-    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
     from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
@@ -38,6 +38,13 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
 
 # the text representation of eos_id, it applies for all tokenizers

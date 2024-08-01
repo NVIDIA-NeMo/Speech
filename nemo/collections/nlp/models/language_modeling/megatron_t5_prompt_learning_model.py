@@ -34,12 +34,10 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
-from nemo.utils.apex_utils import _reconfigure_microbatch_calculator, get_micro_batch_size
 
 try:
     from megatron.core import parallel_state
     from megatron.core.enums import ModelType
-    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -47,6 +45,14 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+
+try:
+    from megatron.core.num_microbatches_calculator import get_micro_batch_size, get_num_microbatches
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import get_micro_batch_size, get_num_microbatches
 
 
 __all__ = ['MegatronT5PromptLearningModel']

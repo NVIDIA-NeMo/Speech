@@ -76,16 +76,7 @@ from nemo.core.classes.mixins.adapter_mixins import AdapterModuleMixin
 from nemo.utils import logging, model_utils
 
 try:
-    from apex import amp
-    from apex.transformer.enums import AttnMaskType
-
-    HAVE_APEX = True
-except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
-
-try:
     from megatron.core import parallel_state
-    from megatron.core.num_microbatches_calculator import get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -93,6 +84,14 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
+
 
 __conditioning_keys__ = {'concat': 'c_concat', 'crossattn': 'c_crossattn', 'adm': 'y'}
 
@@ -1674,10 +1673,6 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
     """Megatron LatentDiffusion Model."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
-        if not HAVE_APEX:
-            raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
-            )
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
                 "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."

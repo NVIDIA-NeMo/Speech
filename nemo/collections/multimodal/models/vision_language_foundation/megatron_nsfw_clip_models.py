@@ -20,7 +20,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from megatron.core import parallel_state
-from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.accelerators import CPUAccelerator
@@ -38,6 +37,14 @@ from nemo.collections.nlp.modules.common.megatron.module import Float16Module, M
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank, torch_dtype_from_precision
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+
+
+try:
+    from megatron.core.num_microbatches_calculator import get_num_microbatches
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
 
 class ContentFilteringModel(MegatronModule):

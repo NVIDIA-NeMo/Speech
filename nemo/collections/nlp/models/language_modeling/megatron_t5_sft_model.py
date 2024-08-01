@@ -30,11 +30,9 @@ from nemo.collections.nlp.modules.common.megatron.utils import get_iterator_k_sp
 from nemo.collections.nlp.parts.mixins.nlp_adapter_mixins import NLPAdapterModelMixin
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import AppState, logging
-from nemo.utils.apex_utils import _reconfigure_microbatch_calculator, get_micro_batch_size
 
 try:
     from megatron.core import parallel_state
-    from megatron.core.num_microbatches_calculator import get_current_global_batch_size, get_num_microbatches
     from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
 
     HAVE_MEGATRON_CORE = True
@@ -42,6 +40,25 @@ try:
 except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
+
+try:
+    from megatron.core.num_microbatches_calculator import (
+        get_current_global_batch_size,
+        get_micro_batch_size,
+        get_num_microbatches,
+        reconfigure_num_microbatches_calculator,
+    )
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import (
+        _reconfigure_microbatch_calculator as reconfigure_num_microbatches_calculator,
+    )
+    from apex.transformer.pipeline_parallel.utils import (
+        get_current_global_batch_size,
+        get_micro_batch_size,
+        get_num_microbatches,
+    )
 
 __all__ = ['MegatronT5SFTModel']
 
@@ -162,7 +179,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
 
     def on_validation_epoch_start(self):
         app_state = AppState()
-        _reconfigure_microbatch_calculator(
+        reconfigure_num_microbatches_calculator(
             rank=app_state.global_rank,
             rampup_batch_size=None,
             global_batch_size=self.cfg.data.validation_ds.global_batch_size,
@@ -173,7 +190,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
 
     def on_test_epoch_start(self):
         app_state = AppState()
-        _reconfigure_microbatch_calculator(
+        reconfigure_num_microbatches_calculator(
             rank=app_state.global_rank,
             rampup_batch_size=None,
             global_batch_size=self.cfg.data.test_ds.global_batch_size,
@@ -256,7 +273,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
                 != ds_config.global_batch_size // parallel_state.get_data_parallel_world_size()
             ):
                 app_state = AppState()
-                _reconfigure_microbatch_calculator(
+                reconfigure_num_microbatches_calculator(
                     rank=app_state.global_rank,
                     rampup_batch_size=None,
                     global_batch_size=global_batch_size_per_gpu * parallel_state.get_data_parallel_world_size(),
@@ -266,7 +283,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
             # NOTE: need to explicitly handle resetting for multi-validation
             else:
                 app_state = AppState()
-                _reconfigure_microbatch_calculator(
+                reconfigure_num_microbatches_calculator(
                     rank=app_state.global_rank,
                     rampup_batch_size=None,
                     global_batch_size=ds_config.global_batch_size,
@@ -548,7 +565,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
 
         app_state = AppState()
         if hasattr(self, "_train_ds"):
-            _reconfigure_microbatch_calculator(
+            reconfigure_num_microbatches_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
                 global_batch_size=self.cfg.data.train_ds.global_batch_size,
@@ -558,7 +575,7 @@ class MegatronT5SFTModel(NLPAdapterModelMixin, MegatronT5Model):
         # When running `trainer.validate()`, the training dataset is not available.
         else:
             logging.warning('No training data found, reconfiguring microbatches based on validation batch sizes.')
-            _reconfigure_microbatch_calculator(
+            reconfigure_num_microbatches_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
                 global_batch_size=data_cfg.global_batch_size,

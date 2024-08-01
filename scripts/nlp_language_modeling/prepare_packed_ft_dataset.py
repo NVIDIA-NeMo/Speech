@@ -46,11 +46,16 @@ Example usage:
 python scripts/nlp_language_modeling/prepare_packed_ft_dataset.py \
    model.data.train_ds.file_names=[/path/to/training.jsonl] \
    model.data.train_ds.max_seq_length=2048 \
-   +tokenizer_path=/path/to/tokenizer.model
-   +output_dir=/path/to/output_folder
+   +tokenizer_path=<see note 1 below> \
+   +output_dir=/path/to/output_folder \
    +pack_sizes=[2048,4096,8192]
    
 Note: 
+  - Tokenizer path supports SentencePiece tokenizer and HF tokenizer. 
+    For SentencePiece tokenizer, specify the file /path/to/tokenizer.model 
+    For HF tokenizer, specify a folder /path/to/hf_folder which contains tokenizer.json, tokenizer_config.json
+    and special_tokens_map.json
+
   - If your model or dataset requires non-default configs for conventional SFT/PEFT training in NeMo, you will
     need to pass in the same configs to ``model.data.train_ds`` as you would for training with unpacked dataset.
 
@@ -83,9 +88,15 @@ def tokenize_dataset(cfg: 'DictConfig'):
     # using the same template as SFT/PEFT script. This may be overkill but guarantees the preprocess settings
     # are identical to normal SFT training
     data_cfg = cfg.model.data.train_ds
+    if os.path.isdir(cfg.tokenizer_path):
+        # pass in a Hugging Face folder which contains tokenizer.json
+        tokenizer = get_nmt_tokenizer(library="huggingface", model_name=cfg.tokenizer_path, use_fast=True)
+    else:
+        tokenizer = get_nmt_tokenizer(library="sentencepiece", tokenizer_model=cfg.tokenizer_path)
+
     dataset = GPTSFTDataset(
         file_path=data_cfg.file_names[0],
-        tokenizer=get_nmt_tokenizer(library="sentencepiece", tokenizer_model=cfg.tokenizer_path),
+        tokenizer=tokenizer,
         max_seq_length=data_cfg.max_seq_length,
         min_seq_length=data_cfg.min_seq_length,
         pad_seq_length_to_mult=16,  # adds padding in collate_fn so this value is irrelevant here
@@ -105,7 +116,6 @@ def tokenize_dataset(cfg: 'DictConfig'):
         tokens_to_generate=data_cfg.get('tokens_to_generate', 0),
         memmap_workers=data_cfg.get('memmap_workers', None),
         hf_dataset=data_cfg.get('hf_dataset', False),
-        global_sample_mapping=data_cfg.get('global_sample_mapping', False),
         truncation_method=data_cfg.get('truncation_method', 'right'),
         special_tokens=data_cfg.get('chat_prompt_tokens', None),
         is_test=True,
@@ -150,23 +160,9 @@ def main(cfg: 'DictConfig') -> None:
 
     logging.info(
         f"""
-✅ Packed datasets with pack sizes {args.pack_sizes} are prepared successfully.
-To train with packed sequences, you need to change three things in the SFT/PEFT config file
-1. Turn on the packed_sequence flag 
-   > +model.data.train_ds.packed_sequence=True
-2. Use the new dataset file instead of the original jsonl file
-   > model.data.train_ds.file_names=/path/to/packed_dataset.npy
-3. Specify the packed sequence length. This should be one of the ``pack_sizes`` you specified during data preparation.
-   > model.data.train_ds.max_seq_length=<pack_size>
-4. Adjust the batch sizes. 
-   Micro batch size has to be set to 1 as a nominal constraint. This is because batches are now concatenated 
-   in the preprocessing step. You can increase the pack_size to achieve the same purpose of increasing micro batch size.
-   Global batch size has to be reduced by the average number of sequences per pack `n`, 
-   where n = total number of sequences / total number of packs. This ensures that each gradient iteration 
-   sees (on average) the same number of sequences so that the recipe is maintained.
-   Please scroll up to see the value of n for each of your pack sizes.
-   > model.micro_batch_size=1
-   > model.global_batch_size=<previous GBS divided by n>
+✅ Packed datasets with pack sizes {args.pack_sizes} are prepared successfully. 
+To train with packed sequences, you need to make changes to the SFT/PEFT config file. See NeMo Documentation 
+for more details: <https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/features/throughput_optimizations.html#sequence-packing-for-sft-peft>
 """
     )
 

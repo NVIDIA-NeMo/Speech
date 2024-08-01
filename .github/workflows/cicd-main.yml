@@ -125,6 +125,19 @@ jobs:
   ##     - name: L2: Multimodal Imagen Train
 
   # L2: Community LLM Checkpoints tests
+  L2_Community_LLM_Checkpoints_tests_Bert:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+          python scripts/checkpoint_converters/convert_bert_hf_to_nemo.py  \
+          --input_name_or_path /home/TestData/nlp/megatron_ir/sbert/hf_model/bert-base-uncased \
+          --output_path /home/TestData/nlp/megatron_ir/sbert/sbert.nemo
+      AFTER_SCRIPT: |
+        rm -f /home/TestData/nlp/megatron_ir/sbert/sbert.nemo
+        rm -rf /home/TestData/nlp/megatron_ir/sbert/model_weights
+
   L2_Community_LLM_Checkpoints_tests_Llama:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -200,7 +213,7 @@ jobs:
       AFTER_SCRIPT: |
         rm -f /home/TestData/multimodal/video_neva/llama3-ci-hf/llama3_ci.nemo
         rm -rf /home/TestData/multimodal/video_neva/llama3-ci-hf/model_weights
-
+  
   # this test is using a 7B model which is too large for GitHub CI
   # replace the model in this test with a toy model or move the test
   # to the nightly CI
@@ -4457,6 +4470,7 @@ jobs:
       - cicd-test-container-setup
       - L0_Unit_Tests_GPU
       - L0_Unit_Tests_CPU
+      - L2_Community_LLM_Checkpoints_tests_Bert
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder
       - L2_Community_LLM_Checkpoints_tests_Falcon

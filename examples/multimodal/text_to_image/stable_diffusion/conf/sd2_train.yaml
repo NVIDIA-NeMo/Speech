@@ -153,6 +153,7 @@ model:
   resume_from_checkpoint: null # manually set the checkpoint file to load from
   apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
   gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  ddp_overlap: False # True for using PyTorch DDP overlap.
 
   optim:
     name: fused_adam

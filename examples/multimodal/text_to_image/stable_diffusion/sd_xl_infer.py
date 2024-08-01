@@ -26,10 +26,10 @@ def main(cfg):
         model_cfg.precision = cfg.trainer.precision
         model_cfg.ckpt_path = None
         model_cfg.inductor = False
-        model_cfg.unet_config.from_pretrained = "/opt/nemo-aligner/checkpoints/sdxl/unet_nemo.ckpt"
-        model_cfg.unet_config.from_NeMo = True
-        model_cfg.first_stage_config.from_pretrained = "/opt/nemo-aligner/checkpoints/sdxl/vae_nemo.ckpt"
-        model_cfg.first_stage_config.from_NeMo = True
+        # model_cfg.unet_config.from_pretrained = "/opt/nemo-aligner/checkpoints/sdxl/unet_nemo.ckpt"
+        # model_cfg.unet_config.from_NeMo = True
+        # model_cfg.first_stage_config.from_pretrained = "/opt/nemo-aligner/checkpoints/sdxl/vae_nemo.ckpt"
+        # model_cfg.first_stage_config.from_NeMo = True
         model_cfg.first_stage_config._target_ = 'nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.autoencoder.AutoencoderKLInferenceWrapper'
         # model_cfg.fsdp = True
 

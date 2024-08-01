@@ -15,12 +15,11 @@
 """
 Example to run this conversion script:
 ```
-    python convert_bert_hf_to_nemo.py \
-     --input_name_or_path "thenlper/gte-large" \
+    python /opt/NeMo/scripts/checkpoint_converters/convert_bert_hf_to_nemo.py \
+     --input_name_or_path /path/to/hf/checkpoints/folder \
      --output_path /path/to/output/nemo/file.nemo \
      --mcore True \
-     --post_process False \
-     --precision 32
+     --precision bf16
 ```
 """
 
@@ -37,7 +36,10 @@ from nemo.utils import logging
 
 
 def adjust_nemo_config(model_config, ref_config, mcore_bert=True):
-    model_config.tokenizer["type"] = "intfloat/e5-large-unsupervised"  # ref_config["_input_name_or_path"]
+    model_config.tokenizer["type"] = ref_config["_name_or_path"]
+    model_config.tokenizer["library"] = "huggingface"
+    model_config.tokenizer["use_fast"] = True
+    model_config["max_position_embeddings"] = ref_config['max_position_embeddings']
     model_config["num_layers"] = ref_config["num_hidden_layers"]
     model_config["hidden_size"] = ref_config["hidden_size"]
     model_config["ffn_hidden_size"] = ref_config["intermediate_size"]
@@ -67,7 +69,7 @@ def get_args():
         "--post_process", type=bool, default=False, required=False, help="Whether to have the postprocessing modules"
     )
     parser.add_argument(
-        "--precision", type=str, default="32", choices=["bf16", "32"], help="Precision for checkpoint weights saved"
+        "--precision", type=str, default="bf16", choices=["bf16", "32"], help="Precision for checkpoint weights saved"
     )
 
     args = parser.parse_args()
@@ -86,7 +88,12 @@ def convert(args):
     model = MegatronBertModel(nemo_config.model, trainer)
 
     if not args.post_process:
-        model.model.lm_head, model.model.encoder.final_layernorm, model.model.binary_head, model.model.output_layer = (
+        (
+            model.model.module.lm_head,
+            model.model.module.encoder.final_layernorm,
+            model.model.module.binary_head,
+            model.model.module.output_layer,
+        ) = (
             None,
             None,
             None,
@@ -263,6 +270,16 @@ def convert(args):
         else:
             nemo_state_dict['model.language_model.embedding.word_embeddings.weight'] = padded_embedding
 
+    modified_dict = {}
+    for key, value in nemo_state_dict.items():
+        if key.startswith('model.'):
+            new_key = 'model.module.' + key[len('model.') :]
+            modified_dict[new_key] = value
+        else:
+            modified_dict[key] = value
+
+    nemo_state_dict = modified_dict
+
     model.load_state_dict(nemo_state_dict, strict=True)
     dtype = torch_dtype_from_precision(args.precision)
     model = model.to(dtype=dtype)
@@ -271,5 +288,6 @@ def convert(args):
 
 
 if __name__ == '__main__':
+    os.environ['NVTE_FLASH_ATTN'] = '0'  # Bert doesn't support FLASH_ATTN
     args = get_args()
     convert(args)

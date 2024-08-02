@@ -2,7 +2,7 @@ import inspect
 import logging
 import os
 import shutil
-from pathlib import Path, PosixPath, WindowsPath
+from pathlib import Path, PosixPath, PurePath, WindowsPath
 from typing import Generic, Optional, Tuple, TypeVar
 
 import pytorch_lightning as pl
@@ -212,6 +212,10 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
             _base = Path(NEMO_MODELS_CACHE)
 
+        # If the useu supplied `hf:///path/to/downloaded/my-model/`
+        # then extract the last dir-name (i.e. my-model) and append it to _base
+        if str(self).startswith('/'):
+            return _base / PurePath((str(self))).name
         return _base / str(self).replace("://", "/")
 
     def on_import_ckpt(self, model: pl.LightningModule):

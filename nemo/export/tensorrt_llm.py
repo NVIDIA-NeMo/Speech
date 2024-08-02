@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
+import safetensors
 import tensorrt_llm
 import torch
 import wrapt
+from tensorrt_llm._utils import numpy_to_torch
 
 from nemo.deploy import ITritonDeployable
 from nemo.export.tarutils import TarPath, unpack_tarball
@@ -365,6 +367,84 @@ class TensorRTLLM(ITritonDeployable):
 
         if load_model:
             self._load()
+
+    def convert_to_safe_tensors(
+        self,
+        nemo_checkpoint_path: str,
+        model_type: Optional[str] = None,
+        delete_existing_files: bool = True,
+        tensor_parallelism_size: int = 1,
+        pipeline_parallelism_size: int = 1,
+        gpus_per_node: int = None,
+        use_parallel_embedding: bool = False,
+        use_embedding_sharing: bool = False,
+        dtype: str = "bfloat16",
+    ):
+        gpus_per_node = tensor_parallelism_size if gpus_per_node is None else gpus_per_node
+
+        if Path(self.model_dir).exists():
+            if delete_existing_files and len(os.listdir(self.model_dir)) > 0:
+                for files in os.listdir(self.model_dir):
+                    path = os.path.join(self.model_dir, files)
+                    try:
+                        shutil.rmtree(path)
+                    except OSError:
+                        os.remove(path)
+
+                if len(os.listdir(self.model_dir)) > 0:
+                    raise Exception("Couldn't delete all files.")
+            elif len(os.listdir(self.model_dir)) > 0:
+                raise Exception("There are files in this folder. Try setting delete_existing_files=True.")
+        else:
+            Path(self.model_dir).mkdir(parents=True, exist_ok=True)
+
+        if model_type == "gpt" or model_type == "starcoder":
+            model_type = "gptnext"
+
+        if model_type == "mixtral":
+            model_type = "llama"
+
+        if tensorrt_llm.mpi_rank() == 0:
+            tmp_dir = tempfile.TemporaryDirectory()
+            nemo_export_dir = Path(tmp_dir.name)
+
+            model, model_configs, self.tokenizer = load_nemo_model(nemo_checkpoint_path, nemo_export_dir)
+            weights_dicts, model_configs = model_to_trtllm_ckpt(
+                model=model,
+                nemo_model_config=model_configs,
+                nemo_export_dir=nemo_export_dir,
+                decoder_type=model_type,
+                dtype=dtype,
+                tensor_parallel_size=tensor_parallelism_size,
+                pipeline_parallel_size=pipeline_parallelism_size,
+                gpus_per_node=gpus_per_node,
+                use_parallel_embedding=use_parallel_embedding,
+                use_embedding_sharing=use_embedding_sharing,
+            )
+
+            for weight_dict, model_config in zip(weights_dicts, model_configs):
+                rank = model_config.mapping.tp_rank
+                for k, v in weight_dict.items():
+                    weight_dict[k] = numpy_to_torch(v)
+
+                safetensors.torch.save_file(weight_dict, os.path.join(self.model_dir, f'rank{rank}.safetensors'))
+
+            model_configs[0].to_json_file(os.path.join(self.model_dir, 'config.json'))
+
+            tokenizer_path = os.path.join(nemo_export_dir, "tokenizer.model")
+            if os.path.exists(tokenizer_path):
+                shutil.copy(tokenizer_path, self.model_dir)
+            else:
+                self.tokenizer.save_pretrained(os.path.join(self.model_dir, 'huggingface_tokenizer'))
+
+            nemo_model_config = os.path.join(nemo_export_dir, "model_config.yaml")
+            if os.path.exists(nemo_model_config):
+                shutil.copy(nemo_model_config, self.model_dir)
+
+            tmp_dir.cleanup()
+
+        if tensorrt_llm.mpi_world_size() > 1:
+            tensorrt_llm.mpi_barrier()
 
     def build(
         self,

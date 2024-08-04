@@ -21,6 +21,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 
+from nemo.collections.common.metrics.perf_metrics import FLOPsMeasurementCallback
 from nemo.collections.nlp.parts.nlp_overrides import (
     CustomProgressBar,
     FSDPMixedPrecisionPlugin,
@@ -173,6 +174,10 @@ class MegatronTrainerBuilder:
 
         if self.cfg.get('exp_manager', {}).get('checkpoint_callback_params', {}).get('async_save', False):
             callbacks.append(AsyncFinalizerCallback())
+
+        if self.cfg.get('exp_manager', {}).get('log_tflops_per_sec_per_gpu', True):
+            callbacks.append(FLOPsMeasurementCallback(self.cfg))
+
         return callbacks
 
     def create_trainer(self, callbacks=None) -> Trainer:

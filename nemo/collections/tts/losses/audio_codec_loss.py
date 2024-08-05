@@ -19,7 +19,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from nemo.collections.asr.parts.preprocessing.features import FilterbankFeatures
-from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths, mask_sequence_tensor
+from nemo.collections.common.parts.utils import mask_sequence_tensor
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths
 from nemo.core.classes import Loss, typecheck
 from nemo.core.neural_types import (
     AudioSignal,
@@ -312,7 +313,7 @@ class SISDRLoss(Loss):
 
         # [B, 1]
         ref_pred = torch.sum(pred * target, dim=-1, keepdim=True)
-        ref_target = torch.sum(target ** 2, dim=-1, keepdim=True)
+        ref_target = torch.sum(target**2, dim=-1, keepdim=True)
         alpha = (ref_pred + self.epsilon) / (ref_target + self.epsilon)
 
         # [B, T]
@@ -320,8 +321,8 @@ class SISDRLoss(Loss):
         distortion = target_scaled - pred
 
         # [B]
-        target_scaled_power = torch.sum(target_scaled ** 2, dim=-1)
-        distortion_power = torch.sum(distortion ** 2, dim=-1)
+        target_scaled_power = torch.sum(target_scaled**2, dim=-1)
+        distortion_power = torch.sum(distortion**2, dim=-1)
 
         ratio = (target_scaled_power + self.epsilon) / (distortion_power + self.epsilon)
         si_sdr = 10 * torch.log10(ratio)
@@ -505,7 +506,7 @@ class DiscriminatorSquaredLoss(Loss):
         loss = 0.0
         for disc_score_real, disc_score_gen in zip(disc_scores_real, disc_scores_gen):
             loss_real = torch.mean((1 - disc_score_real) ** 2)
-            loss_gen = torch.mean(disc_score_gen ** 2)
+            loss_gen = torch.mean(disc_score_gen**2)
             loss += (loss_real + loss_gen) / 2
 
         loss /= len(disc_scores_real)

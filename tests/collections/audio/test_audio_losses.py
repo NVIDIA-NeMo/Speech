@@ -17,6 +17,7 @@ import pytest
 import torch
 
 from nemo.collections.audio.losses.audio import (
+    MAELoss,
     MSELoss,
     SDRLoss,
     calculate_mse_batch,
@@ -474,7 +475,7 @@ class TestAudioLosses:
     @pytest.mark.parametrize('num_channels', [1, 4])
     @pytest.mark.parametrize('ndim', [3, 4])
     def test_mse(self, num_channels: int, ndim: int):
-        """Test SDR calculation"""
+        """Test MSE calculation"""
         batch_size = 8
         num_samples = 50
         num_features = 123
@@ -536,7 +537,7 @@ class TestAudioLosses:
     @pytest.mark.parametrize('num_channels', [1, 4])
     @pytest.mark.parametrize('ndim', [3, 4])
     def test_mse_weighted(self, num_channels: int, ndim: int):
-        """Test SDR calculation with weighting for channels"""
+        """Test MSE calculation with weighting for channels"""
         batch_size = 8
         num_samples = 50
         num_features = 123
@@ -595,7 +596,7 @@ class TestAudioLosses:
     @pytest.mark.parametrize('num_channels', [1, 4])
     @pytest.mark.parametrize('ndim', [3, 4])
     def test_mse_input_length(self, num_channels: int, ndim: int):
-        """Test SDR calculation with input length."""
+        """Test MSE calculation with input length."""
         batch_size = 8
         max_num_samples = 50
         num_features = 123
@@ -650,3 +651,178 @@ class TestAudioLosses:
             assert np.allclose(
                 uut_mse_loss.cpu().detach().numpy(), golden_mse, atol=atol
             ), f'MSELoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mae(self, num_channels: int, ndim: int):
+        """Test MAE calculation"""
+        batch_size = 8
+        num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        mae_loss = MAELoss(ndim=ndim)
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.01, high=1) * _rng.normal(size=signal_shape)
+            # Estimate
+            estimate = target + noise
+
+            # DC bias for both
+            target += _rng.uniform(low=-1, high=1)
+            estimate += _rng.uniform(low=-1, high=1)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+
+            # Reference MSE
+            golden_mae = np.zeros((batch_size, num_channels))
+            for b in range(batch_size):
+                for m in range(num_channels):
+                    err = estimate[b, m, :] - target[b, m, :]
+                    golden_mae[b, m] = np.mean(np.abs(err), axis=reduction_dim)
+
+            # Calculate MSE loss
+            uut_mae_loss = mae_loss(estimate=tensor_estimate, target=tensor_target)
+
+            # Compare
+            assert np.allclose(
+                uut_mae_loss.cpu().detach().numpy(), golden_mae.mean(), atol=atol
+            ), f'MAE not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mae_weighted(self, num_channels: int, ndim: int):
+        """Test MAE calculation with weighting for channels"""
+        batch_size = 8
+        num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        channel_weight = _rng.uniform(low=0.01, high=1.0, size=num_channels)
+        channel_weight = channel_weight / np.sum(channel_weight)
+        mae_loss = MAELoss(weight=channel_weight, ndim=ndim)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+
+            # Reference MAE
+            golden_mae = 0
+            for b in range(batch_size):
+                mae = [
+                    np.mean(np.abs(estimate[b, m, :] - target[b, m, :]), axis=reduction_dim)
+                    for m in range(num_channels)
+                ]
+                # weighted sum
+                mae = np.sum(np.array(mae) * channel_weight)
+                golden_mae += mae
+            golden_mae /= batch_size  # average over batch
+
+            # Calculate MAE loss
+            uut_mae_loss = mae_loss(estimate=tensor_estimate, target=tensor_target)
+
+            # Compare
+            assert np.allclose(
+                uut_mae_loss.cpu().detach().numpy(), golden_mae, atol=atol
+            ), f'MAELoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('ndim', [3, 4])
+    def test_mae_input_length(self, num_channels: int, ndim: int):
+        """Test MAE calculation with input length."""
+        batch_size = 8
+        max_num_samples = 50
+        num_features = 123
+        num_batches = 10
+        random_seed = 42
+        atol = 1e-6
+
+        signal_shape = (
+            (batch_size, num_channels, num_features, max_num_samples)
+            if ndim == 4
+            else (batch_size, num_channels, max_num_samples)
+        )
+
+        reduction_dim = (-2, -1) if ndim == 4 else -1
+
+        _rng = np.random.default_rng(seed=random_seed)
+
+        mae_loss = MAELoss(ndim=ndim)
+
+        for n in range(num_batches):
+
+            # Generate random signal
+            target = _rng.normal(size=signal_shape)
+            # Random noise + scaling
+            noise = _rng.uniform(low=0.001, high=10) * _rng.normal(size=target.shape)
+            # Estimate
+            estimate = target + noise
+
+            # Limit calculation to random input_length samples
+            input_length = _rng.integers(low=1, high=max_num_samples, size=batch_size)
+
+            # Tensors for testing the loss
+            tensor_estimate = torch.tensor(estimate)
+            tensor_target = torch.tensor(target)
+            tensor_input_length = torch.tensor(input_length)
+
+            # Reference MSE
+            golden_mae = 0
+            for b, b_len in enumerate(input_length):
+                mae = [
+                    np.mean(np.abs(estimate[b, m, ..., :b_len] - target[b, m, ..., :b_len]), axis=reduction_dim)
+                    for m in range(num_channels)
+                ]
+                mae = np.mean(np.array(mae))
+                golden_mae += mae
+            golden_mae /= batch_size  # average over batch
+
+            # Calculate MSE
+            uut_mae_loss = mae_loss(estimate=tensor_estimate, target=tensor_target, input_length=tensor_input_length)
+
+            # Compare
+            assert np.allclose(
+                uut_mae_loss.cpu().detach().numpy(), golden_mae, atol=atol
+            ), f'MAELoss not matching for example {n}'

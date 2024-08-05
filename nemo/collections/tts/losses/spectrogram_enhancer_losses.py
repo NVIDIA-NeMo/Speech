@@ -41,7 +41,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch.autograd import grad as torch_grad
 
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 
 
 class GradientPenaltyLoss(torch.nn.Module):

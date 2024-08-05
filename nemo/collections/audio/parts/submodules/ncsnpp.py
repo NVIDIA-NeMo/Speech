@@ -20,8 +20,7 @@ import einops.layers.torch
 import torch
 import torch.nn.functional as F
 
-from nemo.collections.common.parts.utils import activation_registry
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
+from nemo.collections.common.parts.utils import activation_registry, mask_sequence_tensor
 from nemo.core.classes import NeuralModule, typecheck
 from nemo.core.neural_types import FloatType, LengthsType, NeuralType, SpectrogramType, VoidType
 from nemo.utils import logging

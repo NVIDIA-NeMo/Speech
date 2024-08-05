@@ -46,7 +46,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from kornia.filters import filter2d
 
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 
 
 class Blur(torch.nn.Module):
@@ -99,7 +99,10 @@ class RGBBlock(torch.nn.Module):
         self.conv = Conv2DModulated(input_channel, out_filters, 1, demod=False)
 
         self.upsample = (
-            torch.nn.Sequential(torch.nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False), Blur(),)
+            torch.nn.Sequential(
+                torch.nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
+                Blur(),
+            )
             if upsample
             else None
         )
@@ -125,7 +128,15 @@ class Conv2DModulated(torch.nn.Module):
     """
 
     def __init__(
-        self, in_chan, out_chan, kernel, demod=True, stride=1, dilation=1, eps=1e-8, **kwargs,
+        self,
+        in_chan,
+        out_chan,
+        kernel,
+        demod=True,
+        stride=1,
+        dilation=1,
+        eps=1e-8,
+        **kwargs,
     ):
         super().__init__()
         self.filters = out_chan
@@ -148,7 +159,7 @@ class Conv2DModulated(torch.nn.Module):
         weights = w2 * (w1 + 1)
 
         if self.demod:
-            d = torch.rsqrt((weights ** 2).sum(dim=(2, 3, 4), keepdim=True) + self.eps)
+            d = torch.rsqrt((weights**2).sum(dim=(2, 3, 4), keepdim=True) + self.eps)
             weights = weights * d
 
         x = x.reshape(1, -1, h, w)
@@ -165,7 +176,13 @@ class Conv2DModulated(torch.nn.Module):
 
 class GeneratorBlock(torch.nn.Module):
     def __init__(
-        self, latent_dim, input_channels, filters, upsample=True, upsample_rgb=True, channels=1,
+        self,
+        latent_dim,
+        input_channels,
+        filters,
+        upsample=True,
+        upsample_rgb=True,
+        channels=1,
     ):
         super().__init__()
         self.upsample = torch.nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False) if upsample else None
@@ -257,7 +274,12 @@ class Generator(torch.nn.Module):
             not_last = ind != (self.num_layers - 1)
 
             block = GeneratorBlock(
-                latent_dim, in_chan, out_chan, upsample=not_first, upsample_rgb=not_last, channels=channels,
+                latent_dim,
+                in_chan,
+                out_chan,
+                upsample=not_first,
+                upsample_rgb=not_last,
+                channels=channels,
             )
             self.blocks.append(block)
 
@@ -315,14 +337,18 @@ class Generator(torch.nn.Module):
 
 class Discriminator(torch.nn.Module):
     def __init__(
-        self, n_bands, network_capacity=16, channels=1, fmap_max=512,
+        self,
+        n_bands,
+        network_capacity=16,
+        channels=1,
+        fmap_max=512,
     ):
         super().__init__()
         num_layers = int(log2(n_bands) - 1)
         num_init_filters = channels
 
         blocks = []
-        filters = [num_init_filters] + [(network_capacity * 4) * (2 ** i) for i in range(num_layers + 1)]
+        filters = [num_init_filters] + [(network_capacity * 4) * (2**i) for i in range(num_layers + 1)]
 
         set_fmap_max = partial(min, fmap_max)
         filters = list(map(set_fmap_max, filters))

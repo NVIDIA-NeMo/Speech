@@ -16,8 +16,8 @@ import pytest
 import torch
 from torchmetrics import ScaleInvariantSignalDistortionRatio
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.audio_codec_loss import MaskedMAELoss, MaskedMSELoss, SISDRLoss
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 class TestAudioCodecLoss:

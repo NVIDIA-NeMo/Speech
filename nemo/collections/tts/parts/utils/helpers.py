@@ -123,23 +123,26 @@ def binarize_attention(attn, in_len, out_len):
 
 def binarize_attention_parallel(attn, in_lens, out_lens):
     """For training purposes only. Binarizes attention with MAS.
-           These will no longer receive a gradient.
+       These will no longer receive a gradient.
 
-        Args:
-            attn: B x 1 x max_mel_len x max_text_len
-        """
+    Args:
+        attn: B x 1 x max_mel_len x max_text_len
+    """
     with torch.no_grad():
         log_attn_cpu = torch.log(attn.data).cpu().numpy()
         attn_out = b_mas(log_attn_cpu, in_lens.cpu().numpy(), out_lens.cpu().numpy(), width=1)
     return torch.from_numpy(attn_out).to(attn.device)
 
 
-def get_mask_from_lengths(lengths: Optional[torch.Tensor] = None, x: Optional[torch.Tensor] = None,) -> torch.Tensor:
+def get_mask_from_lengths(
+    lengths: Optional[torch.Tensor] = None,
+    x: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """Constructs binary mask from a 1D torch tensor of input lengths
 
     Args:
         lengths: Optional[torch.tensor] (torch.tensor): 1D tensor with lengths
-        x: Optional[torch.tensor] = tensor to be used on, last dimension is for mask 
+        x: Optional[torch.tensor] = tensor to be used on, last dimension is for mask
     Returns:
         mask (torch.tensor): num_sequences x max_length binary tensor
     """
@@ -168,7 +171,7 @@ def sort_tensor(
         context: tensor sorted by lens along dimension dim
         lens_sorted: lens tensor, sorted
         ids_sorted: reorder ids to be used to restore original order
-    
+
     """
     lens_sorted, ids_sorted = torch.sort(lens, descending=descending)
     context = torch.index_select(context, dim, ids_sorted)
@@ -177,13 +180,13 @@ def sort_tensor(
 
 def unsort_tensor(ordered: torch.Tensor, indices: torch.Tensor, dim: Optional[int] = 0) -> torch.Tensor:
     """Reverses the result of sort_tensor function:
-       o, _, ids = sort_tensor(x,l) 
+       o, _, ids = sort_tensor(x,l)
        assert unsort_tensor(o,ids) == x
     Args:
         ordered: context tensor, sorted by lengths
         indices: torch.tensor: 1D tensor with 're-order' indices returned by sort_tensor
     Returns:
-        ordered tensor in original order (before calling sort_tensor)  
+        ordered tensor in original order (before calling sort_tensor)
     """
     return torch.index_select(ordered, dim, indices.argsort(0))
 
@@ -294,7 +297,7 @@ def log_audio_to_tb(
     log_mel = spect.data.cpu().numpy().T
     mel = np.exp(log_mel)
     magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-    audio = griffin_lim(magnitude.T ** griffin_lim_power)
+    audio = griffin_lim(magnitude.T**griffin_lim_power)
     swriter.add_audio(name, audio / max(np.abs(audio)), step, sample_rate=sr)
 
 
@@ -317,10 +320,16 @@ def tacotron2_log_to_tb_func(
     _, spec_target, mel_postnet, gate, gate_target, alignments = tensors
     if log_images and step % log_images_freq == 0:
         swriter.add_image(
-            f"{tag}_alignment", plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T), step, dataformats="HWC",
+            f"{tag}_alignment",
+            plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T),
+            step,
+            dataformats="HWC",
         )
         swriter.add_image(
-            f"{tag}_mel_target", plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()), step, dataformats="HWC",
+            f"{tag}_mel_target",
+            plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()),
+            step,
+            dataformats="HWC",
         )
         swriter.add_image(
             f"{tag}_mel_predicted",
@@ -330,7 +339,10 @@ def tacotron2_log_to_tb_func(
         )
         swriter.add_image(
             f"{tag}_gate",
-            plot_gate_outputs_to_numpy(gate_target[0].data.cpu().numpy(), torch.sigmoid(gate[0]).data.cpu().numpy(),),
+            plot_gate_outputs_to_numpy(
+                gate_target[0].data.cpu().numpy(),
+                torch.sigmoid(gate[0]).data.cpu().numpy(),
+            ),
             step,
             dataformats="HWC",
         )
@@ -340,13 +352,13 @@ def tacotron2_log_to_tb_func(
             log_mel = mel_postnet[0].data.cpu().numpy().T
             mel = np.exp(log_mel)
             magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio = griffin_lim(magnitude.T ** griffin_lim_power)
+            audio = griffin_lim(magnitude.T**griffin_lim_power)
             swriter.add_audio(f"audio/{tag}_predicted", audio / max(np.abs(audio)), step, sample_rate=sr)
 
             log_mel = spec_target[0].data.cpu().numpy().T
             mel = np.exp(log_mel)
             magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio = griffin_lim(magnitude.T ** griffin_lim_power)
+            audio = griffin_lim(magnitude.T**griffin_lim_power)
             swriter.add_audio(f"audio/{tag}_target", audio / max(np.abs(audio)), step, sample_rate=sr)
 
 
@@ -373,16 +385,26 @@ def tacotron2_log_to_wandb_func(
         specs = []
         gates = []
         alignments += [
-            wandb.Image(plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T), caption=f"{tag}_alignment",)
+            wandb.Image(
+                plot_alignment_to_numpy(alignments[0].data.cpu().numpy().T),
+                caption=f"{tag}_alignment",
+            )
         ]
         alignments += [
-            wandb.Image(plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()), caption=f"{tag}_mel_target",),
-            wandb.Image(plot_spectrogram_to_numpy(mel_postnet[0].data.cpu().numpy()), caption=f"{tag}_mel_predicted",),
+            wandb.Image(
+                plot_spectrogram_to_numpy(spec_target[0].data.cpu().numpy()),
+                caption=f"{tag}_mel_target",
+            ),
+            wandb.Image(
+                plot_spectrogram_to_numpy(mel_postnet[0].data.cpu().numpy()),
+                caption=f"{tag}_mel_predicted",
+            ),
         ]
         gates += [
             wandb.Image(
                 plot_gate_outputs_to_numpy(
-                    gate_target[0].data.cpu().numpy(), torch.sigmoid(gate[0]).data.cpu().numpy(),
+                    gate_target[0].data.cpu().numpy(),
+                    torch.sigmoid(gate[0]).data.cpu().numpy(),
                 ),
                 caption=f"{tag}_gate",
             )
@@ -396,16 +418,24 @@ def tacotron2_log_to_wandb_func(
             log_mel = mel_postnet[0].data.cpu().numpy().T
             mel = np.exp(log_mel)
             magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio_pred = griffin_lim(magnitude.T ** griffin_lim_power)
+            audio_pred = griffin_lim(magnitude.T**griffin_lim_power)
 
             log_mel = spec_target[0].data.cpu().numpy().T
             mel = np.exp(log_mel)
             magnitude = np.dot(mel, filterbank) * griffin_lim_mag_scale
-            audio_true = griffin_lim(magnitude.T ** griffin_lim_power)
+            audio_true = griffin_lim(magnitude.T**griffin_lim_power)
 
             audios += [
-                wandb.Audio(audio_true / max(np.abs(audio_true)), caption=f"{tag}_wav_target", sample_rate=sr,),
-                wandb.Audio(audio_pred / max(np.abs(audio_pred)), caption=f"{tag}_wav_predicted", sample_rate=sr,),
+                wandb.Audio(
+                    audio_true / max(np.abs(audio_true)),
+                    caption=f"{tag}_wav_target",
+                    sample_rate=sr,
+                ),
+                wandb.Audio(
+                    audio_pred / max(np.abs(audio_pred)),
+                    caption=f"{tag}_wav_predicted",
+                    sample_rate=sr,
+                ),
             ]
 
             swriter.log({"audios": audios})
@@ -505,10 +535,22 @@ def create_plot(data, x_axis, y_axis, output_filepath=None):
 def plot_gate_outputs_to_numpy(gate_targets, gate_outputs):
     fig, ax = plt.subplots(figsize=(12, 3))
     ax.scatter(
-        range(len(gate_targets)), gate_targets, alpha=0.5, color='green', marker='+', s=1, label='target',
+        range(len(gate_targets)),
+        gate_targets,
+        alpha=0.5,
+        color='green',
+        marker='+',
+        s=1,
+        label='target',
     )
     ax.scatter(
-        range(len(gate_outputs)), gate_outputs, alpha=0.5, color='red', marker='.', s=1, label='predicted',
+        range(len(gate_outputs)),
+        gate_outputs,
+        alpha=0.5,
+        color='red',
+        marker='.',
+        s=1,
+        label='predicted',
     )
 
     plt.xlabel("Frames (Green target, Red predicted)")
@@ -530,24 +572,40 @@ def save_figure_to_numpy(fig):
 
 @rank_zero_only
 def waveglow_log_to_tb_func(
-    swriter, tensors, step, tag="train", n_fft=1024, hop_length=256, window="hann", mel_fb=None,
+    swriter,
+    tensors,
+    step,
+    tag="train",
+    n_fft=1024,
+    hop_length=256,
+    window="hann",
+    mel_fb=None,
 ):
     _, audio_pred, spec_target, mel_length = tensors
     mel_length = mel_length[0]
     spec_target = spec_target[0].data.cpu().numpy()[:, :mel_length]
     swriter.add_image(
-        f"{tag}_mel_target", plot_spectrogram_to_numpy(spec_target), step, dataformats="HWC",
+        f"{tag}_mel_target",
+        plot_spectrogram_to_numpy(spec_target),
+        step,
+        dataformats="HWC",
     )
     if mel_fb is not None:
         mag, _ = librosa.core.magphase(
             librosa.core.stft(
-                np.nan_to_num(audio_pred[0].cpu().detach().numpy()), n_fft=n_fft, hop_length=hop_length, window=window,
+                np.nan_to_num(audio_pred[0].cpu().detach().numpy()),
+                n_fft=n_fft,
+                hop_length=hop_length,
+                window=window,
             )
         )
         mel_pred = np.matmul(mel_fb.cpu().numpy(), mag).squeeze()
         log_mel_pred = np.log(np.clip(mel_pred, a_min=1e-5, a_max=None))
         swriter.add_image(
-            f"{tag}_mel_predicted", plot_spectrogram_to_numpy(log_mel_pred[:, :mel_length]), step, dataformats="HWC",
+            f"{tag}_mel_predicted",
+            plot_spectrogram_to_numpy(log_mel_pred[:, :mel_length]),
+            step,
+            dataformats="HWC",
         )
 
 
@@ -560,7 +618,12 @@ def remove(conv_list):
 
 
 def regulate_len(
-    durations, enc_out, pace=1.0, mel_max_len=None, group_size=1, dur_lens: torch.tensor = None,
+    durations,
+    enc_out,
+    pace=1.0,
+    mel_max_len=None,
+    group_size=1,
+    dur_lens: torch.tensor = None,
 ):
     """A function that takes predicted durations per encoded token, and repeats enc_out according to the duration.
     NOTE: durations.shape[1] == enc_out.shape[1]
@@ -724,30 +787,6 @@ def to_device_recursive(e, device: torch.device):
         return e
 
 
-def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
-    """
-    For tensors containing sequences, zero out out-of-bound elements given lengths of every element in the batch.
-
-    tensor: tensor of shape (B, D, L) or (B, D1, D2, L),
-    lengths: LongTensor of shape (B,)
-    """
-    batch_size, *_, max_lengths = tensor.shape
-
-    if len(tensor.shape) == 2:
-        mask = torch.ones(batch_size, max_lengths).cumsum(dim=-1).type_as(lengths)
-        mask = mask <= rearrange(lengths, "b -> b 1")
-    elif len(tensor.shape) == 3:
-        mask = torch.ones(batch_size, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
-        mask = mask <= rearrange(lengths, "b -> b 1 1")
-    elif len(tensor.shape) == 4:
-        mask = torch.ones(batch_size, 1, 1, max_lengths).cumsum(dim=-1).type_as(lengths)
-        mask = mask <= rearrange(lengths, "b -> b 1 1 1")
-    else:
-        raise ValueError("Can only mask tensors of shape B x D x L and B x D1 x D2 x L")
-
-    return tensor * mask
-
-
 @torch.jit.script
 def batch_from_ragged(
     text: torch.Tensor,
@@ -786,13 +825,16 @@ def batch_from_ragged(
 
 
 def sample_tts_input(
-    export_config, device, max_batch=1, max_dim=127,
+    export_config,
+    device,
+    max_batch=1,
+    max_dim=127,
 ):
     """
-        Generates input examples for tracing etc.
-        Returns:
-            A tuple of input examples.
-        """
+    Generates input examples for tracing etc.
+    Returns:
+        A tuple of input examples.
+    """
     sz = (max_batch * max_dim,) if export_config["enable_ragged_batches"] else (max_batch, max_dim)
     inp = torch.randint(*export_config["emb_range"], sz, device=device, dtype=torch.int64)
     pitch = torch.randn(sz, device=device, dtype=torch.float32) * 0.5

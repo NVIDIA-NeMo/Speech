@@ -23,7 +23,7 @@ from einops import rearrange
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
 from nemo.collections.asr.parts.utils.activations import Snake
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types.elements import (
@@ -399,7 +399,9 @@ class VectorQuantizerBase(NeuralModule, ABC):
             "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
     )
     @abstractmethod
     def decode(self, indices: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
@@ -489,8 +491,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         return inputs + (inputs_rounded - inputs).detach()
 
     def compress(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
-        """Apply compression to the input, to limit to values.
-        """
+        """Apply compression to the input, to limit to values."""
         output_scale = (self.num_levels - 1) / 2
         # scale down a bit to avoid rounding issues
         output_scale = output_scale * (1 - self.eps)
@@ -520,20 +521,17 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         return codes
 
     def codes_to_nonnegative(self, codes: torch.Tensor) -> torch.Tensor:
-        """Convert values centered arouund zero to nonnegative values.
-        """
+        """Convert values centered arouund zero to nonnegative values."""
         scale = offset = self.num_levels // 2
         return scale * codes + offset
 
     def nonnegative_to_codes(self, codes_nonnegative: torch.Tensor) -> torch.Tensor:
-        """Convert nonnegative values to values centered arouund zero.
-        """
+        """Convert nonnegative values to values centered arouund zero."""
         scale = offset = self.num_levels // 2
         return (codes_nonnegative - offset) / scale
 
     def codes_to_indices(self, codes: torch.Tensor) -> torch.Tensor:
-        """Converts a code vector to a single index.
-        """
+        """Converts a code vector to a single index."""
         if codes.size(1) != self.dim:
             raise RuntimeError(
                 f'Input code dimension {codes.size(1)} not matching the expected dimension {self.dim}, input codes shape {codes.shape}'
@@ -575,8 +573,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
     )
     def encode(self, inputs: torch.Tensor, input_len: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Convert a continuous code vector to a single index.
-        """
+        """Convert a continuous code vector to a single index."""
         _, indices = self(inputs=inputs, input_len=input_len)
         return indices
 
@@ -585,11 +582,12 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
             "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType(), optional=True),
         },
-        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
     )
     def decode(self, indices: torch.Tensor, input_len: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Convert a single index to a continuous code vector.
-        """
+        """Convert a single index to a continuous code vector."""
         if indices.size(0) > 1:
             # codebook dimension used for compatibility with RVQ
             raise ValueError(
@@ -642,8 +640,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
     @property
     def codebook_dim(self):
-        """Input vector dimension.
-        """
+        """Input vector dimension."""
         return self.codebook_dim_per_group * self.num_groups
 
     @property
@@ -654,12 +651,11 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
     @property
     def codebook_size(self):
         """Returns the size of the implicit codebook."""
-        return self.codebook_size_per_group ** self.num_groups
+        return self.codebook_size_per_group**self.num_groups
 
     @typecheck()
     def forward(self, inputs, input_len):
-        """Quantize each group separately, then concatenate the results.
-        """
+        """Quantize each group separately, then concatenate the results."""
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
 
         dequantized, indices = [], []
@@ -685,8 +681,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
     )
     def encode(self, inputs: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
-        """Input is split into groups, each group is encoded separately, then the results are concatenated.
-        """
+        """Input is split into groups, each group is encoded separately, then the results are concatenated."""
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
         indices = []
 
@@ -704,11 +699,12 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
             "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
     )
     def decode(self, indices: torch.Tensor, input_len: torch.Tensor) -> torch.Tensor:
-        """Input indices are split into groups, each group is decoded separately, then the results are concatenated.
-        """
+        """Input indices are split into groups, each group is decoded separately, then the results are concatenated."""
         indices_grouped = indices.chunk(self.num_groups, dim=0)
         dequantized = []
 

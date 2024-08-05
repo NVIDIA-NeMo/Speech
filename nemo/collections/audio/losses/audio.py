@@ -584,3 +584,168 @@ class MSELoss(Loss, Typing):
         mse = self.reduce(mse)
 
         return mse
+
+
+def calculate_mae_batch(
+    estimate: torch.Tensor,
+    target: torch.Tensor,
+    input_length: Optional[torch.Tensor] = None,
+    mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Calculate mean absolute error (MAE) per channel.
+
+        MAE = ||estimate - target||_1 / input_length
+
+    Args:
+        estimate: estimated signal, shape (B, C, T) or (B, C, D, T)
+        target: target signal, shape (B, C, T) or (B, C, D, T)
+        input_length: Optional, length of valid samples, shape (B,)
+        mask: Optional, temporal mask, same shape as signals
+
+    Returns:
+        MAE for each channel, shape (B, C)
+    """
+    assert (
+        estimate.shape == target.shape
+    ), f'Estimate shape ({estimate.shape}) not matching target shape ({target.shape})'
+
+    if input_length is not None:
+        if mask is not None:
+            raise RuntimeError(
+                'Argument `input_length` is mutually exclusive with `mask`. Both cannot be used at the same time.'
+            )
+
+        # Construct a binary mask
+        mask = make_seq_mask_like(lengths=input_length, like=estimate, time_dim=-1, valid_ones=True)
+        mask = mask.expand_as(estimate)
+
+    # error
+    err = estimate - target
+
+    # dimensions for averaging
+    if estimate.ndim == 3:
+        # average across time
+        dim = -1
+    elif estimate.ndim == 4:
+        # average across time and features
+        dim = (-2, -1)
+    else:
+        raise RuntimeError(f'Unexpected dimension of the input: {estimate.shape}')
+
+    # calculate masked mean
+    mse = calculate_mean(torch.abs(err), mask=mask, dim=dim)
+
+    return mse
+
+
+class MAELoss(Loss, Typing):
+    """
+    Computes the mean absolute error (MAE) loss with weighted average across channels.
+
+    Args:
+        weight: weight for loss of each output channel, used for averaging the loss across channels. Defaults to `None` (averaging).
+        reduction: batch reduction. Defaults to `mean` over the batch.
+        ndim: Number of dimensions for the input signal
+    """
+
+    def __init__(
+        self,
+        weight: Optional[List[float]] = None,
+        reduction: str = 'mean',
+        ndim: int = 3,
+    ):
+        super().__init__()
+
+        # weight buffer
+        if weight is not None:
+            if any([w <= 0 for w in weight]):
+                raise ValueError(f'Weight must be positive! Current value: {weight}')
+            elif not np.isclose(sum(weight), 1, atol=1e-6):
+                raise ValueError(f'Weight should add to one, current weight: {weight}')
+            weight = torch.tensor(weight).reshape(1, -1)
+            logging.info(f'Channel weight set to %s', weight)
+        self.register_buffer('weight', weight)
+        self.weight: Optional[Tensor]
+
+        # Batch reduction
+        self.reduction = reduction
+        if reduction == 'mean':
+            self.reduce = torch.mean
+        else:
+            raise ValueError(f'Unexpected reduction mode {reduction}.')
+
+        # Input dimension
+        self.ndim = ndim
+
+        if self.ndim == 3:
+            # Time-domain input
+            self.signal_shape = ('B', 'C', 'T')
+        elif self.ndim == 4:
+            # Spectral-domain input
+            self.signal_shape = ('B', 'C', 'D', 'T')
+        else:
+            raise ValueError(f'Unexpected input dimension: {self.ndim}')
+
+        logging.debug('Initialized %s with', self.__class__.__name__)
+        logging.debug('\tweight:       %s', self.weight)
+        logging.debug('\treduction:    %s', self.reduction)
+        logging.debug('\tndim:         %s', self.ndim)
+        logging.debug('\tsignal_shape: %s', self.signal_shape)
+
+    @property
+    def input_types(self):
+        """Input types definitions for MAELoss."""
+        return {
+            "estimate": NeuralType(self.signal_shape, VoidType()),
+            "target": NeuralType(self.signal_shape, VoidType()),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+            "mask": NeuralType(self.signal_shape, MaskType(), optional=True),
+        }
+
+    @property
+    def output_types(self):
+        """Output types definitions for MAELoss.
+        loss:
+            NeuralType(None)
+        """
+        return {"loss": NeuralType(elements_type=LossType())}
+
+    @typecheck()
+    def forward(
+        self,
+        estimate: torch.Tensor,
+        target: torch.Tensor,
+        input_length: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """For input batch of multi-channel signals, calculate MAE between estimate and target for each channel,
+        perform averaging across channels (weighting optional), and apply reduction across the batch.
+
+        Args:
+            estimate: Estimate of the target signal
+            target: Target signal
+            input_length: Length of each example in the batch
+            mask: Mask for each signal
+
+        Returns:
+            Scalar loss.
+        """
+        mae = calculate_mae_batch(
+            estimate=estimate,
+            target=target,
+            input_length=input_length,
+            mask=mask,
+        )
+
+        # channel averaging
+        if self.weight is None:
+            mae = torch.mean(mae, dim=1)
+        else:
+            # weighting across channels
+            mae = mae * self.weight
+            mae = torch.sum(mae, dim=1)
+
+        # reduction
+        mae = self.reduce(mae)
+
+        return mae

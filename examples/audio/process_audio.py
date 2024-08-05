@@ -16,7 +16,7 @@ import contextlib
 import glob
 import json
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -96,6 +96,10 @@ class ProcessConfig:
     # Override model config
     override_config_path: Optional[str] = None  # path to a yaml config that will override the internal config file
 
+    # Override sampler config
+    # For example, to set number of steps, use `++sampler.num_samples=42`
+    sampler: dict = field(default_factory=dict)
+
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
     # If `cuda` is a negative number, inference will be on CPU only.
@@ -154,6 +158,22 @@ def main(cfg: ProcessConfig) -> ProcessConfig:
     trainer = pl.Trainer(devices=device, accelerator=accelerator)
     audio_to_audio_model.set_trainer(trainer)
     audio_to_audio_model = audio_to_audio_model.eval()
+
+    # override sampler
+    if cfg.sampler is not None:
+        logging.info('Overriding sampler with %s', cfg.sampler)
+
+        if hasattr(audio_to_audio_model, 'sampler'):
+            for key, value in cfg.sampler.items():
+                if not hasattr(audio_to_audio_model.sampler, key):
+                    raise RuntimeError(f'Model sampler does not have attribute {key}')
+                logging.debug('Try to set model.sampler.%s to %s', key, value)
+                setattr(audio_to_audio_model.sampler, key, value)
+                if getattr(audio_to_audio_model.sampler, key) != value:
+                    raise RuntimeError(f'Failed to set model sampler attribute {key} to {value}')
+                logging.info('model.sampler.%s was set to %s', key, value)
+        else:
+            raise RuntimeError('Model does not have a sampler')
 
     if cfg.audio_dir is not None:
         filepaths = list(glob.glob(os.path.join(cfg.audio_dir, f"**/*.{cfg.audio_type}"), recursive=True))

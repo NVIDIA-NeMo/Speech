@@ -17,8 +17,8 @@ import torch
 from einops import rearrange
 from omegaconf import DictConfig
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.models import SpectrogramEnhancerModel
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 @pytest.fixture

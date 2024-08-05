@@ -48,13 +48,14 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from torch.utils.tensorboard.writer import SummaryWriter
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.spectrogram_enhancer_losses import (
     ConsistencyLoss,
     GeneratorLoss,
     GradientPenaltyLoss,
     HingeLoss,
 )
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor, to_device_recursive
+from nemo.collections.tts.parts.utils.helpers import to_device_recursive
 from nemo.core import Exportable, ModelPT, PretrainedModelInfo, typecheck
 from nemo.core.neural_types import LengthsType, MelSpectrogramType, NeuralType
 from nemo.core.neural_types.elements import BoolType
@@ -128,7 +129,12 @@ class SpectrogramEnhancerModel(ModelPT, Exportable):
         }
     )
     def forward(
-        self, *, input_spectrograms: torch.Tensor, lengths: torch.Tensor, mixing: bool = False, normalize: bool = True,
+        self,
+        *,
+        input_spectrograms: torch.Tensor,
+        lengths: torch.Tensor,
+        mixing: bool = False,
+        normalize: bool = True,
     ):
         """
         Generator forward pass. Noise inputs will be generated.
@@ -263,7 +269,10 @@ class SpectrogramEnhancerModel(ModelPT, Exportable):
             return g_loss + c_loss
 
     def configure_optimizers(self):
-        generator_opt = instantiate(self._cfg.generator_opt, params=self.generator.parameters(),)
+        generator_opt = instantiate(
+            self._cfg.generator_opt,
+            params=self.generator.parameters(),
+        )
         discriminator_opt = instantiate(self._cfg.discriminator_opt, params=self.discriminator.parameters())
         return [discriminator_opt, generator_opt], []
 

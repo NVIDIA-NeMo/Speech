@@ -15,6 +15,7 @@
 import pytest
 import torch
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.modules.audio_codec_modules import (
     CodecActivation,
     Conv1dNorm,
@@ -29,7 +30,6 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     get_down_sample_padding,
 )
 from nemo.collections.tts.modules.encodec_modules import GroupResidualVectorQuantizer, ResidualVectorQuantizer
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 
 
 class TestAudioCodecModules:
@@ -205,8 +205,7 @@ class TestAudioCodecModules:
 
 class TestResidualVectorQuantizer:
     def setup_class(self):
-        """Setup common members
-        """
+        """Setup common members"""
         self.batch_size = 2
         self.max_len = 20
         self.codebook_size = 256
@@ -315,8 +314,7 @@ class TestCodecActivation:
 
 class TestFiniteScalarQuantizer:
     def setup_class(self):
-        """Setup common members
-        """
+        """Setup common members"""
         self.batch_size = 2
         self.max_len = 20
         self.num_examples = 10

@@ -43,6 +43,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 from torch import Tensor
 
+from nemo.collections.common.parts.utils import mask_sequence_tensor
 from nemo.collections.tts.losses.audio_codec_loss import MaskedMSELoss
 from nemo.collections.tts.modules.audio_codec_modules import (
     CodecActivation,
@@ -53,7 +54,6 @@ from nemo.collections.tts.modules.audio_codec_modules import (
     get_down_sample_padding,
 )
 from nemo.collections.tts.parts.utils.distributed import broadcast_tensors
-from nemo.collections.tts.parts.utils.helpers import mask_sequence_tensor
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types.elements import AudioSignal, EncodedRepresentation, Index, LengthsType, LossType, VoidType
@@ -266,7 +266,10 @@ class SEANetDecoder(NeuralModule):
             out_channels = in_channels // 2
             kernel_size = 2 * up_sample_rate
             up_sample_conv = ConvTranspose1dNorm(
-                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=up_sample_rate,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                stride=up_sample_rate,
             )
             in_channels = out_channels
             self.up_sample_conv_layers.append(up_sample_conv)
@@ -681,7 +684,10 @@ class EuclideanCodebook(NeuralModule):
         return indices
 
     @typecheck(
-        input_types={"indices": NeuralType(('B', 'T'), Index()), "input_len": NeuralType(tuple('B'), LengthsType()),},
+        input_types={
+            "indices": NeuralType(('B', 'T'), Index()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        },
         output_types={"dequantized": NeuralType(('B', 'T', 'D'), EncodedRepresentation())},
     )
     def decode(self, indices, input_len):
@@ -801,7 +807,9 @@ class ResidualVectorQuantizer(VectorQuantizerBase):
             "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
     )
     def decode(self, indices: Tensor, input_len: Tensor) -> Tensor:
         # [B, T, D]
@@ -852,8 +860,7 @@ class GroupResidualVectorQuantizer(VectorQuantizerBase):
 
     @property
     def num_codebooks_per_group(self):
-        """Number of codebooks for each group.
-        """
+        """Number of codebooks for each group."""
         if self.num_codebooks % self.num_groups != 0:
             raise ValueError(
                 f'num_codebooks ({self.num_codebooks}) must be divisible by num_groups ({self.num_groups})'
@@ -863,8 +870,7 @@ class GroupResidualVectorQuantizer(VectorQuantizerBase):
 
     @property
     def codebook_dim_per_group(self):
-        """Input vector dimension for each group.
-        """
+        """Input vector dimension for each group."""
         if self.codebook_dim % self.num_groups != 0:
             raise ValueError(f'codebook_dim ({self.codebook_dim}) must be divisible by num_groups ({self.num_groups})')
 
@@ -881,8 +887,7 @@ class GroupResidualVectorQuantizer(VectorQuantizerBase):
 
     @typecheck()
     def forward(self, inputs, input_len):
-        """Quantize each group separately, then concatenate the results.
-        """
+        """Quantize each group separately, then concatenate the results."""
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
 
         dequantized, indices = [], []
@@ -910,8 +915,7 @@ class GroupResidualVectorQuantizer(VectorQuantizerBase):
         output_types={"indices": NeuralType(('D', 'B', 'T'), Index())},
     )
     def encode(self, inputs: Tensor, input_len: Tensor) -> Tensor:
-        """Input is split into groups, each group is encoded separately, then the results are concatenated.
-        """
+        """Input is split into groups, each group is encoded separately, then the results are concatenated."""
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
         indices = []
 
@@ -929,11 +933,12 @@ class GroupResidualVectorQuantizer(VectorQuantizerBase):
             "indices": NeuralType(('D', 'B', 'T'), Index()),
             "input_len": NeuralType(tuple('B'), LengthsType()),
         },
-        output_types={"dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),},
+        output_types={
+            "dequantized": NeuralType(('B', 'D', 'T'), EncodedRepresentation()),
+        },
     )
     def decode(self, indices: Tensor, input_len: Tensor) -> Tensor:
-        """Input indices are split into groups, each group is decoded separately, then the results are concatenated.
-        """
+        """Input indices are split into groups, each group is decoded separately, then the results are concatenated."""
         indices_grouped = indices.chunk(self.num_groups, dim=0)
         dequantized = []
 

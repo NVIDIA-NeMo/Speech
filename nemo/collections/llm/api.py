@@ -289,7 +289,7 @@ def _setup(
         task_config=getattr(train, "__io__", None),
     )
     if resume is not None:
-        resume.setup(model, trainer)
+        resume.setup(trainer, model)
 
     if optim:
         optim.connect(model)

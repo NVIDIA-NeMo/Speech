@@ -116,6 +116,12 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             forward pass of a model.
         loss_reduction (Optional[Callable[[nn.Module], MegatronLossReduction]]): An optional
             function that defines how the loss is reduced.
+        vp_size (Optional[int]): Virtual pipeline parallel size.
+        ddp_config (Optional[DistributedDataParallelConfig]): An instance of Megatron core's
+            DistributedDataParallelConfig which controls the Megatron DDP configuration.
+        cpu (bool): Whether model should reside on CPU.
+        convert_module_fn (Optional[Callable[[ModelT], nn.Module]]): An optional function to
+            apply to the model parameters after initialization.
 
     Examples
     --------
@@ -628,6 +634,11 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
 
 class _ModuleStepFunction:
+    """
+    This class acts as a bridge between Megatron core's lower-level functional API and PTL's object-oriented API,
+        making it possible to use PTL-compatible functions in Megatron core.
+    """
+
     def __init__(self, name: str, is_property: bool = False, includes_self: bool = False):
         self.name = name
         self.is_property = is_property

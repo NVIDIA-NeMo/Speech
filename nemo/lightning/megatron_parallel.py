@@ -667,7 +667,9 @@ class _ModuleStepFunction:
 def getattr_proxy(self, item: Any) -> Any:
     try:
         return super(self.__class__, self).__getattr__(item)
-    except AttributeError:
+    except AttributeError as e:
+        if item == 'module':  ## this is a hacky WAR and may cause misleading error messages
+            raise e
         try:
             return getattr(self.module, item)
         except AttributeError:

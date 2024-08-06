@@ -41,6 +41,7 @@ class MixtralConfig8x7B(GPTConfig):
     # MoE
     num_moe_experts: int = 8
     moe_router_topk: int = 1
+    moe_router_pre_softmax: bool = True
 
     init_method_std: float = 0.02
     layernorm_epsilon: float = 1e-5
@@ -127,6 +128,7 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
             num_query_groups=config.num_key_value_heads,
             num_moe_experts=config.num_local_experts,
             moe_router_topk=config.num_experts_per_tok,
+            moe_router_pre_softmax=True,
             # norm
             normalization='RMSNorm',
             layernorm_epsilon=config.rms_norm_eps,

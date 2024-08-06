@@ -150,10 +150,13 @@ def reverse_adjust_tensor_shapes(model, hf_model, nemo_state_dict):
     dict: The updated state dictionary with original tensor shapes and structures.
     """
     model_config = model.cfg
-    num_query_groups = model_config["num_query_groups"]
     head_num = model_config["num_attention_heads"]
     hidden_size = model_config["hidden_size"]
     head_size = model_config["kv_channels"]
+    if "num_query_groups" in model_config and model_config["num_query_groups"] is not None:
+        num_query_groups = model_config["num_query_groups"]
+    else:
+        num_query_groups = head_num
     if head_size is None:
         head_size = hidden_size // head_num
     heads_per_group = head_num // num_query_groups
@@ -300,7 +303,7 @@ def convert(args):
         batch_dict = hf_tokenizer(input_texts, max_length=512, padding=True, truncation=True, return_tensors='pt')
         batch_dict_cuda = {k: v.cuda() for k, v in batch_dict.items()}
         hf_model = hf_model.cuda().eval()
-        model = model.eval()
+        model = model.cuda().eval()
 
         hf_outputs = hf_model(**batch_dict_cuda, output_hidden_states=True)
         ids = batch_dict_cuda['input_ids']
@@ -315,7 +318,7 @@ def convert(args):
             attn_mask, _, pos_ids = attn_mask_and_pos_ids
 
             outputs = model(
-                tokens=tokens, text_position_ids=pos_ids.cuda(), attention_mask=attn_mask.cuda(), labels=None
+                tokens=tokens.cuda(), text_position_ids=pos_ids.cuda(), attention_mask=attn_mask.cuda(), labels=None
             )
 
         hf_next_token = hf_outputs.logits[0, -1].argmax()

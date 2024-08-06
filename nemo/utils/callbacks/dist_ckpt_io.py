@@ -323,6 +323,10 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             logging.info(f'Using {sharded_strategy} dist-ckpt load strategy.')
 
         if isinstance(strict, bool):
+            # For backward-compatibility reasons and a bug in MCore (strict check not applied to factories)
+            # we must apply a simple strict check here.
+            if not strict:
+                sharded_state_dict = self.adjust_non_strict_load(path, sharded_state_dict)
             strict = StrictHandling.ASSUME_OK_UNEXPECTED if strict else StrictHandling.LOG_ALL
         if self.load_strictness is not None:
             # Overwrites function argument
@@ -331,6 +335,8 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             # Default behavior
             strict = StrictHandling.ASSUME_OK_UNEXPECTED
 
+        logging.debug(f'Dist ckpt load strictness: {strict}')
+
         return dist_checkpointing.load(
             sharded_state_dict=sharded_state_dict,
             checkpoint_dir=path,
@@ -338,6 +344,30 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
             validate_access_integrity=validate_access_integrity,
             strict=strict,
         )
+
+    def adjust_non_strict_load(self, path: _PATH, sharded_state_dict: Dict[str, Any]):
+        ckpt_sharded_metadata = dist_checkpointing.load_tensors_metadata(path)
+        loaded_keys = []
+        missing_keys = []
+        unexpected_keys = []
+
+        def should_remove_missing_sharded_base(x: Any):
+            if isinstance(x, ShardedBase):
+                if x.key in ckpt_sharded_metadata:
+                    loaded_keys.append(x.key)
+                    return False
+                else:
+                    unexpected_keys.append(x.key)
+                    return True
+            return False
+
+        _, sharded_state_dict = extract_matching_values(sharded_state_dict, should_remove_missing_sharded_base)
+        logging.info(f'The following keys are not in the checkpoint and will not be loaded: {unexpected_keys}')
+
+        # TODO: compute missing_keys by:
+        #  1. all_gather_object of loaded_keys
+        #  2. missing_keys = ckpt_sharded_metadata.keys() - loaded_keys
+        return sharded_state_dict
 
     @_debug_time('DistributedCheckpointIO.remove_checkpoint')
     def remove_checkpoint(self, path: _PATH) -> None:

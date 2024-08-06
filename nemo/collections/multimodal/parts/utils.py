@@ -489,18 +489,9 @@ def create_neva_model_and_processor(cfg):
         else:
             frames = maybe_video_path
 
-        if neva_cfg.mm_cfg.vision_encoder.get("from_hf", False):
-            if (
-                "siglip" in neva_cfg.mm_cfg.vision_encoder.from_pretrained
-                or "siglip" in neva_cfg.mm_cfg.vision_encoder.get("model_type", "")
-            ):
-                processor = SiglipImageProcessor.from_pretrained(neva_cfg.mm_cfg.vision_encoder.from_pretrained)
-            else:
-                # for clip and vit model
-                processor = CLIPImageProcessor.from_pretrained(neva_cfg.mm_cfg.vision_encoder.from_pretrained)
-        else:
-            processor = CLIPImageProcessor.from_pretrained("openai/clip-vit-large-patch14")
-
+        processor = (
+            model.model.module.image_processor if hasattr(model.model, "module") else model.model.image_processor
+        )
         # support single video inference
         if neva_cfg.data.image_aspect_ratio == 'keep':
             max_hw, min_hw = max(frames.size), min(frames.size)
@@ -541,11 +532,11 @@ def create_image_processor(mm_cfg):
         from transformers import AutoConfig
 
         config = AutoConfig.from_pretrained(mm_cfg.vision_encoder.from_pretrained)
-        if config.architectures[0] == "CLIPVisionModel":
+        if config.architectures[0] == "CLIPVisionModel" or config.architectures[0] == "CLIPModel":
             image_processor = CLIPImageProcessor.from_pretrained(
                 mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
             )
-        elif config.architectures[0] == "SiglipVisionModel":
+        elif config.architectures[0] == "SiglipVisionModel" or config.architectures[0] == "SiglipModel":
             image_processor = SiglipImageProcessor.from_pretrained(
                 mm_cfg.vision_encoder.from_pretrained, torch_dtype=torch.bfloat16
             )

@@ -25,6 +25,7 @@ import lhotse.serialization
 import soundfile
 from cytoolz import groupby
 from lhotse import AudioSource, Recording, SupervisionSegment
+from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
 from lhotse.lazy import LazyIteratorChain, LazyJsonlIterator
@@ -329,9 +330,19 @@ class LazyNeMoTarredIterator:
         # Propagate the random seed
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
 
+        # Handle NeMo tarred manifests with offsets.
+        # They have multiple JSONL entries where audio paths end with '-sub1', '-sub2', etc. for each offset.
+        offset_pattern = re.compile(r'^.+(-sub\d+)$')
+
         for sid in shard_ids:
             manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
-            shard_manifest = {data["audio_filepath"]: data for data in self.shard_id_to_manifest[sid]}
+
+            def basename(d: dict) -> str:
+                return (
+                    k[: -len(m.group(1))] if (m := offset_pattern.match(k := d["audio_filepath"])) is not None else k
+                )
+
+            shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])
             tar_path = self.shard_id_to_tar_path[sid]
             with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
                 for tar_info in tar:
@@ -339,7 +350,6 @@ class LazyNeMoTarredIterator:
                         f"Mismatched entry between JSON manifest ('{manifest_path}') and tar file ('{tar_path}'). "
                         f"Cannot locate JSON entry for tar file '{tar_info.name}'"
                     )
-                    data = shard_manifest[tar_info.name]
                     raw_audio = tar.extractfile(tar_info).read()
                     # Note: Lhotse has a Recording.from_bytes() utility that we won't use here because
                     #       the profiling indicated significant overhead in torchaudio ffmpeg integration
@@ -353,27 +363,74 @@ class LazyNeMoTarredIterator:
                         num_samples=meta.frames,
                         duration=meta.duration,
                     )
-                    cut = recording.to_cut()
-                    cut.supervisions.append(
-                        SupervisionSegment(
-                            id=cut.id,
-                            recording_id=cut.recording_id,
-                            start=0,
-                            duration=cut.duration,
-                            text=data.get(self.text_field),
-                            language=data.get(self.lang_field),
+                    cuts_for_recording = []
+                    for data in sorted(shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]):
+                        # Cut the recording into corresponding segment and discard audio data outside the segment.
+                        cut = make_cut_with_subset_inmemory_recording(
+                            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
                         )
-                    )
-                    cut.custom = _to_custom_attr_dict(data)
-                    for extra_field in extra_fields:
-                        extra_field.attach_to(cut)
-                    yield cut
+                        cut.supervisions.append(
+                            SupervisionSegment(
+                                id=cut.id,
+                                recording_id=cut.recording_id,
+                                start=0,
+                                duration=cut.duration,
+                                text=data.get(self.text_field),
+                                language=data.get(self.lang_field),
+                            )
+                        )
+                        cut.custom = _to_custom_attr_dict(data)
+                        for extra_field in extra_fields:
+                            extra_field.attach_to(cut)
+                        cuts_for_recording.append(cut)
+                    del recording  # free the memory - helps with very large audio files
+                    del raw_audio
+                    yield from cuts_for_recording
 
     def __len__(self) -> int:
         return len(self.source)
 
     def __add__(self, other):
         return LazyIteratorChain(self, other)
+
+
+def make_cut_with_subset_inmemory_recording(
+    recording: Recording, offset: float = 0.0, duration: float | None = None
+) -> Cut:
+    """
+    This method is built specifically to optimize CPU memory usage during dataloading
+    when reading tarfiles containing very long recordings (1h+).
+    Normally each cut would hold a reference to the long in-memory recording and load
+    the necessary subset of audio (there wouldn't be a separate copy of the long recording for each cut).
+    This is fairly efficient already, but we don't actually need to hold the unused full recording in memory.
+    Instead, we re-create each cut so that it only holds a reference to the subset of recording necessary.
+    This allows us to discard unused data which would otherwise be held in memory as part of sampling buffering.
+    """
+
+    # Fast path: no offset and (almost) matching duration (within 200ms; leeway for different audio codec behavior).
+    cut = recording.to_cut()
+    if offset == 0.0 and duration is None or abs(duration - recording.duration) < 0.2:
+        return cut
+
+    # Otherwise, apply the memory optimization.
+    cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+    audiobytes = BytesIO()
+    LibsndfileBackend().save_audio(audiobytes, cut.load_audio(), sampling_rate=cut.sampling_rate, format="wav")
+    audiobytes.seek(0)
+    new_recording = Recording(
+        id=recording.id,
+        sampling_rate=recording.sampling_rate,
+        num_samples=cut.num_samples,
+        duration=cut.duration,
+        sources=[
+            AudioSource(
+                type="memory",
+                channels=recording.channel_ids,
+                source=audiobytes.getvalue(),
+            )
+        ],
+    )
+    return new_recording.to_cut()
 
 
 class ExtraField:

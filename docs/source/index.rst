@@ -54,8 +54,8 @@ For more information, browse the developer docs for your area of interest in the
 
    features/mixed_precision
    features/parallelisms
-   features/memory_optimizations
-   features/throughput_optimizations
+   features/moe
+   features/optimizations/index
 
 .. toctree::
    :maxdepth: 1

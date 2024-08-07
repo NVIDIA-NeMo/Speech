@@ -1,83 +1,5 @@
-Memory Optimizations
-====================
-
-Parallelism
------------
-Refer to :doc:`Parallelism <./parallelisms>`.
-
-
-Mixture of Experts
-------------------
-
-Overview
-^^^^^^^^
-
-NeMo supports Mixture of Experts (MoE) in the transformer layer for NLP models.
-
-MoE is a machine learning technique where multiple specialized models (experts,
-usually multi-layer perceptrons) are combined to solve a complex task. Each expert
-focuses on a specific subtask or domain, while a gating network dynamically activates
-the most appropriate expert based on the current input.
-
-
-To use MoE  in the NeMo Framework, adjust the ``num_moe_experts`` parameter in the model configuration:
-
-1. Set ``num_moe_experts`` to `8` to leverage 8 experts in the MoE module.
-
-   .. code-block:: yaml
-
-       num_moe_experts: 8  # Set MoE to use 8 experts
-
-2. Set ``moe_router_topk`` to the number of experts you want activated. For example, if you want to process each input with two experts:
-
-   .. code-block:: yaml
-
-       moe_router_topk: 2  # Processes each token using 2 experts.
-
-In addition, NeMo provides options to configure MoE-specific loss function.
-To balance token distribution across experts:
-
-1. Set ``moe_router_load_balancing_type`` to specify the load balancing method:
-
-   .. code-block:: yaml
-
-      moe_router_load_balancing_type: aux_loss  # to use the auxilary loss, other options include "sinkhorn".
-
-2. Set ``moe_aux_loss_coeff`` to specify the weight of the auxilary loss. Values in the 1e-2 range are a good start, as follows:
-
-   .. code-block:: yaml
-
-      moe_aux_loss_coeff: 1e-2  # set the aux-loss weight to 1e-2
-
-3. Set ``moe_z_loss_coeff`` to specify the weight of the z-loss. A starting value of 1e-3 is recommended, as follows:
-
-   .. code-block:: yaml
-
-      moe_z_loss_coeff: 1e-3
-
-Other options include:
-
-1. ``moe_input_jitter_eps`` adds noise to the input tensor by applying jitter with a specified epsilon value.
-
-2. ``moe_token_dropping`` enables selectively dropping and padding tokens for each expert to achieve
-   a specified capacity.
-
-3. ``moe_token_dropping`` specifies the token dispatcher type, options include 'allgather' and 'alltoall'.
-
-4. ``moe_per_layer_logging`` enables per-layer logging for MoE, currently support aux-loss and z-loss.
-
-5. ``moe_expert_capacity_factor`` the capacity factor for each expert, None means no token will be dropped. The default is None.
-
-6. ``moe_pad_expert_input_to_capacity`` if True, pads the input for each expert to match the expert capacity length, effective only after the moe_expert_capacity_factor is set. The default setting is False.
-
-7. ``moe_token_drop_policy`` the policy to drop tokens. Can be either "probs" or "position". If "probs", the tokens with the lowest probabilities will be dropped. If "position", tokens at the end of each batch will be dropped. Default value is "probs".
-
-8. ``moe_layer_recompute`` if True, checkpointing moe_layer to save activation memory, default is False.
-
-
-
-
-
+Attention Optimizations
+=======================
 
 Flash Attention
 ---------------
@@ -105,26 +27,6 @@ In the NeMo framework, flash attention is supported through `Transformer Engine 
 To disable Tri Dao flash attention, set the environment variable ``NVTE_FLASH_ATTN=0``. To disable cuDNN flash attention, set ``NVTE_FUSED_ATTN=0``.
 
 For more details on the Dot Product Attention backends supported in Transformer Engine, please refer to the source code at `Transformer Engine's Attention Mechanism <https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/attention.py>`_.
-
-Activation Recomputation
-------------------------
-
-Overview
-^^^^^^^^
-
-Full Activation Recomputation
-"""""""""""""""""""""""""""""
-The full activation recomputation method recalculates all the intermediate activations during the backward pass of a model's training, instead of storing them during the forward pass. This technique maximizes memory efficiency at the cost of computational overhead, as each activation is recomputed when needed.
-
-Partial Activation Recomputation
-""""""""""""""""""""""""""""""""
-The partial activation recomputation method recomputes only a subset of layers during the backward phase. It is a trade-off between the full recomputation and no recomputation, balancing memory savings with computational efficiency.
-
-Selective Activation Recomputation
-""""""""""""""""""""""""""""""""""
-The selective activation recomputation method reduces memory footprint of activations significantly via smart activation checkpointing. This approach involves selectively storing only crucial activations and recomputing the others as needed. It is particularly useful in large models to minimize memory usage while controlling the computational cost.
-
-Refer to "Reducing Activation Recomputation in Large Transformer Models" for more details: https://arxiv.org/abs/2205.05198.
 
 Multi-query Attention (MQA) and Grouped-query Attention (GQA)
 -------------------------------------------------------------
@@ -179,24 +81,3 @@ Implement MQA or GQA
 NeMo's support for GQA and MQA is enabled through the integration of Megatron Core's Attention mechanism. The underlying implementation details can be explored within the Attention class of Megatron Core, which provides the functional backbone for these advanced attention methods. To understand the specific modifications and implementations of MQA and GQA, refer to the source code in the Attention class:
 
 Check implementation details from Attention Class in Megatron Core Repo: https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/attention.py#L49.
-
-
-CPU Offloading
---------------
-
-Overview
-^^^^^^^^
-
-CPU Offloading in NeMo is a feature that reduces the peak memory usage of the GPU by offloading activations and inactive weights to CPU storage. NeMo supports offloading at the transformer layer level, allowing users to specify the number of transformer layers in their language model that require CPU offloading. During the forward pass, NeMo offloads activations at the optimal time and reloads them as needed during the backward pass.
-
-Features
-^^^^^^^^
-. Supports training models with long sequence lengths by managing activation memory efficiently.
-. Enables high batch sizes per GPU by offloading activation memory.
-. Overlaps computation with data transfers (Host2Device and Device2Host) during offloading and reloading.
-
-Usage
-^^^^^
-. Set cpu_offloading to True to enable CPU offloading.
-. Set cpu_offloading_num_layers to a value between 0 and the total number of layers in the model minus one.
-. Set cpu_offloading_activations and cpu_offloading_weights based on your needs to offload activations only, weights only, or both.

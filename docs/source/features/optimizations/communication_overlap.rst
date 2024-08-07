@@ -1,5 +1,5 @@
 Communication Overlap
-====================
+=====================
 
 Data-parallel Communication Overlap
 -----------------------------------

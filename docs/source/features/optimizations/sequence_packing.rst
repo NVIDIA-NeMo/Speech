@@ -1,5 +1,5 @@
-Throughput Optimizations
-========================
+Sequence Packing
+================
 
 Sequence Packing for SFT/PEFT
 -----------------------------
@@ -139,11 +139,6 @@ Sequence packing in NeVA (Multimodal LLMs) differs slightly from the LLM SFT/PEF
 please refer to the documentation below
 
 :doc:`../multimodal/mllm/sequence_packing`
-
-Communication Overlap
----------------------
-NeMo leverages Megatron-Core's optimizations to enhance bandwidth utilization and effectively overlap computation with communication. Additional details will be provided soon.
-
 
 .. rubric:: Footnotes
 

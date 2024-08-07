@@ -545,6 +545,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 # mcore bucket_size is based on num of parameters, therefore not
                 # using bucket_cap_mb to configure bucket_size here
                 bucket_size=self.cfg.optim.get('ddp_bucket_size', None),
+                average_in_collective=self.cfg.optim.get('average_in_collective', True),
             )
             self.model = [
                 McoreDDP(

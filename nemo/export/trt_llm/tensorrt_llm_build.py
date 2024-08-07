@@ -76,9 +76,6 @@ def build_and_save_engine(
     plugin_config.use_paged_context_fmha = paged_context_fmha
     plugin_config.multiple_profiles = multiple_profiles
 
-    if max_seq_len is None:
-        max_seq_len = max_input_len + max_output_len
-
     max_num_tokens, opt_num_tokens = check_max_num_tokens(
         max_num_tokens=max_num_tokens,
         opt_num_tokens=opt_num_tokens,

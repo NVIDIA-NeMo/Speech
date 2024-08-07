@@ -59,7 +59,7 @@ def get_layer_prefix(layer_names, is_mcore):
         if 'self_attention' in layer_name:
             transformer_layer_prefix = layer_name.split('layers')[0]
             break
-    assert transformer_layer_prefix is not None, "Cannot extract transformer layer prefix from {layer_name}"
+    assert transformer_layer_prefix is not None, f"Cannot extract transformer layer prefix from {layer_name}"
     if is_mcore:
         model_prefix = transformer_layer_prefix.split('decoder')[0]
     else:

@@ -41,25 +41,19 @@ from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import (
     is_nemo_file,
     load_nemo_model,
 )
+from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
+from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
+from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
 from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load, load_distributed, refit
-
-LOGGER = logging.getLogger("NeMo")
-
-use_model_opt = True
-try:
-    from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
-    from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
-    from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
-except Exception as e:
-    LOGGER.warning(f"Cannot import the Model Optimizer, it will not be available. {type(e).__name__}: {e}")
-    use_model_opt = False
 
 use_deploy = True
 try:
     from nemo.deploy.utils import cast_output, str_ndarray2list
 except Exception as e:
     use_deploy = False
+
+LOGGER = logging.getLogger("NeMo")
 
 
 @wrapt.decorator
@@ -146,16 +140,16 @@ class TensorRTLLM(ITritonDeployable):
         nemo_checkpoint_path: str,
         model_type: Optional[str] = None,
         delete_existing_files: bool = True,
-        n_gpus: int = None,
+        n_gpus: Optional[int] = None,
         tensor_parallelism_size: int = 1,
         pipeline_parallelism_size: int = 1,
-        gpus_per_node: int = None,
+        gpus_per_node: Optional[int] = None,
         max_input_len: int = 256,
         max_output_len: int = 256,
         max_input_token: Optional[int] = None,
         max_output_token: Optional[int] = None,
         max_batch_size: int = 8,
-        max_prompt_embedding_table_size=None,
+        max_prompt_embedding_table_size: Optional[int] = None,
         use_parallel_embedding: bool = False,
         use_embedding_sharing: bool = False,
         paged_kv_cache: bool = True,
@@ -167,9 +161,9 @@ class TensorRTLLM(ITritonDeployable):
         use_lora_plugin: str = None,
         lora_target_modules: List[str] = None,
         max_lora_rank: int = 64,
-        max_num_tokens: int = None,
-        opt_num_tokens: int = None,
-        max_seq_len: int = None,
+        max_num_tokens: Optional[int] = None,
+        opt_num_tokens: Optional[int] = None,
+        max_seq_len: Optional[int] = None,
         multiple_profiles: bool = False,
         gpt_attention_plugin: str = "auto",
         gemm_plugin: str = "auto",
@@ -258,16 +252,22 @@ class TensorRTLLM(ITritonDeployable):
             )
             max_output_len = max_output_token
 
+        if max_seq_len is None:
+            max_seq_len = max_input_len + max_output_len
+
+        if max_batch_size < 4:
+            warnings.warn(
+                "TensorRT LLM may hit a runtime issue with batch size is smaller than 4 on some models."
+                " Force set to 4",
+                stacklevel=2,
+            )
+            max_batch_size = 4
+
         if tensorrt_llm.mpi_rank() == 0:
             tmp_dir = tempfile.TemporaryDirectory()
             nemo_export_dir = Path(tmp_dir.name)
 
-            is_qnemo_ckpt = False
-            if use_model_opt:
-                if is_qnemo_checkpoint(nemo_checkpoint_path):
-                    is_qnemo_ckpt = True
-
-            if is_qnemo_ckpt:
+            if is_qnemo_checkpoint(nemo_checkpoint_path):
                 if os.path.isdir(nemo_checkpoint_path):
                     nemo_export_dir = nemo_checkpoint_path
                 else:
@@ -280,6 +280,7 @@ class TensorRTLLM(ITritonDeployable):
                     engine_dir=self.model_dir,
                     max_input_len=max_input_len,
                     max_output_len=max_output_len,
+                    max_seq_len=max_seq_len,
                     max_batch_size=max_batch_size,
                     max_prompt_embedding_table_size=max_prompt_embedding_table_size,
                     tensor_parallel_size=tensor_parallelism_size,
@@ -293,6 +294,7 @@ class TensorRTLLM(ITritonDeployable):
                     max_lora_rank=max_lora_rank,
                     max_num_tokens=max_num_tokens,
                     opt_num_tokens=opt_num_tokens,
+                    multiple_profiles=multiple_profiles,
                 )
             else:
                 if model_type is None:

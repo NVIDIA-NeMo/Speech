@@ -12,7 +12,7 @@ jobs:
   test-asr-imports:
     runs-on: ubuntu-latest
     container:
-      image: pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+      image: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-runtime
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2
@@ -43,7 +43,7 @@ jobs:
   test-tts-imports:
     runs-on: ubuntu-latest
     container:
-      image: pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+      image: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-runtime
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2

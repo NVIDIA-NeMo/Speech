@@ -28,7 +28,7 @@ Adapter modules represent the functional form of the adapter. We discuss an exam
     :show-inheritance:
     :members:
     :member-order: bysource
-    :no-index:
+    :noindex:
 
 -----
 
@@ -36,7 +36,7 @@ Adapter modules represent the functional form of the adapter. We discuss an exam
     :show-inheritance:
     :members:
     :member-order: bysource
-    :no-index:
+    :noindex:
 
 
 Insertion Form - Module Adapters
@@ -72,7 +72,7 @@ We discuss a simple residual additional connection strategy below - that accepts
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
-    :no-index:
+    :noindex:
 
 -----
 
@@ -81,7 +81,7 @@ We discuss a simple residual additional connection strategy below - that accepts
     :members:
     :member-order: bysource
     :undoc-members: adapter_module_names
-    :no-index:
+    :noindex:
 
 -----
 

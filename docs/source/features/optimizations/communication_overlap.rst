@@ -26,7 +26,8 @@ The TP communication and computation are chunked and the chunks are overlapped i
 In the pipelined overlap, the activation (gradient) tensor all-gather is replaced with multiple steps of input P2P ring exchanges, and reduce-scatter is replaced with multiple steps of GEMM output P2P ring exchanges followed by a reduction of the received outputs.
 In case of the reduce-scatter overlap, NeMo also provides the option to pipeline-overlap using chunks of reduce-scatter, which exposes one reduce-scatter chunk.
 
-.. image:: ../nlp/nemo_megatron/images/tp_comm_overlap.png
+
+.. image:: ../../nlp/nemo_megatron/images/tp_comm_overlap.png
     :align: center
     :width: 600px
     :alt: Tensor-parallel communication overlap
@@ -44,7 +45,7 @@ This increasing PP communication overhead and it cancels off the reduced the pip
 NeMo supports the overlap of the PP communications with non-dependant computations in the 1F1B stage (the body of pipelining, where 1X forward and 1X backward micro-batch executions are interleaved).
 The PP communications in pipeline fill and flush are still exposed.
 
-.. image:: ../nlp/nemo_megatron/images/pp_comm_overlap.png
+.. image:: ../../nlp/nemo_megatron/images/pp_comm_overlap.png
     :align: center
     :width: 600px
     :alt: Pipeline-parallel communication overlap in 1F1B pipelining phase

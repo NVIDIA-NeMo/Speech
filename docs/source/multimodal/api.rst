@@ -8,7 +8,7 @@ Model Classes
     :show-inheritance:
     :no-members:
     :members: __init__, configure_optimizers
-    :no-index:
+    :noindex:
 
 
 .. autoclass:: nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm.MegatronLatentDiffusion

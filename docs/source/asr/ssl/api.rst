@@ -15,12 +15,12 @@ Mixins
 .. autoclass:: nemo.collections.asr.parts.mixins.mixins.ASRModuleMixin
     :show-inheritance:
     :members:
-    :no-index:
+    :noindex:
 
 .. autoclass:: nemo.core.classes.mixins.access_mixins.AccessMixin
     :show-inheritance:
     :members:
-    :no-index:
+    :noindex:
 
 
 

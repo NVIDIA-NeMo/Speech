@@ -3098,44 +3098,29 @@ jobs:
   
   L2_Megatron_GPT_Reranker:
     needs: [cicd-test-container-setup]
-    runs-on: self-hosted-azure
-    timeout-minutes: 10
-    container:
-      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
-      options: 
-        # --user 0:128
-        --device=/dev/nvidia0
-        --gpus all
-        --shm-size=8g
-        --env TRANSFORMERS_OFFLINE=0 
-        --env HYDRA_FULL_ERROR=1
-        --volume /mnt/datadrive/TestData:/home/TestData
-    steps:
-        - name: Checkout repository
-          uses: actions/checkout@v4
-        - run: |
-            rm -rf /home/TestData/nlp/megatron_ir/working_dir
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        rm -rf /home/TestData/nlp/megatron_ir/working_dir
 
-            python examples/nlp/information_retrieval/megatron_gpt_reranker_finetuning.py \
-            exp_manager.exp_dir='/home/TestData/nlp/megatron_ir/working_dir' \
-            model.global_batch_size=4 \
-            model.micro_batch_size=4 \
-            trainer.devices=1 \
-            trainer.num_nodes=1 \
-            trainer.max_epochs=null \
-            trainer.max_steps=20 \
-            trainer.val_check_interval=10 \
-            model.restore_from_path='/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo' \
-            model.peft.lora_tuning.adapter_dim=8 \
-            model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl] \
-            model.data.validation_ds.write_embeddings_to_file=True \
-            model.data.validation_ds.output_file_path_prefix='/home/TestData/nlp/megatron_ir/working_dir/val_embs' \
-            model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
-
-
-            rm -rf /home/TestData/nlp/megatron_ir/working_dir
-        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: "failure()"
+        python examples/nlp/information_retrieval/megatron_gpt_reranker_finetuning.py \
+        exp_manager.exp_dir='/home/TestData/nlp/megatron_ir/working_dir' \
+        model.global_batch_size=4 \
+        model.micro_batch_size=4 \
+        trainer.devices=1 \
+        trainer.num_nodes=1 \
+        trainer.max_epochs=null \
+        trainer.max_steps=20 \
+        trainer.val_check_interval=10 \
+        model.restore_from_path='/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo' \
+        model.peft.lora_tuning.adapter_dim=8 \
+        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl] \
+        model.data.validation_ds.write_embeddings_to_file=True \
+        model.data.validation_ds.output_file_path_prefix='/home/TestData/nlp/megatron_ir/working_dir/val_embs' \
+        model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
+      AFTER_SCRIPT: |
+        rm -rf /home/TestData/nlp/megatron_ir/working_dir
 
   L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]

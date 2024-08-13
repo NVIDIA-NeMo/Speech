@@ -34,18 +34,30 @@ on:
         description: Last 2000 characters of the test step's log
         value: ${{ jobs.main.outputs.log }} 
 jobs:
-  main:
-    runs-on: ${{ inputs.RUNNER }} 
-    outputs:
-      conclusion: ${{ steps.main.conclusion }}
-      log: ${{ steps.main.outputs.log }}
-    permissions:
-      actions: write # Required for cancelling workflows 
+  runner-auto-clean:
+    runs-on: ${{ inputs.RUNNER }}
     steps:
         - name: Docker system cleanup
           run: |
             docker system prune -a --filter "until=48h" --force
 
+  main:
+    runs-on: ${{ inputs.RUNNER }} 
+    outputs:
+      conclusion: ${{ steps.main.conclusion }}
+      log: ${{ steps.main.outputs.log }}
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
         - id: main
           name: Run main script
           timeout-minutes: ${{ inputs.TIMEOUT }}
@@ -54,7 +66,7 @@ jobs:
             (  
               set -e
 
-              docker run --rm --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/nemo_container_${{ github.run_id }} bash -c '${{ inputs.SCRIPT }}'
+              ${{ inputs.SCRIPT }}
             ) 2> >(tee err.log)
 
             EXIT_CODE=$?
@@ -65,9 +77,6 @@ jobs:
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: failure() && inputs.IS_OPTIONAL == false
-
         - name: after_script
           if: always() && inputs.AFTER_SCRIPT != ':'
-          run: |
-            docker run --rm --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/nemo_container_${{ github.run_id }} bash -c '${{ inputs.AFTER_SCRIPT }}'
-            
+          run: ${{ inputs.AFTER_SCRIPT }}

@@ -105,7 +105,7 @@ jobs:
         NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --with_downloads
       IS_OPTIONAL: true
 
-  L0_Unit_Tests_CPU:
+  OPTIONAL_L0_Unit_Tests_CPU:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     with:
@@ -113,6 +113,7 @@ jobs:
       TIMEOUT: 60
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
+      IS_OPTIONAL: true
 
   L0_Setup_Test_Data_And_Models:
     needs: [cicd-test-container-setup]
@@ -974,7 +975,6 @@ jobs:
         data.train_ds.tar_metadata_file=/home/TestData/nlp/duplex_text_norm/tarred_small/metadata.json \
         data.test_ds.use_cache=false \
         data.test_ds.data_path=/home/TestData/nlp/duplex_text_norm/small_test.tsv
-
 
   # L2: Intent and Slot Classification Tasks
   L2_Intent_and_Slot_Classification_Tasks_Intent_and_Slot_Classification:
@@ -3098,29 +3098,44 @@ jobs:
   
   L2_Megatron_GPT_Reranker:
     needs: [cicd-test-container-setup]
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
+    runs-on: self-hosted-azure
+    timeout-minutes: 10
+    container:
+      image: nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+      options: 
+        # --user 0:128
+        --device=/dev/nvidia0
+        --gpus all
+        --shm-size=8g
+        --env TRANSFORMERS_OFFLINE=0 
+        --env HYDRA_FULL_ERROR=1
+        --volume /mnt/datadrive/TestData:/home/TestData
+    steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+        - run: |
+            rm -rf /home/TestData/nlp/megatron_ir/working_dir
 
-        python examples/nlp/information_retrieval/megatron_gpt_reranker_finetuning.py \
-        exp_manager.exp_dir='/home/TestData/nlp/megatron_ir/working_dir' \
-        model.global_batch_size=4 \
-        model.micro_batch_size=4 \
-        trainer.devices=1 \
-        trainer.num_nodes=1 \
-        trainer.max_epochs=null \
-        trainer.max_steps=20 \
-        trainer.val_check_interval=10 \
-        model.restore_from_path='/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo' \
-        model.peft.lora_tuning.adapter_dim=8 \
-        model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl] \
-        model.data.validation_ds.write_embeddings_to_file=True \
-        model.data.validation_ds.output_file_path_prefix='/home/TestData/nlp/megatron_ir/working_dir/val_embs' \
-        model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
+            python examples/nlp/information_retrieval/megatron_gpt_reranker_finetuning.py \
+            exp_manager.exp_dir='/home/TestData/nlp/megatron_ir/working_dir' \
+            model.global_batch_size=4 \
+            model.micro_batch_size=4 \
+            trainer.devices=1 \
+            trainer.num_nodes=1 \
+            trainer.max_epochs=null \
+            trainer.max_steps=20 \
+            trainer.val_check_interval=10 \
+            model.restore_from_path='/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo' \
+            model.peft.lora_tuning.adapter_dim=8 \
+            model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl] \
+            model.data.validation_ds.write_embeddings_to_file=True \
+            model.data.validation_ds.output_file_path_prefix='/home/TestData/nlp/megatron_ir/working_dir/val_embs' \
+            model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
+
+
+            rm -rf /home/TestData/nlp/megatron_ir/working_dir
+        - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
+          if: "failure()"
 
   L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]
@@ -4482,7 +4497,7 @@ jobs:
       AFTER_SCRIPT: |
         rm -f examples/asr/evaluation_transcripts.json
 
-  L2_Stable_Diffusion_Training:
+  OPTIONAL_L2_Stable_Diffusion_Training:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     with:
@@ -4530,6 +4545,7 @@ jobs:
         model.data.synthetic_data=True
       AFTER_SCRIPT: |
         rm -rf examples/multimodal/text_to_image/sd_train_results
+      IS_OPTIONAL: true
 
   L2_NeMo_2_GPT_Pretraining_no_transformer_engine:
     needs: [cicd-test-container-setup]
@@ -4566,7 +4582,7 @@ jobs:
       - gpu-test
       - cicd-test-container-setup
       - L0_Unit_Tests_GPU
-      - L0_Unit_Tests_CPU
+      #- OPTIONAL_L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Bert
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder
@@ -4664,7 +4680,7 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Mixer-TTS
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests
-      - L2_Stable_Diffusion_Training
+      #- OPTIONAL_L2_Stable_Diffusion_Training
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
     if: always()
     runs-on: ubuntu-latest

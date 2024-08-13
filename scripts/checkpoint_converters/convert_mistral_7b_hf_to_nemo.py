@@ -132,7 +132,7 @@ def load_config(mistral_config, tokenizer, config_path):
     # Tokenizer config
     if hasattr(tokenizer, 'vocab_file'):
         nemo_config.tokenizer.model = tokenizer.vocab_file
-    else:
+    elif os.path.exists(os.path.join(config_path, 'tekken.json')):
         # Load tekken.json, extract the 'vocab' field & write it to file.
         vocab_path = os.path.join(config_path, 'tekken.json')
         assert os.path.exists(vocab_path), f"Expected {vocab_path} to exist"
@@ -154,6 +154,14 @@ def load_config(mistral_config, tokenizer, config_path):
             'merge_file': None,
             'delimiter': None,
             'sentencepiece_legacy': False,
+        }
+        nemo_config.tokenizer = tokenizer_dict
+    else:
+        # Otherwise use HF
+        tokenizer_dict = {
+            'library': 'huggingface',
+            'type': args.input_name_or_path,
+            'use_fast': True,
         }
         nemo_config.tokenizer = tokenizer_dict
 

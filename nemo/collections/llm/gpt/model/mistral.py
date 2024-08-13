@@ -111,7 +111,7 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
             num_layers=source.num_hidden_layers,
             hidden_size=source.hidden_size,
             ffn_hidden_size=source.intermediate_size,
-            kv_channels=source.get('head_dim', source.hidden_size // source.num_attention_heads),
+            kv_channels=getattr(source, 'head_dim', source.hidden_size // source.num_attention_heads),
             num_attention_heads=source.num_attention_heads,
             # max_position_embeddings=source.max_position_embeddings,
             init_method_std=source.initializer_range,

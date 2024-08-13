@@ -155,7 +155,7 @@ class HFMixtralImporter(io.ModelConnector["MixtralForCausalLM", MixtralModel]):
             num_layers=config.num_hidden_layers,
             hidden_size=config.hidden_size,
             ffn_hidden_size=config.intermediate_size,
-            kv_channels=config.get('head_dim', config.hidden_size // config.num_attention_heads),
+            kv_channels=getattr(config, 'head_dim', config.hidden_size // config.num_attention_heads),
             max_position_embeddings=config.max_position_embeddings,  # TODO
             seq_length=config.max_position_embeddings,
             # RoPE

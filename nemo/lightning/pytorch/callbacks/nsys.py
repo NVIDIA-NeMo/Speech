@@ -35,15 +35,15 @@ class NsysCallback(Callback):
         ranks: List[int] = [0],
         gen_shape: bool = False,
     ):
-        assert type(start_step) == int, f'Nsys start_step must be of type int. Found: {type(start_step)}'
+        assert type(start_step) is int, f'Nsys start_step must be of type int. Found: {type(start_step)}'
         self._nsys_profile_start_step = start_step
 
-        assert type(end_step) == int, f'Nsys end_step must be of type int. Found: {type(start_step)}'
+        assert type(end_step) is int, f'Nsys end_step must be of type int. Found: {type(start_step)}'
         self._nsys_profile_end_step = end_step
 
         assert (
             self._nsys_profile_end_step >= self._nsys_profile_start_step
-        ), f'Nsys end_step must be greater than or equal to nsys start_step'
+        ), 'Nsys end_step must be greater than or equal to nsys start_step'
 
         self._nsys_profile_ranks = ranks
         self._nsys_profile_gen_shape = gen_shape
@@ -60,8 +60,9 @@ class NsysCallback(Callback):
         """
 
         device = trainer.strategy.root_device
+        current_step = trainer.strategy.current_epoch_step
         if device.type == 'cuda':
-            if batch_idx == self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
+            if current_step == self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
                 logging.info("====== Start nsys profiling ======")
                 torch.cuda.cudart().cudaProfilerStart()
                 if self._nsys_profile_gen_shape:
@@ -76,8 +77,9 @@ class NsysCallback(Callback):
         """
 
         device = trainer.strategy.root_device
+        current_step = trainer.strategy.current_epoch_step
         if device.type == 'cuda':
-            if batch_idx == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
+            if current_step == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
                 logging.info("====== End nsys profiling ======")
                 torch.cuda.cudart().cudaProfilerStop()
                 torch.autograd.profiler.emit_nvtx().__exit__(None, None, None)

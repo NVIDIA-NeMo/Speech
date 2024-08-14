@@ -647,6 +647,16 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     def checkpoint_io(self, io: CheckpointIO) -> None:
         self._checkpoint_io = io
 
+    @property
+    def current_epoch_step(self) -> int:
+        """
+        Get the value of step within an epoch.
+        """
+        return max(
+            self.trainer.fit_loop.epoch_loop.automatic_optimization.optim_progress.optimizer.step.current.completed,
+            self.trainer.fit_loop.epoch_loop.manual_optimization.optim_step_progress.current.completed,
+        )
+
     def _get_data_step(self, step_type: str) -> Optional[_ModuleStepFunction]:
         for fn_name in [f"{step_type}_data_step", "data_step"]:
             if hasattr(self.lightning_module, fn_name):

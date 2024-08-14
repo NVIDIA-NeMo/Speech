@@ -21,6 +21,7 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
+from nemo.collections.asr.data.audio_to_text_lhotse_prompted import PromptedAudioToTextMiniBatch
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
 from nemo.collections.asr.parts.mixins.streaming import StreamingEncoder
 from nemo.collections.asr.parts.preprocessing.features import normalize_batch
@@ -1643,7 +1644,16 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
             tokens = self.input_tokens.to(device).repeat(feat_signal.size(0), 1)
             tokens_len = torch.tensor([tokens.size(1)] * tokens.size(0), device=device).long()
 
-            batch_input = (feat_signal, feat_signal_len, None, None, tokens, tokens_len)
+            batch_input = PromptedAudioToTextMiniBatch(
+                audio=feat_signal,
+                audio_lens=feat_signal_len,
+                transcript=None,
+                transcript_lens=None,
+                prompt=tokens,
+                prompt_lens=tokens_len,
+                prompted_transcript=None,
+                prompted_transcript_lens=None,
+            )
             predictions = self.asr_model.predict_step(batch_input, has_processed_signal=True)
             self.all_preds.extend(predictions)
             del predictions

@@ -1,3 +1,5 @@
+from typing import Any
+
 from nemo.collections.common.prompts.formatter import Modality, PromptFormatter
 from nemo.collections.common.tokenizers.canary_tokenizer import (
     CANARY_BOS,
@@ -32,6 +34,11 @@ class CanaryPromptFormatter(PromptFormatter):
             },
         },
     }
+
+    def _validate_slot_values(self, expected: dict[str, Modality], received: dict[str, Any]) -> None:
+        if "taskname" in received and "task" not in received:
+            received["task"] = received.pop("taskname")
+        return super()._validate_slot_values(expected=expected, received=received)
 
     def encode_turn(self, prompt_template: str, expected_slots: dict, slot_values: dict) -> list[int]:
         # This method handles a level of indirection for Canary.

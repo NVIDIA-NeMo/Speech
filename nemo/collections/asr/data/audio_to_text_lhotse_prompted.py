@@ -67,7 +67,9 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         tokenizer: TokenizerSpec,
-        prompt_format_fn: Callable[[CutSet, TokenizerWrapper], Sequence[Sequence[int]]],
+        prompt_format_fn: Callable[
+            [CutSet, TokenizerWrapper], tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]
+        ],
     ):
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
@@ -95,7 +97,7 @@ class PromptedAudioToTextLhotseDataset(torch.utils.data.Dataset):
             prompted_transcript_lens=prompts_with_answers_lens,
         )
 
-    def _collate_tokens(self, tokens: list[list[int]]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _collate_tokens(self, tokens: list[list[int] | torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         tokens = [torch.as_tensor(t) for t in tokens]
         token_lens = torch.tensor([t.size(0) for t in tokens], dtype=torch.long)
         tokens = collate_vectors(tokens, padding_value=self.padding_value)
@@ -196,19 +198,19 @@ def canary(
                 },
             )
         ]
-        if text := ' '.join(s.text for s in cut.supervisions if s.text is not None):
-            # Create answer_ids only if there is some transcript in the data.
-            turns.extend(
-                dict(
-                    role="assistant",
-                    slots={
-                        "text": text,
-                        formatter.PROMPT_LANGUAGE_SLOT: ifnone(
-                            cut.supervisions[0].language, cut.custom.get("target_lang")
-                        ),
-                    },
-                ),
-            )
+        # If data has no transcript, create empty response with <eos> only.
+        text = ' '.join(s.text for s in cut.supervisions if s.text is not None)
+        turns.append(
+            dict(
+                role="assistant",
+                slots={
+                    "text": text,
+                    formatter.PROMPT_LANGUAGE_SLOT: ifnone(
+                        cut.supervisions[0].language, cut.custom.get("target_lang")
+                    ),
+                },
+            ),
+        )
         encoded = formatter.encode_dialog(turns)
         prompts_with_answers.append(encoded["input_ids"])
         prompts.append(encoded["context_ids"])

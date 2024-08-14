@@ -1038,13 +1038,11 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             signal = batch.audio
             signal_len = batch.audio_lens
 
-        transf_log_probs, encoded_len, enc_states, enc_mask = self.forward(
+        _, _, enc_states, enc_mask = self.forward(
             input_signal=signal,
             input_signal_length=signal_len,
             processed_signal=processed_signal,
             processed_signal_length=processed_signal_length,
-            transcript=batch.prompt,
-            transcript_length=batch.prompt_lens,
         )
 
         text = self.decoding.decode_predictions_tensor(

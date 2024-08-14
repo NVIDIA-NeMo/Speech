@@ -251,7 +251,7 @@ trainer:
   strategy: ddp
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0
-  precision: 16 # Should be set to 16 for O1 and O2 to enable the AMP.
+  precision: bf16-mixed # Should be set to bf16-mixed/16-mixed for O1 and O2 to enable the AMP.
   log_every_n_steps: 100  # Interval of logging.
   enable_progress_bar: True
   num_sanity_val_steps: 2 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
@@ -259,6 +259,7 @@ trainer:
   sync_batchnorm: true
   enable_checkpointing: False  # Provided by exp_manager
   logger: false  # Provided by exp_manager
+  use_distributed_sampler: false  # Lhotse has its own distributed sampler
 
 exp_manager:
   exp_dir: null

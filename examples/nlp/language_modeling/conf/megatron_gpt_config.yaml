@@ -117,6 +117,7 @@ model:
   batch_p2p_comm: True # Batch consecutive inter-peer send/recv operations. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
   seq_len_interpolation_factor: null # RoPE Interpolation factor for sequence length. This is used to build long-context models with RoPE ex: https://arxiv.org/abs/2306.15595.
   num_query_groups: null # Number of query groups for group query attention. If None, normal attention is used.
+  scale_positional_embedding: False # Apply scaling for RoPE frequencies 
 
   ## Reset learning rate schedule.
   # 1. reset_lr=True, reset_lr_steps=False. When pre-training an existing checkpoint "from scratch" on a different dataset.

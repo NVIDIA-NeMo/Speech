@@ -14,3 +14,10 @@ class TestIOMixin:
         assert copied is not dummy
         assert copied.a == dummy.a
         assert copied.b == dummy.b
+
+    def test_init(self):
+        outputs = []
+        for i in range(1001):
+            outputs.append(DummyClass(i, i))
+
+        assert len(outputs) == 1001

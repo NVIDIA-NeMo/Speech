@@ -62,6 +62,8 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
         run: |
           cd ${{ github.run_id }}
+          EXPECTED_VERSION=$(python -c 'import nemo; print(nemo.__version__)')
+
           python3 -m pip install --upgrade build
           python3 -m build
 
@@ -70,7 +72,6 @@ jobs:
           cd ../
 
           INSTALLED_VERSION=$(python -c 'import nemo; print(nemo.__version__)')
-          EXPECTED_VERSION=${{ steps.version-number.outputs.VERSION }}
           
           if [[ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]]; then
             echo 'Wheel has an outdated version, mission abort immediately!'
@@ -82,18 +83,18 @@ jobs:
           python3 -m pip install --upgrade twine
           echo python3 -m twine upload --repository pypi dist/*
 
-      # - name: notify
-      #   run: |
-      #     MESSAGE='{
-      #       "blocks": [
-      #         {
-      #           "type": "section",
-      #           "text": {
-      #             "type": "mrkdwn",
-      #             "text": "Releasebot 🤖: NeMo Toolkit released `${{ steps.version-number.outputs.VERSION }}` 🚀"
-      #           }
-      #         }
-      #       ]
-      #     }'
+      - name: notify
+        run: |
+          MESSAGE='{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": "Releasebot 🤖: NeMo Toolkit released `${{ steps.version-number.outputs.VERSION }}` 🚀"
+                }
+              }
+            ]
+          }'
 
-      #     curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_RELEASE_ENDPOINT }}
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_RELEASE_ENDPOINT }}

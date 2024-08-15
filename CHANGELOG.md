@@ -79,7 +79,7 @@
 
 </details>
 
-#### NLP / NMT
+#### LLM/Multimodal
   
 <details><summary>Changelog</summary>
 

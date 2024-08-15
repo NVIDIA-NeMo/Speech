@@ -4,7 +4,7 @@ import logging
 import os
 import shutil
 from collections import OrderedDict
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Literal, Mapping, Optional, TypeVar, Union, cast
@@ -730,6 +730,14 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             moe_extended_tp=self.moe_extended_tp,
             pipeline_dtype=self.pipeline_dtype,
         )
+
+    @contextmanager
+    @override
+    def tensor_init_context(self, empty_init: Optional[bool] = None):
+        # Materializaton happens in `setup()`
+        # @akoumparouli: using Parent's tensor_init_context causes mcore
+        # parameters to be initialized on GPU instead of (assumed) CPU.
+        yield
 
 
 def ckpt_to_dir(filepath: Union[str, Path]) -> Path:

@@ -1122,7 +1122,7 @@ class MultiSpeakerSimulator(object):
                 alignments=self._alignments,
                 session_name=filename,
                 speaker_id=speaker_ids[speaker_turn],
-                start=int(start / self._params.data_simulator.sr),
+                start=float(start / self._params.data_simulator.sr),
             )
 
             self.annotator.annote_lists['ctm'].extend(new_ctm_entries)

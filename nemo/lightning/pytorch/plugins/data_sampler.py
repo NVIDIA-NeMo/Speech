@@ -25,6 +25,7 @@ class MegatronDataSampler(DataSampler):
         rampup_batch_size: Optional[List[int]] = None,
         dataloader_type: Literal["single", "cyclic", "batch"] = "single",
         init_consumed_samples: int = 0,
+        init_global_step: int = 0,
     ):
         self.seq_len = seq_len
         self.micro_batch_size = micro_batch_size
@@ -35,6 +36,7 @@ class MegatronDataSampler(DataSampler):
         self.prev_consumed_samples = self.init_consumed_samples
         self.if_first_step = 0
         self.prev_global_batch_size = None
+        self.init_global_step = init_global_step
 
     def setup(self, global_rank: int) -> None:
         from nemo.lightning.data import setup_microbatch_calculator
@@ -92,9 +94,7 @@ class MegatronDataSampler(DataSampler):
 
         self.prev_global_batch_size = self.current_global_batch_size
 
-        # TODO: Add consumed samples
-        consumed_samples = self.compute_consumed_samples(trainer.global_step + 1 - self.init_consumed_samples)
-
+        consumed_samples = self.compute_consumed_samples(trainer.global_step + 1 - self.init_global_step)
         pl_module.log(
             'consumed_samples',
             consumed_samples,

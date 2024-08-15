@@ -190,6 +190,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
 
     def _create_dataloader(self, dataset, mode, **kwargs) -> WrappedDataLoader:
         self.init_global_step = self.trainer.global_step
+        self.data_sampler.init_global_step = self.init_global_step
         dataloader = WrappedDataLoader(
             mode=mode,
             dataset=dataset,

@@ -48,7 +48,7 @@ jobs:
                       }'
                   )
 
-          echo curl -L \
+          curl -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.PAT }}" \
@@ -81,7 +81,7 @@ jobs:
           echo Proceed with uploading wheel...
           cd ${{ github.run_id }}
           python3 -m pip install --upgrade twine
-          echo python3 -m twine upload --repository pypi dist/*
+          python3 -m twine upload --repository pypi dist/*
 
       - name: notify
         run: |

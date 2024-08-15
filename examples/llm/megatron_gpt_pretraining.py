@@ -92,7 +92,7 @@ if __name__ == '__main__':
         callbacks=callbacks,
         log_every_n_steps=1,
         limit_val_batches=2,
-        plugins=nl.MegatronMixedPrecision(precision="bf16-mixed", amp_O2=False),
+        plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
     )
 
     nemo_logger = NeMoLogger(

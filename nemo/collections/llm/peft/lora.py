@@ -17,12 +17,26 @@ class AdapterParallelAdd(AdapterWrapper):
     """
 
     def forward(self, x):
-        linear_output, bias = self.to_wrap(x)
-        if isinstance(linear_output, tuple) and len(linear_output) == 2:
-            linear_output, layernorm_output = linear_output
-            adapter_output = self.adapter(layernorm_output)
-        else:
-            adapter_output = self.adapter(x)
+        linear_output = self.to_wrap(x)
+        assert isinstance(
+            linear_output, tuple
+        ), f"{self.to_wrap} should return a tuple but instead returns {linear_output}"
+        """ Four cases for the wrapped module's return values
+        1. nothing: (out, None)
+        2. return_bias: (out, bias)
+        2. return_layernorm_output: ((out, ln_out), None)
+        3. both: (out, bias, ln_out)
+        """
+        if len(linear_output) == 2:
+            linear_output, bias = linear_output
+            if isinstance(linear_output, tuple) and len(linear_output) == 2:
+                linear_output, layernorm_output = linear_output
+                x = layernorm_output
+        elif len(linear_output) == 3:
+            linear_output, bias, layernorm_output = linear_output
+            x = layernorm_output
+
+        adapter_output = self.adapter(x)
         return linear_output + adapter_output, bias
 
 
@@ -72,6 +86,8 @@ class LoRA(PEFT):
     alpha: int = 32
     dropout: float = 0.0
     dropout_position: Literal['pre', 'post'] = 'post'
+    lora_A_init_method: str = "xavier"
+    lora_B_init_method: str = "zero"
 
     def transform(self, m: nn.Module, name=None, prefix=None):
         """
@@ -96,6 +112,11 @@ class LoRA(PEFT):
                 input_is_parallel = False
                 in_features = m.in_features
                 out_features = m.out_features * tp_size
+                # LoRA is applied after layernorm, so layernorm output must be returned
+                m.return_layernorm_output = True
+                # perf optimization for LoRA + SP
+                if m.config.sequence_parallel and not m.ub_overlap_ag:
+                    m.return_layernorm_output_gathered = True
             else:  # name in ['linear_proj', 'linear_fc2']
                 # Row Parallel Linear
                 input_is_parallel = True
@@ -110,8 +131,8 @@ class LoRA(PEFT):
                 activation='identity',
                 norm_position=None,
                 norm_type=None,
-                column_init_method="normal",
-                row_init_method="zero",
+                column_init_method=self.lora_A_init_method,
+                row_init_method=self.lora_B_init_method,
                 gather_output=False,
                 input_is_parallel=input_is_parallel,
                 dropout=self.dropout,

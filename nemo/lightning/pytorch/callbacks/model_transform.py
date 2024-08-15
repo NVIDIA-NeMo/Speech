@@ -71,6 +71,11 @@ class ModelTransform(pl.Callback):
 
     def apply_transform(self, trainer):
         self.model_transform(trainer.model)
+        from pytorch_lightning.utilities import model_summary
+
+        logging.info(
+            f"After applying model_transform:\n" f"{model_summary.summarize(trainer.lightning_module, max_depth=1)}"
+        )
 
     @property
     def _needs_to_call(self) -> bool:

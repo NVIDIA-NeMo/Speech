@@ -365,6 +365,34 @@ jobs:
 
   #           rm -rf llama2_qat_results
 
+  L2_Distill_Llama2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_distillation.py \
+          trainer.devices=2 \
+          trainer.num_nodes=1 \
+          trainer.precision=bf16 \
+          trainer.max_steps=5 \
+          trainer.log_every_n_steps=5 \
+          trainer.val_check_interval=5 \
+          trainer.limit_val_batches=2 \
+          model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+          model.kd_teacher_restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+          model.tensor_model_parallel_size=2 \
+          model.pipeline_model_parallel_size=1 \
+          model.micro_batch_size=1 \
+          model.global_batch_size=4 \
+          model.optim.name=distributed_fused_adam \
+          model.optim.sched.warmup_steps=1 \
+          model.data.data_prefix=[1.0,/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document] \
+          model.data.index_mapping_dir=examples/nlp/language_modeling/gpt_index_mappings \
+          exp_manager.exp_dir=examples/nlp/megatron_llama_distill
+      AFTER_SCRIPT: |
+          rm -rf examples/nlp/megatron_llama_distill
+
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:
     needs: [cicd-test-container-setup]

@@ -64,7 +64,7 @@ python speech_to_text_eval.py \
 
 import json
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from typing import Optional
 
 import torch
@@ -99,8 +99,13 @@ class EvaluationConfig(transcribe_speech.TranscriptionConfig):
     only_score_manifest: bool = False
     scores_per_sample: bool = False
 
-    text_processing: Optional[TextProcessingConfig] = TextProcessingConfig(
-        punctuation_marks=".,?", separate_punctuation=False, do_lowercase=False, rm_punctuation=False,
+    text_processing: Optional[TextProcessingConfig] = field(
+        default_factory=lambda: TextProcessingConfig(
+            punctuation_marks=".,?",
+            separate_punctuation=False,
+            do_lowercase=False,
+            rm_punctuation=False,
+        )
     )
 
 

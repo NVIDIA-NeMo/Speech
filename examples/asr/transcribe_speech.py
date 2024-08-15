@@ -116,7 +116,7 @@ python transcribe_speech.py \
 class ModelChangeConfig:
 
     # Sub-config for changes specific to the Conformer Encoder
-    conformer: ConformerChangeConfig = ConformerChangeConfig()
+    conformer: ConformerChangeConfig = field(default_factory=ConformerChangeConfig)
 
 
 @dataclass
@@ -164,14 +164,14 @@ class TranscriptionConfig:
     overwrite_transcripts: bool = True
 
     # Decoding strategy for CTC models
-    ctc_decoding: CTCDecodingConfig = CTCDecodingConfig()
+    ctc_decoding: CTCDecodingConfig = field(default_factory=CTCDecodingConfig)
 
     # Decoding strategy for RNNT models
     # enable CUDA graphs for transcription
-    rnnt_decoding: RNNTDecodingConfig = RNNTDecodingConfig(fused_batch_size=-1)
+    rnnt_decoding: RNNTDecodingConfig = field(default_factory=lambda: RNNTDecodingConfig(fused_batch_size=-1))
 
     # Decoding strategy for AED models
-    multitask_decoding: MultiTaskDecodingConfig = MultiTaskDecodingConfig()
+    multitask_decoding: MultiTaskDecodingConfig = field(default_factory=MultiTaskDecodingConfig)
     # Prompt slots for prompted models, e.g. Canary-1B. Examples of acceptable prompt inputs:
     # Implicit single-turn assuming default role='user' (works with Canary-1B)
     #  +prompt.source_lang=en +prompt.target_lang=es +prompt.task=asr +prompt.pnc=yes
@@ -187,7 +187,7 @@ class TranscriptionConfig:
     att_context_size: Optional[list] = None
 
     # Use this for model-specific changes before transcription
-    model_change: ModelChangeConfig = ModelChangeConfig()
+    model_change: ModelChangeConfig = field(default_factory=ModelChangeConfig)
 
     # Config for word / character error rate calculation
     calculate_wer: bool = True

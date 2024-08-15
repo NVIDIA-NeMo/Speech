@@ -70,10 +70,305 @@
 #### TTS
 
 <details><summary>Changelog</summary>
+
 - Clean up dev docs collection section by @yaoyu-33 :: PR: #9205
 - Add mel codec checkpoints by @anteju :: PR: #9228
 - GPU unit tests: Mark flaky tests to be fixed by @pablo-garay :: PR: #9559
 - chore: Pin branch in notebooks by @ko3n1g :: PR: #9697
+- refactor: notebook branch release by @ko3n1g :: PR: #9711
+
+</details>
+
+#### NLP / NMT
+  
+<details><summary>Changelog</summary>
+
+- Update nemo.export module for quantized models by @janekl :: PR: #9218
+- Add save option to the TRT-LLM export test script by @oyilmaz-nvidia :: PR: #9221
+- Checkpoint resuming compatible for 2403 container by @suiyoubi :: PR: #9199
+- Clean up dev docs collection section by @yaoyu-33 :: PR: #9205
+- use get with fallback when reading checkpoint_callback_params by @akoumpa :: PR: #9223
+- Revert rope fusion defaults by @cuichenx :: PR: #9237
+- fix import by @akoumpa :: PR: #9240
+- Add TRT-LLM params like max_num_tokens and opt_num_tokens by @oyilmaz-nvidia :: PR: #9210
+- sum-reduce grad_norm in DP+CP domain by @erhoo82 :: PR: #9262
+- Alit/bert convert fix by @JRD971000 :: PR: #9285
+- conv1d stable version by @JRD971000 :: PR: #9330
+- Fix trainer builder when exp_manager is not in config by @yaoyu-33 :: PR: #9293
+- Fix Peft Weights Loading in NeVA by @yaoyu-33 :: PR: #9341
+- Skip sequence_parallel allreduce when using Mcore DistOpt by @akoumpa :: PR: #9344
+- Fix FSDP gradient calculation with orig params by @janEbert :: PR: #9335
+- TRT-LLM Export Code Cleanup by @oyilmaz-nvidia :: PR: #9270
+- support null/None truncation field by @arendu :: PR: #9355
+- NeVa token fusion by @paul-gibbons :: PR: #9245
+- bugfix if using mcore distOpt with sft by @akoumpa :: PR: #9356
+- Re-org export code by @oyilmaz-nvidia :: PR: #9353
+- QLoRA by @cuichenx :: PR: #9340
+- PeFT fix for distOpt by @akoumpa :: PR: #9392
+- [NeMo-UX] Integrating mcore's DistributedDataParallel into MegatronStrategy by @marcromeyn :: PR: #9387
+- cherry pick of #9266 by @dimapihtar :: PR: #9411
+- Enable specifying alpha for PTQ INT8 SmoothQuant method by @janekl :: PR: #9423
+- add support for new mcore ds features by @dimapihtar :: PR: #9388
+- LoRA for MoE Layer by @cuichenx :: PR: #9396
+- Mistral-7B: apply user's precision to output checkpoint by @akoumpa :: PR: #9222
+- Add option to merge distributed optimizer buckets by @timmoon10 :: PR: #9414
+- TRT-LLM 0.10 Update by @oyilmaz-nvidia :: PR: #9402
+- In-framework deployment by @oyilmaz-nvidia :: PR: #9438
+- Bugfix missing variables and argument changes to MegatronPretrainingRandomSampler by @jstjohn :: PR: #9458
+- Hyena Operator by @guyjacob :: PR: #9264
+- Refactor Quantizer for reusing in QAT by @kevalmorabia97 :: PR: #9276
+- move load state dict after initialize parallel state in nlp_model by @ryxli :: PR: #9382
+- Enable user to optionally upgrade Megatron by @jstjohn :: PR: #9478
+- Fix unwrap model by @cuichenx :: PR: #9480
+- fix operator precedence by @akoumpa :: PR: #9403
+- [NeMo-UX] Adding context- & expert-parallelism to MegatronStrategy by @marcromeyn :: PR: #9525
+- update mcoreddp call by @akoumpa :: PR: #9345
+- mcore distOpt restore fix by @akoumpa :: PR: #9421
+- vLLM Export Support by @apanteleev :: PR: #9381
+- PL: Delete precision if using plugin. TODO switch to MegatronTrainerB… by @akoumpa :: PR: #9535
+- extend get_gpt_layer_modelopt_spec to support MoE by @akoumpa :: PR: #9532
+- fix mock data generation for legacy dataset by @dimapihtar :: PR: #9530
+- add reset learning rate functionality by @dimapihtar :: PR: #9372
+- Use closed-formula to round by multiple by @akoumpa :: PR: #9307
+- GPU unit tests: Mark flaky tests to be fixed by @pablo-garay :: PR: #9559
+- Consolidate gpt continue training script into pretraining script by @yaoyu-33 :: PR: #9413
+- Enable encoder adapters for Canary and MultiTaskAED models by @titu1994 :: PR: #9409
+- PTQ refinements by @janekl :: PR: #9574
+- Add ModelOpt QAT example for Llama2 SFT model by @kevalmorabia97 :: PR: #9326
+- Multimodal projection layer adapter fix for PP>1 by @paul-gibbons :: PR: #9445
+- Add offline quantization script for QLoRA deployment by @cuichenx :: PR: #9455
+- Make QLoRA more model-agnostic by @cuichenx :: PR: #9488
+- Set n_gpu to None in nemo export by @oyilmaz-nvidia :: PR: #9593
+- [NeMo-UX] Fix Megatron-optimizer by @marcromeyn :: PR: #9599
+- Chat template support for megatron_gpt_eval.py by @akoumpa :: PR: #9354
+- [NeMo-UX] Add PEFT by @cuichenx :: PR: #9490
+- Alit/mamba tmp by @JRD971000 :: PR: #9612
+- Enable MCore checkpointing optimizations by @mikolajblaz :: PR: #9505
+- Change mixtral moe key name for trt-llm by @oyilmaz-nvidia :: PR: #9620
+- fix ckpt load bug by @dimapihtar :: PR: #9621
+- Alit/mamba by @JRD971000 :: PR: #9575
+- Unwrap ckpt_io for model opt (async save) by @mikolajblaz :: PR: #9622
+- MCore T5 support for NeMo - Training by @huvunvidia :: PR: #9432
+- [Nemo-UX] Expose transformer_layer_spec inside GPTConfig by @marcromeyn :: PR: #9592
+- Update NeMo Clip to Use MCore Modules by @yaoyu-33 :: PR: #9594
+- Mistral + Mixtral Support for NeVa by @paul-gibbons :: PR: #9459
+- Adding support for mcore generate by @shanmugamr1992 :: PR: #9566
+- Improve error messaging during trt-llm export by @oyilmaz-nvidia :: PR: #9638
+- [Cherrypick] support lora when kv_channel != hidden_size / num_heads by @cuichenx :: PR: #9644
+- Parametrize FPS group by @mikolajblaz :: PR: #9648
+- Cherry-pick megatron export fix from main by @borisfom :: PR: #9643
+- add documentation for reset_lr feature by @dimapihta
+- chore: Pin branch in notebooks by @ko3n1g :: PR: #9697
+- Cherry pick: LITA Integration by @Slyne :: PR: #9684
+- SDXL improvements (and support for Draft+) by @rohitrango :: PR: #9654
+- Gemma 2 by @cuichenx :: PR: #9672
+- Allows non-strict load with distributed checkpoints by @mikolajblaz :: PR: #9613
+- refactor: notebook branch release by @ko3n1g :: PR: #9711
+- [NeMo-UX] Make TE and Apex dependencies optional by @ashors1 :: PR: #9550
+- Alit/r2.0.0 by @JRD971000 :: PR: #9718
+- Manually cherry-pick from PR 9679 (PR to main - Support SFT/Eval/PEFT for mcore T5) by @huvunvidia :: PR: #9737
+- In framework export by @oyilmaz-nvidia :: PR: #9658
+- T5 changes based on mcore changes by @pablo-garay :: PR: #9829
+- [NeMo-UX] Use single instance of loss reductions in GPTModel by @hemildesai :: PR: #9801
+- deprecate NeMo NLP tutorial by @dimapihtar :: PR: #9864
+- Disable nvFuser setup with PyTorch 23.11 and later by @athitten :: PR: #9837
+- make torch_dist ckpt strategy as default by @dimapihtar :: PR: #9852
+- add rampup bs documentation by @dimapihtar :: PR: #9884
+- copy of #9576 by @dimapihtar :: PR: #9986
+- Support Nvidia Torch and Arch versions by @thomasdhc :: PR: #9897
+- Bug fix for pooler causing dist checkpointing exception by @shanmugamr1992 :: PR: #10008
+
+</details>
+
+#### Export
+
+<details><summary>Changelog</summary>
+
+- Update nemo.export module for quantized models by @janekl :: PR: #9218
+- Add save option to the TRT-LLM export test script by @oyilmaz-nvidia :: PR: #9221
+- Add TRT-LLM params like max_num_tokens and opt_num_tokens by @oyilmaz-nvidia :: PR: #9210
+- TRT-LLM Export Code Cleanup by @oyilmaz-nvidia :: PR: #9270
+- Re-org export code by @oyilmaz-nvidia :: PR: #9353
+- Use TensorRT-LLM native parameter names in nemo.export module by @janekl :: PR: #9424
+- TRT-LLM 0.10 Update by @oyilmaz-nvidia :: PR: #9402
+- vLLM Export Support by @apanteleev :: PR: #9381
+- Add page context fmha option in TensorRTLLM export by @meatybobby :: PR: #9526
+- Test C++ runtime on demand in nemo_export.py to avoid possible OOMs by @janekl :: PR: #9544
+- Fix nemo export test by @oyilmaz-nvidia :: PR: #9547
+- Add tps and pps params to the export script by @oyilmaz-nvidia :: PR: #9558
+- Add Multimodal Exporter by @meatybobby :: PR: #9256
+- Set n_gpu to None in nemo export by @oyilmaz-nvidia :: PR: #9593
+- Inflight nemo model export support by @JimmyZhang12 :: PR: #9527
+- vLLM Export Improvements by @apanteleev :: PR: #9596
+- Akoumparouli/nemo ux mixtral export by @akoumpa :: PR: #9603
+- Change mixtral moe key name for trt-llm by @oyilmaz-nvidia :: PR: #9620
+- Fix the arguments  of forward_for_export function in msdd_models by @tango4j :: PR: #9624
+- Improve error messaging during trt-llm export by @oyilmaz-nvidia :: PR: #9638
+- Cherry-pick megatron export fix from main by @borisfom :: PR: #9643
+- In framework export by @oyilmaz-nvidia :: PR: #9658
+- Add missing imports for torch dist ckpt in export by @oyilmaz-nvidia :: PR: #9826~
+
+</details>
+
+
+
+
+#### Bugfixes
+  
+<details><summary>Changelog</summary>
+
+- use get with fallback when reading checkpoint_callback_params by @akoumpa :: PR: #9223
+- fix import by @akoumpa :: PR: #9240
+- Remove .nemo instead of renaming by @mikolajblaz :: PR: #9281
+- call set_expert_model_parallel_world_size instead of set_cpu_expert_m… by @akoumpa :: PR: #9275
+- Fix typos in Mixtral NeMo->HF and Starcoder2 NeMo->HF conversion scripts by @evellasques :: PR: #9325
+- Skip sequence_parallel allreduce when using Mcore DistOpt by @akoumpa :: PR: #9344
+- Add OpenAI format response to r2.0.0rc1 by @athitten :: PR: #9796
+- [NeMo UX] Support generating datasets using different train/valid/test distributions by @ashors1 :: PR: #9771
+- Add missing imports for torch dist ckpt in export by @oyilmaz-nvidia :: PR: #9826
+
+</details>
+
+#### General Improvements
+
+<details><summary>Changelog</summary>
+
+- [Nemo CICD] run_cicd_for_release_branches_also by @pablo-garay :: PR: #9213
+- rename paths2audiofiles to audio by @github-actions[bot] :: PR: #9220
+- Fix ASR_Context_Biasing.ipynb contains FileNotFoundError by @github-actions[bot] :: PR: #9234
+- ci: Remove duplicated job by @ko3n1g :: PR: #9258
+- Fix document links by @yaoyu-33 :: PR: #9260
+- Pin transformers by @github-actions[bot] :: PR: #9273
+- Fix loading github raw images on notebook by @github-actions[bot] :: PR: #9283
+- Accept None as an argument to decoder_lengths in GreedyBatchedCTCInfer::forward by @github-actions[bot] :: PR: #9278
+- Refactor Sequence Packing Script by @cuichenx :: PR: #9271
+- [Nemo-UX] Move code to collections + fix some small bugs by @marcromeyn :: PR: #9277
+- Fix typo in HF tutorial by @github-actions[bot] :: PR: #9304
+- Expand documentation for data parallelism and distributed optimizer by @timmoon10 :: PR: #9227
+- Install alerting by @ko3n1g :: PR: #9311
+- typos by @github-actions[bot] :: PR: #9315
+- FP8 feature documentation by @ksivaman :: PR: #9265
+- [Nemo CICD] Comment out flaky tests by @pablo-garay :: PR: #9333
+- Fixed typos in README.rst by @gdevakumar :: PR: #9322
+- Update README.rst to clarify installation via Conda by @SimonCW :: PR: #9323
+- [Nemo CICD] update flaky test by @pablo-garay :: PR: #9339
+- fix lora and ptuning and isort/black by @github-actions[bot] :: PR: #9295
+- Fix P-tuning for Llama based models by @github-actions[bot] :: PR: #9300
+- add large model stable training fix and contrastive loss update for variable seq by @github-actions[bot] :: PR: #9348
+- Guard cuda memory allocator update by @github-actions[bot] :: PR: #9313
+- [Nemo CICD] Remove unnecessary commented out code by @pablo-garay :: PR: #9364
+- Update Gemma conversion script by @yaoyu-33 :: PR: #9365
+- Fix GreedyBatchedCTCInfer regression from GreedyCTCInfer. (#9347) by @github-actions[bot] :: PR: #9371
+- Re-enable cuda graphs in training modes. by @github-actions[bot] :: PR: #9343
+- fix typo infer_seq_lenght -> infer_seq_length by @akoumpa :: PR: #9370
+- Make a backward compatibility for old MSDD configs in label models by @github-actions[bot] :: PR: #9378
+- Dgalvez/fix greedy batch strategy name r2.0.0rc0 by @github-actions[bot] :: PR: #9253
+- Update README.rst by @jgerh :: PR: #9393
+- Force diarizer to use CUDA if cuda is available and if device=None. by @github-actions[bot] :: PR: #9390
+- ci: Properly catch failed tests by introduction of workflow templates by @ko3n1g :: PR: #9324
+- Fix T5 G2P Input and Output Types by @github-actions[bot] :: PR: #9269
+- Huvu/rag pipeline citest by @huvunvidia :: PR: #9384
+- Fix circular import for MM dataprep notebook by @github-actions[bot] :: PR: #9292
+- add check if num layers is divisible by pp size by @github-actions[bot] :: PR: #9298
+- [Nemo CICD] timeouts fix by @pablo-garay :: PR: #9407
+- [NeMo-UX] Removing un-used ModelConfig class by @marcromeyn :: PR: #9389
+- Add tutorial for Llama-3-8B lora training and deployment by @shashank3959 :: PR: #9359
+- [NeMo-UX] Removing default_path from ModelConnector by @marcromeyn :: PR: #9401
+- Fix README by @ericharper :: PR: #9415
+- [SD] Fix SD CUDA Graph Failure by @alpha0422 :: PR: #9319
+- [NeMo-UX] Adding file-lock to Connector by @marcromeyn :: PR: #9400
+- Add Dev Container Bug Report by @pablo-garay :: PR: #9430
+- Akoumparouli/profiling docs by @akoumpa :: PR: #9420
+- ci: Enrich notifications by @ko3n1g :: PR: #9412
+- Fix failing RIR unit test with lhotse 1.24+ by @pzelasko :: PR: #9444
+- [NeMo-UX] Adding support for mcore distributed optimizer by @marcromeyn :: PR: #9435
+- Use ModelOpt build_tensorrt_llm for building engines for qnemo checkpoints by @janekl :: PR: #9452
+- ci(notifications): Fix extraction of last 2K chars by @ko3n1g :: PR: #9450
+- Update readme with mlperf news by @ericharper :: PR: #9457
+- [NeMo-UX] Add nsys callback by @ashors1 :: PR: #9461
+- [NeMo UX] Introducing optimizer module by @marcromeyn :: PR: #9454
+- Fix minor import bug in deploy module by @oyilmaz-nvidia :: PR: #9463
+- ci(notifications): Fetch all jobs by @ko3n1g :: PR: #9465
+- Update build_dataset.py by @stevehuang52 :: PR: #9467
+- bionemo: bn2/add pipelineparallel dtype by @skothenhill-nv :: PR: #9475
+- [NeMo-UX] Integrate experiment manager features with NeMo-UX APIs by @ashors1 :: PR: #9460
+- Add python_requires by @galv :: PR: #9431
+- [NeMo-UX] Fixing imports of NeMoLogging, AutoResume & ModelCheckpoint by @marcromeyn :: PR: #9476
+- Modelopt Refactor for SDXL Quantization by @suiyoubi :: PR: #9279
+- [NeMo-UX] Fixing defaults in llm.train & Mistral7BModel by @marcromeyn :: PR: #9486
+- In framework deploy using deploy script by @oyilmaz-nvidia :: PR: #9468
+- [NeMo-UX] Integrate tokenizer import into model.import_ckpt by @marcromeyn :: PR: #9485
+- append to file by @malay-nagda :: PR: #9483
+- [NeMo-UX] Fix bug in import_ckpt by @marcromeyn :: PR: #9492
+- Add nemotron news by @ericharper :: PR: #9510
+- Add CICD test for Stable Diffusion by @michal2409 :: PR: #9464
+- Akoumparouli/nemo ux mixtral by @akoumpa :: PR: #9446
+- [NeMo-UX] Llama and Gemma by @cuichenx :: PR: #9528
+- [NeMo-UX] minor logging bug fixes by @ashors1 :: PR: #9529
+- Update neva conversion script from and to HF by @yaoyu-33 :: PR: #9296
+- [Nemo-UX] IO fixes by @marcromeyn :: PR: #9512
+- Fix lhotse tests for v1.24.2 by @pzelasko :: PR: #9546
+- [Nemo CICD] Make GPU Unit Tests non-optional by @pablo-garay :: PR: #9551
+- Add Python AIStore SDK to container and bump min Lhotse version by @pzelasko :: PR: #9537
+- [NeMo-UX] Fix tokenizer IO by @marcromeyn :: PR: #9555
+- [NeMo UX] Move mistral_7b.py to mistral.py by @akoumpa :: PR: #9545
+- ci: Do not attempt to send slack on fork by @ko3n1g :: PR: #9556
+- Fix SDXL incorrect name in Docs by @suiyoubi :: PR: #9534
+- Bump PTL version by @athitten :: PR: #9557
+- [Resiliency] Straggler detection by @jbieniusiewi :: PR: #9473
+- [NeMo-UX] Switch to torch_dist as default distributed checkpointing backend by @ashors1 :: PR: #9541
+- [NeMo-UX] Checkpointing bug fixes by @ashors1 :: PR: #9562
+- Expose MCore path_to_cache option by @maanug-nv :: PR: #9570
+- [NeMo-UX] Fix Trainer serialization by @marcromeyn :: PR: #9571
+- Update click version requirement by @thomasdhc :: PR: #9580
+- [Fault tolerance] Heartbeat detection by @maanug-nv :: PR: #9352
+- [Nemo-UX] Add fabric-API for manual forward-pass by @marcromeyn :: PR: #9577
+- [Nemo-UX] Add SDK-factories to llm-collection by @marcromeyn :: PR: #9589
+- [NeMo-UX] Some improvements to NeMoLogger by @marcromeyn :: PR: #9591
+- Set no_sync_func & grad_sync_fucn by @akoumpa :: PR: #9601
+- [NeMo-UX] Fix nemo logger when trainer has no loggers by @ashors1 :: PR: #9607
+- Fix the dictionary  format returned by the `scheduler` method by @sararb :: PR: #9609
+- [NeMo-UX] Dataloading enhancements and bug fixes by @ashors1 :: PR: #9595
+- Fix serialization of AutoResume by @sararb :: PR: #9616
+- Jsonl support by @adityavavre :: PR: #9611
+- Akoumparouli/mistral import instruct chat template fix by @akoumpa :: PR: #9567
+- Remove .cuda calls, use device isntead by @akoumpa :: PR: #9602
+- fix converter defautl args by @akoumpa :: PR: #9565
+- fix: remove non_blocking from PTL's .cuda call by @akoumpa :: PR: #9618
+- NeVA Minor Fixes by @yaoyu-33 :: PR: #9608
+- [NeMo-UX] fix pretrianing data sizes and weights by @cuichenx :: PR: #9627
+- [NeMo-UX] async checkpointing support by @ashors1 :: PR: #9466
+- Change default parallel_save to False by @mikolajblaz :: PR: #9632
+- Add REST API to deploy module by @athitten :: PR: #9539
+- ci: Timeout per step, not job by @ko3n1g :: PR: #9635
+- [NeMo-UX] Fix when optimizers are setup for PEFT by @marcromeyn :: PR: #9619
+- [NeMo-UX] Fix pipeline parallel bug by @ashors1 :: PR: #9637
+- Fixing import error fior llama-index (RAG pipeline) by @pablo-garay :: PR: #9662
+- llama CI fix by @rohitrango :: PR: #9663
+- [NeMo-UX] Make 'load_directly_on_device' configurable by @ashors1 :: PR: #9657
+- [Nemo-UX] Including all trainable-params in a PEFT-checkpoint by @marcromeyn :: PR: #9650
+- [NeMo-UX] Fix imports so local configuration of runs works again by @marcromeyn :: PR: #9690
+- Set TE flag in legacy -> mcore conversion script by @terrykong :: PR: #9722
+- Update starthere docs text by @erastorgueva-nv :: PR: #9724
+- TorchAudio installation workaround for incorrect `PYTORCH_VERSION` variable by @artbataev :: PR: #9736
+- [NeMo-UX] Match nemo 1's default behavior for drop_last and pad_samples_to_global_batch_size by @ashors1 :: PR: #9707
+- add a bit more for timeout (#9702) by @pablo-garay :: PR: #9754
+- Fix missing parallelisms by @maanug-nv :: PR: #9725
+- update branch by @nithinraok :: PR: #9764
+- Fix data preprocessing script by @cuichenx :: PR: #9759
+- vLLM 0.5.1 update by @apanteleev :: PR: #9779
+- upper bound hf-hub by @akoumpa :: PR: #9805
+- Fix few issues and docs for neva and clip in r2.0.0rc1 by @yaoyu-33 :: PR: #9681
+- add dummy vision and text transformer config (assumed mcore to be false) by @rohitrango :: PR: #9699
+- fix lita bugs by @Slyne :: PR: #9810
+- [NeMo-UX] Log `val_loss` by @ashors1 :: PR: #9814
+- [NeMo-UX] Fix some dataloading bugs by @ashors1 :: PR: #9807
+- [NeMo-UX] Adding recipes by @marcromeyn :: PR: #9720
+- [NeMo-UX] Set async_save from strategy rather than ModelCheckpoint by @ashors1 :: PR: #9800
+- Fix hf hub for 0.24+ by @titu1994 :: PR: #9806
+- [NeMo-UX] Fix a minor bug with async checkpointing by @ashors1 :: PR: #9856
+- [NeMo-UX] make progress bar easier to parse by @ashors1 :: PR: #9877
+- Docs: add "Nemo Fundamentals" page by @erastorgueva-nv :: PR: #9835
 - Create __init__.py by @stevehuang52 :: PR: #9892
 - [NeMo-UX] Fixes to make PreemptionCallback work by @hemildesai :: PR: #9830
 - Fix Docker build. Make Dockerfile consistent with CI by @artbataev :: PR: #9784
@@ -98,6 +393,10 @@
 - [NeMo-UX] Update default PTL logging `save_dir` by @ashors1 :: PR: #9954
 - Fix lita tutorial by @Slyne :: PR: #9980
 - Add deploy and REST API support to NeMo 2.0 by @athitten :: PR: #9834
+- ci: Allow changelog manual (#10156) by @ko3n1g :: PR: #10157
+- docs: Add changelog by @ko3n1g :: PR: #10155
+- add manifest file by @ko3n1g :: PR: #10161
+
 </details>
 
 ## NVIDIA Neural Modules 2.0.0rc0

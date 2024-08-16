@@ -576,7 +576,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self, checkpoint: Dict[str, Any], filepath: Union[str, Path], storage_options: Optional[Any] = None
     ) -> None:
         checkpoint["state_dict"] = OrderedDict([])  # remove device state_dict
-        checkpoint["sharded_state_dict"] = self.megatron_parallel.sharded_state_dict()
+        # retrieve `sharded_state_dict` if it has not already been configured in `on_save_checkpoint`
+        if "sharded_state_dict" not in checkpoint:
+            checkpoint["sharded_state_dict"] = self.megatron_parallel.sharded_state_dict()
         if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_include_optimizer:
             checkpoint["optimizer"] = [self.optimizer_sharded_state_dict()]
 

@@ -41,7 +41,7 @@ jobs:
         id: main
         run: |
           parsed_string=$(echo ${{ inputs.test_to_run }} | jq -c --raw-input 'split(",")')
-          echo "test_to_run=${parsed_string}" >> "$GITHUB_ENV""
+          echo "test_to_run=${parsed_string}" >> "$GITHUB_ENV"
 
   gpu-test:
     needs: [pre-flight]

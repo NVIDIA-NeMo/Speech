@@ -9,18 +9,18 @@ from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
-from nemo.collections.llm.gpt.model.llama import Llama3Config8B, LlamaModel
+from nemo.collections.llm.gpt.model.llama import Llama3Config70B, LlamaModel
 from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.utils import Config, Partial
 from nemo.utils.exp_manager import TimingCallback
 
-NAME = "llama3_8b"
+NAME = "llama3_70b"
 
 
 def model() -> Config[pl.LightningModule]:
-    return Config(LlamaModel, config=Config(Llama3Config8B))
+    return Config(LlamaModel, config=Config(Llama3Config70B))
 
 
 def trainer(
@@ -82,12 +82,12 @@ def pretrain_recipe(
         fn,
         model=model(),
         trainer=trainer(
-            tensor_parallelism=1,
-            pipeline_parallelism=1,
-            pipeline_parallelism_type=None,
-            virtual_pipeline_parallelism=None,
+            tensor_parallelism=4,
+            pipeline_parallelism=4,
+            pipeline_parallelism_type=torch.bfloat16,
+            virtual_pipeline_parallelism=5,
             context_parallelism=2,
-            sequence_parallelism=False,
+            sequence_parallelism=True,
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,
             callbacks=[Config(TimingCallback)],
@@ -100,7 +100,7 @@ def pretrain_recipe(
 
 
 def hf_resume() -> Config[nl.AutoResume]:
-    return Config(nl.AutoResume, import_path="hf://meta-llama/Meta-Llama-3.1-8B")
+    return Config(nl.AutoResume, import_path="hf://meta-llama/Meta-Llama-3.1-70B")
 
 
 def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node: int) -> Partial:

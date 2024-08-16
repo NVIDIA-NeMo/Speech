@@ -6,7 +6,7 @@ from nemo.collections.llm.gpt.data.api import squad
 from nemo.collections.llm.gpt.model.llama import MixtralConfig8x7B, MixtralModel
 from nemo.collections.llm.peft.api import gpt_lora
 from nemo.collections.llm.recipes.log.default import default_log
-from nemo.collections.llm.recipes.optim.adam import adam_with_cosine_annealing
+from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.utils import Partial, factory
 
 NAME = "mixtral_8x7b_4k"
@@ -46,7 +46,7 @@ def pretrain_recipe() -> Partial:
         trainer=trainer,
         data=squad,
         log=default_log,
-        optim=adam_with_cosine_annealing,
+        optim=distributed_fused_adam_with_cosine_annealing(),
     )
 
 
@@ -58,7 +58,7 @@ def finetune_recipe() -> Partial:
         trainer=trainer,
         data=squad,
         log=default_log,
-        optim=adam_with_cosine_annealing,
+        optim=distributed_fused_adam_with_cosine_annealing(),
         peft=gpt_lora,
         resume=hf_resume,
     )

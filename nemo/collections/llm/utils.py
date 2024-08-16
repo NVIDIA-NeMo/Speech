@@ -1,6 +1,7 @@
+import logging
 from typing import Any, Callable, Generic, TypeVar, Union, overload
 
-T = TypeVar('T', bound=Callable[..., Any])
+T = TypeVar("T", bound=Callable[..., Any])
 
 try:
     import nemo_run as run
@@ -8,7 +9,11 @@ try:
     Config = run.Config
     Partial = run.Partial
 except ImportError:
-    _T = TypeVar('_T')
+    logging.warning(
+        "Trying to use Config or Partial, but NeMo-Run is not installed. Please install NeMo-Run before proceeding."
+    )
+
+    _T = TypeVar("_T")
 
     class Config(Generic[_T]):
         pass
@@ -22,7 +27,7 @@ def task(*args: Any, **kwargs: Any) -> Callable[[T], T]:
         import nemo_run as run
 
         return run.task(*args, **kwargs)
-    except ImportError:
+    except (ImportError, AttributeError):
         # Return a no-op function
         def noop_decorator(func: T) -> T:
             return func
@@ -47,7 +52,7 @@ def factory(*args: Any, **kwargs: Any) -> Union[Callable[[T], T], T]:
         else:
             # Used as @factory(*args, **kwargs)
             return run.factory(*args, **kwargs)
-    except ImportError:
+    except (ImportError, AttributeError):
         # Return a no-op function
         def noop_decorator(func: T) -> T:
             return func

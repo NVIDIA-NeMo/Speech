@@ -286,16 +286,10 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             self.callbacks.event("on_megatron_reduce_microbatches_end", **context)
         else:
             # we're not on the last pipeline stage so no losses
-            if forward_only:
-                loss_mean = cast(torch.Tensor, [])
-            else:
-                loss_mean = torch.tensor(0.0, device=torch.cuda.current_device())
+            loss_mean = torch.tensor(0.0, device=torch.cuda.current_device())
 
         self.callbacks.event("on_megatron_log_step_end", **context)
         self.callbacks.event("on_megatron_step_end", **context)
-
-        if loss_mean == []:
-            loss_mean = None
 
         return loss_mean
 

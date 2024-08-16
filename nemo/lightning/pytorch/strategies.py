@@ -449,7 +449,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 'global_step',
                 self.trainer.global_step,
                 prog_bar=True,
-                rank_zero_only=True,
                 batch_size=1,
             )
 
@@ -465,31 +464,22 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     "peak_memory_usage",
                     max_memory_reserved,
                     prog_bar=True,
-                    rank_zero_only=True,
                     batch_size=1,
                 )
                 self.lightning_module.log(
                     "memory_allocated",
                     memory_allocated,
                     prog_bar=True,
-                    rank_zero_only=True,
                     batch_size=1,
                 )
 
             if self.log_train_loss:
-                from megatron.core import parallel_state
-
-                from nemo.collections.nlp.parts.utils_funcs import get_last_rank
-
-                # When using pipeline parallelism, loss is calculated only in the last pipeline stage and
-                # it should be casted to other pipeline stages for logging.
-                # we can avoid this broadcast by updating the PTL log function to accept specific ranks
-                if parallel_state.get_pipeline_model_parallel_world_size() > 1:
-                    if torch.distributed.get_rank() == get_last_rank():
-                        torch.distributed.send(out, 0)
-                    elif torch.distributed.get_rank() == 0:
-                        torch.distributed.recv(out, get_last_rank())
-                self.lightning_module.log('reduced_train_loss', out, prog_bar=True, rank_zero_only=True, batch_size=1)
+                # p2p now, broadcast later at ckpt
+                _strategy_lib._sync_from_last_pipeline_stage(out, broadcast=False)
+                if torch.distributed.get_rank() == 0:
+                    self.lightning_module.log(
+                        'reduced_train_loss', out, prog_bar=True, rank_zero_only=True, batch_size=1
+                    )
 
             return out
 
@@ -501,7 +491,24 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         with self.precision_plugin.val_step_context():  # TODO: Do we need this?
             out = self.model(dataloader_iter, forward_only=True, *args, **kwargs)
-            self.lightning_module.log('val_loss', out, rank_zero_only=True, batch_size=1)
+
+            from megatron.core import parallel_state
+
+            pp_size = parallel_state.get_pipeline_model_parallel_world_size()
+            if pp_size > 1:
+                # ranks that are not final pp stage have 0 for loss, and out will be mean-reduced over pp
+                # groups (due to sync_dist), which divides val_loss by pp_size. so we multiply by pp_size to cancel out
+                self.lightning_module.log(
+                    'val_loss',
+                    out * pp_size,
+                    prog_bar=True,
+                    sync_dist=True,
+                    sync_dist_group=parallel_state.get_pipeline_model_parallel_group(),
+                    on_epoch=True,
+                )
+            else:
+                self.lightning_module.log('val_loss', out, prog_bar=True, on_epoch=True)
+
             return out
 
     @override

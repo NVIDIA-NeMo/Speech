@@ -99,7 +99,6 @@ class MegatronDataSampler(DataSampler):
             'consumed_samples',
             consumed_samples,
             prog_bar=True,
-            rank_zero_only=True,
             batch_size=1,
         )
 
@@ -113,7 +112,6 @@ class MegatronDataSampler(DataSampler):
             "global_batch_size",
             self.current_global_batch_size,
             prog_bar=True,
-            rank_zero_only=True,
             batch_size=1,
         )
         self.if_first_step = 1

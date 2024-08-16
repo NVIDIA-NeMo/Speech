@@ -326,9 +326,9 @@ class FabricMegatronStrategy(DDPStrategy):
 
     @property
     def parallelism(self):
-        from megatron.core.model_parallel_config import ModelParallelConfig
+        from nemo.lightning.pytorch.strategies import ParallelismConfig
 
-        return ModelParallelConfig(
+        return ParallelismConfig(
             tensor_model_parallel_size=self.tensor_model_parallel_size,
             pipeline_model_parallel_size=self.pipeline_model_parallel_size,
             virtual_pipeline_model_parallel_size=self.virtual_pipeline_model_parallel_size,

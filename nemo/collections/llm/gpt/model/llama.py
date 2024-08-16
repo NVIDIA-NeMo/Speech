@@ -62,17 +62,48 @@ class Llama2Config70B(LlamaConfig):
 
 
 @dataclass
-class Llama3Config8B(Llama2Config7B):
-    rotary_base: int = 500_000
-    seq_length: int = 8192
+class Llama3Config(GPTConfig):
     num_query_groups: int = 8
-    ffn_hidden_size: int = 14336
+    hidden_dropout: float = 0.0
+    attention_dropout: float = 0.0
+    normalization = "RMSNorm"
+    init_method_std: float = 0.01
+    layernorm_epsilon: float = 1.0e-05
+    add_bias_linear: bool = False
+    activation_func: Callable = F.silu
+    gated_linear_unit: bool = True
+    apply_query_key_layer_scaling: bool = True
+    # Fusions
+    bias_activation_fusion: bool = True
+    masked_softmax_fusion: bool = True
+    persist_layer_norm: bool = True
+    bias_dropout_fusion: bool = True
+    apply_rope_fusion: bool = True
+    share_embeddings_and_output_weights: bool = False
+    position_embedding_type = "rope"
+    rotary_percent: float = 1.0
 
 
 @dataclass
-class Llama3Config70B(Llama2Config70B):
+class Llama3Config8B(Llama3Config):
     rotary_base: int = 500_000
     seq_length: int = 8192
+    num_layers: int = 32
+    hidden_size: int = 4096
+    ffn_hidden_size: int = 14336
+    num_attention_heads: int = 32
+
+
+@dataclass
+class Llama3Config70B(Llama3Config):
+    rotary_base: int = 500_000
+    seq_length: int = 8192
+    num_layers: int = 80
+    hidden_size: int = 8192
+    ffn_hidden_size: int = 28672
+    num_attention_heads: int = 64
+    init_method_std: float = 0.008944
+    make_vocab_size_divisible_by: int = 128
 
 
 @dataclass

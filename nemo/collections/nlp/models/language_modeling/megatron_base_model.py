@@ -408,7 +408,9 @@ class MegatronBaseModel(NLPModel):
                 self.cfg.persist_layer_norm = False
 
             # NVFUSER available starting with 21.11
-            if NVIDIA_TORCH_MAJOR >= 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR >= 11):
+            if (NVIDIA_TORCH_MAJOR >= 21 or (NVIDIA_TORCH_MAJOR == 21 and NVIDIA_TORCH_MINOR >= 11)) and (
+                NVIDIA_TORCH_MAJOR < 23 or (NVIDIA_TORCH_MAJOR == 23 and NVIDIA_TORCH_MINOR < 11)
+            ):
 
                 # NVFUSER
                 torch._C._jit_set_profiling_executor(True)

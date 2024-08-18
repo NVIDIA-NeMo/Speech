@@ -102,14 +102,15 @@ class NeMoLogger(IOMixin):
                 self.name = "default"
 
             version = self.version or os.environ.get(NEMO_ENV_VARNAME_VERSION, None)
-            if is_global_rank_zero():
-                if self.use_datetime_version:
-                    version = time.strftime('%Y-%m-%d_%H-%M-%S')
-            if resume_if_exists:
-                logging.warning(
-                    "No version folders would be created under the log folder as 'resume_if_exists' is enabled."
-                )
-                version = None
+            if not version:
+                if resume_if_exists:
+                    logging.warning(
+                        "No version folders would be created under the log folder as 'resume_if_exists' is enabled."
+                    )
+                    version = None
+                elif is_global_rank_zero():
+                    if self.use_datetime_version:
+                        version = time.strftime('%Y-%m-%d_%H-%M-%S')
             if version:
                 if is_global_rank_zero():
                     os.environ[NEMO_ENV_VARNAME_VERSION] = version

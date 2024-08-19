@@ -60,7 +60,7 @@ Other options include:
 2. ``moe_token_dropping`` enables selectively dropping and padding tokens for each expert to achieve
    a specified capacity, similar to GShard, Switch-Transformer, and DeepSpeed-MoE. Briefly, if the number
    of tokens routed to an expert exceeds its capacity, then the exceeding tokens are dropped. Note that this is
-    currently unsupported so should remain False.
+   currently unsupported so should remain False.
 
 3. ``moe_token_dispatcher_type`` specifies the token dispatcher type, options include 'allgather' and 'alltoall'.
 

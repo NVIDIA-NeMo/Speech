@@ -1,9 +1,9 @@
 Common Configuration Files
 ==========================
 
-This section provides a detailed overview of the NeMo configuration file setup specific to models within the NeMo SpeechLLM collection. For foundational knowledge about setting up and executing experiments common to all NeMo models, such as the Experiment Manager and PyTorch Lightning trainer parameters, refer to the :doc:`core <../../core/core>` documentation.
+This section provides a detailed overview of the NeMo Framework configuration file setup, specifically for models within the NeMo Speech-augmented Large Language Models (SpeechLLM) collection. For foundational knowledge on setting up and executing experiments common to all NeMo Framework models, including the Experiment Manager and PyTorch Lightning trainer parameters, refer to the :doc:`core <../../core/core>` documentation.
 
-Within the configuration files of the NeMo SpeechLLMs, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
+The configuration files for NeMo SpeechLLMs focus on key details such as datasets, augmentation, optimization parameters, and model architectural specifications. This page explores each of these aspects.
 
 Discover exemplary configuration files for all SpeechLLMs in the `config directory of the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm/conf>`_.
 
@@ -11,9 +11,9 @@ Discover exemplary configuration files for all SpeechLLMs in the `config directo
 Dataset Configuration
 ---------------------
 
-The dataset configuration is based on the NeMo ASR data configuration and the NLP data configuration
+The dataset configuration is based on the NeMo ASR data configuration and the NLP data configuration.
 
-The configuration file allows setting any initialization parameter accepted by the Dataset class used in the experiment. For a comprehensive list of Datasets and their parameters, visit the `Datasets <./api.html#Datasets>`__ section of the API.
+The configuration file enables you to set any initialization parameter accepted by the Dataset class used in the experiment. For a comprehensive list of datasets and their parameters, refer to the Datasets section of the :doc:`API <./api>`.
 
 A typical training configuration is as follows:
 
@@ -55,9 +55,9 @@ A typical training configuration is as follows:
         audio_locator: null
 
 
-Key parameters include:
+The key configuration parameters include:
 
-- ``manifest_filepath``: The path to the dataset in JSON lines format, where each line in the file is a python dictionary. This can either be a single file or a list of files.
+- ``manifest_filepath``: The path to the dataset in JSON lines format, where each line in the file is a Python dictionary. This can either be a single file or a list of files.
 - ``global_batch_size``: The global batch size that takes consideration of gradient accumulation, data parallelism.
 - ``micro_batch_size``: The micro batch size that fits on each GPU.
 - ``shuffle``: Whether to shuffle the dataset.
@@ -115,7 +115,7 @@ For a detailed list of arguments, refer to the `Pytorch Lightning Trainer <https
 Experiment Manager Configurations
 ---------------------------------
 
-The NeMo Experiment Manager provides a streamlined approach to manage various tasks such as logging, saving, and resuming.
+The NeMo Framework Experiment Manager provides a streamlined approach to manage various tasks such as logging, saving, and resuming.
 
 .. code-block:: yaml
 
@@ -149,6 +149,8 @@ The NeMo Experiment Manager provides a streamlined approach to manage various ta
 Optimizer Configurations
 -------------------------
 
+NeMo Framework offers a variety of optimizers to enhance the training of neural network models. The following example shows the ``fused_adam`` default optimizer. The learning rate scheduler can be specified in the ``optim.sched`` section.
+
 .. code-block:: yaml
 
   optim:
@@ -162,14 +164,14 @@ Optimizer Configurations
       warmup_steps: 10000
       warmup_ratio: null
 
-The default optimizer used is ``fused_adam``. For details on all supported optimizers, refer to the NeMo user guide. The learning rate scheduler can be specified in the ``optim.sched`` section.
+For more information on the supported optimizers, refer to the "Optimization" section in the NeMo APIs :doc:`docs <../../core/core>`.
 
 Model Configurations
 --------------------
 
 Each configuration file should detail the model architecture used for the experiment.
 
-The parameters commonly shared across most multimodal language models include:
+The following table shows the parameters commonly shared across most multimodal language models.
 
 +------------------------------------------+--------------+---------------------------------------------------------------------------------------+
 | **Parameter**                            | **Datatype** | **Description**                                                                       |
@@ -185,13 +187,13 @@ The parameters commonly shared across most multimodal language models include:
 | :code:`seed`                             | int          | seed used in training                                                                 |
 +------------------------------------------+--------------+---------------------------------------------------------------------------------------+
 
-SALM
-~~~~
+Speech-Augmented Language Model (SALM)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For model-specific configurations, refer to `the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm/conf/salm>`_.
+For information about SALM model-specific configurations, refer to `the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm/conf/salm>`__.
 
 
-BESTOW
-~~~~~~
+BESt features from TwO Worlds (BESTOW)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For model-specific configurations, refer to `the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm/conf/bestow>`_.
+For information about BESTOW model-specific configurations, refer to `the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm/conf/bestow>`__.

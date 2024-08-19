@@ -4,7 +4,7 @@ NeMo Models
 Basics
 ------
 
-NeMo models contain everything needed to train and reproduce Conversational AI models:
+NeMo models contain everything needed to train and reproduce conversational AI models:
 
 - neural network architectures 
 - datasets/data loaders
@@ -35,7 +35,7 @@ As an example, we can instantiate QuartzNet with the following:
 
     model = nemo_asr.models.EncDecCTCModel.from_pretrained(model_name="QuartzNet15x5Base-En")
 
-To see all available pretrained models for a specific NeMo model, use the ``list_available_models()`` method.
+To see all available pretrained models for a specific NeMo model, use the ``list_available_models()`` method:
 
 .. code-block:: Python
 
@@ -52,7 +52,7 @@ Training
 
 NeMo leverages `PyTorch Lightning <https://www.pytorchlightning.ai/>`__ for model training. PyTorch Lightning lets NeMo decouple the
 conversational AI code from the PyTorch training code. This means that NeMo users can focus on their domain (ASR, NLP, TTS) and 
-build complex AI applications without having to rewrite boiler plate code for PyTorch training.
+build complex AI applications without having to rewrite boilerplate code for PyTorch training.
 
 When using PyTorch Lightning, NeMo users can automatically train with:
 
@@ -168,7 +168,7 @@ While validation logic can be found in ``validation_step``:
 
         return {'val_loss': val_loss, 'tp': tp, 'fn': fn, 'fp': fp}
 
-PyTorch Lightning then handles all of the boiler plate code needed for training. Virtually any aspect of training can be customized 
+PyTorch Lightning then handles all of the boilerplate code needed for training. Virtually any aspect of training can be customized
 via PyTorch Lightning `hooks <https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#hooks>`_, 
 `Plugins <https://pytorch-lightning.readthedocs.io/en/stable/extensions/plugins.html>`_, 
 `callbacks <https://pytorch-lightning.readthedocs.io/en/stable/extensions/callbacks.html>`_, or by overriding `methods <https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#methods>`_. 
@@ -239,8 +239,8 @@ Every NeMo example YAML has the same underlying configuration structure:
 - exp_manager
 - model
 
-Model configuration always contain ``train_ds``, ``validation_ds``, ``test_ds``, and ``optim``.  Model architectures vary across 
-domains, therefore, refer to the ASR, NLP, and TTS Collections documentation for more detailed information on Model architecture configuration.
+The model configuration always contains ``train_ds``, ``validation_ds``, ``test_ds``, and ``optim``.  Model architectures, however, can vary across domains.
+Refer to the documentation of specific collections (LLM, ASR etc.) for detailed information on model architecture configuration.
 
 A NeMo configuration file should look similar to the following:
 
@@ -288,15 +288,11 @@ A NeMo configuration file should look similar to the following:
         decoder:
             ...
 
-More specific details about configuration files for each collection can be found on the following pages:
-
-:ref:`NeMo ASR Configuration Files`
-        
 CLI
 ~~~
 
 With NeMo and Hydra, every aspect of model training can be modified from the command-line. This is extremely helpful for running lots 
-of experiments on compute clusters or for quickly testing parameters while developing.
+of experiments on compute clusters or for quickly testing parameters during development.
 
 All NeMo `examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ come with instructions on how to
 run the training/inference script from the command-line (see `here <https://github.com/NVIDIA/NeMo/blob/4e9da75f021fe23c9f49404cd2e7da4597cb5879/examples/asr/asr_ctc/speech_to_text_ctc.py#L24>`__
@@ -374,7 +370,7 @@ be instantiated and modified like any Python `Dataclass <https://docs.python.org
     # modify the training batch size
     cfg.train_ds.tokens_in_batch = 8192
 
-.. note:: Configuration with Hydra always has the following precedence CLI > YAML > Dataclass
+.. note:: Configuration with Hydra always has the following precedence CLI > YAML > Dataclass.
 
 .. _optimization-label:
 
@@ -382,7 +378,7 @@ Optimization
 ------------
 
 Optimizers and learning rate schedules are configurable across all NeMo models and have their own namespace. Here is a sample YAML 
-configuration for a Novograd optimizer with Cosine Annealing learning rate schedule.
+configuration for a Novograd optimizer with a Cosine Annealing learning rate schedule.
 
 .. code-block:: yaml
 
@@ -408,7 +404,7 @@ configuration for a Novograd optimizer with Cosine Annealing learning rate sched
             warmup_ratio: null
             min_lr: 1e-9:
 
-.. note:: `NeMo Examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ has optimizer and scheduler configurations for every NeMo model.
+.. note:: `NeMo Examples <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_ has optimizer and scheduler configurations for every NeMo model.
 
 Optimizers can be configured from the CLI as well:
 
@@ -596,7 +592,7 @@ as shown below we can update this config prior to restoring the model.
 Register Artifacts
 ------------------
 
-Conversational AI models can be complicated to restore as more information is needed than just the checkpoint weights in order to use the model.
+Restoring conversational AI models can be complicated because it requires more than just the checkpoint weights; additional information is also needed to use the model.
 NeMo models can save additional artifacts in the .nemo file by calling ``.register_artifact``.
 When restoring NeMo models using ``.restore_from`` or ``.from_pretrained``, any artifacts that were registered will be available automatically.
 
@@ -643,7 +639,7 @@ Push to Hugging Face Hub
 NeMo models can be pushed to the `Hugging Face Hub <https://huggingface.co/>`_ with the :meth:`~nemo.core.classes.mixins.hf_io_mixin.HuggingFaceFileIO.push_to_hf_hub` method. This method performs the same actions as ``save_to()`` and then uploads the model to the HuggingFace Hub. It offers an additional ``pack_nemo_file`` argument that allows the user to upload the entire NeMo file or just the ``.nemo`` file. This is useful for large language models that have a massive number of parameters, and a single NeMo file could exceed the max upload size of Hugging Face Hub.
 
 
-Upload a model to the hub
+Upload a model to the Hub
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
@@ -688,15 +684,15 @@ Use a Custom Model Card Template for the Hub
 Nested NeMo Models
 ------------------
 
-In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy or use hybrid ASR-TTS models to generate audio from the text on the fly to train or finetune the ASR model.
+In some cases, it may be helpful to use NeMo models inside other NeMo models. For example, we can incorporate language models into ASR models to use in a decoding process to improve accuracy or use hybrid ASR-TTS models to generate audio from the text on the fly to train or fine-tune the ASR model.
 
-There are 3 ways to instantiate child models inside parent models:
+There are three ways to instantiate child models inside parent models:
 
 - use subconfig directly
 - use the ``.nemo`` checkpoint path to load the child model
 - use a pretrained NeMo model
 
-To register a child model, use the ``register_nemo_submodule`` method of the parent model. This method will add the child model to a provided model attribute and, in the serialization process, will handle child artifacts correctly and store the child model config in the parent model config in ``config_field``.
+To register a child model, use the ``register_nemo_submodule`` method of the parent model. This method will add the child model to a specified model attribute. During serialization, it will correctly handle child artifacts and store the child model’s configuration in the parent model’s ``config_field``.
 
 .. code-block:: python
 
@@ -746,30 +742,38 @@ To register a child model, use the ``register_nemo_submodule`` method of the par
 Profiling 
 ---------
 
-NeMo offers users two options for profiling: Nsys & CUDA memory profiling. These two options allow users
+NeMo offers users two options for profiling: Nsys and CUDA memory profiling. These two options allow users
 to debug performance issues as well as memory issues such as memory leaks.
 
 To enable Nsys profiling, add the following options to the model config:
-nsys_profile: False
-   start_step: 10  # Global batch to start profiling
-   end_step: 10 # Global batch to end profiling
-   ranks: [0] # Global rank IDs to profile
-   gen_shape: False # Generate model and kernel details including input shapes
 
-Finally, the model training script with:
+.. code-block:: yaml
 
-nsys profile -s none -o <profile filepath> -t cuda,nvtx --force-overwrite true --capture-range=cudaProfilerApi --capture-range-end=stop python ./examples/... 
+    nsys_profile: False
+        start_step: 10  # Global batch to start profiling
+        end_step: 10 # Global batch to end profiling
+        ranks: [0] # Global rank IDs to profile
+        gen_shape: False # Generate model and kernel details including input shapes
+
+Finally, run the model training script with:
+
+.. code-block:: bash
+
+    nsys profile -s none -o <profile filepath> -t cuda,nvtx --force-overwrite true --capture-range=cudaProfilerApi --capture-range-end=stop python ./examples/...
+
 See more options at `nsight user guide <https://docs.nvidia.com/nsight-systems/UserGuide/index.html#cli-profiling>`_.
 
 
 
 To enable CUDA memory profiling, add the following options to the model config:
 
-memory_profile:
-   enabled: True
-   start_step: 10  # Global batch to start profiling
-   end_step: 10 # Global batch to end profiling
-   rank: 0 # Global rank ID to profile
-   output_path: None # Path to store the profile output file
+.. code-block:: yaml
 
-And invoke your NeMo script without any changes in the invocation command.
+    memory_profile:
+        enabled: True
+        start_step: 10  # Global batch to start profiling
+        end_step: 10 # Global batch to end profiling
+        rank: 0 # Global rank ID to profile
+        output_path: None # Path to store the profile output file
+
+Then invoke your NeMo script without any changes in the invocation command.

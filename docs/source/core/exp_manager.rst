@@ -4,16 +4,16 @@
 Experiment Manager
 ==================
 
-NeMo's Experiment Manager leverages PyTorch Lightning for model checkpointing, TensorBoard Logging, Weights and Biases, DLLogger and MLFlow logging. The
+The NeMo Framework Experiment Manager leverages PyTorch Lightning for model checkpointing, TensorBoard Logging, Weights and Biases, DLLogger and MLFlow logging. The
 Experiment Manager is included by default in all NeMo example scripts.
 
-To use the experiment manager simply call :class:`~nemo.utils.exp_manager.exp_manager` and pass in the PyTorch Lightning ``Trainer``.
+To use the Experiment Manager, call :class:`~nemo.utils.exp_manager.exp_manager` and pass in the PyTorch Lightning ``Trainer``.
 
 .. code-block:: python
 
     exp_dir = exp_manager(trainer, cfg.get("exp_manager", None))
 
-And is configurable via YAML with Hydra.
+The Experiment Manager is configurable using YAML with Hydra.
 
 .. code-block:: bash
 
@@ -23,7 +23,7 @@ And is configurable via YAML with Hydra.
         create_tensorboard_logger: True
         create_checkpoint_callback: True
 
-Optionally, launch TensorBoard to view the training results in ``./nemo_experiments`` (by default).
+Optionally, launch TensorBoard to view the training results in ``exp_dir``, which by default is set to ``./nemo_experiments``.
 
 .. code-block:: bash
 
@@ -33,7 +33,7 @@ Optionally, launch TensorBoard to view the training results in ``./nemo_experime
 
 If ``create_checkpoint_callback`` is set to ``True``, then NeMo automatically creates checkpoints during training
 using PyTorch Lightning's `ModelCheckpoint <https://lightning.ai/docs/pytorch/stable/api/lightning.pytorch.callbacks.ModelCheckpoint.html>`_.
-We can configure the ``ModelCheckpoint`` via YAML or CLI.
+We can configure the ``ModelCheckpoint`` via YAML or CLI:
 
 .. code-block:: yaml
 
@@ -51,9 +51,8 @@ We can configure the ``ModelCheckpoint`` via YAML or CLI.
 Resume Training
 ---------------
 
-We can auto-resume training as well by configuring the ``exp_manager``. Being able to auto-resume is important when doing long training
-runs that are premptible or may be shut down before the training procedure has completed. To auto-resume training, set the following
-via YAML or CLI:
+To auto-resume training, configure the ``exp_manager``. This feature is important for long training runs that might be interrupted or
+shut down before the procedure has completed. To auto-resume training, set the following parameters via YAML or CLI:
 
 .. code-block:: yaml
 
@@ -73,7 +72,7 @@ via YAML or CLI:
 Experiment Loggers
 ------------------
 
-Alongside Tensorboard, NeMo also supports Weights and Biases, MLFlow, DLLogger, ClearML and NeptuneLogger. To use these loggers, simply set the following
+Alongside Tensorboard, NeMo also supports Weights and Biases, MLFlow, DLLogger, ClearML and NeptuneLogger. To use these loggers,  set the following
 via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
 
 
@@ -179,7 +178,7 @@ Exponential Moving Average
 .. _exp_manager_ema-label:
 
 NeMo supports using exponential moving average (EMA) for model parameters. This can be useful for improving model generalization
-and stability. To use EMA, simply set the following via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
+and stability. To use EMA, set the following parameters via YAML or :class:`~nemo.utils.exp_manager.ExpManagerConfig`.
 
 .. code-block:: yaml
 
@@ -201,7 +200,7 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
     NeMo adds support for a callback upon preemption while running the models on clusters. The callback takes care of saving the current state of training via the ``.ckpt``
     file followed by a graceful exit from the run. The checkpoint saved upon preemption has the ``*last.ckpt`` suffix and replaces the previously saved last checkpoints.
     This feature is useful to increase utilization on clusters.
-    The ``PreemptionCallback`` is enabled by default. To disable it simply add ``create_preemption_callback: False`` under exp_manager in the config YAML file. 
+    The ``PreemptionCallback`` is enabled by default. To disable it, add ``create_preemption_callback: False`` under exp_manager in the config YAML file.
 
     Stragglers Detection
     ----------------------
@@ -211,7 +210,7 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
     .. note::
         Stragglers Detection feature is included in the optional NeMo resiliency package.
 
-    Distributed training can be affected by stragglers, which are slow workers that slow down the overall training process. 
+    Distributed training can be affected by stragglers, which are workers that slow down the overall training process.
     NeMo provides a straggler detection feature that can identify slower GPUs.
 
     This feature is implemented in the ``StragglerDetectionCallback``, which is disabled by default.
@@ -220,12 +219,12 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
     A performance score can be interpreted as the ratio of current performance to reference performance.
 
     There are two types of performance scores provided by the callback:
-        - Relative GPU performance score: The best-performing GPU in the workload is used as a reference.
-        - Individual GPU performance score: The best historical performance of the GPU is used as a reference.
+        * Relative GPU performance score: The best-performing GPU in the workload is used as a reference.
+        * Individual GPU performance score: The best historical performance of the GPU is used as a reference.
 
     Examples:
-        - If the relative performance score is 0.5, it means that a GPU is twice slower than the fastest GPU.
-        - If the individual performance score is 0.5, it means that a GPU is twice slower than its best observed performance.
+        * If the relative performance score is 0.5, it means that a GPU is twice slower than the fastest GPU.
+        * If the individual performance score is 0.5, it means that a GPU is twice slower than its best observed performance.
 
     If a GPU performance score drops below the specified threshold, it is identified as a straggler.
 
@@ -246,7 +245,7 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
                 gpu_individual_perf_threshold: 0.7  # Threshold for individual GPU performance scores
                 stop_if_detected: True              # Terminate the workload if stragglers are detected
 
-    Straggler detection might involve inter-rank synchronization, and should be invoked with reasonable frequency (e.g. every few minutes).
+    Straggler detection may require inter-rank synchronization and should be performed at regular intervals, such as every few minutes.
 
 
 .. Fault Tolerance
@@ -257,7 +256,7 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
     .. note::
         Fault Tolerance feature is included in the optional NeMo resiliency package.
 
-    When training DNN models, faults may occur, hindering the progress of the entire training process. 
+    When training Deep Neural Network (DNN models), faults may occur, hindering the progress of the entire training process.
     This is particularly common in distributed, multi-node training scenarios, with many nodes and GPUs involved. 
 
     NeMo incorporates a fault tolerance mechanism to detect training halts. 
@@ -292,11 +291,11 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
     **Importantly, `heartbeats` are not sent during checkpoint loading and saving**, so time for 
     checkpointing related operations should be taken into account.
 
-    If ``calculate_timeouts: True`` timeouts will be automatically estimated based on observed intervals. 
-    Estimated timeouts take precedence over timeouts defined in the config file. **Timeouts are estimated 
-    at the end of a training run, when checkpoint loading and saving were observed**. Hence, in a multi-part 
-    training started from scratch, estimated timeouts won't be available during initial two runs. 
-    Estimated timeouts are stored in a separate JSON file. 
+    If ``calculate_timeouts: True``, timeouts will be automatically estimated based on observed intervals.
+    Estimated timeouts take precedence over timeouts defined in the config file. **Timeouts are estimated
+    at the end of a training run when checkpoint loading and saving were observed.** Hence, in a multi-part
+    training started from scratch, estimated timeouts won't be available during the initial two runs.
+    Estimated timeouts are stored in a separate JSON file.
 
     ``max_subsequent_job_failures`` allows for the automatic continuation of training on a SLURM cluster. 
     This feature requires SLURM job to be scheduled with ``NeMo-Framework-Launcher``. If ``max_subsequent_job_failures`` 
@@ -317,24 +316,25 @@ and stability. To use EMA, simply set the following via YAML or :class:`~nemo.ut
         * ``max_rank_restarts`` (int, default=0) Used by FT launcher. Max number of restarts for a rank. 
         If ``>0`` ranks will be restarted on existing nodes in case of a failure.
         * ``max_subsequent_job_failures`` (int, default=0) Used by FT launcher. How many subsequent job failures are allowed until stopping autoresuming. 
-        ``0`` means do not autoresume.
+        ``0`` means do not auto-resume.
         * ``additional_ft_launcher_args`` (str, default='') Additional FT launcher params (for advanced use).
 
 
 .. _nemo_multirun-label:
+
 Hydra Multi-Run with NeMo
 -------------------------
 
-When training neural networks, it is common to perform hyper parameter search in order to improve the performance of a model
-on some validation data. However, it can be tedious to manually prepare a grid of experiments and management of all checkpoints
-and their metrics. In order to simplify such tasks, NeMo integrates with `Hydra Multi-Run support <https://hydra.cc/docs/tutorials/basic/running_your_app/multi-run/>`_ in order to provide a unified way to run a set of experiments all
-from the config.
+When training neural networks, it is common to perform a hyperparameter search to improve the model’s performance on validation data.
+However, manually preparing a grid of experiments and managing all checkpoints and their metrics can be tedious.
+To simplify these tasks, NeMo integrates with `Hydra Multi-Run support <https://hydra.cc/docs/tutorials/basic/running_your_app/multi-run/>`_,
+providing a unified way to run a set of experiments directly from the configuration.
 
 There are certain limitations to this framework, which we list below:
 
 * All experiments are assumed to be run on a single GPU, and multi GPU for single run (model parallel models are not supported as of now).
-* NeMo Multi-Run supports only grid search over a set of hyper-parameters, but we will eventually add support for advanced hyper parameter search strategies.
-* **NeMo Multi-Run only supports running on one or more GPUs** and will not work if no GPU devices are present.
+* NeMo Multi-Run currently supports only grid search over a set of hyperparameters. Support for advanced hyperparameter search strategies will be added in the future.
+* **NeMo Multi-Run requires one or more GPUs** to function and will not work without GPU devices.
 
 Config Setup
 ~~~~~~~~~~~~
@@ -405,10 +405,10 @@ name as shown below -
       resume_ignore_no_checkpoint: true
 
 
-Running a Multi-Run config
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Run a NeMo Multi-Run Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once the config has been updated, we can now run it just like any normal Hydra script -- with one special flag (``-m``) !
+Once the config has been updated, we can now run it just like any normal Hydra script, with one special flag (``-m``).
 
 .. code-block:: bash
 
@@ -417,21 +417,24 @@ Once the config has been updated, we can now run it just like any normal Hydra s
         ...
 
 Tips and Tricks
-~~~~~~~~~~~~~~~
+---------------
 
-* Preserving disk space for large number of experiments
+This section provides recommendations for using the Experiment Manager.
 
-Some models may have a large number of parameters, and it may be very expensive to save a large number of checkpoints on
-physical storage drives. For example, if you use Adam optimizer, each PyTorch Lightning ".ckpt" file will actually be 3x the
-size of just the model parameters - per ckpt file ! This can be exhorbitant if you have multiple runs.
+Preserving disk space for a large number of experiments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In the above config, we explicitly set ``save_top_k: 1`` and ``always_save_nemo: True`` - what this does is limit the number of
-ckpt files to just 1, and also save a NeMo file (which will contain just the model parameters without optimizer state) and
-can be restored immediately for further work.
+Some models may have a large number of parameters, making it very expensive to save numerous checkpoints on physical storage drives.
+For example, if you use the Adam optimizer, each PyTorch Lightning ".ckpt" file will be three times the size of just the model
+parameters. This can become exorbitant if you have multiple runs.
 
-We can further reduce the storage space by utilizing some utility functions of NeMo to automatically delete either
-ckpt or NeMo files after a training run has finished. This is sufficient in case you are collecting results in some experiment
-tracking tool and can simply rerun the best config after the search is finished.
+In the above configuration, we explicitly set ``save_top_k: 1`` and ``always_save_nemo: True``. This limits the number of ".ckpt"
+files to just one and also saves a NeMo file, which contains only the model parameters without the optimizer state.
+This NeMo file can be restored immediately for further work.
+
+We can further save storage space by using NeMo's utility functions to automatically delete either ".ckpt" or NeMo files
+after a training run has finished. This is sufficient if you are collecting results in an experiment tracking tool and can
+simply rerun the best configuration after the search is completed.
 
 .. code-block:: python
 
@@ -452,24 +455,26 @@ tracking tool and can simply rerun the best config after the search is finished.
         clean_exp_ckpt(exp_log_dir, remove_ckpt=True, remove_nemo=False)
 
 
-* Debugging Multi-Run Scripts
+Debugging Multi-Run Scripts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When running hydra scripts, you may sometimes face config issues which crash the program. In NeMo Multi-Run, a crash in
-any one run will **not** crash the entire program, we will simply take note of it and move onto the next job. Once all
-jobs are completed, we then raise the error in the order that it occurred (it will crash the program with the first error's
-stack trace).
-
-In order to debug Muti-Run, we suggest to comment out the full hyper parameter config set inside ``sweep.params``
-and instead run just a single experiment with the config - which would immediately raise the error.
+When running Hydra scripts, you may encounter configuration issues that crash the program. In NeMo Multi-Run, a crash in
+any single run will not crash the entire program. Instead, we will note the error and proceed to the next job. Once all
+jobs are completed, we will raise the errors in the order they occurred, crashing the program with the first error’s stack trace.
 
 
-* Experiment name cannot be parsed by Hydra
+To debug NeMo Multi-Run, we recommend commenting out the entire hyperparameter configuration set inside ``sweep.params``.
+Instead, run a single experiment with the configuration, which will immediately raise the error.
 
-Sometimes our hyper parameters include PyTorch Lightning ``trainer`` arguments - such as number of steps, number of epochs
-whether to use gradient accumulation or not etc. When we attempt to add these as keys to the expriment manager's ``name``,
+
+Experiment name cannot be parsed by Hydra
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sometimes our hyperparameters include PyTorch Lightning ``trainer`` arguments, such as the number of steps, number of epochs,
+and whether to use gradient accumulation. When we attempt to add these as keys to the experiment manager's ``name``,
 Hydra may complain that ``trainer.xyz`` cannot be resolved.
 
-A simple solution is to finalize the hydra config before you call ``exp_manager()`` as follows -
+A simple solution is to finalize the Hydra config before you call ``exp_manager()`` as follows:
 
 .. code-block:: python
 

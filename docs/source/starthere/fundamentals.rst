@@ -190,10 +190,10 @@ NeMo Inference Scripts
 
 The examples scripts directory also contains many inference scripts such as `transcribe_speech.py <https://github.com/NVIDIA/NeMo/blob/main/examples/asr/transcribe_speech.py>`_. These inference scripts typically differ in structure from training scripts, as they include additional utilities for file I/O (reading and saving files). While inference scripts still use configurations (configs), they don’t require the ``trainer`` and ``model`` sections. Additionally, the default configs for inference scripts are usually specified as dataclasses rather than separate files. You can also modify elements via the command line.
 
-Specifying training data
+Specifying Training Data
 ------------------------
 
-NeMo will handle creation of data loaders for you, as long as you put your data into the expected input format. You may also need to train a tokenizer before starting training. To learn more about data formats, see :doc:`LLM <../nlp/nemo_megatron/gpt/gpt_training>`, :doc:`Multimodal <../multimodal/mllm/datasets>`, :ref:`Speech AI <section-with-manifest-format-explanation>`, and :doc:`Vision models <../vision/datasets>`.
+NeMo will handle the creation of data loaders for you, as long as you put your data into the expected input format. You may also need to train a tokenizer before starting training. To learn more about data formats, see :doc:`LLM <../nlp/nemo_megatron/gpt/gpt_training>`, :doc:`Multimodal <../multimodal/mllm/datasets>`, :ref:`Speech AI <section-with-manifest-format-explanation>`, and :doc:`Vision models <../vision/datasets>`.
 
 
 Model Checkpoints
@@ -209,7 +209,7 @@ The NeMo team also releases pretrained models which you can browse on `NGC <http
 
 
 Fine-Tuning
-----------
+-----------
 
 NeMo allows you to fine-tune models as well as train them from scratch.
 
@@ -219,24 +219,24 @@ You can achieve this by initializing a model with random weights, then replacing
 .. _where_next:
 
 Where To Go Next?
------------
+-----------------
 
 Here are some options:
 
-* Explore Examples or Tutorials: dive into NeMo by exploring our `examples <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ or :doc:`tutorials <./tutorials>`
+* Explore examples or tutorials: dive into NeMo by exploring our `examples <https://github.com/NVIDIA/NeMo/tree/main/examples>`_ or :doc:`tutorials <./tutorials>`
 
-* Domain-Specific Documentation:
+* Domain-specific documentation:
 
-  * For Large Language Models (LLMs), checkout out the :doc:`LLM <../nlp/nemo_megatron/intro>` documentation.
+  * For Large Language Models (LLMs), checkout the :doc:`LLM <../nlp/nemo_megatron/intro>` documentation.
   * For Multimodal tasks, refer to the :doc:`Multimodal <../multimodal/mllm/intro>` documentation.
 
   * If you’re interested in Automatic Speech Recognition (ASR), explore the :doc:`ASR <../asr/intro>` documentation.
   * For Text-to-Speech (TTS), find details in the :doc:`TTS <../tts/intro>` documentation.
-  * Lastly, for Vision Models, consult the :doc:`Vision Models <../vision/intro>` documentation.
+  * For Vision Models, consult the :doc:`Vision Models <../vision/intro>` documentation.
 
 * `NeMo Primer <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/00_NeMo_Primer.ipynb>`__: This tutorial provides a hands-on introduction to NeMo, PyTorch Lightning, and OmegaConf. It covers how to use, modify, save, and restore NeMo models.
 
 * `NeMo Models <https://github.com/NVIDIA/NeMo/blob/stable/tutorials/01_NeMo_Models.ipynb>`__: In this tutorial, you'll learn the fundamentals of creating NeMo models.
 
-* NeMo Core Documentation: Explore the :doc:`NeMo Core <../core/core>` documentation for NeMo, which explains the inner workings of the framework.
+* NeMo Core Documentation: Explore the :doc:`NeMo Core <../core/core>` documentation for NeMo, which explains the inner workings of NeMo Framework.
 

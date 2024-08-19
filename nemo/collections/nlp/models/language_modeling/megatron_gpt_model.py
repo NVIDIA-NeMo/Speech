@@ -154,6 +154,8 @@ def mcore_supports_moe() -> bool:
 
 ## TODO: This function will not work if TE is not installed
 def get_specs(spec_name, transformer_config=None, use_te=True, hyena_cfg: Dict = None):
+    from nemo.collections.nlp.models.language_modeling.megatron.gemma2.gemma2_spec import get_gemma2_layer_spec
+
     # else cases for backwards compatibility with neva
     num_experts = transformer_config.num_moe_experts if transformer_config else None
     moe_grouped_gemm = transformer_config.moe_grouped_gemm if transformer_config else False
@@ -167,6 +169,7 @@ def get_specs(spec_name, transformer_config=None, use_te=True, hyena_cfg: Dict =
         "": get_gpt_layer_local_spec(num_experts, moe_grouped_gemm),
         "te_gpt": get_gpt_layer_with_transformer_engine_spec(num_experts, moe_grouped_gemm),
         "megatron_falcon_gpt": get_falcon_layer_spec(),
+        "megatron_gemma2": get_gemma2_layer_spec(),
         "megatron_gpt_full_te_layer_autocast": get_gpt_full_te_layer_autocast_spec(transformer_config),
         "modelopt": get_gpt_layer_modelopt_spec(num_experts),
         "te_gpt_hyena": get_gpt_layer_with_te_and_hyena_spec(hyena_cfg),
@@ -174,6 +177,17 @@ def get_specs(spec_name, transformer_config=None, use_te=True, hyena_cfg: Dict =
     if spec_name not in name_spec_dict:
         raise ValueError(f"Spec name '{spec_name}' is not recognized.")
     return name_spec_dict[spec_name]
+
+
+def mcore_model_customize(cfg, model):
+    if cfg.get("apply_embedding_scaling", False) and parallel_state.is_pipeline_first_stage():
+        extend_instance(model.embedding, EmbeddingScalingMixin)
+    if cfg.get('scale_positional_embedding', False):
+        model.rotary_pos_emb.inv_freq = apply_rope_scaling(model.rotary_pos_emb.inv_freq)
+    if cfg.get("mcore_customization_config", {}).get("final_logit_softcapping", 0):
+        from nemo.collections.nlp.models.language_modeling.megatron.gemma2.gemma2_modules import Gemma2OutputLayer
+
+        extend_instance(model.output_layer, Gemma2OutputLayer)
 
 
 class EmbeddingScalingMixin(torch.nn.Module):
@@ -450,12 +464,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 seq_len_interpolation_factor=self.cfg.get('seq_len_interpolation_factor', None),
                 rotary_base=self.cfg.get('rotary_base', 10000),
             )
-
-            if self.cfg.get('scale_positional_embedding', False):
-                model.rotary_pos_emb.inv_freq = apply_rope_scaling(model.rotary_pos_emb.inv_freq)
-
-            if self.cfg.get("apply_embedding_scaling", False) and parallel_state.is_pipeline_first_stage():
-                extend_instance(model.embedding, EmbeddingScalingMixin)
+            mcore_model_customize(self.cfg, model)
         else:
             assert self.cfg.get('num_query_groups', None) is None or self.cfg.get(
                 'num_query_groups', None
@@ -2081,7 +2090,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             )
 
         normalization = self.cfg.get('normalization', 'layernorm').lower()
-        layernorm_zero_centered_gamma = self.cfg.get('normalization', 'layernorm') == 'layernorm1p'
+        layernorm_zero_centered_gamma = self.cfg.get('normalization', 'layernorm') == 'layernorm1p' or self.cfg.get(
+            "layernorm_zero_centered_gamma", False
+        )
         if normalization == 'layernorm':
             normalization = 'LayerNorm'
         elif normalization == 'rmsnorm':

@@ -200,54 +200,56 @@ class MultiAudioPerceptionModule(NeuralModule, Exportable):
     """
     Audio perception module that consists of multiple audio encoders and shared modality adapter.
     This module is experimental. An example perception cfg is:
-    -------------------
-    perception:
-        modality_adapter:
-            _target_: nemo.collections.multimodal.speechllm.modules.PoolingMLPConnectors
-            hidden_dim: 512
-            pooling: 'cat'
-            pooling_factor: 2
-            num_layers: 4
-            input_dim: -1
-            output_dim: -1
 
-        spec_augment:
-            _target_: nemo.collections.asr.modules.SpectrogramAugmentation
-            freq_masks: 2 # set to zero to disable it
-            time_masks: 10 # set to zero to disable it
-            freq_width: 27
-            time_width: 0.05
+    .. code-block:: yaml
 
-        encoders:
-            asr_model:
-                _target_: nemo.collections.asr.models.ASRModel
-                output_key: d_model
-                freeze: True
-                pretrained_model: stt_en_fastconformer_transducer_large
-            ssl_model:
-                _target_: nemo.collections.asr.models.SpeechEncDecSelfSupervisedModel
-                output_key: d_model
-                freeze: True
-                pretrained_model: ssl_en_conformer_large
-                use_multi_layer_feat: True
-                multi_layer_feat:
-                layer_idx_list: [0,16]
+        perception:
+            modality_adapter:
+                _target_: nemo.collections.multimodal.speechllm.modules.PoolingMLPConnectors
+                hidden_dim: 512
+                pooling: 'cat'
+                pooling_factor: 2
+                num_layers: 4
+                input_dim: -1
+                output_dim: -1
+
+            spec_augment:
+                _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+                freq_masks: 2 # set to zero to disable it
+                time_masks: 10 # set to zero to disable it
+                freq_width: 27
+                time_width: 0.05
+
+            encoders:
+                asr_model:
+                    _target_: nemo.collections.asr.models.ASRModel
+                    output_key: d_model
+                    freeze: True
+                    pretrained_model: stt_en_fastconformer_transducer_large
+                ssl_model:
+                    _target_: nemo.collections.asr.models.SpeechEncDecSelfSupervisedModel
+                    output_key: d_model
+                    freeze: True
+                    pretrained_model: ssl_en_conformer_large
+                    use_multi_layer_feat: True
+                    multi_layer_feat:
+                    layer_idx_list: [0,16]
+                    aggregator:
+                        mode: "cat"
+                        pooling: "avg"
+                        rounding: "floor"
+
+                speaker_model:
+                    segment_length_in_secs: 0.4
+                    freeze: True
+                    pretrained_model: titanet_large
+
+                ref_model: asr_model
                 aggregator:
                     mode: "cat"
-                    pooling: "avg"
+                    pooling: "mean"
                     rounding: "floor"
 
-            speaker_model:
-                segment_length_in_secs: 0.4
-                freeze: True
-                pretrained_model: titanet_large
-
-            ref_model: asr_model
-            aggregator:
-                mode: "cat"
-                pooling: "mean"
-                rounding: "floor"
-    -------------------
     """
 
     def __init__(self, cfg: DictConfig):
@@ -441,9 +443,10 @@ def lens_to_mask(lens, max_length):
 class TransformerCrossAttention(NeuralModule, Exportable):
     """Transformer module for cross-attention between speech and text embeddings.
     The module allows optional projection from the input embeddings to a lower dimension before feeding them to the transformer.
+
     Args:
         cfg: DictConfig, configuration object for the module which should include:
-            xattn: DictConfig, configuration object for the transformer decoder
+        xattn: DictConfig, configuration object for the transformer decoder
     """
 
     def __init__(self, cfg: DictConfig, *args, **kwargs):

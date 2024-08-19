@@ -1,9 +1,6 @@
 # Modular SpeechLLM
 
-This directory contains example scripts to train and evaluate modular SpeechLLM (e.g, SALM[1], etc). 
-
-## Requirements
-You will need to install this specific branch of NeMo, or use the provided Dockerfile in the root directory of this repository to build a Docker image with all the necessary dependencies.
+This directory contains example scripts to train and evaluate modular SpeechLLM (e.g, SALM[1], BESTOW[2] etc).
 
 ## Architecture
 
@@ -187,3 +184,5 @@ If you have a local `.nemo` file, you can use `model.restore_from_path=/path/to/
 
 ## Reference
 [1] Chen, Z.\*, Huang, H.\*, Andrusenko, A., Hrinchuk, O., Puvvada, K.C., Li, J., Ghosh, S., Balam, J. and Ginsburg, B., 2023. SALM: Speech-augmented Language Model with In-context Learning for Speech Recognition and Translation. ICASSP'24.
+
+[2] Chen, Z., Huang, H., Hrinchuk, O., Puvvada, K.C., Koluguri, N.R., .Zelasko, P., Balam, J., & Ginsburg, B. ,2024. BESTOW: Efficient and Streamable Speech Language Model with the Best of Two Worlds in GPT and T5. ArXiv, abs/2406.19954.

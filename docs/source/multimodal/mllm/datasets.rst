@@ -1,12 +1,12 @@
 Multimodal Language Model Datasets
 ==================================
 
-The NeMo multimodal language model supports the conversation data format, drawing inspiration from and designed based on `LLaVA <https://github.com/haotian-liu/LLaVA/tree/main>`_. Sample datasets can be explored at `LLaVA's data documentation <https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md>`_.
+The NeMo Framework multimodal language model supports the conversation data format, drawing inspiration from and designed based on `LLaVA <https://github.com/haotian-liu/LLaVA/tree/main>`_. Sample datasets can be explored at `LLaVA's data documentation <https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md>`_.
 
-Preparing the Training Dataset
-------------------------------
+Prepare the Training Dataset
+----------------------------
 
-The NeVA model training encompasses two phases: pretraining and finetuning. Each phase mandates a unique dataset.
+The NeVA model training encompasses two phases: pretraining and fine-tuning. Each phase mandates a unique dataset.
 
 For **pretraining**, utilize the *LAION/CC/SBU BLIP-Caption Concept-balanced 558K* dataset. Access this dataset via `LLaVA's GitHub <https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md>`_. After procuring the dataset, extract it to:
 
@@ -14,13 +14,13 @@ For **pretraining**, utilize the *LAION/CC/SBU BLIP-Caption Concept-balanced 558
 
    /path/to/neva/datasets/LLaVA-Pretrain-LCS-558K/blip_laion_cc_sbu_558k.json
 
-Acquire the image data from `HuggingFace <https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain/blob/main/images.zip>`_ and extract to:
+Acquire the image data from `Hugging Face <https://huggingface.co/datasets/liuhaotian/LLaVA-Pretrain/blob/main/images.zip>`__ and extract to:
 
 .. code-block:: bash
 
    /path/to/neva/datasets/LLaVA-Pretrain-LCS-558K/images
 
-For **fine-tuning**, deploy the *LLaVA-Instruct-150K* dataset. This is also available on `LLaVA's GitHub <https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md>`_. You can download the prompts from `HuggingFace <https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/tree/main>`_:
+For **fine-tuning**, deploy the *LLaVA-Instruct-150K* dataset. This is also available on `LLaVA's GitHub <https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md>`_. You can download the prompts from `HuggingFace <https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K/tree/main>`__:
 
 .. code-block:: bash
 
@@ -32,19 +32,19 @@ Image data for this phase can be obtained from the `COCO Dataset <https://cocoda
 
    /path/to/neva/datasets/LLaVA-Instruct-150K/images
 
-Additional Preparation for NeVA Model
--------------------------------------
+Additional Preparation for the NeVA Model
+-----------------------------------------
 
-The following instructions are specific to the NeVA model within the NeMo Multimodal Language Models.
+The following instructions are specific to the NeVA model within the NeMo Framework multimodal language models.
 
-Setting Up LLaMA-2 Chat Checkpoints
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Set Up LLaMA-2 Chat Checkpoints
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Support is available for both the 7B and 13B chat models. Both can be downloaded from `LLaVA's Model Zoo <https://github.com/haotian-liu/LLaVA/blob/main/docs/MODEL_ZOO.md>`_. After downloading the desired HuggingFace checkpoint, extract and store it on your local system to prep for pretraining.
+Support is available for both the 7B and 13B chat models. Both can be downloaded from `LLaVA's Model Zoo <https://github.com/haotian-liu/LLaVA/blob/main/docs/MODEL_ZOO.md>`__. After downloading the checkpoint you want from Hugging Face, extract and store it on your local system to prepare for pretraining.
 
 To convert the LLaMA-2 checkpoints to NeMo's format, follow these steps:
 
-1. Adjust the default yaml file at `megatron_llama_config.yaml <https://TODOURL>`_. Ensure ``model.mcore_gpt`` and ``model.transformer_engine`` are set to `False` before the checkpoint conversion.
+1. Adjust the default YAML file at `megatron_llama_config.yaml <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/language_modeling/conf/megatron_llama_config.yaml>`__. Ensure ``model.mcore_gpt`` and ``model.transformer_engine`` are set to `False` before the checkpoint conversion.
 
 2. For the 7B chat model, use this conversion command:
 
@@ -56,7 +56,7 @@ To convert the LLaMA-2 checkpoints to NeMo's format, follow these steps:
 
 For the 13B model, adjust the paths in the `--in-file` and `--out-file` parameters accordingly.
 
-3. Execute the subsequent command to divide the checkpoint for tensor model parallel sizes of 4 or 8. It's advisable to use TP=4 for the 7B model and TP=8 for the 13B model to ensure both pretraining and finetuning operate without memory complications.
+3. Execute the subsequent command to divide the checkpoint for tensor model parallel sizes of 4 or 8. It's advisable to use TP=4 for the 7B model and TP=8 for the 13B model to ensure both pretraining and fine-tuning operate without memory complications.
 
 .. code-block:: bash
 
@@ -73,10 +73,10 @@ For the 13B model, adjust the paths in the `--in-file` and `--out-file` paramete
      --model_class="nemo.collections.nlp.models.language_modeling.megatron_gpt_model.MegatronGPTModel" \
      --tokenizer_model_path=<PATH-TO-HF-CHECKPOINT>/tokenizer.model
 
-Tokenizer Configuration
-^^^^^^^^^^^^^^^^^^^^^^^
+Configure Tokenizer
+^^^^^^^^^^^^^^^^^^^
 
-For NeVA training, integrating special tokens into the tokenizer is vital. After obtaining the 7B/13B model from Huggingface, also procure the corresponding tokenizer model. Referring to the 7B-chat model:
+For NeVA training, it is vital that you integrate special tokens into the tokenizer. After obtaining the 7B/13B model from Hugging Face, you need to procure the corresponding tokenizer model. Referring to the 7B-chat model:
 
 1. Download the `tokenizer.model <https://huggingface.co/liuhaotian/llava-llama-2-13b-chat-lightning-preview/blob/main/tokenizer.model>`_ to:
 
@@ -84,7 +84,7 @@ For NeVA training, integrating special tokens into the tokenizer is vital. After
 
    /path/to/neva/tokenizers/tokenizer.model
 
-2. Executing the next script necessitates the NeMo dependency. It's more convenient to run the script within the NeMo container.
+2. Step 3 requires NeMo Framework to be installed. For quick setup, we recommend running it within the NeMo Framework container.
 
 3. Employ the command below to infuse special tokens into the tokenizer:
 

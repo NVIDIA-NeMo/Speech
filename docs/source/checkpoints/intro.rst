@@ -4,8 +4,8 @@ Checkpoints
 
 In this section, we present key functionalities of NVIDIA NeMo related to checkpoint management.
 
-Understanding Checkpoint Formats
---------------------------------
+Checkpoint Formats
+------------------
 
 A ``.nemo`` checkpoint is fundamentally a tar file that bundles the model configurations (specified inside a YAML file), model weights (inside a ``.ckpt`` file), and other artifacts like tokenizer models or vocabulary files. This consolidated design streamlines sharing, loading, tuning, evaluating, and inference.
 
@@ -43,7 +43,7 @@ The following example shows the contents of a quantized model intended to be ser
     └── tokenizer_config.yaml
 
 Community Checkpoint Converter
------------------------------
+------------------------------
 We provide easy-to-use tools that enable users to convert community checkpoints into the NeMo format. These tools facilitate various operations, including resuming training, Supervised Fine-Tuning (SFT), Parameter-Efficient Fine-Tuning (PEFT), and deployment. For detailed instructions and guidelines, please refer to our documentation.
 
 We offer comprehensive guides to assist both end users and developers:

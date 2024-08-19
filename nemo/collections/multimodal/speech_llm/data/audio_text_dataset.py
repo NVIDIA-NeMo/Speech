@@ -198,21 +198,26 @@ class AudioTextDataset(TextProcessing, Dataset):
     """
     Dataset that loads tensors via a json file containing paths to audio files, transcripts, and durations (in seconds).
     Each new line is a different sample. Example below:
-    {"audio_filepath": "1.wav", "duration": 1.12, "question": "what is the capital of France?", "answer": "Paris"}
-    {"audio_filepath": "2.wav", "duration": 2.15, "question": "what is the capital of Italy?", "answer": "Rome"}
+
+    .. code-block:: json
+
+        {"audio_filepath": "1.wav", "duration": 1.12, "question": "what is the capital of France?", "answer": "Paris"}
+        {"audio_filepath": "2.wav", "duration": 2.15, "question": "what is the capital of Italy?", "answer": "Rome"}
+
     Args:
         manifest_filepath: Path to manifest json as described above. Can be comma-separated paths.
         tokenizer: text tokenizer object
         sample_rate (int): Sample rate to resample loaded audio to
         int_values (bool): If true, load samples as 32-bit integers. Defauts to False.
-        augmentor (nemo.collections.asr.parts.perturb.AudioAugmentor): An AudioAugmentor object used to augment loaded
-            audio
+        augmentor (nemo.collections.asr.parts.perturb.AudioAugmentor): An AudioAugmentor object used to augment loaded audio
         max_duration: If audio exceeds this length, do not include in dataset
         min_duration: If audio is less than this length, do not include in dataset
         max_utts: Limit number of utterances
         trim: whether or not to trim silence. Defaults to False
         channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
-        --------- NLP SPECIFIC ARGS -------------
+
+            :note: below args are NLP-specific
+
         max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
         min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
         add_bos (bool): Whether to add a beginning of sentence token to each data example
@@ -228,9 +233,16 @@ class AudioTextDataset(TextProcessing, Dataset):
         answer_only_loss: If True, will compute the loss only on the answer part of the input. If False, will compute the loss on the entire input.
         truncation_field: Field to use for truncation. (Options: "answer", "context"). Field to be used for truncation if the combined length exceeds the max sequence length.
         pad_to_max_length: Whether to pad the input to the max sequence length. If False, will pad to the max length of the current batch.
-        prompt_template: Prompt template to inject via an fstring. Formatted like Q: {input}\n\nA: {output}
+        prompt_template: Prompt template to inject via an fstring. Formatted like:
+
+            .. code-block:: text
+
+                Q: {input}\\n\\nA: {output}
+
         end_string: Optional[str] = None, if not None, add this string to the end of the answer.
-        --------------- additional args for misc purposes ----------------
+
+            :note: below args are for miscellaneous purposes
+
         context_file: Optional[Union[List[str], str]] = None, if provided, will use this file to load random questions from, if question is not in manifest.
         sample_alpha: Optional[float] = None, for SPE subword sampling
         audio_locator: Optional[str] = None, a special string to split the context into multiple audio segments.
@@ -583,26 +595,30 @@ class TarredAudioTextDataset(TextProcessing, IterableDataset):
         pad_id (id): Token used to pad when collating samples in batches.
             If this is None, pads using 0s.
             Defaults to None.
-        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
-            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
-                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
-            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
-                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
-                The benefit of replication is that it allows each node to sample data points from the entire
-                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a
+            str value during ddp.
 
-                .. warning::
-                    Replicated strategy allows every node to sample the entire set of available tarfiles,
-                    and therefore more than one node may sample the same tarfile, and even sample the same
-                    data points! As such, there is no assured guarantee that all samples in the dataset will be
-                    sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific
-                    occasions (when the number of shards is not divisible with ``world_size``), will not sample
-                    the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
-                    or test datasets.
+            - `scatter`: The default shard strategy applied by WebDataset, where each node gets
+              a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            - `replicate`: Optional shard strategy, where each node gets all of the set of shards
+              available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+              The benefit of replication is that it allows each node to sample data points from the entire
+              dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+
+            :warning: Replicated strategy allows every node to sample the entire set of available tarfiles,
+                and therefore more than one node may sample the same tarfile, and even sample the same
+                data points! As such, there is no assured guarantee that all samples in the dataset will be
+                sampled at least once during 1 epoch. Scattered strategy, on the other hand, on specific
+                occasions (when the number of shards is not divisible with ``world_size``), will not sample
+                the entire dataset. For these reasons it is not advisable to use tarred datasets as validation
+                or test datasets.
+
         shard_manifests (bool): Whether or not to try / shard manifests. Defaults to False.
         global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
-        --------- NLP SPECIFIC ARGS -------------
+
+            :note: Below args are NLP-specific
+
         max_seq_length (int): maximum sequence length for each dataset examples. Examples will either be truncated to fit this length or dropped if they cannot be truncated.
         min_seq_length (int): min length of each data example in the dataset. Data examples will be dropped if they do not meet the min length requirements.
         add_bos (bool): Whether to add a beginning of sentence token to each data example
@@ -617,11 +633,19 @@ class TarredAudioTextDataset(TextProcessing, IterableDataset):
         answer_only_loss: If True, will compute the loss only on the answer part of the input. If False, will compute the loss on the entire input.
         truncation_field: Field to use for truncation. (Options: "answer", "context"). Field to be used for truncation if the combined length exceeds the max sequence length.
         pad_to_max_length: Whether to pad the input to the max sequence length. If False, will pad to the max length of the current batch.
-        prompt_template: Prompt template to inject via an fstring. Formatted like Q: {input}\n\nA: {output}
+        prompt_template: Prompt template to inject via an fstring. Formatted like:
+
+            .. code-block:: text
+
+                Q: {input}\\n\\nA: {output}
+
         end_string: Optional[str] = None, if not None, add this string to the end of the answer.
-        --------------- additional args for misc purposes ----------------
+
+            :note: Below args are for miscellaneous purposes
+
         context_file: Optional[Union[List[str], str]] = None, if provided, will use this file to load random questions from, if question is not in manifest.
         sample_alpha: Optional[float] = None, for SPE subword sampling
+
     """
 
     def __init__(

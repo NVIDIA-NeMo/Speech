@@ -338,7 +338,7 @@ def main():
         if json_file.endswith('.gz'):
             fin = gzip.open(json_file, 'r')
         else:
-            fin = open(args.input, 'r', encoding='utf-8')
+            fin = open(json_file, 'r', encoding='utf-8')
 
         encoded_docs = pool.imap(encoder.encode, fin, 25)
 

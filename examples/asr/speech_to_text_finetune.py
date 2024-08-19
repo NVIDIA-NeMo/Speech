@@ -62,6 +62,7 @@ from nemo.core.config import hydra_runner
 from nemo.utils import logging, model_utils
 from nemo.utils.exp_manager import exp_manager
 from nemo.utils.get_rank import is_global_rank_zero
+from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
 def get_base_model(trainer, cfg):
@@ -193,7 +194,7 @@ def setup_dataloaders(asr_model, cfg):
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
-    trainer = pl.Trainer(**cfg.trainer)
+    trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     if hasattr(cfg, 'init_from_ptl_ckpt') and cfg.init_from_ptl_ckpt is not None:

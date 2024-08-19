@@ -52,6 +52,7 @@ from nemo.collections.asr.models.hybrid_asr_tts_models import ASRWithTTSModel
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
 @hydra_runner(config_path="examples/asr/asr_tts", config_name="hybrid_asr_tts")
@@ -59,7 +60,7 @@ def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     OmegaConf.resolve(cfg)
 
-    trainer = pl.Trainer(**cfg.trainer)
+    trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     asr_model = ASRWithTTSModel(cfg.model, trainer=trainer)

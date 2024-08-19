@@ -71,13 +71,14 @@ from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
+from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
 @hydra_runner(config_path="../conf/citrinet/", config_name="config_bpe")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
 
-    trainer = pl.Trainer(**cfg.trainer)
+    trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
     exp_manager(trainer, cfg.get("exp_manager", None))
     asr_model = EncDecCTCModelBPE(cfg=cfg.model, trainer=trainer)
 

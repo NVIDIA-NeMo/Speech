@@ -25,7 +25,9 @@ import tensorstore  # This is important even though not used. Otherwise zarr rai
 import torch
 import yaml
 import zarr
-from torch.distributed.checkpoint import FileSystemReader
+from tensorrt_llm._utils import np_bfloat16
+from torch.distributed.checkpoint import FileSystemReader, TensorStorageMetadata
+from torch.distributed.checkpoint.state_dict_loader import load_state_dict
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
@@ -56,9 +58,11 @@ class TarFileSystemReader(FileSystemReader):
     """
 
     def __init__(self, path: Union[Path, TarPath]) -> None:
-        """No call to super().__init__ because it expects pure Path."""
-        self.path = path
-        self.storage_data = dict()
+        """Makes sure that super().__init__ gets a pure path as expected."""
+        super_path = str(path) if isinstance(path, TarPath) else path
+        super().__init__(super_path)
+        if isinstance(path, TarPath):
+            self.path = path  # overwrites path set in super().__init__ call
 
 
 def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):

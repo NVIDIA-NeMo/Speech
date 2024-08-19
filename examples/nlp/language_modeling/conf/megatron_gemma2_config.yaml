@@ -1,0 +1,225 @@
+name: megatron_gemma2
+restore_from_path: null # used when starting from a .nemo file
+
+trainer:
+  devices: 1
+  num_nodes: 1
+  accelerator: gpu
+  precision: 32
+  logger: False # logger provided by exp_manager
+  enable_checkpointing: False
+  use_distributed_sampler: False
+  max_epochs: -1 # PTL default. In practice, max_steps will be reached first. 
+  max_steps: 100000 # consumed_samples = global_step * micro_batch_size * data_parallel_size * accumulate_grad_batches
+  log_every_n_steps: 10
+  val_check_interval: 100
+  limit_val_batches: 50
+  limit_test_batches: 500
+  accumulate_grad_batches: 1 # do not modify, grad acc is automatic for training megatron models
+  gradient_clip_val: 1.0
+  benchmark: False
+  enable_model_summary: False # default PTL callback for this does not support model parallelism, instead we log manually
+
+exp_manager:
+  explicit_log_dir: null
+  exp_dir: null
+  name: megatron_llama
+  create_wandb_logger: False
+  wandb_logger_kwargs:
+    project: null
+    name: null
+  resume_if_exists: True
+  resume_ignore_no_checkpoint: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    monitor: val_loss
+    save_top_k: 10
+    mode: min
+    always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
+    save_nemo_on_train_end: False # not recommended when training large models on clusters with short time limits
+    filename: 'megatron_gpt--{val_loss:.2f}-{step}-{consumed_samples}'
+    model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
+
+model:
+  mcore_gpt: True
+  # specify micro_batch_size, global_batch_size, and model parallelism
+  # gradient accumulation will be done automatically based on data_parallel_size
+  micro_batch_size: 4 # limited by GPU memory
+  global_batch_size: 8 # will use more micro batches to reach global batch size
+  tensor_model_parallel_size: 1 # intra-layer model parallelism
+  pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  virtual_pipeline_model_parallel_size: null # interleaved pipeline
+
+  # model architecture
+  encoder_seq_length: 8192
+  max_position_embeddings: ${.encoder_seq_length}
+  num_layers: 42 # 9b: 18 | 27b: 46
+  hidden_size: 3584 # 9b: 3584 | 27b: 4608
+  ffn_hidden_size: 28672 # Transformer FFN hidden size. Usually 4 * hidden_size. | 9b: 28672 | 27b: 72728
+  num_attention_heads: 16 # 9b: 16 | 27b: 32
+  init_method_std: 0.02 # Standard deviation of the zero mean normal distribution used for weight initialization.')
+  use_scaled_init_method: True # use scaled residuals initialization
+  hidden_dropout: 0.0 # Dropout probability for hidden state transformer.
+  attention_dropout: 0.0 # Dropout probability for attention
+  ffn_dropout: 0.0 # Dropout probability in the feed-forward layer.
+  kv_channels: 256 # Projection weights dimension in multi-head attention. Set to hidden_size // num_attention_heads if null | 9b: 256 | 27b: 128
+  apply_embedding_scaling: True # scale sqrt(hidden_size)
+  apply_query_key_layer_scaling: False # scale Q * K^T by 1 / layer-number.
+  normalization: 'rmsnorm' # Normalization layer to use. Options are 'layernorm', 'rmsnorm'
+  layernorm_zero_centered_gamma: True
+  layernorm_epsilon: 1e-6
+  do_layer_norm_weight_decay: False # True means weight decay on all params
+  make_vocab_size_divisible_by: 128 # Pad the vocab size to be divisible by this value for computation efficiency.
+  pre_process: True # add embedding
+  post_process: True # add pooler
+  persist_layer_norm: True # Use of persistent fused layer norm kernel.
+  bias: False # Whether to use bias terms in all weight matrices.
+  activation: 'fast-geglu' # Options ['gelu', 'geglu', 'swiglu', 'reglu', 'squared-relu', 'fast-geglu', 'fast-swiglu', 'fast-reglu']
+  headscale: False # Whether to learn extra parameters that scale the output of the each self-attention head.
+  transformer_block_type: 'pre_ln' # Options ['pre_ln', 'post_ln', 'normformer']
+  openai_gelu: True # Use OpenAI's GELU instead of the default GeLU
+  normalize_attention_scores: True # Whether to scale the output Q * K^T by 1 / sqrt(hidden_size_per_head). This arg is provided as a configuration option mostly for compatibility with models that have been weight-converted from HF. You almost always want to se this to True.
+  position_embedding_type: 'rope' # Position embedding type. Options ['learned_absolute', 'rope']
+  rotary_percentage: 1.0 # If using position_embedding_type=rope, then the per head dim is multiplied by this.
+  attention_type: 'multihead' # Attention type. Options ['multihead']
+  share_embeddings_and_output_weights: True # Share embedding and output layer weights.
+  overlap_p2p_comm: False # Overlap p2p communication with computes. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
+  batch_p2p_comm: True # Batch consecutive inter-peer send/recv operations. This argument is valid only when `virtual_pipeline_model_parallel_size` is larger than 1
+  num_query_groups: 8 # Number of query groups for group query attention. If None, normal attention is used. | 9b: 8 | 27b: 16
+  mcore_customization_config:
+    query_pre_attn_scalar: 224 # Custom scale factor (normally sqrt dim) in SDPA  9b: 224 | 27b: 144
+    attn_logit_softcapping: 50.0 # Prevents attention outputs from growing excessively by scaling them to a fixed range
+    final_logit_softcapping: 30.0 # Prevents final logits from growing excessively by scaling them to a fixed range
+
+  tokenizer:
+    library: 'sentencepiece'
+    type: null
+    model: ??? # /path/to/tokenizer.model
+    vocab_file: null
+    merge_file: null 
+    delimiter: null # only used for tabular tokenizer
+    sentencepiece_legacy: False # Legacy=True allows you to add special tokens to sentencepiece tokenizers.
+
+  # Mixed precision
+  native_amp_init_scale: 4294967296 # 2 ** 32
+  native_amp_growth_interval: 1000
+  hysteresis: 2 # Gradient scale hysteresis
+  fp32_residual_connection: False # Move residual connections to fp32
+  fp16_lm_cross_entropy: False # Move the cross entropy unreduced loss calculation for lm head to fp16
+
+  # Megatron O2-style half-precision
+  megatron_amp_O2: False # Enable O2-level automatic mixed precision using main parameters
+  grad_allreduce_chunk_size_mb: 125
+
+  # Fusion
+  grad_div_ar_fusion: True # Fuse grad division into torch.distributed.all_reduce. Only used with O2 and no pipeline parallelism..
+  gradient_accumulation_fusion: False # Fuse weight gradient accumulation to GEMMs. Only used with pipeline parallelism and O2.
+  bias_activation_fusion: False # Use a kernel that fuses the bias addition from weight matrices with the subsequent activation function.
+  bias_dropout_add_fusion: False # Use a kernel that fuses the bias addition, dropout and residual connection addition.
+  masked_softmax_fusion: True # Use a kernel that fuses the attention softmax with it's mask.
+  get_attention_mask_from_fusion: True # When using fused softmax it will create the attention mask so we won't copy it to the pipeline stages.
+
+
+  # Miscellaneous
+  seed: 1234
+  resume_from_checkpoint: null # manually set the checkpoint file to load from
+  use_cpu_initialization: False # Init weights on the CPU (slow for large models)
+  onnx_safe: False # Use work-arounds for known problems with Torch ONNX exporter.
+  apex_transformer_log_level: 30 # Python logging level displays logs with severity greater than or equal to this
+  gradient_as_bucket_view: True # PyTorch DDP argument. Allocate gradients in a contiguous bucket to save memory (less fragmentation and buffer memory)
+  sync_batch_comm: False # Enable stream synchronization after each p2p communication between pipeline stages
+
+  ## Activation Checkpointing
+  # NeMo Megatron supports 'selective' activation checkpointing where only the memory intensive part of attention is checkpointed.
+  # These memory intensive activations are also less compute intensive which makes activation checkpointing more efficient for LLMs (20B+).
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  # 'full' will checkpoint the entire transformer layer.
+  activations_checkpoint_granularity: null # 'selective' or 'full' 
+  activations_checkpoint_method: null # 'uniform', 'block'
+  # 'uniform' divides the total number of transformer layers and checkpoints the input activation
+  # of each chunk at the specified granularity. When used with 'selective', 'uniform' checkpoints all attention blocks in the model.
+  # 'block' checkpoints the specified number of layers per pipeline stage at the specified granularity
+  activations_checkpoint_num_layers: null
+  # when using 'uniform' this creates groups of transformer layers to checkpoint. Usually set to 1. Increase to save more memory.
+  # when using 'block' this this will checkpoint the first activations_checkpoint_num_layers per pipeline stage.
+  num_micro_batches_with_partial_activation_checkpoints: null
+  # This feature is valid only when used with pipeline-model-parallelism.
+  # When an integer value is provided, it sets the number of micro-batches where only a partial number of Transformer layers get checkpointed
+  # and recomputed within a window of micro-batches. The rest of micro-batches in the window checkpoint all Transformer layers. The size of window is
+  # set by the maximum outstanding micro-batch backpropagations, which varies at different pipeline stages. The number of partial layers to checkpoint
+  # per micro-batch is set by 'activations_checkpoint_num_layers' with 'activations_checkpoint_method' of 'block'.
+  # This feature enables using activation checkpoint at a fraction of micro-batches up to the point of full GPU memory usage.
+  activations_checkpoint_layers_per_pipeline: null
+  # This feature is valid only when used with pipeline-model-parallelism.
+  # When an integer value (rounded down when float is given) is provided, it sets the number of Transformer layers to skip checkpointing at later
+  # pipeline stages. For example, 'activations_checkpoint_layers_per_pipeline' of 3 makes pipeline stage 1 to checkpoint 3 layers less than
+  # stage 0 and stage 2 to checkpoint 6 layers less stage 0, and so on. This is possible because later pipeline stage
+  # uses less GPU memory with fewer outstanding micro-batch backpropagations. Used with 'num_micro_batches_with_partial_activation_checkpoints',
+  # this feature removes most of activation checkpoints at the last pipeline stage, which is the critical execution path.
+
+  ## Sequence Parallelism
+  # Makes tensor parallelism more memory efficient for LLMs (20B+) by parallelizing layer norms and dropout sequentially
+  # See Reducing Activation Recomputation in Large Transformer Models: https://arxiv.org/abs/2205.05198 for more details.
+  sequence_parallel: False
+
+  ## Transformer Engine
+  transformer_engine: True
+  fp8: False # enables fp8 in TransformerLayer forward
+  fp8_e4m3: False # sets fp8_format = recipe.Format.E4M3 
+  fp8_hybrid: True # sets fp8_format = recipe.Format.HYBRID
+  fp8_margin: 0 # scaling margin 
+  fp8_interval: 1 # scaling update interval
+  fp8_amax_history_len: 1024 # Number of steps for which amax history is recorded per tensor
+  fp8_amax_compute_algo: max # 'most_recent' or 'max'. Algorithm for computing amax from history
+  reduce_amax: True # Perform reduction to sync amax tensors across GPUs after every iteration
+  use_emha: False # Use fused multi-head attention for large sequence-length. Note this is not yet supported. Please set to False.
+
+  data:
+   # Path to data must be specified by the user.
+    # Supports List, String and Dictionary
+    # List : can override from the CLI: "model.data.data_prefix=[.5,/raid/data/pile/my-gpt3_00_text_document,.5,/raid/data/pile/my-gpt3_01_text_document]",
+    # Or see example below: 
+    # data_prefix: 
+    #   - .5
+    #   - /raid/data/pile/my-gpt3_00_text_document
+    #   - .5
+    #   - /raid/data/pile/my-gpt3_01_text_document
+    # Dictionary: can override from CLI "model.data.data_prefix"={"train":[1.0, /path/to/data], "validation":/path/to/data, "test":/path/to/test}
+    # Or see example below:
+    # "model.data.data_prefix: {train:[1.0,/path/to/data], validation:[/path/to/data], test:[/path/to/test]}"
+    # data_prefix: ???
+    index_mapping_dir: null # path to save index mapping .npy files, by default will save in the same location as data_prefix
+    data_impl: mmap
+    splits_string: 900,50,50
+    seq_length: ${model.encoder_seq_length}
+    skip_warmup: True
+    num_workers: 2
+    dataloader_type: single # cyclic
+    reset_position_ids: False # Reset position ids after end-of-document token
+    reset_attention_mask: False # Reset attention mask after end-of-document token
+    eod_mask_loss: False # Mask loss for the end of document tokens
+    validation_drop_last: True # Set to false if the last partial validation samples is to be consumed
+    no_seqlen_plus_one_input_tokens: False # Set to True to disable fetching (sequence length + 1) input tokens, instead get (sequence length) input tokens and mask the last token
+    pad_samples_to_global_batch_size: False # Set to True if you want to pad the last partial batch with -1's to equal global batch size
+    shuffle_documents: True # Set to False to disable documents shuffling. Sample index will still be shuffled
+
+  # Nsys profiling options
+  nsys_profile:
+    enabled: False
+    start_step: 10  # Global batch to start profiling
+    end_step: 10 # Global batch to end profiling
+    ranks: [0] # Global rank IDs to profile
+    gen_shape: False # Generate model and kernel details including input shapes
+  
+  optim:
+    name: fused_adam
+    lr: 2e-4
+    weight_decay: 0.01 
+    betas: 
+    - 0.9
+    - 0.98
+    sched:
+      name: CosineAnnealing
+      warmup_steps: 500
+      constant_steps: 50000
+      min_lr: 2e-5

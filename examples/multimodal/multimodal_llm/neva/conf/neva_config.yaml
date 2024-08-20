@@ -38,7 +38,7 @@ exp_manager:
     save_top_k: 10
     mode: min
     always_save_nemo: False # saves nemo file during validation, not implemented for model parallel
-    save_nemo_on_train_end: False # not recommended when training large models on clusters with short time limits
+    save_nemo_on_train_end: True # not recommended when training large models on clusters with short time limits
     filename: 'megatron_clip--{val_loss:.2f}-{step}-{consumed_samples}'
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
   ema:
@@ -60,6 +60,7 @@ model:
 
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
+  context_parallel_size: 1 # kqv model parallelism
   virtual_pipeline_model_parallel_size: null # interleaved pipeline
 
   restore_from_path: null # used in fine-tuning
@@ -185,7 +186,22 @@ model:
     packed_sequence: False
     num_workers: 8
     dataloader_type: cyclic
-    data_path:
+    data_path: 
+      # This configuration can either be a single string pointing to a data path, or a list of data paths for data blending.
+      # When using a blendable dataset, be aware of the following:
+      # - The sampling of data across datasets depends on both the relative sizes of the datasets and the concat_sampling_probabilities.
+      # - For example, if there are two datasets with lengths of 100 and 10, and the sampling probabilities are set to 0.5 for each,
+      #   then 55 samples would be taken from the dataset of length 100 and 55 from the dataset of length 10 (with repetition).
+      # - This means not all data might be seen in one epoch, and smaller datasets may need to be repeated to match the number of samples.
+      #   Please adjust your concat_sampling_probabilities accordingly to ensure balanced and effective training.
+      
+      # - /path/to/json
+      # - /path/to/json
+    global_batch_size: ${model.global_batch_size}
+    micro_batch_size: ${model.micro_batch_size}
+    concat_sampling_probabilities: null
+      # - 0.5
+      # - 0.5
     lazy_preprocess: True
     is_multimodal: True
     media_type: image # currently supported: image

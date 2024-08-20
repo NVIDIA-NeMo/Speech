@@ -271,6 +271,7 @@ def main():
     logging.info(f"Output directory: {output_dir}")
 
     prefix_path = f"{output_dir}/packed_seq_dataset"
+    os.makedirs(prefix_path, exist_ok=True)
     # Original Datasets to Sequence Lengths Files
     builders = {}
     for item_dict in tqdm(train_dl, desc="Building indexed datasets"):

@@ -25,7 +25,6 @@ from nemo.utils.app_state import AppState
 
 class BlendableDataset(torch.utils.data.Dataset):
     def __init__(self, datasets, weights, size):
-
         self.datasets = datasets
         num_datasets = len(datasets)
         assert num_datasets == len(weights)
@@ -43,6 +42,7 @@ class BlendableDataset(torch.utils.data.Dataset):
         assert num_datasets < 255
         self.dataset_index = np.zeros(self.size, dtype=np.uint8)
         self.dataset_sample_index = np.zeros(self.size, dtype=np.int64)
+
         app_state = AppState()
         try:
             if app_state.local_rank == 0:
@@ -74,6 +74,13 @@ class BlendableDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         dataset_idx = self.dataset_index[idx]
         sample_idx = self.dataset_sample_index[idx]
+        dataset_size = len(self.datasets[dataset_idx])
+        # Ensure the sample index doesn't exceed the dataset size
+        if sample_idx >= dataset_size:
+            logging.warning(f"Index {sample_idx} out of bounds for dataset {dataset_idx}. Reusing existing examples.")
+            sample_idx = sample_idx % dataset_size
+            logging.warning(f"Reusing index {sample_idx} for dataset {dataset_idx}.")
+
         return self.datasets[dataset_idx][sample_idx]
 
     def create_data_mmap(self):
@@ -85,7 +92,7 @@ class MemoryEfficientBlendableDataset(torch.utils.data.Dataset):
     """
     A BlendableDataset implementation that uses less memory than the original implementation.
     Indices are computed algorithmically instead of storing them in memory.
-    
+
     To test call: MemoryEfficientBlendableDataset.test_index_blending()
     """
 

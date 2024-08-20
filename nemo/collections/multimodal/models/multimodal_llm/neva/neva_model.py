@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
-from omegaconf.dictconfig import DictConfig
+from omegaconf import DictConfig, ListConfig
 from pkg_resources import packaging
 from pytorch_lightning.trainer.trainer import Trainer
 from transformers import CLIPVisionModel, SiglipVisionModel
@@ -38,6 +38,10 @@ from nemo.collections.multimodal.models.vision_language_foundation.clip.megatron
     MegatronCLIPModel,
 )
 from nemo.collections.multimodal.parts.utils import create_image_processor, load_nemo_model_weights
+from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
+    get_datasets_weights_and_num_samples,
+)
+from nemo.collections.nlp.data.language_modeling.megatron.blendable_dataset import BlendableDataset
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import MegatronPretrainingSampler
 from nemo.collections.nlp.models.language_modeling.megatron.gpt_model import GPTModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel, get_specs
@@ -1242,15 +1246,132 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
         if self.cfg.get('transformer_engine', False):
             self.setup_transformer_engine_tp_groups()
 
+    def build_train_valid_test_datasets_blend(self):
+        logging.info('Building Blending Neva datasets.')
+
+        train_datasets = []
+        valid_datasets = []
+
+        data_cfg = self.cfg.data
+        is_packed_sequence = data_cfg.get("packed_sequence", False)
+
+        if is_packed_sequence:
+            assert self.cfg.micro_batch_size == 1, "Micro batch size must be 1 if using packed sequence"
+
+        # Check if concat_sampling_probabilities is properly set
+        if data_cfg.get('concat_sampling_probabilities') is None or not isinstance(
+            data_cfg.concat_sampling_probabilities, ListConfig
+        ):
+            raise ValueError(
+                "concat_sampling_probabilities must be a ListConfig with the same number of entries as data_path."
+            )
+
+        if len(data_cfg.concat_sampling_probabilities) != len(data_cfg.data_path):
+            raise ValueError(
+                f"concat_sampling_probabilities must be of the same size as number of files from data path. "
+                f"Provided size {len(data_cfg.concat_sampling_probabilities)}, number of datasets {len(data_cfg.data_path)}"
+            )
+
+        for each_file_from_path in data_cfg.data_path:
+            if is_packed_sequence:
+                train_dataset = NevaPackedSeqDatatset(
+                    each_file_from_path, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+                )
+                valid_dataset = NevaPackedSeqDatatset(
+                    each_file_from_path, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+                )
+            else:
+                ds_dict = make_supervised_data_module(
+                    tokenizer=self.tokenizer,
+                    image_processor=(
+                        self.model.module.image_processor
+                        if hasattr(self.model, "module")
+                        else self.model.image_processor
+                    ),
+                    model_cfg=self.cfg,
+                    each_file_from_path=each_file_from_path,
+                )
+                train_dataset = ds_dict["train_dataset"]
+                valid_dataset = ds_dict["eval_dataset"]
+
+            train_datasets.append(train_dataset)
+            valid_datasets.append(valid_dataset)
+
+        # Create BlendableDataset for training
+        if self.trainer.max_steps is None or self.trainer.max_steps <= 0:
+            raise ValueError(f'Trainer max_steps must be set to a positive integer. Found {self.trainer.max_steps}')
+
+        num_train_samples = self.trainer.max_steps * data_cfg.global_batch_size
+        _, _, num_train_samples_per_dataset = get_datasets_weights_and_num_samples(
+            data_prefix=[
+                weight for pair in zip(data_cfg.concat_sampling_probabilities, data_cfg.data_path) for weight in pair
+            ],
+            num_samples=[num_train_samples],
+        )
+        num_train_samples_after_blend = sum([x[0] for x in num_train_samples_per_dataset])
+
+        logging.info(f"Number of train datasets: {len(train_datasets)}")
+        logging.info(f"Lengths of train datasets: {[len(ds) for ds in train_datasets]}")
+        logging.info(f"Number of train datasets after blending: {num_train_samples_after_blend}")
+
+        if is_packed_sequence:
+            num_train_samples_after_blend = sum([len(ds) for ds in train_datasets])
+
+        self._train_ds = BlendableDataset(
+            datasets=train_datasets, weights=data_cfg.concat_sampling_probabilities, size=num_train_samples_after_blend
+        )
+
+        self._validation_ds = BlendableDataset(
+            datasets=valid_datasets, weights=data_cfg.concat_sampling_probabilities, size=num_train_samples_after_blend
+        )
+
+        logging.info(f'Length of train dataset: {len(self._train_ds)}')
+        logging.info(f'Length of validation dataset: {len(self._validation_ds)}')
+
+        return self._train_ds, self._validation_ds
+
     def build_train_valid_test_datasets(self):
         logging.info('Building Neva datasets.')
+
+        if isinstance(self.cfg.data.data_path, (list, ListConfig)):
+            if len(self.cfg.data.data_path) > 1:
+                # Only consider data blending if there are multiple dataset paths
+                if self.cfg.data.get('concat_sampling_probabilities') is None:
+                    logging.warning("No sampling probabilities provided. Defaulting to uniform sampling.")
+                    self.cfg.data.concat_sampling_probabilities = [1 / len(self.cfg.data.data_path)] * len(
+                        self.cfg.data.data_path
+                    )
+                else:
+                    # Normalize the sampling probabilities if they don't sum to 1
+                    total = sum(self.cfg.data.concat_sampling_probabilities)
+                    if total != 1:
+                        logging.warning(f"Concat_sampling_probabilities sum to {total}. Normalizing to sum to 1.")
+                        self.cfg.data.concat_sampling_probabilities = [
+                            prob / total for prob in self.cfg.data.concat_sampling_probabilities
+                        ]
+                return self.build_train_valid_test_datasets_blend()
+            elif len(self.cfg.data.data_path) == 1:
+                if self.cfg.data.concat_sampling_probabilities is not None:
+                    logging.warning(
+                        "Using sampling probabilities with a single dataset has no effect. Defaulting to None and not using blend dataset."
+                    )
+                    self.cfg.data.concat_sampling_probabilities = None
+                self.cfg.data.data_path = self.cfg.data.data_path[0]
+            else:
+                raise ValueError("data_path must contain at least one valid path.")
+        elif isinstance(self.cfg.data.data_path, str):
+            pass
+        else:
+            raise TypeError("data_path must be a list of paths or a single string")
+
         if self.cfg.data.get("packed_sequence", False):
             assert self.cfg.micro_batch_size == 1, "Micro batch size must be 1 if using packed sequence"
+
             self._train_ds = NevaPackedSeqDatatset(
-                self.cfg.data.data_prefix, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+                self.cfg.data.data_path, self.cfg.mm_cfg.vision_encoder.get("crop_size")
             )
             self._validation_ds = NevaPackedSeqDatatset(
-                self.cfg.data.data_prefix, self.cfg.mm_cfg.vision_encoder.get("crop_size")
+                self.cfg.data.data_path, self.cfg.mm_cfg.vision_encoder.get("crop_size")
             )
         else:
             ds_dict = make_supervised_data_module(

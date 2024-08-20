@@ -103,15 +103,13 @@ To train with packed sequences, modify four items in the SFT/PEFT config file.
 
 .. code-block:: bash
 
-    ++model.data.data_prefix=/lustre/fsw/coreai_dlalgo_genai/datasets/LLaVA-Instruct-150K/packed_seq_12288_336_v1/packed_seq_dataset
-    ++model.data.crop_size=[224,224]
     ++model.data.packed_sequence=True
 
 2. Use the new dataset file instead of the original JSONL file and ensure the crop sizes are correctly specified since images are now cached:
 
 .. code-block:: bash
 
-    ++model.data.data_prefix=/path/to/datasets/LLaVA-Instruct-150K/packed_seq_12288_336_v1/packed_seq_dataset
+    ++model.data.data_path=/path/to/datasets/LLaVA-Instruct-150K/packed_seq_12288_336_v1/packed_seq_dataset
     ++model.data.crop_size=[336,336]
 
 4. Adjust batch sizes:

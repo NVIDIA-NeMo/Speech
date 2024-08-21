@@ -45,6 +45,7 @@ __all__ = [
     "MistralModel",
     "MixtralConfig8x3B",
     "MixtralConfig8x7B",
+    "MixtralConfig8x22B",
     "MixtralModel",
     "LlamaConfig",
     "Llama2Config7B",

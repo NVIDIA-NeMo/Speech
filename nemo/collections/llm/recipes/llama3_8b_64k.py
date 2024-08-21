@@ -32,7 +32,7 @@ def pretrain_recipe(
     recipe.model = model
     recipe.trainer = trainer
 
-    return trainer
+    return recipe
 
 
 def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node: int) -> Partial:
@@ -56,4 +56,4 @@ def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node:
     recipe.model = model
     recipe.trainer = trainer
 
-    return trainer
+    return recipe

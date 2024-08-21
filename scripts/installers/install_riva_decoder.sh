@@ -1,4 +1,6 @@
-# Copyright (c) 2022, NVIDIA CORPORATION.  All rights reserved.
+#!/bin/bash
+
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +14,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-K2_INSTALLATION_MESSAGE = (
-    "Could not import `k2`.\n"
-    "Please install k2 in one of the following ways:\n"
-    "1) (recommended) Run `bash scripts/installers/install_k2.sh`\n"
-    "2) Use any approach from https://k2-fsa.github.io/k2/installation/index.html "
-    "if your your cuda and pytorch versions are supported.\n"
-    "It is advised to always install k2 using setup.sh only, "
-    "as different versions of k2 may not interact with the NeMo code as expected."
-)
+pip install kaldifst kaldilm riva-asrlib-decoder

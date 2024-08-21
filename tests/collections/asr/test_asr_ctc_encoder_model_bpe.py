@@ -24,6 +24,7 @@ from omegaconf import DictConfig
 from nemo.collections.asr.data import audio_to_text
 from nemo.collections.asr.models import configs
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
+from nemo.collections.asr.parts.submodules import ctc_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 from nemo.collections.common import tokenizers
 from nemo.utils.config_utils import assert_dataclass_signature_match
@@ -278,6 +279,34 @@ class TestEncDecCTCModel:
 
         assert asr_model.decoding.preserve_alignments is True
         assert asr_model.decoding.compute_timestamps is True
+
+        new_strategy = DictConfig({})
+        new_strategy.strategy = 'beam'
+        new_strategy.beam = DictConfig({'beam_size': 1})
+        asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
+        assert isinstance(asr_model.decoding.decoding, beam_decode.BeamCTCInfer)
+        assert asr_model.decoding.decoding.search_type == "default"
+
+        new_strategy = DictConfig({})
+        new_strategy.strategy = 'pyctcdecode'
+        new_strategy.beam = DictConfig({'beam_size': 1})
+        asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
+        assert isinstance(asr_model.decoding.decoding, beam_decode.BeamCTCInfer)
+        assert asr_model.decoding.decoding.search_type == "pyctcdecode"
+
+        new_strategy = DictConfig({})
+        new_strategy.strategy = 'flashlight'
+        new_strategy.beam = DictConfig({'beam_size': 1})
+        asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
+        assert isinstance(asr_model.decoding.decoding, beam_decode.BeamCTCInfer)
+        assert asr_model.decoding.decoding.search_type == "flashlight"
+
+        new_strategy = DictConfig({})
+        new_strategy.strategy = 'wfst'
+        new_strategy.beam = DictConfig({'beam_size': 1})
+        asr_model.change_decoding_strategy(decoding_cfg=new_strategy)
+        assert isinstance(asr_model.decoding.decoding, beam_decode.WfstCTCInfer)
+        assert asr_model.decoding.decoding.search_type == "riva"
 
     @pytest.mark.unit
     def test_ASRDatasetConfig_for_AudioToBPEDataset(self):

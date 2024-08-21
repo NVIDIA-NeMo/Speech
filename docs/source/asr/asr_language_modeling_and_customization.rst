@@ -547,6 +547,69 @@ The following is the list of the arguments for the opengrm script:
 | force                | bool   | ``False``        | Whether to recompile and rewrite all files                                                                      |
 +----------------------+--------+------------------+-----------------------------------------------------------------------------------------------------------------+
 
+.. _wfst-ctc-decoding:
+
+WFST CTC decoding
+=================
+Weighted Finite-State Transducers (WFST) are finite-state machines with input and output symbols on each transition and some weight element of a semiring. WFSTs can act as N-gram LMs in a special type of LM-forced beam search, called WFST decoding.
+
+.. note::
+
+    More precisely, WFST decoding is more of a greedy N-depth search with LM.
+    Thus, it is asymptotically worse than conventional beam search decoding algorithms, but faster.
+
+**WARNING**  
+At the moment, NeMo supports WFST decoding only for CTC models and word-based LMs.
+
+To run WFST decoding in NeMo, one needs to provide a NeMo ASR model and either an ARPA LM or a WFST LM (advanced). An ARPA LM can be built from source text with KenLM as follows: ``<kenlm_bin_path>/lmplz -o <ngram_length> --arpa <out_arpa_path> --prune <ngram_prune>``.
+
+The script to evaluate an ASR model with WFST decoding and N-gram models can be found at
+`scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py
+<https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py>`__.
+
+This script has a large number of possible argument overrides, therefore it is advised to use ``python eval_wfst_decoding_ctc.py --help`` to see the full list of arguments.
+
+You may evaluate an ASR model as the following:
+
+.. code-block::
+
+    python eval_wfst_decoding_ctc.py nemo_model_file=<path to the .nemo file of the model> \
+           input_manifest=<path to the evaluation JSON manifest file> \
+           arpa_model_file=<path to the ARPA LM model> \
+           decoding_wfst_file=<path to the decoding WFST file> \
+           beam_width=[<list of the beam widths, separated with commas>] \
+           lm_weight=[<list of the LM weight multipliers, separated with commas>] \
+           open_vocabulary_decoding=<whether to use open vocabulary mode for WFST decoding> \
+           decoding_mode=<decoding mode, affects output. Usually "nbest"> \
+           decoding_search_type=<WFST decoding library. Usually "riva"> \
+           preds_output_folder=<optional folder to store the predictions> \
+           probs_cache_file=null
+
+.. note::
+
+    Since WFST decoding is LM-forced (the search goes over the WIDEST graph), only word sequences accepted by the WFST can appear in the decoding results.
+    To circumvent this restriction, one can pass ``open_vocabulary_decoding=true`` (experimental feature).
+
+
+Quick start example
+-------------------
+
+.. code-block::
+
+    wget -O - https://www.openslr.org/resources/11/3-gram.pruned.1e-7.arpa.gz | \
+    gunzip -c | tr '[:upper:]' '[:lower:]' > 3-gram.pruned.1e-7.arpa && \
+    python eval_wfst_decoding_ctc.py nemo_model_file="stt_en_conformer_ctc_small_ls" \
+           input_manifest="<data_dir>/Librispeech/test_other.json" \
+           arpa_model_file="3-gram.pruned.1e-7.arpa" \
+           decoding_wfst_file="3-gram.pruned.1e-7.fst" \
+           beam_width=[8] \
+           lm_weight=[0.5,0.6,0.7,0.8,0.9]
+
+.. note::
+
+    Building a decoding WFST is a long process, so it is better to provide a ``decoding_wfst_file`` path even if you don't have it.
+    This way, the decoding WFST will be buffered to the specified file path and there will be no need to re-build it on the next run.
+
 
 ***************************************************
 Context-biasing (word boosting) without external LM

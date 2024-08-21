@@ -213,7 +213,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         self.batch_dim_index = self.cfg.get('batch_dim_index', 0)
         self.word_seperator = self.cfg.get('word_seperator', ' ')
 
-        possible_strategies = ['greedy', 'greedy_batch', 'beam', 'pyctcdecode', 'flashlight']
+        possible_strategies = ['greedy', 'greedy_batch', 'beam', 'pyctcdecode', 'flashlight', 'wfst']
         if self.cfg.strategy not in possible_strategies:
             raise ValueError(f"Decoding strategy must be one of {possible_strategies}. Given {self.cfg.strategy}")
 
@@ -314,6 +314,28 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
             self.decoding.override_fold_consecutive_value = False
 
+        elif self.cfg.strategy == 'wfst':
+
+            self.decoding = ctc_beam_decoding.WfstCTCInfer(
+                blank_id=blank_id,
+                beam_size=self.cfg.wfst.get('beam_size', 1),
+                search_type=self.cfg.wfst.get('search_type', 'riva'),
+                return_best_hypothesis=self.cfg.wfst.get('return_best_hypothesis', True),
+                preserve_alignments=self.preserve_alignments,
+                compute_timestamps=self.compute_timestamps,
+                decoding_mode=self.cfg.wfst.get('decoding_mode', 'nbest'),
+                open_vocabulary_decoding=self.cfg.wfst.get('open_vocabulary_decoding', False),
+                beam_width=self.cfg.wfst.get('beam_width', 10.0),
+                lm_weight=self.cfg.wfst.get('lm_weight', 1.0),
+                device=self.cfg.wfst.get('device', 'cuda'),
+                arpa_lm_path=self.cfg.wfst.get('arpa_lm_path', None),
+                wfst_lm_path=self.cfg.wfst.get('wfst_lm_path', None),
+                riva_decoding_cfg=self.cfg.wfst.get('riva_decoding_cfg', None),
+                k2_decoding_cfg=self.cfg.wfst.get('k2_decoding_cfg', None),
+            )
+
+            self.decoding.override_fold_consecutive_value = False
+
         else:
             raise ValueError(
                 f"Incorrect decoding strategy supplied. Must be one of {possible_strategies}\n"
@@ -374,48 +396,56 @@ class AbstractCTCDecoding(ConfidenceMixin):
             hypotheses_list = hypotheses_list[0]  # type: List[Hypothesis]
 
         if isinstance(hypotheses_list[0], NBestHypotheses):
-            hypotheses = []
-            all_hypotheses = []
+            if self.cfg.strategy == 'wfst':
+                all_hypotheses = [hyp.n_best_hypotheses for hyp in hypotheses_list]
+                hypotheses = [hyp[0] for hyp in all_hypotheses]
+            else:
+                hypotheses = []
+                all_hypotheses = []
 
-            for nbest_hyp in hypotheses_list:  # type: NBestHypotheses
-                n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
-                decoded_hyps = self.decode_hypothesis(
-                    n_hyps, fold_consecutive
-                )  # type: List[Union[Hypothesis, NBestHypotheses]]
+                for nbest_hyp in hypotheses_list:  # type: NBestHypotheses
+                    n_hyps = nbest_hyp.n_best_hypotheses  # Extract all hypotheses for this sample
+                    decoded_hyps = self.decode_hypothesis(
+                        n_hyps, fold_consecutive
+                    )  # type: List[Union[Hypothesis, NBestHypotheses]]
 
-                # If computing timestamps
-                if self.compute_timestamps is True:
-                    timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
-                    for hyp_idx in range(len(decoded_hyps)):
-                        decoded_hyps[hyp_idx] = self.compute_ctc_timestamps(decoded_hyps[hyp_idx], timestamp_type)
+                    # If computing timestamps
+                    if self.compute_timestamps is True:
+                        timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
+                        for hyp_idx in range(len(decoded_hyps)):
+                            decoded_hyps[hyp_idx] = self.compute_ctc_timestamps(decoded_hyps[hyp_idx], timestamp_type)
 
-                hypotheses.append(decoded_hyps[0])  # best hypothesis
-                all_hypotheses.append(decoded_hyps)
+                    hypotheses.append(decoded_hyps[0])  # best hypothesis
+                    all_hypotheses.append(decoded_hyps)
 
             if return_hypotheses:
                 return hypotheses, all_hypotheses
 
             best_hyp_text = [h.text for h in hypotheses]
+            # alaptev: The line below might contain a bug. Do we really want all_hyp_text to be flat?
             all_hyp_text = [h.text for hh in all_hypotheses for h in hh]
             return best_hyp_text, all_hyp_text
 
         else:
-            hypotheses = self.decode_hypothesis(
-                hypotheses_list, fold_consecutive
-            )  # type: List[Union[Hypothesis, NBestHypotheses]]
+            if self.cfg.strategy == 'wfst':
+                hypotheses = hypotheses_list
+            else:
+                hypotheses = self.decode_hypothesis(
+                    hypotheses_list, fold_consecutive
+                )  # type: List[Union[Hypothesis, NBestHypotheses]]
 
-            # If computing timestamps
-            if self.compute_timestamps is True:
-                # greedy decoding, can get high-level confidence scores
-                if return_hypotheses and (self.preserve_word_confidence or self.preserve_token_confidence):
-                    hypotheses = self.compute_confidence(hypotheses)
-                else:
-                    # remove unused token_repetitions from Hypothesis.text
-                    for hyp in hypotheses:
-                        hyp.text = hyp.text[:2]
-                timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
-                for hyp_idx in range(len(hypotheses)):
-                    hypotheses[hyp_idx] = self.compute_ctc_timestamps(hypotheses[hyp_idx], timestamp_type)
+                # If computing timestamps
+                if self.compute_timestamps is True:
+                    # greedy decoding, can get high-level confidence scores
+                    if return_hypotheses and (self.preserve_word_confidence or self.preserve_token_confidence):
+                        hypotheses = self.compute_confidence(hypotheses)
+                    else:
+                        # remove unused token_repetitions from Hypothesis.text
+                        for hyp in hypotheses:
+                            hyp.text = hyp.text[:2]
+                    timestamp_type = self.cfg.get('ctc_timestamp_type', 'all')
+                    for hyp_idx in range(len(hypotheses)):
+                        hypotheses[hyp_idx] = self.compute_ctc_timestamps(hypotheses[hyp_idx], timestamp_type)
 
             if return_hypotheses:
                 return hypotheses, None
@@ -1322,6 +1352,11 @@ class CTCDecodingConfig:
     # beam decoding config
     beam: ctc_beam_decoding.BeamCTCInferConfig = field(
         default_factory=lambda: ctc_beam_decoding.BeamCTCInferConfig(beam_size=4)
+    )
+
+    # wfst decoding config
+    wfst: ctc_beam_decoding.WfstCTCInferConfig = field(
+        default_factory=lambda: ctc_beam_decoding.WfstCTCInferConfig(beam_size=4)
     )
 
     # confidence config

@@ -36,6 +36,11 @@ class NeMoLogger(IOMixin):
             save_dir will not be overwritten. This argument applies only to TensorBoardLogger and
             WandbLogger instances.
         ckpt (Optional[ModelCheckpoint]): Model checkpoint callback.
+        tensorboard: (Optional[TensorBoardLogger]): A PyTorch Lightning TensorBoardLogger instance
+            to add to the trainer.
+        wandb (Optional[WandbLogger]): A PyTorch Lightning WandBLogger instance
+            to add to the trainer.
+        extra_loggers(Optional[List[Logger]]): Any additional loggers to add to the trainer.
     """
 
     name: str = "default"

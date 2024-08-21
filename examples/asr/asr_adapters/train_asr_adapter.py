@@ -92,6 +92,7 @@ from nemo.core import adapter_mixins
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import clean_exp_ckpt, exp_manager
+from nemo.utils.trainer_utils import resolve_trainer_cfg
 
 
 def update_model_config_to_support_adapter(model_cfg, current_cfg):
@@ -154,7 +155,7 @@ def main(cfg):
     if cfg.model.pretrained_model is not None and cfg.model.nemo_model is not None:
         raise ValueError("Cannot set both `cfg.model.nemo_model` and `cfg.model.pretrained_model`. Select one only.")
 
-    trainer = pl.Trainer(**cfg.trainer)
+    trainer = pl.Trainer(**resolve_trainer_cfg(cfg.trainer))
     exp_log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
 
     if cfg.model.pretrained_model is not None:

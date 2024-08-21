@@ -181,7 +181,9 @@ trainer:
   max_steps: 1000 # computed at runtime if not set
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   accelerator: auto
-  strategy: ddp
+  strategy:
+    _target_: pytorch_lightning.strategies.DDPStrategy
+    gradient_as_bucket_view: true
   accumulate_grad_batches: 1
   gradient_clip_val: null
   precision: 32 # Should be set to 16 for O1 and O2 to enable the AMP.

@@ -73,7 +73,7 @@ def get_prompt_template_example(special_tokens):
 
 
 def identify_start_index_of_subsequence(subsequence, sequence):
-    """ find the location of the small tensor in the large tensor.
+    """find the location of the small tensor in the large tensor.
         e.g.  small = [1,3], large = [2,3,1,3], returns 2
               small = [3,2], large = [2,3,1,3], returns -1
     Args:
@@ -100,7 +100,7 @@ def _mask_targets(
     label_start_ids,
     num_turn_start_tokens,
 ):
-    """ This function masks the tokens so the loss is computed only on the non-masked role's responses.
+    """This function masks the tokens so the loss is computed only on the non-masked role's responses.
     For 'TEXT_TO_VALUE' type, the loss is computed on the value attributes.
 
     Args:
@@ -373,8 +373,9 @@ class GPTSFTChatDataset(GPTSFTDataset):
             max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 8))
         assert max_length <= self.max_seq_length
 
-        attention_mask = [self._create_attention_mask(max_length) for _ in batch]
-        attention_mask = torch.stack(attention_mask)
+        if not self.get_attention_mask_from_fusion:
+            attention_mask = [self._create_attention_mask(max_length) for _ in batch]
+            attention_mask = torch.stack(attention_mask)
         position_ids = [list(range(max_length)) for _ in batch]
         position_ids = torch.LongTensor(position_ids)
         input_ids = torch.LongTensor(
@@ -389,7 +390,6 @@ class GPTSFTChatDataset(GPTSFTDataset):
         processed_batch = {
             'tokens': input_ids,
             'labels': labels,
-            'attention_mask': attention_mask,
             'loss_mask': loss_mask,
             'position_ids': position_ids,
             'contexts': contexts,
@@ -397,5 +397,8 @@ class GPTSFTChatDataset(GPTSFTDataset):
             'answers': answers,
             'metadata': metadata,
         }
+
+        if not self.get_attention_mask_from_fusion:
+            processed_batch['attention_mask'] = attention_mask
 
         return processed_batch

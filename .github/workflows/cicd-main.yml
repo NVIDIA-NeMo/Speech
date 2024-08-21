@@ -159,6 +159,21 @@ jobs:
         rm -f /home/TestData/nlp/megatron_ir/sbert/sbert.nemo
         rm -rf /home/TestData/nlp/megatron_ir/sbert/model_weights
 
+  L2_Community_LLM_Checkpoints_tests_Mamba2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+          python scripts/checkpoint_converters/convert_mamba2_pyt_to_nemo.py  \
+          --input_name_or_path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt \
+          --output_path /home/TestData/nlp/megatron_mamba/converted_mamba.nemo \
+          --precision=bf16 \
+          --mamba_ssm_ngroups 1
+      AFTER_SCRIPT: |
+        rm -f /home/TestData/nlp/megatron_mamba/converted_mamba.nemo
+        rm -rf /home/TestData/nlp/megatron_mamba/model_weights
+
   L2_Community_LLM_Checkpoints_tests_Llama:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4745,6 +4760,7 @@ jobs:
       - L0_Unit_Tests_GPU
       #- OPTIONAL_L0_Unit_Tests_CPU
       - L2_Community_LLM_Checkpoints_tests_Bert
+      - L2_Community_LLM_Checkpoints_tests_Mamba2
       - L2_Community_LLM_Checkpoints_tests_Llama
       - L2_Community_LLM_Checkpoints_tests_StarCoder
       - L2_Community_LLM_Checkpoints_tests_Falcon

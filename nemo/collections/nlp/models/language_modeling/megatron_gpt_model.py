@@ -1197,7 +1197,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
         if cp_size > 1:
             cp_rank = parallel_state.get_context_parallel_rank()
             for key, val in batch.items():
-                if val is not None:
+                if val is not None and key != "context_lengths":
                     seq_dim = 1 if key != 'attention_mask' else 2
                     val = val.view(
                         *val.shape[0:seq_dim],

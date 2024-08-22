@@ -72,7 +72,7 @@ class Llama3Config(GPTConfig):
     add_bias_linear: bool = False
     activation_func: Callable = F.silu
     gated_linear_unit: bool = True
-    apply_query_key_layer_scaling: bool = True
+    apply_query_key_layer_scaling: bool = False
     # Fusions
     bias_activation_fusion: bool = True
     masked_softmax_fusion: bool = True

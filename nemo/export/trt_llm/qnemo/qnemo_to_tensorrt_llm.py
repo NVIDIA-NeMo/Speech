@@ -36,7 +36,6 @@ def qnemo_to_tensorrt_llm(
     use_parallel_embedding: bool = False,
     paged_kv_cache: bool = True,
     remove_input_padding: bool = True,
-    enable_multi_block_mode: bool = False,
     use_lora_plugin: Optional[str] = None,
     lora_target_modules: Optional[List[str]] = None,
     max_lora_rank: int = 64,
@@ -93,7 +92,6 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--nccl_plugin {config.dtype} "
     build_cmd += f"--paged_kv_cache {'enable' if paged_kv_cache else 'disable'} "
     build_cmd += f"--remove_input_padding {'enable' if remove_input_padding else 'disable'} "
-    build_cmd += f"--multi_block_mode {'enable' if enable_multi_block_mode else 'disable'} "
     build_cmd += f"--multiple_profiles {'enable' if multiple_profiles else 'disable'} "
 
     if use_fused_mlp:

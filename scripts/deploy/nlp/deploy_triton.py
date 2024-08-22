@@ -128,7 +128,8 @@ def get_args(argv):
         default=False,
         action='store_true',
         help='Split long kv sequence into multiple blocks (applied to generation MHA kernels). \
-                        It is beneifical when batchxnum_heads cannot fully utilize GPU.',
+                        It is beneifical when batchxnum_heads cannot fully utilize GPU. \
+                        Only available when using c++ runtime.',
     )
     parser.add_argument(
         "-es", '--enable_streaming', default=False, action='store_true', help="Enables streaming sentences."
@@ -274,6 +275,7 @@ def get_trtllm_deployable(args):
         lora_ckpt_list=args.lora_ckpt,
         load_model=(args.nemo_checkpoint is None),
         use_python_runtime=(not args.use_cpp_runtime),
+        multi_block_mode=args.multi_block_mode,
     )
 
     if args.nemo_checkpoint is not None:
@@ -296,7 +298,6 @@ def get_trtllm_deployable(args):
                 paged_kv_cache=(not args.no_paged_kv_cache),
                 remove_input_padding=(not args.disable_remove_input_padding),
                 dtype=args.dtype,
-                enable_multi_block_mode=args.multi_block_mode,
                 use_lora_plugin=args.use_lora_plugin,
                 lora_target_modules=args.lora_target_modules,
                 max_lora_rank=args.max_lora_rank,

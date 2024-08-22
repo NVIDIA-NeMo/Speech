@@ -100,6 +100,7 @@ class TensorRTLLM(ITritonDeployable):
         use_python_runtime: bool = True,
         enable_chunked_context: bool = None,
         max_tokens_in_paged_kv_cache: int = None,
+        multi_block_mode: bool = False,
     ):
         """
         Args:
@@ -107,6 +108,7 @@ class TensorRTLLM(ITritonDeployable):
             lora_ckpt_list (List[str]): lora checkpoint paths.
             load_model (bool): load TensorRT-LLM model if the engine files exist in the model_dir.
             use_python_runtime (bool): whether to use python or c++ runtime.
+            multi_block_mode (bool): enable faster decoding in multihead attention. Required for long context. Only available when using c++ runtime
         """
 
         if use_python_runtime:
@@ -122,6 +124,7 @@ class TensorRTLLM(ITritonDeployable):
         self.use_python_runtime = use_python_runtime
         self.enable_chunked_context = enable_chunked_context if enable_chunked_context is not None else False
         self.max_tokens_in_paged_kv_cache = max_tokens_in_paged_kv_cache
+        self.multi_block_mode = multi_block_mode
         self.model = None
         self.tokenizer = None
         self.n_gpus = None
@@ -157,7 +160,6 @@ class TensorRTLLM(ITritonDeployable):
         paged_context_fmha: bool = False,
         dtype: str = "bfloat16",
         load_model: bool = True,
-        enable_multi_block_mode: bool = False,
         use_lora_plugin: str = None,
         lora_target_modules: List[str] = None,
         max_lora_rank: int = 64,
@@ -192,7 +194,6 @@ class TensorRTLLM(ITritonDeployable):
             remove_input_padding (bool): enables removing input padding or not.
             dtype (str): Floating point type for model weights (Supports BFloat16/Float16).
             load_model (bool): load TensorRT-LLM model after the export.
-            enable_multi_block_mode (bool): enable faster decoding in multihead attention. Required for long context.
             use_lora_plugin (str): use dynamic lora or not.
             lora_target_modules (List[str]): list of the target lora modules.
             max_lora_rank (int): maximum lora rank.
@@ -288,7 +289,6 @@ class TensorRTLLM(ITritonDeployable):
                     use_parallel_embedding=use_parallel_embedding,
                     paged_kv_cache=paged_kv_cache,
                     remove_input_padding=remove_input_padding,
-                    enable_multi_block_mode=enable_multi_block_mode,
                     use_lora_plugin=use_lora_plugin,
                     lora_target_modules=lora_target_modules,
                     max_lora_rank=max_lora_rank,
@@ -340,7 +340,6 @@ class TensorRTLLM(ITritonDeployable):
                         max_lora_rank=max_lora_rank,
                         lora_target_modules=lora_target_modules,
                         max_prompt_embedding_table_size=max_prompt_embedding_table_size,
-                        enable_multi_block_mode=enable_multi_block_mode,
                         paged_kv_cache=paged_kv_cache,
                         remove_input_padding=remove_input_padding,
                         paged_context_fmha=paged_context_fmha,
@@ -960,6 +959,7 @@ class TensorRTLLM(ITritonDeployable):
                         use_python_runtime=self.use_python_runtime,
                         enable_chunked_context=self.enable_chunked_context,
                         max_tokens_in_paged_kv_cache=self.max_tokens_in_paged_kv_cache,
+                        multi_block_mode=self.multi_block_mode,
                     )
                     self._load_prompt_tables()
                 except Exception as error:

@@ -22,8 +22,6 @@ import tensorrt_llm
 from tensorrt_llm._utils import pad_vocab_size
 from tensorrt_llm.functional import non_gated_version
 from tensorrt_llm.layers import MoeConfig
-from tensorrt_llm.models.gpt.config import GPTConfig
-from tensorrt_llm.models.llama.config import LLaMAConfig
 from tensorrt_llm.models.modeling_utils import PretrainedConfig
 
 from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import (
@@ -36,12 +34,16 @@ LOGGER = logging.getLogger("NeMo")
 
 
 def get_config(decoder_type, config):
-    if decoder_type == "llama":
-        return LLaMAConfig(**config)
-    elif decoder_type == "gpt" or decoder_type == "gptnext":
-        return GPTConfig(**config)
-    else:
-        return PretrainedConfig(**config)
+    DECODER_CONFIG = {
+        "llama": tensorrt_llm.models.llama.config.LLaMAConfig,
+        "gpt": tensorrt_llm.models.gpt.config.GPTConfig,
+        "gptnext": tensorrt_llm.models.gpt.config.GPTConfig,
+        "falcon": tensorrt_llm.models.falcon.config.FalconConfig,
+        "gemma": tensorrt_llm.models.GemmaConfig,
+    }
+    config_cls = DECODER_CONFIG[decoder_type] if decoder_type in DECODER_CONFIG else PretrainedConfig
+
+    return config_cls(**config)
 
 
 def prompt_convert(prompt_config, prompt_weights):

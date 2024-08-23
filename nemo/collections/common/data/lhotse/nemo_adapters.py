@@ -24,7 +24,7 @@ from typing import Generator, Iterable, List, Literal
 import lhotse.serialization
 import soundfile
 from cytoolz import groupby
-from lhotse import AudioSource, Recording, SupervisionSegment
+from lhotse import AudioSource, MonoCut, Recording, SupervisionSegment
 from lhotse.audio.backend import LibsndfileBackend
 from lhotse.cut import Cut
 from lhotse.dataset.dataloading import resolve_seed
@@ -112,11 +112,9 @@ class LazyNeMoIterator:
             audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path))
             duration = data.pop("duration")
             offset = data.pop("offset", None)
-            recording = self._create_recording(audio_path, duration, data.pop("sampling_rate", None))
-            cut = recording.to_cut()
-            if offset is not None:
-                cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
-                cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+            cut = self._create_cut(
+                audio_path=audio_path, offset=offset, duration=duration, sampling_rate=data.pop("sampling_rate", None)
+            )
             # Note that start=0 and not start=offset because supervision's start if relative to the
             # start of the cut; and cut.start is already set to offset
             cut.supervisions.append(
@@ -140,6 +138,42 @@ class LazyNeMoIterator:
     def __add__(self, other):
         return LazyIteratorChain(self, other)
 
+    def _create_cut(
+        self,
+        audio_path: str,
+        offset: float,
+        duration: float,
+        sampling_rate: int | None = None,
+    ) -> Cut:
+        if not self.metadata_only:
+            recording = self._create_recording(audio_path, duration, sampling_rate)
+            cut = recording.to_cut()
+            if offset is not None:
+                cut = cut.truncate(offset=offset, duration=duration, preserve_id=True)
+                cut.id = f"{cut.id}-{round(offset * 1e2):06d}-{round(duration * 1e2):06d}"
+        else:
+            # Only metadata requested.
+            # We'll provide accurate metadata for Cut but inaccurate metadata for Recording to avoid
+            # incurring IO penalty (note that Lhotse manifests contain more information than
+            # NeMo manifests, so for actual dataloading we have to fill it using the audio file).
+            sr = ifnone(sampling_rate, 16000)  # fake sampling rate
+            offset = ifnone(offset, 0.0)
+            cut = MonoCut(
+                id=audio_path,
+                start=offset,
+                duration=duration,
+                channel=0,
+                supervisions=[],
+                recording=Recording(
+                    id=audio_path,
+                    sources=[AudioSource(type="dummy", channels=[0], source="")],
+                    sampling_rate=sr,
+                    duration=offset + duration,
+                    num_samples=compute_num_samples(offset + duration, sr),
+                ),
+            )
+        return cut
+
     def _create_recording(
         self,
         audio_path: str,
@@ -153,15 +187,6 @@ class LazyNeMoIterator:
                 sources=[AudioSource(type="file", channels=[0], source=audio_path)],
                 sampling_rate=sampling_rate,
                 num_samples=compute_num_samples(duration, sampling_rate),
-                duration=duration,
-                channel_ids=[0],
-            )
-        elif self.metadata_only:
-            return Recording(
-                id=audio_path,
-                sources=[AudioSource(type="file", channels=[0], source=audio_path)],
-                sampling_rate=-1,
-                num_samples=-1,
                 duration=duration,
                 channel_ids=[0],
             )

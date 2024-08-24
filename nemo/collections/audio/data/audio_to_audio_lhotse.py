@@ -44,19 +44,29 @@ class LhotseAudioToTargetDataset(torch.utils.data.Dataset):
     EMBEDDING_KEY = "embedding_vector"
 
     def __getitem__(self, cuts: CutSet) -> dict[str, torch.Tensor]:
-        src_audio, src_audio_lens = collate_audio(cuts)
+        # In the rare case, the collate_audio function would raise the FileSeek error when loading .flac (https://github.com/bastibe/python-soundfile/issues/274)
+        # A workaround is to use fault_tolerant and skip failed data, resulting in a smaller batch size for the few problematic cases.
+        src_audio, src_audio_lens, retained_padded_cuts = collate_audio(cuts, fault_tolerant=True)
         ans = {
             "input_signal": src_audio,
             "input_length": src_audio_lens,
         }
-        if _key_available(cuts, self.TARGET_KEY):
-            tgt_audio, tgt_audio_lens = collate_audio(cuts, recording_field=self.TARGET_KEY)
+        # keep only the first non-padding cuts
+        retained_cuts = [
+            cut._first_non_padding_cut if isinstance(cut, MixedCut) else cut for cut in retained_padded_cuts
+        ]
+        retained_cuts = CutSet.from_cuts(retained_cuts)
+
+        if _key_available(retained_cuts, self.TARGET_KEY):
+            # TODO: use fault_tolerant=True for robust loading of target
+            tgt_audio, tgt_audio_lens = collate_audio(retained_cuts, recording_field=self.TARGET_KEY)
             ans.update(target_signal=tgt_audio, target_length=tgt_audio_lens)
-        if _key_available(cuts, self.REFERENCE_KEY):
-            ref_audio, ref_audio_lens = collate_audio(cuts, recording_field=self.REFERENCE_KEY)
+        if _key_available(retained_cuts, self.REFERENCE_KEY):
+            # TODO: use fault_tolerant=True for robust loading of target
+            ref_audio, ref_audio_lens = collate_audio(retained_cuts, recording_field=self.REFERENCE_KEY)
             ans.update(reference_signal=ref_audio, reference_length=ref_audio_lens)
         if _key_available(cuts, self.EMBEDDING_KEY):
-            emb = collate_custom_field(cuts, field=self.EMBEDDING_KEY)
+            emb = collate_custom_field(retained_cuts, field=self.EMBEDDING_KEY)
             ans.update(embedding_signal=emb)
         return ans
 

@@ -30,6 +30,7 @@ __all__ = [
     'ScoreBasedGenerativeAudioToAudioModel',
     'PredictiveAudioToAudioModel',
     'SchroedingerBridgeAudioToAudioModel',
+    'FlowMatchingAudioToAudioModel',
 ]
 
 
@@ -579,6 +580,274 @@ class ScoreBasedGenerativeAudioToAudioModel(AudioToAudioModel):
 
         # Calculate loss
         loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
+        # Update metrics
+        update_metrics = False
+        if self.max_utts_evaluation_metrics is None:
+            # Always update if max is not configured
+            update_metrics = True
+            # Number of examples to process
+            num_examples = input_signal.size(0)  # batch size
+        else:
+            # Check how many examples have been used for metric calculation
+            first_metric_name = next(iter(self.metrics[tag][dataloader_idx]))
+            num_examples_evaluated = self.metrics[tag][dataloader_idx][first_metric_name].num_examples
+            # Update metrics if some examples were not processed
+            update_metrics = num_examples_evaluated < self.max_utts_evaluation_metrics
+            # Number of examples to process
+            num_examples = min(self.max_utts_evaluation_metrics - num_examples_evaluated, input_signal.size(0))
+
+        if update_metrics:
+            # Generate output signal
+            output_signal, _ = self.forward(
+                input_signal=input_signal[:num_examples, ...], input_length=input_length[:num_examples]
+            )
+
+            # Update metrics
+            if hasattr(self, 'metrics') and tag in self.metrics:
+                # Update metrics for this (tag, dataloader_idx)
+                for name, metric in self.metrics[tag][dataloader_idx].items():
+                    metric.update(
+                        preds=output_signal,
+                        target=target_signal[:num_examples, ...],
+                        input_length=input_length[:num_examples],
+                    )
+
+        # Log global step
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return {f'{tag}_loss': loss}
+
+
+class FlowMatchingAudioToAudioModel(AudioToAudioModel):
+    """This models uses a flow matching process to generate
+    an encoded representation of the enhanced signal.
+
+    The model consists of the following blocks:
+        - encoder: transforms input multi-channel audio signal into an encoded representation (analysis transform)
+        - estimator: neural model, estimates a score for the diffusion process
+        - flow: ordinary differential equation (ODE) defining a flow and a vector field.
+        - sampler: sampler for the inference process, estimates coefficients of the target signal
+        - decoder: transforms sampler output into the time domain (synthesis transform)
+        - ssl_pretrain_masking: if it is defined, perform the ssl pretrain masking for self reconstruction in the training process
+    """
+
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        super().__init__(cfg=cfg, trainer=trainer)
+        self.sample_rate = self._cfg.sample_rate
+
+        # Setup processing modules
+        self.encoder = self.from_config_dict(self._cfg.encoder)
+        self.decoder = self.from_config_dict(self._cfg.decoder)
+
+        # Neural estimator
+        self.estimator = self.from_config_dict(self._cfg.estimator)
+
+        # Flow
+        self.flow = self.from_config_dict(self._cfg.flow)
+
+        # Sampler
+        self.sampler = hydra.utils.instantiate(self._cfg.sampler, estimator=self.estimator)
+
+        # probability that the conditional input will be feed into the
+        # estimator in the training stage
+        self.p_cond = self._cfg.get('p_cond', 1.0)
+
+        # Self-Supervised Pretraining
+        if self._cfg.get('ssl_pretrain_masking') is not None:
+            logging.debug('SSL-pretrain_masking is found and will be initialized')
+            self.ssl_pretrain_masking = self.from_config_dict(self._cfg.ssl_pretrain_masking)
+        else:
+            self.ssl_pretrain_masking = None
+
+        # Normalization
+        self.normalize_input = self._cfg.get('normalize_input', False)
+
+        # Metric evaluation
+        self.max_utts_evaluation_metrics = self._cfg.get('max_utts_evaluation_metrics')
+
+        if self.max_utts_evaluation_metrics is not None:
+            logging.warning(
+                'Metrics will be evaluated on first %d examples of the evaluation datasets.',
+                self.max_utts_evaluation_metrics,
+            )
+
+        # Regularization
+        self.eps = self._cfg.get('eps', 1e-8)
+
+        # Setup optional Optimization flags
+        self.setup_optimization_flags()
+
+        logging.debug('Initialized              %s', self.__class__.__name__)
+        logging.debug('\tdoing SSL-pretraining: %s', (self.ssl_pretrain_masking is not None))
+        logging.debug('\tp_cond:                %s', self.p_cond)
+        logging.debug('\tnormalize_input:       %s', self.normalize_input)
+        logging.debug('\tloss:                  %s', self.loss)
+        logging.debug('\teps:                   %s', self.eps)
+
+    @property
+    def input_types(self) -> Dict[str, NeuralType]:
+        return {
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @property
+    def output_types(self) -> Dict[str, NeuralType]:
+        return {
+            "output_signal": NeuralType(('B', 'C', 'T'), AudioSignal(freq=self.sample_rate)),
+            "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        }
+
+    @typecheck()
+    @torch.inference_mode()
+    def forward(self, input_signal, input_length=None):
+        """Forward pass of the model to generate samples from the target distribution.
+
+        Args:
+            input_signal: Tensor that represents a batch of raw audio signals,
+                of shape [B, T] or [B, T, C]. T here represents timesteps, with 1 second of audio represented as
+                `self.sample_rate` number of floating point values.
+            input_signal_length: Vector of length B, that contains the individual lengths of the audio
+                sequences.
+
+        Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
+        """
+        batch_length = input_signal.size(-1)
+
+        if self.normalize_input:
+            # max for each example in the batch
+            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
+            # scale input signal
+            input_signal = input_signal / (norm_scale + self.eps)
+
+        # Encoder
+        encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
+
+        if self.p_cond == 0:
+            encoded = torch.zeros_like(encoded)
+        elif self.ssl_pretrain_masking is not None:
+            encoded = self.ssl_pretrain_masking(input_spec=encoded, length=encoded_length)
+
+        init_state = torch.randn_like(encoded) * self.flow.sigma_start
+
+        # Sampler
+        generated, generated_length = self.sampler(
+            state=init_state, estimator_condition=encoded, state_length=encoded_length
+        )
+
+        # Decoder
+        output, output_length = self.decoder(input=generated, input_length=generated_length)
+
+        if self.normalize_input:
+            # rescale to the original scale
+            output = output * norm_scale
+
+        # Trim or pad the estimated signal to match input length
+        output = self.match_batch_length(input=output, batch_length=batch_length)
+
+        return output, output_length
+
+    @typecheck(
+        input_types={
+            "target_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "input_length": NeuralType(tuple('B'), LengthsType()),
+        },
+        output_types={
+            "loss": NeuralType(None, LossType()),
+        },
+    )
+    def _step(self, target_signal, input_signal, input_length=None):
+        batch_size = target_signal.size(0)
+
+        if self.normalize_input:
+            # max for each example in the batch
+            norm_scale = torch.amax(input_signal.abs(), dim=(-1, -2), keepdim=True)
+            # scale input signal
+            input_signal = input_signal / (norm_scale + self.eps)
+            # scale the target signal
+            target_signal = target_signal / (norm_scale + self.eps)
+
+        # Apply encoder to both target and the input
+        input_enc, input_enc_len = self.encoder(input=input_signal, input_length=input_length)
+        target_enc, _ = self.encoder(input=target_signal, input_length=input_length)
+
+        # Self-Supervised Pretraining
+        if self.ssl_pretrain_masking is not None:
+            input_enc = self.ssl_pretrain_masking(input_spec=input_enc, length=input_enc_len)
+
+        # Drop off conditional inputs (input_enc) with (1 - p_cond) probability.
+        # The dropped conditions will be set to zeros
+        keep_conditions = einops.rearrange((torch.rand(batch_size) < self.p_cond).float(), 'B -> B 1 1 1')
+        input_enc = input_enc * keep_conditions.to(input_enc.device)
+
+        x_start = torch.zeros_like(input_enc)
+
+        time = self.flow.generate_time(batch_size=batch_size).to(device=input_enc.device)
+        sample = self.flow.sample(time=time, x_start=x_start, x_end=target_enc)
+
+        # we want to get a vector field estimate given current state
+        # at training time, current state is sampled from the conditional path
+        #   the vector field model is also conditioned on input signal
+        estimator_input = torch.cat([sample, input_enc], dim=-3)
+
+        # Estimate the vector  using the neural estimator
+        estimate, estimate_len = self.estimator(input=estimator_input, input_length=input_enc_len, condition=time)
+
+        conditional_vector_field = self.flow.vector_field(time=time, x_start=x_start, x_end=target_enc, point=sample)
+
+        return self.loss(estimate=estimate, target=conditional_vector_field, input_length=input_enc_len)
+
+    # PTL-specific methods
+    def training_step(self, batch, batch_idx):
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch.get('target_signal', input_signal.clone())
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, "B T -> B 1 T")
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, "B T -> B 1 T")
+
+        # Calculate the loss
+        loss = self._step(target_signal=target_signal, input_signal=input_signal, input_length=input_length)
+
+        # Logs
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('global_step', torch.tensor(self.trainer.global_step, dtype=torch.float32))
+
+        return loss
+
+    def evaluation_step(self, batch, batch_idx, dataloader_idx: int = 0, tag: str = 'val'):
+
+        if isinstance(batch, dict):
+            # lhotse batches are dictionaries
+            input_signal = batch['input_signal']
+            input_length = batch['input_length']
+            target_signal = batch.get('target_signal', input_signal.clone())
+        else:
+            input_signal, input_length, target_signal, _ = batch
+
+        # For consistency, the model uses multi-channel format, even if the channel dimension is 1
+        if input_signal.ndim == 2:
+            input_signal = einops.rearrange(input_signal, 'B T -> B 1 T')
+        if target_signal.ndim == 2:
+            target_signal = einops.rearrange(target_signal, 'B T -> B 1 T')
+
+        # Calculate loss
+        loss = self._step(
+            target_signal=target_signal,
+            input_signal=input_signal,
+            input_length=input_length,
+        )
 
         # Update metrics
         update_metrics = False

@@ -21,8 +21,8 @@ import numpy as np
 import wrapt
 
 from nemo.deploy import ITritonDeployable
-from nemo.export.multimodal.build import build_trtllm_engine, build_visual_engine
-from nemo.export.multimodal.run import MultimodalModelRunner
+from nemo.export.multimodal.build import build_perception_engine, build_trtllm_engine, build_visual_engine
+from nemo.export.multimodal.run import MultimodalModelRunner, SpeechllmModelRunner
 
 use_deploy = True
 try:
@@ -74,9 +74,13 @@ class TensorRTMMExporter(ITritonDeployable):
         self,
         model_dir: str,
         load_model: bool = True,
+        modality: str = "vision",
     ):
         self.model_dir = model_dir
         self.runner = None
+        # vision modality is for image and video
+        assert modality in ["vision", "audio"]
+        self.modality = modality
 
         if load_model:
             self._load()
@@ -128,8 +132,12 @@ class TensorRTMMExporter(ITritonDeployable):
             dtype=dtype,
         )
 
-        visual_dir = os.path.join(self.model_dir, "visual_engine")
-        build_visual_engine(visual_dir, visual_checkpoint_path, model_type, vision_max_batch_size)
+        if model_type == "salm":
+            perception_dir = os.path.join(self.model_dir, "perception_engine")
+            build_perception_engine(perception_dir, visual_checkpoint_path, model_type, vision_max_batch_size)
+        else:
+            visual_dir = os.path.join(self.model_dir, "visual_engine")
+            build_visual_engine(visual_dir, visual_checkpoint_path, model_type, vision_max_batch_size)
 
         if load_model:
             self._load()
@@ -164,19 +172,32 @@ class TensorRTMMExporter(ITritonDeployable):
             num_beams,
         )
 
+    def get_input_media_tensors(self):
+        if self.modality == "vision":
+            return [Tensor(name="input_media", shape=(-1, -1, -1, 3), dtype=np.uint8)]
+        elif self.modality == "audio":
+            return [
+                Tensor(name="input_signal", shape=(-1,), dtype=np.single),
+                Tensor(name="input_signal_length", shape=(1,), dtype=np.intc),
+            ]
+        return []
+
     @property
     def get_triton_input(self):
         inputs = (
-            Tensor(name="input_text", shape=(-1,), dtype=bytes),
-            Tensor(name="input_media", shape=(-1, -1, -1, 3), dtype=np.uint8),
-            Tensor(name="batch_size", shape=(-1,), dtype=np.int_, optional=True),
-            Tensor(name="max_output_len", shape=(-1,), dtype=np.int_, optional=True),
-            Tensor(name="top_k", shape=(-1,), dtype=np.int_, optional=True),
-            Tensor(name="top_p", shape=(-1,), dtype=np.single, optional=True),
-            Tensor(name="temperature", shape=(-1,), dtype=np.single, optional=True),
-            Tensor(name="repetition_penalty", shape=(-1,), dtype=np.single, optional=True),
-            Tensor(name="num_beams", shape=(-1,), dtype=np.int_, optional=True),
+            [Tensor(name="input_text", shape=(-1,), dtype=bytes)]
+            + self.get_input_media_tensors()
+            + [
+                Tensor(name="batch_size", shape=(-1,), dtype=np.int_, optional=True),
+                Tensor(name="max_output_len", shape=(-1,), dtype=np.int_, optional=True),
+                Tensor(name="top_k", shape=(-1,), dtype=np.int_, optional=True),
+                Tensor(name="top_p", shape=(-1,), dtype=np.single, optional=True),
+                Tensor(name="temperature", shape=(-1,), dtype=np.single, optional=True),
+                Tensor(name="repetition_penalty", shape=(-1,), dtype=np.single, optional=True),
+                Tensor(name="num_beams", shape=(-1,), dtype=np.int_, optional=True),
+            ]
         )
+        inputs = tuple(inputs)
         return inputs
 
     @property
@@ -198,6 +219,9 @@ class TensorRTMMExporter(ITritonDeployable):
                 infer_input["input_image"] = ndarray2img(inputs.pop("input_media")[0])[0]
             elif self.runner.model_type in video_model_list:
                 infer_input["input_image"] = inputs.pop("input_media")[0]
+            elif self.runner.model_type == "salm":
+                infer_input["input_signal"] = inputs.pop("input_signal")
+                infer_input["input_signal_length"] = inputs.pop("input_signal_length")[:, 0]
             if "batch_size" in inputs:
                 infer_input["batch_size"] = inputs.pop("batch_size")[0][0]
             if "max_output_len" in inputs:
@@ -223,5 +247,9 @@ class TensorRTMMExporter(ITritonDeployable):
 
     def _load(self):
         llm_dir = os.path.join(self.model_dir, "llm_engine")
-        visual_dir = os.path.join(self.model_dir, "visual_engine")
-        self.runner = MultimodalModelRunner(visual_dir, llm_dir)
+        if self.modality == "vision":
+            visual_dir = os.path.join(self.model_dir, "visual_engine")
+            self.runner = MultimodalModelRunner(visual_dir, llm_dir, self.modality)
+        elif self.modality == "audio":
+            perception_dir = os.path.join(self.model_dir, "perception_engine")
+            self.runner = SpeechllmModelRunner(perception_dir, llm_dir, self.modality)

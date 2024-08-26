@@ -1,0 +1,16 @@
+name: speechllm_salm
+infer:
+  output_dir: ./salm
+  max_batch_size: 1
+  tensor_parallelism: 1
+  max_input_len: 4096
+  max_output_len: 256
+  max_multimodal_len: 3072
+  perception_max_batch_size: 1
+
+model:
+  type: salm
+  precision: float16
+  perception_model_path: /path/to/speechllm_llama2_7b_perception
+  llm_model_path: /path/to/speechllm_llama2_7b_llm.nemo
+  llm_model_type: llama 

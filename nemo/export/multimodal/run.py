@@ -25,6 +25,7 @@ except Exception:
 
 import einops
 import numpy as np
+import soundfile as sf
 import tensorrt as trt
 import tensorrt_llm
 import tensorrt_llm.profiler as profiler
@@ -32,7 +33,7 @@ import torch
 import yaml
 from PIL import Image
 from tensorrt_llm import logger
-from tensorrt_llm._utils import str_dtype_to_trt
+from tensorrt_llm._utils import str_dtype_to_trt, torch_dtype_to_trt
 from tensorrt_llm.runtime import ModelRunner, Session, TensorInfo
 from torch.nn import functional as F
 from torchvision import transforms
@@ -54,7 +55,8 @@ def trt_dtype_to_torch(dtype):
 
 class MultimodalModelRunner:
 
-    def __init__(self, visual_engine_dir, llm_engine_dir):
+    def __init__(self, visual_engine_dir, llm_engine_dir, modality='vision'):
+        self.modality = modality
         self.runtime_rank = tensorrt_llm.mpi_rank()
         device_id = self.runtime_rank % torch.cuda.device_count()
         torch.cuda.set_device(device_id)
@@ -68,13 +70,15 @@ class MultimodalModelRunner:
             config = json.load(f)
         self.model_type = config['builder_config']['model_type']
         self.vision_precision = config['builder_config']['precision']
+        self.modality_precision = config['builder_config']['precision']
 
         self.num_frames = config['builder_config'].get('num_frames', None)
         self.image_size = config['builder_config'].get('image_size', None)
 
         self.profiling_iterations = 20
 
-        self.init_image_encoder(visual_engine_dir)
+        if modality == 'vision':
+            self.init_image_encoder(visual_engine_dir)
         self.init_tokenizer(llm_engine_dir)
         self.init_llm(llm_engine_dir)
         if self.model_type == 'lita' or self.model_type == 'vila' or self.model_type == 'vita':
@@ -242,10 +246,10 @@ class MultimodalModelRunner:
 
     def preprocess(self, warmup, pre_prompt, post_prompt, image, attention_mask, batch_size):
         if not warmup:
-            profiler.start("Vision")
+            profiler.start(self.modality.capitalize())
 
         if not warmup:
-            profiler.stop("Vision")
+            profiler.stop(self.modality.capitalize())
 
         if self.model_type == 'vila':
             visual_features, visual_atts = self.get_visual_features(image, attention_mask)
@@ -848,7 +852,7 @@ class MultimodalModelRunner:
         if run_profiling:
             msec_per_batch = lambda name: 1000 * profiler.elapsed_time_in_sec(name) / self.profiling_iterations
             logger.info('Latencies per batch (msec)')
-            logger.info('TRT vision encoder: %.1f' % (msec_per_batch('Vision')))
+            logger.info(f'TRT {self.modality} encoder: %.1f' % (msec_per_batch(self.modality.capitalize())))
             logger.info('TRTLLM LLM generate: %.1f' % (msec_per_batch('LLM')))
             logger.info('Multimodal generate: %.1f' % (msec_per_batch('Generate')))
 
@@ -864,3 +868,278 @@ class MultimodalModelRunner:
             raise RuntimeError(f"Invalid model type {self.model_type}")
 
         return media
+
+
+class SpeechllmModelRunner(MultimodalModelRunner):
+    def __init__(self, perception_engine_dir, llm_engine_dir, modality):
+        """
+        perception_engine_dir: path to the perception engine directory
+                               it should contain:
+                               config.json nemo_config.yaml
+                               perception_encoder.engine : tensorrt engine
+                               feature_extractor.ts  : torchscript model
+        llm_engine_dir: path to the LLM engine directory
+        """
+        super().__init__(perception_engine_dir, llm_engine_dir, modality)
+        assert self.model_type == 'salm'
+        # init preprocessor
+        feature_extractor_path = os.path.join(perception_engine_dir, 'feature_extractor.ts')
+        self.feature_extractor = self.init_speech_preprocessor(feature_extractor_path)
+        self.init_modality_encoder(perception_engine_dir)
+
+    def init_modality_encoder(self, engine_dir):
+        """
+        Initialize the modality encoder session from the prebuilt engine directory
+        Args:
+            engine_dir: str, path to the engine directory
+        """
+        # find file with .engine extension
+        engine_file = None
+        for file in os.listdir(engine_dir):
+            if file.endswith('.engine'):
+                engine_file = file
+                break
+        assert engine_file is not None, f"Engine file not found in {engine_dir}"
+        encoder_path = os.path.join(engine_dir, engine_file)
+        logger.info(f'Loading engine from {encoder_path}')
+        with open(encoder_path, 'rb') as f:
+            engine_buffer = f.read()
+        logger.info(f'Creating session from engine {encoder_path}')
+        self.modality_encoder_session = Session.from_serialized_engine(engine_buffer)
+
+    def init_speech_preprocessor(self, feature_extractor_path):
+        feature_extractor = torch.jit.load(feature_extractor_path)
+        feature_extractor.eval()
+        return feature_extractor
+
+    def process_audio(self, input_signal, input_signal_length):
+        """
+        Args:
+            input_signal: audio signal in numpy array
+            input_signal_length: length of the audio signal in numpy array
+
+        Returns:
+            processed_signal: torch.tensor [B, 80, T]
+            processed_signal_length [B]
+        """
+        input_signal = torch.tensor(input_signal, dtype=torch.float32)
+        input_signal_length = torch.tensor(input_signal_length, dtype=torch.int32)
+        processed_signal, processed_signal_length = self.feature_extractor(input_signal, input_signal_length)
+        return processed_signal, processed_signal_length
+
+    def setup_inputs(self, input_text, input_media, batch_size):
+        """
+        Args:
+            input_text: str or List[str] or None
+            input_media: Tuple[np.array, np.array]
+                input_signal: audio signal in numpy array [b, -1]
+                input_signal_length: length of the audio signal in numpy array [b]
+            batch_size: int
+
+        """
+        input_signal, input_signal_length = input_media
+        processed_signal, processed_signal_length = self.process_audio(input_signal, input_signal_length)
+        processed_signal = processed_signal.to(self.device)
+        processed_signal_length = processed_signal_length.to(self.device)
+        if input_text is None:
+            input_text = "Q: what's the transcription of the audio? A:"
+
+        if isinstance(input_text, str):
+            input_text = [input_text] * batch_size
+
+        assert len(input_text) == batch_size
+        pre_prompt = [''] * batch_size
+        post_prompt = input_text
+        decoder_input_ids = None
+        attention_mask = None
+        return (
+            input_text,
+            pre_prompt,
+            post_prompt,
+            processed_signal,
+            processed_signal_length,
+            decoder_input_ids,
+            attention_mask,
+        )
+
+    def load_test_media(self, input_media_path):
+        """
+        Args:
+            input_media_path: str, path to the audio file
+        Returns:
+            input_signal: np.array [1, -1]
+            input_signal_length: np.array [1]
+        """
+        waveform, sample_rate = sf.read(input_media_path, dtype=np.float32)
+        input_signal = np.array([waveform], dtype=np.float32)
+        input_signal_length = np.array([len(waveform)], dtype=np.int32)
+        return input_signal, input_signal_length
+
+    def get_modality_encoder_features(self, modality_features, attention_mask):
+        """
+        Do inference on the modality encoder engine
+        Args:
+            modality_features: dict {'input1': torch.tensor, 'input2': torch.tensor, ..}
+            attention_mask: None
+        Returns:
+        """
+
+        if attention_mask is not None:
+            modality_features['attention_mask'] = attention_mask
+
+        tensor_info = []
+        for key, tensor in modality_features.items():
+            tensor_info.append(TensorInfo(key, torch_dtype_to_trt(tensor.dtype), tensor.shape))
+
+        output_info = self.modality_encoder_session.infer_shapes(tensor_info)
+
+        outputs = {
+            t.name: torch.empty(tuple(t.shape), dtype=trt_dtype_to_torch(t.dtype), device=self.device)
+            for t in output_info
+        }
+
+        ok = self.modality_encoder_session.run(modality_features, outputs, self.stream.cuda_stream)
+        assert ok, "Runtime execution failed for vision encoder session"
+        self.stream.synchronize()
+
+        return outputs
+
+    def preprocess(self, warmup, pre_prompt, post_prompt, processed_features, attention_mask, batch_size):
+        """
+        Args:
+            warmup: bool
+            pre_prompt: List[str]
+            post_prompt: List[str]
+            processed_features: Tuple[torch.tensor, torch.tensor]
+                processed_signal: torch.tensor [B, 80, T]
+                processed_signal_length: torch.tensor [B]
+            attention_mask: None
+            batch_size: int
+        Returns:
+            input_ids: torch.tensor [B, L]
+            input_lengths: torch.tensor [B]
+            ptuning_args: List[torch.tensor]
+            encoded_features: torch.tensor [B, L, D]
+        """
+        if not warmup:
+            profiler.start(self.modality.capitalize())
+
+        if not warmup:
+            profiler.stop(self.modality.capitalize())
+
+        assert self.model_type == 'salm', f"Invalid model type {self.model_type}"
+
+        processed_features = {
+            "processed_signal": processed_features[0],
+            "processed_signal_length": processed_features[1].to(torch.int32),
+        }
+        encoded_outputs = self.get_modality_encoder_features(processed_features, attention_mask)
+        encoded_features, encoded_length = encoded_outputs['encoded'], encoded_outputs['encoded_length']
+        pre_input_ids = self.tokenizer(pre_prompt).input_ids
+        post_input_ids = self.tokenizer(post_prompt).input_ids
+        input_lengths = []
+        input_ids = []
+        encoded_length = encoded_length.cpu().numpy()
+        fake_id_start = self.model.vocab_size
+        for i in range(batch_size):
+            feat_len = encoded_length[i]
+            feat_fake_ids = np.arange(fake_id_start, fake_id_start + feat_len)
+            cur_input_ids = np.concatenate([pre_input_ids[i], feat_fake_ids, post_input_ids[i]])
+            fake_id_start += feat_len
+            input_lengths.append(len(cur_input_ids))
+            input_ids.append(cur_input_ids)
+
+        max_length = max(input_lengths)
+        # convert input_ids to torch tensor with padding
+        input_ids = [
+            np.pad(ids, (0, max_length - len(ids)), 'constant', constant_values=self.tokenizer.pad_token_id)
+            for ids in input_ids
+        ]
+        input_ids = torch.tensor(input_ids, dtype=torch.int32)
+        input_lengths = torch.tensor(input_lengths, dtype=torch.int32)
+        ptuning_args = self.ptuning_setup(encoded_features, input_ids, input_lengths)
+
+        return input_ids, input_lengths, ptuning_args, encoded_features
+
+    def run(
+        self,
+        input_text,
+        input_media=None,
+        max_new_tokens: int = 30,
+        batch_size: int = 1,
+        top_k: int = 1,
+        top_p: float = 0.0,
+        temperature: float = 1.0,
+        repetition_penalty: float = 1.0,
+        num_beams: int = 1,
+        run_profiling=False,
+        check_accuracy=False,
+        input_signal=None,
+        input_signal_length=None,
+    ):
+        """
+        Args:
+            input_text: str or List[str] or None
+            input_media: Tuple[np.array, np.array] or None
+                input_signal: audio signal in numpy array [b, -1]
+                input_signal_length: length of the audio signal in numpy array [b]
+            max_new_tokens: int
+            batch_size: int
+            top_k: int
+            top_p: float
+            temperature: float
+            repetition_penalty: float
+            num_beams: int
+            run_profiling: bool
+            check_accuracy: bool
+        """
+        if input_media is None:
+            assert input_signal is not None and input_signal_length is not None
+            input_media = (input_signal, input_signal_length)
+
+        (
+            input_text,
+            pre_prompt,
+            post_prompt,
+            processed_signal,
+            processed_signal_length,
+            decoder_input_ids,
+            attention_mask,
+        ) = self.setup_inputs(input_text, input_media, batch_size)
+        processed_media = (processed_signal, processed_signal_length)
+
+        self.generate(
+            pre_prompt,
+            post_prompt,
+            processed_media,
+            decoder_input_ids,
+            max_new_tokens,
+            attention_mask=attention_mask,
+            warmup=True,
+            batch_size=batch_size,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+            repetition_penalty=repetition_penalty,
+            num_beams=num_beams,
+        )
+        num_iters = self.profiling_iterations if run_profiling else 1
+        for _ in range(num_iters):
+            output_text = self.generate(
+                pre_prompt,
+                post_prompt,
+                processed_media,
+                decoder_input_ids,
+                max_new_tokens,
+                attention_mask=attention_mask,
+                warmup=False,
+                batch_size=batch_size,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=temperature,
+                repetition_penalty=repetition_penalty,
+                num_beams=num_beams,
+            )
+        if self.runtime_rank == 0:
+            self.print_result(input_text, output_text, batch_size, num_beams, run_profiling, check_accuracy)
+        return output_text

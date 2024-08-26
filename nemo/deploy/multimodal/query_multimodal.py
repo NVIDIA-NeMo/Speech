@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import numpy as np
+import soundfile as sf
 from PIL import Image
 
 from nemo.deploy.utils import str_list2numpy
@@ -71,6 +72,11 @@ class NemoQueryMultimodal:
         elif self.model_type == "neva" or self.model_type == "vila":
             media = Image.open(input_media).convert('RGB')
             return np.expand_dims(np.array(media), axis=0)
+        elif self.model_type == "salm":
+            waveform, sample_rate = sf.read(input_media, dtype=np.float32)
+            input_signal = np.array([waveform], dtype=np.float32)
+            input_signal_length = np.array([[len(waveform)]], dtype=np.int32)
+            return {"input_signal": input_signal, "input_signal_length": input_signal_length}
         else:
             raise RuntimeError(f"Invalid model type {self.model_type}")
 
@@ -105,8 +111,10 @@ class NemoQueryMultimodal:
         inputs = {"input_text": prompts}
 
         media = self.setup_media(input_media)
-
-        inputs["input_media"] = np.repeat(media[np.newaxis, :, :, :, :], prompts.shape[0], axis=0)
+        if isinstance(media, dict):
+            inputs.update(media)
+        else:
+            inputs["input_media"] = np.repeat(media[np.newaxis, :, :, :, :], prompts.shape[0], axis=0)
 
         if batch_size is not None:
             inputs["batch_size"] = np.full(prompts.shape, batch_size, dtype=np.int_)

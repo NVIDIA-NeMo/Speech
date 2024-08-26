@@ -300,13 +300,8 @@ class ConnectorMixin:
         """
         connector = self._get_connector(path)
         ckpt_path: Path = connector.local_path(base_path=base_path)
-        # If already in multiproc environment (e.g. due to torchrun invocation) run only on RANK = 0
-        from nemo.utils.get_rank import is_global_rank_zero
-
-        if is_global_rank_zero():
-            ckpt_path = connector(ckpt_path, overwrite=overwrite)
-            connector.on_import_ckpt(self)
-
+        ckpt_path = connector(ckpt_path, overwrite=overwrite)
+        connector.on_import_ckpt(self)
         return ckpt_path
 
     @classmethod

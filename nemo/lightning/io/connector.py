@@ -145,6 +145,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
             pl.Trainer: The trainer configured with the model and strategy.
         """
         from nemo.lightning import MegatronStrategy, Trainer
+        from nemo.lightning._strategy_lib import megatron_lazy_init_context
 
         _trainer = trainer or Trainer(
             devices=1, accelerator="cpu", strategy=MegatronStrategy(store_optimizer_states=False)
@@ -155,7 +156,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
         if not model.state_dict():
             _trainer.strategy.lazy_init = True
-            with _trainer.init_module():
+            with _trainer.init_module(), megatron_lazy_init_context(model.config):
                 model.configure_model()
 
         return _trainer

@@ -163,7 +163,7 @@ Optimization related configurations
 Training with precached latents
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Since the VAE and text encoder remain frozed during training, you can pre-calculate the image and caption latents offline, enhancing training throughput. To create a pre-cached dataset, see :doc:`Multimodal Dataset <./datasets>`. For training using this dataset, configure ``model.data`` section properly and set ``model.first_stage_key=image_encoded`` along with ``model.cond_stage_key=captions_encoded``.
+Since the VAE and text encoder remain frozen during training, you can pre-calculate the image and caption latents offline, enhancing training throughput. To create a pre-cached dataset, see :doc:`Multimodal Dataset <./datasets>`. For training using this dataset, configure ``model.data`` section properly and set ``model.first_stage_key=image_encoded`` along with ``model.cond_stage_key=captions_encoded``.
 
 Reference
 -----------

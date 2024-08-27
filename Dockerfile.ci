@@ -34,7 +34,7 @@ WORKDIR /workspace
 # Install NeMo requirements
 ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
 ARG MODELOPT_VERSION=0.15.0
-ARG MCORE_TAG=ef85bc94fc744aa5d398d12140f808023afbf78d
+ARG MCORE_TAG=01ca03f11e89f4f85682dcac647c2b913b25fcee
 ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
 RUN \
 --mount=type=bind,source=requirements,target=requirements \

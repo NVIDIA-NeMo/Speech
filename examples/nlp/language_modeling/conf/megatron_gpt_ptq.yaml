@@ -17,13 +17,15 @@ trainer:
   num_nodes: 1
   accelerator: gpu
   logger: false # logger provided by exp_manager
-  precision: bf16 # 16, 32, or bf16
+  precision: ${export.dtype} # 16, bf16, or 32
   enable_checkpointing: false
 
 model:
   tensor_model_parallel_size: 1
   pipeline_model_parallel_size: 1
   restore_from_path: llama2-7b-fp16.nemo # Nemo file path
+  precision: ${export.dtype} # Model weights data type
+  megatron_amp_O2: true # Enable Megatron O2-style half-precision
 
   ## Activation Checkpoint
   activations_checkpoint_granularity: null # 'selective' or 'full'
@@ -42,7 +44,7 @@ export:
   decoder_type: llama # gptnext, gpt2, llama
   inference_tensor_parallel: 1 # Default using 1 TP for inference
   inference_pipeline_parallel: 1 # Default using 1 PP for inference
-  dtype: ${trainer.precision} # Default precision data type
+  dtype: 16 # Default precision data type for non-quantized layers: 16 or bf16
   save_path: llama2-7b-${quantization.algorithm}.qnemo # Path where the quantized model will be saved
   compress: false # Whether save_path should be a tarball or a directory
   sample_output: true # Whether to run a sample prompt before saving

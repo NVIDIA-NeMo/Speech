@@ -177,6 +177,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             model_parallel_config = ModelParallelConfig()
         self._sequence_parallel = model_parallel_config.sequence_parallel
         model_parallel_config.sequence_parallel = False  # SP is irrelevant for the lora linear layer
+        self.config = model_parallel_config
 
         if input_is_parallel:
             self.linear_in = RowParallelLinear(
@@ -298,8 +299,14 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             # this function also handles the backward pass correctly
             x = gather_from_sequence_parallel_region(x)
 
+        if self.config.cpu_offloading and self.config.cpu_offloading_activations:
+            x.activation_offloading = True
         x, _ = self.linear_in(x)  # (@adithyare) ColumnLinear returns output and bias, we are ignoring the bias term.
+
         x = self.activation(x)
+
+        if self.config.cpu_offloading and self.config.cpu_offloading_activations:
+            x.activation_offloading = True
         x, _ = self.linear_out(x)
 
         if self._sequence_parallel and self.input_is_parallel:

@@ -10,13 +10,18 @@ def tensorboard_logger(name: str, save_dir: str = "tb_logs") -> Config[TensorBoa
     return Config(TensorBoardLogger, save_dir=save_dir, name=name)
 
 
-def wandb_logger(project: str, name: str) -> Config[WandbLogger]:
-    return Config(
+def wandb_logger(project: str, name: str, entity: Optional[str] = None) -> Config[WandbLogger]:
+    cfg = Config(
         WandbLogger,
         project=project,
         name=name,
         config={},
     )
+
+    if entity:
+        cfg.entity = entity
+
+    return cfg
 
 
 def default_log(

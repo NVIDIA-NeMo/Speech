@@ -93,7 +93,7 @@ def parallel_lm_logits(
     tensor_model_parallel = parallel_state.get_tensor_model_parallel_world_size() > 1
 
     # async grad allreduce can only be used when not using sequence parallelism
-    async_grad_allreduce = async_tensor_model_parallel_allreduce and tensor_model_parallel and not sequence_parallel
+    allreduce_dgrad = async_tensor_model_parallel_allreduce and tensor_model_parallel and not sequence_parallel
 
     # copy input_ to model parallel region if needed
     if async_tensor_model_parallel_allreduce or sequence_parallel:
@@ -108,7 +108,7 @@ def parallel_lm_logits(
         weight=word_embeddings_weight,
         bias=bias,
         gradient_accumulation_fusion=gradient_accumulation_fusion,
-        async_grad_allreduce=async_grad_allreduce,
+        allreduce_dgrad=allreduce_dgrad,
         sequence_parallel=sequence_parallel,
     )
 

@@ -255,7 +255,6 @@ class StateDictTransform(Generic[F]):
             if multiple_sources:
                 for target_index, target_match in np.ndenumerate(target_matches):
                     source_match = source_matches[target_index]
-
                     if accepts_var_args:
                         source_values = [source_dict[k] for k in source_match]
                         target_dict[target_match] = self.call_transform(ctx, *source_values)

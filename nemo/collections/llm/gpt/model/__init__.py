@@ -57,6 +57,14 @@ from nemo.collections.llm.gpt.model.qwen2 import (
     Qwen2Config500M,
     Qwen2Model,
 )
+from nemo.collections.llm.gpt.model.starcoder import StarcoderConfig, StarcoderConfig15B, StarcoderModel
+from nemo.collections.llm.gpt.model.starcoder2 import (
+    Starcoder2Config,
+    Starcoder2Config3B,
+    Starcoder2Config7B,
+    Starcoder2Config15B,
+    Starcoder2Model,
+)
 
 __all__ = [
     "GPTConfig",
@@ -67,6 +75,14 @@ __all__ = [
     "MixtralConfig8x7B",
     "MixtralConfig8x22B",
     "MixtralModel",
+    "Starcoder2Config",
+    "Starcoder2Model",
+    "Starcoder2Config15B",
+    "Starcoder2Config7B",
+    "Starcoder2Config3B",
+    "StarcoderConfig",
+    "StarcoderConfig15B",
+    "StarcoderModel",
     "LlamaConfig",
     "Llama2Config7B",
     "Llama2Config13B",

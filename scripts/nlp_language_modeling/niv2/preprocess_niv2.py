@@ -18,8 +18,6 @@ import re
 from argparse import ArgumentParser
 from multiprocessing import Pool
 
-from sacremoses import MosesDetokenizer
-
 from nemo.collections.common.tokenizers import AutoTokenizer
 
 
@@ -99,6 +97,8 @@ def write_dataset_to_file(file_name, output_file_name, detokenizer, tokenizer, i
 
 
 def process_folder(data_folder, output_folder, splits_file, remove_newline):
+    from sacremoses import MosesDetokenizer
+
     detokenizer = MosesDetokenizer('en')
     tokenizer = AutoTokenizer("gpt2")
     assert os.path.isdir(data_folder)
@@ -162,10 +162,15 @@ if __name__ == '__main__':
         help="Path to output folder where JSONL files will be written.",
     )
     parser.add_argument(
-        "--splits_file_path", type=str, default="default", help="Path to the file that contains splits. ex: ",
+        "--splits_file_path",
+        type=str,
+        default="default",
+        help="Path to the file that contains splits. ex: ",
     )
     parser.add_argument(
-        "--remove_newline", action="store_true", help="Whether to remove newlines from the input and output.",
+        "--remove_newline",
+        action="store_true",
+        help="Whether to remove newlines from the input and output.",
     )
     args = parser.parse_args()
     process_folder(args.niv2_dataset_path, args.jsonl_output_path, args.splits_file_path, args.remove_newline)

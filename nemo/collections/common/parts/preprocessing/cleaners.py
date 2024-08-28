@@ -14,7 +14,6 @@
 
 import re
 
-import inflect
 from text_unidecode import unidecode
 
 from nemo.utils import logging
@@ -139,7 +138,14 @@ ABBREVIATIONS_TTS_FASTPITCH = [
 ]
 
 
-inflect = inflect.engine()
+from functools import cache
+
+
+@cache
+def inflect_engine():
+    import inflect
+
+    return inflect.engine()
 
 
 def clean_text(string, table, punctuation_to_replace, abbreviation_version=None):
@@ -194,11 +200,12 @@ class NumberCleaner:
         self.currency = None
 
     def format_final_number(self, whole_num, decimal):
+        inflect = inflect_engine()
         if self.currency:
             return_string = inflect.number_to_words(whole_num)
             return_string += " dollar" if whole_num == 1 else " dollars"
             if decimal:
-                return_string += " and " + inflect.number_to_words(decimal)
+                return_string += " and " + inflect_engine().number_to_words(decimal)
                 return_string += " cent" if whole_num == decimal else " cents"
             self.reset()
             return return_string
@@ -210,11 +217,12 @@ class NumberCleaner:
         else:
             # Check if there are non-numbers
             def convert_to_word(match):
-                return " " + inflect.number_to_words(match.group(0)) + " "
+                return " " + inflect_engine().number_to_words(match.group(0)) + " "
 
             return re.sub(r'[0-9,]+', convert_to_word, whole_num)
 
     def clean(self, match):
+        inflect = inflect_engine()
         ws = match.group(2)
         number = match.group(3)
         _proceeding_symbol = match.group(7)

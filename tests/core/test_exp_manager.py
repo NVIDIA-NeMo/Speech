@@ -1050,3 +1050,50 @@ class TestExpManager:
         assert 'epoch=8.ckpt' in ckpt_filenames
         assert 'epoch=7.ckpt' in ckpt_filenames
         assert 'epoch=4.ckpt' in ckpt_filenames
+
+    @pytest.mark.unit
+    def test_doesnt_silently_start_from_scratch(self, tmp_path):
+        """
+        Ensure that if the last checkpoint is unfinished it wont silently start from scratch.
+        This is to avoid a training that is not actually making any progress.
+        """
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=900-consumed_samples=1000.0-last.ckpt",
+            isdir=False,
+            add_unfinished_marker=True,
+        )  # incomplete last
+
+        restored_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+
+        with pytest.raises(Exception):
+            exp_manager(
+                restored_trainer,
+                {"resume_if_exists": True, "resume_ignore_no_checkpoint": True, "explicit_log_dir": str(test_dir)},
+            )
+
+    @pytest.mark.unit
+    def test_doesnt_silently_start_from_scratch_dist(self, tmp_path):
+        """
+        Ensure that if the last distributed checkpoint is unfinished it wont silently start from scratch.
+        This is to avoid a training that is not actually making any progress.
+        """
+
+        test_dir = tmp_path / "test"
+        checkpoints_dir = test_dir / "checkpoints"
+
+        self._write_fake_checkpoint(
+            checkpoints_dir / "megatron_gpt--val_loss=5.01-step=1100-consumed_samples=17600.0-last",
+            isdir=True,
+            add_unfinished_marker=True,
+        )  # incomplete last
+
+        restored_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
+
+        with pytest.raises(Exception):
+            exp_manager(
+                restored_trainer,
+                {"resume_if_exists": True, "resume_ignore_no_checkpoint": True, "explicit_log_dir": str(test_dir)},
+            )

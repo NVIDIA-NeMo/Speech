@@ -109,8 +109,26 @@ class AutoResume(Resume, io.IOMixin):
             end_dist_checkpoints = [d for d in dist_checkpoints if d.match("*end")]
             last_dist_checkpoints = [d for d in dist_checkpoints if d.match("*last")]
 
+            end_chkpt_cnt = len(end_dist_checkpoints)
             end_checkpoints = _filter_out_unfinished_checkpoints(end_dist_checkpoints)
+            finished_end_chkpt_cnt = len(end_checkpoints)
+            if end_chkpt_cnt > 0 and finished_end_chkpt_cnt == 0:
+                raise ValueError(
+                    "End checkpoint is unfinished and cannot be used to resume the training."
+                    " Please remove the checkpoint manually to avoid unexpected cosequences, such as"
+                    " restarting from scratch."
+                )
+
+            last_chkpt_cnt = len(last_dist_checkpoints)
             last_checkpoints = _filter_out_unfinished_checkpoints(last_dist_checkpoints)
+            finished_last_chkpt_cnt = len(last_checkpoints)
+            if last_chkpt_cnt > 0 and finished_last_chkpt_cnt == 0:
+                raise ValueError(
+                    "Last checkpoint is unfinished and cannot be used to resume the training."
+                    " Please remove the checkpoint manually to avoid unexpected cosequences, such as"
+                    " restarting from scratch. Hint: Iteration number can be added to the checkpoint name pattern"
+                    " to maximize chance that there is at least one finished last checkpoint to resume from."
+                )
 
             if not checkpoint_dir.exists() or (not len(end_checkpoints) > 0 and not len(last_checkpoints) > 0):
                 if self.resume_ignore_no_checkpoint:

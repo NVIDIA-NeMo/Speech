@@ -17,11 +17,9 @@ from lightning_fabric.utilities.optimizer import _optimizer_to_device, _optimize
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 from pytorch_lightning.accelerators import CPUAccelerator
-from pytorch_lightning.callbacks.progress import TQDMProgressBar
 from pytorch_lightning.loops import _AutomaticOptimization, evaluation_loop, fit_loop, prediction_loop
 from pytorch_lightning.loops.fetchers import _DataLoaderIterDataFetcher
 from pytorch_lightning.overrides.distributed import _sync_module_states
-from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.trainer.states import RunningStage, TrainerFn
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -32,9 +30,16 @@ from torch.utils.data import DataLoader
 from typing_extensions import override
 
 from nemo.lightning import _strategy_lib, io
-from nemo.lightning.io.pl import MegatronCheckpointIO
 from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, _ModuleStepFunction
-from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ModelTransform, ProgressPrinter
+from nemo.lightning.pytorch.callbacks import ModelTransform
+from nemo.lightning.pytorch.strategies.utils import (
+    ckpt_to_dir,
+    fix_progress_bar,
+    get_checkpoint_io,
+    init_model_parallel,
+    setup_data_sampler,
+    setup_parallel_ranks,
+)
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO, AsyncFinalizerCallback
 
 if TYPE_CHECKING:
@@ -260,17 +265,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             assert self.model is not None
             self.model = self._layer_sync.apply(self.model)
 
-        datamodule = getattr(trainer, "datamodule", None)
-        if not self.data_sampler and hasattr(datamodule, "data_sampler"):
-            self.data_sampler = datamodule.data_sampler
-            self.data_sampler.setup(self.cluster_environment.global_rank())
-            if hasattr(datamodule, "reconfigure_limit_batches"):
-                datamodule.reconfigure_limit_batches()
+        setup_data_sampler(self.trainer)
+        fix_progress_bar(trainer, self.replace_progress_bar, self.progress_interval)
 
-        if self.data_sampler:
-            self.data_sampler.connect(trainer)
-
-        self._fix_progress_bar(trainer)
         self.setup_megatron_parallel(trainer)
         self.setup_precision_plugin()
 
@@ -323,19 +320,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
     @override
     def setup_distributed(self) -> None:
-        self._setup_parallel_ranks()
+        setup_parallel_ranks(self)
         super().setup_distributed()
-
-        from megatron.core import parallel_state
-
-        from nemo.utils import AppState
-
-        # init model parallel if needed
-        if not parallel_state.model_parallel_is_initialized():
-            app_state = AppState()
-
-            if app_state.model_parallel_size is not None:
-                _strategy_lib.init_model_parallel(self.model)
+        init_model_parallel(self.model)
 
         if self.data_sampler:
             assert isinstance(self.cluster_environment, ClusterEnvironment), "Cluster environment not initialized"
@@ -433,12 +420,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             self.optimizers = _optimizers
 
         _optimizers_to_device(self.optimizers, self.root_device)
-
-    def _setup_parallel_ranks(self) -> None:
-        self.set_world_ranks()
-        env = cast(ClusterEnvironment, self.cluster_environment)
-
-        _strategy_lib.init_parallel_ranks(env.world_size(), env.global_rank(), env.local_rank(), self.parallelism)
 
     @override
     def training_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
@@ -561,27 +542,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
         return kwargs
 
-    def _fix_progress_bar(self, trainer: pl.Trainer) -> None:
-        callbacks: List[pl.Callback] = cast(List[pl.Callback], getattr(trainer, "callbacks"))
-        contains_megatron_progress, contains_progress = False, False
-        for callback in callbacks:
-            if isinstance(callback, MegatronProgressBar):
-                contains_megatron_progress = True
-            if callback.__class__ == TQDMProgressBar:
-                contains_progress = True
-        if not contains_megatron_progress and contains_progress:
-            for i, callback in enumerate(callbacks):
-                if isinstance(callback, TQDMProgressBar):
-                    if self.replace_progress_bar:
-                        printer = ProgressPrinter(log_interval=self.progress_interval)
-                        printer._trainer = trainer
-                        if not trainer.is_global_zero:
-                            printer.disable()
-                        callbacks[i] = printer
-                    else:
-                        callback.__class__ = MegatronProgressBar
-                    break
-
     def optimizer_sharded_state_dict(self, is_loading=False):
         """
         Sharded state dictionary for an MainParamsOptimizerWrapper.
@@ -660,23 +620,17 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @property
     @override
     def checkpoint_io(self) -> CheckpointIO:
-        if self._checkpoint_io is None:
-            self._checkpoint_io = MegatronCheckpointIO(
-                save_ckpt_format=self.save_ckpt_format,
-                async_save=self.async_save,
-                torch_dist_multiproc=self.torch_dist_multiproc,
-                assume_constant_structure=self.assume_constant_structure,
-                parallel_save=self.parallel_save,
-                parallel_save_within_dp=self.parallel_save_within_dp,
-                parallel_load=self.parallel_load,
-                load_directly_on_device=self.load_directly_on_device,
-            )
-            if self.async_save:
-                self._checkpoint_io = AsyncFinalizableCheckpointIO(self._checkpoint_io)
-        elif isinstance(self._checkpoint_io, _WrappingCheckpointIO):
-            self._checkpoint_io.checkpoint_io = MegatronCheckpointIO()
-
-        return self._checkpoint_io
+        return get_checkpoint_io(
+            self._checkpoint_io,
+            save_ckpt_format=self.save_ckpt_format,
+            async_save=self.async_save,
+            torch_dist_multiproc=self.torch_dist_multiproc,
+            assume_constant_structure=self.assume_constant_structure,
+            parallel_save=self.parallel_save,
+            parallel_save_within_dp=self.parallel_save_within_dp,
+            parallel_load=self.parallel_load,
+            load_directly_on_device=self.load_directly_on_device,
+        )
 
     @checkpoint_io.setter
     def checkpoint_io(self, io: CheckpointIO) -> None:
@@ -773,19 +727,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         # @akoumparouli: using Parent's tensor_init_context causes mcore
         # parameters to be initialized on GPU instead of (assumed) CPU.
         yield
-
-
-def ckpt_to_dir(filepath: Union[str, Path]) -> Path:
-    """PTL considers checkpoints as .ckpt files.
-    This method removes the extension and returns a path
-    to be used as a directory for distributed checkpoints.
-    """
-    filepath = Path(filepath)
-
-    if filepath.suffix == ".ckpt":
-        return filepath.with_name(filepath.stem)
-
-    return filepath
 
 
 def _data_fetcher_wrapper(fn):

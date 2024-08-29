@@ -18,7 +18,7 @@ from nemo.lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from nemo.lightning.pytorch.optim import LRSchedulerModule, MegatronOptimizerModule, OptimizerModule, lr_scheduler
 from nemo.lightning.pytorch.plugins import MegatronDataSampler, MegatronMixedPrecision
 from nemo.lightning.pytorch.plugins import data_sampler as _data_sampler
-from nemo.lightning.pytorch.strategies import MegatronStrategy
+from nemo.lightning.pytorch.strategies import FSDPStrategy, MegatronStrategy
 from nemo.lightning.pytorch.trainer import Trainer
 from nemo.lightning.resume import AutoResume
 

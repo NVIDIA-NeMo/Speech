@@ -136,7 +136,7 @@ def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch
     }
 
     state_dict.update(
-        {k: {} for k, tp in metadata.state_dict_metadata.items() if isinstance(tp, BytesStorageMetadata)}
+        {k: [] for k, tp in metadata.state_dict_metadata.items() if isinstance(tp, BytesStorageMetadata)}
     )
 
     load_state_dict(

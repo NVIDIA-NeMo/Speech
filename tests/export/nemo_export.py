@@ -242,6 +242,8 @@ def run_inference(
     test_deployment=False,
     test_data_path=None,
     save_trt_engine=False,
+    fp8_quantized=False,
+    fp8_kvcache=False,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
     if Path(checkpoint_path).exists():
         if tp_size > torch.cuda.device_count():
@@ -325,6 +327,8 @@ def run_inference(
                 lora_target_modules=lora_target_modules,
                 max_num_tokens=max_num_tokens,
                 use_embedding_sharing=use_embedding_sharing,
+                fp8_quantized=fp8_quantized,
+                fp8_kvcache=fp8_kvcache,
             )
 
         if ptuning:
@@ -452,6 +456,8 @@ def run_existing_checkpoints(
     test_data_path=None,
     save_trt_engine=False,
     in_framework=False,
+    fp8_quantized=False,
+    fp8_kvcache=False,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
     if tp_size > torch.cuda.device_count():
         print("Skipping the test due to not enough number of GPUs")
@@ -530,6 +536,8 @@ def run_existing_checkpoints(
             test_deployment=test_deployment,
             test_data_path=test_data_path,
             save_trt_engine=save_trt_engine,
+            fp8_quantized=fp8_quantized,
+            fp8_kvcache=fp8_kvcache,
         )
 
 
@@ -748,16 +756,33 @@ def get_args():
         type=float,
         help="GPU memory utilization percentage for vLLM.",
     )
+    parser.add_argument(
+        "-fp8",
+        "--export_fp8_quantized",
+        default="auto",
+        type=str,
+        help="Enables exporting to a FP8-quantized TRT LLM checkpoint",
+    )
+    parser.add_argument(
+        "-kv_fp8",
+        "--use_fp8_kv_cache",
+        default="auto",
+        type=str,
+        help="Enables exporting with FP8-quantizatized KV-cache",
+    )
 
     args = parser.parse_args()
 
-    def str_to_bool(name: str, s: str) -> bool:
+    def str_to_bool(name: str, s: str, optional: bool = False) -> Optional[bool]:
+        s = s.lower()
         true_strings = ["true", "1"]
         false_strings = ["false", "0"]
-        if s.lower() in true_strings:
+        if s in true_strings:
             return True
-        if s.lower() in false_strings:
+        if s in false_strings:
             return False
+        if optional and s == 'auto':
+            return None
         raise UsageError(f"Invalid boolean value for argument --{name}: '{s}'")
 
     args.test_cpp_runtime = str_to_bool("test_cpp_runtime", args.test_cpp_runtime)
@@ -768,6 +793,8 @@ def get_args():
     args.use_vllm = str_to_bool("use_vllm", args.use_vllm)
     args.use_parallel_embedding = str_to_bool("use_parallel_embedding", args.use_parallel_embedding)
     args.in_framework = str_to_bool("in_framework", args.in_framework)
+    args.export_fp8_quantized = str_to_bool("export_fp8_quantized", args.export_fp8_quantized, optional=True)
+    args.use_fp8_kv_cache = str_to_bool("use_fp8_kv_cache", args.use_fp8_kv_cache, optional=True)
 
     return args
 
@@ -821,6 +848,8 @@ def run_inference_tests(args):
                 test_data_path=args.test_data_path,
                 save_trt_engine=args.save_trt_engine,
                 in_framework=args.in_framework,
+                fp8_quantized=args.export_fp8_quantized,
+                fp8_kvcache=args.use_fp8_kv_cache,
             )
 
             tps = tps * 2
@@ -877,6 +906,8 @@ def run_inference_tests(args):
                     test_cpp_runtime=args.test_cpp_runtime,
                     test_data_path=args.test_data_path,
                     save_trt_engine=args.save_trt_engine,
+                    fp8_quantized=args.export_fp8_quantized,
+                    fp8_kvcache=args.use_fp8_kv_cache,
                 )
 
             tps = tps * 2
@@ -940,5 +971,7 @@ if __name__ == '__main__':
         run_inference_tests(args)
     except UsageError as e:
         LOGGER.error(f"{e}")
+        raise e
     except argparse.ArgumentError as e:
         LOGGER.error(f"{e}")
+        raise e

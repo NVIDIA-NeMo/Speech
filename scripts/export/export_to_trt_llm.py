@@ -15,10 +15,15 @@
 import argparse
 import logging
 import sys
+from typing import Optional
 
 from nemo.export.tensorrt_llm import TensorRTLLM
 
 LOGGER = logging.getLogger("NeMo")
+
+
+class UsageError(Exception):
+    pass
 
 
 def get_args(argv):
@@ -107,8 +112,37 @@ def get_args(argv):
         'It is used to compute the workspace size of lora plugin.',
     )
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
+    parser.add_argument(
+        "-fp8",
+        "--export_fp8_quantized",
+        default="auto",
+        type=str,
+        help="Enables exporting to a FP8-quantized TRT LLM checkpoint",
+    )
+    parser.add_argument(
+        "-kv_fp8",
+        "--use_fp8_kv_cache",
+        default="auto",
+        type=str,
+        help="Enables exporting with FP8-quantizatized KV-cache",
+    )
 
     args = parser.parse_args(argv)
+
+    def str_to_bool(name: str, s: str, optional: bool = False) -> Optional[bool]:
+        s = s.lower()
+        true_strings = ["true", "1"]
+        false_strings = ["false", "0"]
+        if s in true_strings:
+            return True
+        if s in false_strings:
+            return False
+        if optional and s == 'auto':
+            return None
+        raise UsageError(f"Invalid boolean value for argument --{name}: '{s}'")
+
+    args.export_fp8_quantized = str_to_bool("export_fp8_quantized", args.export_fp8_quantized, optional=True)
+    args.use_fp8_kv_cache = str_to_bool("use_fp8_kv_cache", args.use_fp8_kv_cache, optional=True)
     return args
 
 
@@ -153,6 +187,8 @@ def nemo_export_trt_llm(argv):
             use_lora_plugin=args.use_lora_plugin,
             lora_target_modules=args.lora_target_modules,
             max_lora_rank=args.max_lora_rank,
+            fp8_quantized=args.export_fp8_quantized,
+            fp8_kvcache=args.use_fp8_kv_cache,
         )
 
         LOGGER.info("Export is successful.")

@@ -79,6 +79,7 @@ def convert(in_file, precision=None, cpu_only=True) -> None:
     model_config = MegatronGPTModel.restore_from(in_file, trainer=dummy_trainer, return_config=True)
     model_config.tensor_model_parallel_size = 1
     model_config.pipeline_model_parallel_size = 1
+    model_config.sequence_parallel = False
     if cpu_only:
         map_location = torch.device('cpu')
         model_config.use_cpu_initialization = True

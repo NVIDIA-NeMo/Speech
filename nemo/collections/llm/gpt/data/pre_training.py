@@ -54,6 +54,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         split (str): A string of 3 comma-separated integers denoting how much of the distribution
             to allocate to train, validation, and test sets, respectively. Unused if ``paths`` is a dict.
         index_mapping_dir (Optional[str]): Path to a directory to write index mapping files.
+        num_dataset_builder_threads (int): The number of threads to use for dataset building.
     """
 
     def __init__(
@@ -73,6 +74,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         seed: int = 1234,
         split: str = "900,50,50",
         index_mapping_dir: Optional[str] = None,
+        num_dataset_builder_threads: int = 1,
     ) -> None:
         super().__init__()
         if not isinstance(paths, (list, tuple, dict)):
@@ -110,6 +112,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         self.seed = seed
         self.split = split
         self.index_mapping_dir = index_mapping_dir
+        self.num_dataset_builder_threads = num_dataset_builder_threads
         self.init_global_step = 0
 
         from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
@@ -218,6 +221,7 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
             reset_position_ids=self.reset_position_ids,
             reset_attention_mask=self.reset_attention_mask,
             eod_mask_loss=self.eod_mask_loss,
+            num_dataset_builder_threads=self.num_dataset_builder_threads,
             **self.build_kwargs,
         )
 

@@ -116,12 +116,42 @@ class TestNeMoLogger:
                 dirpath=Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints"),
                 resume_if_exists=True,
             ).setup(trainer)
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end").rmdir()
+
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end").mkdir()
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end-unfinished").touch()
+        # Error because *end.ckpt is unfinished, should raise an error despite resume_ignore_no_checkpoint=True
+        with pytest.raises(ValueError):
+            nl.AutoResume(
+                dirpath=Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints"),
+                resume_if_exists=True,
+                resume_past_end=True,
+                resume_ignore_no_checkpoint=True,
+            ).setup(trainer)
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end").rmdir()
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end-unfinished").unlink()
+
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last").mkdir()
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last-unfinished").touch()
+        # Error because *last.ckpt is unfinished, should raise an error despite resume_ignore_no_checkpoint=True
+        with pytest.raises(ValueError):
+            nl.AutoResume(
+                dirpath=Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints"),
+                resume_if_exists=True,
+                resume_ignore_no_checkpoint=True,
+            ).setup(trainer)
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last").rmdir()
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last-unfinished").unlink()
 
         ## if there are multiple "-last" checkpoints, choose the most recent one
-        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--end").rmdir()
         Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel--last").mkdir()
         time.sleep(1)  ## sleep for a second so the checkpoints are created at different times
         Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel2--last").mkdir()
+        time.sleep(1)
+        # unfinished last, that should be ignored
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel3--last").mkdir()
+        Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints" / "mymodel3--last-unfinished").touch()
+
         nl.AutoResume(
             dirpath=Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints"),
             resume_if_exists=True,

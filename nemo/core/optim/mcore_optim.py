@@ -70,9 +70,9 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
             loss = closure()
 
         # return unused update_successful, grad_norm, num_zeros_in_grad
-        self.mcore_optimizer.step()
+        _, grad_norm, num_zeros_in_grad = self.mcore_optimizer.step()
 
-        return loss
+        return loss, grad_norm, num_zeros_in_grad
 
     # Promote state so it can be retrieved or set via
     # "optimizer_instance.state"

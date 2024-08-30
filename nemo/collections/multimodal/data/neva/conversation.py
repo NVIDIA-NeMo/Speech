@@ -49,6 +49,7 @@ class SeparatorStyle(Enum):
     LLAMA_3 = auto()
     MISTRAL = auto()
     NVGPT = auto()
+    YI34b = auto()
 
 
 @dataclasses.dataclass
@@ -155,7 +156,31 @@ class Conversation:
                     ret += wrap_user(message) + self.sep
                 else:
                     ret += wrap_assistant(message) + (self.sep if message else "")
+        elif self.sep_style == SeparatorStyle.YI34b:
+            """
+            {{ if .System }}<|im_start|>system
+            {{ .System }}<|im_end|>
+            {{ end }}{{ if .Prompt }}<|im_start|>user
+            {{ .Prompt }}<|im_end|>
+            {{ end }}<|im_start|>assistant
+            {{ .Response }}<|im_end|>
+            """
+            wrap_sys = lambda msg: f"<|im_start|>system\n{msg}<|im_end|>"
+            wrap_user = lambda msg: f"<|im_start|>user\n{msg.strip()}<|im_end|>"
+            wrap_assistant = lambda msg: f"<|im_start|>assistant\n{msg}<|im_end|>"
 
+            ret = wrap_sys(self.system) if len(self.system) > 0 else ""
+            for i, (role, message) in enumerate(messages):
+                if i == 0:
+                    assert message, "first message should not be none"
+                    assert role == self.roles[0], "first message should come from user"
+                if type(message) is tuple:
+                    message, _, _ = message
+                elif i % 2 == 0:
+                    ret += wrap_user(message) + self.sep
+                else:
+                    ret += wrap_assistant(message) + (self.sep if message else "")
+            ret = ret.strip()
         elif self.sep_style == SeparatorStyle.PLAIN:
             seps = [self.sep, self.sep2]
             ret = self.system
@@ -320,6 +345,16 @@ conv_nv_dpo = Conversation(
     sep_style=SeparatorStyle.NVGPT,
     sep=DEFAULT_SEPARATOR_TOKEN,
     sep2=f"{DEFAULT_SYSTEM_TOKEN}System\n",
+)
+
+conv_yi_34b = Conversation(
+    system="",
+    roles=('user', 'assistant'),
+    version="1.5",
+    messages=(),
+    offset=0,
+    sep_style=SeparatorStyle.YI34b,
+    sep="\n",
 )
 
 conv_vicuna_v0 = Conversation(
@@ -490,6 +525,7 @@ conv_templates = {
     "nv_steerlm": conv_nvgpt,
     "nv_dpo": conv_nv_dpo,
     "mistral": conv_mistral,
+    "yi_34b": conv_yi_34b,
 }
 
 if __name__ == "__main__":

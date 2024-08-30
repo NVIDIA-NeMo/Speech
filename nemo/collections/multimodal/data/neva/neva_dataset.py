@@ -598,6 +598,104 @@ def preprocess_llama_2(
     )
 
 
+def preprocess_yi_34b(
+    sources: dict,
+    tokenizer,
+    cfg,
+) -> Dict:
+    """
+    Preprocess sources for Yi-1.5 34b model configuration.
+
+    The function applies prompt templates and tokenizes the conversations according to the Yi-1.5 34b model specifications.
+    It involves special handling of tokens, masking of labels, and adjustments based on configuration settings.
+
+    This template works with the following tokenizer configs:
+    - model.tokenizer.library='huggingface'
+    - model.tokenizer.type='01-ai/Yi-1.5-34B'
+    - model.tokenizer.additional_special_tokens='{additional_special_tokens: ["<extra_id_0>", "<extra_id_1>", "<extra_id_2>", "<extra_id_3>", "<extra_id_4>", "<extra_id_5>"]}'
+    At inference time, add end string to stop sampling:
+    - inference.end_strings='["<|im_end|>"]'
+
+    Parameters:
+    - sources (dict): A dictionary of sources containing conversations to be processed.
+    - tokenizer: The tokenizer to be used for processing the text.
+    - cfg: Configuration settings for preprocessing, including context length and additional tokens.
+
+    Returns:
+    - Dict: A dictionary containing tokenized and labeled data suitable for the LLaMA 2 model.
+      This includes tokens, labels, and any special processing as defined in the configuration.
+    """
+
+    """<|im_start|>user\n{prompt.strip()}<|im_end|>\n<|im_start|>assistant\n"""
+
+    conv = conversation_lib.conv_yi_34b.copy()
+
+    # apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        source = source["conversations"]
+        strip_end_for_inference = False
+
+        for i, turn in enumerate(source):
+
+            if i % 2 == 1:
+                turn["from"] = conv.roles[1]
+                value = turn["value"]
+
+                conv.append_message(turn['from'], value)
+                if not turn["value"]:
+                    strip_end_for_inference = True
+            else:
+                turn["from"] = conv.roles[0]
+                conv.append_message(turn["from"], turn["value"])
+        context = conv.get_prompt()
+        if strip_end_for_inference and context.endswith("\n<|im_end|>"):
+            context = context[: -len("\n<|im_end|>")] + "\n"
+        conversations.append(context)
+
+    add_extra_token = cfg.get("add_extra_token")
+
+    tokens = tokenize(
+        texts=conversations,
+        tokenizer=tokenizer,
+        context_length=cfg.get("context_length"),
+        add_extra_token=add_extra_token,
+    )
+    labels = tokens.clone().detach()
+
+    round_sep = "<|im_start|>user\n"
+    sep = "<|im_start|>assistant\n"
+    for conversation, target in zip(conversations, labels):
+        rounds = conversation.split(round_sep)
+        rounds = [round_sep.join(rounds[:2])] + [(round_sep + x) for x in rounds[2:]]
+        assert len(conversation) == sum(map(len, rounds))
+        cur_len = 0
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                break
+            instruction_len = len(tokenizer.text_to_ids(parts[0] + sep))
+            round_len = len(tokenizer.text_to_ids(rou))
+            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+
+            cur_len += round_len
+        target[cur_len:] = IGNORE_INDEX
+
+    if add_extra_token:
+        tokens = tokens[:, :-1].contiguous()
+        labels = labels[:, 1:].contiguous()
+    else:
+        labels = torch.roll(labels, shifts=-1, dims=-1)
+        labels[:, -1] = IGNORE_INDEX
+
+    return dict(
+        tokens=tokens,
+        labels=labels,
+    )
+
+
 def preprocess_v1(
     sources: dict,
     tokenizer,
@@ -1156,6 +1254,12 @@ class LazySupervisedDataset(Dataset):
             )
         elif self.conv_template == "plain":
             data_dict = preprocess_plain(
+                sources,
+                self.tokenizer,
+                self.multimodal_cfg,
+            )
+        elif self.conv_template == "yi_34b":
+            data_dict = preprocess_yi_34b(
                 sources,
                 self.tokenizer,
                 self.multimodal_cfg,

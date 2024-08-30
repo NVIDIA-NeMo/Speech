@@ -7,7 +7,20 @@ from collections import OrderedDict
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Literal, Mapping, Optional, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ContextManager,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import pytorch_lightning as pl
 import torch
@@ -29,6 +42,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from typing_extensions import override
 
+from nemo.core.optim.mcore_optim import McoreDistributedOptimizer
 from nemo.lightning import _strategy_lib, io
 from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, _ModuleStepFunction
 from nemo.lightning.pytorch.callbacks import ModelTransform
@@ -471,6 +485,24 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 self.lightning_module.log('reduced_train_loss', out, prog_bar=True, batch_size=1, sync_dist=False)
 
             return out
+
+    @override
+    def optimizer_step(
+        self,
+        optimizer: torch.optim.Optimizer,
+        closure: Callable[[], Any],
+        model: Optional[Union["pl.LightningModule", nn.Module]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        optimizer_output = super().optimizer_step(optimizer, closure, model, **kwargs)
+
+        if isinstance(optimizer, McoreDistributedOptimizer):
+            optimizer_output, grad_norm, num_zeros_in_grad = optimizer_output
+            self.lightning_module.log('grad_norm', grad_norm, batch_size=1)
+            if num_zeros_in_grad is not None:
+                self.lightning_module.log('num_zeros_in_grad', num_zeros_in_grad, batch_size=1)
+
+        return optimizer_output
 
     @override
     def validation_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:

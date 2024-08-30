@@ -244,7 +244,10 @@ def run_inference(
     save_trt_engine=False,
     fp8_quantized=False,
     fp8_kvcache=False,
+    trt_llm_export_kwargs=None,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
+    if trt_llm_export_kwargs is None:
+        trt_llm_export_kwargs = {}
     if Path(checkpoint_path).exists():
         if tp_size > torch.cuda.device_count():
             print(
@@ -329,6 +332,7 @@ def run_inference(
                 use_embedding_sharing=use_embedding_sharing,
                 fp8_quantized=fp8_quantized,
                 fp8_kvcache=fp8_kvcache,
+                **trt_llm_export_kwargs,
             )
 
         if ptuning:
@@ -458,6 +462,7 @@ def run_existing_checkpoints(
     in_framework=False,
     fp8_quantized=False,
     fp8_kvcache=False,
+    trt_llm_export_kwargs=None,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
     if tp_size > torch.cuda.device_count():
         print("Skipping the test due to not enough number of GPUs")
@@ -492,6 +497,9 @@ def run_existing_checkpoints(
         use_embedding_sharing = True
     else:
         use_embedding_sharing = False
+
+    if trt_llm_export_kwargs is None:
+        trt_llm_export_kwargs = {}
 
     if in_framework:
         return run_in_framework_inference(
@@ -538,6 +546,7 @@ def run_existing_checkpoints(
             save_trt_engine=save_trt_engine,
             fp8_quantized=fp8_quantized,
             fp8_kvcache=fp8_kvcache,
+            **trt_llm_export_kwargs,
         )
 
 
@@ -770,6 +779,12 @@ def get_args():
         type=str,
         help="Enables exporting with FP8-quantizatized KV-cache",
     )
+    parser.add_argument(
+        "--trt_llm_export_kwargs",
+        default={},
+        type=json.loads,
+        help="Extra keyword arguments passed to TensorRTLLM.export",
+    )
 
     args = parser.parse_args()
 
@@ -850,6 +865,7 @@ def run_inference_tests(args):
                 in_framework=args.in_framework,
                 fp8_quantized=args.export_fp8_quantized,
                 fp8_kvcache=args.use_fp8_kv_cache,
+                trt_llm_export_kwargs=args.trt_llm_export_kwargs,
             )
 
             tps = tps * 2
@@ -908,6 +924,7 @@ def run_inference_tests(args):
                     save_trt_engine=args.save_trt_engine,
                     fp8_quantized=args.export_fp8_quantized,
                     fp8_kvcache=args.use_fp8_kv_cache,
+                    trt_llm_export_kwargs=args.trt_llm_export_kwargs,
                 )
 
             tps = tps * 2

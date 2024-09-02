@@ -41,6 +41,7 @@ from nemo.core import adapter_mixins
 from nemo.utils import logging
 
 try:
+    from transformer_engine.pytorch.attention import DotProductAttention
     from transformer_engine.pytorch.module import LayerNormLinear, LayerNormMLP
 
     HAVE_TE = True
@@ -255,10 +256,20 @@ class CrossAttention(nn.Module):
         dim_head=64,
         dropout=0.0,
         use_flash_attention=False,
+        use_te_dpa=False,
         lora_network_alpha=None,
         use_te=False,
     ):
         super().__init__()
+
+        assert not (
+            use_te_dpa and use_flash_attention
+        ), 'use_te_dpa and use_flash_attention cannot be True together. Please specify the attention you want to use.'
+
+        if use_flash_attention:
+            assert flash_attn_installed, 'Flash-attention must be installed.'
+        if use_te_dpa:
+            assert HAVE_TE, 'TransformerEngine is required to run with TE DPA.'
 
         self.inner_dim = dim_head * heads
         if context_dim is None:
@@ -277,6 +288,7 @@ class CrossAttention(nn.Module):
         self.to_k = LinearWrapper(context_dim, self.inner_dim, bias=False, lora_network_alpha=lora_network_alpha)
         self.to_v = LinearWrapper(context_dim, self.inner_dim, bias=False, lora_network_alpha=lora_network_alpha)
 
+        self.use_te_dpa = use_te_dpa
         self.use_te = use_te
         if use_te:
             return_layernorm_output = True if self.is_self_attn else False
@@ -292,11 +304,21 @@ class CrossAttention(nn.Module):
         )
         self.use_flash_attention = use_flash_attention
 
-        if dim_head <= 160 and (dim_head % 8) == 0 and flash_attn_installed:
-            if context_dim == query_dim:
-                self.flash_attn = FlashSelfAttention(softmax_scale=self.scale)
-            else:
-                self.flash_attn = FlashCrossAttention(softmax_scale=self.scale)
+        if dim_head <= 160 and (dim_head % 8) == 0:
+            if self.use_flash_attention:
+                if context_dim == query_dim:
+                    self.flash_attn = FlashSelfAttention(softmax_scale=self.scale)
+                else:
+                    self.flash_attn = FlashCrossAttention(softmax_scale=self.scale)
+            elif self.use_te_dpa:
+                self.te_dpa = DotProductAttention(
+                    kv_channels=dim_head,
+                    num_attention_heads=self.inner_dim // dim_head,
+                    attn_mask_type='no_mask',
+                    attention_type='self' if context_dim == query_dim else 'cross',
+                    qkv_format='bshd',  # `sbhd`, `bshd`, `thd`
+                    softmax_scale=self.scale,
+                )
 
     def forward(self, x, context=None, mask=None, additional_tokens=None, n_times_crossframe_attn_in_self=0):
         h = self.heads
@@ -338,7 +360,7 @@ class CrossAttention(nn.Module):
 
         if (
             not flash_attn_installed
-            or not self.use_flash_attention
+            or (not self.use_flash_attention and not self.use_te_dpa)
             or q.dtype == torch.float32
             or (self.dim_head > 160 or (self.dim_head % 8) != 0)
             or mask is not None
@@ -365,6 +387,13 @@ class CrossAttention(nn.Module):
 
             # (b h) n d -> b n (h d)
             out = rearrange_heads_inner(out, h)
+
+        elif self.use_te_dpa:
+            b, s_kv, hd = k.shape
+            s_q = q.shape[1]
+            d = hd // h
+            out = self.te_dpa(q.view(b, s_q, h, d), k.view(b, s_kv, h, d), v.view(b, s_kv, h, d))
+
         elif self.context_dim == self.query_dim:
             # self-attention
             qkv = torch.stack([q, k, v], dim=2)
@@ -404,6 +433,7 @@ class BasicTransformerBlock(nn.Module):
         gated_ff=True,
         use_checkpoint=False,
         use_flash_attention=False,
+        use_te_dpa=False,
         disable_self_attn=False,
         lora_network_alpha=None,
         use_te=False,
@@ -416,6 +446,7 @@ class BasicTransformerBlock(nn.Module):
             dim_head=d_head,
             dropout=dropout,
             use_flash_attention=use_flash_attention,
+            use_te_dpa=use_te_dpa,
             context_dim=context_dim if self.disable_self_attn else None,
             lora_network_alpha=lora_network_alpha,
             use_te=use_te,
@@ -428,6 +459,7 @@ class BasicTransformerBlock(nn.Module):
             dim_head=d_head,
             dropout=dropout,
             use_flash_attention=use_flash_attention,
+            use_te_dpa=use_te_dpa,
             lora_network_alpha=lora_network_alpha,
             use_te=use_te,
         )  # is self-attn if context is none
@@ -485,6 +517,7 @@ class SpatialTransformer(nn.Module):
         use_linear=False,
         use_checkpoint=False,
         use_flash_attention=False,
+        use_te_dpa=False,
         lora_network_alpha=None,
         use_te=False,
     ):
@@ -527,6 +560,7 @@ class SpatialTransformer(nn.Module):
                     context_dim=context_dim[d],
                     use_checkpoint=use_checkpoint,
                     use_flash_attention=use_flash_attention,
+                    use_te_dpa=use_te_dpa,
                     disable_self_attn=disable_self_attn,
                     lora_network_alpha=lora_network_alpha,
                     use_te=use_te,

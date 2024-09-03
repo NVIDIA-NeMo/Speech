@@ -76,7 +76,7 @@ except (ImportError, ModuleNotFoundError):
 
 
 try:
-    from apex.transformer.parallel_state import set_virtual_pipeline_model_parallel_world_size
+    from megatron.core.parallel_state import set_virtual_pipeline_model_parallel_world_size
 
     HAVE_INTERLEAVED = True
 

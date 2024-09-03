@@ -9,21 +9,27 @@ from nemo.lightning.io.mixin import ConnectorMixin, ConnT, ModelConnector, load
 from nemo.lightning.io.pl import TrainerContext
 
 
-def load_context(path: Path) -> TrainerContext:
+def load_context(path: Path, subpath: Optional[str] = None) -> TrainerContext:
     """
     Loads a TrainerContext from a json-file or directory.
 
     Args:
         path (Path): The path to the json-file or directory containing 'io.json'.
+        subpath (Optional[str]): Subpath to selectively load only specific objects inside the TrainerContext. Defaults to None.
 
     Returns
     -------
         TrainerContext: The loaded TrainerContext instance.
 
     Example:
+        # Load the entire context
         checkpoint: TrainerContext = load_ckpt("/path/to/checkpoint")
+
+        # Load a subpath of the context, for eg: model.config
+        checkpoint: TrainerContext = load_ckpt("/path/to/checkpoint", subpath="model.config")
+
     """
-    return load(path, output_type=TrainerContext)
+    return load(path, output_type=TrainerContext, subpath=subpath)
 
 
 def model_importer(target: Type[ConnectorMixin], ext: str) -> Callable[[Type[ConnT]], Type[ConnT]]:

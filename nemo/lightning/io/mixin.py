@@ -22,8 +22,9 @@ from nemo.lightning.io.artifact.base import Artifact
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.connector import ModelConnector
 from nemo.lightning.io.fdl_torch import enable as _enable_ext
+from nemo.utils import logging
 
-ConnT = TypeVar('ConnT', bound=ModelConnector)
+ConnT = TypeVar("ConnT", bound=ModelConnector)
 CkptType = TypeVar("CkptType")
 _enable_ext()
 
@@ -361,7 +362,7 @@ def track_io(target, artifacts: Optional[List[Artifact]] = None):
     """
 
     def _add_io_to_class(cls):
-        if inspect.isclass(cls) and hasattr(cls, '__init__') and not hasattr(cls, '__io__'):
+        if inspect.isclass(cls) and hasattr(cls, "__init__") and not hasattr(cls, "__io__"):
             if cls in [str, int, float, tuple, list, dict, bool, type(None)]:
                 return cls
 
@@ -497,7 +498,6 @@ def _io_flatten_object(instance):
 
 
 def _io_unflatten_object(values, metadata):
-
     assert hasattr(_thread_local, "output_dir")
     output_dir = _thread_local.output_dir
 
@@ -512,7 +512,7 @@ def _io_unflatten_object(values, metadata):
 def _io_path_elements_fn(x):
     try:
         serialization.dump_json(x.__io__)
-    except (serialization.UnserializableValueError, AttributeError) as e:
+    except (serialization.UnserializableValueError, AttributeError):
         return (serialization.IdentityElement(),)
 
     return x.__io__.__path_elements__()
@@ -552,13 +552,14 @@ def _artifact_transform_load(cfg: fdl.Config, path: Path):
             pass
 
 
-def load(path: Path, output_type: Type[CkptType] = Any) -> CkptType:
+def load(path: Path, output_type: Type[CkptType] = Any, subpath: Optional[str] = None) -> CkptType:
     """
     Loads a configuration from a pickle file and constructs an object of the specified type.
 
     Args:
         path (Path): The path to the pickle file or directory containing 'io.pkl'.
         output_type (Type[CkptType]): The type of the object to be constructed from the loaded data.
+        subpath (Optional[str]): Subpath to selectively load only specific objects inside the output_type. Defaults to None.
 
     Returns
     -------
@@ -571,29 +572,48 @@ def load(path: Path, output_type: Type[CkptType] = Any) -> CkptType:
     Example:
         loaded_model = load("/path/to/model", output_type=MyModel)
     """
-    del output_type  # Just for type-hint
-
     _path = Path(path)
     _thread_local.output_dir = _path
 
-    if hasattr(_path, 'is_dir') and _path.is_dir():
+    if hasattr(_path, "is_dir") and _path.is_dir():
         _path = Path(_path) / "io.json"
-    elif hasattr(_path, 'isdir') and _path.isdir:
+    elif hasattr(_path, "isdir") and _path.isdir:
         _path = Path(_path) / "io.json"
 
     if not _path.is_file():
         raise FileNotFoundError(f"No such file: '{_path}'")
+
+    if subpath:
+        subpath = "<root>." + subpath
 
     ## add IO functionality to custom objects present in the json file
     with open(_path) as f:
         j = json.load(f)
         for obj, val in j["objects"].items():
             clss = ".".join([val["type"]["module"], val["type"]["name"]])
+            if subpath and "paths" in val:
+                if all(map(lambda p: subpath not in p, val["paths"])):
+                    continue
+
             if not serialization.find_node_traverser(locate(clss)):
                 track_io(locate(clss))
 
     with open(_path, "rb") as f:
-        config = serialization.load_json(f.read())
+        json_config = json.loads(f.read())
+
+        root_key = None
+        for obj, val in json_config["objects"].items():
+            if "paths" in val and subpath in val["paths"]:
+                root_key = obj
+                break
+
+        if subpath and not root_key:
+            logging.warning(f"Could not find {subpath} for {output_type} in {_path}")
+
+        if root_key:
+            json_config["root"]["key"] = root_key
+
+        config = serialization.Deserialization(json_config).result
         _artifact_transform_load(config, path)
 
     return fdl.build(config)

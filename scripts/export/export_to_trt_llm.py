@@ -79,7 +79,8 @@ def get_args(argv):
         default=False,
         action='store_true',
         help='Split long kv sequence into multiple blocks (applied to generation MHA kernels). \
-                        It is beneifical when batchxnum_heads cannot fully utilize GPU.',
+                        It is beneifical when batchxnum_heads cannot fully utilize GPU. \
+                        Only available when using c++ runtime.',
     )
     parser.add_argument(
         '--use_lora_plugin',
@@ -165,7 +166,9 @@ def nemo_export_trt_llm(argv):
         return
 
     try:
-        trt_llm_exporter = TensorRTLLM(model_dir=args.model_repository, load_model=False)
+        trt_llm_exporter = TensorRTLLM(
+            model_dir=args.model_repository, load_model=False, multi_block_mode=args.multi_block_mode
+        )
 
         LOGGER.info("Export to TensorRT-LLM function is called.")
         trt_llm_exporter.export(
@@ -183,7 +186,6 @@ def nemo_export_trt_llm(argv):
             paged_kv_cache=(not args.no_paged_kv_cache),
             remove_input_padding=(not args.disable_remove_input_padding),
             dtype=args.dtype,
-            enable_multi_block_mode=args.multi_block_mode,
             use_lora_plugin=args.use_lora_plugin,
             lora_target_modules=args.lora_target_modules,
             max_lora_rank=args.max_lora_rank,

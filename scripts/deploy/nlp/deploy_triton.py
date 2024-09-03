@@ -18,12 +18,18 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 import uvicorn
 
 from nemo.deploy import DeployPyTriton
 
 LOGGER = logging.getLogger("NeMo")
+
+
+class UsageError(Exception):
+    pass
+
 
 megatron_llm_supported = True
 try:
@@ -202,7 +208,36 @@ def get_args(argv):
         help="Return the response from PyTriton server in OpenAI compatible format",
     )
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
+    parser.add_argument(
+        "-fp8",
+        "--export_fp8_quantized",
+        default="auto",
+        type=str,
+        help="Enables exporting to a FP8-quantized TRT LLM checkpoint",
+    )
+    parser.add_argument(
+        "-kv_fp8",
+        "--use_fp8_kv_cache",
+        default="auto",
+        type=str,
+        help="Enables exporting with FP8-quantizatized KV-cache",
+    )
     args = parser.parse_args(argv)
+
+    def str_to_bool(name: str, s: str, optional: bool = False) -> Optional[bool]:
+        s = s.lower()
+        true_strings = ["true", "1"]
+        false_strings = ["false", "0"]
+        if s in true_strings:
+            return True
+        if s in false_strings:
+            return False
+        if optional and s == 'auto':
+            return None
+        raise UsageError(f"Invalid boolean value for argument --{name}: '{s}'")
+
+    args.export_fp8_quantized = str_to_bool("export_fp8_quantized", args.export_fp8_quantized, optional=True)
+    args.use_fp8_kv_cache = str_to_bool("use_fp8_kv_cache", args.use_fp8_kv_cache, optional=True)
     return args
 
 
@@ -304,6 +339,8 @@ def get_trtllm_deployable(args):
                 multiple_profiles=args.multiple_profiles,
                 gpt_attention_plugin=args.gpt_attention_plugin,
                 gemm_plugin=args.gemm_plugin,
+                fp8_quantized=args.export_fp8_quantized,
+                fp8_kvcache=args.use_fp8_kv_cache,
             )
         except Exception as error:
             raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))

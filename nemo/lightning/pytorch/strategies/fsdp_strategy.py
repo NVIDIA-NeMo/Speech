@@ -22,8 +22,8 @@ from typing_extensions import override
 from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import (
     ckpt_to_dir,
+    create_checkpoint_io,
     fix_progress_bar,
-    get_checkpoint_io,
     init_model_parallel,
     mcore_to_pyt_sharded_state_dict,
     pyt_to_mcore_state_dict,
@@ -159,7 +159,10 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
     @property
     @override
     def checkpoint_io(self) -> CheckpointIO:
-        return get_checkpoint_io(self._checkpoint_io)
+        if not self._checkpoint_io:
+            self._checkpoint_io = create_checkpoint_io()
+
+        return self._checkpoint_io
 
     @checkpoint_io.setter
     def checkpoint_io(self, io: CheckpointIO) -> None:

@@ -48,7 +48,6 @@ class Qwen2Config(GPTConfig):
     layernorm_epsilon: float = 1e-6
     rotary_base: float = 1000000.0
     position_embedding_type: str = "rope"
-    apply_query_key_layer_scaling: bool = True
 
 
 @dataclass

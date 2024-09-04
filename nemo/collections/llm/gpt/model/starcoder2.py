@@ -49,7 +49,6 @@ class Starcoder2Config(GPTConfig):
     kv_channels: int = None
     num_query_groups: int = None
     window_size: Optional[List[int]] = None
-    apply_query_key_layer_scaling: bool = True
     attention_softmax_in_fp32: bool = True
     bias_activation_fusion: bool = True
     bias_dropout_fusion: bool = True

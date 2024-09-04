@@ -43,7 +43,6 @@ class NemotronConfig(GPTConfig):
 
     hidden_dropout: float = 0.0
     attention_dropout: float = 0.0
-    apply_query_key_layer_scaling: bool = True
     rotary_percent: float = 0.5
     masked_softmax_fusion: bool = True
     persist_layer_norm: bool = True

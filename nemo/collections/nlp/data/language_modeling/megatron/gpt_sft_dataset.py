@@ -521,11 +521,16 @@ class GPTSFTDataset(Dataset):
 
 class GPTSFTPackedDataset(GPTSFTDataset):
     def __init__(self, file_path: str, tokenizer: TokenizerSpec, return_cu_seqlen: bool = True, **kwargs):
+        """
+        file_path: See `file_path` in the parent class.
+        tokenizer: See `tokenizer` in the parent class.
+        return_cu_seqlen: Whether to return `cu_seqlen` to pass to the model. Having `cu_seqlen` in the model input
+                enables THD attention kernel, which is the correct format for training with packed sequence to prevent
+                cross-sequence attention. This flag should be True unless you have a specific use case.
+        """
         np.random.seed(kwargs.get('seed', 1234))
         super().__init__(file_path, tokenizer, **kwargs)
         assert self.virtual_tokens == 0, "P-Tuning with packed sequence is not supported."
-
-        # Whether to return `cu_seqlen` to pass to model. This should be true for almost all use cases.
         self.return_cu_seqlen = return_cu_seqlen
 
     def __getitem__(self, idx):

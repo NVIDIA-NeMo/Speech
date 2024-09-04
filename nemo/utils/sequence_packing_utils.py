@@ -118,6 +118,9 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
     counts = [0] * truncate_seq_len
 
     for item_dict in dataset:
+        # Minus 1 here to account for the fact that transformer input and label have one less token than the full sequence
+        # Input is missing the last token and label is missing the first token (this way the tokens are aligned for next token prediction).
+        # We want pack size to be the length of the actual input and label, hence minus 1.
         seq_len = len(item_dict['input_ids']) - 1
         sequences[seq_len].append(item_dict)
         counts[seq_len] += 1

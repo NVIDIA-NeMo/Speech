@@ -352,6 +352,17 @@ class ASRDecoderTimeStamps:
             self.asr_batch_size = if_none_get_default(self.params['asr_batch_size'], 4)
             self.model_stride_in_secs = 0.02
 
+        elif 'fastconformer' in self.ASR_model_name.lower():
+            self.run_ASR = self.run_ASR_BPE_CTC
+            self.encdec_class = EncDecCTCModelBPE
+            self.decoder_delay_in_sec = if_none_get_default(self.params['decoder_delay_in_sec'], 0.08)
+            self.word_ts_anchor_offset = if_none_get_default(self.params['word_ts_anchor_offset'], 0.12)
+            self.asr_batch_size = if_none_get_default(self.params['asr_batch_size'], 16)
+            self.model_stride_in_secs = 0.08
+            # FastConformer requires buffered inference and the parameters for buffered processing.
+            self.chunk_len_in_sec = 15
+            self.total_buffer_in_secs = 30
+
         elif 'conformer' in self.ASR_model_name.lower():
             self.run_ASR = self.run_ASR_BPE_CTC
             self.encdec_class = EncDecCTCModelBPE

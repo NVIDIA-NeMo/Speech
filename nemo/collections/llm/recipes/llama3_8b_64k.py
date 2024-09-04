@@ -3,8 +3,11 @@ from typing import Callable
 import torch
 
 from nemo.collections.llm.api import pretrain
+from nemo.collections.llm.gpt.data.mock import MockDataModule
+from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes import llama3_8b
-from nemo.collections.llm.utils import Partial
+from nemo.collections.llm.utils import Config, Partial
+from nemo.utils.exp_manager import TimingCallback
 
 NAME = "llama3_8b_64k"
 
@@ -16,6 +19,9 @@ def pretrain_recipe(
         name=name, ckpt_dir=ckpt_dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn
     )
 
+    model = llama3_8b.model()
+    model.config.seq_length = 65536
+
     trainer = llama3_8b.trainer(
         tensor_parallelism=2,
         pipeline_parallelism=4,
@@ -25,12 +31,14 @@ def pretrain_recipe(
         sequence_parallelism=True,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
+        callbacks=[Config(TimingCallback)],
     )
-    model = llama3_8b.model()
-    model.config.seq_length = 65536
+
+    data = Config(MockDataModule, seq_length=65536, global_batch_size=512, micro_batch_size=1)
 
     recipe.model = model
     recipe.trainer = trainer
+    recipe.data = data
 
     return recipe
 
@@ -40,6 +48,9 @@ def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node:
         name=name, ckpt_dir=ckpt_dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
     )
 
+    model = llama3_8b.model()
+    model.config.seq_length = 65536
+
     trainer = llama3_8b.trainer(
         tensor_parallelism=2,
         pipeline_parallelism=4,
@@ -49,11 +60,13 @@ def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node:
         sequence_parallelism=True,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
+        callbacks=[Config(TimingCallback)],
     )
-    model = llama3_8b.model()
-    model.config.seq_length = 65536
+
+    data = Config(SquadDataModule, seq_length=65536, global_batch_size=512, micro_batch_size=1)
 
     recipe.model = model
     recipe.trainer = trainer
+    recipe.data = data
 
     return recipe

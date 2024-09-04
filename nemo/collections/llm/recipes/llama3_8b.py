@@ -2,7 +2,6 @@ from typing import Callable, Optional
 
 import pytorch_lightning as pl
 import torch
-from megatron.core.distributed import DistributedDataParallelConfig
 from pytorch_lightning.callbacks.callback import Callback
 
 from nemo import lightning as nl

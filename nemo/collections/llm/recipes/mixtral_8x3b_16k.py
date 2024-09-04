@@ -3,8 +3,12 @@ from typing import Callable
 import torch
 
 from nemo.collections.llm.api import pretrain
+from nemo.collections.llm.gpt.data.mock import MockDataModule
+from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes import mixtral_8x3b
-from nemo.collections.llm.utils import Partial
+from nemo.collections.llm.utils import Config, Partial
+from nemo.utils.exp_manager import TimingCallback
+
 
 NAME = "mixtral_8x3b_16k"
 
@@ -16,6 +20,10 @@ def pretrain_recipe(
         name=name, ckpt_dir=ckpt_dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn
     )
 
+    model = mixtral_8x3b.model()
+    model.config.seq_length = 16384
+    model.config.max_position_embeddings = 16384
+
     trainer = mixtral_8x3b.trainer(
         tensor_parallelism=2,
         pipeline_parallelism=2,
@@ -23,15 +31,17 @@ def pretrain_recipe(
         virtual_pipeline_parallelism=8,
         context_parallelism=2,
         sequence_parallelism=True,
-        expert_parallelism=2,
+        expert_parallelism=1,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
+        callbacks=[Config(TimingCallback)],
     )
-    model = mixtral_8x3b.model()
-    model.config.seq_length = 16384
+
+    data = Config(MockDataModule, seq_length=16384, global_batch_size=512, micro_batch_size=1)
 
     recipe.model = model
     recipe.trainer = trainer
+    recipe.data = data
 
     return recipe
 
@@ -41,6 +51,10 @@ def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node:
         name=name, ckpt_dir=ckpt_dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
     )
 
+    model = mixtral_8x3b.model()
+    model.config.seq_length = 16384
+    model.config.max_position_embeddings = 16384
+
     trainer = mixtral_8x3b.trainer(
         tensor_parallelism=2,
         pipeline_parallelism=2,
@@ -48,14 +62,16 @@ def finetune_recipe(name: str, ckpt_dir: str, num_nodes: int, num_gpus_per_node:
         virtual_pipeline_parallelism=8,
         context_parallelism=2,
         sequence_parallelism=True,
-        expert_parallelism=2,
+        expert_parallelism=1,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
+        callbacks=[Config(TimingCallback)],
     )
-    model = mixtral_8x3b.model()
-    model.config.seq_length = 16384
+
+    data = Config(SquadDataModule, seq_length=16384, global_batch_size=512, micro_batch_size=1)
 
     recipe.model = model
     recipe.trainer = trainer
+    recipe.data = data
 
     return recipe

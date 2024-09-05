@@ -17,6 +17,7 @@ def distributed_fused_adam_with_cosine_annealing(max_lr: float = 1e-4) -> Config
         use_distributed_optimizer=True,
         overlap_grad_reduce=True,
         overlap_param_gather=True,
+        clip_grad=1.0,
     )
 
     sched = Config(

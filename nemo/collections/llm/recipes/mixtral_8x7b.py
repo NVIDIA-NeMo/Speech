@@ -57,7 +57,6 @@ def trainer(
         accumulate_grad_batches=1,
         callbacks=callbacks,
         devices=num_gpus_per_node,
-        gradient_clip_val=1.0,
         limit_test_batches=50,
         limit_val_batches=32,
         log_every_n_steps=10,

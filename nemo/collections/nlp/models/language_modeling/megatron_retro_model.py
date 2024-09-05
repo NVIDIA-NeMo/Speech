@@ -66,6 +66,7 @@ from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.neural_types import ChannelType, NeuralType
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import, safe_import_from
 
 try:
     from megatron.core import InferenceParams, parallel_state
@@ -98,14 +99,9 @@ except (ImportError, ModuleNotFoundError):
     logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
     from apex.transformer.pipeline_parallel.utils import get_num_microbatches
 
-try:
-    import transformer_engine
-    from transformer_engine.pytorch import module as te_module
-
-    HAVE_TE = True
-
-except (ImportError, ModuleNotFoundError):
-    HAVE_TE = False
+transformer_engine, HAVE_TE = safe_import("transformer_engine")
+te_module, HAVE_TE_MODULE = safe_import_from("transformer_engine.pytorch", "module")
+HAVE_TE = HAVE_TE and HAVE_TE_MODULE
 
 
 class MegatronRetroModel(MegatronGPTModel):

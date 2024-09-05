@@ -33,10 +33,12 @@ from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
 from megatron.core.dist_checkpointing.mapping import ShardedTensor
 from megatron.core.dist_checkpointing.optimizer import get_param_id_to_sharded_param_map, optim_state_to_sharding_state
-from transformer_engine.pytorch.cpp_extensions import cast_to_fp8
 
 from nemo.utils import logging, str_to_dtype
+from nemo.utils.import_utils import safe_import_from
 from nemo.utils.te_utils import is_float8tensor
+
+cast_to_fp8, _ = safe_import_from("transformer_engine.pytorch.cpp_extensions", "cast_to_fp8")
 
 _distribute_within_nodes_pgs = {}
 

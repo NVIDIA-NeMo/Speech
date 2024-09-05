@@ -45,6 +45,7 @@ from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 from nemo.collections.nlp.parts import utils_funcs
 from nemo.core import adapter_mixins
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
 
 try:
     from apex.normalization import MixedFusedRMSNorm
@@ -70,16 +71,13 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
 
-try:
-    from transformer_engine.common import recipe
-    from transformer_engine.pytorch import TransformerLayer, fp8_autocast
-    from transformer_engine.pytorch.distributed import checkpoint as te_checkpoint
+recipe, HAVE_RECIPE = safe_import_from("transformer_engine.common", "recipe")
+TransformerLayer, HAVE_LAYER = safe_import_from("transformer_engine.pytorch", "TransformerLayer")
+fp8_autocast, HAVE_AUTOCAST = safe_import_from("transformer_engine.pytorch", "fp8_autocast")
+te_checkpoint, HAVE_CKPT = safe_import_from("transformer_engine.pytorch.distributed", "checkpoint")
+HAVE_TE = HAVE_RECIPE and HAVE_LAYER and HAVE_AUTOCAST and HAVE_CKPT
 
-    HAVE_TE = True
-
-except:
-    HAVE_TE = False
-
+if not HAVE_TE:
     # fake missing class
     class TransformerLayer(ApexGuardDefaults):
         def __init__(self):

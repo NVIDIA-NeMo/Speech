@@ -40,15 +40,9 @@ from nemo.collections.multimodal.modules.stable_diffusion.diffusionmodules.util 
     zero_module,
 )
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import
 
-try:
-    # FP8 related import
-    import transformer_engine
-
-    HAVE_TE = True
-
-except (ImportError, ModuleNotFoundError):
-    HAVE_TE = False
+transformer_engine, HAVE_TE = safe_import("transformer_engine")
 
 try:
     from apex.contrib.group_norm import GroupNorm

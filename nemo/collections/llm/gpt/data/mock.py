@@ -22,12 +22,9 @@ from torch.utils import data
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
+from nemo.utils.import_utils import safe_import
 
-HAVE_TE = True
-try:
-    import transformer_engine
-except (ImportError, ModuleNotFoundError):
-    HAVE_TE = False
+_, HAVE_TE = safe_import("transformer_engine")
 
 if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec

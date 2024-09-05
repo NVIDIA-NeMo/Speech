@@ -18,10 +18,9 @@ from lightning_fabric.plugins.environments import slurm
 from pytorch_lightning import plugins as _pl_plugins
 
 # This is here to import it once, which improves the speed of launch when in debug-mode
-try:
-    import transformer_engine  # noqa
-except ImportError:
-    pass
+from nemo.utils.import_utils import safe_import
+
+safe_import("transformer_engine")
 
 from nemo.lightning.base import get_vocab_size, teardown
 from nemo.lightning.fabric.fabric import Fabric

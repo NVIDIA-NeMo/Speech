@@ -15,13 +15,15 @@
 from functools import partial
 
 import pytest
-import transformer_engine as te
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning import io
+from nemo.utils.import_utils import safe_import
+
+te, HAVE_TE = safe_import("transformer_engine")
 
 
 def dummy_extra(a, b, c=5):

@@ -13,10 +13,9 @@
 # limitations under the License.
 
 # This is here to import it once, which improves the speed of launch when in debug-mode
-try:
-    import transformer_engine  # noqa
-except ImportError:
-    pass
+from nemo.utils.import_utils import safe_import
+
+safe_import("transformer_engine")
 
 from nemo.collections.llm import peft, tokenizer
 from nemo.collections.llm.api import export_ckpt, finetune, import_ckpt, pretrain, train, validate

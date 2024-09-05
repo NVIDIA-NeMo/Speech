@@ -39,15 +39,12 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
 )
 from nemo.core import adapter_mixins
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
 
-try:
-    from transformer_engine.pytorch.attention import DotProductAttention
-    from transformer_engine.pytorch.module import LayerNormLinear, LayerNormMLP
-
-    HAVE_TE = True
-
-except (ImportError, ModuleNotFoundError):
-    HAVE_TE = False
+DotProductAttention, HAVE_DPA = safe_import_from("transformer_engine.pytorch.attention", "DotProductAttention")
+LayerNormLinear, HAVE_LN_LINEAR = safe_import_from("transformer_engine.pytorch.module", "LayerNormLinear")
+LayerNormMLP, HAVE_LN_MLP = safe_import_from("transformer_engine.pytorch.module", "LayerNormMLP")
+HAVE_TE = HAVE_DPA and HAVE_LN_LINEAR and HAVE_LN_MLP
 
 
 def check_cuda():

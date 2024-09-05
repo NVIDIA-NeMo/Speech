@@ -22,6 +22,7 @@ from torch import Tensor, nn
 
 from nemo.collections.nlp.parts.peft_config import LORA_CONFIG_TO_MCORE_MAP, get_target_modules
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
 
 te_version = packaging.version.Version(version("transformer-engine"))
 
@@ -178,11 +179,11 @@ class NF4LayerNormLinearWrapper(NF4LinearWrapper):
         since this is for QLoRA.
         '''
         if self.normalization == 'LayerNorm':
-            from transformer_engine.pytorch.module.layernorm import _LayerNorm
+            _LayerNorm, _ = safe_import_from("transformer_engine.pytorch.module.layernorm", "_LayerNorm")
 
             layer_norm_fn = _LayerNorm.apply
         elif self.normalization == 'RMSNorm':
-            from transformer_engine.pytorch.module.rmsnorm import _RMSNorm
+            _RMSNorm, _ = safe_import_from("transformer_engine.pytorch.module.layernorm", "_RMSNorm")
 
             layer_norm_fn = _RMSNorm.apply
         else:

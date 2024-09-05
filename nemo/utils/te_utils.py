@@ -13,16 +13,10 @@
 # limitations under the License.
 
 import torch
+from nemo.utils.import_utils import safe_import_from
 
 # Check if Transformer Engine has Float8Tensor class
-HAVE_TE_FLOAT8TENSOR = False
-try:
-    from transformer_engine.pytorch.float8_tensor import Float8Tensor
-
-    HAVE_TE_FLOAT8TENSOR = True
-except (ImportError, ModuleNotFoundError):
-    # Float8Tensor not found
-    pass
+Float8Tensor, HAVE_TE_FLOAT8TENSOR = safe_import_from("transformer_engine.pytorch.float8_tensor", "Float8Tensor")
 
 
 def is_float8tensor(tensor: torch.Tensor) -> bool:

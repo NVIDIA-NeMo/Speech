@@ -625,7 +625,16 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         # retrieve `sharded_state_dict` if it has not already been configured in `on_save_checkpoint`
         if "sharded_state_dict" not in checkpoint:
             checkpoint["sharded_state_dict"] = self.megatron_parallel.sharded_state_dict()
-        if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_save_optimizer:
+
+        ## replace unsharded optimizer_states with sharded dict.
+        ## note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
+        ## the checkpoint will contain only model weights. Optimizer states will be omitted.
+        if (
+            "optimizer_states" in checkpoint
+            and self.trainer.state.fn == TrainerFn.FITTING
+            and self.ckpt_save_optimizer
+        ):
+            del checkpoint["optimizer_states"]
             checkpoint["optimizer"] = [self.optimizer_sharded_state_dict()]
 
         self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)

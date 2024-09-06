@@ -208,11 +208,15 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         checkpoint["sharded_state_dict"] = pyt_to_mcore_state_dict(checkpoint.pop("state_dict"))
         checkpoint["state_dict"] = OrderedDict([])
 
-        # TODO: do we still need to keep this?
-        for optim_state in checkpoint['optimizer_states']:
-            optim_state.pop("state")
-
-        if self.trainer.state.fn == TrainerFn.FITTING and self.ckpt_save_optimizer:
+        ## replace unsharded optimizer_states with sharded dict.
+        ## note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
+        ## the checkpoint will contain only model weights. Optimizer states will be omitted.
+        if (
+            "optimizer_states" in checkpoint
+            and self.trainer.state.fn == TrainerFn.FITTING
+            and self.ckpt_save_optimizer
+        ):
+            del checkpoint["optimizer_states"]
             checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
             pyt_to_mcore_state_dict(checkpoint['optimizer']['state'], prefix="optimizer.state.")
 

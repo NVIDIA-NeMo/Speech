@@ -66,6 +66,11 @@ class AutoResume:
     resume_past_end: bool = False
     resume_ignore_no_checkpoint: bool = False
 
+    WEIGHTS_PATH = "weights"
+
+    def get_model_weights_path(self, path):
+        return Path(path) / self.WEIGHTS_PATH
+
     def setup(self, trainer: Union[pl.Trainer, fl.Fabric], model=None):
         if isinstance(trainer, fl.Fabric):
             raise NotImplementedError("Fabric is not supported yet.")
@@ -90,6 +95,7 @@ class AutoResume:
     def _try_import_model(
         self, model: Optional[io.ConnectorMixin], path: str, adapter_path: Optional[str] = None
     ) -> BasePath:
+
         if model is None:
             raise ValueError("Model is needed to import checkpoint from HF or other non-NeMo checkpoint format.")
         try:
@@ -99,6 +105,11 @@ class AutoResume:
             new_path = path
 
         if adapter_path:
+
+            maybe_model_weights_path = self.get_model_weights_path(adapter_path)
+            if os.path.isdir(maybe_model_weights_path):
+                adapter_path = maybe_model_weights_path
+
             new_path = AdapterPath(Path(adapter_path), base_model_path=new_path)
 
         if isinstance(new_path, str):
@@ -210,6 +221,11 @@ class AutoResume:
         app_state.restore = self.resume_if_exists
         if self.resume_if_exists:
             checkpoint = self._find_trainer_ckpt_path()
+
+        if checkpoint:
+            maybe_model_weights_path = self.get_model_weights_path(checkpoint)
+            if os.path.isdir(maybe_model_weights_path):
+                checkpoint = maybe_model_weights_path
 
         if checkpoint:
             if self.adapter_path:

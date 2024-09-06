@@ -141,7 +141,7 @@ class IOMixin:
                            will be stored.
         """
         output_path = Path(output)
-        local_artifacts_dir = "artifacts"
+        local_artifacts_dir = "."
         artifacts_dir = output_path / local_artifacts_dir
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -518,7 +518,7 @@ def _io_path_elements_fn(x):
     return x.__io__.__path_elements__()
 
 
-def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: Path = "artifacts"):
+def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: Path = "."):
     for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
         current_val = getattr(cfg, artifact.attr)
         if current_val is None:

@@ -111,7 +111,7 @@ class MegatronDataSampler(DataSampler):
         self.prev_global_batch_size = self.current_global_batch_size
 
         consumed_samples = self.compute_consumed_samples(trainer.global_step + 1 - self.init_global_step)
-        if self.output_log:
+        if self.output_log and self.trainer.training:
             # You may need to turn off logging, for example when doing trainer.predict(model, data)
             pl_module.log(
                 'consumed_samples',

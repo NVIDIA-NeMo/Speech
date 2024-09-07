@@ -32,7 +32,6 @@ def default_log(
 ) -> Config[nl.NeMoLogger]:
     ckpt = Config(
         nl.ModelCheckpoint,
-        save_best_model=False,
         save_last=True,
         save_top_k=10,
         every_n_train_steps=200,

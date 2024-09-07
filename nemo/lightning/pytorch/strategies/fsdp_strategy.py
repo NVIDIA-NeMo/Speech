@@ -216,7 +216,7 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
             and self.trainer.state.fn == TrainerFn.FITTING
             and self.ckpt_save_optimizer
         ):
-            del checkpoint["optimizer_states"]
+            checkpoint["optimizer_states"] = {}
             checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
             pyt_to_mcore_state_dict(checkpoint['optimizer']['state'], prefix="optimizer.state.")
 

@@ -634,7 +634,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             and self.trainer.state.fn == TrainerFn.FITTING
             and self.ckpt_save_optimizer
         ):
-            del checkpoint["optimizer_states"]
+            checkpoint["optimizer_states"] = {}
             checkpoint["optimizer"] = [self.optimizer_sharded_state_dict()]
 
         self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)

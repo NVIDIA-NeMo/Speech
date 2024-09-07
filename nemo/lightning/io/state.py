@@ -321,7 +321,7 @@ class StateDictTransform(Generic[F]):
 
 
 def _match_keys(keys: List[str], pattern: str) -> np.ndarray:
-    regex_pattern = re.compile("^" + pattern.replace("*", "(.*)") + "$")
+    regex_pattern = re.compile("^" + pattern.replace("*", r"([^.]+)") + "$")
     wildcard_matches = [[] for _ in range(pattern.count("*"))]
 
     for key in filter(lambda x: x is not None, keys):

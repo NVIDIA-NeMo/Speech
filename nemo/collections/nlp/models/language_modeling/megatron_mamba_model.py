@@ -67,9 +67,6 @@ class MegatronMambaModel(MegatronGPTModel):
         averaged_loss = torch.tensor(0.0, dtype=torch.float32).cuda()
         return averaged_loss
 
-    def sharded_state_dict(self, prefix: str = ''):
-        return None
-
     def _reset_activation_checkpointing_args(self):
         return
 

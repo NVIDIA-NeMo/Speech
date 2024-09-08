@@ -65,14 +65,6 @@ jobs:
             CHERRYPICK_SUCCESSFUL=$?
 
             if [[ $CHERRYPICK_SUCCESSFUL -eq 0 ]]; then
-              curl \
-                --header "PRIVATE-TOKEN: $PROJECT_ACCESS_TOKEN_MCORE" \
-                --url https://${GITLAB_ENDPOINT}/api/v4/projects/141257/merge_requests \
-                -d "source_branch=cherry-pick-$MR_ID-$RELEASE_BRANCH" \
-                -d "target_branch=$RELEASE_BRANCH" \
-                -d "title=Cherry-pick $PR_ID into $RELEASE_BRANCH" \
-                -d "labels=cherry-pick"
-
               curl -L \
                 -X POST \
                 -H "Accept: application/vnd.github+json" \

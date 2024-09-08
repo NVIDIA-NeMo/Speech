@@ -57,9 +57,9 @@ jobs:
             
             (
               git fetch origin $RELEASE_BRANCH:$RELEASE_BRANCH
-              git switch --force-create cherry-pick-$MR_ID-$RELEASE_BRANCH $RELEASE_BRANCH
+              git switch --force-create cherry-pick-$PR_ID-$RELEASE_BRANCH $RELEASE_BRANCH
               git cherry-pick $SHA
-              git push -u origin --force cherry-pick-$MR_ID-$RELEASE_BRANCH
+              git push -u origin --force cherry-pick-$PR_ID-$RELEASE_BRANCH
               git checkout ${CI_DEFAULT_BRANCH:-main}
             )
 

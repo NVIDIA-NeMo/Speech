@@ -28,6 +28,8 @@ jobs:
     needs: analyse-labels
     permissions:
       actions: write
+      pull-requests: write
+      contents: write
     strategy:
       matrix:
         branch: ${{ fromJSON(needs.analyse-labels.outputs.branches) }}

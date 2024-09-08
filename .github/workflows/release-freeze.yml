@@ -39,7 +39,7 @@ jobs:
           cd ${{ github.run_id }}
                     
           if [[ "${{ inputs.is_prelease }}" == "false" ]]; then
-            sed "/^PRE_RELEASE/c\PRE_RELEASE = ''" nemo/package_info.py 
+            sed -i "/^PRE_RELEASE/c\PRE_RELEASE = ''" nemo/package_info.py 
           fi
 
           VERSION=$(python -c 'import nemo; print(nemo.__version__)')

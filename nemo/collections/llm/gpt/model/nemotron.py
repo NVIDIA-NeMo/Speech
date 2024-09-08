@@ -173,7 +173,7 @@ class HFNemotronImporter(io.ModelConnector["NemotronForCausalLM", NemotronModel]
     def tokenizer(self) -> "AutoTokenizer":
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(str(self))
+        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property
     def config(self) -> NemotronConfig:

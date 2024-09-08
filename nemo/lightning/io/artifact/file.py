@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 from typing import Union
@@ -23,8 +24,46 @@ class FileArtifact(Artifact[str]):
         return path
 
 
+def pathize(s):
+    if not isinstance(s, Path):
+        return Path(s)
+    return s
+
+
 def copy_file(src: Union[Path, str], path: Union[Path, str], relative_dst: Union[Path, str]):
-    relative_path = Path(relative_dst) / Path(src).name
-    output = Path(path) / relative_path
+    relative_path = pathize(relative_dst) / pathize(src).name
+    output = pathize(path) / relative_path
+    if output.exists():
+        raise FileExistsError(f"Dst file already exists {str(output)}")
     shutil.copy2(src, output)
     return relative_path
+
+
+class DirArtifact(Artifact[str]):
+    def dump(self, value: str, absolute_dir: Path, relative_dir: Path) -> str:
+        value = pathize(value)
+        absolute_dir = pathize(absolute_dir)
+        relative_dir = pathize(relative_dir)
+        if not value.is_dir():
+            return value
+
+        relative_dir = relative_dir / value.name
+        os.makedirs(str(absolute_dir / relative_dir), exist_ok=True)
+        for file in value.iterdir():
+            copy_file(file, absolute_dir, relative_dir)
+        return str(relative_dir)
+
+    def load(self, path: str) -> str:
+        return path
+
+
+class DirOrStringArtifact(DirArtifact):
+    def dump(self, value: str, absolute_dir: Path, relative_dir: Path) -> str:
+        if not pathize(value).exists():
+            # This is Artifact is just a string.
+            self.skip = True
+            return value
+        return super().dump(value, absolute_dir, relative_dir)
+
+    def load(self, path: str) -> str:
+        return path

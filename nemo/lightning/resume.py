@@ -34,6 +34,20 @@ else:
     BasePath = PosixPath
 
 
+def _try_restore_tokenizer(model, ckpt_path):
+    from nemo.lightning.io import load_context
+
+    try:
+        tokenizer = load_context(ckpt_path, "model.tokenizer")
+        model.tokenizer = tokenizer
+        model.__io__.tokenizer = tokenizer.__io__
+    except:
+        # Ignore if the ckpt doesn't have a tokenizer.
+        pass
+    finally:
+        return model
+
+
 @dataclass(kw_only=True)
 class AutoResume:
     """Class that handles the logic for setting checkpoint paths and restoring from
@@ -79,6 +93,11 @@ class AutoResume:
         if trainer_ckpt_path:
             trainer.ckpt_path = trainer_ckpt_path
             trainer.checkpoint_callback.last_model_path = trainer_ckpt_path
+            # Load artifacts
+            if getattr(self.restore_config, 'load_artifacts', False):
+                context_path = self.get_context_path(model)
+                model = _try_restore_tokenizer(model, context_path)
+
         elif self.restore_config:
             new_path = self._try_import_model(
                 model=model,
@@ -213,6 +232,19 @@ class AutoResume:
         else:
             checkpoint = last_checkpoints[0]
 
+        return checkpoint
+
+    def get_context_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:
+        checkpoint = None
+        app_state = AppState()
+        app_state.restore = self.resume_if_exists
+        if self.resume_if_exists:
+            checkpoint = self._find_trainer_ckpt_path()
+
+        if checkpoint:
+            maybe_model_weights_path = Path(checkpoint) / "context"
+            if os.path.isdir(maybe_model_weights_path):
+                checkpoint = maybe_model_weights_path
         return checkpoint
 
     def get_trainer_ckpt_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:

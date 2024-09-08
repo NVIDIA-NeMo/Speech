@@ -120,7 +120,7 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
-        return AutoTokenizer(str(self))
+        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property
     def config(self) -> StarcoderConfig:

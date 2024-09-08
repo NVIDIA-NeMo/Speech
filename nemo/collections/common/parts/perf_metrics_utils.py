@@ -2,7 +2,6 @@ import glob
 import os
 from typing import List
 
-from tensorboard.backend.event_processing import event_accumulator
 
 from nemo.utils import logging
 
@@ -27,6 +26,7 @@ def read_tb_log(path: str, summary_name: str) -> List:
     Returns:
         summary_list: list, the values in the read summary list, formatted as a list.
     """
+    from tensorboard.backend.event_processing import event_accumulator
 
     files = glob.glob(f"{path}/events*tfevents*")
     files.sort(key=lambda x: os.path.getmtime(os.path.join(path, x)))

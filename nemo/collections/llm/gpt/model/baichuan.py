@@ -106,7 +106,7 @@ class HFBaichuan2Importer(io.ModelConnector["AutoModelForCausalLM", Baichuan2Mod
     def tokenizer(self) -> "AutoTokenizer":
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(str(self), trust_remote_code=True)
+        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
 
     @property
     def config(self) -> Baichuan2Config:

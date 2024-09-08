@@ -520,6 +520,9 @@ def _io_path_elements_fn(x):
 
 def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: Path = "."):
     for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
+        # Allow optional artifacts
+        if artifact.skip:
+            continue
         current_val = getattr(cfg, artifact.attr)
         if current_val is None:
             if artifact.required:
@@ -539,7 +542,12 @@ def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: P
 
 def _artifact_transform_load(cfg: fdl.Config, path: Path):
     for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
+        if artifact.skip:
+            continue
         current_val = getattr(cfg, artifact.attr)
+        # __init__ arguments can be None
+        if current_val is None:
+            continue
         ## replace local path with absolute one
         new_val = str(Path(path) / current_val)
         setattr(cfg, artifact.attr, new_val)
@@ -589,31 +597,31 @@ def load(path: Path, output_type: Type[CkptType] = Any, subpath: Optional[str] =
     ## add IO functionality to custom objects present in the json file
     with open(_path) as f:
         j = json.load(f)
-        for obj, val in j["objects"].items():
-            clss = ".".join([val["type"]["module"], val["type"]["name"]])
-            if subpath and "paths" in val:
-                if all(map(lambda p: subpath not in p, val["paths"])):
-                    continue
+    for obj, val in j.get("objects", {}).items():
+        clss = ".".join([val["type"]["module"], val["type"]["name"]])
+        if subpath and "paths" in val:
+            if all(map(lambda p: subpath not in p, val["paths"])):
+                continue
 
-            if not serialization.find_node_traverser(locate(clss)):
-                track_io(locate(clss))
+        if not serialization.find_node_traverser(locate(clss)):
+            track_io(locate(clss))
 
     with open(_path, "rb") as f:
         json_config = json.loads(f.read())
 
-        root_key = None
-        for obj, val in json_config["objects"].items():
-            if "paths" in val and subpath in val["paths"]:
-                root_key = obj
-                break
+    root_key = None
+    for obj, val in json_config.get("objects", {}).items():
+        if "paths" in val and subpath in val["paths"]:
+            root_key = obj
+            break
 
-        if subpath and not root_key:
-            logging.warning(f"Could not find {subpath} for {output_type} in {_path}")
+    if subpath and not root_key:
+        logging.warning(f"Could not find {subpath} for {output_type} in {_path}")
 
-        if root_key:
-            json_config["root"]["key"] = root_key
+    if root_key:
+        json_config["root"]["key"] = root_key
 
-        config = serialization.Deserialization(json_config).result
-        _artifact_transform_load(config, path)
+    config = serialization.Deserialization(json_config).result
+    _artifact_transform_load(config, path)
 
     return fdl.build(config)

@@ -42,6 +42,8 @@ class RestoreConfig:
     adapter_path: Optional[str] = None
     load_model_state: bool = True
     load_optim_state: bool = False
+    # eg tokenizer, etc.
+    load_artifacts: bool = True
 
 
 def setup_parallel_ranks(strategy: pl.strategies.Strategy):

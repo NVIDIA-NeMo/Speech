@@ -44,6 +44,25 @@ jobs:
             cherry-pick
           reviewers: |
             ${{ github.event.pull_request.user.login }}
+        
+      - name: Send Slack message on failure
+        if: failure()
+        run: |
+          URL=https://github.com/NVIDIA/NeMo/pull/${{ github.event.number }}
+
+          MESSAGE='{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ":alert: Cherrypick bot 🤖: Cherry-pick of <'$URL'|#'${{ github.event.number }}'> failed"
+                }
+              }
+            ]
+          }'
+
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_WEBHOOK }}
 
 env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

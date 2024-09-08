@@ -59,7 +59,7 @@ class MixtralConfig(GPTConfig):
     moe_aux_loss_coeff: float = 0.01
     moe_expert_capacity_factor: float = 1.0
     moe_pad_expert_input_to_capacity: bool = True
-    moe_router_topk: int = 1
+    moe_router_topk: int = 2
     moe_router_pre_softmax: bool = True
     moe_token_dispatcher_type: str = "alltoall"
 
@@ -104,7 +104,7 @@ class MixtralConfig8x7B(MixtralConfig):
 @dataclass
 class MixtralConfig8x22B(MixtralConfig):
     """
-    Config for Mixtral-8x7B model
+    Config for Mixtral-8x22B model
     Official announcement: https://mistral.ai/news/mixtral-8x22b/
     """
 
@@ -114,9 +114,6 @@ class MixtralConfig8x22B(MixtralConfig):
     ffn_hidden_size: int = 16384
     max_position_embeddings: int = 4096
     seq_length: int = 4096
-    # MoE
-    num_moe_experts: int = 8
-    moe_router_topk: int = 2
 
 
 class MixtralModel(GPTModel):

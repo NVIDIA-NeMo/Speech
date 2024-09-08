@@ -34,11 +34,12 @@ jobs:
           PAYLOAD=$(jq \
                       -n \
                       -c \
+                      --arg TAG_NAME "v${VERSION}" \
                       --arg CI_COMMIT_BRANCH "${{ inputs.branch }}" \
                       --arg NAME "$NAME" \
                       --arg BODY "$CHANGELOG" \
                       '{
-                        "tag_name": $CI_COMMIT_BRANCH,
+                        "tag_name": $TAG_NAME,
                         "target_commitish": $CI_COMMIT_BRANCH,
                         "name": $NAME,
                         "body": $BODY,

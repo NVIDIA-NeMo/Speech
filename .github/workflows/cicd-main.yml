@@ -70,6 +70,7 @@ jobs:
         docker container prune --filter "until=24h" --force
         docker image prune -a --filter "until=24h" --force
 
+
   cicd-test-container-setup:
     needs: [cicd-cluster-clean, pre-flight]
     runs-on: self-hosted-azure-builder

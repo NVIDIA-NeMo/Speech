@@ -37,12 +37,12 @@ jobs:
         id: release-branch
         run: |
           cd ${{ github.run_id }}
-          
-          VERSION=$(python -c 'import nemo; print(nemo.__version__)')
-          
+                    
           if [[ "${{ inputs.is_prelease }}" == "false" ]]; then
             sed -i '/^PRE_RELEASE/c\PRE_RELEASE =  '\''' nemo/package_info.py 
           fi
+
+          VERSION=$(python -c 'import nemo; print(nemo.__version__)')
 
           echo "Release version r$VERSION" > version
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

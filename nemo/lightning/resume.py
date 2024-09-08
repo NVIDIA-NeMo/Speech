@@ -57,7 +57,8 @@ class AutoResume:
         restore_config (Optional[RestoreConfig]): Optional config for selectively restoring specific parts like model weights, optimizer states, etc.
             If the config contains a path from HF or another non-NeMo checkpoint format, the checkpoint will be automatically converted to a NeMo compatible format.
             resume_from_folder or the run's log_dir takes precedence over restore_config.
-        resume_from_directory (str): Path to the checkpointing directory to restore from. Defaults to <log_dir>/checkpoints
+        resume_from_directory (str): Path to the checkpointing directory to restore from.
+        resume_from_path (str): Path to a specific checkpoint to restore from.
         adapter_path (str): Path to any adapter checkpoints.
         resume_if_exists (bool): Whether this experiment is resuming from a previous run. If
             True, it sets trainer._checkpoint_connector._ckpt_path so that the trainer should
@@ -75,6 +76,7 @@ class AutoResume:
 
     restore_config: Optional[RestoreConfig] = None
     resume_from_directory: Optional[str] = None
+    resume_from_path: Optional[str] = None
     adapter_path: Optional[str] = None
     resume_if_exists: bool = False
     resume_past_end: bool = False
@@ -248,6 +250,10 @@ class AutoResume:
         return checkpoint
 
     def get_trainer_ckpt_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:
+        if self.resume_from_path:
+            maybe_model_weights_path = self.get_model_weights_path(self.resume_from_path)
+            return maybe_model_weights_path if os.path.isdir(maybe_model_weights_path) else self.resume_from_path
+
         checkpoint = None
         app_state = AppState()
         app_state.restore = self.resume_if_exists

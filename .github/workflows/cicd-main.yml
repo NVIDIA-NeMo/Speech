@@ -19,6 +19,7 @@ on:
       - 'main'
       - 'r**'
     types: [ labeled ]
+
   workflow_dispatch:
     inputs:
       test_to_run:

@@ -1,4 +1,3 @@
-fiddle
 huggingface_hub>=0.24
 numba
 numpy>=1.22

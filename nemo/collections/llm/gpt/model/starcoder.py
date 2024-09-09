@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Annotated, Callable, Optional
 import torch.nn.functional as F
 from torch import nn
 
-from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
@@ -120,6 +119,8 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
+        from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
+
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property

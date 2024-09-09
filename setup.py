@@ -273,7 +273,7 @@ setuptools.setup(
     # Custom commands.
     cmdclass={'style': StyleCommand},
     entry_points={
-        "run.factories": [
+        "nemo_run.cli": [
             "llm = nemo.collections.llm",
         ],
     },

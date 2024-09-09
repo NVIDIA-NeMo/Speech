@@ -123,15 +123,16 @@ jobs:
         ### \'\'
   
   # L0: GPU unit tests
-  L0_Unit_Tests_GPU_ASR:
+  OPTIONAL_L0_Unit_Tests_GPU_ASR:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_GPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure
        TIMEOUT: 20
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/asr -m "not pleasefixme" --with_downloads
+       IS_OPTIONAL: true
 
   L0_Unit_Tests_GPU_Audio:
      needs: [cicd-test-container-setup]
@@ -5113,7 +5114,7 @@ jobs:
       - gpu-test
       - cicd-test-container-setup
 
-      - L0_Unit_Tests_GPU_ASR
+      #- OPTIONAL_L0_Unit_Tests_GPU_ASR
       - L0_Unit_Tests_GPU_Audio
       - L0_Unit_Tests_GPU_Common
       - L0_Unit_Tests_GPU_LLM

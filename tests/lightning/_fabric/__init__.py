@@ -11,3 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
+# Directory name is "_fabric" instead of "fabric" to avoid
+# name collision with package the "fabric" when running scripts
+# in the parent directory.

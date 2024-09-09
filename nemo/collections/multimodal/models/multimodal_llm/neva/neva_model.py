@@ -21,7 +21,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig, ListConfig, OmegaConf
 from pkg_resources import packaging
 from pytorch_lightning.trainer.trainer import Trainer
 from transformers import CLIPVisionModel, SiglipVisionModel
@@ -68,6 +68,25 @@ from nemo.collections.vision.data.megatron.data_samplers import MegatronVisionPr
 from nemo.core import adapter_mixins
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging
+
+try:
+    from megatron.energon import (
+        LimitDataset,
+        RepeatDataset,
+        WorkerConfig,
+        get_loader,
+        get_savable_loader,
+        get_train_dataset,
+        get_val_datasets,
+    )
+
+    from nemo.collections.multimodal.data.neva.neva_energon_dataset import TaskEncoder
+
+    HAVE_ENERGON = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_ENERGON = False
 
 try:
     from megatron.core import InferenceParams, dist_checkpointing, parallel_state, tensor_parallel
@@ -1226,10 +1245,22 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
         else:
             # TODO: consider adding a ModelPT guard to check if model is being restored.
             # allowing restored models to optionally setup datasets
-            self.build_train_valid_test_datasets()
-            self.setup_training_data(self.cfg.data)
-            self.setup_validation_data(self.cfg.data)
-            self.setup_test_data(self.cfg.data)
+
+            if self.cfg.get('energon', {}).get('use_energon', False):
+                if not HAVE_ENERGON:
+                    raise ImportError(
+                        "Megatron-Energon was not found. Please see the Energon README for installation instructions: https://github.com/NVIDIA/Megatron-Energon?tab=readme-ov-file#installation."
+                    )
+                assert not self.use_peft, "NeMo does not currently support the combination of Energon and PEFT."
+                logging.info(
+                    "You are now using an experimental implementation of Megatron-Energon, https://github.com/NVIDIA/Megatron-Energon, for your NeVA dataloader. Further updates to Energon support in NeMo will be done in NeMo 2.0 implementation."
+                )
+                self.build_train_valid_test_datasets_energon()
+            else:
+                self.build_train_valid_test_datasets()
+                self.setup_training_data(self.cfg.data)
+                self.setup_validation_data(self.cfg.data)
+                self.setup_test_data(self.cfg.data)
 
         # when using pipeline model parallel the final stage need to initialize word embeddings
         if parallel_state.get_pipeline_model_parallel_world_size() > 1:
@@ -1435,6 +1466,144 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
             persistent_workers=True if self.cfg.data.num_workers > 0 else False,
         )
 
+    def datasets_provider(self, worker_config=None):
+        """Create multimodal train, validation and test datasets."""
+        if parallel_state.get_pipeline_model_parallel_world_size() == 1:
+            micro_batch_size = self.cfg.micro_batch_size
+        else:
+            micro_batch_size = self.cfg.global_batch_size // parallel_state.get_data_parallel_world_size()
+
+        dname = OmegaConf.to_container(self.cfg.energon.data, resolve=True)
+
+        image_processor = (
+            self.model.module.image_processor if hasattr(self.model, "module") else self.model.image_processor
+        )
+
+        add_extra_token = 1
+        if getattr(self.cfg, 'no_seqlen_plus_one_input_tokens', False):
+            add_extra_token = 0
+
+        multimodal_cfg = dict(
+            is_multimodal=self.cfg.data.is_multimodal,
+            sep_image_conv_front=self.cfg.data.sep_image_conv_front,
+            model_type=self.cfg.mm_cfg.llm.get("model_type", "nvgpt"),
+            conv_template=self.cfg.data.get("conv_template", "nvgpt"),
+            patch_dim=self.cfg.mm_cfg.vision_encoder.patch_dim,
+            crop_size=self.cfg.mm_cfg.vision_encoder.get("crop_size", (336, 336)),
+            image_folder=self.cfg.data.get('image_folder', None),
+            video_folder=self.cfg.data.get('video_folder', None),
+            image_aspect_ratio=self.cfg.data.image_aspect_ratio,
+            use_im_start_end=getattr(self.cfg.mm_cfg, 'use_im_start_end', False),
+            image_processor=image_processor,
+            add_extra_token=add_extra_token,
+            context_length=self.cfg.encoder_seq_length,
+            media_type=self.cfg.data.get('media_type', 'image'),
+            num_frames=self.cfg.data.get('num_frames', -1),
+            use_lita=getattr(self.cfg.mm_cfg, 'use_lita', False),
+            lita=getattr(self.cfg.mm_cfg, 'lita', {}),
+            mm_mlp_adapter_type=self.cfg.mm_cfg.get('mm_mlp_adapter_type', 'linear'),
+        )
+
+        data_cfg = dict(
+            splice_single_frame=self.cfg.data.get('splice_single_frame', None),
+            num_frames=self.cfg.data.get('num_frames', -1),
+            sep_token_between_frames=self.cfg.data.get('sep_token_between_frames', False),
+        )
+
+        train_dataset = get_train_dataset(
+            dname,
+            batch_size=micro_batch_size,
+            task_encoder=TaskEncoder(
+                tokenizer=self.tokenizer,
+                image_processor=image_processor,
+                multimodal_cfg=multimodal_cfg,
+                data_cfg=data_cfg,
+            ),
+            worker_config=worker_config,
+            virtual_epoch_length=1000,
+            max_samples_per_sequence=100,
+            shuffle_buffer_size=100,
+            image_decode="pil",
+        )
+
+        val_datasets = get_val_datasets(
+            dname,
+            batch_size=micro_batch_size,
+            # This is the total number over all workers
+            task_encoder=TaskEncoder(
+                tokenizer=self.tokenizer,
+                image_processor=image_processor,
+                multimodal_cfg=multimodal_cfg,
+                data_cfg=data_cfg,
+            ),
+            worker_config=worker_config,
+            image_decode="pil",
+        )
+
+        val_datasets_without_source_datasets = [
+            # Limit the dataset to eval_iters * num_microbatches
+            LimitDataset(
+                # Repeat the inner dataset in case it's too short
+                RepeatDataset(val_ds, worker_config=worker_config),
+                length=self.cfg.micro_batch_size * self.trainer.limit_val_batches,
+                worker_config=worker_config,
+                reset_after_epoch=True,
+            )
+            for val_ds, _src_ds in val_datasets
+        ]
+
+        return train_dataset, val_datasets_without_source_datasets, None
+
+    # energon dataset builder
+    def build_train_valid_test_datasets_energon(self):
+        """Builds train and validation dataloaders using Megatron-Energon"""
+        rank = parallel_state.get_data_parallel_rank()
+        world_size = parallel_state.get_data_parallel_world_size()
+        data_parallel_group = parallel_state.get_data_parallel_group()
+        worker_debug_path = None
+        worker_log_level = 0
+        logging.info(
+            f" Multimodal train dataloader initializing with  rank {rank} world_size {world_size} data_parallel_group {data_parallel_group} ****** "
+        )
+
+        worker_config = WorkerConfig(
+            rank=rank,
+            world_size=world_size,
+            num_workers=1,
+            data_parallel_group=data_parallel_group,
+            worker_debug_path=worker_debug_path,
+            worker_log_level=worker_log_level,
+        )
+        train_ds, valid_ds1, test_ds = self.datasets_provider(worker_config)
+        train_dataloader = get_savable_loader(train_ds, worker_config=worker_config)
+
+        # Restore energon train dataloader state if we are resuming training
+        restore = os.path.exists(self.trainer.ckpt_path) if self.trainer.ckpt_path else False
+        if restore:
+            replica_id = (
+                parallel_state.get_pipeline_model_parallel_rank(),
+                parallel_state.get_tensor_model_parallel_rank(),
+                parallel_state.get_context_parallel_rank(),
+            )
+            sharded_state_dict = {
+                'dataloader_state': ShardedObject(
+                    data=None,
+                    key='dataloader_state',
+                    global_shape=[parallel_state.get_data_parallel_world_size()],
+                    global_offset=[parallel_state.get_data_parallel_rank()],
+                    replica_id=replica_id,
+                )
+            }
+            state_dict = dist_checkpointing.load(sharded_state_dict, self.trainer.ckpt_path)
+            train_dataloader.restore_state_rank(state_dict['dataloader_state'])
+            logging.info(f"Restored dataset state from {self.trainer.ckpt_path}")
+
+        valid_dataloader = [get_loader(valid_ds, worker_config=worker_config) for valid_ds in valid_ds1]
+        # valid_dataloader = get_loader(valid_ds1, worker_config=worker_config)
+        self._train_dl = train_dataloader
+        self._validation_dl = valid_dataloader
+        return self._train_dl, self._validation_dl
+
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         """
@@ -1510,6 +1679,49 @@ class MegatronNevaModel(MultimodalAdapterModelMixin, MegatronGPTModel):
                 for i in range(len(self.model)):
                     parallel_state.set_virtual_pipeline_model_parallel_rank(i)
                     self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
+                parallel_state.set_virtual_pipeline_model_parallel_rank(0)
+
+    def on_save_checkpoint(self, checkpoint) -> None:
+        """LightningModule hook:
+        https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-save-checkpoint
+        """
+
+        # Neva supports Megatron Energon dataloader, this requires saving the dataloader state on each data parallel group
+        def should_save_dataloader_state():
+            if self._train_dl is None:
+                return False
+            if not hasattr(self._train_dl, "save_state"):
+                return False
+            first_rank = (
+                parallel_state.is_pipeline_first_stage(ignore_virtual=True)
+                and parallel_state.get_tensor_model_parallel_rank() == 0
+            )
+            return first_rank
+
+        def save_dataloader_state():
+            train_dataloader_state_dict = self._train_dl.save_state_rank()
+            checkpoint['dataloader_state'] = ShardedObject(
+                data=train_dataloader_state_dict,
+                key='dataloader_state',
+                global_shape=[parallel_state.get_data_parallel_world_size()],
+                global_offset=[parallel_state.get_data_parallel_rank()],
+            )
+
+        # Save energon train dataloader state if conditions are met
+        if self.cfg.get('energon', False) and should_save_dataloader_state():
+            save_dataloader_state()
+
+        # mcore uses distributed checkpointing
+        # FSDP supports the lagecy checkpointing or torch-FSDP-native sharded checkpointing
+        if self.mcore_gpt and not self.use_fsdp:
+            checkpoint['sharded_state_dict'] = self.sharded_state_dict()
+
+        # legacy checkpointing for interleaved
+        else:
+            if isinstance(self.model, list):
+                for i in range(len(self.model)):
+                    parallel_state.set_virtual_pipeline_model_parallel_rank(i)
+                    checkpoint[f'model{i}'] = self.model[i].module.state_dict_for_save_checkpoint()
                 parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def sharded_state_dict(self, prefix: str = ''):

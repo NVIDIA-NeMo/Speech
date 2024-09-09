@@ -210,6 +210,23 @@ model:
     image_folder: null
     image_aspect_ratio: 'square'
 
+energon:
+  use_energon: False
+  data:
+    __module__: megatron.energon
+    __class__: Metadataset
+    splits:
+      # Train dataset, the datasets will be mixed according to their weights 
+      train:
+        datasets:
+          - weight: 1.0
+            path: null
+      val:
+        datasets:
+          - weight: 1.0
+            path: null
+
+
   # Nsys profiling options
   nsys_profile:
     enabled: False

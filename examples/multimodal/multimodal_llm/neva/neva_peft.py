@@ -23,8 +23,6 @@ from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
-mp.set_start_method("spawn", force=True)
-
 
 @hydra_runner(config_path="conf", config_name="neva_peft")
 def main(cfg) -> None:

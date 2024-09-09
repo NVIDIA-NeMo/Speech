@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import torch.multiprocessing as mp
 from omegaconf.omegaconf import OmegaConf
 
 from nemo.collections.multimodal.models.multimodal_llm.neva.neva_model import MegatronNevaModel
@@ -21,8 +19,6 @@ from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerB
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
-
-mp.set_start_method("spawn", force=True)
 
 
 @hydra_runner(config_path="conf", config_name="neva_config")

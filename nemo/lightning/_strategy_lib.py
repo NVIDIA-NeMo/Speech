@@ -144,9 +144,6 @@ def set_model_parallel_attributes(model, parallelism):
     # Note: Importing nemo.lightning.pytorch.strategies creates an import cycle.
     from megatron.core.transformer.transformer_config import TransformerConfig
 
-    assert (
-        type(parallelism).__name__ == 'ParallelismConfig'
-    ), f"Expected parallelism config to be of type ParallelismConfig, but got {type(parallelism)}"
     has_mcore_config = isinstance(getattr(model, "config", None), TransformerConfig)
     if has_mcore_config and hasattr(model, "configure_model"):
         config: TransformerConfig = model.config

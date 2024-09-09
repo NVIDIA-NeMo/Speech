@@ -1105,6 +1105,10 @@ class MaskedTokenLossReduction(MegatronLossReduction):
 
         from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 
+        # neva returns (logits, loss_mask)
+        if isinstance(forward_out, tuple):
+            forward_out, loss_mask = forward_out
+            batch["loss_mask"] = loss_mask
         cp_size = parallel_state.get_context_parallel_world_size()
         if cp_size == 1:
             loss_for_ub = masked_token_loss(forward_out, batch["loss_mask"])
@@ -1156,6 +1160,19 @@ class MaskedTokenLossReduction(MegatronLossReduction):
             return loss_sum
 
         return torch.tensor(0.0, device=torch.cuda.current_device())
+
+
+class MaskedTokenLossReductionWithLossMask(MaskedTokenLossReduction):
+    def forward(
+        self,
+        batch: Dict[str, torch.Tensor],
+        forward_out: Tuple[torch.Tensor, torch.Tensor],
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        # expecting returns (token_level_loss, loss_mask)
+        forward_out, loss_mask = forward_out
+        batch["loss_mask"] = loss_mask
+
+        return super().forward(batch, forward_out)
 
 
 def masked_token_loss(tensor: Tensor, mask: Tensor):

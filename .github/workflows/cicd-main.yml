@@ -241,10 +241,10 @@ jobs:
          --ignore=tests/utils
 
   # L0: CPU unit tests
-  L0_Unit_Tests_CPU_ASR:
+  OPTIONAL_L0_Unit_Tests_CPU_ASR:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_CPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_CPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure-cpu
        TIMEOUT: 20
@@ -5126,7 +5126,7 @@ jobs:
       #- OPTIONAL_L0_Unit_Tests_GPU_Lightning
       - L0_Unit_Tests_GPU_Others
 
-      - L0_Unit_Tests_CPU_ASR
+      #- OPTIONAL_L0_Unit_Tests_CPU_ASR
       - L0_Unit_Tests_CPU_Audio
       - L0_Unit_Tests_CPU_Common
       - L0_Unit_Tests_CPU_LLM

@@ -951,8 +951,8 @@ def get_git_hash():
             True,
             subprocess.check_output(['git', 'rev-parse', 'HEAD'], stderr=subprocess.STDOUT).decode(),
         )
-    except subprocess.CalledProcessError as err:
-        return False, "{}\n".format(err.output.decode("utf-8"))
+    except (subprocess.CalledProcessError, FileNotFoundError) as err:
+        return False, "{}\n".format(err)
 
 
 def get_git_diff():

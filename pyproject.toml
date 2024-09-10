@@ -12,6 +12,64 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nemo-toolkit"
+dynamic = ["dependencies", "optional-dependencies", "version"]
+description = "NeMo - a toolkit for Conversational AI"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+authors = [{ name = "NVIDIA", email = "nemo-toolkit@nvidia.com" }]
+maintainers = [{ name = "NVIDIA", email = "nemo-toolkit@nvidia.com" }]
+keywords = [
+    "NLP",
+    "NeMo",
+    "deep",
+    "gpu",
+    "language",
+    "learning",
+    "learning",
+    "machine",
+    "nvidia",
+    "pytorch",
+    "speech",
+    "torch",
+    "tts",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements/requirements.txt"] }
+
+[project.entry-points."run.factories"]
+llm = "nemo.collections.llm"
+
+[project.urls]
+Download = "https://github.com/NVIDIA/NeMo/releases"
+Homepage = "https://github.com/nvidia/nemo"
+
 [tool.isort]
 profile = "black"  # black-compatible
 line_length = 119  # should match black parameters

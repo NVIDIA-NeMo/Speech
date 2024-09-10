@@ -80,54 +80,46 @@ extras_require = {
 }
 
 
-extras_require['all'] = list(chain(extras_require.values()))
+extras_require['all'] = list(chain(*extras_require.values()))
 
 # Add lightning requirements as needed
-extras_require['common'] = list(chain([extras_require['common'], extras_require['core']]))
+extras_require['common'] = list(chain(extras_require['common'], extras_require['core']))
 extras_require['test'] = list(
     chain(
-        [
-            extras_require['tts'],
-            extras_require['core'],
-            extras_require['common'],
-        ]
+        extras_require['tts'],
+        extras_require['core'],
+        extras_require['common'],
     )
 )
-extras_require['asr'] = list(chain([extras_require['asr'], extras_require['core'], extras_require['common']]))
+extras_require['asr'] = list(chain(extras_require['asr'], extras_require['core'], extras_require['common']))
 extras_require['nlp'] = list(
     chain(
-        [
-            extras_require['nlp'],
-            extras_require['core'],
-            extras_require['common'],
-        ]
+        extras_require['nlp'],
+        extras_require['core'],
+        extras_require['common'],
     )
 )
 extras_require['tts'] = list(
     chain(
-        [
-            extras_require['tts'],
-            extras_require['core'],
-            extras_require['common'],
-        ]
+        extras_require['tts'],
+        extras_require['core'],
+        extras_require['common'],
     )
 )
 extras_require['multimodal'] = list(
     chain(
-        [
-            extras_require['multimodal'],
-            extras_require['nlp'],
-            extras_require['core'],
-            extras_require['common'],
-        ]
+        extras_require['multimodal'],
+        extras_require['nlp'],
+        extras_require['core'],
+        extras_require['common'],
     )
 )
-extras_require['audio'] = list(chain([extras_require['audio'], extras_require['core'], extras_require['common']]))
+extras_require['audio'] = list(chain(extras_require['audio'], extras_require['core'], extras_require['common']))
 
 # TTS has extra dependencies
-extras_require['tts'] = list(chain([extras_require['tts'], extras_require['asr']]))
+extras_require['tts'] = list(chain(extras_require['tts'], extras_require['asr']))
 
-extras_require['slu'] = list(chain([extras_require['slu'], extras_require['asr']]))
+extras_require['slu'] = list(chain(extras_require['slu'], extras_require['asr']))
 
 
 ###############################################################################

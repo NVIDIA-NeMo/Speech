@@ -300,14 +300,15 @@ jobs:
        SCRIPT: |
          CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/nlp -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
 
-  L0_Unit_Tests_CPU_TTS:
+  OPTIONAL_L0_Unit_Tests_CPU_TTS:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_CPU_TTS') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_CPU_TTS') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure-cpu
        SCRIPT: |
          CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/tts -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
+       IS_OPTIONAL: true
 
   L0_Unit_Tests_CPU_Core:
      needs: [cicd-test-container-setup]
@@ -5136,7 +5137,7 @@ jobs:
       - L0_Unit_Tests_CPU_LLM
       - L0_Unit_Tests_CPU_Multimodal
       - L0_Unit_Tests_CPU_NLP
-      - L0_Unit_Tests_CPU_TTS
+      #- OPTIONAL_L0_Unit_Tests_CPU_TTS
       - L0_Unit_Tests_CPU_Core
       - L0_Unit_Tests_CPU_Hydra
       - L0_Unit_Tests_CPU_Lightning

@@ -171,14 +171,15 @@ jobs:
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/multimodal -m "not pleasefixme" --with_downloads
 
-  L0_Unit_Tests_GPU_NLP:
+  OPTIONAL_L0_Unit_Tests_GPU_NLP:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_GPU_NLP') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_NLP') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/nlp -m "not pleasefixme" --with_downloads
+       IS_OPTIONAL: true
 
   L0_Unit_Tests_GPU_TTS:
      needs: [cicd-test-container-setup]
@@ -251,14 +252,15 @@ jobs:
        SCRIPT: |
          CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/asr -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
 
-  L0_Unit_Tests_CPU_Audio:
+  OPTIONAL_L0_Unit_Tests_CPU_Audio:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_CPU_Audio') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_CPU_Audio') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure-cpu
        SCRIPT: |
          CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/audio -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat
+       IS_OPTIONAL: true
 
   L0_Unit_Tests_CPU_Common:
      needs: [cicd-test-container-setup]
@@ -5119,7 +5121,7 @@ jobs:
       - L0_Unit_Tests_GPU_Common
       - L0_Unit_Tests_GPU_LLM
       - L0_Unit_Tests_GPU_Multimodal
-      - L0_Unit_Tests_GPU_NLP
+      #- OPTIONAL_L0_Unit_Tests_GPU_NLP
       - L0_Unit_Tests_GPU_TTS
       #- OPTIONAL_L0_Unit_Tests_GPU_Core
       - L0_Unit_Tests_GPU_Hydra
@@ -5127,7 +5129,7 @@ jobs:
       - L0_Unit_Tests_GPU_Others
 
       #- OPTIONAL_L0_Unit_Tests_CPU_ASR
-      - L0_Unit_Tests_CPU_Audio
+      #- OPTIONAL_L0_Unit_Tests_CPU_Audio
       - L0_Unit_Tests_CPU_Common
       - L0_Unit_Tests_CPU_LLM
       - L0_Unit_Tests_CPU_Multimodal

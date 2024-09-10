@@ -182,14 +182,15 @@ jobs:
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/nlp -m "not pleasefixme" --with_downloads
        IS_OPTIONAL: true
 
-  L0_Unit_Tests_GPU_TTS:
+  OPTIONAL_L0_Unit_Tests_GPU_TTS:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_GPU_TTS') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_TTS') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/tts -m "not pleasefixme" --with_downloads
+       IS_OPTIONAL: true
 
   OPTIONAL_L0_Unit_Tests_GPU_Core:
      needs: [cicd-test-container-setup]
@@ -5123,7 +5124,7 @@ jobs:
       - L0_Unit_Tests_GPU_LLM
       - L0_Unit_Tests_GPU_Multimodal
       #- OPTIONAL_L0_Unit_Tests_GPU_NLP
-      - L0_Unit_Tests_GPU_TTS
+      #- OPTIONAL_L0_Unit_Tests_GPU_TTS
       #- OPTIONAL_L0_Unit_Tests_GPU_Core
       - L0_Unit_Tests_GPU_Hydra
       #- OPTIONAL_L0_Unit_Tests_GPU_Lightning

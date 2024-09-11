@@ -62,6 +62,7 @@ class ExampleConfig(ModelParallelConfig):
     """
 
     calculate_per_token_loss: bool = False
+    fp8: bool = False
 
     def configure_model(self) -> nn.Module:
         """This function is called by the strategy to construct the model.

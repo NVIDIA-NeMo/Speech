@@ -164,7 +164,7 @@ def megatron_lazy_init_context(config) -> Generator[None, None, None]:
     def monkey_patched(c):
         return {"device": "meta"}
 
-    from megatron.core.transformer.custom_layers import transformer_engine as _te
+    from megatron.core.extensions import transformer_engine as _te
 
     original = _te._get_extra_te_kwargs  # noqa: SLF001
     _te._get_extra_te_kwargs = monkey_patched  # noqa: SLF001

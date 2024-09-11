@@ -64,18 +64,18 @@ try:
     from megatron.core import parallel_state
     from megatron.core.distributed import DistributedDataParallel as McoreDDP
     from megatron.core.distributed import DistributedDataParallelConfig
-    from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-    from megatron.core.models.gpt import GPTModel as MCoreGPTModel
-    from megatron.core.models.vision.clip_vit_model import CLIPViTModel
-    from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
-    from megatron.core.transformer.attention import CrossAttention, CrossAttentionSubmodules
-    from megatron.core.transformer.custom_layers.transformer_engine import (
+    from megatron.core.extensions.transformer_engine import (
         TEColumnParallelLinear,
         TEDotProductAttention,
         TELayerNormColumnParallelLinear,
         TENorm,
         TERowParallelLinear,
     )
+    from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
+    from megatron.core.models.gpt import GPTModel as MCoreGPTModel
+    from megatron.core.models.vision.clip_vit_model import CLIPViTModel
+    from megatron.core.pipeline_parallel.schedules import get_forward_backward_func
+    from megatron.core.transformer.attention import CrossAttention, CrossAttentionSubmodules
     from megatron.core.transformer.enums import AttnMaskType as MCoreAttnMaskType
     from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules

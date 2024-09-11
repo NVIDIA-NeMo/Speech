@@ -31,8 +31,8 @@ def distributed_fused_adam_with_cosine_annealing(max_lr: float = 1e-4) -> run.Co
         adam_beta2=0.95,
         adam_eps=1e-5,
         use_distributed_optimizer=True,
-        overlap_grad_reduce=True,
-        overlap_param_gather=True,
+        #        overlap_grad_reduce=True,
+        #        overlap_param_gather=True,
         clip_grad=1.0,
     )
 

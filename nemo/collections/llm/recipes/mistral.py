@@ -18,6 +18,7 @@ from typing import Optional
 import nemo_run as run
 import pytorch_lightning as pl
 import torch
+from megatron.core.distributed import DistributedDataParallelConfig
 from pytorch_lightning.callbacks.callback import Callback
 
 from nemo import lightning as nl
@@ -105,6 +106,13 @@ def trainer(
         ckpt_include_optimizer=True,
         ckpt_async_save=True,
         ckpt_parallel_load=True,
+        ddp=run.Config(
+            DistributedDataParallelConfig,
+            check_for_nan_in_grad=True,
+            grad_reduce_in_fp32=True,
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+        ),
     )
 
     trainer = run.Config(

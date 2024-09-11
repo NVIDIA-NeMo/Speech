@@ -15,14 +15,14 @@
 from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
 
 try:
-    from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
-    from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
-    from megatron.core.transformer.custom_layers.transformer_engine import (
+    from megatron.core.extensions.transformer_engine import (
         TEColumnParallelLinear,
         TEDotProductAttention,
         TENorm,
         TERowParallelLinear,
     )
+    from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
+    from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.identity_op import IdentityOp
     from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -62,7 +62,11 @@ def get_falcon_layer_spec() -> ModuleSpec:
         self_attn_bda=get_bias_dropout_add,
         pre_mlp_layernorm=TENorm,
         mlp=ModuleSpec(
-            module=MLP, submodules=MLPSubmodules(linear_fc1=TEColumnParallelLinear, linear_fc2=TERowParallelLinear,),
+            module=MLP,
+            submodules=MLPSubmodules(
+                linear_fc1=TEColumnParallelLinear,
+                linear_fc2=TERowParallelLinear,
+            ),
         ),
         mlp_bda=get_bias_dropout_add,
     )

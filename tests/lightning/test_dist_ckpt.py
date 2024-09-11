@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import os
+
+os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
 from pathlib import Path
 
 import pytest

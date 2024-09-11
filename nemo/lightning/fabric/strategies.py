@@ -302,7 +302,7 @@ class FabricMegatronStrategy(DDPStrategy):
         def monkey_patched(config):
             return {"device": "meta"}
 
-        from megatron.core.transformer.custom_layers import transformer_engine as _te
+        from megatron.core.extensions import transformer_engine as _te
 
         original = _te._get_extra_te_kwargs  # noqa: SLF001
         _te._get_extra_te_kwargs = monkey_patched  # noqa: SLF001

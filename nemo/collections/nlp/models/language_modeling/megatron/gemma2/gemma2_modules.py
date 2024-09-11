@@ -17,11 +17,11 @@ from typing import Callable, Optional
 
 import torch
 from megatron.core import parallel_state, tensor_parallel
+from megatron.core.extensions.transformer_engine import TENorm, TERowParallelLinear
 from megatron.core.fusions.fused_softmax import FusedScaleMaskSoftmax
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel import ColumnParallelLinear
 from megatron.core.transformer import MegatronModule, TransformerConfig
-from megatron.core.transformer.custom_layers.transformer_engine import TENorm, TERowParallelLinear
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.utils import attention_mask_func
 from megatron.core.utils import divide

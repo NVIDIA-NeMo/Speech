@@ -1,9 +1,6 @@
 import torch.nn as nn
+from megatron.core.extensions.transformer_engine import TELayerNormColumnParallelLinear, TERowParallelLinear
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TELayerNormColumnParallelLinear,
-    TERowParallelLinear,
-)
 from megatron.core.transformer.spec_utils import ModuleSpec
 
 from nemo.collections.nlp.modules.common.hyena.hyena import (

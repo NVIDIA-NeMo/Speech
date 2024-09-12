@@ -27,6 +27,7 @@ def get_args():
     parser.add_argument("--run_number", type=int, help="Number of config to run")
     parser.add_argument("--logs_dir", type=str, help="Path where to save training logs")
     parser.add_argument("--data_path", type=str, help="Path to the dataset")
+    parser.add_argument("--tokenizer_path", type=str, help="Path to the tokenizer")
     parser.add_argument("--get_results", action="store_true")
 
     return parser.parse_args()
@@ -51,6 +52,8 @@ def train_config(args):
         max_steps_per_run=25,
         num_tokens_in_b=10,
         vocab_size=51200,
+        tokenizer_type="autotokenizer",
+        tokenizer_path=args.tokenizer_path,
         data_paths=args.data_path,
         path_to_logs=args.logs_dir,
     )

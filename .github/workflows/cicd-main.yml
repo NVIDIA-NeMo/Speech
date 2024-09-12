@@ -3466,6 +3466,41 @@ jobs:
         rm -rf examples/nlp/language_modeling/gpt_pretrain_results
         rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
+  L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      SCRIPT: |
+        mkdir examples/llm/auto_configurator/auto_conf_logs
+
+        python examples/llm/auto_configurator/auto_config.py \
+        --logs_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+        --data_path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --tokenizer_path=/home/TestData/nlp/gpt2_tokenizer \
+        --run_number=1
+
+        python examples/llm/auto_configurator/auto_config.py \
+        --logs_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+        --data_path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --tokenizer_path=/home/TestData/nlp/gpt2_tokenizer \
+        --run_number=2
+
+        python examples/llm/auto_configurator/auto_config.py \
+        --logs_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+        --data_path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --tokenizer_path=/home/TestData/nlp/gpt2_tokenizer \
+        --run_number=3
+
+        python examples/llm/auto_configurator/auto_config.py \
+        --logs_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+        --data_path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
+        --tokenizer_path=/home/TestData/nlp/gpt2_tokenizer \
+        --get_results
+      AFTER_SCRIPT: |
+        rm -rf examples/llm/auto_configurator/auto_conf_logs
+
   L2_Megatron_GPT_Finetuning_PP2:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -5217,6 +5252,7 @@ jobs:
       - L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2
+      - L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124
       - L2_Megatron_GPT_Finetuning_PP2
       - L2_Megatron_GPT_Finetuning_StarCoder_PP1
       - L2_Megatron_GPT_Embedding 

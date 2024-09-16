@@ -102,7 +102,7 @@ if __name__ == '__main__':
     )
 
     nemo_logger = NeMoLogger(
-        dir=args.experiment_dir,
+        log_dir=args.experiment_dir,
     )
 
     train(

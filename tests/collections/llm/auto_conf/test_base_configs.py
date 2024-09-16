@@ -118,7 +118,7 @@ def get_logger() -> run.Config[nl.NeMoLogger]:
         ckpt=ckpt,
         tensorboard=tb_logger,
         wandb=None,
-        dir="/",
+        log_dir="/",
     )
 
 

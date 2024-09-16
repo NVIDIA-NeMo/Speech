@@ -180,7 +180,7 @@ class TestNeMoLogger:
 
         logger = nl.NeMoLogger(
             name="default",
-            dir=str(tmp_path) + "/test_resume",
+            log_dir=str(tmp_path) + "/test_resume",
             version="version_0",
             use_datetime_version=False,
         )

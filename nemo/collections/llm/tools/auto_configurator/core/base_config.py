@@ -203,7 +203,7 @@ class BaseConfig:
             ckpt=ckpt,
             tensorboard=tb_logger,
             wandb=None,
-            dir=self.config.path_to_logs,
+            log_dir=self.config.path_to_logs,
         )
 
     def get_run_config(self) -> dict:

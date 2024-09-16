@@ -35,7 +35,7 @@ class NeMoLogger(IOMixin):
 
     Args:
         name (str): Name of the experiment.
-        dir (Optional[str]): Directory to save logs.
+        log_dir (Optional[str]): Directory to save logs.
         explicit_log_dir (Optional[str]): Explicit log directory.
         version (Optional[str]): Version of the experiment.
         use_datetime_version (bool): Whether to use datetime as version.
@@ -56,7 +56,7 @@ class NeMoLogger(IOMixin):
     """
 
     name: str = "default"
-    dir: Optional[str] = None
+    log_dir: Optional[str] = None
     explicit_log_dir: Optional[str] = None
     version: Optional[str] = None
     use_datetime_version: bool = True
@@ -99,9 +99,9 @@ class NeMoLogger(IOMixin):
                     f"that was passed to nemo_logger container a logger, but update_logger_directory is False. This means "
                     f"that the trainer's logger directory may not match with the explicit_log_dir."
                 )
-            if self.dir or self.version:
+            if self.log_dir or self.version:
                 logging.error(
-                    f"nemo logger received explicit_log_dir: {self.explicit_log_dir} and at least one of dir: {self.dir}, "
+                    f"nemo logger received explicit_log_dir: {self.explicit_log_dir} and at least one of dir: {self.log_dir}, "
                     f"or version: {self.version}. Please note that dir, name, and version will be ignored."
                 )
             if is_global_rank_zero() and Path(self.explicit_log_dir).exists():
@@ -110,8 +110,8 @@ class NeMoLogger(IOMixin):
 
         else:
             # Default dir to ./nemo_experiments if None was passed
-            _dir = self.dir
-            if self.dir is None:
+            _dir = self.log_dir
+            if self.log_dir is None:
                 _dir = str(Path.cwd() / "nemo_experiments")
 
             if not self.name:

@@ -57,11 +57,10 @@ class MixtralConfig(GPTConfig):
     # MoE
     num_moe_experts: int = 8
     moe_aux_loss_coeff: float = 0.01
-    moe_expert_capacity_factor: float = 1.0
-    moe_pad_expert_input_to_capacity: bool = True
     moe_router_topk: int = 2
     moe_router_pre_softmax: bool = True
     moe_token_dispatcher_type: str = "alltoall"
+    moe_router_load_balancing_type: str = 'aux_loss'
 
     init_method_std: float = 0.02
     layernorm_epsilon: float = 1e-5

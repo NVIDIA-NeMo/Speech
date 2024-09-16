@@ -29,6 +29,8 @@ from nemo.collections.llm.gpt.model.mixtral import MixtralConfig8x7B, MixtralMod
 from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
+from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
+from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.utils.exp_manager import TimingCallback
 
 NAME = "mixtral_8x7b"
@@ -54,14 +56,14 @@ def model() -> run.Config[pl.LightningModule]:
 
 
 def trainer(
-    tensor_parallelism: int = 8,
-    pipeline_parallelism: int = 2,
+    tensor_parallelism: int = 1,
+    pipeline_parallelism: int = 4,
     pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
-    virtual_pipeline_parallelism: Optional[int] = None,
+    virtual_pipeline_parallelism: Optional[int] = 8,
     context_parallelism: int = 1,
-    sequence_parallelism: bool = True,
-    expert_parallelism: int = 1,
-    num_nodes: int = 2,
+    sequence_parallelism: bool = False,
+    expert_parallelism: int = 8,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,
@@ -138,7 +140,7 @@ def trainer(
 
 @run.cli.factory(target=pretrain, name=NAME)
 def pretrain_recipe(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 2, num_gpus_per_node: int = 8, fn=pretrain
+    dir: Optional[str] = None, name: str = "default", num_nodes: int = 8, num_gpus_per_node: int = 8, fn=pretrain
 ) -> run.Partial:
     """
     Create a pre-training recipe for Mixtral 8x7B model.
@@ -159,10 +161,10 @@ def pretrain_recipe(
     Examples:
         CLI usage:
             $ nemo llm pretrain --factory mixtral_8x7b
-            $ nemo llm pretrain --factory "mixtral_8x7b(num_nodes=2, name='my_mixtral_pretrain')"
+            $ nemo llm pretrain --factory "mixtral_8x7b(num_nodes=8, name='my_mixtral_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe(name="mixtral_8x7b_pretrain", num_nodes=2)
+            >>> recipe = pretrain_recipe(name="mixtral_8x7b_pretrain", num_nodes=8)
             >>> print(recipe)
     """
     return run.Partial(
@@ -176,6 +178,49 @@ def pretrain_recipe(
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=3e-4),
         resume=default_resume(),
     )
+
+
+@run.cli.factory(target=pretrain, name=NAME + "_performance")
+def pretrain_recipe_performance(
+    dir: Optional[str] = None, name: str = "default", num_nodes: int = 8, num_gpus_per_node: int = 8, fn=pretrain
+) -> run.Partial:
+    """
+    Create a performance-optimized pre-training recipe for Mixtral 8x7B model.
+
+    This recipe enables performance optimizations that may not be suitable for all use cases.
+    It builds upon the standard pre-training recipe and adds additional performance enhancements.
+
+    Args:
+        dir (Optional[str]): Directory for saving logs and checkpoints.
+        name (str): Name of the pre-training run.
+        num_nodes (int): Number of compute nodes to use.
+        num_gpus_per_node (int): Number of GPUs per node.
+        fn (Callable): The pre-training function to use.
+
+    Returns:
+        run.Partial: Partial configuration for performance-optimized pre-training.
+
+    Examples:
+        CLI usage:
+            $ nemo llm pretrain --factory "mixtral_8x3b.pretrain_recipe_performance(num_nodes=8, name='perf_pretrain')"
+
+        Python API usage:
+            >>> recipe = pretrain_recipe_performance(name="mixtral_8x3b_perf", num_nodes=8)
+            >>> print(recipe)
+
+    Note:
+        Use this recipe with caution and only when you need maximum performance.
+        It may not be suitable for all hardware configurations or use cases.
+    """
+    recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn)
+    recipe.trainer.callbacks.extend(
+        [
+            run.Config(MegatronTokenDropCallback),
+            run.Config(MegatronCommOverlapCallback),
+        ]
+    )
+
+    return recipe
 
 
 def hf_resume() -> run.Config[nl.AutoResume]:

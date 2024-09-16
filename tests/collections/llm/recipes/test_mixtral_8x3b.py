@@ -28,18 +28,18 @@ class TestMixtral8x3B:
         assert trainer_config.__fn_or_cls__ == Trainer
         assert trainer_config.accelerator == "gpu"
         assert trainer_config.devices == 8
-        assert trainer_config.num_nodes == 1
+        assert trainer_config.num_nodes == 2
 
         # Check strategy configuration
         assert isinstance(trainer_config.strategy, run.Config)
         assert trainer_config.strategy.__fn_or_cls__.__name__ == "MegatronStrategy"
-        assert trainer_config.strategy.tensor_model_parallel_size == 4
+        assert trainer_config.strategy.tensor_model_parallel_size == 1
         assert trainer_config.strategy.pipeline_model_parallel_size == 1
         assert trainer_config.strategy.pipeline_dtype is None
         assert trainer_config.strategy.virtual_pipeline_model_parallel_size is None
         assert trainer_config.strategy.context_parallel_size == 1
-        assert trainer_config.strategy.sequence_parallel is True
-        assert trainer_config.strategy.expert_model_parallel_size == 1
+        assert trainer_config.strategy.sequence_parallel is False
+        assert trainer_config.strategy.expert_model_parallel_size == 4
 
     def test_pretrain_recipe(self, recipe_module):
         recipe = recipe_module.pretrain_recipe()

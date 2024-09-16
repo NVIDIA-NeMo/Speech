@@ -157,9 +157,6 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         **kwargs,
     ):
         super().__init__()
-        if not HAVE_APEX:
-            logging.info("Apex is required to use ParallelLinearAdapters.")
-            raise RuntimeError("ParallelLinearAdapter can not run without Apex.")
         if not HAVE_MEGATRON_CORE:
             logging.info("Megatron-core is required to use ParallelLinearAdapters.")
             raise RuntimeError("ParallelLinearAdapter can not run without Megatron-core.")
@@ -227,6 +224,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         if self.norm_position in ["pre", "post"]:
             ln_features = in_features if self.norm_position == "pre" else out_features
             if norm_type == 'mixedfusedlayernorm':
+                assert HAVE_APEX, "Apex is required to use MixedFusedLayerNorm"
                 self.layer_norm = MixedFusedLayerNorm(ln_features, 1e-5, sequence_parallel_enbaled=False)
             elif norm_type == 'layernorm':
                 self.layer_norm = nn.LayerNorm(ln_features)

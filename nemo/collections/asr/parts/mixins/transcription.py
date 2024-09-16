@@ -29,6 +29,7 @@ from tqdm import tqdm
 
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
+from nemo.collections.asr.parts.utils import manifest_utils
 from nemo.utils import logging, logging_mode
 
 TranscriptionReturnType = Union[List[str], List['Hypothesis'], Tuple[List[str]], Tuple[List['Hypothesis']]]
@@ -49,6 +50,7 @@ class InternalTranscribeConfig:
 
     # Scratch space
     temp_dir: Optional[str] = None
+    manifest_filepath: Optional[str] = None
 
 
 @dataclass
@@ -480,6 +482,11 @@ class TranscriptionMixin(ABC):
 
         # Check if audio is a list of strings (filepaths or manifests)
         if isinstance(audio[0], str):
+            if len(audio) == 1 and audio[0].endswith('.json') or audio[0].endswith('.jsonl'):
+                # Assume it is a path to a manifest file
+                trcfg._internal.manifest_filepath = audio[0]
+                audio = manifest_utils.read_manifest(audio[0])
+
             audio_files = list(audio)
 
             tmp_dir = trcfg._internal.temp_dir

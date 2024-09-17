@@ -2211,6 +2211,9 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
                     cfg.channels_last = True
                 if not cfg.get('capture_cudagraph_iters'):
                     cfg.capture_cudagraph_iters = -1
+                if cfg.get('unet_config') and cfg.get('unet_config').get('use_te_dpa'):
+                    cfg.unet_config.use_te_dpa = False
+                    cfg.unet_config.use_flash_attention = True
 
             # compatibility for stable diffusion old checkpoint tweaks
             first_key = list(checkpoint['state_dict'].keys())[0]
@@ -2242,6 +2245,14 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
                 for key in checkpoint['state_dict'].keys():
                     new_key = key.replace('._orig_mod', '', 1)
                     new_state_dict[new_key] = checkpoint['state_dict'][key]
+                checkpoint['state_dict'] = new_state_dict
+
+            # compatiblity for te-dpa in inference
+            if cfg.get('unet_config') and not cfg.get('unet_config').get('use_te_dpa'):
+                new_state_dict = {}
+                for key in checkpoint['state_dict'].keys():
+                    if "_extra_state" not in key:
+                        new_state_dict[key] = checkpoint['state_dict'][key]
                 checkpoint['state_dict'] = new_state_dict
 
             if cfg.get('megatron_amp_O2', False):

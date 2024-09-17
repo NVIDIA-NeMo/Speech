@@ -19,7 +19,6 @@ from typing import Union
 import torch
 import torch._dynamo
 from accelerated_scan.triton import scan
-from causal_conv1d import causal_conv1d_fn
 from einops import rearrange
 from torch import nn
 
@@ -39,6 +38,13 @@ try:
 except (ImportError, ModuleNotFoundError):
     TransformerConfig = ApexGuardDefaults
     HAVE_MEGATRON_CORE = False
+
+try:
+    from causal_conv1d import causal_conv1d_fn
+
+    HAVE_CAUSAL_CONV1D = True
+except (ImportError, ModuleNotFoundError):
+    HAVE_CAUSAL_CONV1D = False
 
 torch._dynamo.config.suppress_errors = True
 
@@ -277,6 +283,8 @@ class RGLRU(nn.Module):
 
 class Conv1D(MegatronModule):
     def __init__(self, config, width, temporal_width):
+        if not HAVE_CAUSAL_CONV1D:
+            raise ImportError("Package causal_conv1d is required to use Conv1D")
         super().__init__(config=config)
         self.config = config
         self.width = width

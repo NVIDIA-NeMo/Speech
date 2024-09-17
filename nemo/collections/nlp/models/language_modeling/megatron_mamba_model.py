@@ -13,13 +13,30 @@
 # limitations under the License.
 
 import torch
-from megatron.core.models.mamba import MambaModel
-from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec
 from omegaconf.dictconfig import DictConfig
 from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.utils import logging
+
+try:
+    import mamba_ssm
+
+    HAVE_MAMBA_SSM = True
+
+except ModuleNotFoundError:
+
+    HAVE_MAMBA_SSM = False
+
+try:
+    from megatron.core.models.mamba import MambaModel
+    from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
 
 
 class MegatronMambaModel(MegatronGPTModel):
@@ -28,7 +45,8 @@ class MegatronMambaModel(MegatronGPTModel):
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
-
+        if not HAVE_MEGATRON_CORE or not HAVE_MAMBA_SSM:
+            raise ImportError("Both megatron.core and mamba_ssm packages are required to use MegatronMambaModel")
         self.vocab_size = cfg.get('vocab_size', 65536)
         self.cfg = cfg
         super().__init__(cfg=cfg, trainer=trainer)
@@ -36,7 +54,8 @@ class MegatronMambaModel(MegatronGPTModel):
         self.mcore_gpt = True
 
     def model_provider_func(self, pre_process, post_process):
-
+        if not HAVE_MEGATRON_CORE or not HAVE_MAMBA_SSM:
+            raise ImportError("Both megatron.core and mamba_ssm packages are required to use MegatronMambaModel")
         self.hybrid_override_pattern = self.cfg.get(
             'hybrid_override_pattern', "M" * self.transformer_config.num_layers
         )

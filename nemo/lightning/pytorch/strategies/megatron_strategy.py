@@ -715,8 +715,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         assert self.megatron_parallel is not None
 
         _strategy_lib.load_model_state_dict(self.megatron_parallel, checkpoint, strict=strict)
-        for opt in self.optimizers:
-            opt.reload_model_params()
+
+        if not 'optimizer' in checkpoint:
+            for opt in self.optimizers:
+                opt.reload_model_params()
 
     @property
     @override

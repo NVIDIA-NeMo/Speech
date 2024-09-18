@@ -20,6 +20,7 @@ To learn more about using NeMo to train Large Language Models at scale, please r
    peft/landing_page
    positional_embeddings
    mcore_customization
+   model_distillation/drop_layers
    reset_learning_rate
    rampup_batch_size
 

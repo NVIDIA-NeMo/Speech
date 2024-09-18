@@ -16,7 +16,7 @@ import sys
 from typing import Optional, Union
 
 from lightning_fabric.utilities.exceptions import MisconfigurationException
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelSummary
 from pytorch_lightning.plugins.environments import TorchElasticEnvironment
@@ -181,6 +181,15 @@ class MegatronTrainerBuilder:
         return callbacks
 
     def create_trainer(self, callbacks=None) -> Trainer:
+        # Make a dummy train step if skip_train
+        if self.cfg.model.get("skip_train", False):
+            self.cfg.trainer.max_steps = 1
+            self.cfg.trainer.val_check_interval = 1
+            # Set num_sanity_val_steps to 0
+            with open_dict(self.cfg.trainer):
+                self.cfg.trainer.num_sanity_val_steps = 0
+            self.cfg.exp_manager.create_checkpoint_callback = False
+
         # cfg.trainer.precision becomes None in Trainer if precision_plugins exist since both precision plugins and precision
         precision = self.cfg.trainer.precision
         strategy = self._training_strategy()

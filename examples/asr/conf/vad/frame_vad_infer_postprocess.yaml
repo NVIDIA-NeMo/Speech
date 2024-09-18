@@ -4,11 +4,11 @@ input_manifest: null # Path of json file of evaluation data. Audio files should 
 output_dir: null  # Path to output directory where results will be stored
 num_workers: 12
 sample_rate: 16000
-evaluate: False  # whether to get AUROC and DERs, the manifest must contains groundtruth if enabled
+evaluate: false  # whether to get AUROC and DERs, the manifest must contains groundtruth if enabled
 
 prepare_manifest:
-  auto_split: True # whether to automatically split manifest entry by split_duration to avoid potential CUDA out of memory issue.
-  split_duration: 400 # try smaller number if you still have CUDA memory issue
+  auto_split: true # whether to automatically split manifest entry by split_duration to avoid potential CUDA out of memory issue.
+  split_duration: 400 # max length in seconds, try smaller number if you still have CUDA memory issue
 
 vad:
   model_path: "vad_multilingual_frame_marblenet" #.nemo local model path or pretrained model name or none

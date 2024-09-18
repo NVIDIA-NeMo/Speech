@@ -108,6 +108,7 @@ def get_base_model(trainer, cfg):
             # restore model from cached model dir
             asr_model = ASRModel.from_pretrained(model_name=pretrained_name)
 
+    asr_model.set_trainer(trainer)
     return asr_model
 
 

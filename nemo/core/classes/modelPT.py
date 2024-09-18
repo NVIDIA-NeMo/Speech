@@ -1640,6 +1640,16 @@ class ModelPT(LightningModule, Model):
             self._hparams_initial['cfg'] = OmegaConf.to_object(self._cfg)
 
     @property
+    def hparams(self):
+        """
+        Overwrite default hparams property to return the lastest model config.
+        Without this change, the hparams property would return the old config if there was a direct change to
+        self._cfg (e.g., in self.setup_optimization()) that was not done via `self.cfg = new_cfg`.
+        """
+        self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
+        return super().hparams
+
+    @property
     def validation_step_outputs(self):
         """
         Cached outputs of validation_step. It can be a list of items (for single data loader) or a list of lists

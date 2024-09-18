@@ -11,7 +11,7 @@ model:
   # configs for huggingface load_dataset function
   data_path: "librispeech_asr"
   data_name: null  # name for the specific dataset to load, e.g., 'en' for MCV datasets, but some datasets don't require this field.
-  streaming: false # set True to use streaming mode, which doesn't wait for data downloading but each training step takes longer in the first epoch. If True, you'll need to specify trainer.max_steps instead of trainer.max_epochs.
+  streaming: false # set True to use streaming mode, which doesn't wait for data downloading but each training step takes longer in the first epoch. If True, you'll need to specify trainer.max_steps and trainer.limit_train_batches, instead of trainer.max_epochs.
 
   # keys for audio, sample_rate and transcription in the huggingface dataset, keys seperated by `.` for nested fields. See example at the bottom of this file.
   audio_key: "audio.array"

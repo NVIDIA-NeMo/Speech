@@ -72,6 +72,9 @@ model:
 
   # use GPTModel from megatron.core
   mcore_gpt: True
+  
+  # Skip training and do only validation step
+  skip_train: False
 
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size
@@ -119,6 +122,7 @@ model:
   seq_len_interpolation_factor: null # RoPE Interpolation factor for sequence length. This is used to build long-context models with RoPE ex: https://arxiv.org/abs/2306.15595.
   num_query_groups: null # Number of query groups for group query attention. If None, normal attention is used.
   scale_positional_embedding: False # Apply scaling for RoPE frequencies 
+  drop_layers: [] # Select which layers should be ignored. Should be a list of layer numbers such as [0, 1, 4].
 
   ## Reset learning rate schedule.
   # 1. reset_lr=True, reset_lr_steps=False. When pre-training an existing checkpoint "from scratch" on a different dataset.

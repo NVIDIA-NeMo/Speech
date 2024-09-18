@@ -176,15 +176,37 @@ def get_specs(spec_name, transformer_config=None, use_te=True, hyena_cfg: Dict =
     return name_spec_dict[spec_name]
 
 
+def drop_layers(model, layers_to_drop: List[int]):
+    def noop_forward_patch(
+        hidden_states,
+        attention_mask,
+        context_mask=None,
+        context=None,
+        rotary_pos_emb=None,
+        inference_params=None,
+        packed_seq_params=None,
+    ):
+        return hidden_states.clone(), context
+
+    num_layers = len(model.decoder.layers)
+    for layer_id in layers_to_drop:
+        assert layer_id > 0 and layer_id <= num_layers, f"Layers to drop should be in range (1, {num_layers})"
+        logging.info(f"Patching layer {layer_id} to noop-layer in forward pass")
+        model.decoder.layers[layer_id - 1].forward = noop_forward_patch
+
+
 def mcore_model_customize(cfg, model):
     if cfg.get("apply_embedding_scaling", False) and parallel_state.is_pipeline_first_stage():
         extend_instance(model.embedding, EmbeddingScalingMixin)
-    if cfg.get('scale_positional_embedding', False):
+    if cfg.get("scale_positional_embedding", False):
         model.rotary_pos_emb.inv_freq = apply_rope_scaling(model.rotary_pos_emb.inv_freq)
     if cfg.get("mcore_customization_config", {}).get("final_logit_softcapping", 0):
         from nemo.collections.nlp.models.language_modeling.megatron.gemma2.gemma2_modules import Gemma2OutputLayer
 
         extend_instance(model.output_layer, Gemma2OutputLayer)
+    if cfg.get("drop_layers"):
+        assert cfg.get("skip_train", False), "Dropping layers allowed only for validation runs (forward pass)"
+        drop_layers(model, cfg.get("drop_layers"))
 
 
 class EmbeddingScalingMixin(torch.nn.Module):

@@ -12,33 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-echo "unset all SLURM_, PMI_, PMIX_ Variables"
 set -x
+
+echo "unset all SLURM_, PMI_, PMIX_ Variables"
 for i in $(env | grep ^SLURM_ | cut -d"=" -f 1); do unset -v $i; done
 for i in $(env | grep ^PMI_ | cut -d"=" -f 1); do unset -v $i; done
 for i in $(env | grep ^PMIX_ | cut -d"=" -f 1); do unset -v $i; done
-set +x
 
 
-
-python tests/export/nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --min_tps 1
-python tests/export/nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --min_tps 2
+python tests/export/nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --min_tps 1 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --ptuning --min_tps 1 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-7B-base --existing_test_models --lora --min_tps 1 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-7B-code --existing_test_models --min_tps 1 --max_tps 2
-python tests/export/nemo_export.py --model_name LLAMA2-7B-base-fp8 --existing_test_models --min_tps 1 --max_tps 1
-python tests/export/nemo_export.py --model_name LLAMA2-7B-base-int4 --existing_test_models --min_tps 1 --max_tps 1
-python tests/export/nemo_export.py --model_name LLAMA2-7B-base-int8 --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name LLAMA2-7B-base-int4-awq --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name LLAMA2-7B-base-int8-sq --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name LLAMA2-7B-fp8-sft --existing_test_models --min_tps 1
 python tests/export/nemo_export.py --model_name LLAMA2-13B-base --existing_test_models --min_tps 1 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-13B-base --existing_test_models --ptuning --min_tps 1 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-13B-base-fp8 --existing_test_models --min_tps 2 --max_tps 2
-python tests/export/nemo_export.py --model_name LLAMA2-13B-base-int4 --existing_test_models --min_tps 2 --max_tps 2
 python tests/export/nemo_export.py --model_name LLAMA2-70B-base --existing_test_models --min_tps 2 --max_tps 8
-python tests/export/nemo_export.py --model_name LLAMA2-70B-base-fp8 --existing_test_models --min_tps 8 --max_tps 8
-python tests/export/nemo_export.py --model_name LLAMA2-70B-base-int4 --existing_test_models --min_tps 8 --max_tps 8
+python tests/export/nemo_export.py --model_name LLAMA2-70B-base-int4-awq --existing_test_models --min_tps 4 --max_tps 4
+python tests/export/nemo_export.py --model_name LLAMA2-70B-base-int8-sq --existing_test_models --min_tps 2 --max_tps 2
+python tests/export/nemo_export.py --model_name LLAMA3-8B-base-fp8 --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name LLAMA3-70B-base-fp8 --existing_test_models --min_tps 8 --max_tps 8
 python tests/export/nemo_export.py --model_name FALCON-7B-base --existing_test_models --min_tps 1 --max_tps 1
 python tests/export/nemo_export.py --model_name FALCON-40B-base --existing_test_models --min_tps 2 --max_tps 8
-python tests/export/nemo_export.py --model_name STARCODER1-15B-base --existing_test_models --min_tps 1 --max_tps 1
-python tests/export/nemo_export.py --model_name STARCODER2-15B-base --existing_test_models --min_tps 1 --max_tps 1
-python tests/export/nemo_export.py --model_name GEMMA-base --existing_test_models --min_tps 1 --max_tps 1
-python tests/export/nemo_export.py --model_name Nemotron3-22B-base-32k --existing_test_models --min_tps 2
+python tests/export/nemo_export.py --model_name STARCODER1-15B-python --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name STARCODER2-15B-4k-vfinal --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name GEMMA-2B-base --existing_test_models --min_tps 1 --max_tps 1
+python tests/export/nemo_export.py --model_name NEMOTRON3-22B-base-32k-v1 --existing_test_models --min_tps 2
+python tests/export/nemo_export.py --model_name NEMOTRON3-22B-base-32k-v2 --existing_test_models --min_tps 2
+python tests/export/nemo_export.py --model_name NEMOTRON3-22B-base-32k-v3 --existing_test_models --min_tps 2
+python tests/export/nemo_export.py --model_name NEMOTRON4-340B-base-fp8 --existing_test_models --min_tps 8 --trt_llm_export_kwargs '{"reduce_fusion": false}'

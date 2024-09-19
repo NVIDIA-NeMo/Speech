@@ -27,6 +27,7 @@ from nemo.lightning import OptimizerModule, io, teardown
 from nemo.utils import logging
 
 if TYPE_CHECKING:
+    from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
     from transformers import LlamaConfig as HFLlamaConfig
     from transformers import LlamaForCausalLM
 

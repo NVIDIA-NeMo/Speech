@@ -22,6 +22,7 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
     from transformers import GPTBigCodeConfig as HFStarcoderConfig
@@ -81,7 +82,7 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
     def apply(self, output_path: Path) -> Path:
         from transformers import GPTBigCodeForCausalLM
 
-        source = GPTBigCodeForCausalLM.from_pretrained(str(self))
+        source = GPTBigCodeForCausalLM.from_pretrained(str(self), torch_dtype='auto')
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -146,6 +147,9 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
             num_query_groups=1,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
             share_embeddings_and_output_weights=False,
+            fp16=(dtype_from_hf(source) == torch.float16),
+            bf16=(dtype_from_hf(source) == torch.bfloat16),
+            params_dtype=dtype_from_hf(source),
         )
 
         return output

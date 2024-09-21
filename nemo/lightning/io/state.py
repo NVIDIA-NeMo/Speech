@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Generic, List, Optional, Tuple, TypeVar,
 import numpy as np
 import torch
 from torch import nn
+from nemo.lightning.pytorch.utils import extract_dtypes
 
 SourceModuleT = TypeVar("SourceModuleT", bound=nn.Module)
 TargetModuleT = TypeVar("TargetModuleT", bound=nn.Module)
@@ -92,6 +93,9 @@ def apply_transforms(
     if hasattr(target, "module") and isinstance(target.module, MegatronModule):
         _target = target.module
 
+    # Track dtypes to make sure they weren't modified during conversion.
+    target_orig_dtypes = extract_dtypes(_target.named_parameters())
+
     target_state = _target.state_dict()
     ctx = TransformCTX(
         source=_source,
@@ -157,6 +161,7 @@ def apply_transforms(
     """finally:
         cls._set_model_restore_state(is_being_restored=False)"""
 
+    assert target_orig_dtypes == extract_dtypes(_target.named_parameters())
     if hasattr(target, "module") and isinstance(target.module, MegatronModule):
         target.module = _target
 

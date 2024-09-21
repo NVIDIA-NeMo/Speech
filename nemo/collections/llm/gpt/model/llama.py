@@ -24,6 +24,7 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
 
 if TYPE_CHECKING:
@@ -222,13 +223,13 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
     def apply(self, output_path: Path) -> Path:
         from transformers import LlamaForCausalLM
 
-        source = LlamaForCausalLM.from_pretrained(str(self))
+        source = LlamaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
 
-        print(f"Converted Llama model to Nemo, model saved to {output_path}")
+        print(f"Converted Llama model to Nemo, model saved to {output_path} in {source.dtype}.")
 
         teardown(trainer, target)
         del trainer, target
@@ -278,6 +279,9 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             gated_linear_unit=True,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
             share_embeddings_and_output_weights=False,
+            fp16=(dtype_from_hf(source) == torch.float16),
+            bf16=(dtype_from_hf(source) == torch.bfloat16),
+            params_dtype=dtype_from_hf(source),
         )
 
         return output
@@ -421,7 +425,7 @@ def _export_qkv(ctx: io.TransformCTX, linear_qkv):
     target_key="decoder.layers.*.mlp.linear_fc1.weight",
 )
 def _import_linear_fc1(down, gate):
-    return torch.cat((down, gate), axis=0).float()
+    return torch.cat((down, gate), axis=0)
 
 
 @io.state_transform(

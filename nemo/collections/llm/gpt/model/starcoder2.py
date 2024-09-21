@@ -23,6 +23,7 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
     from transformers import Starcoder2Config as HFStarcoder2Config
@@ -108,7 +109,7 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
     def apply(self, output_path: Path) -> Path:
         from transformers import Starcoder2ForCausalLM
 
-        source = Starcoder2ForCausalLM.from_pretrained(str(self))
+        source = Starcoder2ForCausalLM.from_pretrained(str(self), torch_dtype='auto')
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -171,6 +172,9 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
             rotary_base=source.rope_theta,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
             share_embeddings_and_output_weights=False,
+            fp16=(dtype_from_hf(source) == torch.float16),
+            bf16=(dtype_from_hf(source) == torch.bfloat16),
+            params_dtype=dtype_from_hf(source),
         )
 
         return output

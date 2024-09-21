@@ -23,6 +23,7 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -82,7 +83,7 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
     def apply(self, output_path: Path) -> Path:
         from transformers import AutoModelForCausalLM
 
-        source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True)
+        source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -128,6 +129,9 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
             seq_length=source.seq_length,
             num_query_groups=source.multi_query_group_num,
             make_vocab_size_divisible_by=source.padded_vocab_size,
+            fp16=(dtype_from_hf(source) == torch.float16),
+            bf16=(dtype_from_hf(source) == torch.bfloat16),
+            params_dtype=dtype_from_hf(source),
         )
 
         return output

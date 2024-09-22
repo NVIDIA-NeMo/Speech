@@ -86,16 +86,20 @@ jobs:
 
       - name: notify
         run: |
+          VERSION=${{ steps.version-number.outputs.VERSION }}
+
+          URL="https://github.com/NVIDIA/NeMo/releases/tag/v$VERSION"
           MESSAGE='{
             "blocks": [
               {
                 "type": "section",
                 "text": {
                   "type": "mrkdwn",
-                  "text": "Releasebot 🤖: NeMo Toolkit released `${{ steps.version-number.outputs.VERSION }}` 🚀"
+                  "text": "Releasebot 🤖: NeMo-Toolkit released <'$URL'|`'$VERSION'`> 🚀"
                 }
               }
             ]
           }'
+
 
           curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_RELEASE_ENDPOINT }}

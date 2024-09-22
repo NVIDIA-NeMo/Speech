@@ -39,6 +39,7 @@ jobs:
             https://api.github.com/repos/NVIDIA/NeMo/pulls/$PR_ID)
           
           LABELS=$(echo -E $PR | jq '.labels | [.[].name] | join(",")' | tr -d '"')
+          AUTHOR=$(echo -E $PR | jq '.user.login')
 
           TARGET_BRANCHES=$(echo "$LABELS" | grep -o 'r[^,]*')
       
@@ -66,13 +67,21 @@ jobs:
             CHERRYPICK_SUCCESSFUL=$?
 
             if [[ $CHERRYPICK_SUCCESSFUL -eq 0 ]]; then
-              curl -L \
+              NEW_PR=$(curl -L \
                 -X POST \
                 -H "Accept: application/vnd.github+json" \
                 -H "Authorization: Bearer $GH_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 https://api.github.com/repos/NVIDIA/NeMo/pulls \
-                -d '{"title":"Cherry-pick '$PR_ID' into '$RELEASE_BRANCH'","head":"cherry-pick-'$PR_ID'-'$RELEASE_BRANCH'","base":"'$RELEASE_BRANCH'"}'
+                -d '{"title":"Cherry-pick '$PR_ID' into '$RELEASE_BRANCH'","head":"cherry-pick-'$PR_ID'-'$RELEASE_BRANCH'","base":"'$RELEASE_BRANCH'"}')
+              NEW_PR_ID=$(echo -e $NEW_PR | jq '.id')
+              curl -L \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                https://api.github.com/repos/NVIDIA/NeMo/pulls/$NEW_PR_ID/requested_reviewers \
+                -d '{"reviewers":["'$AUTHOR'"]}'
 
             else
               URL="https://github.com/NVIDIA/NeMo/pull/$PR_ID"

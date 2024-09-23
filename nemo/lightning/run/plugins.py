@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import copy
-import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,7 +34,7 @@ from nemo.utils import logging
 
 def _merge_callbacks(partial: run.Partial, callbacks: list[run.Config[Callback]]):
     if hasattr(partial, "trainer"):
-        if hasattr(partial.trainer, "callbacks"):
+        if hasattr(partial.trainer, "callbacks") and partial.trainer.callbacks:
             for callback in callbacks:
                 if callback not in partial.trainer.callbacks:
                     partial.trainer.callbacks.append(callback)
@@ -177,3 +176,68 @@ class WandbPlugin(run.Plugin):
             logging.warning(
                 f"The {self.__class__.__name__} will have no effect as WANDB_API_KEY environment variable is not set."
             )
+
+
+@dataclass(kw_only=True)
+class ConfigValidationPlugin(run.Plugin):
+    """
+    A plugin for validating a NeMo task with its executor.
+
+    This plugin is used to ensure that the NeMo environment, task, and executor meet certain criteria.
+    The validation checks include preemption, checkpoint directory,
+    serialization, and Weights and Biases (wandb) integration.
+
+    Attributes:
+        validate_preemption (bool): Whether to validate the preemption callback. If set to True, the plugin will
+            assert that the task has a `PreemptionCallback`. Defaults to True.
+        validate_checkpoint_dir (bool): Whether to validate the checkpoint directory. If set to True and the executor
+            is a `SlurmExecutor`, the plugin will assert that the task's log directory exists in the mounts
+            specified in the `SlurmExecutor`. Defaults to True.
+        validate_serialization (bool): Whether to validate task serialization. If set to True, the plugin will
+            assert that the task can be successfully serialized and deserialized using NeMo-Run's
+            `ZlibJSONSerializer`. Defaults to True.
+        validate_wandb (bool): Whether to validate Weights and Biases integration. If set to True, the plugin will
+            assert that the executor's environment variables contain a `WANDB_API_KEY`
+            and that NeMo Logger's `wandb` is set. Defaults to False.
+        validate_nodes_and_devices (bool): Whether to validate the number of devices and nodes. If set to True, the plugin will assert that the task's
+            trainer is configured to use the same number of nodes and devices as the executor. Defaults to True.
+    """
+
+    validate_preemption: bool = True
+    validate_checkpoint_dir: bool = True
+    validate_serialization: bool = True
+    validate_wandb: bool = False
+    validate_nodes_and_devices: bool = True
+
+    def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+        assert isinstance(task, run.Partial)
+        logging.info(f"Validating {task.__fn_or_cls__.__qualname__} and {executor.__class__.__qualname__}.")
+        if self.validate_preemption:
+            logging.info("Validating preemption callback")
+            assert any(map(lambda callback: callback.__fn_or_cls__ == PreemptionCallback, task.trainer.callbacks))
+
+        if self.validate_checkpoint_dir:
+            if isinstance(executor, run.SlurmExecutor):
+                mounts = executor.container_mounts + ["/nemo_run"]
+                mounts = list(map(lambda m: m.split(":")[-1], mounts))
+                logging.info(f"Validating checkpoint dir {task.log.log_dir} exists in {mounts}")
+                assert task.log.log_dir
+                assert any(map(lambda mount: Path(mount) in Path(task.log.log_dir).parents, mounts))
+
+        if self.validate_serialization:
+            from nemo_run.core.serialization.zlib_json import ZlibJSONSerializer
+
+            logging.info("Validating serialization/de-serialization of task")
+            serializer = ZlibJSONSerializer()
+            assert serializer.deserialize(serializer.serialize(task)) == task
+
+        if self.validate_wandb:
+            logging.info("Validating that Weights and Biases is enabled for task")
+            assert "WANDB_API_KEY" in executor.env_vars.keys()
+            assert task.log.wandb
+
+        if self.validate_nodes_and_devices:
+            logging.info("Validating that nodes and devices match for task and executor")
+            if isinstance(executor, run.SlurmExecutor):
+                assert task.trainer.num_nodes == executor.nodes
+                assert task.trainer.devices == executor.nproc_per_node()

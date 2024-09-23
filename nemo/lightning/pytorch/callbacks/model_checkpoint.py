@@ -163,6 +163,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
+        super().on_train_start(trainer, pl_module)
+
     def nemo_topk_check_previous_run(self):
         try:
             self.best_k_models

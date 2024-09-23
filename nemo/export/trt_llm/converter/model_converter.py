@@ -231,15 +231,12 @@ def model_to_trtllm_ckpt(
         "transformer.ln_f.bias",
     }
 
-    gpus_per_node = tensor_parallel_size if gpus_per_node is None else gpus_per_node
-
     for i in range(world_size):
         mapping = tensorrt_llm.Mapping(
             world_size=world_size,
             rank=i,
             tp_size=tensor_parallel_size,
             pp_size=pipeline_parallel_size,
-            gpus_per_node=gpus_per_node,
         )
         layers_range = mapping.pp_layers(num_layers)
 

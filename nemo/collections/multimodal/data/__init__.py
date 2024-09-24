@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.utils.import_utils import safe_import_from
 
-from nemo.collections.multimodal.data.energon import SimpleMultiModalDataModule
-
+SimpleMultiModalDataModule, _ = safe_import_from(
+    "nemo.collections.multimodal.data.energon", "SimpleMultiModalDataModule"
+)
 __all__ = ["SimpleMultiModalDataModule"]

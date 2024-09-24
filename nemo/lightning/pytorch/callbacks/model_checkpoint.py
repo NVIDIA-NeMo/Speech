@@ -73,7 +73,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
         train_time_interval: Optional[timedelta] = None,
         save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
         save_optim_on_train_end: Optional[bool] = False,
-        always_save_context: bool = False,
+        always_save_context: bool = True,
         save_context_on_train_end: bool = True,
         **kwargs,
     ):

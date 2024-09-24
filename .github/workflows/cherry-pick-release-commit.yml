@@ -70,12 +70,21 @@ jobs:
 
             if [[ $CHERRYPICK_SUCCESSFUL -eq 0 ]]; then
               PR_URL="https://github.com/NVIDIA/NeMo/pull/$PR_ID"
-              PAYLOAD='{
-                "title": "Cherry pick `'$PR_TITLE' ('$PR_ID')` into `'$RELEASE_BRANCH'`",
-                "head": "cherry-pick-'$PR_ID'-'$RELEASE_BRANCH'",
-                "base": "'$RELEASE_BRANCH'",
-                "body": "[🤖]: Hi @'$AUTHOR' 👋,<br><br>we'"'"'ve cherry picked #'$PR_ID' into `'$RELEASE_BRANCH'` for you! 🚀<br><br>Please review and approve this cherry pick by your convenience!"
-              }'
+
+              PAYLOAD=$(jq \
+                -n \
+                -c \
+                --arg TITLE "Cherry pick \`$PR_TITLE ($PR_ID)\` into \`$RELEASE_BRANCH\`" \
+                --arg HEAD "cherry-pick-$PR_ID-$RELEASE_BRANCH" \
+                --arg RELEASE_BRANCH "$RELEASE_BRANCH" \
+                --arg BODY "[🤖]: Hi @$AUTHOR 👋,<br><br>we've cherry picked #$PR_ID into \`$RELEASE_BRANCH\` for you! 🚀<br><br>Please review and approve this cherry pick by your convenience\!" \
+                '{
+                  "title": $TITLE,
+                  "head": $HEAD,
+                  "base": $RELEASE_BRANCH,
+                  "body": $BODY
+                }'
+              )
 
               NEW_PR=$(curl -L \
                 -X POST \
@@ -85,7 +94,7 @@ jobs:
                 https://api.github.com/repos/NVIDIA/NeMo/pulls \
                 -d $PAYLOAD)
                 
-              NEW_PR_ID=$(echo -e $NEW_PR | jq '.number')
+              NEW_PR_ID=$(echo -E $NEW_PR | jq '.number')
               curl -L \
                 -X POST \
                 -H "Accept: application/vnd.github+json" \

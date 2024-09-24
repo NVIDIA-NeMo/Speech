@@ -306,13 +306,15 @@ class ConnectorMixin:
         return ckpt_path
 
     @classmethod
-    def _get_connector(cls, ext, path=None, importer=True, **kwargs) -> ModelConnector:
+    def _get_connector(
+        cls, ext: Union[str, Path], path: Optional[Union[str, Path]] = None, importer: bool = True, **kwargs
+    ) -> ModelConnector:
         """
         Retrieves the appropriate model connector based on the file extension and path,
         distinguishing between importers and exporters.
 
         Args:
-            ext (str): The file extension or a URI that may include a protocol specifier.
+            ext (Union[str, Path]): The file extension or a URI that may include a protocol specifier.
             path (Optional[Union[str, Path]]): The path where the model file is located or will be saved.
             importer (bool): Flag to determine if the connector is for importing (True) or exporting (False).
 
@@ -326,10 +328,11 @@ class ConnectorMixin:
                         when required.
         """
         _path = None
+        ext = str(ext)
         if "://" in ext:
             ext, _path = ext.split("://")
         else:
-            _path = path
+            _path = str(path)
 
         connector = cls._IMPORTERS.get(str(cls) + ext) if importer else cls._EXPORTERS.get(str(cls) + ext)
         if not connector:

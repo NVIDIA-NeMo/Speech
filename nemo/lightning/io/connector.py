@@ -222,7 +222,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
     def local_path(self, base_path: Optional[Path] = None) -> Path:
         if base_path:
-            _base = base_path
+            _base = Path(base_path)
         else:
             from nemo.lightning.base import NEMO_MODELS_CACHE
 

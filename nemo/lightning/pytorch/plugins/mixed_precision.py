@@ -220,12 +220,12 @@ def update_config_with_dtype_overrides(dtype_config, config):
     for field in fields(dtype_config):
         if not hasattr(config, field.name):
             continue
-        # If we overwrote a value, throw a warning.
+        # If we overwrote a value, log a debug message.
         old_val = getattr(config, field.name)
         new_val = getattr(dtype_config, field.name)
         if old_val != new_val:
             setattr(config, field.name, new_val)
-            logging.warning(f"Overwrote {type(config).__name__}.{field.name}  {old_val} -> {new_val}")
+            logging.debug(f"Overwrote {type(config).__name__}.{field.name}  {old_val} -> {new_val}")
     return config
 
 

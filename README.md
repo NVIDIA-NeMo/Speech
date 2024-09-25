@@ -78,6 +78,16 @@
 
 <details open>
   <summary><b>Speech Recognition</b></summary>
+  <details>
+      <summary>
+        <a href="https://developer.nvidia.com/blog/accelerating-leaderboard-topping-asr-models-10x-with-nvidia-nemo/">
+          Accelerating Leaderboard-Topping ASR Models 10x with NVIDIA NeMo
+        </a> (2024/09/24)
+      </summary>
+      NVIDIA NeMo team released a number of inference optimizations for CTC, RNN-T, and TDT models that resulted in up to 10x inference speed-up. 
+      These models now exceed an inverse real-time factor (RTFx) of 2,000, with some reaching RTFx of even 6,000.
+      <br><br>
+    </details>
     <details>
       <summary>
         <a href="https://developer.nvidia.com/blog/new-standard-for-speech-recognition-and-translation-from-the-nvidia-nemo-canary-model/">

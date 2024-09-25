@@ -411,7 +411,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             self.setup_optimizers(trainer)
 
         self.model = self.megatron_parallel
-        self.model.callbacks.add(getattr(trainer, "callbacks"))
+        trainer_callbacks = getattr(trainer, "callbacks", None)
+        if trainer_callbacks:
+            self.model.callbacks.add(*trainer_callbacks)
 
         if self.data_sampler:
             self.model.callbacks.add(self.data_sampler)
@@ -480,6 +482,17 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
 
             out = self.model(dataloader_iter, forward_only=False, *args, **kwargs)
 
+            if torch.is_tensor(out):
+                reduced_train_loss = out
+            else:
+                if not isinstance(out, dict):
+                    raise ValueError(f"Expected dict or tensor for reduced_train_loss, got {type(out)}")
+
+                if "loss" not in out:
+                    raise ValueError(f"Expected 'loss' in output dict, got {out.keys()}")
+
+                reduced_train_loss = out["loss"]
+
             self.lightning_module.log(
                 "global_step",
                 self.trainer.global_step,
@@ -511,8 +524,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             if self.log_train_loss:
                 # p2p now, broadcast later at ckpt. only with pp, some ranks will log 0.0
                 # WHICH IS OK because we broadcast later at checkpoint time
-                _strategy_lib._sync_from_last_pipeline_stage(out, broadcast=False)
-                self.lightning_module.log("reduced_train_loss", out, prog_bar=True, batch_size=1, sync_dist=False)
+                _strategy_lib._sync_from_last_pipeline_stage(reduced_train_loss, broadcast=False)
+                self.lightning_module.log(
+                    "reduced_train_loss", reduced_train_loss, prog_bar=True, batch_size=1, sync_dist=False
+                )
 
             return out
 
@@ -601,7 +616,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             kwargs["forward_step"] = self._get_forward_step(step_name)
         if "loss_reduction" not in kwargs:
             kwargs["loss_reduction"] = self._get_loss_reduction(step_name)
-        kwargs.update(self._data_config_kwargs(dataloader_iter))
 
         return kwargs
 
@@ -780,13 +794,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 return _ModuleStepFunction(fn_name, is_property=True)
 
         return None
-
-    def _data_config_kwargs(self, dataloader_iter) -> Dict[str, Any]:
-        if not hasattr(dataloader_iter, "data_config") and self.data_sampler:
-            if hasattr(self.data_sampler, "megatron_data_kwargs"):
-                return self.data_sampler.megatron_data_kwargs
-
-        return {}
 
     @property
     def distributed_sampler_kwargs(self) -> Dict[str, Any]:

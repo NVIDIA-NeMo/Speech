@@ -50,7 +50,7 @@ class AdapterParallelAdd(AdapterWrapper):
             linear_output, bias, layernorm_output = linear_output
             x = layernorm_output
 
-        adapter_output = self.adapter(x)
+        adapter_output = self.adapter(x.contiguous())
         return linear_output + adapter_output, bias
 
 

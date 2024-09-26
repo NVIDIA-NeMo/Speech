@@ -5396,6 +5396,23 @@ jobs:
       - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' }}
         run: exit 0
 
+      - if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' && github.event_name == 'pull_request' }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.number }}
+          body: |
+            [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
+            
+            I just wanted to let you know that, you know, a <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|CICD pipeline> for this PR just finished successfully ✨
+
+            So it might be time to merge this PR or like to get some approvals 🚀
+
+            But I'm just a 🤖 so I'll leave it you what to do next.
+
+            Have a great day! 
+
+            //cc @ko3n1g
+
       - if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' }}
         name: Checkout repository
         uses: actions/checkout@v4

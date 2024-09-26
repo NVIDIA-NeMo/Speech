@@ -10,3 +10,4 @@ infer:
   repetition_penalty: 1.0  # The parameter for repetition penalty. 1.0 means no penalty.
   num_beams: 1
   max_new_tokens: 30
+  lora_uids: null

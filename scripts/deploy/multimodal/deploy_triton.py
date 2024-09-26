@@ -101,6 +101,37 @@ def get_args(argv):
         type=int,
         help="Max batch size of the visual inputs, for lita/vita model with video inference, this should be set to 256",
     )
+    parser.add_argument(
+        '--use_lora_plugin',
+        nargs='?',
+        const=None,
+        choices=['float16', 'float32', 'bfloat16'],
+        help="Activates the lora plugin which enables embedding sharing.",
+    )
+    parser.add_argument(
+        '--lora_target_modules',
+        nargs='+',
+        default=None,
+        choices=[
+            "attn_qkv",
+            "attn_q",
+            "attn_k",
+            "attn_v",
+            "attn_dense",
+            "mlp_h_to_4h",
+            "mlp_gate",
+            "mlp_4h_to_h",
+        ],
+        help="Add lora in which modules. Only be activated when use_lora_plugin is enabled.",
+    )
+    parser.add_argument(
+        '--max_lora_rank',
+        type=int,
+        default=64,
+        help='maximum lora rank for different lora modules. '
+        'It is used to compute the workspace size of lora plugin.',
+    )
+    parser.add_argument("--lora_checkpoint_path", default=None, type=str, help="The checkpoint path of LoRA weights")
     args = parser.parse_args(argv)
     return args
 
@@ -133,7 +164,9 @@ def get_trt_deployable(args):
         raise ValueError("Model type is required to be defined if a nemo checkpoint is provided.")
 
     exporter = TensorRTMMExporter(
-        model_dir=trt_path, load_model=(args.visual_checkpoint is None), modality=args.modality
+        model_dir=trt_path,
+        load_model=(args.visual_checkpoint is None),
+        modality=args.modality,
     )
 
     if args.visual_checkpoint is not None:
@@ -151,6 +184,10 @@ def get_trt_deployable(args):
                 max_batch_size=args.max_batch_size,
                 max_multimodal_len=args.max_multimodal_len,
                 dtype=args.dtype,
+                use_lora_plugin=args.use_lora_plugin,
+                lora_target_modules=args.lora_target_modules,
+                max_lora_rank=args.max_lora_rank,
+                lora_checkpoint_path=args.lora_checkpoint_path,
             )
         except Exception as error:
             raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))

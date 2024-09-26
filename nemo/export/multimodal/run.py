@@ -171,7 +171,10 @@ class MultimodalModelRunner:
 
     def init_llm(self, llm_engine_dir):
         self.model = ModelRunner.from_dir(
-            llm_engine_dir, rank=tensorrt_llm.mpi_rank(), debug_mode=False, stream=self.stream
+            llm_engine_dir,
+            rank=tensorrt_llm.mpi_rank(),
+            debug_mode=False,
+            stream=self.stream,
         )
         self.model_config = self.model.session._model_config
         self.runtime_mapping = self.model.session.mapping
@@ -380,6 +383,7 @@ class MultimodalModelRunner:
         temperature,
         repetition_penalty,
         num_beams,
+        lora_uids=None,
     ):
         if not warmup:
             profiler.start("Generate")
@@ -412,6 +416,7 @@ class MultimodalModelRunner:
             repetition_penalty=repetition_penalty,
             num_beams=num_beams,
             output_sequence_lengths=False,
+            lora_uids=lora_uids,
             return_dict=False,
         )
 
@@ -786,6 +791,7 @@ class MultimodalModelRunner:
         temperature,
         repetition_penalty,
         num_beams,
+        lora_uids=None,
         run_profiling=False,
         check_accuracy=False,
     ):
@@ -807,6 +813,7 @@ class MultimodalModelRunner:
             temperature=temperature,
             repetition_penalty=repetition_penalty,
             num_beams=num_beams,
+            lora_uids=lora_uids,
         )
         num_iters = self.profiling_iterations if run_profiling else 1
         for _ in range(num_iters):
@@ -824,6 +831,7 @@ class MultimodalModelRunner:
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
                 num_beams=num_beams,
+                lora_uids=lora_uids,
             )
         if self.runtime_rank == 0:
             self.print_result(input_text, output_text, batch_size, num_beams, run_profiling, check_accuracy)
@@ -1076,6 +1084,7 @@ class SpeechllmModelRunner(MultimodalModelRunner):
         check_accuracy=False,
         input_signal=None,
         input_signal_length=None,
+        lora_uids=None,
     ):
         """
         Args:

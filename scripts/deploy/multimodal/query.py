@@ -36,6 +36,14 @@ def get_args(argv):
     parser.add_argument("-rp", "--repetition_penalty", default=1.0, type=float, help="repetition_penalty")
     parser.add_argument("-nb", "--num_beams", default=1, type=int, help="num_beams")
     parser.add_argument("-it", "--init_timeout", default=60.0, type=float, help="init timeout for the triton server")
+    parser.add_argument(
+        "-lt",
+        "--lora_task_uids",
+        default=None,
+        type=str,
+        nargs="+",
+        help="The list of LoRA task uids; use -1 to disable the LoRA module",
+    )
 
     args = parser.parse_args(argv)
     return args
@@ -55,5 +63,6 @@ if __name__ == '__main__':
         repetition_penalty=args.repetition_penalty,
         num_beams=args.num_beams,
         init_timeout=args.init_timeout,
+        lora_uids=args.lora_task_uids,
     )
     print(output)

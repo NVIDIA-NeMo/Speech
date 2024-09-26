@@ -105,6 +105,7 @@ class NemoQueryMultimodal:
         repetition_penalty=1.0,
         num_beams=1,
         init_timeout=60.0,
+        lora_uids=None,
     ):
 
         prompts = str_list2numpy([input_text])
@@ -136,6 +137,10 @@ class NemoQueryMultimodal:
 
         if num_beams is not None:
             inputs["num_beams"] = np.full(prompts.shape, num_beams, dtype=np.int_)
+
+        if lora_uids is not None:
+            lora_uids = np.char.encode(lora_uids, "utf-8")
+            inputs["lora_uids"] = np.full((prompts.shape[0], len(lora_uids)), lora_uids)
 
         with ModelClient(self.url, self.model_name, init_timeout_s=init_timeout) as client:
             result_dict = client.infer_batch(**inputs)

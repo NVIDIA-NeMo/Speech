@@ -31,6 +31,8 @@ def main(cfg):
         max_batch_size=cfg.infer.max_batch_size,
         max_multimodal_len=cfg.infer.max_multimodal_len,
         dtype=cfg.model.precision,
+        lora_checkpoint_path=cfg.model.lora_path,
+        use_lora_plugin="auto" if cfg.model.lora_path is not None else None,
         load_model=False,
     )
 

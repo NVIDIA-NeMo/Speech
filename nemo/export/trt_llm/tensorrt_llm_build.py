@@ -105,13 +105,14 @@ def build_and_save_engine(
 
     if use_lora_plugin is not None:
         # build_config.plugin_config.set_lora_plugin(use_lora_plugin)
-        # build_config.plugin_config._lora_plugin = use_lora_plugin
+        build_config.plugin_config._lora_plugin = use_lora_plugin
         lora_config = LoraConfig(
             lora_dir=lora_ckpt_list,
             lora_ckpt_source='nemo',
             max_lora_rank=max_lora_rank,
-            lora_target_modules=lora_target_modules,
         )
+        if lora_target_modules is not None:
+            lora_config.lora_target_modules = lora_target_modules
         build_config.lora_config = lora_config
 
     model = model_cls.from_config(model_config)

@@ -12,5 +12,6 @@ model:
   type: neva #neva, video-neva, lita, vila, vita
   precision: bfloat16
   visual_model_path: /path/to/visual.nemo
-  llm_model_path: /path/to/llm.nemo
-  llm_model_type: llama 
+  llm_model_path: null
+  llm_model_type: llama
+  lora_path: null

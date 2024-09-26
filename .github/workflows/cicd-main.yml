@@ -5403,7 +5403,7 @@ jobs:
           body: |
             [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
             
-            I just wanted to let you know that, you know, a <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|CICD pipeline> for this PR just finished successfully ✨
+            I just wanted to let you know that, you know, a [CICD pipeline](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for this PR just finished successfully ✨
 
             So it might be time to merge this PR or like to get some approvals 🚀
 

@@ -424,26 +424,24 @@ class MCoreCLIPViTModel(CLIPViTModel):
         # TODO (yuya): need to handle post_process correctly in order to enable PP
         self.output_dim = kwargs.pop('output_dim')
         super().__init__(*args, **kwargs)
-        if self.post_process:
-            self.final_layernorm = TENorm(
-                config=self.config,
-                hidden_size=self.config.hidden_size,
-                eps=self.config.layernorm_epsilon,
-            )
-            self.head = torch.nn.Linear(
-                self.config.hidden_size,
-                self.output_dim,
-                bias=False,
-            )
+        self.final_layernorm = TENorm(
+            config=self.config,
+            hidden_size=self.config.hidden_size,
+            eps=self.config.layernorm_epsilon,
+        )
+        self.head = torch.nn.Linear(
+            self.config.hidden_size,
+            self.output_dim,
+            bias=False,
+        )
 
     def forward(self, x):
         x = super().forward(
             x,
         )
-        if self.post_process:
-            x = self.final_layernorm(x)
-            x = x[:, 0]
-            x = self.head(x)
+        x = self.final_layernorm(x)
+        x = x[:, 0]
+        x = self.head(x)
         return x
 
 

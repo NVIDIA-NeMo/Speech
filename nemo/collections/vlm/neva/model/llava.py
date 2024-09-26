@@ -111,7 +111,7 @@ class HFLlavaImporter(io.ModelConnector["LlavaForConditionalGeneration", LlavaMo
             "language_model.model.layers.*.post_attention_layernorm.weight": "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
             "language_model.model.norm.weight": "language_model.decoder.final_layernorm.weight",
             "language_model.lm_head.weight": "language_model.output_layer.weight",
-            "vision_tower.vision_model.*": "vision_model.vision_model.*",
+            "vision_tower.vision_model.**": "vision_model.vision_model.**",
         }
         if "vision_projection.encoder.linear_fc1.weight" in target.module.state_dict().keys():
             mapping.update(

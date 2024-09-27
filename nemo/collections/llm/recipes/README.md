@@ -16,10 +16,10 @@ Recipes are designed to be modular and extensible, allowing users to easily cust
 
 ### Command Line Interface
 
-You can use these recipes via the NeMo CLI:
+You can use these recipes via the NeMo CLI (provided by [NeMo-Run](https://github.com/NVIDIA/NeMo-Run)):
 
 ```bash
-nemorun llm <task> --factory <recipe_name>
+nemo llm <task> --factory <recipe_name>
 ```
 Where:
 - `<task>` is either `pretrain` or `finetune`
@@ -27,16 +27,19 @@ Where:
 
 For example:
 ```bash
-nemorun llm pretrain --factory llama3_8b
+nemo llm pretrain --factory llama3_8b
 ```
 
+> [!IMPORTANT]
+> When launching the recipes with multiple processes (i.e. on multiple GPUs), add the `-y` option to the command to avoid user confirmation prompts.
+> For example, `nemo llm pretrain --factory llama3_8b -y`
 
 ### Customizing Parameters
 
 You can override any parameter in the recipe:
 
 ```bash
-nemorun llm pretrain --factory llama3_8b trainer.max_steps=2000
+nemo llm pretrain --factory llama3_8b trainer.max_steps=2000
 ```
 
 For more details around running recipes, see [pre-train](../../../../examples/llm/pretrain/README.md).

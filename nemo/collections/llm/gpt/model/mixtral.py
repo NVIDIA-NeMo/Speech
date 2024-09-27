@@ -383,3 +383,12 @@ def _export_moe_w1_w3(linear_fc1):
     gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
 
     return gate_proj, up_proj
+
+
+__all__ = [
+    "MixtralConfig",
+    "MixtralConfig8x3B",
+    "MixtralConfig8x7B",
+    "MixtralConfig8x22B",
+    "MixtralModel",
+]

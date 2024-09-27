@@ -174,8 +174,10 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
 class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
     def init(self) -> "AutoModelForCausalLM":
         from transformers import AutoModelForCausalLM
+        from transformers.modeling_utils import no_init_weights
 
-        return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
+        with no_init_weights(True):
+            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
 
     def apply(self, output_path: Path) -> Path:
         target = self.init()

@@ -184,8 +184,10 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
 class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCausalLM"]):
     def init(self) -> "Starcoder2ForCausalLM":
         from transformers import Starcoder2ForCausalLM
+        from transformers.modeling_utils import no_init_weights
 
-        return Starcoder2ForCausalLM._from_config(self.config)
+        with no_init_weights(True):
+            return Starcoder2ForCausalLM._from_config(self.config)
 
     def apply(self, output_path: Path) -> Path:
         target = self.init()

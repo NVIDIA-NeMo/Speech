@@ -188,8 +188,10 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
 class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
     def init(self) -> "MistralForCausalLM":
         from transformers import AutoModelForCausalLM
+        from transformers.modeling_utils import no_init_weights
 
-        return AutoModelForCausalLM.from_config(self.config)
+        with no_init_weights(True):
+            return AutoModelForCausalLM.from_config(self.config)
 
     def apply(self, output_path: Path) -> Path:
         # TODO: Make it work with lazy init

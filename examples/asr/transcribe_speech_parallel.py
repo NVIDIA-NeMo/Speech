@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -82,6 +82,7 @@ from omegaconf import MISSING, OmegaConf
 from nemo.collections.asr.data.audio_to_text_dataset import ASRPredictionWriter
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
+from nemo.collections.asr.models.aed_multitask_models import EncDecMultiTaskModel
 from nemo.collections.asr.models.configs.asr_models_config import ASRDatasetConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_greedy_decoding import GreedyBatchedRNNTInferConfig
@@ -93,7 +94,9 @@ from nemo.utils.get_rank import is_global_rank_zero
 @dataclass
 class ParallelTranscriptionConfig:
     model: Optional[str] = None  # name
-    predict_ds: ASRDatasetConfig = ASRDatasetConfig(return_sample_id=True, num_workers=4)
+    predict_ds: ASRDatasetConfig = ASRDatasetConfig(
+        return_sample_id=True, num_workers=4, min_duration=0, max_duration=40
+    )
     output_path: str = MISSING
 
     # when return_predictions is enabled, the prediction call would keep all the predictions in memory and return them when prediction is done
@@ -157,10 +160,24 @@ def main(cfg: ParallelTranscriptionConfig):
     if isinstance(model, EncDecHybridRNNTCTCModel) and cfg.decoder_type is not None:
         model.change_decoding_strategy(decoder_type=cfg.decoder_type)
 
-    trainer = ptl.Trainer(**cfg.trainer)
-
     cfg.predict_ds.return_sample_id = True
     cfg.predict_ds = match_train_config(predict_ds=cfg.predict_ds, train_ds=model.cfg.train_ds)
+
+    if isinstance(model, EncDecMultiTaskModel):
+        cfg.trainer.use_distributed_sampler = False
+        OmegaConf.set_struct(cfg.predict_ds, False)
+        cfg.predict_ds.use_lhotse = True
+        cfg.predict_ds.lang_field = "target_lang"
+        OmegaConf.set_struct(cfg.predict_ds, True)
+
+    trainer = ptl.Trainer(**cfg.trainer)
+
+    if isinstance(model, EncDecMultiTaskModel):
+        OmegaConf.set_struct(cfg.predict_ds, False)
+        cfg.predict_ds.global_rank = trainer.global_rank
+        cfg.predict_ds.world_size = trainer.world_size
+        OmegaConf.set_struct(cfg.predict_ds, True)
+
     data_loader = model._setup_dataloader_from_config(cfg.predict_ds)
 
     os.makedirs(cfg.output_path, exist_ok=True)

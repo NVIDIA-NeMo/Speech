@@ -859,16 +859,30 @@ class ASRPredictionWriter(BasePredictionWriter):
         batch_idx: int,
         dataloader_idx: int,
     ):
+        import lhotse
+
         for sample_id, transcribed_text in prediction:
             item = {}
-            sample = self.dataset.get_manifest_sample(sample_id)
-            item["audio_filepath"] = sample.audio_file
-            item["offset"] = sample.offset
-            item["duration"] = sample.duration
-            item["text"] = sample.text_raw
-            item["pred_text"] = transcribed_text
-            self.outf.write(json.dumps(item) + "\n")
-            self.samples_num += 1
+            if isinstance(sample_id, lhotse.cut.Cut):
+                sample = sample_id
+                if isinstance(sample, lhotse.cut.MixedCut):
+                    sample = sample.first_non_padding_cut
+                item["audio_filepath"] = sample.recording.sources[0].source
+                item["offset"] = sample.start
+                item["duration"] = sample.duration
+                item["text"] = sample.supervisions[0].text
+                item["pred_text"] = transcribed_text
+                self.outf.write(json.dumps(item) + "\n")
+                self.samples_num += 1
+            else:
+                sample = self.dataset.get_manifest_sample(sample_id)
+                item["audio_filepath"] = sample.audio_file
+                item["offset"] = sample.offset
+                item["duration"] = sample.duration
+                item["text"] = sample.text_raw
+                item["pred_text"] = transcribed_text
+                self.outf.write(json.dumps(item) + "\n")
+                self.samples_num += 1
         return
 
     def close_output_file(self):

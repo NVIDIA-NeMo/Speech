@@ -112,6 +112,7 @@ jobs:
           # Basic Import Checks
           python -c "import nemo.collections.asr as nemo_asr"
           python -c "import nemo.collections.nlp as nemo_nlp"
+          python -c "import nemo.collections.nlp as nemo_nlp; nemo_nlp.modules.get_tokenizer_list()"
           python -c "import nemo.collections.tts as nemo_tts"
 
           python setup.py style

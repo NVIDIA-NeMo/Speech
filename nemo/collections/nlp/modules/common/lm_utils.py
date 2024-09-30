@@ -102,6 +102,16 @@ def get_lm_model(
     pretrain_model_name = ''
     if cfg.get('language_model') and cfg.language_model.get('pretrained_model_name', ''):
         pretrain_model_name = cfg.language_model.get('pretrained_model_name', '')
+
+    from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
+
+    def get_megatron_pretrained_bert_models() -> List[str]:
+
+        all_pretrained_megatron_bert_models = [
+            model.pretrained_model_name for model in MegatronBertModel.list_available_models()
+        ]
+        return all_pretrained_megatron_bert_models
+
     all_pretrained_megatron_bert_models = get_megatron_pretrained_bert_models()
     if (
         cfg.tokenizer is not None
@@ -175,13 +185,13 @@ def get_transformer(
                                  config_dict={
                                      '_target_': 'transformers.BertConfig',
                                      'hidden_size': 1536
-                                 }) 
+                                 })
 
 
     Args:
         library (str, optional): Can be 'nemo', 'huggingface', or 'megatron'. Defaults to 'nemo'.
         model_name (Optional[str], optional): Named model architecture from the chosen library. Defaults to None.
-        pretrained (bool, optional): Use True to get pretrained weights. 
+        pretrained (bool, optional): Use True to get pretrained weights.
                                      False will use the same architecture but with randomly initialized weights.
                                      Defaults to False.
         config_dict (Optional[dict], optional): Use for custom configuration of transformer. Defaults to None.

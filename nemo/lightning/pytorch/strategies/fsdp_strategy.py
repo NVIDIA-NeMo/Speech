@@ -205,8 +205,12 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
     @override
     def remove_checkpoint(self, filepath: Union[str, Path]) -> None:
         # Taken from MegatronStrategy
+        ckpt = ckpt_to_dir(filepath)
         if self.is_global_zero:
-            shutil.rmtree(ckpt_to_dir(filepath))
+            if os.path.islink(ckpt):
+                os.unlink(ckpt)
+            else:
+                shutil.rmtree(ckpt)
 
     @override
     def save_checkpoint(

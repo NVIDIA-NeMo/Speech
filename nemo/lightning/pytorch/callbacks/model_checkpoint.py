@@ -81,11 +81,17 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self.save_context_on_train_end = save_context_on_train_end
         self.save_optim_on_train_end = save_optim_on_train_end
 
+        ## stores the next -last checkpoint to be saved, used only when save_last = 'link'
+        ## this is needed because when using symlinks, we need to update the non-last checkpoint's
+        ## last_model_path to point to the corresponding -last version
+        self.future_last_model_path = ""
+
         # Checkpoints which removal is deferred until async save is done.
         # Each element of `deferred_ckpts_to_remove` is a growing list
         # that `self._remove_checkpoint` adds to. Once `self._save_checkpoint`
         # is called, the last element is frozen and a new element is added.
         self.deferred_ckpts_to_remove: List[List[str]] = []
+        self.ckpts_to_link: Dict[str, str] = {}
 
         # Call the parent class constructor with the remaining kwargs.
         super().__init__(
@@ -239,6 +245,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
             self.kth_value = None
             self.best_model_path = ""
             self.best_model_score = None
+
+    def state_dict(self):
+        state = super().state_dict()
+        ## if using symlinks, overwrite last_model_path to avoid off-by-one issues
+        if self.save_last == "link":
+            state["last_model_path"] = self.future_last_model_path
+        return state
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         super().load_state_dict(state_dict)
@@ -397,6 +410,25 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
         return monitor_candidates
 
+    def _link_checkpoint(self, trainer: "pl.Trainer", filepath: str, linkpath: str, override_async=False) -> None:
+
+        ## check to see whether this step has already been saved as top_k
+        ## in which case we can create a symlink
+        ## otherwise, we have to save the checkpoint
+        saved_current_step = str(ckpt_to_dir(linkpath)).replace("-last", "") == str(ckpt_to_dir(filepath))
+        if not saved_current_step:
+            self._save_checkpoint(trainer, linkpath)
+            return
+
+        ## linking will happen as part of the finalize fn
+        if self.async_save and not override_async:
+            self.ckpts_to_link[str(filepath)] = str(linkpath)
+            return
+
+        filepath = ckpt_to_dir(filepath)
+        linkpath = ckpt_to_dir(linkpath)
+        super()._link_checkpoint(trainer, filepath, linkpath)
+
     def _save_checkpoint(self, trainer: 'pytorch_lightning.Trainer', filepath: str) -> None:
         from nemo.utils.get_rank import is_global_rank_zero
 
@@ -407,6 +439,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
         ema_callback = self._ema_callback(trainer)
 
         self._last_global_step_saved = trainer.global_step
+
+        ## manually update last_model_path so symlink is up-to-date
+        ## should only be done when using a symlink
+        if self.save_last == "link":
+            self.future_last_model_path = str(ckpt_to_dir(filepath))
+            if not str(ckpt_to_dir(filepath)).endswith("last"):
+                self.future_last_model_path += "-last.ckpt"
 
         if ema_callback is not None:
             if self.async_save:
@@ -452,6 +491,7 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 TrainerContext.from_trainer(trainer).io_dump(ckpt_to_dir(filepath) / "context")
 
             if self.async_save:
+                self._last_checkpoint_saved = filepath
                 logging.info(f'Scheduled async checkpoint save for {filepath}')
             else:
                 finalize_fn()
@@ -478,6 +518,9 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 return
 
             logging.info(f'Async checkpoint save for step {global_step} ({filepath}) finalized successfully.')
+
+            if str(filepath) in self.ckpts_to_link:
+                self._link_checkpoint(trainer, filepath, self.ckpts_to_link.pop(filepath), override_async=True)
 
             # Remove checkpoints marked for removal by `self._remove_checkpoint`
             # For each finalization there is exactly one entry in self.deferred_ckpts_to_remove

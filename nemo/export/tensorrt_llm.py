@@ -45,7 +45,14 @@ from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
 from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
 from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
-from nemo.export.trt_llm.tensorrt_llm_run import generate, generate_streaming, load, load_distributed, refit
+from nemo.export.trt_llm.tensorrt_llm_run import (
+    generate,
+    generate_streaming,
+    load,
+    load_distributed,
+    refit,
+    unload_engine,
+)
 
 use_deploy = True
 try:
@@ -505,12 +512,12 @@ class TensorRTLLM(ITritonDeployable):
         engine = build_and_save_engine(
             max_input_len=max_input_len,
             max_output_len=max_output_len,
+            max_seq_len=max_input_len + max_output_len,
             max_batch_size=max_batch_size,
             model_config=model_config[0],
             model_weights=weights[0],
             model_dir=self.model_dir,
             model_type=model_type,
-            custom_all_reduce=False,
             use_refit=use_refit,
         )
         torch.distributed.barrier()
@@ -983,3 +990,6 @@ class TensorRTLLM(ITritonDeployable):
                         "model needs to be exported again. "
                         "Error message: " + repr(error)
                     ) from error
+
+    def unload_engine(self):
+        unload_engine()

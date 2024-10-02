@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 import tensorrt_llm
 import torch
-from tensorrt_llm._utils import torch_to_numpy
+from tensorrt_llm._utils import mpi_comm, torch_to_numpy
 
 # A global dicts to store exported weights.
 # This is set to be a global variable to avoid extra code modification from tensorrt_llm.
@@ -586,6 +586,13 @@ def init_model_parallel_from_nemo(reshard_model):
         pp_size = 1
 
     mp_rank = tp_size * pp_rank + tp_rank
+    # Need to split cpp MPI World Comm because TensorRT-LLM NCCL plugins refer to the locally split comm.
+    # High level call structure is: MpiComm::split -> MpiComm::setSession -> LOCAL_COMM_SESSION (used in allReducePlugin.cpp)
     tensorrt_llm.bindings.MpiComm.split(dp_rank, mp_rank)
+    # Also split the python mpi communicator and set the global world one to the local split one
+    new_comm = mpi_comm().Split(color=dp_rank, key=mp_rank)
+    from mpi4py import MPI
+
+    MPI.COMM_WORLD = new_comm
 
     return mp_rank, dp_rank, tp_size, pp_size, dp_size

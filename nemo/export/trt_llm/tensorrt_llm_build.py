@@ -53,6 +53,7 @@ def build_and_save_engine(
     multiple_profiles: bool = False,
     gpt_attention_plugin: str = "auto",
     gemm_plugin: str = "auto",
+    reduce_fusion: bool = False,
 ):
     architecture = "LLaMAForCausalLM" if model_config.architecture == "LlamaForCausalLM" else model_config.architecture
     try:
@@ -71,6 +72,7 @@ def build_and_save_engine(
     plugin_config.remove_input_padding = remove_input_padding
     plugin_config.use_paged_context_fmha = paged_context_fmha
     plugin_config.multiple_profiles = multiple_profiles
+    plugin_config.reduce_fusion = reduce_fusion
 
     max_num_tokens, opt_num_tokens = check_max_num_tokens(
         max_num_tokens=max_num_tokens,

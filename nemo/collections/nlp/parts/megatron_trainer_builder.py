@@ -147,7 +147,10 @@ class MegatronTrainerBuilder:
         use_dist_ckpt = not self.cfg.model.get('fsdp', False) and (
             self.cfg.model.get('mcore_gpt', False) or self.cfg.model.get('mcore_bert', False)
         )
-        async_save = self.cfg.get('exp_manager', {}).get('checkpoint_callback_params', {}).get('async_save', False)
+        # exp_manager == None is valid and indicates no exp_manager should be initialized
+        async_save = (
+            (self.cfg.get('exp_manager', {}) or {}).get('checkpoint_callback_params', {}).get('async_save', False)
+        )
         if use_dist_ckpt:
             checkpoint_io = DistributedCheckpointIO.from_config(self.cfg.model, async_save)
             if async_save:
@@ -172,10 +175,12 @@ class MegatronTrainerBuilder:
         if 'enable_progress_bar' not in self.cfg.trainer or self.cfg.trainer.enable_progress_bar:
             callbacks.append(CustomProgressBar())
 
-        if self.cfg.get('exp_manager', {}).get('checkpoint_callback_params', {}).get('async_save', False):
+        # exp_manager == None is valid and indicates no exp_manager should be initialized
+        if (self.cfg.get('exp_manager', {}) or {}).get('checkpoint_callback_params', {}).get('async_save', False):
             callbacks.append(AsyncFinalizerCallback())
 
-        if self.cfg.get('exp_manager', {}).get('log_tflops_per_sec_per_gpu', True):
+        # exp_manager == None is valid and indicates no exp_manager should be initialized
+        if (self.cfg.get('exp_manager', {}) or {}).get('log_tflops_per_sec_per_gpu', True):
             callbacks.append(FLOPsMeasurementCallback(self.cfg))
 
         return callbacks

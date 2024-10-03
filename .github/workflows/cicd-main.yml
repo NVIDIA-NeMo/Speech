@@ -392,10 +392,7 @@ jobs:
       SCRIPT: |
           python scripts/checkpoint_converters/convert_bert_hf_to_nemo.py  \
           --input_name_or_path /home/TestData/nlp/megatron_ir/sbert/hf_model/bert-base-uncased \
-          --output_path /home/TestData/nlp/megatron_ir/sbert/sbert.nemo
-      AFTER_SCRIPT: |
-        rm -f /home/TestData/nlp/megatron_ir/sbert/sbert.nemo
-        rm -rf /home/TestData/nlp/megatron_ir/sbert/model_weights
+          --output_path /tmp/nlp_megatron_ir_sbert/sbert.nemo
 
   L2_Community_LLM_Checkpoints_tests_Mamba2:
     needs: [cicd-test-container-setup]
@@ -406,12 +403,9 @@ jobs:
       SCRIPT: |
           python scripts/checkpoint_converters/convert_mamba2_pyt_to_nemo.py  \
           --input_name_or_path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt \
-          --output_path /home/TestData/nlp/megatron_mamba/converted_mamba.nemo \
+          --output_path /tmp/nlp_megatron_mamba/converted_mamba.nemo \
           --precision=bf16 \
           --mamba_ssm_ngroups 1
-      AFTER_SCRIPT: |
-        rm -f /home/TestData/nlp/megatron_mamba/converted_mamba.nemo
-        rm -rf /home/TestData/nlp/megatron_mamba/model_weights
 
   L2_Community_LLM_Checkpoints_tests_Llama:
     needs: [cicd-test-container-setup]
@@ -422,10 +416,8 @@ jobs:
       SCRIPT: |
         CUDA_VISIBLE_DEVICES=0 python scripts/checkpoint_converters/convert_llama_hf_to_nemo.py \
           --input_name_or_path=/home/TestData/nlp/megatron_llama/llama-ci-hf-tiny \
-          --output_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+          --output_path=/tmp/nlp_megatron_llama/llama_ci.nemo \
           --precision=16
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_llama/model_weights
 
   L2_Community_LLM_Checkpoints_tests_Llama3:
     needs: [cicd-test-container-setup]
@@ -436,11 +428,8 @@ jobs:
       SCRIPT: |
         CUDA_VISIBLE_DEVICES=0 python scripts/checkpoint_converters/convert_llama_hf_to_nemo.py \
           --input_name_or_path=/home/TestData/nlp/megatron_llama/llama3-ci-hf \
-          --output_path=/home/TestData/nlp/megatron_llama/llama3-ci-hf/llama3_ci.nemo \
-          --precision=16          
-      AFTER_SCRIPT: |
-        rm -f /home/TestData/nlp/megatron_llama/llama3-ci-hf/llama3_ci.nemo
-        rm -rf /home/TestData/nlp/megatron_llama/llama3-ci-hf/model_weights
+          --output_path=/tmp/nlp_megatron_llama_llama3-ci-hf/llama3_ci.nemo \
+          --precision=16
 
   L2_Community_LLM_Checkpoints_tests_StarCoder:
     needs: [cicd-test-container-setup]
@@ -449,14 +438,10 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        mkdir -p /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/${{ github.run_id }};
+        mkdir -p /tmp/nlp_megatron_gpt_starcoder-ci-hf/
         python scripts/checkpoint_converters/convert_starcoder_hf_to_nemo.py \
         --input_name_or_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf \
-        --output_path /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/${{ github.run_id }}
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/megatron_starcoder_tp1_pp1.nemo; 
-        rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/${{ github.run_id }}/
-        rm -rf /home/TestData/nlp/megatron_gpt/starcoder-ci-hf/model_weights
+        --output_path /tmp/nlp_megatron_gpt_starcoder-ci-hf/
 
   L2_Community_LLM_Checkpoints_tests_Falcon:
     needs: [cicd-test-container-setup]
@@ -467,10 +452,7 @@ jobs:
       SCRIPT: |
           python scripts/checkpoint_converters/convert_falcon_hf_to_nemo.py \
           --input_name_or_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf \
-          --output_path /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
-          rm -f /home/TestData/nlp/megatron_gpt/falcon-ci-hf/falcon_ci.nemo
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_gpt/falcon-ci-hf/model_weights
+          --output_path /tmp/nlp_megatron_gpt_falcon-ci-hf/falcon_ci.nemo
   
   # L2: Community llava multimodal Checkpoints tests
   L2_Community_vita_Checkpoints_tests_Llama3:
@@ -480,7 +462,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        mkdir /home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}
         export PYTHONPATH=/home/TestData/multimodal/video_neva/LLaVA:$PYTHONPATH
         CUDA_VISIBLE_DEVICES=0 python examples/multimodal/multimodal_llm/neva/convert_llava_to_neva.py \
           --in-file /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/llm \
@@ -488,11 +469,9 @@ jobs:
           --mm-vision-tower /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/vision_tower \
           --tokenizer-model /home/TestData/multimodal/video_neva/vita-tokenizer/ \
           --config-file vita_config.yaml \
-          --out-file=/home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}/llama3_ci.nemo \
+          --out-file=/tmp/multimodal_video_neva_llama3-ci-hf/ \
           --model-type VITA \
           --conv-template llama_3
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/multimodal/video_neva/llama3-ci-hf/${{ github.run_id }}
   
   # this test is using a 7B model which is too large for GitHub CI
   # replace the model in this test with a toy model or move the test
@@ -531,9 +510,7 @@ jobs:
         python examples/nlp/language_modeling/megatron_gpt_ptq.py \
           model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
           quantization.algorithm=null \
-          export.save_path=/home/TestData/nlp/megatron_llama/ci_baseline
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_llama/ci_baseline
+          export.save_path=/tmp/nlp_megatron_llama_export_only/ci_baseline
 
   L2_PTQ_Llama2_FP8:
     needs: [cicd-test-container-setup]
@@ -552,9 +529,7 @@ jobs:
           inference.batch_size=2 \
           export.inference_tensor_parallel=2 \
           export.sample_output=False \
-          export.save_path=/home/TestData/nlp/megatron_llama/ci_fp8.qnemo
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_llama/ci_fp8.qnemo
+          export.save_path=/tmp/nlp_megatron_llama_eo/ci_fp8.qnemo
 
   OPTIONAL_L2_PTQ_Llama2_INT8_SQ:
     needs: [cicd-test-container-setup]
@@ -571,9 +546,7 @@ jobs:
           quantization.num_calib_size=8 \
           inference.batch_size=2 \
           export.sample_output=False \
-          export.save_path=/home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_llama/ci_int8_sq.qnemo
+          export.save_path=/tmp/nlp_megatron_llama_eo/ci_int8_sq.qnemo
       IS_OPTIONAL: true
 
   # TODO: investigate int4_awq stuck issues and restore the test
@@ -3588,7 +3561,7 @@ jobs:
         trainer.max_steps=3 \
         trainer.precision=16 \
         trainer.gradient_clip_val=1.0 \
-        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
+        exp_manager.exp_dir=/tmp/gpt_finetuning_pp2_megatron \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/PP2/gpt_pp2_tp1.nemo \
@@ -3618,7 +3591,7 @@ jobs:
         trainer.max_steps=3 \
         trainer.precision=16 \
         trainer.gradient_clip_val=1.0 \
-        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
+        exp_manager.exp_dir=/tmp/gpt_finetuning_pp2_megatron \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/PP2/gpt_pp2_tp1.nemo \
@@ -3639,8 +3612,6 @@ jobs:
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]
-      AFTER_SCRIPT: |
-        rm -rf examples/nlp/language_modeling/gpt_sft_results
 
   L2_Megatron_GPT_Finetuning_StarCoder_PP1:
     needs: [cicd-test-container-setup]
@@ -3659,7 +3630,7 @@ jobs:
         +trainer.limit_val_batches=2 \
         +trainer.limit_test_batches=2 \
         exp_manager.checkpoint_callback_params.save_best_model=False \
-        exp_manager.exp_dir=examples/nlp/language_modeling/gpt_sft_results \
+        exp_manager.exp_dir=/tmp/gpt_sft_results_starcoder_pp1 \
         model.peft.peft_scheme=none \
         model.optim.name=distributed_fused_adam \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/starcoder-ci-nemo/megatron_starcoder_tp1_pp1.nemo \
@@ -3672,9 +3643,7 @@ jobs:
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.test_ds.num_workers=0 \
         model.data.train_ds.concat_sampling_probabilities=[1.0]
-      AFTER_SCRIPT: |
-        rm -rf examples/nlp/language_modeling/gpt_sft_results
-  
+
   L2_Megatron_GPT_Reranker:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -3682,10 +3651,8 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
-        
         python examples/nlp/information_retrieval/megatron_gpt_reranker_finetuning.py \
-        exp_manager.exp_dir="/home/TestData/nlp/megatron_ir/working_dir" \
+        exp_manager.exp_dir="/tmp/gpt_reranker_workdir/" \
         model.global_batch_size=4 \
         model.micro_batch_size=4 \
         trainer.devices=1 \
@@ -3699,8 +3666,6 @@ jobs:
         model.data.validation_ds.write_embeddings_to_file=True \
         model.data.validation_ds.output_file_path_prefix="/home/TestData/nlp/megatron_ir/working_dir/val_embs" \
         model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
 
   L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]
@@ -3709,10 +3674,8 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
-
         python examples/nlp/information_retrieval/megatron_gpt_embedding_finetuning.py \
-        exp_manager.exp_dir="/home/TestData/nlp/megatron_ir/working_dir" \
+        exp_manager.exp_dir="/tmp/gpt_embedding_workdir/" \
         model.global_batch_size=4 \
         model.micro_batch_size=4 \
         trainer.devices=1 \
@@ -3725,7 +3688,7 @@ jobs:
         model.data.validation_ds.query_file_names=[/home/TestData/nlp/megatron_ir/test_query.jsonl] \
         model.data.validation_ds.doc_file_names=[/home/TestData/nlp/megatron_ir/test_doc.jsonl] \
         model.data.validation_ds.write_embeddings_to_file=True \
-        model.data.validation_ds.output_file_path_prefix="/home/TestData/nlp/megatron_ir/working_dir/val_embs" \
+        model.data.validation_ds.output_file_path_prefix="/tmp/gpt_embedding_workdir/val_embs/" \
         model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
 
 
@@ -3733,16 +3696,14 @@ jobs:
         trainer.devices=1 \
         trainer.num_nodes=1 \
         model.restore_from_path="/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo" \
-        model.peft.restore_from_path="/home/TestData/nlp/megatron_ir/working_dir/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo" \
+        model.peft.restore_from_path="/tmp/gpt_embedding_workdir/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo" \
         model.global_batch_size=4 \
         model.micro_batch_size=4 \
         model.peft.lora_tuning.adapter_dim=8 \
         model.data.test_ds.write_embeddings_to_file=True \
-        model.data.test_ds.output_file_path_prefix="/home/TestData/nlp/megatron_ir/working_dir/test_embs" \
+        model.data.test_ds.output_file_path_prefix="/tmp/gpt_embedding_workdir/test_embs" \
         model.data.test_ds.query_file_names=[/home/TestData/nlp/megatron_ir/test_query.jsonl] \
         model.data.test_ds.doc_file_names=[/home/TestData/nlp/megatron_ir/test_doc.jsonl]
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_ir/working_dir
 
   L2_Megatron_GPT_PEFT_Lora_PP2_O2:
     needs: [cicd-test-container-setup]
@@ -3751,8 +3712,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_pp2
-
         python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -3761,7 +3720,7 @@ jobs:
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=bf16 \
-        exp_manager.exp_dir=/home/TestData/nlp/lora_tuning_pp2 \
+        exp_manager.exp_dir=/tmp/nlp_peft_lora_tuning_pp2 \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
@@ -3779,7 +3738,7 @@ jobs:
         
         python examples/nlp/language_modeling/tuning/megatron_gpt_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
-        model.peft.restore_from_path=/home/TestData/nlp/lora_tuning_pp2/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo \
+        model.peft.restore_from_path=/tmp/nlp_peft_lora_tuning_pp2/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo \
         model.pipeline_model_parallel_size=2 \
         model.tensor_model_parallel_size=1 \
         trainer.devices=2 \
@@ -3790,12 +3749,10 @@ jobs:
         model.micro_batch_size=1 \
         model.data.test_ds.tokens_to_generate=10 \
         model.data.test_ds.write_predictions_to_file=True \
-        model.data.test_ds.output_file_path_prefix="/home/TestData/nlp/lora_tuning_pp2/out" \
+        model.data.test_ds.output_file_path_prefix="/tmp/nlp_peft_lora_tuning_pp2/out" \
         inference.greedy=True \
         inference.repetition_penalty=1.0 \
-        inference.outfile_path="/home/TestData/nlp/lora_tuning_pp2/out.jsonl"
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_pp2
+        inference.outfile_path="/tmp/nlp_peft_lora_tuning_pp2/out.jsonl"
 
   L2_Megatron_GPT_PEFT_Lora_TP2_O1:
     needs: [cicd-test-container-setup]
@@ -3804,8 +3761,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_tp2
-
         python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -3814,7 +3769,7 @@ jobs:
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=bf16 \
-        exp_manager.exp_dir=/home/TestData/nlp/lora_tuning_tp2 \
+        exp_manager.exp_dir=/tmp/nlp_peft_lora_tuning_pp2_o1 \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
@@ -3831,7 +3786,7 @@ jobs:
 
         python examples/nlp/language_modeling/tuning/megatron_gpt_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_gpt/mcore_45M/megatron_llama.nemo \
-        model.peft.restore_from_path=/home/TestData/nlp/lora_tuning_tp2/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo \
+        model.peft.restore_from_path=/tmp/nlp_peft_lora_tuning_pp2_o1/megatron_gpt_peft_lora_tuning/checkpoints/megatron_gpt_peft_lora_tuning.nemo \
         model.tensor_model_parallel_size=2 \
         trainer.devices=2 \
         model.data.test_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel_4.jsonl] \
@@ -3840,12 +3795,10 @@ jobs:
         model.micro_batch_size=1 \
         model.data.test_ds.tokens_to_generate=10 \
         model.data.test_ds.write_predictions_to_file=True \
-        model.data.test_ds.output_file_path_prefix="/home/TestData/nlp/lora_tuning_tp2/out" \
+        model.data.test_ds.output_file_path_prefix="/tmp/nlp_peft_lora_tuning_pp2_o1/out" \
         inference.greedy=True \
         inference.repetition_penalty=1.0 \
-        inference.outfile_path="/home/TestData/nlp/lora_tuning_tp2/out.jsonl"
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_tp2
+        inference.outfile_path="/tmp/nlp_peft_lora_tuning_pp2_o1/out.jsonl"
 
   L2_Megatron_GPT_PEFT_Lora_TP2SP1:
     needs: [cicd-test-container-setup]
@@ -3854,8 +3807,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-2-h100
       SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_tp2_sp1
-
         CUDA_DEVICE_MAX_CONNECTIONS=1 NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=1 python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -3864,7 +3815,7 @@ jobs:
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=bf16 \
-        exp_manager.exp_dir=/home/TestData/nlp/lora_tuning_tp2_sp1 \
+        exp_manager.exp_dir=/tmp/nlp_lora_tuning_tp2_sp1 \
         +model.mcore_gpt=True \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
@@ -3901,8 +3852,6 @@ jobs:
         model.data.validation_ds.num_workers=0 \
         model.data.validation_ds.file_names=[/home/TestData/nlp/megatron_sft/quarel.jsonl] \
         model.data.validation_ds.names=[quarel]
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/lora_tuning_tp2_sp1        
 
   L2_Megatron_GPT_Eval:
     needs: [cicd-test-container-setup]
@@ -4744,7 +4693,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/t5_lora_tuning_tp2
 
         python examples/nlp/language_modeling/tuning/megatron_t5_finetuning.py \
         trainer.devices=2 \
@@ -4754,7 +4702,7 @@ jobs:
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=16 \
-        exp_manager.exp_dir=/home/TestData/nlp/t5_lora_tuning_tp2 \
+        exp_manager.exp_dir=/tmp/nlp_t5_lora_tuning_tp2 \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
         model.restore_from_path=/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m_tp2.nemo \
@@ -4771,7 +4719,7 @@ jobs:
 
         python examples/nlp/language_modeling/tuning/megatron_t5_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_t5/8m/megatron_t5_8m_tp2.nemo \
-        model.peft.restore_from_path=/home/TestData/nlp/t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
+        model.peft.restore_from_path=/tmp/nlp_t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
         model.peft.restore_from_ckpt_name=null \
         model.peft.restore_from_hparams_path=null \
         model.tensor_model_parallel_size=2 \
@@ -4782,12 +4730,10 @@ jobs:
         model.micro_batch_size=1 \
         model.data.test_ds.tokens_to_generate=10 \
         model.data.test_ds.write_predictions_to_file=True \
-        model.data.test_ds.output_file_path_prefix=/home/TestData/nlp/t5_lora_tuning_tp2/out \
+        model.data.test_ds.output_file_path_prefix=/tmp/nlp_t5_lora_tuning_tp2/out \
         inference.greedy=True \
         inference.repetition_penalty=1.0 \
-        inference.outfile_path=/home/TestData/nlp/t5_lora_tuning_tp2/out.jsonl
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/t5_lora_tuning_tp2
+        inference.outfile_path=/tmp/nlp_t5_lora_tuning_tp2/out.jsonl
 
   L2_Megatron_Core_T5_PEFT_Lora_TP2:
     needs: [cicd-test-container-setup]
@@ -4796,8 +4742,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        rm -rf /home/TestData/nlp/mcore_t5_lora_tuning_tp2
-
         NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/tuning/megatron_t5_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
@@ -4806,7 +4750,7 @@ jobs:
         trainer.val_check_interval=3 \
         ++trainer.limit_val_batches=2 \
         trainer.precision=16 \
-        exp_manager.exp_dir=/home/TestData/nlp/mcore_t5_lora_tuning_tp2 \
+        exp_manager.exp_dir=/tmp/nlp_mcore_t5_lora_tuning_tp2 \
         model.pipeline_model_parallel_size=1 \
         model.tensor_model_parallel_size=2 \
         model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m.nemo \
@@ -4823,7 +4767,7 @@ jobs:
 
         NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python examples/nlp/language_modeling/tuning/megatron_t5_generate.py \
         model.restore_from_path=/home/TestData/nlp/megatron_t5/220m/megatron_mcore_t5_220m.nemo \
-        model.peft.restore_from_path=/home/TestData/nlp/mcore_t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
+        model.peft.restore_from_path=/tmp/nlp_mcore_t5_lora_tuning_tp2/megatron_t5_peft_lora_tuning/checkpoints/megatron_t5_peft_lora_tuning.nemo \
         model.peft.restore_from_ckpt_name=null \
         model.peft.restore_from_hparams_path=null \
         model.tensor_model_parallel_size=2 \
@@ -4834,12 +4778,10 @@ jobs:
         model.micro_batch_size=1 \
         model.data.test_ds.tokens_to_generate=10 \
         model.data.test_ds.write_predictions_to_file=True \
-        model.data.test_ds.output_file_path_prefix=/home/TestData/nlp/mcore_t5_lora_tuning_tp2/out \
+        model.data.test_ds.output_file_path_prefix=/tmp/nlp_mcore_t5_lora_tuning_tp2/out \
         inference.greedy=True \
         inference.repetition_penalty=1.0 \
-        inference.outfile_path=/home/TestData/nlp/mcore_t5_lora_tuning_tp2/out.jsonl
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/mcore_t5_lora_tuning_tp2
+        inference.outfile_path=/tmp/nlp_mcore_t5_lora_tuning_tp2/out.jsonl
 
   # L2: Megatron Mock Data Generation                
   L2_Megatron_Mock_Data_Generation_MockGPTDataset:
@@ -5204,11 +5146,8 @@ jobs:
         python tests/collections/llm/gpt/model/megatron_ssm_pretraining.py \
         --devices 1 \
         --max-steps 10 \
-        --experiment-dir /home/TestData/nlp/megatron_mamba/nemo-ux-mamba/cicd_test_pretrain/${{ github.run_id }} \
+        --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_pretrain/${{ github.run_id }} \
         --data-path /home/TestData/nlp/megatron_mamba/toy_ssm_dataset/legal_pile_text_document
-      
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_mamba/nemo-ux-mamba/cicd_test_pretrain/${{ github.run_id }}
 
   L2_NeMo_2_SSM_Finetuning:
     needs: [cicd-test-container-setup]
@@ -5221,11 +5160,9 @@ jobs:
         python tests/collections/llm/gpt/model/megatron_ssm_finetuning.py \
         --devices 1 \
         --max-steps 10 \
-        --experiment-dir /home/TestData/nlp/megatron_mamba/nemo-ux-mamba/cicd_test_sft/${{ github.run_id }} \
+        --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_sft/${{ github.run_id }} \
         --model-path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt
 
-      AFTER_SCRIPT: |
-        rm -rf /home/TestData/nlp/megatron_mamba/nemo-ux-mamba/cicd_test_sft/${{ github.run_id }}
 
   L2_NeMo_2_HF_MODEL_IMPORT:
     needs: [cicd-test-container-setup]

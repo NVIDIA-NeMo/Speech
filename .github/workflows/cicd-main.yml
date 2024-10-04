@@ -5390,15 +5390,13 @@ jobs:
           body: |
             [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
             
-            I just wanted to let you know that, you know, a [CICD pipeline](https://github.com/$REPOSITORY/actions/runs/$RUN_ID) for this PR just finished successfully ✨
+            We wanted to let you know that a [CICD pipeline](https://github.com/$REPOSITORY/actions/runs/$RUN_ID) for this PR just finished successfully
 
-            So it might be time to merge this PR or like to get some approvals 🚀
+            So it might be time to merge this PR or get some approvals
 
-            But I'm just a 🤖 so I'll leave it you what to do next.
+            I'm just a bot so I'll leave it you what to do next.
 
-            Have a great day! 
-
-            //cc @ko3n1g
+            //cc @pablo-garay @ko3n1g
 
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
         if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}

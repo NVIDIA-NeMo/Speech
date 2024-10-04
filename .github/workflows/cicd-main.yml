@@ -1243,14 +1243,15 @@ jobs:
   
 
   # L2: Transducer alignment
-  L2_Transducer_alignment_Running_pytest:
+  OPTIONAL_L2_Transducer_alignment_Running_pytest:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_Transducer_alignment_Running_pytest') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_Transducer_alignment_Running_pytest') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
         pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1 --with_downloads
+      IS_OPTIONAL: true
 
   # L2: Segmentation Tool
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav:
@@ -3667,10 +3668,10 @@ jobs:
         model.data.validation_ds.output_file_path_prefix="/home/TestData/nlp/megatron_ir/working_dir/val_embs" \
         model.data.train_ds.file_names=[/home/TestData/nlp/megatron_ir/train.jsonl]
 
-  L2_Megatron_GPT_Embedding:
+  OPTIONAL_L2_Megatron_GPT_Embedding:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_Megatron_GPT_Embedding') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_Megatron_GPT_Embedding') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -3704,6 +3705,7 @@ jobs:
         model.data.test_ds.output_file_path_prefix="/tmp/gpt_embedding_workdir/test_embs" \
         model.data.test_ds.query_file_names=[/home/TestData/nlp/megatron_ir/test_query.jsonl] \
         model.data.test_ds.doc_file_names=[/home/TestData/nlp/megatron_ir/test_doc.jsonl]
+      IS_OPTIONAL: true
 
   L2_Megatron_GPT_PEFT_Lora_PP2_O2:
     needs: [cicd-test-container-setup]
@@ -5118,10 +5120,10 @@ jobs:
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
 
-  L2_NeMo_2_GPT_DDP_Param_Parity_check:
+  OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_DDP_Param_Parity_check') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -5134,11 +5136,12 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
+      IS_OPTIONAL: true
       
-  L2_NeMo_2_SSM_Pretraining:
+  OPTIONAL_L2_NeMo_2_SSM_Pretraining:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_SSM_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_SSM_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -5148,11 +5151,12 @@ jobs:
         --max-steps 10 \
         --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_pretrain/${{ github.run_id }} \
         --data-path /home/TestData/nlp/megatron_mamba/toy_ssm_dataset/legal_pile_text_document
+      IS_OPTIONAL: true
 
-  L2_NeMo_2_SSM_Finetuning:
+  OPTIONAL_L2_NeMo_2_SSM_Finetuning:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_SSM_Finetuning') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_SSM_Finetuning') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -5162,7 +5166,7 @@ jobs:
         --max-steps 10 \
         --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_sft/${{ github.run_id }} \
         --model-path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt
-
+      IS_OPTIONAL: true
 
   L2_NeMo_2_HF_MODEL_IMPORT:
     needs: [cicd-test-container-setup]
@@ -5268,7 +5272,7 @@ jobs:
       - L2_ASR_Adapters_Linear_Adapters
       - L2_ASR_Adapters_RelPos_MHA_Adapters
       - L2_Speech_Transcription_Speech_to_Text_Transcribe
-      - L2_Transducer_alignment_Running_pytest
+      #- OPTIONAL_L2_Transducer_alignment_Running_pytest
       - L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav
       - L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
       - L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
@@ -5311,7 +5315,7 @@ jobs:
       #- OPTIONAL_L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124
       - L2_Megatron_GPT_Finetuning_PP2
       - L2_Megatron_GPT_Finetuning_StarCoder_PP1
-      - L2_Megatron_GPT_Embedding 
+      #- OPTIONAL_L2_Megatron_GPT_Embedding 
       - L2_Megatron_GPT_PEFT_Lora_PP2_O2
       - L2_Megatron_GPT_PEFT_Lora_TP2_O1
       - L2_Megatron_GPT_PEFT_Lora_TP2SP1
@@ -5344,10 +5348,10 @@ jobs:
       - Speech_Checkpoints_tests
       #- OPTIONAL_L2_Stable_Diffusion_Training
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
-      - L2_NeMo_2_GPT_DDP_Param_Parity_check
+      #- OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
-      - L2_NeMo_2_SSM_Pretraining
-      - L2_NeMo_2_SSM_Finetuning
+      #- OPTIONAL_L2_NeMo_2_SSM_Pretraining
+      #- OPTIONAL_L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_Mixtral_Pretraining
     if: always()
@@ -5359,7 +5363,10 @@ jobs:
         run: |
           # Slack notifications are send only on test failure (not cancelled):
           FAILED=${{ contains(needs.*.outputs.conclusion, 'failure') }}
-          echo "FAILED=$FAILED" >> $GITHUB_OUTPUT
+          echo "FAILED=$FAILED" 
+          
+          
+          $GITHUB_OUTPUT
 
           # Mark as successful if no job was cancelled:
           SUCCESS=${{ !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}

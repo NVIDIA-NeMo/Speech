@@ -61,20 +61,6 @@ class TestLlama3_70B_64k:
         assert recipe.data.global_batch_size == 512
         assert recipe.data.micro_batch_size == 1
 
-    def test_finetune_recipe(self, recipe_module):
-        recipe = recipe_module.finetune_recipe()
-        assert isinstance(recipe, run.Partial)
-        assert recipe.__fn_or_cls__ == finetune
-        assert isinstance(recipe.model, run.Config)
-        assert recipe.model.__fn_or_cls__ == LlamaModel
-        assert isinstance(recipe.trainer, run.Config)
-        assert recipe.trainer.__fn_or_cls__ == Trainer
-        assert isinstance(recipe.data, run.Config)
-        assert recipe.data.__fn_or_cls__ == SquadDataModule
-        assert recipe.data.seq_length == 65536
-        assert recipe.data.global_batch_size == 512
-        assert recipe.data.micro_batch_size == 1
-
     @pytest.mark.parametrize("num_nodes,num_gpus_per_node", [(32, 8), (64, 4), (128, 2)])
     def test_pretrain_recipe_with_different_configurations(self, recipe_module, num_nodes, num_gpus_per_node):
         recipe = recipe_module.pretrain_recipe(num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)

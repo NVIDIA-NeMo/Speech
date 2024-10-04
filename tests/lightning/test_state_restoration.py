@@ -146,7 +146,7 @@ def run_train_from_scratch():
         data=data,
         trainer=trainer,
         log=NeMoLogger(
-            dir=EXP_DIR,
+            log_dir=EXP_DIR,
         ),
         tokenizer='data',
         optim=opt,
@@ -171,7 +171,7 @@ def run_resume_train():
         data=data,
         trainer=trainer,
         log=NeMoLogger(
-            dir=EXP_DIR,
+            log_dir=EXP_DIR,
         ),
         tokenizer='data',
         optim=opt,

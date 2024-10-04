@@ -14,7 +14,11 @@
 
 import os
 
-os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
+
+def set_env():
+    os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '1'
+
+
 from pathlib import Path
 
 import pytest
@@ -70,6 +74,8 @@ class TestDistCkptIO:
     @pytest.mark.run_only_on('GPU')
     def test_dist_ckpt_io_called_for_mcore_models(self, tmp_path):
 
+        set_env()
+        assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
         model, data = get_model_and_data()
 
         strategy = _get_strategy()
@@ -92,10 +98,12 @@ class TestDistCkptIO:
         assert len(ckpts) == 1
         ckpt = ckpts[0]
         assert str(ckpt) == _get_last_checkpoint_dir(model)
+        trainer._teardown()
 
     @pytest.mark.run_only_on('GPU')
     def test_async_save_produces_same_checkpoints_as_sync(self, tmp_path):
-
+        set_env()
+        assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
         model, data = get_model_and_data()
 
         sync_ckpt_dir = tmp_path / 'sync_checkpoints'
@@ -156,9 +164,11 @@ class TestDistCkptIO:
         for k in sync_state_dict['sharded_state_dict'].keys():
             if isinstance(sync_state_dict['sharded_state_dict'][k], torch.Tensor):
                 assert torch.all(sync_state_dict['sharded_state_dict'][k] == async_state_dict['sharded_state_dict'][k])
+        dummy_trainer._teardown()
 
     def test_sharded_strategies(self):
-
+        set_env()
+        assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
         model_checkpoint = nl.ModelCheckpoint()
 
         strategy = nl.MegatronStrategy(
@@ -181,3 +191,4 @@ class TestDistCkptIO:
         assert base_checkpoint_io.save_ckpt_format == 'torch_dist'
         assert base_checkpoint_io.parallel_save
         assert base_checkpoint_io.load_directly_on_device == False
+        trainer._teardown()

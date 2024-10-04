@@ -130,6 +130,7 @@ class TestCommonMetrics:
     ],
 )
 class TestPerplexity(PerplexityTester):
+    @pytest.mark.pleasefixme
     def test_perplexity(self, ddp, dist_sync_on_step, probs, logits):
         self.run_class_perplexity_test(
             ddp=ddp,

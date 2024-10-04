@@ -1044,7 +1044,10 @@ class EncDecMultiTaskModel(ASRModel, ExportableEncDecModel, ASRBPEMixin, ASRModu
             decoder_input_ids=batch.prompt,
             return_hypotheses=False,
         )[0]
-        return list(zip(batch.cuts, text))
+        if batch.cuts:
+            return list(zip(batch.cuts, text))
+        else:
+            return text
 
     @property
     def adapter_module_names(self) -> List[str]:

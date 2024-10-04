@@ -17,7 +17,7 @@ import tempfile
 
 import pytest
 import torch
-from lhotse import CutSet
+from lhotse import CutSet, MonoCut
 from lhotse.testing.dummies import DummyManifest
 from omegaconf import DictConfig
 
@@ -411,7 +411,9 @@ class TestEncDecMultiTaskModel:
         outputs = asr_model.predict_step(batch)
         print(outputs)
         assert len(outputs) == 1
-        assert isinstance(outputs[0], str)
+        assert len(outputs[0]) == 2
+        assert isinstance(outputs[0][0], MonoCut)
+        assert isinstance(outputs[0][1], str)
 
     @pytest.mark.unit
     def test_FrameBatchMultiTaskAED(self, asr_model, test_data_dir):

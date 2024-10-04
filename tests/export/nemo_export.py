@@ -436,7 +436,7 @@ def run_inference(
         if test_deployment:
             nm.stop()
 
-        if not save_trt_engine:
+        if not save_trt_engine and model_dir:
             shutil.rmtree(model_dir)
 
         return (functional_result, accuracy_result)
@@ -677,8 +677,8 @@ def get_args():
     )
     parser.add_argument(
         "--ptuning",
-        default=False,
-        action='store_true',
+        type=str,
+        default="False",
     )
     parser.add_argument(
         "--lora_checkpoint",
@@ -686,8 +686,8 @@ def get_args():
     )
     parser.add_argument(
         "--lora",
-        default=False,
-        action='store_true',
+        type=str,
+        default="False",
     )
     parser.add_argument(
         "--top_k",
@@ -784,6 +784,8 @@ def get_args():
         s = s.lower()
         true_strings = ["true", "1"]
         false_strings = ["false", "0"]
+        if s == '':
+            return False
         if s in true_strings:
             return True
         if s in false_strings:
@@ -798,6 +800,8 @@ def get_args():
     args.save_trt_engine = str_to_bool("save_trt_engin", args.save_trt_engine)
     args.run_accuracy = str_to_bool("run_accuracy", args.run_accuracy)
     args.use_vllm = str_to_bool("use_vllm", args.use_vllm)
+    args.lora = str_to_bool("lora", args.lora)
+    args.ptuning = str_to_bool("ptuning", args.ptuning)
     args.use_parallel_embedding = str_to_bool("use_parallel_embedding", args.use_parallel_embedding)
     args.in_framework = str_to_bool("in_framework", args.in_framework)
     args.export_fp8_quantized = str_to_bool("export_fp8_quantized", args.export_fp8_quantized, optional=True)

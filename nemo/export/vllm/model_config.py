@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 import yaml
@@ -39,6 +39,7 @@ class NemoModelConfig(ModelConfig):
         dtype: Union[str, torch.dtype],
         seed: int,
         revision: Optional[str] = None,
+        override_neuron_config: Optional[Dict[str, Any]] = None,
         code_revision: Optional[str] = None,
         rope_scaling: Optional[dict] = None,
         rope_theta: Optional[float] = None,
@@ -50,6 +51,7 @@ class NemoModelConfig(ModelConfig):
         max_seq_len_to_capture: Optional[int] = None,
         max_logprobs: int = 5,
         disable_sliding_window: bool = False,
+        use_async_output_proc: bool = False,
     ) -> None:
         # Don't call ModelConfig.__init__ because we don't want it to call
         # transformers.AutoConfig.from_pretrained(...)
@@ -67,6 +69,7 @@ class NemoModelConfig(ModelConfig):
         self.seed = seed
         self.revision = revision
         self.code_revision = code_revision
+        self.override_neuron_config = override_neuron_config
         self.rope_scaling = rope_scaling
         self.rope_theta = rope_theta
         self.tokenizer_revision = tokenizer_revision
@@ -77,6 +80,8 @@ class NemoModelConfig(ModelConfig):
         self.max_logprobs = max_logprobs
         self.disable_sliding_window = disable_sliding_window
         self.served_model_name = nemo_checkpoint
+        self.multimodal_config = None
+        self.use_async_output_proc = use_async_output_proc
 
         self.model_converter = get_model_converter(model_type)
         if self.model_converter is None:

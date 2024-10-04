@@ -30,6 +30,7 @@ from tqdm import tqdm
 from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
 from nemo.collections.asr.parts.preprocessing.segment import AudioSegment, ChannelSelectorType
 from nemo.collections.asr.parts.utils import manifest_utils
+from nemo.collections.common.data.utils import move_data_to_device
 from nemo.utils import logging, logging_mode
 
 TranscriptionReturnType = Union[List[str], List['Hypothesis'], Tuple[List[str]], Tuple[List['Hypothesis']]]
@@ -66,25 +67,6 @@ class TranscribeConfig:
     partial_hypothesis: Optional[List[Any]] = None
 
     _internal: Optional[InternalTranscribeConfig] = None
-
-
-def move_to_device(batch, device, non_blocking=False):
-    """
-    Recursively move all tensors in `batch` to `device`.
-    Supports tensors, lists, tuples, dictionaries, and dataclasses.
-    """
-    if isinstance(batch, torch.Tensor):
-        return batch.to(device, non_blocking=non_blocking)
-    elif isinstance(batch, (list, tuple)):
-        return type(batch)(move_to_device(x, device, non_blocking) for x in batch)
-    elif isinstance(batch, dict):
-        return {k: move_to_device(v, device, non_blocking) for k, v in batch.items()}
-    elif is_dataclass(batch):
-        return type(batch)(
-            **{field.name: move_to_device(getattr(batch, field.name), device, non_blocking) for field in fields(batch)}
-        )
-    else:
-        return batch  # do nothing if not supported type
 
 
 def get_value_from_transcription_config(trcfg, key, default):
@@ -386,7 +368,7 @@ class TranscriptionMixin(ABC):
 
                 for test_batch in tqdm(dataloader, desc="Transcribing", disable=not verbose):
                     # Move batch to device
-                    test_batch = move_to_device(test_batch, transcribe_cfg._internal.device)
+                    test_batch = move_data_to_device(test_batch, transcribe_cfg._internal.device)
                     # Run forward pass
                     model_outputs = self._transcribe_forward(test_batch, transcribe_cfg)
                     processed_outputs = self._transcribe_output_processing(model_outputs, transcribe_cfg)

@@ -609,6 +609,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         return test_logs
 
     def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+        if not outputs or not all([isinstance(x, dict) for x in outputs]):
+            logging.warning("No outputs to process for validation_epoch_end")
+            return {}
         if self.compute_eval_loss:
             val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
             val_loss_log = {'val_loss': val_loss_mean}

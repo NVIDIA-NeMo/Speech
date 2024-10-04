@@ -1318,3 +1318,103 @@ class TarredAudioToMultiLabelDataset(IterableDataset):
 
     def _collate_fn(self, batch):
         return _speech_collate_fn(batch, pad_id=0)
+
+
+class AudioPairToLabelDataset(AudioToSpeechLabelDataset):
+    """
+    Dataset class for audio pairs classification tasks, such as calculating EER for speaker verification.
+    The input manifest file should contain pairs of audio files and a label. It's format is almost the same as
+    `AudioToSpeechLabelDataset` except that the `audio_filepath` field should be a list of two audio file paths
+    instead of one, and that `offset` and `duration` are not used as the dataset class will load the whole audio.
+
+    Example of a line in the manifest file:
+    {
+        "audio_filepath": ["/path/to/audio_wav_0.wav", "/path/to/audio_wav_1.wav"],
+        "duration": null,  # not used, will load the whole audio
+        "offset": 0.0,  # not used, will load the whole audio
+        "label": "0"  # label for the pair, can be a string or an integer
+    }
+
+    """
+
+    @property
+    def output_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Returns definitions of module output ports."""
+
+        output_types = {
+            'audio_signal': NeuralType(
+                ('B', 'T'),
+                (
+                    AudioSignal(freq=self._sample_rate)
+                    if self is not None and hasattr(self, '_sample_rate')
+                    else AudioSignal()
+                ),
+            ),
+            'a_sig_length': NeuralType(tuple('B'), LengthsType()),
+            'audio_signal_2': NeuralType(
+                ('B', 'T'),
+                (
+                    AudioSignal(freq=self._sample_rate)
+                    if self is not None and hasattr(self, '_sample_rate')
+                    else AudioSignal()
+                ),
+            ),
+            'a_sig_length_2': NeuralType(tuple('B'), LengthsType()),
+            'label': NeuralType(tuple('B'), LabelsType()),
+            'label_length': NeuralType(tuple('B'), LengthsType()),
+        }
+
+        return output_types
+
+    def __init__(
+        self,
+        *,
+        manifest_filepath: str | List[str],
+        labels: List[str],
+        featurizer,
+        min_duration: float | None = 0.1,
+        max_duration: float | None = None,
+        trim: bool = False,
+        window_length_in_sec: float | None = 8,
+        shift_length_in_sec: float | None = 1,
+        normalize_audio: bool = False,
+        **kwargs,
+    ):
+        super().__init__(
+            manifest_filepath=manifest_filepath,
+            labels=labels,
+            featurizer=featurizer,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            trim=trim,
+            window_length_in_sec=window_length_in_sec,
+            shift_length_in_sec=shift_length_in_sec,
+            normalize_audio=normalize_audio,
+            is_regression_task=False,
+            cal_labels_occurrence=False,
+        )
+
+    def __getitem__(self, index):
+        sample = self.collection[index]
+
+        audio_pair = sample.audio_file
+
+        features = self.featurizer.process(audio_pair[0], offset=0, duration=None, trim=self.trim)
+        f, fl = features, torch.tensor(features.shape[0]).long()
+
+        features2 = self.featurizer.process(audio_pair[1], offset=0, duration=None, trim=self.trim)
+        f2, fl2 = features2, torch.tensor(features2.shape[0]).long()
+
+        t = torch.tensor(self.label2id[sample.label]).long()
+        tl = torch.tensor(1).long()  # For compatibility with collate_fn used later
+
+        return f, fl, f2, fl2, t, tl
+
+    def fixed_seq_collate_fn(self, batch):
+        audio1, audio_len1, audio2, audio_len2, label, label_len = zip(*batch)
+
+        batch1 = list(zip(audio1, audio_len1, label, label_len))
+        a_sig1, a_sig_len1, pair_label, pair_label_len = _fixed_seq_collate_fn(self, batch1)
+        batch2 = list(zip(audio2, audio_len2, label, label_len))
+        a_sig2, a_sig_len2, _, _ = _fixed_seq_collate_fn(self, batch2)
+        return a_sig1, a_sig_len1, a_sig2, a_sig_len2, pair_label, pair_label_len

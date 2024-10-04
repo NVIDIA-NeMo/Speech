@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-
 import pytest
 import torch
-from omegaconf import DictConfig, ListConfig
+from omegaconf import DictConfig
 
-from nemo.collections.asr.models import SpeechEncDecSelfSupervisedModel
+from nemo.collections.asr.models import EncDecDenoiseMaskedTokenPredModel, SpeechEncDecSelfSupervisedModel
+from nemo.core.classes.common import typecheck
 
 
 @pytest.fixture()
@@ -132,6 +131,157 @@ def ssl_model():
     return ssl_model
 
 
+@pytest.fixture()
+def denoise_mlm_ssl_model():
+
+    model_defaults = {
+        "subsampling_factor": 1,
+        'enc_hidden': 32,
+        'dec_out': 128,
+        "sample_rate": 16000,
+        "num_classes": 32,
+        "num_books": 1,
+        "code_dim": 16,
+        "squeeze_single": False,
+        "mask_position": "pre_conv",  # position to apply masking, before or after conv subsampling, choices in ['pre_conv', 'post_conv']
+    }
+
+    preprocessor = {
+        "_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",
+        "sample_rate": model_defaults["sample_rate"],
+        "normalize": "per_feature",
+        "window_size": 0.025,
+        "window_stride": 0.01,
+        "window": "hann",
+        "features": 80,
+        "n_fft": 512,
+        "log": True,
+        "frame_splicing": 1,
+        "dither": 0.00001,
+        "pad_to": 16,
+        "pad_value": 0.0,
+    }
+
+    encoder = {
+        'cls': 'nemo.collections.asr.modules.ConvASREncoder',
+        'params': {
+            'feat_in': preprocessor["features"],
+            'activation': 'relu',
+            'conv_mask': True,
+            'jasper': [
+                {
+                    'filters': model_defaults['enc_hidden'],
+                    'repeat': 1,
+                    'kernel': [1],
+                    'stride': [1],
+                    'dilation': [1],
+                    'dropout': 0.0,
+                    'residual': False,
+                    'separable': True,
+                    'se': True,
+                    'se_context_size': -1,
+                },
+                {
+                    'filters': model_defaults['enc_hidden'],
+                    'repeat': 1,
+                    'kernel': [1],
+                    'stride': [1],
+                    'dilation': [1],
+                    'dropout': 0.0,
+                    'residual': False,
+                    'separable': True,
+                    'se': True,
+                    'se_context_size': -1,
+                },
+                {
+                    'filters': model_defaults['enc_hidden'],
+                    'repeat': 1,
+                    'kernel': [1],
+                    'stride': [1],
+                    'dilation': [1],
+                    'dropout': 0.0,
+                    'residual': False,
+                    'separable': True,
+                    'se': True,
+                    'se_context_size': -1,
+                },
+            ],
+        },
+    }
+
+    spec_augment = {
+        '_target_': 'nemo.collections.asr.modules.SpectrogramAugmentation',
+        'freq_masks': 0,
+        'time_masks': 0,
+        'freq_width': 16,
+        'time_width': 0.05,
+    }
+
+    masking = {
+        "_target_": "nemo.collections.asr.modules.RandomBlockMasking",
+        "block_size": 40,  # for pre_conv masking, 10ms per frame, 400ms per block with block_size=40
+        "mask_prob": 0.01,  # for allow_overlap=True, this means the mask prob for each frame; otherwise it means the overall masked proportion
+        "feat_in": preprocessor["features"],
+        "freeze": True,
+        "allow_overlap": True,
+    }
+
+    quantizer = {
+        "_target_": "nemo.collections.asr.modules.RandomProjectionVectorQuantizer",
+        "feat_in": preprocessor["features"],
+        "code_dim": model_defaults["code_dim"],
+        "num_books": model_defaults["num_books"],
+        "num_classes": model_defaults["num_classes"],
+        "dist_fn": "l2",  # choices=["l2", "cosine"]
+        "freeze": True,
+        "squeeze_single": model_defaults["squeeze_single"],
+        "combine_time_steps": model_defaults["subsampling_factor"],  # conformer sub-sampling ratio
+    }
+
+    decoder = {
+        "_target_": "nemo.collections.asr.modules.MultiSoftmaxDecoder",
+        "feat_in": model_defaults["enc_hidden"],
+        "num_classes": model_defaults["num_classes"],
+        "num_decoders": model_defaults["num_books"],
+        "squeeze_single": model_defaults["squeeze_single"],
+        "use_bias": True,
+    }
+
+    loss = {
+        "_target_": "nemo.collections.asr.losses.MultiMLMLoss",
+        "combine_time_steps": model_defaults[
+            "subsampling_factor"
+        ],  # conformer sub-sampling ratio for 'pre_conv', 1 for 'post_conv'
+        "mask_threshold": 0.8,
+        "num_decoders": model_defaults["num_books"],
+        "squeeze_single": model_defaults["squeeze_single"],
+    }
+
+    optim = {
+        "name": "adamw",
+        "lr": 5.0,
+        # optimizer arguments
+        "betas": [0.9, 0.98],
+        "weight_decay": 1e-3,
+    }
+
+    model_config = DictConfig(
+        {
+            "preprocessor": DictConfig(preprocessor),
+            "spec_augment": DictConfig(spec_augment),
+            'model_defaults': DictConfig(model_defaults),
+            "masking": DictConfig(masking),
+            "quantizer": DictConfig(quantizer),
+            "encoder": DictConfig(encoder),
+            "decoder": DictConfig(decoder),
+            "loss": DictConfig(loss),
+            "optim": DictConfig(optim),
+        }
+    )
+    ssl_model = EncDecDenoiseMaskedTokenPredModel(cfg=model_config)
+    return ssl_model
+
+
 class TestSSLModel:
     @pytest.mark.unit
     def test_constructor(self, ssl_model):
@@ -221,3 +371,58 @@ class TestSSLModel:
             loss_value, loss_val_dict = ssl_model.decoder_loss_step(spectrograms, spec_masks, encoded, encoded_len)
 
         assert len(loss_val_dict) == 4
+
+
+class TestDenoiseMLMSSLModel:
+    @pytest.mark.unit
+    def test_forward(self, denoise_mlm_ssl_model):
+        input_signal = torch.randn(size=(4, 64000))
+        input_length = torch.randint(low=48000, high=64000, size=[4])
+        noise = 0.1 * torch.ones_like(input_signal)
+        noisy_input_signal = input_signal + noise
+        noisy_input_length = input_length
+        with torch.no_grad():
+            with typecheck.disable_checks():
+                log_probs, encoded_len, masks, tokens = denoise_mlm_ssl_model.forward(
+                    input_signal=input_signal,
+                    input_signal_length=input_length,
+                    noisy_input_signal=noisy_input_signal,
+                    noisy_input_signal_length=noisy_input_length,
+                )
+
+        assert log_probs.size(0) == 4
+        assert log_probs.size(2) == denoise_mlm_ssl_model.cfg.model_defaults.num_classes
+        assert encoded_len.size(0) == 4
+        assert masks.size(0) == 4
+        assert tokens.size(0) == 4
+        assert masks.sum() == 0.0  # no mask should be applied to the input by default
+
+    @pytest.mark.unit
+    def test_forward_masked(self, denoise_mlm_ssl_model: EncDecDenoiseMaskedTokenPredModel):
+        input_signal = torch.randn(size=(4, 64000))
+        input_length = torch.randint(low=48000, high=64000, size=[4])
+        noise = 0.1 * torch.ones_like(input_signal)
+        noisy_input_signal = input_signal + noise
+        noisy_input_length = input_length
+
+        with torch.no_grad():
+            with typecheck.disable_checks():
+                log_probs, encoded_len, masks, tokens = denoise_mlm_ssl_model.forward(
+                    input_signal=input_signal,
+                    input_signal_length=input_length,
+                    noisy_input_signal=noisy_input_signal,
+                    noisy_input_signal_length=noisy_input_length,
+                    apply_mask=True,
+                )
+
+        loss_value = denoise_mlm_ssl_model.loss(
+            masks=masks, decoder_outputs=log_probs, targets=tokens, decoder_lengths=encoded_len
+        )
+
+        assert log_probs.size(0) == 4
+        assert log_probs.size(2) == denoise_mlm_ssl_model.cfg.model_defaults.num_classes
+        assert encoded_len.size(0) == 4
+        assert masks.size(0) == 4
+        assert tokens.size(0) == 4
+        assert masks.sum() > 0.0  # mask should be applied to the input
+        assert not torch.isnan(loss_value)

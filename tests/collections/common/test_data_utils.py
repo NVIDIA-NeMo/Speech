@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from nemo.collections.asr.parts.mixins.transcription import move_to_device
+from nemo.collections.common.data.utils import move_data_to_device
 
 
 @dataclass
@@ -23,8 +23,8 @@ class _Batch:
         "not a tensor",
     ],
 )
-def test_transcription_move_to_device(batch):
-    cuda_batch = move_to_device(batch, device="cuda")
+def test_move_data_to_device(batch):
+    cuda_batch = move_data_to_device(batch, device="cuda")
     assert type(batch) == type(cuda_batch)
     if isinstance(batch, _Batch):
         assert cuda_batch.data.is_cuda

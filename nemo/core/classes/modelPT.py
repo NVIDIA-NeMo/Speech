@@ -1027,7 +1027,6 @@ class ModelPT(LightningModule, Model):
 
             if 'log' in output_dict:
                 self.log_dict(output_dict.pop('log'), on_epoch=True)
-
             # return everything else
             return output_dict
 

@@ -1,0 +1,238 @@
+# This is an example config that uses a NEST model as feature extractors, by using multi-layer feature aggregation.
+# The major modification is to replace `model.preprocessor` with the one in this config. 
+
+name: "NEST_MFA_Tune_TitaNet"
+
+model:
+  sample_rate: 16000
+
+  train_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    labels: null
+    batch_size: 64
+    num_workers: 8
+    shuffle: True
+    augmentor:
+      noise:
+        manifest_path: ???
+        prob: 0.5
+        min_snr_db: 0
+        max_snr_db: 15
+
+      speed:
+        prob: 0.5
+        sr: ${model.sample_rate}
+        resample_type: 'kaiser_fast'
+        min_speed_rate: 0.95
+        max_speed_rate: 1.05
+
+      impulse:
+        prob: 0.5
+        manifest_path: ???
+
+  validation_ds:
+    manifest_filepath: ???
+    sample_rate: ${model.sample_rate}
+    labels: null
+    batch_size: 128
+    num_workers: 8
+    shuffle: False
+
+  # Overwrite the original 'preprocessor' and replace it with multi-layer feature aggregation from ConformerEncoder
+  preprocessor:
+    _target_: nemo.collections.asr.modules.ssl_modules.multi_layer_feat.ConformerMultiLayerFeaturePreprocessor
+    layer_idx_list: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    freeze_encoder: True
+    aggregator:
+      _target_: nemo.collections.asr.modules.ssl_modules.multi_layer_feat.Aggregator
+      mode: "weighted_sum"
+      weights: null
+      layer_idx_list: ${model.preprocessor.layer_idx_list}
+    
+    # the actual preprocessor to use
+    preprocessor:
+      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+      normalize: "per_feature"
+      window_size: 0.025
+      sample_rate: ${model.sample_rate}
+      window_stride: 0.01
+      window: "hann"
+      features: 80
+      n_fft: 512
+      frame_splicing: 1
+      dither: 0.00001
+      stft_conv: false
+
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      freq_masks: 3
+      freq_width: 4
+      time_masks: 5
+      time_width: 0.05
+    
+    # this has to match with the ConformerEncoder config in NEST pretrain config
+    encoder:
+      _target_: nemo.collections.asr.modules.ConformerEncoder
+      feat_in: ${model.preprocessor.preprocessor.features}
+      feat_out: -1 # you may set it if you need different output size other than the default d_model
+      n_layers: 17
+      d_model: 512
+
+      # Sub-sampling params
+      subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+      subsampling_factor: 8 # must be power of 2 for striding and vggnet
+      subsampling_conv_channels: 256 # -1 sets it to d_model
+      causal_downsampling: false
+
+      # Feed forward module's params
+      ff_expansion_factor: 4
+
+      # Multi-headed Attention Module's params
+      self_attention_model: rel_pos # rel_pos or abs_pos
+      n_heads: 8 # may need to be lower for smaller d_models
+      # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+      att_context_size: [-1, -1] # -1 means unlimited context
+      att_context_style: regular # regular or chunked_limited
+      xscaling: true # scales up the input embeddings by sqrt(d_model)
+      untie_biases: true # unties the biases of the TransformerXL layers
+      pos_emb_max_len: 5000
+
+      # Convolution module's params
+      conv_kernel_size: 9
+      conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+      # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+      # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+      conv_context_size: null
+
+      ### regularization
+      dropout: 0.1 # The dropout used in most of the Conformer Modules
+      dropout_pre_encoder: 0.1 # The dropout used before the encoder
+      dropout_emb: 0.0 # The dropout used for embeddings
+      dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+      # set to non-zero to enable stochastic depth
+      stochastic_depth_drop_prob: 0.0
+      stochastic_depth_mode: linear  # linear or uniform
+      stochastic_depth_start_layer: 1
+
+  encoder:
+    _target_: nemo.collections.asr.modules.ConvASREncoder
+    feat_in: ${model.preprocessor.encoder.d_model}
+    activation: relu
+    conv_mask: true
+
+    jasper:
+      -   filters: ${model.model_defaults.filters}
+          repeat: 1
+          kernel: [3]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat:  ${model.model_defaults.repeat}
+          kernel: [7]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [11]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: ${model.model_defaults.filters}
+          repeat: ${model.model_defaults.repeat}
+          kernel: [15]
+          stride: [1]
+          dilation: [1]
+          dropout: ${model.model_defaults.dropout}
+          residual: true
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+      -   filters: &enc_feat_out 3072
+          repeat: 1
+          kernel: [1]
+          stride: [1]
+          dilation: [1]
+          dropout: 0.0
+          residual: false
+          separable: ${model.model_defaults.separable}
+          se: ${model.model_defaults.se}
+          se_context_size: ${model.model_defaults.se_context_size}
+
+  decoder:
+    _target_: nemo.collections.asr.modules.SpeakerDecoder
+    feat_in: *enc_feat_out
+    num_classes: 7205
+    pool_mode: 'attention'
+    emb_sizes: 192
+
+  loss:
+    _target_: nemo.collections.asr.losses.angularloss.AngularSoftmaxLoss # you could also use cross-entrophy loss
+    scale: 30    
+    margin: 0.2  
+
+  optim:
+    name: adamw
+    lr: 0.005
+    weight_decay: 0.0002
+
+    # scheduler setup
+    sched:
+      name: CosineAnnealing
+      warmup_ratio: 0.1
+      min_lr: 1e-6
+
+trainer:
+  devices: -1 # number of gpus (trained on four nodes - each node has 8 gpus)
+  max_epochs: 250
+  max_steps: -1 # computed at runtime if not set
+  num_nodes: 1
+  accelerator: gpu
+  strategy: ddp
+  accumulate_grad_batches: 1
+  deterministic: False
+  enable_checkpointing: False
+  logger: False
+  log_every_n_steps: 1  # Interval of logging.
+  val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  gradient_clip_val: 1.0
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: True
+  create_checkpoint_callback: True
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 1
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  # You may use this section to create a W&B logger
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

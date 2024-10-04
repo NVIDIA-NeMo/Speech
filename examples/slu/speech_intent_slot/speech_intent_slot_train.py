@@ -88,11 +88,17 @@ def main(cfg):
     pretrained_encoder_name = cfg.pretrained_encoder.name
     if pretrained_encoder_name is not None:
         if Path(pretrained_encoder_name).is_file():
-            logging.info(f"Loading pretrained encoder from local: {pretrained_encoder_name}")
-            pretraind_model = ASRModel.restore_from(
-                restore_path=pretrained_encoder_name, map_location=torch.device("cpu")
-            )
-            model.encoder.load_state_dict(pretraind_model.encoder.state_dict(), strict=False)
+            if not pretrained_encoder_name.endswith(".nemo"):
+                logging.info(f"Loading encoder from PyTorch Lightning checkpoint: {pretrained_encoder_name}")
+                state_dict = torch.load(pretrained_encoder_name, map_location='cpu')['state_dict']
+                pretraind_model = None
+            else:
+                logging.info(f"Loading pretrained encoder from NeMo file: {pretrained_encoder_name}")
+                pretraind_model = ASRModel.restore_from(
+                    restore_path=pretrained_encoder_name, map_location=torch.device("cpu")
+                )
+                state_dict = pretraind_model.state_dict()
+            model.load_state_dict(state_dict, strict=False)
             del pretraind_model
         else:
             logging.info(f"Loading pretrained encoder from NGC: {pretrained_encoder_name}")

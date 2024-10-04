@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
 import torch
 
 
@@ -34,6 +35,7 @@ class MultiLayerPerceptron(torch.nn.Module):
         num_layers: int = 2,
         activation: str = 'relu',
         log_softmax: bool = True,
+        channel_idx: Optional[int] = None,
     ):
         super().__init__()
         self.layers = 0
@@ -46,16 +48,37 @@ class MultiLayerPerceptron(torch.nn.Module):
         setattr(self, f'layer{self.layers}', layer)
         self.layers += 1
         self.log_softmax = log_softmax
+        self.channel_idx = channel_idx
 
     @property
     def last_linear_layer(self):
         return getattr(self, f'layer{self.layers - 1}')
 
-    def forward(self, hidden_states):
-        output_states = hidden_states[:]
+    def forward(self, hidden_states: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """
+        Multi-layer perceptron forward function compatible with multiple types of input keyword arguments
+        """
+        if hidden_states is None:
+            if "audio_signal" in kwargs:
+                hidden_states = kwargs["audio_signal"]
+            elif "encoder_output" in kwargs:
+                hidden_states = kwargs["encoder_output"]
+            else:
+                raise ValueError("No input tensor found")
+
+        if self.channel_idx is not None:
+            # compatible with transformers/conformer output
+            output_states = hidden_states.transpose(-1, self.channel_idx)
+        else:
+            output_states = hidden_states
+
         for i in range(self.layers):
             output_states = getattr(self, f'layer{i}')(output_states)
 
         if self.log_softmax:
             output_states = torch.log_softmax(output_states, dim=-1)
+
+        if self.channel_idx is not None:
+            # compatible with transformers/conformer output
+            output_states = output_states.transpose(-1, self.channel_idx)
         return output_states

@@ -31,6 +31,7 @@ model:
     labels: null
     batch_size: 128
     shuffle: False
+    is_audio_pair: false  # set `true` to calculate EER during validation, see nemo/collections/asr/models/label_models.py for details
 
   model_defaults:
     filters: 1024

@@ -100,6 +100,9 @@ class TranslationConfig:
     # if True, will also skip writing anything to the output file
     return_translations: bool = False
 
+    presort_manifest: bool = False  # sort manifest by duration before inference
+    pred_name_postfix: str = "translation"  # postfix to add to the audio filename for the output
+
 
 @hydra_runner(config_name="TranslationConfig", schema=TranslationConfig)
 def main(cfg: TranslationConfig) -> Union[TranslationConfig, List[str]]:
@@ -176,8 +179,8 @@ def main(cfg: TranslationConfig) -> Union[TranslationConfig, List[str]]:
     # translate audio
     with torch.amp.autocast(asr_model.device.type, enabled=cfg.amp):
         with torch.no_grad():
-            translations = asr_model.translate(
-                paths2audio_files=filepaths,
+            translations = asr_model.transcribe(
+                audio=filepaths,
                 batch_size=cfg.batch_size,
                 return_hypotheses=return_hypotheses,
             )

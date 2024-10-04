@@ -160,9 +160,13 @@ class SpeedPerturbation(Perturbation):
             return
 
         new_sr = int(self._sr * speed_rate)
-        data._samples = librosa.core.resample(
-            data._samples, orig_sr=self._sr, target_sr=new_sr, res_type=self._res_type
-        )
+        try:
+            data._samples = librosa.core.resample(
+                data._samples, orig_sr=self._sr, target_sr=new_sr, res_type=self._res_type
+            )
+        except Exception as e:
+            logging.warning(f"Failed to resample audio from {self._sr} to {new_sr}. Skipping augmentation. Error: {e}")
+            return
 
 
 class TimeStretchPerturbation(Perturbation):
@@ -371,7 +375,10 @@ class ImpulsePerturbation(Perturbation):
 
     def perturb(self, data):
         impulse = read_one_audiosegment(
-            self._manifest, data.sample_rate, tarred_audio=self._tarred_audio, audio_dataset=self._data_iterator,
+            self._manifest,
+            data.sample_rate,
+            tarred_audio=self._tarred_audio,
+            audio_dataset=self._data_iterator,
         )
 
         # normalize if necessary
@@ -385,6 +392,10 @@ class ImpulsePerturbation(Perturbation):
         # len of input data samples
         len_data = len(data._samples)
 
+        if max(abs(data._samples)) == 0:
+            logging.warning("Zero audio input found, skipping impulse perturbation.")
+            return
+
         # convolve with the full impulse response
         data._samples = signal.fftconvolve(data._samples, impulse_norm, "full")
 
@@ -396,6 +407,10 @@ class ImpulsePerturbation(Perturbation):
 
         # trim to match the input data length
         data._samples = data._samples[:len_data]
+
+        if max(abs(data._samples)) == 0:
+            logging.warning("Zero audio input found after impulse perturbation.")
+            return
 
         # normalize data samples to [-1,1] after rir convolution to avoid nans with fp16 training
         data._samples = data._samples / max(abs(data._samples))
@@ -493,7 +508,10 @@ class NoisePerturbation(Perturbation):
             ref_mic (int): reference mic index for scaling multi-channel audios
         """
         noise = read_one_audiosegment(
-            self._manifest, data.sample_rate, tarred_audio=self._tarred_audio, audio_dataset=self._data_iterator,
+            self._manifest,
+            data.sample_rate,
+            tarred_audio=self._tarred_audio,
+            audio_dataset=self._data_iterator,
         )
         self.perturb_with_input_noise(data, noise, ref_mic=ref_mic)
 
@@ -516,13 +534,31 @@ class NoisePerturbation(Perturbation):
             )
 
         snr_db = random.uniform(self._min_snr_db, self._max_snr_db)
+
+        if data.is_empty():
+            logging.warning(
+                f"Empty audio segment found for {data.audio_file} with offset {data.offset} and duration {data.duration}."
+            )
+
         if data_rms is None:
             data_rms = data.rms_db
 
-        if data.num_channels > 1:
-            noise_gain_db = data_rms[ref_mic] - noise.rms_db[ref_mic] - snr_db
+        if noise.is_empty():
+            logging.warning(
+                f"Empty noise segment found for {noise.audio_file} with offset {noise.offset} and duration {noise.duration}."
+            )
+            noise_rms = -float("inf")
         else:
-            noise_gain_db = data_rms - noise.rms_db - snr_db
+            noise_rms = noise.rms_db
+
+        if data.is_empty() and noise.is_empty():
+            logging.warning("Both data and noise segments are empty. Skipping perturbation.")
+            return
+
+        if data.num_channels > 1:
+            noise_gain_db = data_rms[ref_mic] - noise_rms[ref_mic] - snr_db
+        else:
+            noise_gain_db = data_rms - noise_rms - snr_db
         noise_gain_db = min(noise_gain_db, self._max_gain_db)
 
         # calculate noise segment to use
@@ -736,7 +772,7 @@ class NoisePerturbationWithNormalization(Perturbation):
             x (numpy array): input audio signal
             norm_to_db (float): the db to normalise to
         """
-        rms = (x ** 2).mean(axis=0) ** 0.5
+        rms = (x**2).mean(axis=0) ** 0.5
         rms = np.where(np.isclose(rms, 0), self._epsilon, rms)
         scalar = 10 ** (norm_to_db / 20.0) / rms
         return x * scalar
@@ -828,33 +864,33 @@ class WhiteNoisePerturbation(Perturbation):
 
 class RirAndNoisePerturbation(Perturbation):
     """
-        RIR augmentation with additive foreground and background noise.
-        In this implementation audio data is augmented by first convolving the audio with a Room Impulse Response
-        and then adding foreground noise and background noise at various SNRs. RIR, foreground and background noises
-        should either be supplied with a manifest file or as tarred audio files (faster).
+    RIR augmentation with additive foreground and background noise.
+    In this implementation audio data is augmented by first convolving the audio with a Room Impulse Response
+    and then adding foreground noise and background noise at various SNRs. RIR, foreground and background noises
+    should either be supplied with a manifest file or as tarred audio files (faster).
 
-        Different sets of noise audio files based on the original sampling rate of the noise. This is useful while
-        training a mixed sample rate model. For example, when training a mixed model with 8 kHz and 16 kHz audio with a
-        target sampling rate of 16 kHz, one would want to augment 8 kHz data with 8 kHz noise rather than 16 kHz noise.
+    Different sets of noise audio files based on the original sampling rate of the noise. This is useful while
+    training a mixed sample rate model. For example, when training a mixed model with 8 kHz and 16 kHz audio with a
+    target sampling rate of 16 kHz, one would want to augment 8 kHz data with 8 kHz noise rather than 16 kHz noise.
 
-        Args:
-            rir_manifest_path: Manifest file for RIRs
-            rir_tar_filepaths: Tar files, if RIR audio files are tarred
-            rir_prob: Probability of applying a RIR
-            noise_manifest_paths: Foreground noise manifest path
-            min_snr_db: Min SNR for foreground noise
-            max_snr_db: Max SNR for background noise,
-            noise_tar_filepaths: Tar files, if noise files are tarred
-            apply_noise_rir: Whether to convolve foreground noise with a a random RIR
-            orig_sample_rate: Original sampling rate of foreground noise audio
-            max_additions: Max number of times foreground noise is added to an utterance,
-            max_duration: Max duration of foreground noise
-            bg_noise_manifest_paths: Background noise manifest path
-            bg_min_snr_db: Min SNR for background noise
-            bg_max_snr_db: Max SNR for background noise
-            bg_noise_tar_filepaths: Tar files, if noise files are tarred
-            bg_orig_sample_rate: Original sampling rate of background noise audio
-            rng: Random seed. Default is None
+    Args:
+        rir_manifest_path: Manifest file for RIRs
+        rir_tar_filepaths: Tar files, if RIR audio files are tarred
+        rir_prob: Probability of applying a RIR
+        noise_manifest_paths: Foreground noise manifest path
+        min_snr_db: Min SNR for foreground noise
+        max_snr_db: Max SNR for background noise,
+        noise_tar_filepaths: Tar files, if noise files are tarred
+        apply_noise_rir: Whether to convolve foreground noise with a a random RIR
+        orig_sample_rate: Original sampling rate of foreground noise audio
+        max_additions: Max number of times foreground noise is added to an utterance,
+        max_duration: Max duration of foreground noise
+        bg_noise_manifest_paths: Background noise manifest path
+        bg_min_snr_db: Min SNR for background noise
+        bg_max_snr_db: Max SNR for background noise
+        bg_noise_tar_filepaths: Tar files, if noise files are tarred
+        bg_orig_sample_rate: Original sampling rate of background noise audio
+        rng: Random seed. Default is None
 
     """
 
@@ -959,12 +995,12 @@ class RirAndNoisePerturbation(Perturbation):
 
 class TranscodePerturbation(Perturbation):
     """
-        Audio codec augmentation. This implementation uses sox to transcode audio with low rate audio codecs,
-        so users need to make sure that the installed sox version supports the codecs used here (G711 and amr-nb).
+    Audio codec augmentation. This implementation uses sox to transcode audio with low rate audio codecs,
+    so users need to make sure that the installed sox version supports the codecs used here (G711 and amr-nb).
 
-        Args:
-            codecs (List[str]):A list of codecs to be trancoded to. Default is None.
-            rng (int): Random seed. Default is None.
+    Args:
+        codecs (List[str]):A list of codecs to be trancoded to. Default is None.
+        rng (int): Random seed. Default is None.
     """
 
     def __init__(self, codecs=None, rng=None):
@@ -1019,9 +1055,9 @@ class TranscodePerturbation(Perturbation):
 
 class RandomSegmentPerturbation(Perturbation):
     """
-    Returns a random segment from input of duration "duration_sec". 
+    Returns a random segment from input of duration "duration_sec".
     If duration_sec > input audio length, pad_to_duration determines the outcome.
-    
+
     RandomSegmentPerturbation is intended for self-supervised learning.
     Not for supervised, as extracting corresponding text is not facilitated.
 
@@ -1030,20 +1066,29 @@ class RandomSegmentPerturbation(Perturbation):
         duration_sec (float): duration of the segment to be extracted
         pad_to_duration (bool): zero pad if length of input audio < duration_sec
         rng: Random seed. Default is None
+        min_rms_db: Minimum RMS db value for the perturbed audio. Default is None
+        max_trials: Maximum number of trials to find a segment with RMS db > min_rms_db. Default is 10
+        verbose: If True, logs a warning if RMS db < min_rms_db after max_trials. Default is False
     """
 
-    def __init__(self, duration_sec=32.0, pad_to_duration=False, rng=None):
+    def __init__(
+        self, duration_sec=32.0, pad_to_duration=False, rng=None, min_rms_db=None, max_trials=10, verbose=False
+    ):
         if duration_sec <= 0:
             raise ValueError("duration_sec should be > 0")
 
         self._duration_sec = duration_sec
         self._pad_to_duration = pad_to_duration
+        self._min_rms_db = min_rms_db
+        self._max_trials = max_trials
+        self._verbose = verbose
         random.seed(rng) if rng else None
 
-    def perturb(self, data):
+    def perturb(self, data: AudioSegment):
         if self._duration_sec > data.duration:
             if not self._pad_to_duration:
-                raise ValueError(f"audio length < {self._duration_sec} sec and pad_to_duration is set to False")
+                # don't do anything if pad_to_duration is False
+                return
             start_time = 0.0
             pad_size = self._duration_sec * data.sample_rate - data.num_samples
             data.pad(pad_size=pad_size)
@@ -1051,6 +1096,22 @@ class RandomSegmentPerturbation(Perturbation):
             start_time = random.uniform(0.0, data.duration - self._duration_sec)
 
         end_time = start_time + self._duration_sec
+        new_data = copy.deepcopy(data)
+        new_data.subsegment(start_time=start_time, end_time=end_time)
+        if self._min_rms_db is not None:
+            rms_db = new_data.rms_db if new_data.num_channels == 1 else min(new_data.rms_db)
+            trial = 0
+            while rms_db < self._min_rms_db and trial < self._max_trials:
+                start_time = random.uniform(0.0, data.duration - self._duration_sec)
+                end_time = start_time + self._duration_sec
+                new_data = copy.deepcopy(data)
+                new_data.subsegment(start_time=start_time, end_time=end_time)
+                rms_db = new_data.rms_db if new_data.num_channels == 1 else min(new_data.rms_db)
+                trial += 1
+            if self._verbose and trial == self._max_trials and rms_db < self._min_rms_db:
+                logging.warning(
+                    f"Could not find a segment with RMS db > {self._min_rms_db} after {self._max_trials} trials."
+                )
         data.subsegment(start_time=start_time, end_time=end_time)
 
 
@@ -1085,14 +1146,14 @@ class AudioAugmentor(object):
         self._pipeline = perturbations if perturbations is not None else []
 
     def perturb(self, segment):
-        for (prob, p) in self._pipeline:
+        for prob, p in self._pipeline:
             if random.random() < prob:
                 p.perturb(segment)
         return
 
     def max_augmentation_length(self, length):
         newlen = length
-        for (prob, p) in self._pipeline:
+        for prob, p in self._pipeline:
             newlen = p.max_augmentation_length(newlen)
         return newlen
 
@@ -1238,20 +1299,20 @@ def process_augmentations(augmenter, global_rank=0, world_size=1) -> Optional[Au
 
 class AugmentationDataset(IterableDataset):
     """
-        A class that loads tarred audio files and cycles over the files in the dataset.
-        Accepts a single comma-separated JSON manifest file (in the same style as for the AudioToCharDataset/AudioToBPEDataset),
-        as well as the path(s) to the tarball(s) containing the wav files. Each line of the manifest should
-        contain the information for one audio file, including at least the transcript and name of the audio
-        file within the tarball.
-        Valid formats for the audio_tar_filepaths argument include:
-        (1) a single string that can be brace-expanded, e.g. 'path/to/audio.tar' or 'path/to/audio_{1..100}.tar.gz', or
-        (2) a list of file paths that will not be brace-expanded, e.g. ['audio_1.tar', 'audio_2.tar', ...].
-        Note: For brace expansion in (1), there may be cases where `{x..y}` syntax cannot be used due to shell interference.
-        This occurs most commonly inside SLURM scripts. Therefore we provide a few equivalent replacements.
-        Supported opening braces - { <=> (, [, < and the special tag _OP_.
-        Supported closing braces - } <=> ), ], > and the special tag _CL_.
-        For SLURM based tasks, we suggest the use of the special tags for ease of use.
-        See the WebDataset documentation for more information about accepted data and input formats.
+    A class that loads tarred audio files and cycles over the files in the dataset.
+    Accepts a single comma-separated JSON manifest file (in the same style as for the AudioToCharDataset/AudioToBPEDataset),
+    as well as the path(s) to the tarball(s) containing the wav files. Each line of the manifest should
+    contain the information for one audio file, including at least the transcript and name of the audio
+    file within the tarball.
+    Valid formats for the audio_tar_filepaths argument include:
+    (1) a single string that can be brace-expanded, e.g. 'path/to/audio.tar' or 'path/to/audio_{1..100}.tar.gz', or
+    (2) a list of file paths that will not be brace-expanded, e.g. ['audio_1.tar', 'audio_2.tar', ...].
+    Note: For brace expansion in (1), there may be cases where `{x..y}` syntax cannot be used due to shell interference.
+    This occurs most commonly inside SLURM scripts. Therefore we provide a few equivalent replacements.
+    Supported opening braces - { <=> (, [, < and the special tag _OP_.
+    Supported closing braces - } <=> ), ], > and the special tag _CL_.
+    For SLURM based tasks, we suggest the use of the special tags for ease of use.
+    See the WebDataset documentation for more information about accepted data and input formats.
     """
 
     def __init__(
@@ -1287,8 +1348,7 @@ class AugmentationDataset(IterableDataset):
         return len(self._manifest)
 
     def _loop_offsets(self, iterator):
-        """This function is used to iterate through utterances with different offsets for each file.
-        """
+        """This function is used to iterate through utterances with different offsets for each file."""
 
         class TarredAudioLoopOffsets:
             def __init__(self, collection):

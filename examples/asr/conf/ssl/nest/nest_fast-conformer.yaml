@@ -1,0 +1,254 @@
+# This config contains the default values for self-supervised pre-training of a FastConformer model
+#
+# Here are the recommended configs for different variants of FastConformer, other parameters are the same as in this config file.
+#
+#  +--------------+---------+---------+----------+----------------+--------------+------------+
+#  | Model        | d_model | n_heads | n_layers |conv_kernel_size| weight_decay |  xscaling  |
+#  +==============+=========+========+===========+================+==============+============+
+#  | Small  (14M) |   176   |    4   |    16     |        9       |     0.0      |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+------------+
+#  | Medium (32M) |   256   |    4   |    16     |        9       |     1e-3     |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+------------+
+#  | Large (120M) |   512   |    8   |    17     |        9       |     1e-3     |    True    |
+#  +--------------+---------+--------+-----------+----------------+--------------+------------+
+#  | XLarge (616M)|   1024  |    8   |    24     |        9       |     1e-3     |    False   |
+#  +--------------+---------+--------+-----------+----------------+--------------+------------+
+#  | XXLarge(1.2B)|   1024  |    8   |    42     |        9       |     1e-3     |    False   |
+#  +--------------------------------------------------------------+--------------+------------+ 
+
+
+name: "NEST-FastConformer-SSL"
+
+model:
+  sample_rate: 16000
+  num_classes: 8192
+  num_books: 1
+  code_dim: 16
+  squeeze_single: false
+  mask_position: pre_conv  # position to apply masking, before or after conv subsampling, choices in ['pre_conv', 'post_conv']
+  
+  train_ds:
+    manifest_filepath: ???
+    noise_manifest: null
+    sample_rate: ${model.sample_rate}
+    batch_size: 8 # you may increase batch_size if your memory allows
+    shuffle: true
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+    trim_silence: false
+    max_duration: 60.0
+    min_duration: 1.0
+    drop_last: true
+    is_concat: false
+    concat_sampling_technique: temperature
+    concat_sampling_temperature: 1.0 
+    # tarred datasets
+    is_tarred: false
+    tarred_audio_filepaths: null
+    shuffle_n: 2048
+    # bucketing params
+    bucketing_strategy: "synced_randomized"
+    bucketing_batch_size: null
+    # batch augmentation
+    batch_augmentor:
+      _target_: nemo.collections.asr.modules.ssl_modules.MultiSpeakerNoiseAugmentation
+      prob: 0.5  # prob of activating the augmentation
+      noise_ratio: 0.5  # prob of applying noise aug, otherwise apply speech augmentation
+      min_r_speech: -5.0  # min energy ratio when applying speech augmentation
+      max_r_speech: 5.0  # max energy ratio when applying speech augmentation
+      min_r_noise: -5.0  # min energy ratio when applying noise augmentation
+      max_r_noise: 20.0  # max energy ratio when applying noise augmentation
+      min_mix_rate: 0.5  # min ratio of the input audio that would be augmented
+      max_mix_rate: 0.5  # max ratio of the input audio that would be augmented
+      min_num_segments: 1  # min num of segments that consititute the noise audio
+      max_num_segments: 1  # max num of segments that consititute the noise audio
+      min_num_speakers: 1  # min num of extra speakers to add
+      max_num_speakers: 1  # max num of extra speakers to add
+
+  validation_ds:
+    manifest_filepath: ???
+    noise_manifest: null
+    sample_rate: ${model.sample_rate}
+    batch_size: 8 # you may increase batch_size if your memory allows
+    shuffle: false
+    num_workers: 8
+    pin_memory: true
+    use_start_end_token: false
+    max_duration: 60.0
+    min_duration: 1.0
+    # batch augmentation
+    batch_augmentor:
+      _target_: nemo.collections.asr.modules.ssl_modules.MultiSpeakerNoiseAugmentation
+      prob: 0.5
+      noise_ratio: 0.5
+      min_r_speech: -5.0
+      max_r_speech: 5.0
+      min_r_noise: -5.0
+      max_r_noise: 20.0
+      min_mix_rate: 0.5
+      max_mix_rate: 0.5
+      min_num_segments: 1  # min num of segments that consititute the noise audio
+      max_num_segments: 1  # max num of segments that consititute the noise audio
+      min_num_speakers: 1  # min num of extra speakers to add
+      max_num_speakers: 1  # max num of extra speakers to add
+
+  preprocessor:
+    _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+    sample_rate: ${model.sample_rate}
+    normalize: "per_feature"
+    window_size: 0.025
+    window_stride: 0.01
+    window: "hann"
+    features: 80
+    n_fft: 512
+    log: true
+    frame_splicing: 1
+    dither: 0.00001
+    pad_to: 16
+    pad_value: 0.0
+
+  # spec_augment is not actually used, just to avoid init error
+  spec_augment:
+    _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+    freq_masks: 0 # set to zero to disable it
+    time_masks: 0 # set to zero to disable it
+    freq_width: 27
+    time_width: 0.05
+
+  masking:
+    _target_: nemo.collections.asr.modules.RandomBlockMasking
+    block_size: 40  # for pre_conv masking, 10ms per frame, 400ms per block with block_size=40
+    mask_prob: 0.01  # for allow_overlap=True, this means the mask prob for each frame; otherwise it means the overall masked proportion
+    feat_in: ${model.preprocessor.features}
+    freeze: true
+    allow_overlap: true
+
+  quantizer:
+    _target_: nemo.collections.asr.modules.RandomProjectionVectorQuantizer
+    feat_in: ${model.preprocessor.features}
+    code_dim: ${model.code_dim}
+    num_books: ${model.num_books}
+    num_classes: ${model.num_classes}
+    dist_fn: "l2"  # choices=["l2", "cosine"]
+    freeze: true
+    squeeze_single: ${model.squeeze_single}
+    combine_time_steps: ${model.encoder.subsampling_factor}  # conformer sub-sampling ratio
+  
+  encoder:
+    _target_: nemo.collections.asr.modules.ConformerEncoder
+    feat_in: ${model.preprocessor.features}
+    feat_out: -1 # you may set it if you need different output size other than the default d_model
+    n_layers: 17
+    d_model: 512
+    use_bias: True # whether to apply bias in the feedforward, MHA and convolution modules
+
+    # Sub-sampling params
+    subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+    subsampling_factor: 8 # must be power of 2 for striding and vggnet
+    subsampling_conv_channels: 256 # -1 sets it to d_model
+    causal_downsampling: false
+
+    # Feed forward module's params
+    ff_expansion_factor: 4
+
+    # Multi-headed Attention Module's params
+    self_attention_model: rel_pos # rel_pos or abs_pos
+    n_heads: 8 # may need to be lower for smaller d_models
+    # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+    att_context_size: [-1, -1] # -1 means unlimited context
+    att_context_style: regular # regular or chunked_limited
+    xscaling: true # scales up the input embeddings by sqrt(d_model)
+    untie_biases: true # unties the biases of the TransformerXL layers
+    pos_emb_max_len: 5000
+
+    # Convolution module's params
+    conv_kernel_size: 9
+    conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+    # conv_context_size can be"causal" or a list of two integers while conv_context_size[0]+conv_context_size[1]+1==conv_kernel_size
+    # null means [(kernel_size-1)//2, (kernel_size-1)//2], and 'causal' means [(kernel_size-1), 0]
+    conv_context_size: null
+
+    ### regularization
+    dropout: 0.1 # The dropout used in most of the Conformer Modules
+    dropout_pre_encoder: 0.1 # The dropout used before the encoder
+    dropout_emb: 0.0 # The dropout used for embeddings
+    dropout_att: 0.1 # The dropout for multi-headed attention modules
+
+    # set to non-zero to enable stochastic depth
+    stochastic_depth_drop_prob: 0.0
+    stochastic_depth_mode: linear  # linear or uniform
+    stochastic_depth_start_layer: 1
+
+  decoder:
+    _target_: nemo.collections.asr.modules.MultiSoftmaxDecoder
+    feat_in: ${model.encoder.d_model}
+    num_classes: ${model.num_classes}
+    num_decoders: ${model.num_books}
+    squeeze_single: ${model.squeeze_single}
+    use_bias: true
+
+  loss:
+    _target_: nemo.collections.asr.losses.MultiMLMLoss
+    combine_time_steps: ${model.encoder.subsampling_factor}  # conformer sub-sampling ratio for 'pre_conv', 1 for 'post_conv'
+    mask_threshold: 0.8
+    num_decoders: ${model.num_books}
+    squeeze_single: ${model.squeeze_single}
+
+  optim:
+    name: adamw
+    lr: 5.0
+    # optimizer arguments
+    betas: [0.9, 0.98]
+    weight_decay: 1e-3
+
+    # scheduler setup
+    sched:
+      name: NoamAnnealing
+      d_model: ${model.encoder.d_model}
+      # scheduler config override
+      warmup_steps: 25000
+      warmup_ratio: null
+      min_lr: 1e-6
+
+trainer:
+  devices: -1 # number of GPUs, -1 would use all available GPUs
+  num_nodes: 1
+  max_epochs: 1000
+  max_steps: -1 # computed at runtime if not set
+  val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+  accelerator: auto
+  strategy: ddp_find_unused_parameters_true
+  accumulate_grad_batches: 1
+  gradient_clip_val: 0.0
+  precision: 32 # 16, 32, or bf16
+  log_every_n_steps: 10  # Interval of logging.
+  enable_progress_bar: True
+  num_sanity_val_steps: 0 # number of steps to perform validation steps for sanity check the validation process before starting the training, setting to 0 disables it
+  check_val_every_n_epoch: 1 # number of evaluations on validation every n epochs
+  sync_batchnorm: true
+  enable_checkpointing: False  # Provided by exp_manager
+  logger: false  # Provided by exp_manager
+  benchmark: false # needs to be false for models with variable-length speech input as it slows down training
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  # filename: '${name}--{${exp_manager.checkpoint_callback_params.monitor}:.3f}-{step}-{epoch}'
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  checkpoint_callback_params:
+    # in case of multiple validation sets, first one is used
+    monitor: "val_loss"
+    mode: "min"
+    save_top_k: 1
+
+  # you need to set these two to True to continue the training
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true
+
+  # You may use this section to create a W&B logger
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null

@@ -36,7 +36,7 @@
 import math
 import os
 import random
-from typing import Iterable, Optional, Union
+from typing import Iterable, List, Optional, Union
 
 import librosa
 import numpy as np
@@ -171,6 +171,9 @@ class AudioSegment(object):
         channel_selector=None,
         normalize_db: Optional[float] = None,
         ref_channel: Optional[int] = None,
+        audio_file: Optional[Union[str, List[str]]] = None,
+        offset: Optional[float] = None,
+        duration: Optional[float] = None,
     ):
         """Create audio segment from samples.
         Samples are convert float32 internally, with int scaled to [-1, 1].
@@ -207,7 +210,9 @@ class AudioSegment(object):
         self._orig_sr = orig_sr if orig_sr is not None else sample_rate
         self._ref_channel = ref_channel
         self._normalize_db = normalize_db
-
+        self._audio_file = audio_file
+        self._offset = offset
+        self._duration = duration
         if normalize_db is not None:
             self.normalize_db(normalize_db, ref_channel)
 
@@ -349,7 +354,7 @@ class AudioSegment(object):
                 samples = Audio.from_file(audio_file, codec=ffmpeg_codecs.get(os.path.splitext(audio_file)[-1]))
                 sample_rate = samples.frame_rate
                 num_channels = samples.channels
-                if offset > 0:
+                if offset is not None and offset > 0:
                     # pydub does things in milliseconds
                     seconds = offset * 1000
                     samples = samples[int(seconds) :]
@@ -380,6 +385,9 @@ class AudioSegment(object):
             channel_selector=channel_selector,
             normalize_db=normalize_db,
             ref_channel=ref_channel,
+            audio_file=audio_file,
+            offset=offset,
+            duration=duration,
         )
 
     @classmethod
@@ -419,7 +427,7 @@ class AudioSegment(object):
         for a_file in audio_file_list:
             # Load audio from the current file
             a_segment = cls.from_file(
-                a_file,
+                audio_file=a_file,
                 target_sr=target_sr,
                 int_values=int_values,
                 offset=offset,
@@ -465,6 +473,7 @@ class AudioSegment(object):
             target_sr=target_sr,
             trim=trim,
             channel_selector=channel_selector,
+            audio_file=audio_file_list,
             *args,
             **kwargs,
         )
@@ -571,6 +580,18 @@ class AudioSegment(object):
     @property
     def orig_sr(self):
         return self._orig_sr
+
+    @property
+    def offset(self):
+        return float(self._offset) if self._offset is not None else None
+
+    @property
+    def audio_file(self):
+        return str(self._audio_file) if self._audio_file is not None else None
+
+    def is_empty(self):
+        mean_square = np.sum(np.mean(self._samples**2, axis=0))
+        return self.num_samples == 0 or mean_square == 0
 
     def gain_db(self, gain):
         self._samples *= 10.0 ** (gain / 20.0)

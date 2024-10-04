@@ -59,7 +59,7 @@ Run with the default config that uses ASR-pretrained encoder on NeMo ASR-set 3.0
 ```bash
 DATA_DIR="./slurp_data"
 EXP_NAME="slurp_conformer_transformer_large"
-CUDA_VISIBLE_DEVICES=0 python run_speech_intent_slot_train.py \
+CUDA_VISIBLE_DEVICES=0 python speech_intent_slot_train.py \
     --config-path="./configs" --config-name=conformer_transformer_large_bpe \
     model.train_ds.manifest_filepath="[${DATA_DIR}/train_slu.json,${DATA_DIR}/train_synthetic_slu.json]" \
     model.validation_ds.manifest_filepath="${DATA_DIR}/devel_slu.json" \
@@ -88,7 +88,7 @@ CKPT_AVG_DIR="../../../examples/slu/speech_intent_slot/${CKPT_DIR}"
 python ../../../scripts/checkpoint_averaging/checkpoint_averaging.py $CKPT_AVG_DIR
 
 NEMO_MODEL="${CKPT_DIR}/${EXP_NAME}-averaged.nemo"
-CUDA_VISIBLE_DEVICES=0 python run_speech_intent_slot_eval.py \
+CUDA_VISIBLE_DEVICES=0 python speech_intent_slot_eval.py \
     dataset_manifest="${DATA_DIR}/test_slu.json" \
     model_path=$NEMO_MODEL \
     batch_size=32 \

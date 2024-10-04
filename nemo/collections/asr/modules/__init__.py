@@ -44,3 +44,9 @@ from nemo.collections.asr.modules.rnnt import (
     StatelessTransducerDecoder,
 )
 from nemo.collections.asr.modules.squeezeformer_encoder import SqueezeformerEncoder, SqueezeformerEncoderAdapter
+from nemo.collections.asr.modules.ssl_modules import (
+    ConvFeatureMaksingWrapper,
+    MultiSoftmaxDecoder,
+    RandomBlockMasking,
+    RandomProjectionVectorQuantizer,
+)

@@ -338,13 +338,28 @@ def resolve_validation_dataloaders(model: 'ModelPT'):
             # using the name of each of the nested dataset
             model._validation_names = [ds.name for ds in ds_values]
         else:
-            model._validation_names = [parse_dataset_as_name(ds) for ds in ds_values]
+            ds_names = cfg.validation_ds.get('name', [])
+            if len(ds_names) > 0:
+                if len(ds_names) != len(ds_values):
+                    raise ValueError(
+                        f"Number of names ({len(ds_names)}) does not match number of datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
+                    )
+                model._validation_names = [parse_dataset_as_name(n) for n in ds_names]
+            else:
+                model._validation_names = [parse_dataset_as_name(ds) for ds in ds_values]
         unique_names_check(name_list=model._validation_names)
+
         return
 
     else:
         model.setup_validation_data(cfg.validation_ds)
-        model._validation_names = [parse_dataset_as_name(ds_values)]
+        ds_names = cfg.validation_ds.get('name', None)
+        if ds_names is not None:
+            if not isinstance(ds_names, str):
+                raise ValueError(f"`name` must be a string for single manifest, got {ds_names}")
+            model._validation_names = [parse_dataset_as_name(ds_names)]
+        else:
+            model._validation_names = [parse_dataset_as_name(ds_values)]
         unique_names_check(name_list=model._validation_names)
 
 
@@ -417,14 +432,28 @@ def resolve_test_dataloaders(model: 'ModelPT'):
             # using the name of each of the nested dataset
             model._test_names = [ds.name for ds in ds_values]
         else:
-            model._test_names = [parse_dataset_as_name(ds) for ds in ds_values]
+            ds_names = cfg.test_ds.get('name', [])
+            if len(ds_names) > 0:
+                if len(ds_names) != len(ds_values):
+                    raise ValueError(
+                        f"Number of names ({len(ds_names)}) does not match number of datasets ({len(ds_values)}). Got {ds_names} and {ds_values}"
+                    )
+                model._test_names = [parse_dataset_as_name(n) for n in ds_names]
+            else:
+                model._test_names = [parse_dataset_as_name(ds) for ds in ds_values]
 
         unique_names_check(name_list=model._test_names)
         return
 
     else:
         model.setup_test_data(cfg.test_ds)
-        model._test_names = [parse_dataset_as_name(ds_values)]
+        ds_names = cfg.test_ds.get('name', None)
+        if ds_names is not None:
+            if not isinstance(ds_names, str):
+                raise ValueError(f"`name` must be a string for single manifest, got {ds_names}")
+            model._test_names = [parse_dataset_as_name(ds_names)]
+        else:
+            model._test_names = [parse_dataset_as_name(ds_values)]
 
         unique_names_check(name_list=model._test_names)
 
@@ -468,7 +497,7 @@ def convert_model_config_to_dict_config(cfg: Union['DictConfig', 'NemoConfig']) 
 
 
 def _convert_config(cfg: 'OmegaConf'):
-    """ Recursive function convertint the configuration from old hydra format to the new one. """
+    """Recursive function convertint the configuration from old hydra format to the new one."""
     if not _HAS_HYDRA:
         logging.error("This function requires Hydra/Omegaconf and it was not installed.")
         exit(1)
@@ -671,9 +700,9 @@ def inject_model_parallel_rank(filepath, fsdp_sharded_ckpt=False):
 
 
 def ckpt_to_dir(filepath: Union[str, Path]) -> Path:
-    """ PTL considers checkpoints as .ckpt files.
-        This method removes the extension and returns a path
-        to be used as a directory for distributed checkpoints
+    """PTL considers checkpoints as .ckpt files.
+    This method removes the extension and returns a path
+    to be used as a directory for distributed checkpoints
     """
 
     filepath = Path(filepath)

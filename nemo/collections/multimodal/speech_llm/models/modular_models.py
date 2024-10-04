@@ -28,8 +28,8 @@ from pytorch_lightning.trainer.trainer import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 
 from nemo.collections.asr.models import ASRModel, EncDecSpeakerLabelModel
-from nemo.collections.asr.parts.mixins.transcription import move_to_device
 from nemo.collections.asr.parts.utils.eval_utils import remove_punctuations
+from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.metrics import MetricStringToTorchMetric, TextMetricsSet
 from nemo.collections.multimodal.speech_llm.data.build_dataset import (
     build_speechllm_dataloader,
@@ -480,7 +480,7 @@ class ModularAudioGPTModel(SpeechLLMAdapterMixin, MegatronGPTSFTModel):
             if self.get_attention_mask_from_fusion and 'attention_mask' in required_keys:
                 required_keys.remove('attention_mask')
 
-            batch = move_to_device(batch, self.device)
+            batch = move_data_to_device(batch, self.device)
             batch = self.get_batch_on_this_context_parallel_rank(batch)
 
             if not self.mcore_gpt:

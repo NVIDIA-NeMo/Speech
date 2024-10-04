@@ -31,7 +31,7 @@ from nemo.utils import logging
 @dataclass
 class EvaluationConfig(InferenceConfig):
     dataset_manifest: str = MISSING
-    output_filename: Optional[str] = "evaluation_transcripts.json"
+    output_filename: Optional[str] = None
     average: str = "micro"
     full: bool = False
     errors: bool = False
@@ -43,7 +43,8 @@ class EvaluationConfig(InferenceConfig):
 def main(cfg: EvaluationConfig):
     torch.set_grad_enabled(False)
 
-    cfg.output_filename = str(Path(Path(cfg.model_path).parent) / Path("predictions.json"))
+    if not cfg.only_score_manifest and not cfg.output_filename:
+        cfg.output_filename = str(Path(Path(cfg.model_path).parent) / Path("predictions.json"))
 
     if is_dataclass(cfg):
         cfg = OmegaConf.structured(cfg)

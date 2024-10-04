@@ -63,6 +63,11 @@ def gpt_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
 
     required_keys = set()
     required_keys.add("attention_mask")
+    if 'cu_seqlens' in _batch:
+        required_keys.add('cu_seqlens')
+        required_keys.add('cu_seqlens_argmin')
+        required_keys.add('max_seqlen')
+
     if parallel_state.is_pipeline_first_stage():
         required_keys.update(("tokens", "position_ids"))
     if parallel_state.is_pipeline_last_stage():
@@ -266,7 +271,9 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         labels: Optional[torch.Tensor] = None,
         decoder_input: Optional[torch.Tensor] = None,
         inference_params=None,
+        packed_seq_params=None,
     ) -> torch.Tensor:
+        extra_kwargs = {'packed_seq_params': packed_seq_params} if packed_seq_params is not None else {}
         output_tensor = self.module(
             input_ids,
             position_ids,
@@ -274,6 +281,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             decoder_input=decoder_input,
             labels=labels,
             inference_params=inference_params,
+            **extra_kwargs,
         )
 
         return output_tensor
@@ -308,7 +316,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         return self._validation_loss_reduction
 
 
-def get_batch_on_this_context_parallel_rank(batch):
+def get_batch_on_this_context_parallel_rank(batch) -> Dict[str, torch.Tensor]:
     from megatron.core import parallel_state
 
     if (cp_size := parallel_state.get_context_parallel_world_size()) > 1:

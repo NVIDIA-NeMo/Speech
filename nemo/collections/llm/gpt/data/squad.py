@@ -54,6 +54,7 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
         pin_memory: bool = True,
         persistent_workers: bool = False,
         pad_to_max_length: bool = False,
+        packed_sequence_size: int = -1,
     ):
         self.force_redownload = force_redownload
         self.delete_raw = delete_raw
@@ -71,15 +72,15 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
             pad_to_max_length=pad_to_max_length,
+            packed_sequence_size=packed_sequence_size,
         )
 
     def prepare_data(self) -> None:
         # if train file is specified, no need to do anything
-        if self.train_path.exists() and not self.force_redownload:
-            return
-
-        dset = self._download_data()
-        self._preprocess_and_split_data(dset)
+        if not self.train_path.exists() or self.force_redownload:
+            dset = self._download_data()
+            self._preprocess_and_split_data(dset)
+        super().prepare_data()
 
     def _download_data(self):
         logging.info(f"Downloading {self.__class__.__name__}...")

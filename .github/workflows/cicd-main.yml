@@ -66,9 +66,8 @@ jobs:
     steps:
     - name: Clean server from old files
       run: |
-        docker container prune --filter "until=24h" --force
-        docker image prune -a --filter "until=24h" --force
-
+        docker system prune --filter "until=24h" --filter "label=nemo.library=nemo-core" --force
+        
   cicd-test-container-setup:
     needs: [cicd-cluster-clean, pre-flight]
     runs-on: self-hosted-azure-builder
@@ -90,17 +89,22 @@ jobs:
         driver: docker
 
     - name: Restore cache
-      run: docker pull nemoci.azurecr.io/nemo_container:latest
+      run: |
+        docker pull nemoci.azurecr.io/nemo_container:latest
+        docker pull nemoci.azurecr.io/nemo_container_${{ github.event.number || 'noop' }} || true
 
     - name: Build and push
       uses: docker/build-push-action@v5
       with:
         file: Dockerfile.ci
         push: true
-        cache-from: nemoci.azurecr.io/nemo_container:latest
+        cache-from: |
+          nemoci.azurecr.io/nemo_container:latest
+          nemoci.azurecr.io/nemo_container_${{ github.event.number || 'noop' }}
         cache-to: type=inline
         tags: |
           nemoci.azurecr.io/nemo_container_${{ github.run_id }}
+          nemoci.azurecr.io/nemo_container_${{ github.event.number || 'noop' }}
           nemoci.azurecr.io/nemo_container:latest
 
     - name: Run some checks

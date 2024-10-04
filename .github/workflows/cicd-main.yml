@@ -5370,7 +5370,7 @@ jobs:
           echo "FAILED=$FAILED" 
           
           # Mark as successful if no job was cancelled:
-          SUCCESS=${{ !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
+          SUCCESS=${{ !contains(needs.*.outputs.conclusion, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
           echo "SUCCESS=$SUCCESS" >> $GITHUB_OUTPUT
 
       # This should depend on all the tests so we block/unblock based on all tests passing

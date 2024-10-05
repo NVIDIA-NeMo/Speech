@@ -5368,7 +5368,7 @@ jobs:
         run: |
           # Slack notifications are send only on test failure (not cancelled):
           FAILED=${{ contains(needs.*.outputs.conclusion, 'failure') }}
-          echo "FAILED=$FAILED" 
+          echo "FAILED=$FAILED" >> $GITHUB_OUTPUT
           
           # Mark as successful if no job was cancelled:
           SUCCESS=${{ !contains(needs.*.outputs.conclusion, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}

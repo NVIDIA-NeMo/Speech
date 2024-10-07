@@ -24,7 +24,6 @@ from pathlib import Path
 import pytest
 import pytorch_lightning as pl
 import torch
-from megatron.core.num_microbatches_calculator import reconfigure_num_microbatches_calculator
 
 import nemo.lightning as nl
 from nemo.collections import llm
@@ -43,13 +42,9 @@ def _get_last_checkpoint_dir(model: pl.LightningModule, suffix: str = '') -> Pat
     return f'epoch={model.trainer.current_epoch - 1}-step={model.trainer.max_steps - 1}{suffix}'
 
 
-def get_model_and_data():
-    micro_batch_size = 2
-    global_batch_size = 2
+def get_model_and_data(mbs=2, gbs=2):
     seq_length = 128
-    data = llm.MockDataModule(
-        seq_length=seq_length, micro_batch_size=micro_batch_size, global_batch_size=global_batch_size
-    )
+    data = llm.MockDataModule(seq_length=seq_length, micro_batch_size=mbs, global_batch_size=gbs)
 
     config = llm.GPTConfig(
         num_layers=2,
@@ -58,13 +53,6 @@ def get_model_and_data():
         num_attention_heads=4,
         seq_length=seq_length,
         apply_query_key_layer_scaling=1,
-    )
-    reconfigure_num_microbatches_calculator(
-        0,
-        None,
-        global_batch_size,
-        micro_batch_size,
-        data_parallel_size=1,
     )
     return llm.GPTModel(config, tokenizer=data.tokenizer), data
 
@@ -76,21 +64,25 @@ class TestDistCkptIO:
 
         set_env()
         assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
-        model, data = get_model_and_data()
+        gbs, mbs = 2, 2
+        model, data = get_model_and_data(mbs, gbs)
+        from tests.lightning.mcore_microbatch_utils import reconfigure_num_microbatches_calculator_manager
 
-        strategy = _get_strategy()
+        with reconfigure_num_microbatches_calculator_manager(0, None, gbs, mbs, data_parallel_size=1):
 
-        trainer = nl.Trainer(
-            devices=1,
-            accelerator="gpu",
-            strategy=strategy,
-            enable_checkpointing=True,
-            max_steps=2,
-            default_root_dir=str(tmp_path),
-            logger=False,
-        )
+            strategy = _get_strategy()
 
-        trainer.fit(model, data)
+            trainer = nl.Trainer(
+                devices=1,
+                accelerator="gpu",
+                strategy=strategy,
+                enable_checkpointing=True,
+                max_steps=2,
+                default_root_dir=str(tmp_path),
+                logger=False,
+            )
+
+            trainer.fit(model, data)
 
         assert isinstance(trainer.strategy.checkpoint_io, MegatronCheckpointIO)
         # Ckpt path doesn't contain the .ckpt suffix
@@ -104,51 +96,54 @@ class TestDistCkptIO:
     def test_async_save_produces_same_checkpoints_as_sync(self, tmp_path):
         set_env()
         assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
-        model, data = get_model_and_data()
+        gbs, mbs = 2, 2
+        model, data = get_model_and_data(mbs, gbs)
+        from tests.lightning.mcore_microbatch_utils import reconfigure_num_microbatches_calculator_manager
 
-        sync_ckpt_dir = tmp_path / 'sync_checkpoints'
-        async_ckpt_dir = tmp_path / 'async_checkpoints'
+        with reconfigure_num_microbatches_calculator_manager(0, None, gbs, mbs, data_parallel_size=1):
 
-        sync_checkpoint_io = MegatronCheckpointIO('torch_dist')
-        async_checkpoint_io = AsyncFinalizableCheckpointIO(MegatronCheckpointIO('torch_dist', async_save=True))
+            sync_ckpt_dir = tmp_path / 'sync_checkpoints'
+            async_ckpt_dir = tmp_path / 'async_checkpoints'
 
-        # dummy_trainer just to initialize NCCL
-        dummy_trainer = pl.Trainer(
-            devices=1,
-            logger=False,
-            max_steps=2,
-            strategy=_get_strategy(),
-        )
-        dummy_trainer.fit(model, data)
-        strategy = _get_strategy()
-        tmp_path = strategy.broadcast(tmp_path)
+            sync_checkpoint_io = MegatronCheckpointIO('torch_dist')
+            async_checkpoint_io = AsyncFinalizableCheckpointIO(MegatronCheckpointIO('torch_dist', async_save=True))
 
-        ## reset the model and data and train with sync checkpointing
-        model, data = get_model_and_data()
-        sync_test_trainer = pl.Trainer(
-            devices=1,
-            enable_checkpointing=True,
-            logger=False,
-            max_steps=2,
-            strategy=_get_strategy(),
-            plugins=[sync_checkpoint_io],
-            default_root_dir=str(sync_ckpt_dir),
-        )
-        sync_test_trainer.fit(model, data)
+            # dummy_trainer just to initialize NCCL
+            dummy_trainer = pl.Trainer(
+                devices=1,
+                logger=False,
+                max_steps=2,
+                strategy=_get_strategy(),
+            )
+            dummy_trainer.fit(model, data)
+            strategy = _get_strategy()
 
-        ## reset the model and data and train with sync checkpointing
-        model, data = get_model_and_data()
-        async_test_trainer = pl.Trainer(
-            devices=1,
-            enable_checkpointing=True,
-            logger=False,
-            max_steps=2,
-            strategy=_get_strategy(),
-            plugins=[async_checkpoint_io],
-            callbacks=AsyncFinalizerCallback(),
-            default_root_dir=str(async_ckpt_dir),
-        )
-        async_test_trainer.fit(model, data)
+            ## reset the model and data and train with sync checkpointing
+            model, data = get_model_and_data(mbs, gbs)
+            sync_test_trainer = pl.Trainer(
+                devices=1,
+                enable_checkpointing=True,
+                logger=False,
+                max_steps=2,
+                strategy=_get_strategy(),
+                plugins=[sync_checkpoint_io],
+                default_root_dir=str(sync_ckpt_dir),
+            )
+            sync_test_trainer.fit(model, data)
+
+            ## reset the model and data and train with sync checkpointing
+            model, data = get_model_and_data(mbs, gbs)
+            async_test_trainer = pl.Trainer(
+                devices=1,
+                enable_checkpointing=True,
+                logger=False,
+                max_steps=2,
+                strategy=_get_strategy(),
+                plugins=[async_checkpoint_io],
+                callbacks=AsyncFinalizerCallback(),
+                default_root_dir=str(async_ckpt_dir),
+            )
+            async_test_trainer.fit(model, data)
 
         checkpoint = {'sharded_state_dict': model.sharded_state_dict()}
 

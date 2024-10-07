@@ -27,7 +27,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from megatron.core.num_microbatches_calculator import reconfigure_num_microbatches_calculator
 from megatron.core.optimizer import OptimizerConfig
 
 import nemo.lightning as nl
@@ -90,7 +89,7 @@ def compare_ckpts(a, b, path=[]):
         raise ValueError("Unexpected value type " + str(type(a)))
 
 
-def setup_data_model_optim(log_dir, n_steps, data_path, gbs=2, mbs=1):
+def setup_data(log_dir, n_steps, data_path, gbs=2, mbs=1):
     seq_length = 2048
     tokenizer = get_nmt_tokenizer(
         "megatron",
@@ -108,14 +107,11 @@ def setup_data_model_optim(log_dir, n_steps, data_path, gbs=2, mbs=1):
         tokenizer=tokenizer,
         split='9999,1,1',
     )
-    # Other tests might have different configs, so need to configure explicitly.
-    reconfigure_num_microbatches_calculator(
-        0,
-        None,
-        gbs,
-        mbs,
-        data_parallel_size=1,
-    )
+    return data
+
+
+def setup_model_optim(log_dir, n_steps, tokenizer, gbs=2, mbs=1):
+    seq_length = 2048
     gpt_config = llm.GPTConfig(
         num_layers=2,
         hidden_size=128,
@@ -131,7 +127,7 @@ def setup_data_model_optim(log_dir, n_steps, data_path, gbs=2, mbs=1):
         masked_softmax_fusion=False,
     )
 
-    model = llm.GPTModel(gpt_config, tokenizer=data.tokenizer)
+    model = llm.GPTModel(gpt_config, tokenizer=tokenizer)
 
     opt_config = OptimizerConfig(
         optimizer='adam',
@@ -148,7 +144,7 @@ def setup_data_model_optim(log_dir, n_steps, data_path, gbs=2, mbs=1):
     )
     optim = MegatronOptimizerModule(config=opt_config)
 
-    return gpt_config, data, model, optim
+    return gpt_config, model, optim
 
 
 def setup_trainer_and_logger(log_dir):
@@ -248,18 +244,29 @@ class TestCkptStateRestoration:
             log_dir = f'/tmp/mcore_logs_{n_steps}steps'
             os.makedirs(log_dir, exist_ok=True)
             data_path = [DATA_PATH]
-            gpt_config, data, model, optim = setup_data_model_optim(log_dir, n_steps, data_path)
-            trainer, nemo_logger = setup_trainer_and_logger(log_dir)
-            llm.train(
-                model=model,
-                data=data,
-                trainer=trainer,
-                log=nemo_logger,
-                resume=resume,
-                tokenizer='data',
-                optim=optim,
-            )
-            trainer._teardown()
+            data = setup_data(log_dir, n_steps, data_path, gbs=2, mbs=1)
+            # Other tests might have different configs, so need to configure explicitly.
+            from tests.lightning.mcore_microbatch_utils import reconfigure_num_microbatches_calculator_manager
+
+            with reconfigure_num_microbatches_calculator_manager(
+                0,
+                None,
+                2,  # gbs
+                1,  # mbs
+                data_parallel_size=1,
+            ):
+                gpt_config, model, optim = setup_model_optim(log_dir, n_steps, data.tokenizer)
+                trainer, nemo_logger = setup_trainer_and_logger(log_dir)
+                llm.train(
+                    model=model,
+                    data=data,
+                    trainer=trainer,
+                    log=nemo_logger,
+                    resume=resume,
+                    tokenizer='data',
+                    optim=optim,
+                )
+                trainer._teardown()
 
         set_env()
         assert os.environ['NVTE_FLASH_ATTN'] == '0'

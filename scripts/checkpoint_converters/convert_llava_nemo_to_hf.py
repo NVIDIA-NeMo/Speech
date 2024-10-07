@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-   python3 /opt/NeMo/scripts/nlp_language_modeling/convert_gemma_hf_to_nemo.py \
+   python3 /opt/NeMo/scripts/checkpoint_converters/convert_llava_nemo_to_hf.py \
    --input_name_or_path /path/to/llava-v1.5-7b.nemo \
    --hf_input_path llava-hf/llava-1.5-7b-hf \
    --hf_output_path=/path/to/hf_updated_checkpoint
@@ -261,6 +261,12 @@ def get_args():
         default=None,
         help="Output HF model path, " "with the same format as above but user's own weights",
     )
+    parser.add_argument(
+        "--cpu_only",
+        action="store_true",
+        help="Load model in cpu only. Useful if the model cannot fit in GPU memory, "
+        "but this option makes the conversion script significantly slower.",
+    )
     parser.add_argument("--skip_verification", action="store_true")
 
     args = parser.parse_args()
@@ -277,9 +283,23 @@ def convert(args):
         os.path.join(os.path.dirname(__file__), '../../examples/multimodal/multimodal_llm/neva/conf/llava_config.yaml')
     )
     trainer = MegatronTrainerBuilder(nemo_config).create_trainer()
+    model_config = MegatronNevaModel.restore_from(
+        restore_path=args.input_name_or_path, trainer=trainer, return_config=True
+    )
+    model_config.tensor_model_parallel_size = 1
+    model_config.pipeline_model_parallel_size = 1
+    if args.cpu_only:
+        logging.info("******** Loading model on CPU. This will take a significant amount of time.")
+        map_location = torch.device('cpu')
+        model_config.use_cpu_initialization = True
+    else:
+        map_location = None
+
     model = MegatronNevaModel.restore_from(
         restore_path=args.input_name_or_path,
         trainer=trainer,
+        override_config_path=model_config,
+        map_location=map_location,
         save_restore_connector=NLPSaveRestoreConnector(),
     )
 

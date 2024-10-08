@@ -242,7 +242,7 @@ class StateDictTransform(Generic[F]):
 
             if isinstance(target_key, str):
                 target_matches = _match_keys(target_keys, target_key)
-                if target_matches.size < 1:
+                if target_matches.size == 1 and target_matches == np.array(None):
                     raise ValueError(f"No matches found for target key: {target_key}")
             else:
                 if isinstance(target_key, dict):

@@ -32,17 +32,11 @@ EOF
 
 WORKDIR /workspace
 
-# Install Mamba
-ARG MAMBA_TAG=v2.0.3
+# Install Mamba Dependancy
 ARG CAUSAL_CONV_TAG=v1.2.2.post1
 
 RUN <<"EOF" bash -ex
 # Mamba dependancy installation
-git clone --depth 1 --branch ${MAMBA_TAG} https://github.com/state-spaces/mamba.git && \
-  cd mamba && \
-  python setup.py install && \
-  cd .. && \
-  rm -rf mamba
 
 git clone --depth 1 --branch ${CAUSAL_CONV_TAG} https://github.com/Dao-AILab/causal-conv1d && \
   cd causal-conv1d && \

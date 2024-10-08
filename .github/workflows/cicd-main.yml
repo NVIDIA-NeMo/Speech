@@ -5151,10 +5151,10 @@ jobs:
         rm -rf tests/collections/llm/gpt_index_mappings
       IS_OPTIONAL: true
       
-  OPTIONAL_L2_NeMo_2_SSM_Pretraining:
+  L2_NeMo_2_SSM_Pretraining:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_SSM_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_SSM_Pretraining') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -5164,12 +5164,11 @@ jobs:
         --max-steps 10 \
         --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_pretrain/${{ github.run_id }} \
         --data-path /home/TestData/nlp/megatron_mamba/toy_ssm_dataset/legal_pile_text_document
-      IS_OPTIONAL: true
 
-  OPTIONAL_L2_NeMo_2_SSM_Finetuning:
+  L2_NeMo_2_SSM_Finetuning:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_SSM_Finetuning') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_SSM_Finetuning') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -5179,7 +5178,6 @@ jobs:
         --max-steps 10 \
         --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_sft/${{ github.run_id }} \
         --model-path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt
-      IS_OPTIONAL: true
 
   L2_NeMo_2_HF_MODEL_IMPORT:
     needs: [cicd-test-container-setup]
@@ -5364,8 +5362,8 @@ jobs:
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
       #- OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
-      #- OPTIONAL_L2_NeMo_2_SSM_Pretraining
-      #- OPTIONAL_L2_NeMo_2_SSM_Finetuning
+      - L2_NeMo_2_SSM_Pretraining
+      - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_Mixtral_Pretraining
       - L2_PTQ_Llama2_INT8_SQ

@@ -472,7 +472,10 @@ class NLPAdapterModelMixin:
                 use_mcore = (getattr(self, 'mcore_gpt', False)) or (getattr(self, 'mcore_t5', False))
                 if use_mcore:
                     for index, module in enumerate(self.get_model_module_list()):
-                        if parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None:
+                        if (
+                            parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None
+                            and f'model_{index}' in checkpoint['state_dict']
+                        ):
                             checkpoint_state_dict = checkpoint['state_dict'][f'model_{index}']
                         else:
                             checkpoint_state_dict = checkpoint['state_dict']

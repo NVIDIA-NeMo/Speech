@@ -85,7 +85,8 @@ class FLOPsMeasurementCallback(Callback):
             logging.error(f"Failed to calculate TFLOPs per sec per GPU.\n{exc}")
 
         logging.info(f"TFLOPs per sec per GPU={tflops_per_sec_per_gpu:.2f}")
-        pl_module.logger.experiment.add_scalar("tflops_per_sec_per_gpu", tflops_per_sec_per_gpu)
+        if pl_module.logger:
+            pl_module.logger.experiment.add_scalar("tflops_per_sec_per_gpu", tflops_per_sec_per_gpu)
 
     def eval_tflops_per_sec_per_gpu(self, train_step_time: List | float | int) -> float:
         """

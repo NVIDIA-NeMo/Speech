@@ -59,7 +59,7 @@ class TestMixtral8x22B:
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == MockDataModule
-        assert recipe.data.seq_length == 8192
+        assert recipe.data.seq_length == 4096
         assert recipe.data.global_batch_size == 512
         assert recipe.data.micro_batch_size == 1
 

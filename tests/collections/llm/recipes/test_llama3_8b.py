@@ -56,13 +56,6 @@ class TestLlama3_8B:
         assert isinstance(trainer_config.plugins, run.Config)
         assert trainer_config.plugins.__fn_or_cls__.__name__ == "MegatronMixedPrecision"
 
-    def test_hf_resume(self, recipe_module):
-        resume_config = recipe_module.hf_resume()
-        assert isinstance(resume_config, run.Config)
-        assert resume_config.__fn_or_cls__ == AutoResume
-        assert isinstance(resume_config.restore_config, run.Config)
-        assert resume_config.restore_config.path == "hf://meta-llama/Meta-Llama-3-8B"
-
     def test_pretrain_recipe(self, recipe_module):
         recipe = recipe_module.pretrain_recipe()
         assert isinstance(recipe, run.Partial)
@@ -86,8 +79,8 @@ class TestLlama3_8B:
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == SquadDataModule
-        assert recipe.data.seq_length == 8192
-        assert recipe.data.global_batch_size == 512
+        assert recipe.data.seq_length == 2048
+        assert recipe.data.global_batch_size == 128
         assert isinstance(recipe.peft, run.Config)
         assert recipe.peft.__fn_or_cls__ == LoRA
 

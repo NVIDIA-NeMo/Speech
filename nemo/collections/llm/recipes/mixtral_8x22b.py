@@ -27,6 +27,7 @@ from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.mixtral import MixtralConfig8x22B, MixtralModel
 from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
@@ -224,47 +225,27 @@ def pretrain_recipe_performance(
     return recipe
 
 
-def hf_resume() -> run.Config[nl.AutoResume]:
-    """
-    Configure automatic resumption from a Hugging Face checkpoint for Mixtral 8x22B model.
-
-    This function sets up the configuration to resume training from a pre-trained
-    Hugging Face model checkpoint.
-
-    More info about the model can be found at: https://huggingface.co/mistralai/Mixtral-8x22B-v0.1
-
-    Returns:
-        run.Config[nl.AutoResume]: Configuration for resuming from HuggingFace checkpoint.
-
-    Note:
-        This is particularly useful for fine-tuning scenarios where you want to
-        start from the pre-trained Mixtral 8x22B model.
-    """
-    return run.Config(
-        nl.AutoResume,
-        restore_config=run.Config(nl.RestoreConfig, path="hf://mistralai/Mixtral-8x22B-v0.1"),
-    )
-
-
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
     dir: Optional[str] = None,
     name: str = "default",
     num_nodes: int = 8,
     num_gpus_per_node: int = 8,
+    peft_scheme: Optional[str] = 'lora',
 ) -> run.Partial:
     """
     Create a fine-tuning recipe for Mixtral 8x22B model.
 
     This function sets up a complete configuration for fine-tuning, including
     model, trainer, data, logging, optimization, and resumption settings.
-    It uses LoRA (Low-Rank Adaptation) for efficient fine-tuning.
+    The recipe uses LoRA (Low-Rank Adaptation) for efficient fine-tuning, unless peft_scheme is set to None.
 
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
 
     Returns:
         run.Partial: Partial configuration for fine-tuning.
@@ -281,8 +262,18 @@ def finetune_recipe(
     Note:
         This recipe uses the SQuAD dataset for fine-tuning.
     """
-    recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=finetune)
-    recipe.resume = hf_resume()
-    recipe.peft = run.Config(LoRA, target_modules=['linear_qkv', 'linear_proj'], dim=32)
-    recipe.data = run.Config(SquadDataModule, seq_length=8192, global_batch_size=512, micro_batch_size=1)
+    recipe = default_finetune_recipe(
+        model(), "mistralai/Mixtral-8x22B-v0.1mistralai/Mixtral-8x22B-v0.1", dir, name, num_nodes, num_gpus_per_node
+    )
+    recipe.trainer.strategy.expert_model_parallel_size = 8
+    recipe.trainer.strategy.tensor_model_parallel_size = 8
+    if peft_scheme is None or peft_scheme.lower() == 'none':
+        recipe.trainer.strategy.pipeline_model_parallel_size = 4
+        recipe.trainer.strategy.virtual_pipeline_model_parallel_size = 14
+        recipe.optim.config.lr = 5e-6
+    elif peft_scheme.lower() == 'lora':
+        recipe.peft = run.Config(LoRA, target_modules=['linear_qkv', 'linear_proj'], dim=32)
+        recipe.optim.config.lr = 1e-4
+    else:
+        raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
     return recipe

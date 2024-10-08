@@ -22,6 +22,7 @@ import lightning_fabric as fl
 import pytorch_lightning as pl
 
 from nemo.lightning import io
+from nemo.lightning.base import NEMO_MODELS_CACHE
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
@@ -101,7 +102,7 @@ class AutoResume:
                 model = _try_restore_tokenizer(model, context_path)
 
         elif self.restore_config:
-            new_path = self._try_import_model(
+            new_path = self._extract_path(
                 model=model,
                 path=self.restore_config.path,
                 adapter_path=self.restore_config.adapter_path,
@@ -112,17 +113,22 @@ class AutoResume:
             else:
                 self.restore_config.path = str(new_path)
             trainer.strategy.restore_config = self.restore_config
+            # Load artifacts
+            if self.restore_config.load_artifacts:
+                context_path = new_path / "context"
+                if not context_path.is_dir():
+                    context_path = new_path
 
-    def _try_import_model(
+                _try_restore_tokenizer(model, context_path)
+
+    def _extract_path(
         self, model: Optional[io.ConnectorMixin], path: str, adapter_path: Optional[str] = None
     ) -> BasePath:
-
-        if model is None:
-            raise ValueError("Model is needed to import checkpoint from HF or other non-NeMo checkpoint format.")
-        try:
-            new_path = model.import_ckpt(path)
-        except (ValueError, AttributeError):
-            # This is reached when the model connector does not exist for the particular path.
+        if "://" in path:
+            assert path.startswith("nemo://"), "Only NeMo based paths starting with nemo:// are currently supported."
+            _, _path = path.split("://")
+            new_path = os.path.join(NEMO_MODELS_CACHE, _path)
+        else:
             new_path = path
 
         if adapter_path:
@@ -146,7 +152,7 @@ class AutoResume:
         assert (
             "://" in self.restore_config.path
         ), "For now PEFT resume requires specifying the import path instead of local path"
-        base_model_path = self._try_import_model(model, self.restore_config.path)
+        base_model_path = self._extract_path(model, self.restore_config.path)
         if base_model_path != Path(metadata['model_ckpt_path']):
             raise ValueError(
                 f"When trying to resume a PEFT training run, found mismatching values: "

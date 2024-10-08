@@ -49,13 +49,6 @@ class TestNemotron4_340B:
         assert recipe.trainer.num_nodes == num_nodes
         assert recipe.trainer.devices == num_gpus_per_node
 
-    def test_hf_resume(self, recipe_module):
-        resume_config = recipe_module.hf_resume()
-        assert isinstance(resume_config, run.Config)
-        assert resume_config.__fn_or_cls__ == AutoResume
-        assert isinstance(resume_config.restore_config, run.Config)
-        assert resume_config.restore_config.path == "hf://nvidia/Nemotron-4-340B-Base"
-
     def test_finetune_recipe(self, recipe_module):
         recipe = recipe_module.finetune_recipe()
         assert isinstance(recipe, run.Partial)

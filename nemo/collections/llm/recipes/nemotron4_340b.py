@@ -174,25 +174,28 @@ def pretrain_recipe(
     )
 
 
-@run.cli.factory(name=NAME + "_hf")
-def hf_resume() -> run.Config[nl.AutoResume]:
+@run.cli.factory(name=NAME + "_nemo")
+def nemo_resume() -> run.Config[nl.AutoResume]:
     """
-    Configure automatic resumption from a Hugging Face checkpoint for Nemotron4 340B model.
+    Configure automatic resumption from a NeMo checkpoint converted from Huggingface for Nemotron4 340B model.
 
-    This function sets up the configuration to resume training from a pre-trained
-    Hugging Face model checkpoint.
+    More info about the Huggingface model can be found at: https://huggingface.co/nvidia/Nemotron-4-340B-Base.
 
-    More info about the model can be found at: https://huggingface.co/nvidia/Nemotron-4-340B-Base
+    This NeMo checkpoint should be converted from Huggingface beforehand, using nemo.collections.llm.import_ckpt.
+    When converting the checkpoint, the NeMo checkpoint will be saved in NEMO_HOME (set to ~/.cache/nemo by default).
+
+    This function sets up the configuration to resume training from path nemo://nvidia/Nemotron-4-340B-Base.
+    This translates to the full path {NEMO_HOME}/models/nvidia/Nemotron-4-340B-Base.
 
     Returns:
-        run.Config[nl.AutoResume]: Configuration for resuming from HuggingFace checkpoint.
+        run.Config[nl.AutoResume]: Configuration for resuming from NeMo checkpoint.
 
     Note:
         This is particularly useful for fine-tuning scenarios where you want to
         start from the pre-trained Nemotron4 340B model.
     """
     return run.Config(
-        nl.AutoResume, restore_config=run.Config(nl.RestoreConfig, path="hf://nvidia/Nemotron-4-340B-Base")
+        nl.AutoResume, restore_config=run.Config(nl.RestoreConfig, path="nemo://nvidia/Nemotron-4-340B-Base")
     )
 
 
@@ -308,7 +311,7 @@ def finetune_recipe(
         max_lr=max_lr,
         fn=fn,
     )
-    recipe.resume = hf_resume()
+    recipe.resume = nemo_resume()
     recipe.peft = run.Config(LoRA)
     recipe.data = run.Config(
         SquadDataModule, seq_length=seq_length, global_batch_size=global_batch_size, micro_batch_size=micro_batch_size

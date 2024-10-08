@@ -7,14 +7,23 @@ WEIGHTS_PATH: str = "weights"
 CONTEXT_PATH: str = "context"
 
 
+def idempotent_path_append(base_dir: Union[str, Path], suffix) -> Path:
+    assert isinstance(base_dir, Path)
+    if base_dir.parts[-1] != suffix:
+        base_dir = base_dir / suffix
+    return base_dir
+
+
 def ckpt_to_weights_subdir(filepath: Union[str, Path]) -> Path:
     """Given an input checkpoint filepath, clean it using `ckpt_to_dir` and then return the weights subdirectory."""
-    return ckpt_to_dir(filepath=filepath) / WEIGHTS_PATH
+    base_dir = ckpt_to_dir(filepath=filepath)
+    return idempotent_path_append(base_dir, WEIGHTS_PATH)
 
 
 def ckpt_to_context_subdir(filepath: Union[str, Path]) -> Path:
     """Given an input checkpoint filepath, clean it using `ckpt_to_dir` and then return the context subdirectory."""
-    return ckpt_to_dir(filepath=filepath) / CONTEXT_PATH
+    base_dir = ckpt_to_dir(filepath=filepath)
+    return idempotent_path_append(base_dir, CONTEXT_PATH)
 
 
 def ckpt_to_dir(filepath: Union[str, Path]) -> Path:

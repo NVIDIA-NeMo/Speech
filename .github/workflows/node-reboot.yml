@@ -1,124 +1,52 @@
-# Regularly updates the CI container
-name: Reboots VMs in a controlled way
-on:
-  schedule:
-    - cron: 0 0 * * *
-  workflow_dispatch:
+# # Regularly updates the CI container
+# name: Reboots VMs in a controlled way
+# on:
+#   schedule:
+#     - cron: 0 0,4,8,12,16,20 * * *
+#   workflow_dispatch:
   
-jobs:
-  main:
-    runs-on: ${{ matrix.vm }}
-    environment: main
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - vm: azure-gpu-vm-runner1
-          - vm: azure-gpu-vm-runner-1gpu-a
-          - vm: azure-gpu-vm-runner-1gpu-c
-          - vm: azure-gpu-vm-runner1-h100
-          - vm: azure-gpu-vm-runner2
-          - vm: azure-gpu-vm-runner6
-          - vm: azure-gpu-vm-runner7
-          - vm: azure-gpu-vm-runner8
-          - vm: azure-gpu-vm-runner9
-    steps:
-      - name: Reboot
-        run: |
-          echo ${{ secrets.VM_KEY }} | sudo -S reboot -h now || true
+# jobs:
+#   pre-flight:
+#     runs-on: ubuntu-latest
+#     outputs:
+#       list-of-vms: ${{ steps.main.outputs.main }}
+#     environment: main
+#     steps:
+#       - name: Get list of VMs
+#         id: main
+#         env:
+#           GITHUB_TOKEN: ${{ secrets.PAT }}
+#         run: |
+#           RUNNERS=$(curl -L \
+#             -H "Accept: application/vnd.github+json" \
+#             -H "Authorization: Bearer $GITHUB_TOKEN" \
+#             -H "X-GitHub-Api-Version: 2022-11-28" \
+#             https://api.github.com/repos/NVIDIA/NeMo/actions/runners)
 
-  test:
-    needs: main
-    runs-on: ${{ matrix.vm }}
-    environment: main
-    if: always()
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - vm: azure-gpu-vm-runner1
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner-1gpu-a
-            n_gpus: 1
-          - vm: azure-gpu-vm-runner-1gpu-c
-            n_gpus: 1
-          - vm: azure-gpu-vm-runner1-h100
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner2
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner6
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner7
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner8
-            n_gpus: 2
-          - vm: azure-gpu-vm-runner9
-            n_gpus: 2
-    steps:
-      - name: Check nvidia-smi
-        run: nvidia-smi
+#           MATRIX=$(echo $RUNNERS \
+#             | jq -c '[
+#                 .runners[] 
+#                 | select(.status == "online")
+#                 | {
+#                   "vm": .name, 
+#                   "n_gpus": [
+#                     .labels[] 
+#                     | select(.name | endswith("gpu")) | .name
+#                   ][0][:1]
+#                 }
+#               ]
+#             '
+#           )
+#           echo main=$MATRIX | tee -a "$GITHUB_OUTPUT"
 
-      - name: Re-install docker interface
-        run: |
-          echo ${{ secrets.VM_KEY }} | sudo -S bash -c "
-            sudo apt-get remove -y nvidia-docker2 nvidia-container-toolkit docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; 
-
-            # Add Docker's official GPG key:
-            apt-get update
-            apt-get install ca-certificates curl
-            install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-            chmod a+r /etc/apt/keyrings/docker.asc
-
-            # Add the repository to Apt sources:
-            echo \
-              \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-              $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable\" | \
-              tee /etc/apt/sources.list.d/docker.list > /dev/null
-            apt-get update
-
-            apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-            curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg -f --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 
-            curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-              sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-              tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-            apt-get update
-            apt-get install -y nvidia-container-toolkit
-            
-            nvidia-ctk runtime configure --runtime=docker
-            systemctl restart docker
-            
-            apt-get install -y nvidia-docker2
-            systemctl restart docker
-          "
-
-      - name: Check nvidia-smi
-        run: |
-          docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
-
-          NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-
-          if [[ $NUM_GPUS -ne ${{ matrix.n_gpus }} ]]; then
-            exit 1
-          fi
-      
-      - name: Shut runner down on failure
-        if: failure()
-        run: |
-          cd /home/azureuser/actions-runner
-          echo ${{ secrets.VM_KEY }} | sudo -S ./svc.sh stop
-
-          MESSAGE='{
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": ":alert: VM bot 🤖: Hey <@${{ secrets.SLACK_WEBHOOK_ADMIN }}>: Some VMs are having not the best day of their life, maybe bring them an apple or so."
-                }
-              }
-            ]
-          }'
-
-          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_WEBHOOK }}
+#   maintenance:
+#     needs: pre-flight
+#     strategy:
+#       fail-fast: false
+#       matrix:
+#         include: ${{ fromJSON(needs.pre-flight.outputs.list-of-vms )}}
+#     uses: ./.github/workflows/node-reboot-single-vm.yml
+#     with:
+#       vm: ${{ matrix.vm }}
+#       n_gpus: ${{ matrix.n_gpus }}
+#     secrets: inherit

@@ -1,0 +1,203 @@
+# This config contains the default values for training 22.05kHz Low-frame rate Speech Codec model.
+# If you want to train model on other dataset, you can change config values according to your dataset.
+# Most dataset-specific arguments are in the head of the config file, see below.
+
+name: AudioCodec
+
+max_epochs: ???
+# Adjust batch size based on GPU memory
+batch_size: 16
+# When doing weighted sampling with multiple manifests, this defines how many training steps are in an epoch.
+# If null, then weighted sampling is disabled.
+weighted_sampling_steps_per_epoch: null
+
+# Dataset metadata for each manifest
+# https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/tts/data/vocoder_dataset.py#L39-L41
+train_ds_meta: ???
+val_ds_meta: ???
+
+log_ds_meta: ???
+log_dir: ???
+
+# Modify these values based on your sample rate
+sample_rate: 22050
+samples_per_frame: 1024
+train_n_samples: 24576 # ~1.11 seconds
+# The product of the down_sample_rates and up_sample_rates should match the samples_per_frame.
+# For example 8 * 8 * 4 * 2 * 2 = 1024.
+up_sample_rates: [8, 8, 4, 2, 2]
+down_sample_rates: [2, 2, 4, 8, 8]
+
+num_codebooks: 8
+encoder_out_dim: 32
+
+model:
+
+  max_epochs: ${max_epochs}
+  steps_per_epoch: ${weighted_sampling_steps_per_epoch}
+
+  sample_rate: ${sample_rate}
+  samples_per_frame: ${samples_per_frame}
+
+  mel_loss_l1_scale: 1.0
+  mel_loss_l2_scale: 0.0
+  stft_loss_scale: 20.0
+  time_domain_loss_scale: 0.0
+  codebook_loss_scale: 0.0
+  commit_loss_scale: 0.0
+
+  # Probability of updating the discriminator during each training step
+  # For example, update the discriminator 1/2 times (1 update for every 2 batches)
+  disc_updates_per_period: 1
+  disc_update_period: 2
+
+  # All resolutions for mel reconstruction loss, ordered [num_fft, hop_length, window_length]
+  loss_resolutions: [
+    [32, 8, 32], [64, 16, 64], [128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]
+  ]
+  mel_loss_dims: [5, 10, 20, 40, 80, 160, 320]
+  mel_loss_log_guard: 1.0
+  stft_loss_log_guard: 1.0
+  feature_loss_type: absolute
+
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      dataset_meta: ${train_ds_meta}
+      weighted_sampling_steps_per_epoch: ${weighted_sampling_steps_per_epoch}
+      sample_rate: ${sample_rate}
+      n_samples: ${train_n_samples}
+      min_duration: 0.4 # seconds
+      max_duration: null
+
+    dataloader_params:
+      batch_size: ${batch_size}
+      drop_last: true
+      num_workers: 4
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      sample_rate: ${sample_rate}
+      n_samples: null
+      min_duration: null
+      max_duration: null
+      trunc_duration: 10.0 # Only use the first 10 seconds of audio for computing validation loss
+      dataset_meta: ${val_ds_meta}
+
+    dataloader_params:
+      batch_size: 4
+      num_workers: 2
+
+  # Configures how audio samples are generated and saved during training.
+  # Remove this section to disable logging.
+  log_config:
+    log_dir: ${log_dir}
+    log_epochs: [1, 5, 7]
+    epoch_frequency: 4
+    log_tensorboard: false
+    log_wandb: false
+
+    generators:
+      - _target_: nemo.collections.tts.parts.utils.callbacks.AudioCodecArtifactGenerator
+        log_audio: true
+        log_encoding: false
+        log_dequantized: false
+
+    dataset:
+      _target_: nemo.collections.tts.data.vocoder_dataset.VocoderDataset
+      sample_rate: ${sample_rate}
+      n_samples: null
+      min_duration: null
+      max_duration: null
+      trunc_duration: 10.0 # Only log the first 10 seconds of generated audio.
+      dataset_meta: ${log_ds_meta}
+
+    dataloader_params:
+      batch_size: 4
+      num_workers: 2
+
+  audio_encoder:
+    _target_: nemo.collections.tts.modules.audio_codec_modules.HiFiGANEncoder
+    down_sample_rates: ${down_sample_rates}
+    encoded_dim: ${encoder_out_dim}
+    base_channels: 48
+    activation: "lrelu"
+    resblock_dilation_sizes: [1,]
+
+  audio_decoder:
+    _target_: nemo.collections.tts.modules.audio_codec_modules.HiFiGANDecoder
+    up_sample_rates: ${up_sample_rates}
+    input_dim: ${encoder_out_dim}
+    base_channels: 1024
+    activation: "lrelu"
+    output_activation: "tanh"
+
+  vector_quantizer:
+    _target_: nemo.collections.tts.modules.audio_codec_modules.GroupFiniteScalarQuantizer
+    num_groups: ${num_codebooks}
+    num_levels_per_group: [8, 7, 6, 6] # 2k codes
+    # num_levels: [9, 8, 8, 7] # 4k  codes
+
+
+  discriminator:
+    _target_: nemo.collections.tts.modules.audio_codec_modules.Discriminator
+    discriminators:
+      - _target_: nemo.collections.tts.modules.encodec_modules.MultiResolutionDiscriminatorSTFT
+        resolutions: [[128, 32, 128], [256, 64, 256], [512, 128, 512], [1024, 256, 1024], [2048, 512, 2048]]
+      - _target_: nemo.collections.tts.modules.audio_codec_modules.MultiPeriodDiscriminator
+      - _target_: nemo.collections.tts.modules.audio_codec_modules.SLMDiscriminator
+        slm_model_name: "microsoft/wavlm-base-plus"
+        slm_sr: 16000
+        input_sr: ${sample_rate}
+        slm_hidden: 768
+        slm_layers: 13 
+        initial_channel: 64
+        use_spectral_norm: false
+
+  generator_loss:
+    _target_: nemo.collections.tts.losses.audio_codec_loss.GeneratorSquaredLoss
+
+  discriminator_loss:
+    _target_: nemo.collections.tts.losses.audio_codec_loss.DiscriminatorSquaredLoss
+
+  optim:
+    _target_: torch.optim.Adam
+    lr: 2e-4
+    betas: [0.8, 0.99]
+
+    sched:
+      name: ExponentialLR
+      gamma: 0.998
+
+trainer:
+  num_nodes: 1
+  devices: -1
+  accelerator: gpu
+  strategy: ddp_find_unused_parameters_true
+  precision: 32
+  max_epochs: ${max_epochs}
+  accumulate_grad_batches: 1
+  enable_checkpointing: False # Provided by exp_manager
+  logger: false # Provided by exp_manager
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 2
+  benchmark: false
+
+exp_manager:
+  exp_dir: null
+  name: ${name}
+  create_tensorboard_logger: true
+  create_checkpoint_callback: true
+  create_wandb_logger: false
+  wandb_logger_kwargs:
+    name: null
+    project: null
+  checkpoint_callback_params:
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_best_model: true
+    always_save_nemo: true
+  resume_if_exists: true
+  resume_ignore_no_checkpoint: true

@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from transformers import AutoModel
 
 from nemo.collections.asr.modules import AudioToMelSpectrogramPreprocessor
 from nemo.collections.common.parts.utils import ClampActivation, HalfSnake, Snake, mask_sequence_tensor
@@ -35,6 +36,13 @@ from nemo.core.neural_types.elements import (
 )
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging
+
+try:
+    import torchaudio
+
+    HAVE_TORCHAUDIO = True
+except ModuleNotFoundError:
+    HAVE_TORCHAUDIO = False
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -54,6 +62,109 @@ def get_up_sample_padding(kernel_size: int, stride: int) -> Tuple[int, int]:
     output_padding = (kernel_size - stride) % 2
     padding = (kernel_size - stride + 1) // 2
     return padding, output_padding
+
+
+class SSLModel(NeuralModule):
+    def __init__(self, slm_model_name):
+        super().__init__()
+        self.ssl_model = AutoModel.from_pretrained(slm_model_name)
+
+    def forward(self, *args, **kwargs):
+        return self.ssl_model(*args, **kwargs)
+
+
+class SLMDiscriminator(NeuralModule):
+    """SLM Discriminator, as described in both the StyleTTS2 and Low Frame-Rate Speech Codec papers.
+
+    Args:
+        slm_model_name: Hugging Face Speech Language Models name.
+        slm_sr: Speech Language Models input sampling rate.
+        input_sr: Audio input sampling rate.
+        slm_hidden: Speech Language Model hidden dim.
+        slm_layers: Speech Language Model number of layers.
+        initial_channel: discriminative head number of channels.
+        use_spectral_norm: If True uses spectral normalization otherwise uses weight norm.
+
+    """
+
+    def __init__(
+        self,
+        slm_model_name="microsoft/wavlm-base-plus",
+        slm_sr=16000,
+        input_sr=22050,
+        slm_hidden=768,
+        slm_layers=13,
+        initial_channel=64,
+        use_spectral_norm=False,
+    ):
+        super().__init__()
+
+        if not HAVE_TORCHAUDIO:
+            logging.error('Could not import torchaudio. SLMDiscriminator will not work.')
+
+            raise ModuleNotFoundError(
+                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
+            )
+
+        self.slm_model = SSLModel(slm_model_name)
+
+        # Freeze slm model
+        self.slm_model.freeze()
+
+        self.resample = torchaudio.transforms.Resample(input_sr, slm_sr)
+
+        norm_f = torch.nn.utils.weight_norm if use_spectral_norm == False else torch.nn.utils.spectral_norm
+        self.pre = norm_f(nn.Conv1d(slm_hidden * slm_layers, initial_channel, 1, 1, padding=0))
+
+        self.convs = nn.ModuleList(
+            [
+                norm_f(nn.Conv1d(initial_channel, initial_channel * 2, kernel_size=5, padding=2)),
+                norm_f(nn.Conv1d(initial_channel * 2, initial_channel * 4, kernel_size=5, padding=2)),
+                norm_f(nn.Conv1d(initial_channel * 4, initial_channel * 4, 5, 1, padding=2)),
+            ]
+        )
+
+        self.conv_post = norm_f(nn.Conv1d(initial_channel * 4, 1, 3, 1, padding=1))
+
+    def _forward(self, x):
+        x = self.slm_model(input_values=self.resample(x), output_hidden_states=True).hidden_states
+        x = torch.stack(x, dim=1).transpose(-1, -2).flatten(start_dim=1, end_dim=2)
+
+        x = self.pre(x)
+        fmap = []
+        for l in self.convs:
+            x = l(x)
+            x = F.leaky_relu(x, 0.1)
+            fmap.append(x.unsqueeze(-1))
+
+        x = self.conv_post(x)
+        x = torch.flatten(x, 1, -1)
+
+        return x, fmap
+
+    @property
+    def input_types(self):
+        return {
+            "audio_real": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_gen": NeuralType(('B', 'T_audio'), AudioSignal()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "scores_real": [NeuralType(('B', 'C', 'T_out'), VoidType())],
+            "scores_gen": [NeuralType(('B', 'C', 'T_out'), VoidType())],
+            "fmaps_real": [[NeuralType(('B', 'D', 'T_layer', 'C'), VoidType())]],
+            "fmaps_gen": [[NeuralType(('B', 'D', 'T_layer', 'C'), VoidType())]],
+        }
+
+    @typecheck()
+    def forward(self, audio_real, audio_gen):
+
+        y_d_r, fmap_r = self._forward(audio_real)
+        y_d_g, fmap_g = self._forward(audio_gen)
+
+        return [y_d_r.unsqueeze(1)], [y_d_g.unsqueeze(1)], [fmap_r], [fmap_g]
 
 
 class CodecActivation(nn.Module):

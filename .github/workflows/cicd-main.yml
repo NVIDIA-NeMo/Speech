@@ -5167,6 +5167,21 @@ jobs:
         rm -rf tests/collections/llm/t5_pretrain_results/${{ github.run_id }}
         rm -rf tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
+  L2_NeMo_2_T5_Finetuning:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_T5_Finetuning') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python tests/collections/llm/megatron_t5_finetuning.py \
+        --devices=2 \
+        --max-steps=250 \
+        --experiment-dir=tests/collections/llm/t5_finetune_results/${{ github.run_id }} \
+        --checkpoint-path=/home/TestData/nlp/megatron_t5/220m/nemo2.0_t5_220m_150steps
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
+
   L2_NeMo_2_Mixtral_Pretraining:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -5316,6 +5331,7 @@ jobs:
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining
+      - L2_NeMo_2_T5_Finetuning
       - L2_NeMo_2_Mixtral_Pretraining
       - L2_PTQ_Llama2_INT8_SQ
       - L2_PTQ_Llama2_FP8

@@ -62,7 +62,9 @@ class RequestDataSet(Dataset):
         super().__init__()
         self.sentences = sentences
 
-    def __len__(self,):
+    def __len__(
+        self,
+    ):
         return len(self.sentences)
 
     def __getitem__(self, idx):
@@ -131,9 +133,12 @@ def fix_for_O2(state_dict):
 
 
 def merge(
-    base_model_state_dict: Dict[str, Any], lora_state_dicts: List[Dict], num_layers: int, mcore: bool,
+    base_model_state_dict: Dict[str, Any],
+    lora_state_dicts: List[Dict],
+    num_layers: int,
+    mcore: bool,
 ):
-    """ 
+    """
     Iterate through all the feedforward weights in all the layers.
     Collect the corresponding lora weights for each layer and across tp ranks.
     Computes the "full rank" weight from the two low-rank weights and add it to the feedforward weight.
@@ -211,14 +216,16 @@ def main(cfg) -> None:
     # trainer required for restoring model parallel models
     trainer = Trainer(strategy=NLPDDPStrategy(), **cfg.trainer)
 
-    if cfg.tensor_model_parallel_size < 0 or cfg.pipeline_model_parallel_size < 0:
-        model_config = MegatronGPTModel.restore_from(
-            restore_path=cfg.gpt_model_file, trainer=trainer, return_config=True,
-        )
+    model_config = MegatronGPTModel.restore_from(
+        restore_path=cfg.gpt_model_file,
+        trainer=trainer,
+        return_config=True,
+    )
 
-        with open_dict(cfg):
-            cfg.tensor_model_parallel_size = model_config.get('tensor_model_parallel_size', 1)
-            cfg.pipeline_model_parallel_size = model_config.get('pipeline_model_parallel_size', 1)
+    with open_dict(cfg):
+        # load base model with TP1 PP1.
+        model_config.tensor_model_parallel_size = 1
+        model_config.pipeline_model_parallel_size = 1
 
     if cfg.gpt_model_file:
         save_restore_connector = NLPSaveRestoreConnector()
@@ -230,6 +237,7 @@ def main(cfg) -> None:
             trainer=trainer,
             return_config=True,
             save_restore_connector=save_restore_connector,
+            override_config_path=model_config,
         )
         OmegaConf.set_struct(pretrained_cfg, True)
         with open_dict(pretrained_cfg):
@@ -245,28 +253,8 @@ def main(cfg) -> None:
             map_location=torch.device("cpu") if cfg.trainer.accelerator == 'cpu' else None,
             save_restore_connector=save_restore_connector,
         )
-    elif cfg.checkpoint_dir:
-        app_state = AppState()
-        if cfg.tensor_model_parallel_size > 1 or cfg.pipeline_model_parallel_size > 1:
-            app_state.model_parallel_size = cfg.tensor_model_parallel_size * cfg.pipeline_model_parallel_size
-            app_state.tensor_model_parallel_size = cfg.tensor_model_parallel_size
-            app_state.pipeline_model_parallel_size = cfg.pipeline_model_parallel_size
-            (
-                app_state.tensor_model_parallel_rank,
-                app_state.pipeline_model_parallel_rank,
-                app_state.model_parallel_size,
-                app_state.data_parallel_size,
-                app_state.virtual_pipeline_model_parallel_rank,
-            ) = fake_initialize_model_parallel(
-                world_size=app_state.model_parallel_size,
-                rank=trainer.global_rank,
-                tensor_model_parallel_size_=cfg.tensor_model_parallel_size,
-                pipeline_model_parallel_size_=cfg.pipeline_model_parallel_size,
-            )
-        checkpoint_path = inject_model_parallel_rank(os.path.join(cfg.checkpoint_dir, cfg.checkpoint_name))
-        model = MegatronGPTModel.load_from_checkpoint(checkpoint_path, hparams_file=cfg.hparams_file, trainer=trainer)
     else:
-        raise ValueError("need at least a nemo file or checkpoint dir")
+        raise ValueError("You must specify the base model file with gpt_model_file=/path/to/model.nemo")
 
     # load the lora weights on cpu for all ranks of the lora model
     lora_weights, lora_model_cfg = load_lora(cfg.lora_model_path)

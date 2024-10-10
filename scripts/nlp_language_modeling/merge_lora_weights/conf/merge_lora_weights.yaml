@@ -5,12 +5,6 @@ trainer:
   logger: False # logger provided by exp_manager
   precision: 16 # 16, 32, or bf16
 
-tensor_model_parallel_size: -1
-pipeline_model_parallel_size: -1
-pipeline_model_parallel_split_rank: -1 # used for encoder and decoder model (0 for others)
 gpt_model_file: null, # GPT nemo file path
-checkpoint_dir: null # checkpoint file dir. This is used to load the PTL checkpoint generated during the GPT training
-checkpoint_name: null # PTL checkpoint file name, only used for PTL checkpoint loading
-hparams_file: null # model configuration file, only used for PTL checkpoint loading
 lora_model_path: ???
 merged_model_path: ???

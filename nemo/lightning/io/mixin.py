@@ -408,7 +408,6 @@ def _io_transform_args(self, init_fn, *args, **kwargs) -> Dict[str, Any]:
     """
     sig = inspect.signature(init_fn)
     bound_args = sig.bind_partial(self, *args, **kwargs)
-    bound_args.apply_defaults()
     config_kwargs = {k: v for k, v in bound_args.arguments.items() if k != "self"}
 
     to_del = []

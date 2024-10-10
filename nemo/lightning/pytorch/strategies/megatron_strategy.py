@@ -471,8 +471,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @override
     def training_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         assert self.lightning_module is not None
-        assert self.model is not None
-        kwargs = self._update_step_kwargs(dataloader_iter, kwargs, "training")
+        assert isinstance(self.model, MegatronParallel)
 
         with self.precision_plugin.train_step_context():  # TODO: Do we need this?
             # Set grad to zero.
@@ -481,7 +480,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             for opt in self.optimizers:
                 opt.zero_grad()
 
-            out = self.model(dataloader_iter, forward_only=False, *args, **kwargs)
+            out = self.model.training_step(dataloader_iter, *args, **kwargs)
 
             if torch.is_tensor(out):
                 reduced_train_loss = out
@@ -554,11 +553,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @override
     def validation_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         assert self.lightning_module is not None
-        assert self.model is not None
-        kwargs = self._update_step_kwargs(dataloader_iter, kwargs, "validation")
+        assert isinstance(self.model, MegatronParallel)
 
         with self.precision_plugin.val_step_context():  # TODO: Do we need this?
-            out = self.model(dataloader_iter, forward_only=True, *args, **kwargs)
+            out = self.model.validation_step(dataloader_iter, *args, **kwargs)
 
             from megatron.core import parallel_state
 
@@ -582,20 +580,18 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     @override
     def test_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         assert self.lightning_module is not None
-        assert self.model is not None
-        kwargs = self._update_step_kwargs(dataloader_iter, kwargs, "test")
+        assert isinstance(self.model, MegatronParallel)
 
         with self.precision_plugin.test_step_context():  # TODO: Do we need this?
-            return self.model(dataloader_iter, forward_only=True, *args, **kwargs)
+            return self.model.test_step(dataloader_iter, *args, **kwargs)
 
     @override
     def predict_step(self, dataloader_iter, *args: Any, **kwargs: Any) -> STEP_OUTPUT:
         assert self.lightning_module is not None
-        assert self.model is not None
-        kwargs = self._update_step_kwargs(dataloader_iter, kwargs, "predict")
+        assert isinstance(self.model, MegatronParallel)
 
         with self.precision_plugin.predict_step_context():  # TODO: Do we need this?
-            return self.model(dataloader_iter, forward_only=True, *args, **kwargs)
+            return self.model.predict_step(dataloader_iter, *args, **kwargs)
 
     @override
     def teardown(self) -> None:
@@ -772,35 +768,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             self.trainer.fit_loop.epoch_loop.automatic_optimization.optim_progress.optimizer.step.current.completed,
             self.trainer.fit_loop.epoch_loop.manual_optimization.optim_step_progress.current.completed,
         )
-
-    def _get_data_step(self, step_type: str) -> Optional[_ModuleStepFunction]:
-        for fn_name in [f"{step_type}_data_step", "data_step"]:
-            if hasattr(self.lightning_module, fn_name):
-                return _ModuleStepFunction(fn_name)
-
-        return None
-
-    def _get_forward_step(self, step_type: str) -> Optional[_ModuleStepFunction]:
-        from megatron.core import parallel_state
-
-        if parallel_state.is_pipeline_last_stage():
-            if not hasattr(self.lightning_module, f"{step_type}_step"):
-                raise ValueError(f"LightningModule does not have {step_type}_step method")
-
-            return _ModuleStepFunction(f"{step_type}_step", includes_self=True)
-
-        for fn_name in [f"{step_type}_forward_step", "forward_step"]:
-            if hasattr(self.lightning_module, fn_name):
-                return _ModuleStepFunction(fn_name, includes_self=True)
-
-        return None
-
-    def _get_loss_reduction(self, step_type: str) -> Optional[_ModuleStepFunction]:
-        for fn_name in [f"{step_type}_loss_reduction", "loss_reduction"]:
-            if hasattr(self.lightning_module, fn_name):
-                return _ModuleStepFunction(fn_name, is_property=True)
-
-        return None
 
     @property
     def distributed_sampler_kwargs(self) -> Dict[str, Any]:

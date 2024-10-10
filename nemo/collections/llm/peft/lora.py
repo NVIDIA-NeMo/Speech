@@ -20,6 +20,14 @@ from torch import nn
 
 from nemo.lightning.pytorch.callbacks.peft import PEFT, AdapterWrapper
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import_from
+
+TEColumnParallelLinear, HAVE_TE_COL_LINEAR = safe_import_from(
+    "megatron.core.transformer.custom_layers.transformer_engine", "TEColumnParallelLinear"
+)
+TERowParallelLinear, HAVE_TE_ROW_LINEAR = safe_import_from(
+    "megatron.core.transformer.custom_layers.transformer_engine", "TERowParallelLinear"
+)
 
 
 class AdapterParallelAdd(AdapterWrapper):
@@ -119,13 +127,17 @@ class LoRA(PEFT):
 
         tp_size = parallel_state.get_tensor_model_parallel_world_size()
         if name in self.target_modules:
-            # m.in_features and m.out_features are divided by tp_size already,
-            # but in_features and out_features passed to ParallelLinearAdapter are not.
             if name in ['linear_qkv', 'linear_fc1']:
                 # Column Parallel Linear
                 input_is_parallel = False
-                in_features = m.in_features
-                out_features = m.out_features * tp_size
+                if HAVE_TE_COL_LINEAR and isinstance(m, TEColumnParallelLinear):
+                    # m.in_features and m.out_features are divided by tp_size already,
+                    # but in_features and out_features passed to ParallelLinearAdapter are not.
+                    in_features = m.in_features
+                    out_features = m.out_features * tp_size
+                else:
+                    in_features = m.input_size
+                    out_features = m.output_size
                 # LoRA is applied after layernorm, so layernorm output must be returned
                 m.return_layernorm_output = True
                 # perf optimization for LoRA + SP
@@ -134,8 +146,12 @@ class LoRA(PEFT):
             else:  # name in ['linear_proj', 'linear_fc2']
                 # Row Parallel Linear
                 input_is_parallel = True
-                in_features = m.in_features * tp_size
-                out_features = m.out_features
+                if HAVE_TE_ROW_LINEAR and isinstance(m, TERowParallelLinear):
+                    in_features = m.in_features * tp_size
+                    out_features = m.out_features
+                else:
+                    in_features = m.input_size
+                    out_features = m.output_size
 
             logging.info(f"Adding lora to: {prefix}.{name}")
             adapter = ParallelLinearAdapter(

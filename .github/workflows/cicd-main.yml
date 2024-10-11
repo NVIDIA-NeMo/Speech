@@ -5193,6 +5193,15 @@ jobs:
         --experiment-dir=/tmp/mixtral_pretrain_results \
         --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document
 
+  L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        bash tests/collections/llm/bitexact/mixtral/run.sh
+
   Nemo_CICD_Test:
     needs: 
       - pre-flight
@@ -5347,6 +5356,7 @@ jobs:
       - L2_Speech_Transcription_Canary_Transcribe_With_Prompt
       - L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
       - L2_Megatron_GPT_Reranker
+      - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
     if: always()
     runs-on: ubuntu-latest
     steps:  

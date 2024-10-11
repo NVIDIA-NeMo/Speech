@@ -84,7 +84,6 @@ def slurm_executor(
         "NCCL_NVLS_ENABLE": "0",
         "NVTE_DP_AMAX_REDUCE_INTERVAL": "0",
         "NVTE_ASYNC_AMAX_REDUCTION": "1",
-        "NVTE_FUSED_ATTN": "0",
     }
     if custom_env_vars:
         env_vars |= custom_env_vars

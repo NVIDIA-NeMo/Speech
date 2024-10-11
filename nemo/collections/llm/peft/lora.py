@@ -25,6 +25,10 @@ from nemo.utils.import_utils import safe_import_from
 TEColumnParallelLinear, HAVE_TE_COL_LINEAR = safe_import_from(
     "megatron.core.transformer.custom_layers.transformer_engine", "TEColumnParallelLinear"
 )
+TELayerNormColumnParallelLinear, HAVE_TE_COL_LINEAR = safe_import_from(
+    "megatron.core.transformer.custom_layers.transformer_engine",
+    "TELayerNormColumnParallelLinear",
+)
 TERowParallelLinear, HAVE_TE_ROW_LINEAR = safe_import_from(
     "megatron.core.transformer.custom_layers.transformer_engine", "TERowParallelLinear"
 )
@@ -130,7 +134,9 @@ class LoRA(PEFT):
             if name in ['linear_qkv', 'linear_fc1']:
                 # Column Parallel Linear
                 input_is_parallel = False
-                if HAVE_TE_COL_LINEAR and isinstance(m, TEColumnParallelLinear):
+                if HAVE_TE_COL_LINEAR and (
+                    isinstance(m, TEColumnParallelLinear) or isinstance(m, TELayerNormColumnParallelLinear)
+                ):
                     # m.in_features and m.out_features are divided by tp_size already,
                     # but in_features and out_features passed to ParallelLinearAdapter are not.
                     in_features = m.in_features

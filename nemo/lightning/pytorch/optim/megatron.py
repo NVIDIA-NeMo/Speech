@@ -17,10 +17,11 @@ from typing import Callable, List, Optional
 
 import pytorch_lightning as pl
 from megatron.core.distributed import finalize_model_grads
-from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.optimizer import OptimizerConfig
 from megatron.core.utils import get_model_config
 from torch.optim import Optimizer
 
+from nemo.lightning._strategy_lib import setup_megatron_optimizer
 from nemo.lightning.megatron_parallel import MegatronParallel
 from nemo.lightning.pytorch.optim.base import LRSchedulerModule, OptimizerModule
 
@@ -97,42 +98,15 @@ class MegatronOptimizerModule(OptimizerModule):
         if not isinstance(model, MegatronParallel):
             raise ValueError("Model must be an instance of MegatronParallel")
 
-        from nemo.core.optim import McoreDistributedOptimizer
-
-        class McoreOpt(McoreDistributedOptimizer):
-            def sharded_state_dict(
-                self,
-                model_sharded_state_dict,
-                optimizer_state_dict=None,
-                is_loading=False,
-                sharding_type='fully_sharded_model_space',
-            ):
-                mcore_optimizer_sig = inspect.signature(self.mcore_optimizer.sharded_state_dict).parameters
-                distrib_optim_kwargs = {}
-                if "sharding_type" in mcore_optimizer_sig:
-                    distrib_optim_kwargs["sharding_type"] = sharding_type
-                state_dict = self.mcore_optimizer.sharded_state_dict(
-                    model_sharded_state_dict, is_loading=is_loading, **distrib_optim_kwargs
-                )
-                return state_dict
-
-        mcore_opt = get_megatron_optimizer(
+        optimizer = setup_megatron_optimizer(
+            model,
             self.config,
-            list(model),
             no_weight_decay_cond=self.no_weight_decay_cond,
             scale_lr_cond=self.scale_lr_cond,
             lr_mult=self.lr_mult,
         )
 
-        if getattr(model.ddp_config, "overlap_param_sync", False) and getattr(
-            model.ddp_config, "align_param_gather", False
-        ):
-            param_sync_func = [model_chunk.start_param_sync for model_chunk in model]
-            param_sync_func = param_sync_func[0] if len(model) == 1 else param_sync_func
-            for module in model:
-                module.config.param_sync_func = param_sync_func
-
-        return [McoreOpt(mcore_opt)]
+        return [optimizer]
 
     def finalize_model_grads(self, *args, **kwargs):
         return finalize_model_grads(*args, **kwargs)

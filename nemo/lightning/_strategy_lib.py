@@ -603,15 +603,17 @@ def setup_megatron_optimizer(
             )
             return state_dict
 
+    # megatron optimizer expects McoreDDP
+    ddp_modules = [m.module for m in model]
     mcore_opt = get_megatron_optimizer(
         config,
-        list(model),
+        ddp_modules,
         no_weight_decay_cond=no_weight_decay_cond,
         scale_lr_cond=scale_lr_cond,
         lr_mult=lr_mult,
     )
 
-    if getattr(model.ddp_config, "overlap_param_sync", False) and getattr(
+    if getattr(model.ddp_config, "overlap_param_gather", False) and getattr(
         model.ddp_config, "align_param_gather", False
     ):
         param_sync_func = [model_chunk.start_param_sync for model_chunk in model]

@@ -5205,7 +5205,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 1 \
@@ -5215,14 +5215,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 1 \
         --mbs 1
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_SFT_TP1PP1_MBS2:
     needs: [cicd-test-container-setup]
@@ -5236,7 +5236,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 1 \
@@ -5246,14 +5246,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 1 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_SFT_TP1PP2_MBS2:
     needs: [cicd-test-container-setup]
@@ -5267,7 +5267,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 2 \
@@ -5277,14 +5277,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 1 \
         --pp_size 2 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_SFT_TP2PP1_MBS2:
     needs: [cicd-test-container-setup]
@@ -5298,7 +5298,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 2 \
         --pp_size 1 \
@@ -5308,14 +5308,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft none \
         --tp_size 2 \
         --pp_size 1 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1:
     needs: [cicd-test-container-setup]
@@ -5329,7 +5329,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 1 \
@@ -5339,14 +5339,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 1 \
         --mbs 1
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_LoRA_TP1PP1_MBS2:
     needs: [cicd-test-container-setup]
@@ -5360,7 +5360,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 1 \
@@ -5370,14 +5370,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 1 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_LoRA_TP1PP2_MBS2:
     needs: [cicd-test-container-setup]
@@ -5391,7 +5391,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 2 \
@@ -5401,14 +5401,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 1 \
         --pp_size 2 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_GPT_LoRA_TP2PP1_MBS2:
     needs: [cicd-test-container-setup]
@@ -5422,7 +5422,7 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 3 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 2 \
         --pp_size 1 \
@@ -5432,14 +5432,14 @@ jobs:
         --restore_path /home/TestData/nemo2_ckpt/llama_68M \
         --devices 2 \
         --max_steps 6 \
-        --experiment_dir tests/collections/llm/${{ github.run_id }} \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
         --peft lora \
         --tp_size 2 \
         --pp_size 1 \
         --mbs 2
 
       AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/${{ github.run_id }}
+        rm -rf /tmp/nemo2_gpt_finetune/${{ github.run_id }}
 
   L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact:
     needs: [cicd-test-container-setup]

@@ -88,8 +88,8 @@ class NeMoLogger(IOMixin):
         from nemo.constants import NEMO_ENV_VARNAME_VERSION
         from nemo.utils.get_rank import is_global_rank_zero
 
-        self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        self.global_rank = trainer.node_rank * trainer.world_size + self.local_rank
+        self.local_rank = trainer.local_rank
+        self.global_rank = trainer.global_rank
         logging.rank = self.global_rank
 
         if self.explicit_log_dir and isinstance(trainer, pl.Trainer):  # If explicit log_dir was passed, short circuit

@@ -265,8 +265,10 @@ class LazyNeMoTarredIterator:
         shard_seed: int | Literal["trng", "randomized"] = "trng",
         text_field: str = "text",
         lang_field: str = "lang",
+        tarred_random_access: bool = False,
         extra_fields: list[dict[str, str]] | None = None,
     ) -> None:
+        self.tarred_random_access = tarred_random_access
         self.shard_id_to_manifest: dict[int, Iterable[dict]]
         self.paths = expand_sharded_filepaths(manifest_path)
         if len(self.paths) == 1:
@@ -345,6 +347,30 @@ class LazyNeMoTarredIterator:
     def shard_ids(self) -> List[int]:
         return sorted(self.shard_id_to_manifest.keys())
 
+    def _iter_random_read(self, tar_path, shard_manifest, manifest_path) -> Generator[tuple[dict, bytes], None, None]:
+        with tarfile.open(fileobj=BytesIO(open_best(tar_path, mode="rb").read()), mode="r") as tar:
+            for data in shard_manifest:
+                try:
+                    tar_info = tar.getmember(data)
+                    raw_audio = tar.extractfile(tar_info).read()
+                    yield data, raw_audio, tar_info
+                except KeyError as e:
+                    raise RuntimeError(
+                        f"Mismatched entry between JSON manifest ('{manifest_path}') and tar file ('{tar_path}'). "
+                        f"The following audio_filepath='{data['audio_filepath']}' was not found in the tar file."
+                    ) from e
+
+    def _iter_sequential(self, tar_path, shard_manifest, manifest_path) -> Generator[tuple[dict, bytes], None, None]:
+        with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
+            for tar_info in tar:
+                assert tar_info.name in shard_manifest, (
+                    f"Mismatched entry between JSON manifest ('{manifest_path}') and tar file ('{tar_path}'). "
+                    f"Cannot locate JSON entry for tar file '{tar_info.name}'"
+                )
+                data = shard_manifest[tar_info.name]
+                raw_audio = tar.extractfile(tar_info).read()
+                yield data, raw_audio, tar_info
+
     def __iter__(self) -> Generator[Cut, None, None]:
         shard_ids = self.shard_ids
 
@@ -359,6 +385,7 @@ class LazyNeMoTarredIterator:
         # They have multiple JSONL entries where audio paths end with '-sub1', '-sub2', etc. for each offset.
         offset_pattern = re.compile(r'^(?P<stem>.+)(?P<sub>-sub\d+)(?P<ext>\.\w+)?$')
 
+        iter_fn = self._iter_random_read if self.tarred_random_access else self._iter_sequential
         for sid in shard_ids:
             manifest_path = self.paths[sid] if len(self.paths) > 1 else self.paths[0]
 
@@ -371,50 +398,40 @@ class LazyNeMoTarredIterator:
 
             shard_manifest: dict[str, list[dict]] = groupby(basename, self.shard_id_to_manifest[sid])
             tar_path = self.shard_id_to_tar_path[sid]
-            with tarfile.open(fileobj=open_best(tar_path, mode="rb"), mode="r|*") as tar:
-                for tar_info in tar:
-                    assert tar_info.name in shard_manifest, (
-                        f"Mismatched entry between JSON manifest ('{manifest_path}') and tar file ('{tar_path}'). "
-                        f"Cannot locate JSON entry for tar file '{tar_info.name}'"
+            for data, raw_audio, tar_info in iter_fn(tar_path, shard_manifest, manifest_path):
+                meta = soundfile.info(BytesIO(raw_audio))
+                recording = Recording(
+                    id=tar_info.path,
+                    sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],
+                    sampling_rate=int(meta.samplerate),
+                    num_samples=meta.frames,
+                    duration=meta.duration,
+                )
+                cuts_for_recording = []
+                for data in sorted(shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]):
+                    # Cut the recording into corresponding segment and discard audio data outside the segment.
+                    cut = make_cut_with_subset_inmemory_recording(
+                        recording, offset=data.get("offset", 0.0), duration=data.get("duration")
                     )
-                    raw_audio = tar.extractfile(tar_info).read()
-                    # Note: Lhotse has a Recording.from_bytes() utility that we won't use here because
-                    #       the profiling indicated significant overhead in torchaudio ffmpeg integration
-                    #       that parses full audio instead of just reading the header for WAV files.
-                    # recording = lhotse.Recording.from_bytes(raw_audio, recording_id=tar_info.path)
-                    meta = soundfile.info(BytesIO(raw_audio))
-                    recording = Recording(
-                        id=tar_info.path,
-                        sources=[AudioSource(type="memory", channels=list(range(meta.channels)), source=raw_audio)],
-                        sampling_rate=int(meta.samplerate),
-                        num_samples=meta.frames,
-                        duration=meta.duration,
+                    cut.supervisions.append(
+                        SupervisionSegment(
+                            id=cut.id,
+                            recording_id=cut.recording_id,
+                            start=0,
+                            duration=cut.duration,
+                            text=data.get(self.text_field),
+                            language=data.get(self.lang_field),
+                        )
                     )
-                    cuts_for_recording = []
-                    for data in sorted(shard_manifest[tar_info.name], key=lambda d: d["audio_filepath"]):
-                        # Cut the recording into corresponding segment and discard audio data outside the segment.
-                        cut = make_cut_with_subset_inmemory_recording(
-                            recording, offset=data.get("offset", 0.0), duration=data.get("duration")
-                        )
-                        cut.supervisions.append(
-                            SupervisionSegment(
-                                id=cut.id,
-                                recording_id=cut.recording_id,
-                                start=0,
-                                duration=cut.duration,
-                                text=data.get(self.text_field),
-                                language=data.get(self.lang_field),
-                            )
-                        )
-                        cut.custom = _to_custom_attr_dict(data)
-                        cut.manifest_origin = manifest_path
-                        cut.tar_origin = tar_path
-                        for extra_field in extra_fields:
-                            extra_field.attach_to(cut)
-                        cuts_for_recording.append(cut)
-                    del recording  # free the memory - helps with very large audio files
-                    del raw_audio
-                    yield from cuts_for_recording
+                    cut.custom = _to_custom_attr_dict(data)
+                    cut.manifest_origin = manifest_path
+                    cut.tar_origin = tar_path
+                    for extra_field in extra_fields:
+                        extra_field.attach_to(cut)
+                    cuts_for_recording.append(cut)
+                del recording  # free the memory - helps with very large audio files
+                del raw_audio
+                yield from cuts_for_recording
 
     def __len__(self) -> int:
         return len(self.source)

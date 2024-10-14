@@ -725,11 +725,11 @@ class BeamRNNTInfer(Typing):
                 D = []
 
                 # Decode a batch of beam states and scores
-                beam_y, beam_state, beam_lm_tokens = self.decoder.batch_score_hypothesis(C, cache, beam_state)
+                beam_y, beam_state = self.decoder.batch_score_hypothesis(C, cache)
 
                 # Extract the log probabilities and the predicted tokens
                 beam_logp = torch.log_softmax(
-                    self.joint.joint(h_enc, beam_y) / self.softmax_temperature, dim=-1
+                    self.joint.joint(h_enc, torch.stack(beam_y)) / self.softmax_temperature, dim=-1
                 )  # [B, 1, 1, V + 1]
                 beam_logp = beam_logp[:, 0, 0, :]  # [B, V + 1]
                 beam_topk = beam_logp[:, ids].topk(beam, dim=-1)
@@ -776,7 +776,7 @@ class BeamRNNTInfer(Typing):
                             new_hyp = Hypothesis(
                                 score=(hyp.score + float(logp)),
                                 y_sequence=(hyp.y_sequence + [int(k)]),
-                                dec_state=self.decoder.batch_select_state(beam_state, j),
+                                dec_state=beam_state[j],
                                 lm_state=hyp.lm_state,
                                 timestep=hyp.timestep[:] + [i],
                                 length=encoded_lengths,
@@ -859,6 +859,7 @@ class BeamRNNTInfer(Typing):
         beam_state = self.decoder.initialize_state(
             torch.zeros(beam, device=h.device, dtype=h.dtype)
         )  # [L, B, H], [L, B, H] for LSTMS
+        beam_state = [self.decoder.batch_select_state(beam_state, 0)]
 
         # compute u_max as either a specific static limit,
         # or a multiple of current `h_length` dynamically.
@@ -872,7 +873,7 @@ class BeamRNNTInfer(Typing):
             Hypothesis(
                 y_sequence=[self.blank],
                 score=0.0,
-                dec_state=self.decoder.batch_select_state(beam_state, 0),
+                dec_state=beam_state[0],
                 timestep=[-1],
                 length=0,
             )
@@ -919,14 +920,8 @@ class BeamRNNTInfer(Typing):
                         sub_batch_ids.remove(id)
 
                     # extract the states of the sub batch only.
-                    if isinstance(self.decoder, RNNTDecoder):
-                        # LSTM decoder, state is [layer x batch x hidden]
-                        beam_state_ = [
-                            beam_state[state_id][:, sub_batch_ids, :] for state_id in range(len(beam_state))
-                        ]
-                    elif isinstance(self.decoder, StatelessTransducerDecoder):
-                        # stateless decoder, state is [batch x hidden]
-                        beam_state_ = [beam_state[state_id][sub_batch_ids, :] for state_id in range(len(beam_state))]
+                    if isinstance(self.decoder, RNNTDecoder) or isinstance(self.decoder, StatelessTransducerDecoder):
+                        beam_state_ = (beam_state[sub_batch_id] for sub_batch_id in sub_batch_ids)
                     else:
                         raise NotImplementedError("Unknown decoder type.")
 
@@ -935,22 +930,21 @@ class BeamRNNTInfer(Typing):
                     beam_state_ = beam_state
 
                 # Decode a batch/sub-batch of beam states and scores
-                beam_y, beam_state_, beam_lm_tokens = self.decoder.batch_score_hypothesis(B_, cache, beam_state_)
+                beam_y, beam_state_ = self.decoder.batch_score_hypothesis(B_, cache)
 
                 # If only a subset of batch ids were updated (some were removed)
                 if sub_batch_ids is not None:
                     # For each state in the RNN (2 for LSTM)
-                    for state_id in range(len(beam_state)):
-                        # Update the current batch states with the sub-batch states (in the correct indices)
-                        # These indices are specified by sub_batch_ids, the ids of samples which were updated.
-                        if isinstance(self.decoder, RNNTDecoder):
-                            # LSTM decoder, state is [layer x batch x hidden]
-                            beam_state[state_id][:, sub_batch_ids, :] = beam_state_[state_id][...]
-                        elif isinstance(self.decoder, StatelessTransducerDecoder):
-                            # stateless decoder, state is [batch x hidden]
-                            beam_state[state_id][sub_batch_ids, :] = beam_state_[state_id][...]
-                        else:
-                            raise NotImplementedError("Unknown decoder type.")
+                    # Update the current batch states with the sub-batch states (in the correct indices)
+                    # These indices are specified by sub_batch_ids, the ids of samples which were updated.
+                    if isinstance(self.decoder, RNNTDecoder) or isinstance(self.decoder, StatelessTransducerDecoder):
+                        # LSTM decoder, state is [layer x batch x hidden]
+                        index = 0
+                        for sub_batch_id in sub_batch_ids:
+                            beam_state[sub_batch_id] = beam_state_[index]
+                            index += 1
+                    else:
+                        raise NotImplementedError("Unknown decoder type.")
                 else:
                     # If entire batch was updated, simply update all the states
                     beam_state = beam_state_
@@ -963,7 +957,7 @@ class BeamRNNTInfer(Typing):
 
                 # Extract the log probabilities and the predicted tokens
                 beam_logp = torch.log_softmax(
-                    self.joint.joint(h_enc, beam_y) / self.softmax_temperature, dim=-1
+                    self.joint.joint(h_enc, torch.stack(beam_y)) / self.softmax_temperature, dim=-1
                 )  # [B=beam, 1, 1, V + 1]
                 beam_logp = beam_logp[:, 0, 0, :]  # [B=beam, V + 1]
                 beam_topk = beam_logp[:, ids].topk(beam, dim=-1)
@@ -1011,7 +1005,7 @@ class BeamRNNTInfer(Typing):
                         new_hyp = Hypothesis(
                             score=(hyp.score + float(logp)),
                             y_sequence=(hyp.y_sequence[:] + [int(k)]),
-                            dec_state=self.decoder.batch_select_state(beam_state, h_states_idx),
+                            dec_state=beam_state[h_states_idx],
                             lm_state=hyp.lm_state,
                             timestep=hyp.timestep[:] + [i],
                             length=i,
@@ -1084,7 +1078,7 @@ class BeamRNNTInfer(Typing):
         # prepare the batched beam states
         beam = min(self.beam_size, self.vocab_size)
         beam_state = self.decoder.initialize_state(
-            torch.zeros(beam, device=h.device, dtype=h.dtype)
+            torch.zeros(1, device=h.device, dtype=h.dtype)
         )  # [L, B, H], [L, B, H] for LSTMS
 
         # Initialize first hypothesis for the beam (blank)
@@ -1106,8 +1100,8 @@ class BeamRNNTInfer(Typing):
                 hyp.alignments = [[]]
 
         # Decode a batch of beam states and scores
-        beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score_hypothesis(init_tokens, cache, beam_state)
-        state = self.decoder.batch_select_state(beam_state, 0)
+        beam_dec_out, beam_state = self.decoder.batch_score_hypothesis(init_tokens, cache)
+        state = beam_state[0]
 
         # Setup ngram LM:
         if self.ngram_lm:
@@ -1267,18 +1261,10 @@ class BeamRNNTInfer(Typing):
                     break
 
                 else:
-                    # Initialize the beam states for the hypotheses in the expannsion list
-                    beam_state = self.decoder.batch_initialize_states(
-                        beam_state,
-                        [hyp.dec_state for hyp in list_exp],
-                        # [hyp.y_sequence for hyp in list_exp],  # <look into when this is necessary>
-                    )
-
                     # Decode a batch of beam states and scores
-                    beam_dec_out, beam_state, beam_lm_tokens = self.decoder.batch_score_hypothesis(
+                    beam_dec_out, beam_state = self.decoder.batch_score_hypothesis(
                         list_exp,
                         cache,
-                        beam_state,
                         # self.language_model is not None,
                     )
 
@@ -1300,7 +1286,7 @@ class BeamRNNTInfer(Typing):
                         for i, hyp in enumerate(list_exp):
                             # Preserve the decoder logits for the current beam
                             hyp.dec_out.append(beam_dec_out[i])
-                            hyp.dec_state = self.decoder.batch_select_state(beam_state, i)
+                            hyp.dec_state = beam_state[i]
 
                             # TODO: Setup LM
                             if self.language_model is not None:
@@ -1325,7 +1311,7 @@ class BeamRNNTInfer(Typing):
 
                     else:
                         # Extract the log probabilities
-                        beam_logp, _ = self.resolve_joint_output(beam_enc_out, beam_dec_out)
+                        beam_logp, _ = self.resolve_joint_output(beam_enc_out, torch.stack(beam_dec_out))
                         beam_logp = beam_logp[:, 0, 0, :]
 
                         # For all expansions, add the score for the blank label
@@ -1334,7 +1320,7 @@ class BeamRNNTInfer(Typing):
 
                             # Preserve the decoder's output and state
                             hyp.dec_out.append(beam_dec_out[i])
-                            hyp.dec_state = self.decoder.batch_select_state(beam_state, i)
+                            hyp.dec_state = beam_state[i]
 
                             # TODO: Setup LM
                             if self.language_model is not None:
@@ -1387,7 +1373,7 @@ class BeamRNNTInfer(Typing):
             else:
                 final.append(hyp)
 
-        return hypotheses
+        return final
 
     def resolve_joint_output(self, enc_out: torch.Tensor, dec_out: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

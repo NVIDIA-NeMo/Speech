@@ -68,6 +68,9 @@ def init_parallel_ranks(
         init_local_rank = app_state.local_rank
     else:
         init_world_size = world_size
+        pp = parallel_config.pipeline_model_parallel_size or 1
+        if world_size < pp:
+            raise ValueError(f"Expected world_size ({world_size}) to be greater than/equal to pipeline size ({pp})")
         init_global_rank = global_rank
         init_local_rank = local_rank
 

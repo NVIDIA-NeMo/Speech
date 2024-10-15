@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from functools import partial
+from pathlib import Path
 
 import pytest
+import yaml
 from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo import lightning as nl
@@ -24,6 +27,7 @@ from nemo.lightning import io
 from nemo.utils.import_utils import safe_import
 
 te, HAVE_TE = safe_import("transformer_engine")
+ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "artifacts")
 
 
 def dummy_extra(a, b, c=5):
@@ -55,7 +59,7 @@ class TestLoad:
         )
 
         ckpt = io.TrainerContext(model, trainer, extra={"dummy": partial_function_with_pos_and_key_args})
-        ckpt.io_dump(tmpdir)
+        ckpt.io_dump(tmpdir, yaml_attrs=["model"])
         loaded = io.load_context(tmpdir)
 
         assert loaded.model.config.seq_length == ckpt.model.config.seq_length
@@ -64,3 +68,10 @@ class TestLoad:
 
         loaded_func = loaded.extra["dummy"]
         assert loaded_func(b=2) == partial_function_with_pos_and_key_args(b=2)
+
+        model_yaml = Path(tmpdir) / "model.yaml"
+        assert model_yaml.exists()
+
+        observed = yaml.safe_load(model_yaml.read_text())
+        expected = yaml.safe_load((Path(ARTIFACTS_DIR) / "model.yaml").read_text())
+        assert observed.keys() == expected.keys()

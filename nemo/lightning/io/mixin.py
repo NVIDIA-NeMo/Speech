@@ -15,6 +15,8 @@ import fiddle as fdl
 import fiddle._src.experimental.dataclasses as fdl_dc
 from cloudpickle import dump
 from cloudpickle import load as pickle_load
+from fiddle._src import config as config_lib
+from fiddle._src import partial
 from fiddle._src.experimental import serialization
 from typing_extensions import Self
 
@@ -31,6 +33,37 @@ _enable_ext()
 
 # Thread-local storage for artifacts directory
 _thread_local = threading.local()
+
+
+def _ordered_arguments_with_default(data: config_lib.Config) -> Dict[Union[int, str], Any]:
+    result = config_lib.ordered_arguments(data, include_defaults=True)
+    for key, arg in result.items():
+        if isinstance(arg, config_lib.Config):
+            ordered_arg = _ordered_arguments_with_default(arg)
+            result[key] = ordered_arg
+
+    if "__fn_or_cls__" in result:
+        raise ValueError(
+            "It is not supported to dump objects of functions/classes " "that have a __fn_or_cls__ parameter."
+        )
+
+    result["_target_"] = (
+        f"{inspect.getmodule(config_lib.get_callable(data)).__name__}.{config_lib.get_callable(data).__qualname__}"  # type: ignore
+    )
+    if isinstance(data, partial.Partial):
+        result["_partial_"] = True
+
+    return result
+
+
+def _config_representer_with_defaults(dumper, data, type_name="Config"):
+    """Returns a YAML representation of `data`."""
+    value = _ordered_arguments_with_default(data)
+    return dumper.represent_data(value)
+
+
+def _partial_representer_with_defaults(dumper, data):
+    return _config_representer_with_defaults(dumper, data, type_name="Partial")
 
 
 class IOMixin:
@@ -130,7 +163,7 @@ class IOMixin:
     def io_artifacts(cls) -> List[Artifact]:
         return []
 
-    def io_dump(self, output: Path):
+    def io_dump(self, output: Path, yaml_attrs: list[str]):
         """
         Serializes the configuration object (`__io__`) to a file, allowing the object state to be
         saved and later restored. Also creates an artifacts directory and stores it in a thread-local
@@ -156,6 +189,11 @@ class IOMixin:
             json = serialization.dump_json(io)
             f.write(json)
 
+        yaml_configs = self._io_dump_yaml(io, attrs=yaml_attrs)
+        for attr, serialized_str in yaml_configs.items():
+            _path = output_path / f"{attr}.yaml"
+            _path.write_text(serialized_str)
+
         # Clear thread-local storage after io_dump is complete
         del _thread_local.local_artifacts_dir
         del _thread_local.output_path
@@ -163,6 +201,29 @@ class IOMixin:
         # Check if artifacts directory is empty and delete if so
         if not any(artifacts_dir.iterdir()):
             shutil.rmtree(artifacts_dir)
+
+    def _io_dump_yaml(self, io: config_lib.Config, attrs: list[str]):
+        import yaml
+
+        original_representers = yaml.SafeDumper.yaml_representers.copy()
+
+        from nemo_run.config import Config, Partial
+        from nemo_run.core.serialization.yaml import YamlSerializer, _function_representer
+
+        yaml.SafeDumper.add_representer(config_lib.Config, _config_representer_with_defaults)
+        yaml.SafeDumper.add_representer(partial.Partial, _partial_representer_with_defaults)
+        yaml.SafeDumper.add_representer(Config, _config_representer_with_defaults)
+        yaml.SafeDumper.add_representer(Partial, _partial_representer_with_defaults)
+
+        yaml.SafeDumper.add_multi_representer(object, _function_representer)
+
+        serializer = YamlSerializer()
+        result = {}
+        for attr in attrs:
+            result[attr] = serializer.serialize(getattr(io, attr))
+
+        yaml.SafeDumper.yaml_representers = original_representers
+        return result
 
 
 class ConnectorMixin:

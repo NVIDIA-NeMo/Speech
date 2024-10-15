@@ -1,0 +1,15 @@
+# temporary config
+
+model:
+    type: transformer
+    num_layers: 6
+    num_heads: 8
+    hidden_size: 512
+    dropout: 0.1
+    max_position_embeddings: 4096
+
+trainer:
+    devices: 1
+    accelerator: 'cpu'
+    max_epochs: 50
+    precision: 32

@@ -1,0 +1,16 @@
+# The script to be run.
+script: ???
+script_config: ???
+
+exp_name: null
+results_dir: ???  # Where to store the results of the run
+
+num_tasks_per_node: 1
+
+executor: local
+
+containers:
+  asr: gitlab-master.nvidia.com/smajumdar/nemo_containers/asr-run:0.0.1
+
+mounts:
+  - "~/.cache/torch/NeMo:/cache/torch/NeMo"

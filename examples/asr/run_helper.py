@@ -20,6 +20,7 @@ from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.common.parts import run_utils
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 
 
 NEMO_ROOT = Path(__file__).absolute().parents[2]
@@ -29,16 +30,19 @@ def gather_mounts(cluster_cfg):
     # Gather all mounts from the cluster config including ones which are disjoint from the cluster_cfg.mounts list.
     mounts = cluster_cfg.get('mounts', [])
 
+    # Resolve any mounts in th cluster config that need user expansion
+    mounts = [os.path.expanduser(m) for m in mounts]
+
     keys = list(cluster_cfg.keys())
     with open_dict(cluster_cfg):
         for k in keys:
             if k.startswith("mount_"):
-                print(f"Found additional mount flag in the cluster config `{k}`. Adding it to the mounts list.")
+                logging.info(f"Found additional mount flag in the cluster config `{k}`. Adding it to the mounts list.")
                 mounts.append(cluster_cfg[k])
                 del cluster_cfg[k]
 
         cluster_cfg['mounts'] = mounts
-        print(f"Final Mounts: {mounts}")
+        logging.info(f"Final Mounts: {mounts}")
 
 
 def check_root_path(path, nemo_root):

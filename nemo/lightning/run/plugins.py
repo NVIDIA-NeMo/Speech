@@ -25,6 +25,7 @@ from pytorch_lightning import Callback
 from pytorch_lightning.loggers import WandbLogger
 
 from nemo.lightning.pytorch.callbacks import NsysCallback, PreemptionCallback
+from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 from nemo.utils import logging
 
 # This file contains plugins based on NeMo-Run's run.Plugin API.
@@ -241,3 +242,67 @@ class ConfigValidationPlugin(run.Plugin):
             if isinstance(executor, run.SlurmExecutor):
                 assert task.trainer.num_nodes == executor.nodes
                 assert task.trainer.devices == executor.nproc_per_node()
+
+
+@dataclass(kw_only=True)
+class PerfEnvPlugin(run.Plugin):
+    """
+    A plugin for setting up performance optimized environments.
+
+    Attributes:
+        enable_layernorm_sm_margin (bool): Set SM margin for TransformerEngine's Layernorm, so
+            in order to not block DP level communication overlap.
+        layernorm_sm_margin (int): The SM margin for TransformerEngine Layernorm.
+        enable_vboost (bool): Whether to steer more power towards tensor cores via
+            `sudo nvidia-smi boost-slider --vboost 1`. May not work on all systems.
+    """
+
+    enable_layernorm_sm_margin: bool = True
+    layernorm_sm_margin: int = 16
+    enable_vboost: bool = False
+
+    def get_vboost_srun_cmd(self, nodes, job_dir):
+        import shlex
+
+        vboost_cmd = " ".join(
+            [
+                "\n# Command 0: enable vboost\n\n",
+                "srun",
+                f"--ntasks={nodes}",
+                "--output",
+                os.path.join(job_dir, "vboost.out"),
+                "--error",
+                os.path.join(job_dir, "vboost.err"),
+                "bash -c ",
+                shlex.quote("sudo nvidia-smi boost-slider --vboost 1"),
+            ],
+        )
+
+        return vboost_cmd
+
+    def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+
+        if task.trainer.strategy.__fn_or_cls__ == MegatronStrategy:
+            # Force program order kernel launch for TP, CP overlap
+            tp_size = task.trainer.strategy.tensor_model_parallel_size
+            cp_size = task.trainer.strategy.context_parallel_size
+            if tp_size > 1 and cp_size > 1:
+                executor.env_vars["CUDA_DEVICE_MAX_CONNECTIONS"] = 1
+
+            # Set LayerNorm SM margin to support the overlap with LayerNorm kernel
+            if self.enable_layernorm_sm_margin:
+                executor.env_vars["NVTE_FWD_LAYERNORM_SM_MARGIN"] = self.layernorm_sm_margin
+                executor.env_vars["NVTE_BWD_LAYERNORM_SM_MARGIN"] = self.layernorm_sm_margin
+
+        # Force Transformer Engine to use cuDNN attention over HazyResearch's Flash Attention
+        executor.env_vars["NVTE_FLASH_ATTN"] = 0
+        executor.env_vars["NVTE_FUSED_ATTN"] = 1
+
+        # Improve perf by steering power to tensor cores, may not work on all systems
+        if self.enable_vboost and isinstance(executor, run.SlurmExecutor):
+            vboost_cmd = self.get_vboost_srun_cmd(executor.nodes, executor.job_dir)
+            executor.setup_lines = (
+                executor.setup_lines + vboost_cmd
+                if (executor.setup_lines and len(executor.setup_lines) > 0)
+                else vboost_cmd
+            )

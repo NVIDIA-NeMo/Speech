@@ -58,7 +58,12 @@ from typing_extensions import override
 from nemo.core.optim.mcore_optim import McoreDistributedOptimizer
 from nemo.lightning import _strategy_lib, io
 from nemo.lightning.ckpt_utils import ckpt_to_weights_subdir
-from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, _ModuleStepFunction
+from nemo.lightning.megatron_parallel import (
+    CallbackConnector,
+    MegatronParallel,
+    _ModuleStepFunction,
+    aggregate_moe_loss_stats,
+)
 from nemo.lightning.pytorch.callbacks import ModelTransform
 from nemo.lightning.pytorch.strategies.utils import (
     RestoreConfig,
@@ -529,6 +534,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                 self.lightning_module.log(
                     "reduced_train_loss", reduced_train_loss, prog_bar=True, batch_size=1, sync_dist=False
                 )
+                # Log any MoE losses.
+                # TODO(@akoumparouli): loss_scale depends on the GBS.
+                for loss_name, loss_value in aggregate_moe_loss_stats(loss_scale=1.0).items():
+                    self.lightning_module.log(loss_name, loss_value, prog_bar=True, rank_zero_only=True, batch_size=1)
 
             return out
 

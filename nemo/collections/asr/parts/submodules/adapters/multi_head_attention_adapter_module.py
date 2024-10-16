@@ -134,8 +134,17 @@ class MultiHeadAttentionAdapter(mha.MultiHeadAttention, adapter_modules.AdapterM
         dropout_rate: float,
         proj_dim: Optional[int] = None,
         adapter_strategy: MHAResidualAddAdapterStrategy = None,
+        use_pytorch_sdpa: bool = False,
+        use_pytorch_sdpa_backends: Optional[list] = None,
     ):
-        super().__init__(n_head=n_head, n_feat=n_feat, dropout_rate=dropout_rate, max_cache_len=0)
+        super().__init__(
+            n_head=n_head,
+            n_feat=n_feat,
+            dropout_rate=dropout_rate,
+            max_cache_len=0,
+            use_pytorch_sdpa=use_pytorch_sdpa,
+            use_pytorch_sdpa_backends=use_pytorch_sdpa_backends,
+        )
 
         self.pre_norm = nn.LayerNorm(n_feat)
 
@@ -200,6 +209,8 @@ class MultiHeadAttentionAdapterConfig:
     dropout_rate: float = 0.0
     proj_dim: Optional[int] = None
     adapter_strategy: Optional[Any] = field(default_factory=lambda: MHAResidualAddAdapterStrategyConfig())
+    use_pytorch_sdpa: bool = False
+    use_pytorch_sdpa_backends: Optional[list] = None
     _target_: str = "{0}.{1}".format(MultiHeadAttentionAdapter.__module__, MultiHeadAttentionAdapter.__name__)
 
 
@@ -225,9 +236,18 @@ class RelPositionMultiHeadAttentionAdapter(mha.RelPositionMultiHeadAttention, ad
         dropout_rate: float,
         proj_dim: Optional[int] = None,
         adapter_strategy: MHAResidualAddAdapterStrategyConfig = None,
+        use_pytorch_sdpa: bool = False,
+        use_pytorch_sdpa_backends: Optional[list] = None,
     ):
         super().__init__(
-            n_head=n_head, n_feat=n_feat, dropout_rate=dropout_rate, pos_bias_u=None, pos_bias_v=None, max_cache_len=0
+            n_head=n_head,
+            n_feat=n_feat,
+            dropout_rate=dropout_rate,
+            pos_bias_u=None,
+            pos_bias_v=None,
+            max_cache_len=0,
+            use_pytorch_sdpa=use_pytorch_sdpa,
+            use_pytorch_sdpa_backends=use_pytorch_sdpa_backends,
         )
 
         self.pre_norm = nn.LayerNorm(n_feat)
@@ -305,6 +325,8 @@ class RelPositionMultiHeadAttentionAdapterConfig:
     dropout_rate: float = 0.0
     proj_dim: Optional[int] = None
     adapter_strategy: Optional[Any] = field(default_factory=lambda: MHAResidualAddAdapterStrategyConfig())
+    use_pytorch_sdpa: bool = False
+    use_pytorch_sdpa_backends: Optional[list] = None
     _target_: str = "{0}.{1}".format(
         RelPositionMultiHeadAttentionAdapter.__module__, RelPositionMultiHeadAttentionAdapter.__name__
     )

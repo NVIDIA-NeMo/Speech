@@ -145,6 +145,8 @@ model:
     xscaling: true # scales up the input embeddings by sqrt(d_model)
     untie_biases: true # unties the biases of the TransformerXL layers
     pos_emb_max_len: 5000
+    use_pytorch_sdpa: false # use torch sdpa instead of manual attention
+    use_pytorch_sdpa_backends: [] # empty list means all backends https://pytorch.org/docs/stable/generated/torch.nn.attention.SDPBackend.html e.g. [MATH]
 
     # Convolution module's params
     conv_kernel_size: 9

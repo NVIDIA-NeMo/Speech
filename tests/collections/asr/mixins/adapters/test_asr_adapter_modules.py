@@ -179,6 +179,59 @@ class TestASRAdapterModules:
             assert out.shape == x.shape
 
     @pytest.mark.unit
+    def test_relmha_adapter_with_torch_sdpa(self):
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 32, 50)
+        lengths = torch.randint(1, x.size(1), size=(x.size(0),))
+        lengths[torch.randint(0, x.size(0), size=(1,))[0]] = x.size(1)
+
+        adapter_torch_sdpa = adapter_modules.RelPositionMultiHeadAttentionAdapter(
+            n_head=2, n_feat=50, dropout_rate=0.0, proj_dim=-1, use_pytorch_sdpa=True
+        )
+        adapter = adapter_modules.RelPositionMultiHeadAttentionAdapter(
+            n_head=2, n_feat=50, dropout_rate=0.0, proj_dim=-1, use_pytorch_sdpa=False
+        )
+        # to dont reset linear_out parameters to zero
+        adapter.linear_out = torch.nn.Linear(adapter.linear_out.in_features, adapter.linear_out.out_features)
+        for original_param, sdpa_param in zip(adapter.parameters(), adapter_torch_sdpa.parameters()):
+            sdpa_param.data.copy_(original_param.data)
+        relpos_enc = adapter_modules.RelPositionalEncodingAdapter(d_model=50)
+
+        pad_mask, att_mask = get_mask(lengths)
+        relpos_enc.extend_pe(lengths.max(), device='cpu', dtype=torch.float32)
+
+        with torch.no_grad():
+            _, pos_emb = relpos_enc(x)
+            out = adapter(x, x, x, att_mask, pos_emb)
+            out_sdpa = adapter_torch_sdpa(x, x, x, att_mask, pos_emb)
+            assert torch.allclose(out_sdpa, out, atol=1e-5)
+
+    @pytest.mark.unit
+    def test_mha_adapter_with_torch_sdpa(self):
+        torch.random.manual_seed(0)
+        x = torch.randn(2, 32, 50)
+        lengths = torch.randint(1, x.size(1), size=(x.size(0),))
+        lengths[torch.randint(0, x.size(0), size=(1,))[0]] = x.size(1)
+
+        adapter_torch_sdpa = adapter_modules.MultiHeadAttentionAdapter(
+            n_head=2, n_feat=50, dropout_rate=0.0, proj_dim=-1, use_pytorch_sdpa=True
+        )
+        adapter = adapter_modules.MultiHeadAttentionAdapter(
+            n_head=2, n_feat=50, dropout_rate=0.0, proj_dim=-1, use_pytorch_sdpa=False
+        )
+        # to dont reset linear_out parameters to zero
+        adapter.linear_out = torch.nn.Linear(adapter.linear_out.in_features, adapter.linear_out.out_features)
+
+        for original_param, sdpa_param in zip(adapter.parameters(), adapter_torch_sdpa.parameters()):
+            sdpa_param.data.copy_(original_param.data)
+
+        pad_mask, att_mask = get_mask(lengths)
+        with torch.no_grad():
+            out = adapter(x, x, x, att_mask)
+            out_sdpa = adapter_torch_sdpa(x, x, x, att_mask)
+            assert torch.allclose(out_sdpa, out, atol=1e-5)
+
+    @pytest.mark.unit
     def test_abspos_encoding_init(self):
         torch.random.manual_seed(0)
         x = torch.randn(2, 32, 50)

@@ -350,13 +350,20 @@ class FabricMegatronStrategy(DDPStrategy):
 
     @contextmanager
     def megatron_context(self) -> Generator[None, None, None]:
-        def monkey_patched(config):
-            return {"device": "meta"}
-
         from megatron.core.extensions import transformer_engine as _te
 
         original = _te._get_extra_te_kwargs  # noqa: SLF001
-        _te._get_extra_te_kwargs = monkey_patched  # noqa: SLF001
+
+        def _get_extra_te_kwargs_meta(c):
+            """Forces device to meta"""
+            kwargs = original(c)
+            kwargs['device'] = 'meta'
+            return kwargs
+
+        _te._get_extra_te_kwargs = _get_extra_te_kwargs_meta  # noqa: SLF001
+
+        _orig_perform_initialization = self.parallelism.perform_initialization
+        _orig_use_cpu_initialization = self.parallelism.use_cpu_initialization
 
         self.parallelism.perform_initialization = False
         self.parallelism.use_cpu_initialization = True
@@ -364,6 +371,8 @@ class FabricMegatronStrategy(DDPStrategy):
         yield
 
         _te._get_extra_te_kwargs = original  # noqa: SLF001
+        self.parallelism.perform_initialization = _orig_perform_initialization
+        self.parallelism.use_cpu_initialization = _orig_use_cpu_initialization
 
     @property
     @override

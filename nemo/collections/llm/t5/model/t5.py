@@ -29,8 +29,6 @@ if TYPE_CHECKING:
 
 def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     from megatron.core import parallel_state
-    from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder import AttnMaskType
-    from nemo.collections.nlp.modules.common.megatron.utils import build_attention_mask_3d
 
     from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder import AttnMaskType
     from nemo.collections.nlp.modules.common.megatron.utils import build_attention_mask_3d

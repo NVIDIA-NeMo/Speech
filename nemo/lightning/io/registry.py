@@ -12,16 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from nemo.lightning.io.artifact import DirOrStringArtifact, FileArtifact
 from nemo.lightning.io.mixin import track_io
 
-__all__ = []
-
-
-def extract_name(cls):
-    return str(cls).split('.')[-1].rstrip('>').rstrip("'")
-
-
+# Registers all required classes with track_io functionality
 try:
     # Track HF tokenizers
     from transformers import AutoTokenizer as HfAutoTokenizer
@@ -36,7 +31,6 @@ try:
                 for attr_name in ['vocab_file', 'merges_file', 'tokenizer_file', 'name_or_path']
             ],
         )
-        __all__.append(extract_name(cls))
 
     from nemo.collections.common.tokenizers import AutoTokenizer
 
@@ -48,8 +42,8 @@ try:
             DirOrStringArtifact("pretrained_model_name", required=False),
         ],
     )
-    __all__.append("AutoTokenizer")
 except ImportError:
+    # HF tokenizers are not available, no need to track them
     pass
 
 
@@ -57,6 +51,6 @@ try:
     from nemo.collections.common.tokenizers import SentencePieceTokenizer
 
     track_io(SentencePieceTokenizer, artifacts=[FileArtifact("model_path")])
-    __all__.append("SentencePieceTokenizer")
 except ImportError:
+    # SentencePieceTokenizer is not available, no need to track it
     pass

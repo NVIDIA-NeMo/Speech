@@ -65,7 +65,7 @@ def main(args):
     strategy = MegatronStrategy(
         expert_model_parallel_size=args.devices,
         tensor_model_parallel_size=1,
-        sequence_parallel=True,
+        sequence_parallel=False,
         context_parallel_size=1,
         params_dtype=torch.bfloat16,
         pipeline_dtype=torch.bfloat16,

@@ -29,7 +29,7 @@ def tokenizer(vocab_path, merges_path):
 def main(args):
     strategy = MegatronStrategy(
         tensor_model_parallel_size=args.devices,
-        sequence_parallel=True,
+        sequence_parallel=False,
         context_parallel_size=1,
         params_dtype=torch.bfloat16,
         pipeline_dtype=torch.bfloat16,

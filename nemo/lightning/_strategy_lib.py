@@ -157,6 +157,10 @@ def set_model_parallel_attributes(model, parallelism):
             setattr(config, attr_name, getattr(parallelism, attr_name))
             if hasattr(config, "__io__"):
                 setattr(config.__io__, attr_name, getattr(parallelism, attr_name))
+        if hasattr(config, '__post_init__'):
+            # MCore does not use args in __post_init__
+            # @akoumparouli: is there a better way (e.g. reinit config)?
+            config.__post_init__()
 
         return config
 

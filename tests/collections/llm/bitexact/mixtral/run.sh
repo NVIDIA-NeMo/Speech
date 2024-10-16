@@ -24,7 +24,7 @@ torchrun --nproc-per-node 1 --nnodes 1 /workspace/Megatron-LM/pretrain_gpt.py \
     --init-method-std 0.008 --bf16 --use-mcore-models --transformer-impl transformer_engine \
     --use-distributed-optimizer --train-iters=10 --dataloader-type single --use-dist-ckpt \
     --dist-ckpt-format=torch_dist \
-    --tensor-model-parallel-size 1 --pipeline-model-parallel-size 1 --sequence-parallel \
+    --tensor-model-parallel-size 1 --pipeline-model-parallel-size 1 \
     --no-gradient-accumulation-fusion \
     --data-path "$DATA_PATH" \
     --split 99,1,0 --log-interval 10 --save-interval 20000 --eval-interval 1000 --eval-iters 32 \

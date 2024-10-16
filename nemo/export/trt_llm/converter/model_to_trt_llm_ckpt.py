@@ -157,7 +157,8 @@ def convert_model_to_trt_llm_ckpt(
             num_kv_heads = num_attention_heads
 
     export_config = {
-        "apply_layernorm_1p": nemo_model_config.get("normalization", "") == "layernorm1p",
+        "apply_layernorm_1p": nemo_model_config.get("normalization", "") == "layernorm1p"
+        or nemo_model_config.get("layernorm_zero_centered_gamma", False),
         "tp_size": training_tp_size,
         "split_gated_activation": nemo_model_config.get("activation", "gelu")
         in ["swiglu", "geglu", "fast-swiglu", "fast-geglu"]
@@ -195,7 +196,7 @@ def convert_model_to_trt_llm_ckpt(
 
             val = val.to(storage_type).cpu()
             model_level_weights["transformer.vocab_embedding.weight"].append(val)
-        if has_lm_head and pp_idx == training_pp_size - 1:
+        if has_lm_head and pp_idx == training_pp_size - 1 and decoder_type != "gemma":
             val = model.get("state_dict", model)[get_layer_name("output_layer", prefix)]
             val = val.to(storage_type).cpu()
             model_level_weights["lm_head.weight"].append(val)

@@ -374,8 +374,11 @@ class TensorRTLLM(ITritonDeployable):
                     )
 
             tokenizer_path = os.path.join(nemo_export_dir, "tokenizer.model")
+            tokenizer_path_nemo2 = os.path.join(nemo_export_dir, "nemo_context")
             if os.path.exists(tokenizer_path):
                 shutil.copy(tokenizer_path, self.model_dir)
+            elif os.path.exists(tokenizer_path_nemo2):
+                shutil.copytree(tokenizer_path_nemo2, Path(self.model_dir) / "nemo_context")
             else:
                 self.tokenizer.save_pretrained(os.path.join(self.model_dir, 'huggingface_tokenizer'))
 

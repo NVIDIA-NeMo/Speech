@@ -1980,11 +1980,16 @@ class MegatronLatentDiffusion(NLPAdapterModelMixin, MegatronBaseModel):
         return loss
 
     def setup(self, stage=None):
-        """PTL hook that is executed after DDP spawns.
-            We setup datasets here as megatron datasets require DDP to instantiate.
-            See https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup for more information.
+        """
+        PTL hook that is executed after DDP spawns.
+
+        We setup datasets here as Megatron datasets require DDP to instantiate.
+        See the PyTorch Lightning documentation for more information:
+        https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#setup
+
         Args:
-            stage (str, optional): Can be 'fit', 'validate', 'test' or 'predict'. Defaults to None.
+            stage (str, optional):
+                Can be 'fit', 'validate', 'test', or 'predict'. Defaults to None.
         """
         if self.model.rng:
             self.model.rng.manual_seed(self.cfg.seed + 100 * parallel_state.get_data_parallel_rank())

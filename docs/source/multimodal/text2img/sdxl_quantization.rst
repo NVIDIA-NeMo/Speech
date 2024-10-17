@@ -7,13 +7,13 @@ This example shows how to use ModelOpt to calibrate and quantize the UNet part o
 We also provide instructions on deploying and running E2E SDXL pipeline
 with ModelOpt quantized int8 UNet to generate images and measure latency on target GPUs.
 
-To get started, it is required to have a pretrained SDXL checkpoint in ``nemo`` format. The example training configs are provided in NeMo,
-which is located in ``NeMo/examples/multimodal/text2img/stable_diffusion``.
+To get started, you need a pretrained SDXL checkpoint in NeMo format. Example training configurations are available here: Stable Diffusion Examples `<https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/text_to_image/stable_diffusion>`_.
+
 
 Calibration
 ---------------
-The first step is to run quantization script with default config, and finally the script will export the quantized unet to onnx file.
-Here is the default config for ``NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_quantize.py``.
+The first step is to run the quantization script with the default config. The script will export the quantized unet to the onnx file.
+Here is the default config for SDXL Quantize Script: `<https://github.com/NVIDIA/NeMo/blob/main/examples/multimodal/text_to_image/stable_diffusion/sd_xl_quantize.py>`_.
 
 
 .. code-block:: yaml
@@ -32,10 +32,10 @@ Here is the default config for ``NeMo/examples/multimodal/text2img/stable_diffus
 
 Important Parameters
 ^^^^^^^^^^^^^^^^^^^^
-- percentile: Control quantization scaling factors (amax) collecting range, meaning that we will collect the minimum amax in the range of (n_steps * percentile) steps. Recommendation: 1.0
-- alpha: A parameter in SmoothQuant, used for linear layers only. Recommendation: 0.8 for SDXL, 1.0 for SD 1.5
+- percentile: Controls the range for collecting quantization scaling factors (amax). This means we will collect the minimum amax over a range of (n_steps * percentile) steps. We recommend 1.0.
+- alpha: A parameter in SmoothQuant, used exclusively for linear layers only. We recommend 0.8 for SDXL and 1.0 for SD 1.5.
 - quant-level: Which layers to be quantized, 1: CNNs, 2: CNN + FFN, 2.5: CNN + FFN + QKV, 3: CNN + Linear. Recommendation: 2, 2.5 and 3, depending on the requirements for image quality & speedup.
-- calib-size: For SDXL, we recommend 32, 64 or 128, for SD 1.5, set to 512 or 1024.
+- calib-size: For SDXL, we recommend 32, 64 or 128, for SD 1.5 and set to 512 or 1024.
 
 
 Build the TRT engine for the Quantized ONNX UNet
@@ -48,15 +48,16 @@ Build the TRT engine for the Quantized ONNX UNet
 
 Important Parameters
 ^^^^^^^^^^^^^^^^^^^^
-Input shape has to be provided here when building TRT engine.
+When building the TRT engine, you must provide the input shape as follows:
+
 - x: Input image latent shape (B * C * H * W)
-- context: Input text conditioning (B * S * hidden_dimention)
+- context: Input text conditioning (B * S * hidden_dimension)
 - y: Additional embedding (B * adm_in_channels)
 
 Build End-to-end Stable Diffusion XL Pipeline with NeMo
 -----------------------------------------------------------
 
-We provide a script to build end to end TRT inference pipeline with NeMo backend, which is located at `NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_export.py`.
+We provide a script to build an end-to-end TRT inference pipeline with the NeMo backend here: SDXL Export Script `<https://github.com/NVIDIA/NeMo/blob/main/examples/multimodal/text_to_image/stable_diffusion/sd_xl_export.py>`_.
 
 .. code-block:: yaml
 
@@ -73,16 +74,16 @@ We provide a script to build end to end TRT inference pipeline with NeMo backend
 
 Important Parameters
 ^^^^^^^^^^^^^^^^^^^^
-- out_path: Directory to save onnx file and TRT engine files
-- width and height: Image resolution of inference output
-- batch_size: Only used for dummy input generation and onnx sanity check
-- {min,max}_batch_size: The input batch size of TRT engine along its dynamic axis
+- out_path: Directory to save onnx file and TRT engine files.
+- width and height: Image resolution of inference output.
+- batch_size: Only used for dummy input generation and onnx sanity check.
+- {min,max}_batch_size: The input batch size of TRT engine along its dynamic axis.
 
 
-Run End-to-end Stable Diffusion XL TRT Pipeline
+Run End-to-End Stable Diffusion XL TRT Pipeline
 -----------------------------------------------------------
 
-The inference script can be found at `NeMo/examples/multimodal/text2img/stable_diffusion/sd_xl_trt_inference.py`.
+The inference script can be found here: SDXL TRT Inference Script `<https://github.com/NVIDIA/NeMo/blob/main/examples/multimodal/text_to_image/stable_diffusion/sd_xl_trt_inference.py>`_.
 
 .. code-block:: yaml
 
@@ -138,23 +139,20 @@ FP16 inference vs Int8 inference
    :width: 50%
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/asset-githubio-home-sdxl_trt_int8_1.png
    :width: 50%
+
 Prompt: A photo of a Shiba Inu dog with a backpack riding a bike. It is wearing sunglasses and a beach hat. (FP16 upper vs Int8 lower)
-
-
-
 
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/asset-githubio-home-sdxl_trt_fp16_2.png
    :width: 50%
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/asset-githubio-home-sdxl_trt_int8_2.png
    :width: 50%
+
 Prompt: A cute corgi lives in a house made out of sushi. (FP16 upper vs Int8 lower)
-
-
-
 
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/asset-githubio-home-sdxl_trt_fp16_3.png
    :width: 50%
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/asset-githubio-home-sdxl_trt_int8_3.png
    :width: 50%
+
 Prompt: A high contrast portrait of a very happy fuzzy panda dressed as a chef in a high end kitchen making dough. There is a painting of flowers on the wall behind him. (FP16 upper vs Int8 lower)
 

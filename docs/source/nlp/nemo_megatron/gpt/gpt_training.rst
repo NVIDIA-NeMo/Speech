@@ -1,31 +1,31 @@
-GPT model training
+GPT Model Training
 ------------------
 
-GPT is a decoder-only Transformer model.
+The Generative Pre-trained Transformer (GPT) is a decoder-only Transformer model. This section demonstrates how to train a GPT-style model with NeMo.
 
 
-Quick start
-^^^^^^^^^^^
-The steps below demonstrate training of a GPT-style model with NeMo
+
+
+
 
 .. note::
-    This example is best completed using the latest NeMo Framework NGC Container
+    This example is best completed using the latest NeMo Framework Training container `<https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo>`_.
 
-Data download & pre-processing
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Download and Pre-process Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. note::
-    Data download, pre-processing and tokenizer training in the example below will take ~3 hours.
+    The example below will take approximately 3 hours to download data, pre-process it, and train the tokenizer.
 
-**Step 1: Download data**
+1. Download data.
 
-The step below will download Wikipedia data (around 20GB) and can take several hours.
+The following step will download approximately 20GB of Wikipedia data, which can take several hours to complete.
 
 .. code-block:: bash
 
     wget https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-pages-articles.xml.bz2
 
-**Step 2: Extract raw data**
+2. Extract raw data.
 
 .. code-block:: bash
 
@@ -33,16 +33,16 @@ The step below will download Wikipedia data (around 20GB) and can take several h
     python -m wikiextractor.WikiExtractor enwiki-latest-pages-articles.xml.bz2 --json
     find text -name 'wiki_*' -exec cat {} \; > train_data.jsonl
 
-Now, ``train_data.jsonl`` will contain our training data in the json line format. We are interested in the data under "text" field.
+Now, train_data.jsonl will contain our training data in JSON line format. We are particularly interested in the data within the "text" field.
 
 
-**Step 3: Train tokenizer**
+3. Train tokenizer.
 
-Below we will consider 2 options for training data tokenizers: Using pre-built HuggingFace BPE and training and using your own Google Sentencepiece tokenizer.
+Below, we will consider two options for training data tokenizers: using the pre-built Hugging Face BPE or training and using your own Google Sentencepiece tokenizer.
 
 Note that only the second option allows you to experiment with vocabulary size.
 
-*Option 1:* Using HuggingFace GPT2 tokenizer files.
+*Option 1:* Use Hugging Face GPT2 tokenizer files.
 
 With this option, we will download a pre-built vocabulary and merge the files for the BPE tokenizer.
 
@@ -52,10 +52,10 @@ With this option, we will download a pre-built vocabulary and merge the files fo
     wget https://s3.amazonaws.com/models.huggingface.co/bert/gpt2-merges.txt
 
 
-*Option 2:* Using `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library. 
+*Option 2:* Use `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library. 
 
-It comes as a dependency with NeMo, so if you have installed NeMo it should already be installed.
-Note that training tokenizer model will also take some time.
+Google Sentencepiece is included as a dependency with NeMo, so if you have installed NeMo, it should already be installed. 
+Please note that training the tokenizer model will also take some time.
 
 .. code-block:: bash
 
@@ -70,13 +70,13 @@ Note that training tokenizer model will also take some time.
         --pad_id=0 --unk_id=1 --bos_id=2 --eos_id=3 \
         --split_digits true
 
-After this is done (will take a while), you'll have two files: ``spm_32k_wiki.model`` and ``spm_32k_wiki.vocab`` corresponding to the model and vocabulary.
+Completing this step can take some time. After it is done, you'll have two files: ``spm_32k_wiki.model`` and ``spm_32k_wiki.vocab`` corresponding to the model and vocabulary.
 
-**Step 4: Convert training data into memory map format**
+4. Convert training data into memory map format.
 
-This format makes training more efficient, especially with many nodes and GPUs. This step will also tokenize data using the tokenizer model from Step 3.
+The memory map format makes training more efficient, especially with many nodes and GPUs. This step will also tokenize data using the tokenizer model from Step 3.
 
-*Option 1:* Using HuggingFace GPT2 tokenizer files.
+*Option 1:* Use Hugging Face GPT2 tokenizer files.
 
 .. code-block:: bash
 
@@ -92,7 +92,7 @@ This format makes training more efficient, especially with many nodes and GPUs. 
     --append-eod \
     --workers=32
 
-*Option 2:* Using `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library.
+*Option 2:* Use `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library.
 
 .. code-block:: bash
 
@@ -106,14 +106,14 @@ This format makes training more efficient, especially with many nodes and GPUs. 
     --workers=32
 
 
-Train GPT-style Model
-~~~~~~~~~~~~~~~~~~~~~
+Train a GPT-Style Model
+~~~~~~~~~~~~~~~~~~~~~~~
 
 Once you have prepared training data and tokenizer, you are ready to train the model.
 The configuration we present below has about 124M parameters and should fit on a single 16GB GPU using float16.
 Let's go!
 
-*Option 1:* Using HuggingFace GPT2 tokenizer files.
+*Option 1:* Use Hugging Face GPT2 tokenizer files.
 
 .. code-block:: bash
 
@@ -166,7 +166,7 @@ Let's go!
 	exp_manager.checkpoint_callback_params.always_save_nemo=False
 
 
-*Option 2:* Using `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library.
+*Option 2:* Use `Google Sentencepiece <https://github.com/google/sentencepiece>`_ tokenizer library.
 
 .. code-block:: bash
 
@@ -219,18 +219,17 @@ Let's go!
 	exp_manager.checkpoint_callback_params.always_save_nemo=False
 
 
-Next, you can launch Tensorboard to monitor training like so:
+Next, you can launch Tensorboard to monitor training, as follows:
 
 .. code-block:: bash
 
     tensorboard --logdir nemo_experiments --bind_all
 
-Next steps
+Next Steps
 ~~~~~~~~~~
 
-Please refer to:
+For more information, please refer to:
 
 * :ref:`batching` section for batch size adjustments
 * :ref:`parallelisms` section for understanding various types of parallelisms
-* :ref:`promptlearning` section for details on prompt-tuning and p-tuning
 

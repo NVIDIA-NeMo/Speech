@@ -27,7 +27,7 @@ One way to incorporate speech into an LLM is to concatenate speech features with
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/salm.png
     :align: center
     :alt: SALM model
-    :scale: 50%
+    :width: 80%
 
 
 
@@ -36,7 +36,7 @@ Another approach is to use a cross-attention mechanism, where text embeddings at
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v1.23.0/bestow.png
     :align: center
     :alt: BESTOW model
-    :scale: 50%
+    :width: 80%
 
 NeMo Framework contains `example scripts <https://github.com/NVIDIA/NeMo/tree/main/examples/multimodal/speech_llm>`__ for training and evaluating for both SALM and BESTOW models. A pre-trained `checkpoint <https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models/speechllm_fc_llama2_7b>`__ for SALM is also available.
 

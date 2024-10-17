@@ -66,6 +66,7 @@ autodoc_mock_imports = [
     'taming',
     'cytoolz',  # for adapters
     'megatron',  # for nlp
+    "open_clip",
 ]
 
 _skipped_autodoc_mock_imports = ['wrapt', 'numpy']

@@ -293,6 +293,13 @@ class RNNTGreedyDecodeCudaGraph:
         device: torch.device,
         partial_hypotheses: Optional[List[rnnt_utils.Hypothesis]] = None,
     ):
+        if x.device.type != "cuda":
+            # If CUDA graphs are enabled and "frame-looping" algorithm is requested, current class
+            # is not suitable to handle non-CUDA inputs; thus we are passing them to original caller
+            return self.caller._greedy_decode_blank_as_pad_loop_frames(
+                x=x, out_len=out_len, device=device, partial_hypotheses=partial_hypotheses
+            )
+
         if partial_hypotheses is not None:
             raise NotImplementedError(
                 "`partial_hypotheses` support is not available "

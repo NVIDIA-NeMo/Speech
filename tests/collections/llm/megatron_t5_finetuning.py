@@ -21,6 +21,7 @@ def get_args():
     parser = argparse.ArgumentParser(description='Train a small T5 model using NeMo 2.0')
     parser.add_argument('--devices', type=int, help="Number of devices to use for training")
     parser.add_argument('--max-steps', type=int, help="Number of steps to train for")
+    parser.add_argument('--peft', type=str, default='none', help="none | lora")
     parser.add_argument('--experiment-dir', type=str, help="directory to write results and checkpoints to")
     parser.add_argument('--experiment-name', type=str, help="name of experiment")
     parser.add_argument('--wandb-project', type=str, default=None, help="wandb project name")
@@ -69,7 +70,6 @@ if __name__ == '__main__':
         pipeline_model_parallel_size=1,
         pipeline_dtype=torch.float32,
         ckpt_load_optimizer=False,
-        # ckpt_load_optimizer=True,
     )
     checkpoint_callback = ModelCheckpoint(
         every_n_train_steps=5000,
@@ -92,6 +92,11 @@ if __name__ == '__main__':
     opt = MegatronOptimizerModule(
         config=opt_config,
     )
+
+    if args.peft == 'lora':
+        peft = llm.peft.LoRA()
+    else:
+        peft = None
 
     trainer = nl.Trainer(
         devices=args.devices,
@@ -125,6 +130,7 @@ if __name__ == '__main__':
         resume=resume,
         data=data,
         trainer=trainer,
+        peft=peft,
         log=nemo_logger,
         optim=opt,
     )

@@ -584,8 +584,12 @@ def _io_path_elements_fn(x):
 def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: Path = "."):
     for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
         # Allow optional artifacts
-        if artifact.skip:
+        if artifact.skip or (not hasattr(cfg, artifact.attr) and not artifact.required):
             continue
+
+        if not hasattr(cfg, artifact.attr) and artifact.required:
+            raise ValueError(f"Artifact '{artifact.attr}' is required but not provided")
+
         current_val = getattr(cfg, artifact.attr)
         if current_val is None:
             if artifact.required:

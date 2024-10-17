@@ -2,7 +2,6 @@ from typing import Callable, Dict, List, Optional, Union
 
 import pytorch_lightning as pl
 import torch
-from prettytable import PrettyTable
 from pytorch_lightning.callbacks import Callback
 
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
@@ -141,6 +140,8 @@ class ParameterDebugger(Callback):
 
         # create table only if there is something to print
         if any(param_keys) or any(grad_keys):
+            from prettytable import PrettyTable
+
             debug_table = PrettyTable()
             debug_table.add_column("Parameter", names_col)
 

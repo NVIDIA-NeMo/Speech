@@ -19,6 +19,7 @@ import subprocess
 import sys
 import time
 import warnings
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -37,7 +38,6 @@ from pytorch_lightning.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLo
 from pytorch_lightning.loops import _TrainingEpochLoop
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
-
 
 from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
@@ -214,6 +214,8 @@ class ExpManagerConfig:
     files_to_copy: Optional[List[str]] = None
     # logs timing of train/val/test steps
     log_step_timing: Optional[bool] = True
+    # log step time with nemo logger instead of lightning logger to avoid lightning logger overhead
+    log_delta_step_timing: Optional[bool] = False
     step_timing_kwargs: Optional[StepTimingParams] = field(default_factory=lambda: StepTimingParams())
     # Configures creation of log files for different ranks
     log_local_rank_0_only: Optional[bool] = False
@@ -292,6 +294,53 @@ class TimingCallback(Callback):
 
     def on_after_backward(self, trainer, pl_module):
         self._on_batch_end("train_backward_timing", pl_module)
+
+
+class DeltaTimingCallback(Callback):
+    """
+    Logs execution time of train/val/test steps using nemo logger. Calculates
+    time from previous batch end to current batch end. This ensures accuracy.
+
+    Note: step time will only be printed in stdout. If you have initialized
+    loggers like TensorBoard, WandB, etc, step time will not be recorded there.
+    Use this callback instead of 'TimingCallback' to avoid logging overhead with
+    lightning logger used in the latter.
+    """
+
+    def __init__(self, timer_kwargs={}):
+        self._sync_cuda = timer_kwargs.get("sync_cuda", False)
+        self.timers = defaultdict(defaultdict)
+
+    def _on_epoch_start(self, name, trainer, pl_module):
+        # synchronize pytorch cuda execution if supported
+        if self._sync_cuda and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+
+        self.timers[name]["step"] = 0
+        self.timers[name]["start"] = time.time()
+
+    def _on_batch_end(self, name, trainer, pl_module):
+        # synchronize pytorch cuda execution if supported
+        if self._sync_cuda and torch.cuda.is_initialized():
+            torch.cuda.synchronize()
+
+        end = time.time()
+        dt = end - self.timers[name]["start"]
+        logging.info(f'Step {self.timers[name]["step"]}: {name} in s={dt}')
+        self.timers[name]["step"] += 1
+        self.timers[name]["start"] = end
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self._on_epoch_start("train_step_timing in s", trainer, pl_module)
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self._on_epoch_start("validation_step_timing in s", trainer, pl_module)
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self._on_batch_end("train_step_timing in s", trainer, pl_module)
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        self._on_batch_end("validation_step_timing in s", trainer, pl_module)
 
 
 def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None) -> Optional[Path]:
@@ -512,7 +561,10 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
         )
 
     # add loggers timing callbacks
-    if cfg.log_step_timing:
+    if cfg.log_delta_step_timing:
+        timing_callback = DeltaTimingCallback(timer_kwargs=cfg.step_timing_kwargs or {})
+        trainer.callbacks.insert(0, timing_callback)
+    elif cfg.log_step_timing:
         timing_callback = TimingCallback(timer_kwargs=cfg.step_timing_kwargs or {})
         trainer.callbacks.insert(0, timing_callback)
 

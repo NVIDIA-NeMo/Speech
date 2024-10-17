@@ -90,11 +90,25 @@ class PEFT(ABC, ModelTransform):
         Returns:
             nn.Module: The transformed model with PEFT applied.
         """
-
-        model.freeze()
+        self.freeze_model(model)
         model.walk(self.transform)
 
         return model
+
+    def freeze_model(self, model: nn.Module) -> None:
+        """Apply a default freeze method to the model.
+
+        This method freezes all the model parameters. This method can be overridden by subclasses to
+        implement custom freeze strategies (e.g. freeze only parts of the model)
+
+        Args:
+            model (nn.Module): The model to be fine-tuned.
+
+        Returns:
+            nn.Module: The transformed model with PEFT applied.
+        """
+        model.freeze()
+        model.train(mode=True)
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
         super().setup(trainer, pl_module, stage=stage)

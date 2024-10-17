@@ -144,6 +144,11 @@ class vLLMExporter(ITritonDeployable):
             max_seq_len_to_capture=None,
         )
 
+        if model_config.nemo_model_config.get("fp8", False):
+            LOGGER.warning(
+                "NeMo FP8 checkpoint detected, but exporting FP8 quantized engines is not supported for vLLM."
+            )
+
         parallel_config = ParallelConfig(
             pipeline_parallel_size=pipeline_parallel_size, tensor_parallel_size=tensor_parallel_size
         )

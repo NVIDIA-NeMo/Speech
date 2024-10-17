@@ -13,10 +13,6 @@
 # limitations under the License.
 
 
-# NOTE: the file name does not contain "test" on purpose to avoid executing
-#       these tests outside of the CI machines environment, where test data is
-#       stored
-
 from pathlib import Path
 from typing import Union
 
@@ -27,6 +23,7 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.models import EncDecRNNTBPEModel
 from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import prepare_audio_data
 
 DEVICES = []
@@ -65,7 +62,7 @@ def get_rnnt_alignments(
     loop_labels: bool = True,
     use_cuda_graph_decoder=False,
     device="cuda",
-):
+) -> list[Hypothesis]:
     cfg = OmegaConf.structured(TranscriptionConfig())
     cfg.rnnt_decoding.confidence_cfg.preserve_frame_confidence = True
     cfg.rnnt_decoding.preserve_alignments = True
@@ -74,12 +71,13 @@ def get_rnnt_alignments(
         cfg.rnnt_decoding.greedy.loop_labels = loop_labels
         cfg.rnnt_decoding.greedy.use_cuda_graph_decoder = use_cuda_graph_decoder
     cfg.dataset_manifest = str(manifest_path)
-    filepaths = prepare_audio_data(cfg)[0][:10]  # selecting 10 files only
+    filepaths = prepare_audio_data(cfg)[0][:8]  # selecting 8 files only
+    # NB: 9th file has the same transcription but a bit different alignment for batched/non-batched decoding
 
     model = model.to(device)
     model.change_decoding_strategy(cfg.rnnt_decoding)
 
-    transcriptions = model.transcribe(
+    transcriptions: list[Hypothesis] = model.transcribe(
         audio=filepaths,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,

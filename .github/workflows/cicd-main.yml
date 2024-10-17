@@ -131,16 +131,16 @@ jobs:
         ### \'\'
   
   # L0: GPU unit tests
-  OPTIONAL_L0_Unit_Tests_GPU_ASR:
+  L0_Unit_Tests_GPU_ASR:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_GPU_ASR') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure
        TIMEOUT: 20
+       # TODO: remove this hack
        SCRIPT: |
-         NEMO_NUMBA_MINVER=0.53 pytest tests/collections/asr -m "not pleasefixme" --with_downloads
-       IS_OPTIONAL: true
+         python -c "from nemo.collections.asr.models import ASRModel" && NEMO_NUMBA_MINVER=0.53 pytest tests/collections/asr -m "not pleasefixme" --with_downloads
 
   L0_Unit_Tests_GPU_Audio:
      needs: [cicd-test-container-setup]
@@ -1212,18 +1212,6 @@ jobs:
         matmul_precision=medium
       AFTER_SCRIPT: |
         rm -rf preds.json
-  
-
-  # L2: Transducer alignment
-  OPTIONAL_L2_Transducer_alignment_Running_pytest:
-    needs: [cicd-test-container-setup]
-    uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_Transducer_alignment_Running_pytest') || needs.cicd-test-container-setup.outputs.all == 'true'
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: |
-        pytest tests/collections/asr/decoding/rnnt_alignments_check.py --durations=-1 --with_downloads
-      IS_OPTIONAL: true
 
   # L2: Segmentation Tool
   L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav:
@@ -5456,7 +5444,7 @@ jobs:
       - gpu-test
       - cicd-test-container-setup
 
-      #- OPTIONAL_L0_Unit_Tests_GPU_ASR
+      - L0_Unit_Tests_GPU_ASR
       - L0_Unit_Tests_GPU_Audio
       - L0_Unit_Tests_GPU_Common
       - L0_Unit_Tests_GPU_LLM
@@ -5507,7 +5495,6 @@ jobs:
       - L2_ASR_Adapters_Linear_Adapters
       - L2_ASR_Adapters_RelPos_MHA_Adapters
       - L2_Speech_Transcription_Speech_to_Text_Transcribe
-      #- OPTIONAL_L2_Transducer_alignment_Running_pytest
       - L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav
       - L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
       - L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference

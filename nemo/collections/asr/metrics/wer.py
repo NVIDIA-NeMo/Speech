@@ -254,8 +254,9 @@ class WER(Metric):
         fold_consecutive=True,
         batch_dim_index=0,
         dist_sync_on_step=False,
+        sync_on_compute=True,
     ):
-        super().__init__(dist_sync_on_step=dist_sync_on_step)
+        super().__init__(dist_sync_on_step=dist_sync_on_step, sync_on_compute=sync_on_compute)
 
         self.decoding = decoding
         self.use_cer = use_cer

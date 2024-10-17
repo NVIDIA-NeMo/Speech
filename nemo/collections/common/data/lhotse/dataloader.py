@@ -317,7 +317,6 @@ def get_lhotse_dataloader_from_config(
             duration_bins=determine_bucket_duration_bins(config),
             num_cuts_for_bins_estimate=config.num_cuts_for_bins_estimate,
             buffer_size=config.bucket_buffer_size,
-            concurrent=config.concurrent_bucketing,
             rank=0 if is_tarred else global_rank,
             world_size=1 if is_tarred else world_size,
         )

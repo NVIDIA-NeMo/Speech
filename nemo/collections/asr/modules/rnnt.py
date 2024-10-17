@@ -1457,6 +1457,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     sub_transcripts = sub_transcripts.detach()
 
                     # Update WER on each process without syncing
+                    if self.training:
+                        original_sync = self.wer._to_sync
+                        self.wer._to_sync = False
+
                     self.wer.update(
                         predictions=sub_enc,
                         predictions_lengths=sub_enc_lens,
@@ -1466,6 +1470,9 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     # Sync and all_reduce on all processes, compute global WER
                     wer, wer_num, wer_denom = self.wer.compute()
                     self.wer.reset()
+
+                    if self.training:
+                        self.wer._to_sync = original_sync
 
                     wers.append(wer)
                     wer_nums.append(wer_num)

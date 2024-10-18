@@ -31,7 +31,7 @@ class TestLlama3_70B:
         assert trainer_config.__fn_or_cls__ == Trainer
         assert trainer_config.accelerator == "gpu"
         assert trainer_config.devices == 8
-        assert trainer_config.num_nodes == 1
+        assert trainer_config.num_nodes == 4
 
         # Check strategy configuration
         assert isinstance(trainer_config.strategy, run.Config)
@@ -81,7 +81,7 @@ class TestLlama3_70B:
 
     def test_pretrain_recipe_performance(self, recipe_module):
         recipe = recipe_module.pretrain_recipe_performance(
-            name="test_perf", dir="/tmp", num_nodes=1, num_gpus_per_node=8
+            name="test_perf", dir="/tmp", num_nodes=4, num_gpus_per_node=8
         )
         assert any(
             isinstance(cb, run.Config) and cb.__fn_or_cls__ == MegatronCommOverlapCallback

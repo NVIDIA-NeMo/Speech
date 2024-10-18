@@ -49,7 +49,7 @@ def model() -> run.Config[pl.LightningModule]:
 
 
 def trainer(
-    num_nodes: int = 2,
+    num_nodes: int = 4,
     num_gpus_per_node: int = 8,
 ) -> run.Config:
     """
@@ -58,8 +58,8 @@ def trainer(
     This function sets up the distributed training strategy optimized for the large 70B model with longer sequences.
 
     Args:
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 4.
+        num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
         run.Config: Configuration for the NeMo Lightning Trainer.
@@ -76,10 +76,10 @@ def trainer(
         This configuration uses extensive parallelism to handle the large model size and longer sequence length efficiently.
     """
     return llama3_70b.trainer(
-        tensor_parallelism=2,
-        pipeline_parallelism=4,
+        tensor_parallelism=8,
+        pipeline_parallelism=2,
         pipeline_parallelism_type=torch.bfloat16,
-        virtual_pipeline_parallelism=5,
+        virtual_pipeline_parallelism=None,
         context_parallelism=2,
         sequence_parallelism=True,
         num_nodes=num_nodes,
@@ -91,7 +91,7 @@ def trainer(
 def pretrain_recipe(
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 2,
+    num_nodes: int = 4,
     num_gpus_per_node: int = 8,
 ) -> run.Partial:
     """
@@ -103,8 +103,8 @@ def pretrain_recipe(
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the pre-training run.
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 4.
+        num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
         run.Partial: Partial configuration for pre-training.

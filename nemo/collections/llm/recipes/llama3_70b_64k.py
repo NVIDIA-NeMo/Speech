@@ -21,7 +21,6 @@ import torch
 
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes import llama3_70b
 from nemo.utils.exp_manager import TimingCallback
 
@@ -59,8 +58,8 @@ def trainer(
     This function sets up the distributed training strategy optimized for the large 70B model with long sequences.
 
     Args:
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 32.
+        num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
         run.Config: Configuration for the NeMo Lightning Trainer.
@@ -81,7 +80,7 @@ def trainer(
         tensor_parallelism=8,
         pipeline_parallelism=4,
         pipeline_parallelism_type=torch.bfloat16,
-        virtual_pipeline_parallelism=5,
+        virtual_pipeline_parallelism=None,
         context_parallelism=8,
         sequence_parallelism=True,
         num_nodes=num_nodes,
@@ -106,8 +105,8 @@ def pretrain_recipe(
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the pre-training run.
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 32.
+        num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
         run.Partial: Partial configuration for pre-training.

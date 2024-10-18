@@ -57,7 +57,7 @@ def pretrain_recipe(
     tensor_parallelism: int = 4,
     pipeline_parallelism: int = 1,
     pipeline_parallelism_type: Optional[torch.dtype] = None,
-    virtual_pipeline_parallelism: Optional[int] = 10,
+    virtual_pipeline_parallelism: Optional[int] = None,
     context_parallelism: int = 2,
     sequence_parallelism: bool = True,
     num_nodes: int = 1,

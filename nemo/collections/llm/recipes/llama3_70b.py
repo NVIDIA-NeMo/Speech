@@ -24,7 +24,6 @@ from pytorch_lightning.callbacks.callback import Callback
 from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.llama import Llama3Config70B, LlamaModel
 from nemo.collections.llm.peft.lora import LoRA
 from nemo.collections.llm.recipes.finetune_default import default_finetune_recipe
@@ -64,7 +63,7 @@ def trainer(
     virtual_pipeline_parallelism: Optional[int] = 5,
     context_parallelism: int = 2,
     sequence_parallelism: bool = True,
-    num_nodes: int = 1,
+    num_nodes: int = 4,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,
@@ -143,7 +142,7 @@ def trainer(
 
 @run.cli.factory(target=pretrain, name=NAME)
 def pretrain_recipe(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 1, num_gpus_per_node: int = 8, fn=pretrain
+    dir: Optional[str] = None, name: str = "default", num_nodes: int = 4, num_gpus_per_node: int = 8, fn=pretrain
 ) -> run.Partial:
     """
     Create a pre-training recipe for Llama3 70B model.
@@ -190,7 +189,7 @@ def pretrain_recipe(
 
 @run.cli.factory(target=pretrain, name=NAME + "_performance")
 def pretrain_recipe_performance(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 1, num_gpus_per_node: int = 8, fn=pretrain
+    dir: Optional[str] = None, name: str = "default", num_nodes: int = 4, num_gpus_per_node: int = 8, fn=pretrain
 ) -> run.Partial:
     """
     Create a performance-optimized pre-training recipe for Llama3 70B model.

@@ -29,15 +29,15 @@ class TestLlama3_8B_16k:
         assert trainer_config.__fn_or_cls__ == Trainer
         assert trainer_config.accelerator == "gpu"
         assert trainer_config.devices == 8
-        assert trainer_config.num_nodes == 1
+        assert trainer_config.num_nodes == 2
 
         # Check strategy configuration
         assert isinstance(trainer_config.strategy, run.Config)
         assert trainer_config.strategy.__fn_or_cls__.__name__ == "MegatronStrategy"
-        assert trainer_config.strategy.tensor_model_parallel_size == 2
-        assert trainer_config.strategy.pipeline_model_parallel_size == 4
+        assert trainer_config.strategy.tensor_model_parallel_size == 4
+        assert trainer_config.strategy.pipeline_model_parallel_size == 2
         assert trainer_config.strategy.pipeline_dtype == torch.bfloat16
-        assert trainer_config.strategy.virtual_pipeline_model_parallel_size == 5
+        assert trainer_config.strategy.virtual_pipeline_model_parallel_size is None
         assert trainer_config.strategy.context_parallel_size == 2
         assert trainer_config.strategy.sequence_parallel is True
 
@@ -61,14 +61,37 @@ class TestLlama3_8B_16k:
         assert recipe.trainer.num_nodes == num_nodes
         assert recipe.trainer.devices == num_gpus_per_node
 
-    def test_trainer_parallelism_options(self, recipe_module):
+    def test_valid_trainer_parallelism(self, recipe_module):
         trainer_config = recipe_module.trainer()
-        assert trainer_config.strategy.tensor_model_parallel_size == 2
-        assert trainer_config.strategy.pipeline_model_parallel_size == 4
-        assert trainer_config.strategy.pipeline_dtype == torch.bfloat16
-        assert trainer_config.strategy.virtual_pipeline_model_parallel_size == 5
-        assert trainer_config.strategy.context_parallel_size == 2
-        assert trainer_config.strategy.sequence_parallel is True
+
+        assert isinstance(trainer_config.strategy, run.Config)
+        assert trainer_config.strategy.__fn_or_cls__.__name__ == "MegatronStrategy"
+
+        assert trainer_config.strategy.expert_model_parallel_size == 1
+
+        assert (
+            trainer_config.strategy.tensor_model_parallel_size
+            * trainer_config.strategy.pipeline_model_parallel_size
+            * trainer_config.strategy.context_parallel_size
+            * trainer_config.strategy.expert_model_parallel_size
+            % trainer_config.devices
+            == 0
+        )
+        assert (
+            trainer_config.strategy.tensor_model_parallel_size
+            * trainer_config.strategy.pipeline_model_parallel_size
+            * trainer_config.strategy.context_parallel_size
+            * trainer_config.strategy.expert_model_parallel_size
+            / trainer_config.devices
+            % trainer_config.num_nodes
+            == 0
+        )
+
+        if trainer_config.strategy.pipeline_model_parallel_size != 1:
+            assert trainer_config.strategy.pipeline_dtype is not None
+
+        if trainer_config.strategy.tensor_model_parallel_size == 1:
+            assert trainer_config.strategy.sequence_parallel is False
 
     def test_model_config_parameters(self, recipe_module):
         model_config = recipe_module.model()

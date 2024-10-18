@@ -42,7 +42,7 @@ def model() -> run.Config[pl.LightningModule]:
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=nemotron4_340 ...
+            $ nemo llm pretrain model=nemotron4_340b ...
 
         Python API usage:
             >>> model_config = model()
@@ -60,7 +60,7 @@ def pretrain_recipe(
     # Trainer
     tensor_parallelism: int = 8,
     pipeline_parallelism: int = 12,
-    pipeline_parallelism_type: Optional[torch.dtype] = None,
+    pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
     virtual_pipeline_parallelism: Optional[int] = 8,
     context_parallelism: int = 1,
     sequence_parallelism: bool = False,
@@ -125,8 +125,8 @@ def pretrain_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory nemotron4_340
-            $ nemo llm pretrain --factory "nemotron4_340(num_nodes=1, name='my_nemotron_pretrain')"
+            $ nemo llm pretrain --factory nemotron4_340b
+            $ nemo llm pretrain --factory "nemotron4_340b(num_nodes=1, name='my_nemotron_pretrain')"
 
         Python API usage:
             >>> recipe = pretrain_recipe(name="nemotron_pretrain", num_nodes=1)
@@ -263,7 +263,7 @@ def finetune_recipe(
     # Trainer
     tensor_parallelism: int = 8,
     pipeline_parallelism: int = 12,
-    pipeline_parallelism_type: Optional[torch.dtype] = None,
+    pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
     virtual_pipeline_parallelism: Optional[int] = 8,
     context_parallelism: int = 1,
     sequence_parallelism: bool = False,
@@ -328,8 +328,8 @@ def finetune_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm finetune --factory nemotron4_340
-            $ nemo llm finetune --factory "nemotron4_340(name='my_nemotron4_340_finetune', num_nodes=4)"
+            $ nemo llm finetune --factory nemotron4_340b
+            $ nemo llm finetune --factory "nemotron4_340b(name='my_nemotron4_340_finetune', num_nodes=4)"
 
         Python API usage:
             >>> recipe = finetune_recipe(name="my_nemotron4_340_finetune", num_nodes=4)

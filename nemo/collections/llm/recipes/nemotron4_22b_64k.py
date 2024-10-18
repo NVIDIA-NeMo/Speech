@@ -56,9 +56,9 @@ def pretrain_recipe(
     # Trainer
     tensor_parallelism: int = 4,
     pipeline_parallelism: int = 2,
-    pipeline_parallelism_type: Optional[torch.dtype] = None,
-    virtual_pipeline_parallelism: Optional[int] = 10,
-    context_parallelism: int = 2,
+    pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
+    virtual_pipeline_parallelism: Optional[int] = None,
+    context_parallelism: int = 4,
     sequence_parallelism: bool = True,
     num_nodes: int = 4,
     num_gpus_per_node: int = 8,
@@ -122,10 +122,10 @@ def pretrain_recipe(
     Examples:
         CLI usage:
             $ nemo llm pretrain --factory nemotron4_22b_64k
-            $ nemo llm pretrain --factory "nemotron4_22b_64k(num_nodes=1, name='my_nemotron_pretrain')"
+            $ nemo llm pretrain --factory "nemotron4_22b_64k(num_nodes=2, name='my_nemotron_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe(name="nemotron_pretrain", num_nodes=1)
+            >>> recipe = pretrain_recipe(name="nemotron_pretrain", num_nodes=2)
             >>> print(recipe)
 
     Note:

@@ -19,6 +19,7 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
 ## NOTE: This script is present for github-actions testing only.
@@ -43,6 +44,7 @@ def get_args():
     parser.add_argument('--mbs', type=int, default=1, help="micro batch size")
     parser.add_argument('--tp_size', type=int, default=1, help="tensor parallel size")
     parser.add_argument('--pp_size', type=int, default=1, help="pipeline parallel size")
+    parser.add_argument('--packed', action='store_true', help="use packed sequence dataset")
 
     return parser.parse_args()
 
@@ -97,7 +99,16 @@ if __name__ == '__main__':
     else:
         peft = None
 
-    squad = llm.SquadDataModule(seq_length=2048, micro_batch_size=args.mbs, global_batch_size=8, num_workers=0)
+    packed_sequence_specs = (
+        PackedSequenceSpecs(packed_sequence_size=2048, tokenizer_model_name="dummy_tokenizer") if args.packed else None
+    )
+    dolly = llm.DollyDataModule(
+        seq_length=2048,
+        micro_batch_size=args.mbs,
+        global_batch_size=8,
+        num_workers=0,
+        packed_sequence_specs=packed_sequence_specs,
+    )
 
     tokenizer = get_nmt_tokenizer(tokenizer_model=os.path.join(args.restore_path, "dummy_tokenizer.model"))
     llama3_8b = llm.LlamaModel(Llama3ConfigCI(), tokenizer=tokenizer)
@@ -109,7 +120,7 @@ if __name__ == '__main__':
 
     llm.finetune(
         model=llama3_8b,
-        data=squad,
+        data=dolly,
         trainer=trainer,
         peft=peft,
         log=logger,

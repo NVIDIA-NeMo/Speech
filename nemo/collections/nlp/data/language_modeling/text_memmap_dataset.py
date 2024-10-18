@@ -127,7 +127,7 @@ class TextMemMapDataset(Dataset):
                 index_mapping_dir=index_mapping_dir,
             )
 
-        if is_distributed:
+        if is_distributed and not _lightning_prepare_data():
             torch.distributed.barrier()
 
         if is_distributed and AppState().local_rank == 0:
@@ -152,7 +152,7 @@ class TextMemMapDataset(Dataset):
                 index_mapping_dir=index_mapping_dir,
             )
 
-        if is_distributed:
+        if is_distributed and not _lightning_prepare_data():
             torch.distributed.barrier()
 
         logging.info(f"Loading data files")
@@ -749,3 +749,19 @@ class OnlineSampleMapping:
         sample_block = sample_block % self.dataset_size
 
         return sample_block
+
+
+def _lightning_prepare_data():
+    """
+    This function checks whether it is invoked in lightning's hook "prepare_data", which is run only on rank 0.
+    TextMemMapDataset contains a torch.distributed.barrier operation, so when run inside the single-process hook
+    prepare_data, the barrier operation would hang forever.
+    """
+    import inspect
+
+    return any(
+        [
+            frame.function == 'prepare_data' and 'prepare_packed_sequence_data' in frame.code_context[0]
+            for frame in inspect.stack()
+        ]
+    )

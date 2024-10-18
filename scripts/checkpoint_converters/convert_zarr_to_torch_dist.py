@@ -16,14 +16,13 @@ r"""
 Conversion script to convert zarr checkpoints into torch distributed checkpoint.
   Example to run this conversion script:
     python -m torch.distributed.launch --nproc_per_node=<tensor_model_parallel_size> * <pipeline_model_parallel_size> \
-     megatron_zarr_ckpt_to_torch_dist.py \
+     convert_zarr_to_torch_dist.py \
      --model_type <model_type> \
      --checkpoint_folder <path_to_PTL_checkpoints_folder> \
      --checkpoint_name <checkpoint_name> \
      --path_to_save <path_to_output_ckpt_files> \
      --tensor_model_parallel_size <tensor_model_parallel_size> \
      --pipeline_model_parallel_size <pipeline_model_parallel_size> \
-     --hparams_file <path_to_model_yaml_config> \
      --gpus_per_node <gpus_per_node>
 """
 
@@ -64,12 +63,14 @@ def get_args():
         "--hparams_file",
         type=str,
         default=None,
-        required=True,
+        required=False,
         help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
     )
     parser.add_argument("--path_to_save", type=str, default=None, required=True, help="Path to output ckpt files.")
     parser.add_argument(
-        "--save_to_nemo", action="store_true", help="If passed, output will be written as .nemo file.",
+        "--save_to_nemo",
+        action="store_true",
+        help="If passed, output will be written as .nemo file.",
     )
     parser.add_argument("--gpus_per_node", type=int, required=True, default=None)
     parser.add_argument("--tensor_model_parallel_size", type=int, required=True, default=None)
@@ -81,7 +82,7 @@ def get_args():
         default=None,
         help="If pipeline parallel size > 1, this is the rank at which the encoder ends and the decoder begins.",
     )
-    parser.add_argument("--local_rank", type=int, required=False, default=os.getenv('LOCAL_RANK', -1))
+    parser.add_argument("--local-rank", type=int, required=False, default=os.getenv('LOCAL_RANK', -1))
     parser.add_argument("--cluster_type", required=False, default=None, help="Whether on BCP platform")
     parser.add_argument(
         "--precision",
@@ -93,7 +94,18 @@ def get_args():
     )
 
     parser.add_argument(
-        "--model_type", type=str, required=True, default="gpt", choices=["gpt", "sft", "bert"],
+        "--model_type",
+        type=str,
+        required=True,
+        default="gpt",
+        choices=["gpt", "sft", "bert"],
+    ),
+    parser.add_argument(
+        "--ckpt_format",
+        type=str,
+        required=False,
+        default="torch_dist",
+        choices=["zarr", "torch_dist"],
     )
 
     args = parser.parse_args()
@@ -114,7 +126,7 @@ def convert(local_rank, rank, world_size, args):
             'precision': args.precision,
         },
         'model': {
-            'native_amp_init_scale': 2 ** 32,
+            'native_amp_init_scale': 2**32,
             'native_amp_growth_interval': 1000,
             'hysteresis': 2,
             'gradient_as_bucket_view': True,
@@ -167,7 +179,7 @@ def convert(local_rank, rank, world_size, args):
         )
 
     with open_dict(model.cfg):
-        model.cfg.torch_distributed_checkpoint = True
+        model.cfg.dist_ckpt_format = args.ckpt_format
 
     model._save_restore_connector = NLPSaveRestoreConnector()
     save_file_path = args.path_to_save

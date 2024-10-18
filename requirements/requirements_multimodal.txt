@@ -1,6 +1,6 @@
 addict
 clip
-decord
+decord; sys_platform == 'linux'
 diffusers>=0.19.3
 einops_exts
 imageio

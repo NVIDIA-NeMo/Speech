@@ -26,6 +26,7 @@ from nemo.utils import logging
 
 if TYPE_CHECKING:
     from nemo.collections.common.tokenizers import TokenizerSpec
+    from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 
 
 class DollyDataModule(FineTuningDataModule, IOMixin):
@@ -56,7 +57,7 @@ class DollyDataModule(FineTuningDataModule, IOMixin):
         pin_memory: bool = True,
         persistent_workers: bool = False,
         pad_to_max_length: bool = False,
-        packed_sequence_size: int = -1,
+        packed_sequence_specs: Optional["PackedSequenceSpecs"] = None,
     ):
         self.force_redownload = force_redownload
         self.delete_raw = delete_raw
@@ -74,7 +75,7 @@ class DollyDataModule(FineTuningDataModule, IOMixin):
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
             pad_to_max_length=pad_to_max_length,
-            packed_sequence_size=packed_sequence_size,
+            packed_sequence_specs=packed_sequence_specs,
         )
 
     def prepare_data(self) -> None:

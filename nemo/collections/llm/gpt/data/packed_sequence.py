@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -83,3 +83,32 @@ def prepare_packed_sequence_data(
     # save output data
     np.save(output_path, output_data)
     logging.info(f"Packed sequence is prepared and saved to {output_path}")
+
+
+@dataclass
+class PackedSequenceSpecs:
+    packed_sequence_size: int = -1
+    """
+    If a positive integer, this arg enables training with sequence packing and specifies the pack size
+    If less than or equal to 0, sequence packing is disabled. Defaults to -1.
+    Note: This arg is distinct from `seq_length` because `seq_length` specifies the maximum length of the original sequence
+    (i.e. the length to truncate long sequences in the input data).
+    """
+
+    tokenizer_model_name: str = None
+    """
+    Keep track of tokenizer model name, since each tokenizer produces a different packed sequence dataset file.
+    This field is set by llm.finetune api.
+    """
+
+    packed_data_path: Path = None
+    """
+    If specified, use the packed dataset from this file instead of the default path.
+    """
+
+    def __post_init__(self):
+        if self.packed_data_path is not None:
+            assert (
+                self.packed_data_path.suffix == ".npy"
+            ), f"packed data file must be a .npy file: {self.packed_data_path}"
+            assert self.packed_data_path.exists(), f"packed data file does not exist: {self.packed_data_path}"

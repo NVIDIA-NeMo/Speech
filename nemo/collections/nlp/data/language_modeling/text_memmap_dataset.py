@@ -260,7 +260,8 @@ class TextMemMapDataset(Dataset):
                 raise RuntimeError(f"Missing header, expected {self._header_lines} header lines")
 
             # load meta info
-            idx_info_dict = pickle.load(open(idx_fn + ".info", "rb"))
+            with open(idx_fn + ".info", "rb") as fp:
+                idx_info_dict = pickle.load(fp)
             # test for mismatch in expected newline_int
             if "newline_int" in idx_info_dict:
                 newline_int = idx_info_dict["newline_int"]
@@ -378,9 +379,7 @@ class CSVFieldsMemmapDataset(TextMemMapDataset):
         self._data_sep = data_sep
 
     def _build_data_from_text(self, text: str):
-        """
-
-        """
+        """ """
         _build_data_from_text = super()._build_data_from_text
         data = {}
         text_fields = text.split(self._data_sep)
@@ -513,7 +512,11 @@ def _build_memmap_index_files(newline_int, build_index_fn, fn, index_mapping_dir
 
 
 def build_index_files(
-    dataset_paths, newline_int, workers=None, build_index_fn=_build_index_from_memdata, index_mapping_dir: str = None,
+    dataset_paths,
+    newline_int,
+    workers=None,
+    build_index_fn=_build_index_from_memdata,
+    index_mapping_dir: str = None,
 ):
     """Auxiliary method to build multiple index files"""
     if len(dataset_paths) < 1:
@@ -528,7 +531,12 @@ def build_index_files(
     ctx = mp.get_context("fork")
     with ctx.Pool(workers) as p:
         build_status = p.map(
-            partial(_build_memmap_index_files, newline_int, build_index_fn, index_mapping_dir=index_mapping_dir,),
+            partial(
+                _build_memmap_index_files,
+                newline_int,
+                build_index_fn,
+                index_mapping_dir=index_mapping_dir,
+            ),
             dataset_paths,
         )
 

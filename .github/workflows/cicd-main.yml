@@ -4370,8 +4370,6 @@ jobs:
       - L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
       - L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
       - L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference
-      - L2_Intent_and_Slot_Classification_Tasks_Intent_and_Slot_Classification
-      - L2_Intent_and_Slot_Classification_Tasks_Multi-Label_Intent_and_Slot_Classification
       - L2_Pretraining_BERT_pretraining_from_Text
       - L2_Pretraining_BERT_from_Preprocessed
       - L2_NMT_Attention_is_All_You_Need_Training_NMT_Training_Post-LN

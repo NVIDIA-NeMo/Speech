@@ -59,7 +59,7 @@ class MistralConfig7B(GPTConfig):
 
 
 @dataclass
-class MistralNeMo2407Config12B(MistralConfig7B):
+class MistralNeMoConfig12B(MistralConfig7B):
     """
     https://mistral.ai/news/mistral-nemo/
     """
@@ -75,7 +75,7 @@ class MistralNeMo2407Config12B(MistralConfig7B):
 
 
 @dataclass
-class MistralNeMo2407Config123B(MistralConfig7B):
+class MistralNeMoConfig123B(MistralConfig7B):
     """
     https://mistral.ai/news/mistral-large-2407/
     """

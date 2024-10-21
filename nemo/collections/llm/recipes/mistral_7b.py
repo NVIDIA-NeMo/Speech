@@ -33,7 +33,7 @@ from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 from nemo.utils.exp_manager import TimingCallback
 
-NAME = "mistral"
+NAME = "mistral_7b"
 
 
 @run.cli.factory(name=NAME)

@@ -53,7 +53,7 @@ from nemo.collections.llm.gpt.model.llama import (
     LlamaConfig,
     LlamaModel,
 )
-from nemo.collections.llm.gpt.model.mistral import MistralConfig7B, MistralModel
+from nemo.collections.llm.gpt.model.mistral import MistralConfig7B, MistralModel, MistralNeMoConfig12B
 from nemo.collections.llm.gpt.model.mixtral import (
     MixtralConfig8x3B,
     MixtralConfig8x7B,

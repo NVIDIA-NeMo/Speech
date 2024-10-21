@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from collections import OrderedDict
-from typing import Optional
+from typing import List, Optional
 
 from transformers import AutoTokenizer as AUTOTOKENIZER
 
@@ -43,6 +43,7 @@ class AutoTokenizer(TokenizerSpec):
         sep_token: Optional[str] = None,
         cls_token: Optional[str] = None,
         unk_token: Optional[str] = None,
+        additional_special_tokens: Optional[List] = [],
         use_fast: Optional[bool] = False,
         trust_remote_code: Optional[bool] = False,
     ):
@@ -60,6 +61,7 @@ class AutoTokenizer(TokenizerSpec):
             sep_token: token used for separating sequences
             cls_token: class token. Usually equal to bos_token
             unk_token: token to use for unknown tokens
+            additional_special_tokens: list of other tokens beside standard special tokens (bos, eos, pad, etc.). For example, sentinel tokens for T5 (<extra_id_0>, <extra_id_1>, etc.)
             use_fast: whether to use fast HuggingFace tokenizer
         """
         try:
@@ -124,8 +126,15 @@ class AutoTokenizer(TokenizerSpec):
         elif self.tokenizer.cls_token is None and self.tokenizer.bos_token:
             special_tokens_dict["cls_token"] = self.tokenizer.bos_token
 
+        # add additional special tokens (not standard special tokens such as bos, eod, sep)
+        if additional_special_tokens is not None:
+            special_tokens_dict["additional_special_tokens"] = additional_special_tokens
+
         new_tokens_in_vocab = []
         for token in [mask_token, bos_token, eos_token, pad_token, sep_token, cls_token, unk_token]:
+            if token is not None and token not in self.tokenizer.get_vocab():
+                new_tokens_in_vocab.append(token)
+        for token in additional_special_tokens:
             if token is not None and token not in self.tokenizer.get_vocab():
                 new_tokens_in_vocab.append(token)
 

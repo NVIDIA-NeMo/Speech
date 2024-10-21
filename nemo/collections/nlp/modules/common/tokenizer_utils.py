@@ -69,7 +69,8 @@ def get_tokenizer(
             To see the list of all HuggingFace pretrained models, use:
             nemo_nlp.modules.common.get_huggingface_pretrained_lm_models_list()
         tokenizer_model: tokenizer model file of sentencepiece
-        special_tokens: dict of special tokens
+        special_tokens: dict of special tokens.
+            For additional special tokens besides standard special tokens (bos, eos, pad, etc.), such as sentinel tokens for T5 (<extra_id_0>, <extra_id_1>, etc.), use key 'additional_special_tokens'
         vocab_file: path to vocab file
         use_fast: (only for HuggingFace AutoTokenizer) set to True to use fast HuggingFace tokenizer
         bpe_dropout: (experimental) BPE dropout tries to corrupt the standard segmentation
@@ -224,7 +225,11 @@ def get_nmt_tokenizer(
             f'Getting Megatron tokenizer for pretrained model name: {model_name}, custom vocab file: {vocab_file}, and merges file: {merges_file}'
         )
         return get_tokenizer(
-            tokenizer_name=model_name, vocab_file=vocab_file, merges_file=merges_file, chat_template=chat_template
+            tokenizer_name=model_name,
+            vocab_file=vocab_file,
+            merges_file=merges_file,
+            special_tokens=special_tokens_dict,
+            chat_template=chat_template,
         )
     elif library == 'tabular':
         from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer

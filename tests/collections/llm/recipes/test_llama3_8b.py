@@ -90,10 +90,8 @@ class TestLlama3_8B:
         assert recipe.trainer.num_nodes == num_nodes
         assert recipe.trainer.devices == num_gpus_per_node
 
-    def test_pretrain_recipe_performance(self, recipe_module):
-        recipe = recipe_module.pretrain_recipe_performance(
-            name="test_perf", dir="/tmp", num_nodes=1, num_gpus_per_node=8
-        )
+    def test_pretrain_performance_optimizations(self, recipe_module):
+        recipe = recipe_module.pretrain_recipe(performance_mode=True)
         assert any(cb.__fn_or_cls__.__name__ == "MegatronCommOverlapCallback" for cb in recipe.trainer.callbacks)
 
     def test_trainer_parallelism_options(self, recipe_module):

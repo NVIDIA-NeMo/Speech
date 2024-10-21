@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from typing import Optional
+from typing import Callable, Optional
 
 import nemo_run as run
 import pytorch_lightning as pl
@@ -145,7 +145,12 @@ def trainer(
 
 @run.cli.factory(target=pretrain, name=NAME)
 def pretrain_recipe(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 16, num_gpus_per_node: int = 8, fn=pretrain
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 16,
+    num_gpus_per_node: int = 8,
+    performance_mode: bool = False,
+    fn: Callable = pretrain,
 ) -> run.Partial:
     """
     Create a pre-training recipe for Mixtral 8x22B model.
@@ -158,6 +163,7 @@ def pretrain_recipe(
         name (str): Name of the pre-training run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
+        performance_mode (bool): If true, enables optimizations for maximum performance.
         fn (Callable): The pre-training function to use.
 
     Returns:
@@ -172,7 +178,7 @@ def pretrain_recipe(
             >>> recipe = pretrain_recipe(name="mixtral_pretrain", num_nodes=16)
             >>> print(recipe)
     """
-    return run.Partial(
+    recipe = run.Partial(
         fn,
         model=model(),
         trainer=trainer(
@@ -184,45 +190,35 @@ def pretrain_recipe(
         resume=default_resume(),
     )
 
+    if performance_mode:
+        recipe = pretrain_performance_optimizations(recipe)
 
-@run.cli.factory(target=pretrain, name=NAME + "_performance")
-def pretrain_recipe_performance(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 8, num_gpus_per_node: int = 8, fn=pretrain
-) -> run.Partial:
+    return recipe
+
+
+def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     """
     Create a performance-optimized pre-training recipe for Mixtral 8x22B model.
 
-    This recipe enables performance optimizations that may not be suitable for all use cases.
+    This method enables performance optimizations that may not be suitable for all use cases.
     It builds upon the standard pre-training recipe and adds additional performance enhancements.
 
     Args:
-        dir (Optional[str]): Directory for saving logs and checkpoints.
-        name (str): Name of the pre-training run.
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
-        fn (Callable): The pre-training function to use.
+        recipe (run.Partial): Base pre-train recipe to which performance optimizations will be added
 
     Returns:
         run.Partial: Partial configuration for performance-optimized pre-training.
 
-    Examples:
-        CLI usage:
-            $ nemo llm pretrain --factory "mixtral_8x22b.pretrain_recipe_performance(num_nodes=8, name='perf_pretrain')"
-
-        Python API usage:
-            >>> recipe = pretrain_recipe_performance(name="mixtral_8x22b_perf", num_nodes=8)
-            >>> print(recipe)
-
     Note:
-        Use this recipe with caution and only when you need maximum performance.
+        Use this method with caution and only when you need maximum performance.
         It may not be suitable for all hardware configurations or use cases.
     """
-    recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn)
 
-    # 'overlap_param_gather_with_optimizer_step' and 'align_param_gather' params are set automatically by MegatronCommOverlapCallback
-    # They are added here for user's knowledge
-    # overlap_param_gather_with_optimizer_step- If true, overlap param all-gather of first bucket with optimizer step.
-    # align_param_gather- If true, all PP stages launch param all-gathers simultaneously, else each PP stage launches independently as needed
+    # 'overlap_param_gather_with_optimizer_step' and 'align_param_gather' params are set automatically
+    # by MegatronCommOverlapCallback. They are added here for user's knowledge.
+    # overlap_param_gather_with_optimizer_step- Overlap param all-gather of first bucket with optimizer step.
+    # align_param_gather- If true, all PP stages launch param all-gathers simultaneously, else
+    # each PP stage launches independently as needed.
 
     recipe.trainer.callbacks.extend(
         [

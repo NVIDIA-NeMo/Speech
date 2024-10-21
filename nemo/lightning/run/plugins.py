@@ -287,16 +287,16 @@ class PerfEnvPlugin(run.Plugin):
             tp_size = task.trainer.strategy.tensor_model_parallel_size
             cp_size = task.trainer.strategy.context_parallel_size
             if tp_size > 1 and cp_size > 1:
-                executor.env_vars["CUDA_DEVICE_MAX_CONNECTIONS"] = 1
+                executor.env_vars["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
 
             # Set LayerNorm SM margin to support the overlap with LayerNorm kernel
             if self.enable_layernorm_sm_margin:
-                executor.env_vars["NVTE_FWD_LAYERNORM_SM_MARGIN"] = self.layernorm_sm_margin
-                executor.env_vars["NVTE_BWD_LAYERNORM_SM_MARGIN"] = self.layernorm_sm_margin
+                executor.env_vars["NVTE_FWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
+                executor.env_vars["NVTE_BWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
 
         # Force Transformer Engine to use cuDNN attention over HazyResearch's Flash Attention
-        executor.env_vars["NVTE_FLASH_ATTN"] = 0
-        executor.env_vars["NVTE_FUSED_ATTN"] = 1
+        executor.env_vars["NVTE_FLASH_ATTN"] = "0"
+        executor.env_vars["NVTE_FUSED_ATTN"] = "1"
 
         # Improve perf by steering power to tensor cores, may not work on all systems
         if self.enable_vboost and isinstance(executor, run.SlurmExecutor):

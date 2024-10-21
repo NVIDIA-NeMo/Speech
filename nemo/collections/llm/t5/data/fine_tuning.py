@@ -61,8 +61,6 @@ class FineTuningDataModule(pl.LightningDataModule):
         from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
         self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "BertWordPieceCase")
-        additional_tokens = {'additional_special_tokens': [f'<extra_id_{i}>' for i in range(100)]}
-        self.tokenizer.add_special_tokens(additional_tokens)
 
         self.memmap_workers = memmap_workers
         self.num_workers = num_workers

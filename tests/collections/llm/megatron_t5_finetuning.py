@@ -35,9 +35,12 @@ if __name__ == '__main__':
 
     args = get_args()
 
+    special_tokens = {}
+    special_tokens['additional_special_tokens'] = [f'<extra_id_{i}>' for i in range(100)]
     tokenizer = get_nmt_tokenizer(
         "megatron",
         "BertWordPieceCase",
+        special_tokens=special_tokens,
     )
 
     data = SquadDataModule(

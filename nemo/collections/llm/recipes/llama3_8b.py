@@ -143,7 +143,12 @@ def trainer(
 
 @run.cli.factory(target=pretrain, name=NAME)
 def pretrain_recipe(
-    dir: Optional[str] = None, name: str = "default", num_nodes: int = 1, num_gpus_per_node: int = 8, fn=pretrain
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 1,
+    num_gpus_per_node: int = 8,
+    performance_mode: bool = False,
+    fn: Callable = pretrain,
 ) -> run.Partial:
     """
     Create a pre-training recipe for Llama3 8B model.
@@ -156,6 +161,7 @@ def pretrain_recipe(
         name (str): Name of the pre-training run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
+        performance_mode (bool): If true, enables optimizations for maximum performance.
         fn (Callable): The pre-training function to use.
 
     Returns:
@@ -174,7 +180,7 @@ def pretrain_recipe(
         For more details on pre-training LLMs with NeMo, see the pre-training
         guide in the `examples/llm/pretrain/` directory.
     """
-    return run.Partial(
+    recipe = run.Partial(
         fn,
         model=model(),
         trainer=trainer(
@@ -188,44 +194,29 @@ def pretrain_recipe(
         resume=default_resume(),
     )
 
+    if performance_mode:
+        recipe = pretrain_performance_optimizations(recipe)
 
-@run.cli.factory(target=pretrain, name=NAME + "_performance")
-def pretrain_recipe_performance(
-    dir: Optional[str] = None,
-    name: str = "default",
-    num_nodes: int = 1,
-    num_gpus_per_node: int = 8,
-    fn: Callable = pretrain,
-) -> run.Partial:
+    return recipe
+
+
+def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     """
     Create a performance-optimized pre-training recipe for Llama3 8B model.
 
-    This recipe enables performance optimizations that may not be suitable for all use cases.
+    This method enables performance optimizations that may not be suitable for all use cases.
     It builds upon the standard pre-training recipe and adds additional performance enhancements.
 
     Args:
-        dir (Optional[str]): Directory for saving logs and checkpoints.
-        name (str): Name of the pre-training run.
-        num_nodes (int): Number of compute nodes to use.
-        num_gpus_per_node (int): Number of GPUs per node.
-        fn (Callable): The pre-training function to use.
+        recipe (run.Partial): Base pre-train recipe to which performance optimizations will be added
 
     Returns:
         run.Partial: Partial configuration for performance-optimized pre-training.
 
-    Examples:
-            $ nemo llm pretrain --factory llama3_8b_optimized
-
-        Python API usage:
-            >>> recipe = pretrain_recipe_performance(name="llama3_8b_perf", num_nodes=4)
-            >>> print(recipe)
-
     Note:
-        Use this recipe with caution and only when you need maximum performance.
+        Use this method with caution and only when you need maximum performance.
         It may not be suitable for all hardware configurations or use cases.
     """
-    recipe = pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node, fn=fn)
-
     recipe.trainer.callbacks.append(
         run.Config(
             MegatronCommOverlapCallback,

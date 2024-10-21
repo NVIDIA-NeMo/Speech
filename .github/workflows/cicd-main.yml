@@ -3887,7 +3887,7 @@ jobs:
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
 
-  OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check:
+  L2_NeMo_2_GPT_DDP_Param_Parity_check:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check') || needs.cicd-test-container-setup.outputs.all == 'true'
@@ -3895,7 +3895,7 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |
 
-        python tests/lightning/test_ddp_parity_checker.py \
+        TORCHDYNAMO_DISABLE=1 python tests/lightning/test_ddp_parity_checker.py \
         --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
         --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
         --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document
@@ -3903,8 +3903,7 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
-      IS_OPTIONAL: true
-      
+
   L2_NeMo_2_SSM_Pretraining:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4423,7 +4422,7 @@ jobs:
       - Speech_Checkpoints_tests
       - L2_Stable_Diffusion_Training
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
-      #- OPTIONAL_L2_NeMo_2_GPT_DDP_Param_Parity_check
+      - L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning

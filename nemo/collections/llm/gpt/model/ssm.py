@@ -53,6 +53,9 @@ class SSMConfig(TransformerConfig, io.IOMixin):
     fp16_lm_cross_entropy: bool = False
     parallel_output: bool = True
     share_embeddings_and_output_weights: bool = False
+    params_dtype: torch.dtype = torch.bfloat16
+    fp16: bool = False
+    bf16: bool = True
     num_layers: int = 2
     mamba_ssm_ngroups: int = 8
     num_attention_heads: int = 1
@@ -81,6 +84,7 @@ class SSMConfig(TransformerConfig, io.IOMixin):
 
     forward_step_fn: Callable = ssm_forward_step
     data_step_fn: Callable = gpt_data_step
+    tokenizer_model_path: str = None
 
     def configure_model(self, tokenizer) -> "MCoreMambaModel":
 
@@ -127,9 +131,17 @@ class PyTorchSSMImporter(io.ModelConnector["GPTModel", GPTModel]):
             def state_dict(self):
                 return self._state_dict
 
+            def to(self, dtype):
+                for k, v in self._state_dict.items():
+                    if v.dtype != dtype:
+                        logging.warning(f"Converting {k} from {v.dtype} (source model) to {dtype} (target model)")
+                    self._state_dict[k] = v.to(dtype)
+
         source = ModelState(source)
         target = self.init()
-        trainer = self.nemo_setup(target)
+        trainer = self.nemo_setup(target, ckpt_async_save=False)
+        source.to(self.config.params_dtype)
+        target.to(self.config.params_dtype)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
 

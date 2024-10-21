@@ -76,7 +76,7 @@ class Logger(metaclass=Singleton):
         self.rank = 0 if is_global_rank_zero() else "UNK"
 
     def _define_logger(self, capture_warnings=True):
-        """ Creates the logger if not already created. Called in init"""
+        """Creates the logger if not already created. Called in init"""
 
         # Use double-checked locking to avoid taking lock unnecessarily.
         if self._logger is not None:
@@ -126,7 +126,7 @@ class Logger(metaclass=Singleton):
         self._logger.propagate = False
 
     def remove_stream_handlers(self):
-        """ Removes StreamHandler that log to stdout and stderr from the logger."""
+        """Removes StreamHandler that log to stdout and stderr from the logger."""
         if self._logger is None:
             raise RuntimeError("Impossible to set handlers if the Logger is not predefined")
 
@@ -236,7 +236,7 @@ class Logger(metaclass=Singleton):
 
     @contextmanager
     def patch_stderr_handler(self, stream):
-        """ Sends messages that should log to stderr to stream instead. Useful for unittests """
+        """Sends messages that should log to stderr to stream instead. Useful for unittests"""
         if self._logger is not None:
             try:
                 old_stream = self._handlers["stream_stderr"].stream
@@ -268,7 +268,7 @@ class Logger(metaclass=Singleton):
 
     @contextmanager
     def patch_stdout_handler(self, stream):
-        """ Sends messages that should log to stdout to stream instead. Useful for unittests """
+        """Sends messages that should log to stdout to stream instead. Useful for unittests"""
         if self._logger is not None:
             try:
                 old_stream = self._handlers["stream_stdout"].stream
@@ -339,6 +339,16 @@ class Logger(metaclass=Singleton):
                 warnings.showwarning = self.old_warnings_showwarning
                 self.old_warnings_showwarning = None
 
+    def _warning_is_ignored(self, category):
+        from warnings import filters
+
+        # Search the filters
+        for action, msg, cat, mod, ln in filters:
+            # least-common demoninator if multiple filters for the same class.
+            if cat == category and action == 'ignore':
+                return True
+        return False
+
     def _showwarning(self, message, category, filename, lineno, file=None, line=None):
         """
         Implementation of showwarnings which redirects to logging.
@@ -346,6 +356,8 @@ class Logger(metaclass=Singleton):
         with level logging.WARNING.
         """
         s = warnings.formatwarning(message, category, filename, lineno, line)
+        if self._warning_is_ignored(category):
+            return
         self.warning("%s", s)
 
     def _logged_once(self, msg, mode):

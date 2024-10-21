@@ -7,27 +7,6 @@
   - Container: [NeMo24.03.01.framework](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo/tags)
   - System: DGX-H100
 
-<style>
-  table {
-    border-collapse: collapse;
-  }
-  th {
-    border: 1px solid;
-    padding: 5px;
-    text-align: center; /* Center-align all header cells */
-  }
-  td {
-    border: 1px solid;
-    padding: 5px;
-  }
-  th.top-border {
-    border-top: 2px solid;
-  }
-  td.speedup {
-    font-weight: bold;
-  }
-</style>
-
 
 <table>
   <thead>

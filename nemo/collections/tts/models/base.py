@@ -18,6 +18,7 @@ from contextlib import ExitStack, contextmanager
 from typing import List, Optional
 
 import torch
+from hydra.utils import instantiate
 from omegaconf import DictConfig
 from tqdm import tqdm
 
@@ -28,9 +29,39 @@ from nemo.core.neural_types.elements import AudioSignal
 from nemo.core.neural_types.neural_type import NeuralType
 from nemo.utils import logging, model_utils
 
+PYNINI_AVAILABLE = True
+try:
+    import nemo_text_processing
+except (ImportError, ModuleNotFoundError):
+    PYNINI_AVAILABLE = False
 
-class SpectrogramGenerator(ModelPT, ABC):
-    """ Base class for all TTS models that turn text into a spectrogram """
+
+class NeedsNormalizer:
+    """Base class for all TTS models that needs text normalization(TN)"""
+
+    def _setup_normalizer(self, cfg):
+        if "text_normalizer" in cfg:
+            if not PYNINI_AVAILABLE:
+                logging.error(
+                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details."
+                )
+                logging.error("The normalizer will be disabled.")
+                return
+            normalizer_kwargs = {}
+
+            if "whitelist" in cfg.text_normalizer:
+                normalizer_kwargs["whitelist"] = self.register_artifact(
+                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
+                )
+
+            self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
+            self.text_normalizer_call = self.normalizer.normalize
+            if "text_normalizer_call_kwargs" in cfg:
+                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
+
+
+class SpectrogramGenerator(NeedsNormalizer, ModelPT, ABC):
+    """Base class for all TTS models that turn text into a spectrogram"""
 
     @abstractmethod
     def parse(self, str_input: str, **kwargs) -> 'torch.tensor':
@@ -115,7 +146,7 @@ class Vocoder(ModelPT, ABC):
 
 
 class GlowVocoder(Vocoder):
-    """ Base class for all Vocoders that use a Glow or reversible Flow-based setup. All child class are expected
+    """Base class for all Vocoders that use a Glow or reversible Flow-based setup. All child class are expected
     to have a parameter called audio_to_melspec_precessor that is an instance of
     nemo.collections.asr.parts.FilterbankFeatures"""
 
@@ -175,7 +206,11 @@ class GlowVocoder(Vocoder):
                 return torch.sqrt(spec.pow(2).sum(-1)), torch.atan2(spec[..., -1], spec[..., 0])
 
             self.stft = lambda x: yet_another_patch(
-                x, n_fft=n_fft, hop_length=hop_length, win_length=win_length, window=window,
+                x,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                win_length=win_length,
+                window=window,
             )
             self.istft = lambda x, y: torch.istft(
                 torch.complex(x * torch.cos(y), x * torch.sin(y)),
@@ -252,15 +287,15 @@ class MelToSpec(ModelPT, ABC):
         return list_of_models
 
 
-class TextToWaveform(ModelPT, ABC):
-    """ Base class for all end-to-end TTS models that generate a waveform from text """
+class TextToWaveform(NeedsNormalizer, ModelPT, ABC):
+    """Base class for all end-to-end TTS models that generate a waveform from text"""
 
     @abstractmethod
     def parse(self, str_input: str, **kwargs) -> 'torch.tensor':
         """
-       A helper function that accepts a raw python string and turns it into a tensor. The tensor should have 2
-        dimensions. The first is the batch, which should be of size 1. The second should represent time. The tensor
-        should represent either tokenized or embedded text, depending on the model.
+        A helper function that accepts a raw python string and turns it into a tensor. The tensor should have 2
+         dimensions. The first is the batch, which should be of size 1. The second should represent time. The tensor
+         should represent either tokenized or embedded text, depending on the model.
         """
 
     @abstractmethod
@@ -299,7 +334,6 @@ class G2PModel(ModelPT, ABC):
         num_workers: int = 0,
         pred_field: Optional[str] = "pred_text",
     ) -> List[str]:
-
         """
         Main function for Inference. Converts grapheme entries from the manifest "graheme_field" to phonemes
         Args:

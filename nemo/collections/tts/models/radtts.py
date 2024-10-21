@@ -296,7 +296,9 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             text_tokenizer=self.tokenizer,
         )
         return torch.utils.data.DataLoader(  # noqa
-            dataset=dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params,
+            dataset=dataset,
+            collate_fn=dataset.collate_fn,
+            **cfg.dataloader_params,
         )
 
     def setup_training_data(self, cfg):
@@ -315,7 +317,9 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
             "speaker": NeuralType(('B'), Index(), optional=True),
             "sigma": NeuralType(optional=True),
         },
-        output_types={"spect": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType()),},
+        output_types={
+            "spect": NeuralType(('B', 'D', 'T_spec'), MelSpectrogramType()),
+        },
     )
     def generate_spectrogram(self, tokens: 'torch.tensor', speaker: int = 0, sigma: float = 1.0) -> torch.tensor:
         self.eval()
@@ -350,12 +354,14 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
 
             if "phoneme_dict" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["phoneme_dict"] = self.register_artifact(
-                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                    'text_tokenizer.g2p.phoneme_dict',
+                    cfg.text_tokenizer.g2p.phoneme_dict,
                 )
 
             if "heteronyms" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["heteronyms"] = self.register_artifact(
-                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                    'text_tokenizer.g2p.heteronyms',
+                    cfg.text_tokenizer.g2p.heteronyms,
                 )
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
@@ -373,29 +379,6 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
 
             self.text_tokenizer_pad_id = text_tokenizer_pad_id
             self.tokens = tokens
-
-    def _setup_normalizer(self, cfg):
-        if "text_normalizer" in cfg:
-            normalizer_kwargs = {}
-
-            if "whitelist" in cfg.text_normalizer:
-                normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
-                )
-
-            try:
-                import nemo_text_processing
-
-                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
-                self.text_normalizer_call = self.normalizer.normalize
-            except Exception as e:
-                logging.error(e)
-                raise ImportError(
-                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details"
-                )
-            self.text_normalizer_call = self.normalizer.normalize
-            if "text_normalizer_call_kwargs" in cfg:
-                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
 
     def parse(self, text: str, normalize=False) -> torch.Tensor:
         if self.training:
@@ -479,7 +462,11 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         inp[inp == pad_id] = pad_id - 1 if pad_id > 0 else pad_id + 1
 
         inputs.update(
-            {'speaker_id': speaker, 'speaker_id_text': speaker, 'speaker_id_attributes': speaker,}
+            {
+                'speaker_id': speaker,
+                'speaker_id_text': speaker,
+                'speaker_id_attributes': speaker,
+            }
         )
         new_inputs = {
             'text': inp,
@@ -495,11 +482,24 @@ class RadTTSModel(SpectrogramGenerator, Exportable):
         return (new_inputs,)
 
     def forward_for_export(
-        self, text, batch_lengths, speaker_id, speaker_id_text, speaker_id_attributes, pitch, pace, volume,
+        self,
+        text,
+        batch_lengths,
+        speaker_id,
+        speaker_id_text,
+        speaker_id_attributes,
+        pitch,
+        pace,
+        volume,
     ):
         if self.export_config["enable_ragged_batches"]:
             text, pitch, pace, volume_tensor, lens = batch_from_ragged(
-                text, pitch, pace, batch_lengths=batch_lengths, padding_idx=self.tokenizer_pad, volume=volume,
+                text,
+                pitch,
+                pace,
+                batch_lengths=batch_lengths,
+                padding_idx=self.tokenizer_pad,
+                volume=volume,
             )
             if volume is not None:
                 volume = volume_tensor

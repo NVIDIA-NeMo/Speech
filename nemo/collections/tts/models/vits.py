@@ -92,28 +92,6 @@ class VitsModel(TextToWaveform):
 
         self.automatic_optimization = False
 
-    def _setup_normalizer(self, cfg):
-        if "text_normalizer" in cfg:
-            normalizer_kwargs = {}
-
-            if "whitelist" in cfg.text_normalizer:
-                normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
-                )
-
-            try:
-                import nemo_text_processing
-
-                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
-                self.text_normalizer_call = self.normalizer.normalize
-            except Exception as e:
-                logging.error(e)
-                raise ImportError(
-                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details"
-                )
-            if "text_normalizer_call_kwargs" in cfg:
-                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
-
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer and cfg.text_tokenizer.g2p is not None:
@@ -131,12 +109,14 @@ class VitsModel(TextToWaveform):
 
             if "phoneme_dict" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["phoneme_dict"] = self.register_artifact(
-                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                    'text_tokenizer.g2p.phoneme_dict',
+                    cfg.text_tokenizer.g2p.phoneme_dict,
                 )
 
             if "heteronyms" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["heteronyms"] = self.register_artifact(
-                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                    'text_tokenizer.g2p.heteronyms',
+                    cfg.text_tokenizer.g2p.heteronyms,
                 )
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
@@ -164,8 +144,14 @@ class VitsModel(TextToWaveform):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
-        optim_g = instantiate(optim_config, params=self.net_g.parameters(),)
-        optim_d = instantiate(optim_config, params=self.net_d.parameters(),)
+        optim_g = instantiate(
+            optim_config,
+            params=self.net_g.parameters(),
+        )
+        optim_d = instantiate(
+            optim_config,
+            params=self.net_d.parameters(),
+        )
 
         if sched_config is not None:
             if sched_config.name == 'ExponentialLR':
@@ -173,10 +159,14 @@ class VitsModel(TextToWaveform):
                 scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=sched_config.lr_decay)
             elif sched_config.name == 'CosineAnnealing':
                 scheduler_g = CosineAnnealing(
-                    optimizer=optim_g, max_steps=sched_config.max_steps, min_lr=sched_config.min_lr,
+                    optimizer=optim_g,
+                    max_steps=sched_config.max_steps,
+                    min_lr=sched_config.min_lr,
                 )
                 scheduler_d = CosineAnnealing(
-                    optimizer=optim_d, max_steps=sched_config.max_steps, min_lr=sched_config.min_lr,
+                    optimizer=optim_d,
+                    max_steps=sched_config.max_steps,
+                    min_lr=sched_config.min_lr,
                 )
             else:
                 raise ValueError("Unknown optimizer.")
@@ -362,7 +352,9 @@ class VitsModel(TextToWaveform):
             text_tokenizer=self.tokenizer,
         )
         return torch.utils.data.DataLoader(  # noqa
-            dataset=dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params,
+            dataset=dataset,
+            collate_fn=dataset.collate_fn,
+            **cfg.dataloader_params,
         )
 
     def train_dataloader(self):
@@ -377,7 +369,10 @@ class VitsModel(TextToWaveform):
         train_sampler = DistributedBucketSampler(dataset, **self.cfg.train_ds.batch_sampler)
 
         dataloader = torch.utils.data.DataLoader(
-            dataset, collate_fn=dataset.collate_fn, batch_sampler=train_sampler, **self.cfg.train_ds.dataloader_params,
+            dataset,
+            collate_fn=dataset.collate_fn,
+            batch_sampler=train_sampler,
+            **self.cfg.train_ds.dataloader_params,
         )
         return dataloader
 
@@ -412,7 +407,9 @@ class VitsModel(TextToWaveform):
         return list_of_models
 
     @typecheck(
-        input_types={"tokens": NeuralType(('B', 'T_text'), TokenIndex(), optional=True),},
+        input_types={
+            "tokens": NeuralType(('B', 'T_text'), TokenIndex(), optional=True),
+        },
         output_types={"audio": NeuralType(('B', 'T_audio'), AudioSignal())},
     )
     def convert_text_to_waveform(self, *, tokens, speakers=None):

@@ -24,6 +24,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
+from nemo.collections.tts.models.base import NeedsNormalizer
 from nemo.collections.tts.parts.utils.helpers import (
     binarize_attention,
     g2p_backward_compatible_support,
@@ -41,7 +42,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
-class AlignerModel(ModelPT):
+class AlignerModel(NeedsNormalizer, ModelPT):
     """Speech-to-text alignment model (https://arxiv.org/pdf/2108.10447.pdf) that is used to learn alignments between mel spectrogram and text."""
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
@@ -76,29 +77,6 @@ class AlignerModel(ModelPT):
         self.bin_loss_scale = 0.0
         self.bin_loss_start_ratio = cfg.bin_loss_start_ratio
         self.bin_loss_warmup_epochs = cfg.bin_loss_warmup_epochs
-
-    def _setup_normalizer(self, cfg):
-        if "text_normalizer" in cfg:
-            normalizer_kwargs = {}
-
-            if "whitelist" in cfg.text_normalizer:
-                normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
-                )
-
-            try:
-                import nemo_text_processing
-
-                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
-            except Exception as e:
-                logging.error(e)
-                raise ImportError(
-                    "`nemo_text_processing` not installed, see https://github.com/NVIDIA/NeMo-text-processing for more details"
-                )
-
-            self.text_normalizer_call = self.normalizer.normalize
-            if "text_normalizer_call_kwargs" in cfg:
-                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
 
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}

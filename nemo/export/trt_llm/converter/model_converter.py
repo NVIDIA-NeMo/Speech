@@ -260,9 +260,7 @@ def model_to_trtllm_ckpt(
 
         if mapping.is_first_pp_rank():
             embedding_weight = (
-                np.ascontiguousarray(
-                    split(weights_dict["transformer.vocab_embedding.weight"], mapping.tp_size, mapping.tp_rank)
-                )
+                split(weights_dict["transformer.vocab_embedding.weight"], mapping.tp_size, mapping.tp_rank)
                 if use_parallel_embedding
                 else weights_dict["transformer.vocab_embedding.weight"]
             )
@@ -272,9 +270,7 @@ def model_to_trtllm_ckpt(
             pos_embedding_weight = weights_dict.get("transformer.position_embedding.weight")
             if pos_embedding_weight is not None:
                 if use_parallel_embedding:
-                    pos_embedding_weight = np.ascontiguousarray(
-                        split(pos_embedding_weight, mapping.tp_size, mapping.tp_rank)
-                    )
+                    pos_embedding_weight = split(pos_embedding_weight, mapping.tp_size, mapping.tp_rank)
                 weights_dict_local["transformer.position_embedding.weight"] = pos_embedding_weight
 
         if mapping.is_last_pp_rank():

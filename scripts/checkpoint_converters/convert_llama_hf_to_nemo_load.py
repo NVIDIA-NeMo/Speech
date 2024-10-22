@@ -15,7 +15,7 @@
 r"""
 Conversion script to convert Huggingface LLaMA checkpoints into nemo checkpoint.
   Example to run this conversion script:
-    python convert_llama_hf_to_nemo.py \
+    python convert_llama_hf_to_nemo_load.py \
      --input_name_or_path <path_to_hf_checkpoints_folder> \
      --input_state_dict <path_to_saved_state_dict> \
      --output_path <path_to_output_nemo_file> \

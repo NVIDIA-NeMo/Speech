@@ -3,7 +3,7 @@
 ### Listing the available recipes for pretraining
 
 ```bash
-nemorun llm pretrain --help
+nemo llm pretrain --help
 ```
 
 ![recipe-listing](https://github.com/NVIDIA/NeMo/releases/download/v2.0.0rc0/list-recipes.png)
@@ -12,7 +12,7 @@ nemorun llm pretrain --help
 ### Run pre-training with a default recipe
 
 ```bash
-nemorun llm pretrain --factory llama3_8b
+nemo llm pretrain --factory llama3_8b
 ```
 
 ![llama3_70b](https://github.com/NVIDIA/NeMo/releases/download/v2.0.0rc0/llama3_70b.png)
@@ -20,7 +20,7 @@ nemorun llm pretrain --factory llama3_8b
 We can also call the factory function with custom parameters:
 
 ```bash
-nemorun llm pretrain --factory "llama3_70b(num_nodes=128)"
+nemo llm pretrain --factory "llama3_70b(num_nodes=128)"
 ```
 
 ![llama3_70b-128-nodes](https://github.com/NVIDIA/NeMo/releases/download/v2.0.0rc0/llama3_70b_128nodes.png)
@@ -29,13 +29,13 @@ nemorun llm pretrain --factory "llama3_70b(num_nodes=128)"
 The CLI allows you to overwrite any parameter. For example, to run the recipe with 2000 steps: 
 
 ```bash
-nemorun llm pretrain --factory llama3_70b trainer.max_steps=2000
+nemo llm pretrain --factory llama3_70b trainer.max_steps=2000
 ```
 
 The syntax of the CLI is the same as the Python code. Which is great but in some cases you might want to inspect & edit a recipe interactively. An easy way to do this using the cli is the use the `--repl` flag.
 
 ```bash
-nemorun llm pretrain --factory llama3_70b --repl
+nemo llm pretrain --factory llama3_70b --repl
 ```
 
 ![repl](https://github.com/NVIDIA/NeMo/releases/download/v2.0.0rc0/repl.gif)

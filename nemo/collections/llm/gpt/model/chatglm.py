@@ -221,7 +221,7 @@ def _import_qkv_weight(ctx: io.TransformCTX, hf_qkv_weights):
     k = k.view(*new_kv_tensor_shape)
     v = v.view(*new_kv_tensor_shape)
 
-    qkv_weights = torch.empty((0, head_size, old_tensor_shape[1]))
+    qkv_weights = torch.empty((0, head_size, old_tensor_shape[1])).type_as(hf_qkv_weights)
     for i in range(num_query_groups):
         qkv_weights = torch.cat((qkv_weights, q[i * heads_per_group : (i + 1) * heads_per_group, :, :]))
         qkv_weights = torch.cat((qkv_weights, k[i : i + 1, :, :]))
@@ -251,7 +251,7 @@ def _import_qkv_bias(ctx: io.TransformCTX, hf_qkv_bias):
     q = q.view(*new_q_tensor_shape)
     k = k.view(*new_kv_tensor_shape)
     v = v.view(*new_kv_tensor_shape)
-    qkv_bias = torch.empty((0, head_size))
+    qkv_bias = torch.empty((0, head_size)).type_as(hf_qkv_bias)
     for i in range(num_query_groups):
         qkv_bias = torch.cat((qkv_bias, q[i * heads_per_group : (i + 1) * heads_per_group, :]))
         qkv_bias = torch.cat((qkv_bias, k[i : i + 1, :]))

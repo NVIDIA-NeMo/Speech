@@ -60,7 +60,7 @@ def default_finetune_recipe(
         ),
         data=run.Config(llm.SquadDataModule, seq_length=2048, global_batch_size=128, micro_batch_size=1),
         log=llm.default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
-        optim=distributed_fused_adam_with_cosine_annealing(max_lr=1e-4, min_lr=0, warmup_steps=50),
+        optim=distributed_fused_adam_with_cosine_annealing(max_lr=1e-4, min_lr=0, warmup_steps=50, adam_beta2=0.98),
         resume=nemo_resume(resume_path),
     )
 
@@ -77,9 +77,9 @@ def default_finetune_trainer(
     num_nodes=1,
     num_gpus_per_node=8,
     max_steps=1000,
-    limit_test_batches=None,
-    limit_val_batches=None,
-    val_check_interval=5,
+    limit_test_batches=1,
+    limit_val_batches=1,
+    val_check_interval=30,
 ):
     strategy = run.Config(
         nl.MegatronStrategy,

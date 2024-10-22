@@ -215,7 +215,7 @@ def _import_qkv(ctx: io.TransformCTX, qkv_weights):
     q = qkv_weights[0].squeeze().view(*new_q_tensor_shape)
     k = qkv_weights[1].squeeze().view(*new_kv_tensor_shape)
     v = qkv_weights[2].squeeze().view(*new_kv_tensor_shape)
-    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:])
+    qkv_weights = torch.empty((0, head_size) + old_tensor_shape[1:]).type_as(qkv_weights)
     for i in range(num_query_groups):
         qkv_weights = torch.cat((qkv_weights, q[i * heads_per_group : (i + 1) * heads_per_group, :, :]))
         qkv_weights = torch.cat((qkv_weights, k[i : i + 1, :, :]))

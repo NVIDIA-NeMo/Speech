@@ -436,7 +436,7 @@ def export_ckpt(
 def generate(
     path: Union[Path, str],
     prompts: list[str],
-    trainer: Optional[nl.Trainer] = None,
+    trainer: nl.Trainer,
     params_dtype: torch.dtype = torch.bfloat16,
     max_batch_size: int = 4,
     random_seed: Optional[int] = None,

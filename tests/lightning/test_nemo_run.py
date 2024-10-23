@@ -36,6 +36,7 @@ BASE_CHECKPOINT_DIR = "/nemo_run/checkpoints"
         ("nemotron4_22b_64k", "pretrain_recipe", "nemotron4_22b_64k_pretrain"),
         ("nemotron4_340b", "pretrain_recipe", "nemotron4_340b_pretrain"),
         ("nemotron4_340b", "finetune_recipe", "nemotron4_340b_finetune"),
+        ("gpt3_175b", "pretrain_recipe", "gpt3_175b_pretrain"),
     ],
 )
 def test_recipes_with_nemo_run(module, recipe, name, tmpdir, monkeypatch):

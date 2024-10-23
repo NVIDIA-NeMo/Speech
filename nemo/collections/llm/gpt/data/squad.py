@@ -56,6 +56,7 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
         persistent_workers: bool = False,
         pad_to_max_length: bool = False,
         packed_sequence_specs: Optional["PackedSequenceSpecs"] = None,
+        sanity_check_dist_workers: bool = True,
     ):
         self.force_redownload = force_redownload
         self.delete_raw = delete_raw
@@ -74,6 +75,7 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
             persistent_workers=persistent_workers,
             pad_to_max_length=pad_to_max_length,
             packed_sequence_specs=packed_sequence_specs,
+            sanity_check_dist_workers=sanity_check_dist_workers,
         )
 
     def prepare_data(self) -> None:

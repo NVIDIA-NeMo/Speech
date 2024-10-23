@@ -17,7 +17,12 @@ from typing import Optional
 import nemo_run as run
 from megatron.core.optimizer import OptimizerConfig
 
-from nemo.lightning.pytorch.optim import CosineAnnealingScheduler, MegatronOptimizerModule, OptimizerModule
+from nemo.lightning.pytorch.optim import (
+    CosineAnnealingScheduler,
+    MegatronOptimizerModule,
+    OptimizerModule,
+    PytorchOptimizerModule,
+)
 
 
 @run.cli.factory
@@ -58,4 +63,56 @@ def distributed_fused_adam_with_cosine_annealing(
         MegatronOptimizerModule,
         config=opt_cfg,
         lr_scheduler=sched,
+    )
+
+
+@run.cli.factory
+def pytorch_adam_with_cosine_annealing(
+    precision: str = "bf16-mixed",  # or "16-mixed"
+    warmup_steps: int = 2000,
+    constant_steps: int = 0,
+    max_lr: float = 1e-5,
+    min_lr: Optional[float] = None,
+    clip_grad: float = 1.0,
+) -> run.Config[OptimizerModule]:
+    from torch.optim import Adam
+
+    return run.Config(
+        PytorchOptimizerModule,
+        optim_cls=Adam,
+        config=dict(
+            lr=max_lr,
+            weight_decay=0.1,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+        ),
+        lr_scheduler=run.Config(
+            CosineAnnealingScheduler,
+            warmup_steps=warmup_steps,
+            constant_steps=constant_steps,
+            min_lr=min_lr or (0.1 * max_lr),
+        ),
+    )
+
+
+@run.cli.factory
+def pytorch_adam_with_flat_lr(
+    precision: str = "bf16-mixed",  # or "16-mixed"
+    warmup_steps: int = 2000,
+    constant_steps: int = 0,
+    max_lr: float = 1e-5,
+    min_lr: Optional[float] = None,
+    clip_grad: float = 1.0,
+) -> run.Config[OptimizerModule]:
+    from torch.optim import Adam
+
+    return run.Config(
+        PytorchOptimizerModule,
+        optim_cls=Adam,
+        config=dict(
+            lr=max_lr,
+            weight_decay=0.1,
+            betas=(0.9, 0.95),
+            eps=1e-8,
+        ),
     )

@@ -267,6 +267,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
     def connect(self, model: pl.LightningModule) -> None:
         super().connect(model)
 
+        assert not hasattr(model, 'is_hf_model'), "Cannot use HfAutoModelForCausalLM with MegatronParallel"
+
         _maybe_mcore_config = _strategy_lib.set_model_parallel_attributes(model, self.parallelism)
         if _maybe_mcore_config:
             self._mcore_config = _maybe_mcore_config

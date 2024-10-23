@@ -64,6 +64,7 @@ class GPTSFTDataset(Dataset):
         output_original_text: bool = False,
         ceil_to_power_2: bool = False,
         get_attention_mask_from_fusion: bool = False,
+        sanity_check_dist_workers: bool = True,
     ):
         """
         file_path: Path to a JSONL GPT supervised fine-tuning dataset. Data is formatted as multiple JSON lines with each line formatted as follows. {'input': 'John von Neumann\nVon Neumann made fundamental contributions .... Q: What did the math of artificial viscosity do?', 'output': 'smoothed the shock transition without sacrificing basic physics'}
@@ -89,6 +90,7 @@ class GPTSFTDataset(Dataset):
         special_tokens: special tokens for the chat prompts, a dictionary of {token_type: token}. Default: {'system_turn_start': '<extra_id_0>', 'turn_start': '<extra_id_1>', 'label_start': '<extra_id_2>', 'end_of_turn': '\n', "end_of_name": "\n"}
         is_test: Whether this dataset is the test split.
         output_original_text (bool): if true, will keep the original text in the output alongside the tokenized ids.
+        sanity_check_dist_workers (bool): if true, will run sanity check across workers when making mapping.
         """
         self.tokenizer = tokenizer
         self.file_path = file_path
@@ -117,6 +119,7 @@ class GPTSFTDataset(Dataset):
         self.output_original_text = output_original_text
         self.ceil_to_power_2 = ceil_to_power_2
         self.get_attention_mask_from_fusion = get_attention_mask_from_fusion
+        self.sanity_check_dist_workers = sanity_check_dist_workers
 
         if special_tokens is None:
             self.special_tokens = {
@@ -196,6 +199,7 @@ class GPTSFTDataset(Dataset):
                 binary_head=False,
                 index_mapping_dir=self.index_mapping_dir,
                 samples_mapping=osm,
+                sanity_check_dist_workers=self.sanity_check_dist_workers,
             )
         else:
             self.samples_mapping = None

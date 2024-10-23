@@ -21,6 +21,7 @@ from nemo.collections.llm import peft
 from nemo.collections.llm.gpt.data import (
     DollyDataModule,
     FineTuningDataModule,
+    HfDatasetDataModule,
     MockDataModule,
     PreTrainingDataModule,
     SquadDataModule,
@@ -57,6 +58,7 @@ from nemo.collections.llm.gpt.model import (
     GPTConfig126M,
     GPTConfig175B,
     GPTModel,
+    HfAutoModelForCausalLM,
     Llama2Config7B,
     Llama2Config13B,
     Llama2Config70B,
@@ -182,6 +184,7 @@ __all__ = [
     "squad",
     "dolly",
     "peft",
+    "HfAutoModelForCausalLM",
 ]
 
 

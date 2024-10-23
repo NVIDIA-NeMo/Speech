@@ -209,7 +209,7 @@ def create_masked_lm_predictions(
     # on-the-fly whole word masking is possible.
     token_boundary = [0] * len(tokens)
     skip_mask_idx = None  # Store the index of token that cannot be masked.
-    for (i, token) in enumerate(tokens):
+    for i, token in enumerate(tokens):
         if token == skip_masking_id:
             skip_mask_idx = i
         if token == cls_id or token == sep_id:
@@ -285,7 +285,10 @@ def create_masked_lm_predictions(
             available_ngrams = list(cand_index_set.keys())
             # n - 1 because pvals is 0-indexed and available ngrams are 1-indexed.
             pvals_current = np.array([pvals[n - 1] for n in available_ngrams])
-            n = np_rng.choice(available_ngrams, p=pvals_current / pvals_current.sum(keepdims=True),)
+            n = np_rng.choice(
+                available_ngrams,
+                p=pvals_current / pvals_current.sum(keepdims=True),
+            )
         else:
             # Sampling "n" from the geometric distribution and clipping it to
             # the max_ngrams. Using p=0.2 default from the SpanBERT paper
@@ -488,7 +491,10 @@ def create_extreme_masked_lm_predictions(
         if span_length_distribution == LengthDistribution.uniform:
             available_ngrams = list(cand_index_set.keys())
             pvals_current = np.array([pvals[n] for n in available_ngrams])
-            n = np_rng.choice(available_ngrams, p=pvals_current / pvals_current.sum(keepdims=True),)
+            n = np_rng.choice(
+                available_ngrams,
+                p=pvals_current / pvals_current.sum(keepdims=True),
+            )
         elif span_length_distribution == LengthDistribution.geometric:
             # Sampling "n" from the geometric distribution and clipping it to
             # the max_ngrams. Using p=0.2 default from the SpanBERT paper
@@ -914,7 +920,13 @@ def build_train_valid_test_datasets(
                 seed,
             )
             test_ds = MockT5Dataset(
-                cfg, tokenizer, "test", int(train_valid_test_num_samples[2]), max_seq_length, max_seq_length_dec, seed,
+                cfg,
+                tokenizer,
+                "test",
+                int(train_valid_test_num_samples[2]),
+                max_seq_length,
+                max_seq_length_dec,
+                seed,
             )
             return train_ds, valid_ds, test_ds
         else:
@@ -1257,6 +1269,7 @@ def get_samples_mapping(
     binary_head,
     index_mapping_dir: str = None,
     samples_mapping: Any = None,
+    sanity_check_dist_workers: bool = True,
 ):
     """Get a list that maps a sample index to a starting sentence index, end sentence index, and length"""
 
@@ -1328,14 +1341,16 @@ def get_samples_mapping(
         logging.info(
             ' > elasped time to build and save samples mapping ' '(seconds): {:4f}'.format(time.time() - start_time)
         )
-    torch.distributed.barrier()
-    counts = torch.cuda.LongTensor([1])
-    torch.distributed.all_reduce(counts, group=parallel_state.get_data_parallel_group(with_context_parallel=True))
-    torch.distributed.all_reduce(counts, group=parallel_state.get_pipeline_model_parallel_group())
-    assert counts[0].item() == (
-        torch.distributed.get_world_size()
-        // torch.distributed.get_world_size(group=parallel_state.get_tensor_model_parallel_group())
-    )
+
+    if sanity_check_dist_workers:
+        torch.distributed.barrier()
+        counts = torch.cuda.LongTensor([1])
+        torch.distributed.all_reduce(counts, group=parallel_state.get_data_parallel_group(with_context_parallel=True))
+        torch.distributed.all_reduce(counts, group=parallel_state.get_pipeline_model_parallel_group())
+        assert counts[0].item() == (
+            torch.distributed.get_world_size()
+            // torch.distributed.get_world_size(group=parallel_state.get_tensor_model_parallel_group())
+        )
     # Load indexed dataset if not given externally.
     if samples_mapping is None:
         logging.info(' > loading indexed mapping from {}'.format(indexmap_filename))

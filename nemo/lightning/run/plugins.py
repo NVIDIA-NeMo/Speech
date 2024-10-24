@@ -52,14 +52,14 @@ class PreemptionPlugin(run.Plugin):
         preempt_time (int): The time, in seconds, before the task's time limit at which the executor
                              will send a SIGTERM preemption signal. This allows tasks to be gracefully
                              stopped before reaching their time limit, reducing waste and
-                             promoting fair resource usage. The default value is 300 seconds (5 minutes).
+                             promoting fair resource usage. The default value is 60 seconds (1 minute).
                              This is only supported for ``run.SlurmExecutor``.
         callbacks (list[run.Config[Callback]]): A list of callback configurations that the plugin
                                                 will merge with the task's existing callbacks.
                                                 By default, the list includes NeMo's preemption callback.
     """
 
-    preempt_time: int = 300
+    preempt_time: int = 60
     callbacks: list[run.Config[Callback]] = field(default_factory=lambda: [run.Config(PreemptionCallback)])
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):

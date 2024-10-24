@@ -59,7 +59,6 @@ if __name__ == "__main__":
         strategy=nl.MegatronStrategy(
             ckpt_load_optimizer=False,
             ckpt_save_optimizer=False,
-            ckpt_async_save=False,
             tensor_model_parallel_size=1,
         ),
         plugins=nl.MegatronMixedPrecision(

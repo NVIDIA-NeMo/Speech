@@ -28,8 +28,8 @@ model:
   mask_position: pre_conv  # position to apply masking, before or after conv subsampling, choices in ['pre_conv', 'post_conv']
   
   train_ds:
-    manifest_filepath: ???
-    noise_manifest: null
+    manifest_filepath: ??? # path to training manifest, can be a string or list of strings
+    noise_manifest: ???  # the manifest for noise data, can be a string or list of strings
     sample_rate: ${model.sample_rate}
     batch_size: 8 # you may increase batch_size if your memory allows
     shuffle: true

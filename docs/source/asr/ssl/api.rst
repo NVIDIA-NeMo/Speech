@@ -4,6 +4,10 @@ NeMo SSL collection API
 
 Model Classes
 -------------
+.. autoclass:: nemo.collections.asr.models.EncDecDenoiseMaskedTokenPredModel
+    :show-inheritance:
+    :members:
+
 .. autoclass:: nemo.collections.asr.models.SpeechEncDecSelfSupervisedModel
     :show-inheritance:
     :members: 

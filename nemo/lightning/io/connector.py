@@ -185,6 +185,8 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         output_path = Path(output_path)
         output_path.mkdir(parents=True, exist_ok=True)
         trainer.save_checkpoint(ckpt_to_weights_subdir(output_path))
+        if getattr(trainer.strategy, "async_save", False):
+            trainer.strategy.checkpoint_io.maybe_finalize_save_checkpoint(blocking=True)
 
         from nemo.lightning.io.pl import TrainerContext
         from nemo.utils.get_rank import is_global_rank_zero

@@ -14,6 +14,7 @@
 
 import json
 from abc import ABC, abstractmethod
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
@@ -27,6 +28,7 @@ from typing_extensions import override
 from nemo.lightning.io.pl import ckpt_to_dir
 from nemo.lightning.pytorch.callbacks.model_transform import ModelTransform
 from nemo.utils import logging
+from nemo.utils.callbacks.dist_ckpt_io import AsyncCompatibleCheckpointIO
 
 if TYPE_CHECKING:
     from megatron.core.dist_checkpointing.mapping import ShardedStateDict
@@ -111,11 +113,28 @@ class PEFT(ABC, ModelTransform):
         model.train(mode=True)
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
+        from nemo.lightning.pytorch.strategies.utils import create_checkpoint_io
+
         super().setup(trainer, pl_module, stage=stage)
 
         trainer.strategy.trainer = trainer
-        self.wrapped_io = WrappedAdapterIO(trainer.strategy.checkpoint_io, self)
-        trainer.strategy._checkpoint_io = self.wrapped_io
+        wrapped_io = partial(WrappedAdapterIO, peft=self)
+        ckpt_io_kwargs = {
+            "save_ckpt_format": trainer.strategy.save_ckpt_format,
+            "async_save": trainer.strategy.async_save,
+            "torch_dist_multiproc": trainer.strategy.torch_dist_multiproc,
+            "assume_constant_structure": trainer.strategy.assume_constant_structure,
+            "parallel_save": trainer.strategy.parallel_save,
+            "parallel_save_within_dp": trainer.strategy.parallel_save_within_dp,
+            "parallel_load": trainer.strategy.parallel_load,
+            "load_directly_on_device": trainer.strategy.load_directly_on_device,
+        }
+        trainer.strategy._checkpoint_io = create_checkpoint_io(wrapping_ckpt_io=wrapped_io, **ckpt_io_kwargs)
+        self.wrapped_io = (
+            trainer.strategy._checkpoint_io._checkpoint_io
+            if trainer.strategy.async_save
+            else trainer.strategy._checkpoint_io
+        )
         trainer.strategy._init_model_parallel = False
         trainer.strategy._setup_optimizers = False
 
@@ -271,7 +290,7 @@ class AdapterWrapper(nn.Module):
             self.adapter.load_state_dict(adapter_state_dict, strict)
 
 
-class WrappedAdapterIO(_WrappingCheckpointIO):
+class WrappedAdapterIO(_WrappingCheckpointIO, AsyncCompatibleCheckpointIO):
     peft: Optional[PEFT] = None
     model_ckpt_path: Optional[Path] = None
     adapter_ckpt_path: Optional[Path] = None
@@ -287,7 +306,7 @@ class WrappedAdapterIO(_WrappingCheckpointIO):
         checkpoint['sharded_state_dict'] = dict(
             filter(lambda item: self.peft.adapter_key_filter(item[0]), checkpoint['sharded_state_dict'].items())
         )
-        self.checkpoint_io.save_checkpoint(checkpoint, path, storage_options=storage_options)
+        request = self.checkpoint_io.save_checkpoint(checkpoint, path, storage_options=storage_options)
 
         from nemo.utils.get_rank import is_global_rank_zero
 
@@ -296,6 +315,7 @@ class WrappedAdapterIO(_WrappingCheckpointIO):
             adapter_meta_path = ckpt_to_dir(path) / _ADAPTER_META_FILENAME
             with open(adapter_meta_path, "w") as f:
                 json.dump(metadata, f)
+        return request
 
     @override
     def load_checkpoint(

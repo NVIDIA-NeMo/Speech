@@ -135,7 +135,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         save_ckpt_format (str): Distributed checkpoint format to use for checkpoint saving. Should be one of
             'torch_dist' or 'zarr'. Defaults to 'torch_dist'.
         ckpt_async_save (bool): Whether to save checkpoints asynchronously to reduce checkpointing overhead.
-            Defaults to False.
+            Defaults to True.
         ckpt_torch_dist_multiproc (int): Number of extra processes per rank used during ckpt save
             with PyTorch distributed format. Defaults to None.
         ckpt_assume_constant_structure (bool): Allows caching some computation across checkpoint saves.
@@ -145,7 +145,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         ckpt_parallel_save_within_dp (bool): If true, save will be parallelized only within a DP group
             (whole world otherwise), which might slightly reduce the save overhead. Defaults to False.
         ckpt_parallel_load (bool): If true, each worker will load part of the dist checkpoint
-            and exchange with NCCL. Might use some extra GPU memory. Defaults to False.
+            and exchange with NCCL. Might use some extra GPU memory. Defaults to True.
         ckpt_parallel_save_optim (bool): Parallel save/load of a DistributedOptimizer. 'True'
             allows performant save and reshardable checkpoints. Set to 'False' only in order to minimize
             the number of checkpoint files.
@@ -191,12 +191,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         lazy_init: bool = False,
         pipeline_dtype: Optional[torch.dtype] = None,
         save_ckpt_format: str = "torch_dist",
-        ckpt_async_save: bool = False,
+        ckpt_async_save: bool = True,
         ckpt_torch_dist_multiproc: int = None,  ## TODO(ashors): put elsewhere?
         ckpt_assume_constant_structure: bool = False,
         ckpt_parallel_save: bool = True,
         ckpt_parallel_save_within_dp: bool = False,
-        ckpt_parallel_load: bool = False,
+        ckpt_parallel_load: bool = True,
         ckpt_parallel_save_optim: bool = True,
         ckpt_load_directly_on_device: bool = True,
         setup_optimizers: bool = True,

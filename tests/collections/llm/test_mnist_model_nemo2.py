@@ -501,6 +501,7 @@ def run_train_mnist_litautoencoder_with_megatron_strategy_single_gpu():
                 monitor="val_loss",
                 save_top_k=1,
                 every_n_train_steps=5,
+                filename="{model_name}--{val_loss:.2f}-{step}-{consumed_samples}",
                 # Enables the .nemo file-like checkpointing where all IOMixins are under SerDe
                 always_save_context=True,
             )

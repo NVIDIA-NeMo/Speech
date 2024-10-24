@@ -1120,7 +1120,7 @@ class TestExpManager:
                         "always_save_nemo": True,
                     },
                     "explicit_log_dir": str(test_dir),
-                }
+                },
             )
 
         with pytest.raises(LoggerMisconfigurationError):

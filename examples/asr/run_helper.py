@@ -82,6 +82,7 @@ def merge_configs(script_config, run_config):
     check_missing_values(result)
     return result
 
+
 def check_config_mount_paths(script_config, cluster_config):
     # recursively walk all values of the script_config, checking if its a path-like string and if so, check if the path is a mounted path
     # if it is not, raise an error
@@ -154,7 +155,9 @@ def main(cluster_cfg):
         if 'exp_manager' in merged_config and 'name' in merged_config['exp_manager']:
             exp_name = merged_config['exp_manager']['name']
         else:
-            raise ValueError("Experiment name not provided in the run config file (`exp_name`)) or the cluster config (inside exp_manager.name)")
+            raise ValueError(
+                "Experiment name not provided in the run config file (`exp_name`)) or the cluster config (inside exp_manager.name)"
+            )
 
     with run.Experiment(exp_name) as exp:
         cmd = get_execution_script(cluster_script_path, "config.yaml")
@@ -166,7 +169,8 @@ def main(cluster_cfg):
         num_nodes = cluster_cfg.get('num_nodes', merged_config['trainer'].get('num_nodes', 1))
         cluster_cfg = OmegaConf.to_object(cluster_cfg)
 
-        run_utils.add_task(exp,
+        run_utils.add_task(
+            exp,
             cmd=cmd,
             task_name=job_name,
             cluster_config=cluster_cfg,

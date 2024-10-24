@@ -227,7 +227,9 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
             ),
         ]
     )
-
+    recipe.trainer.strategy.expert_model_parallel_size = 1
+    recipe.trainer.strategy.tensor_model_parallel_size = 8
+    recipe.trainer.strategy.sequence_parallel = True
     return recipe
 
 

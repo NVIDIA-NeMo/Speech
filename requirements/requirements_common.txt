@@ -1,4 +1,5 @@
 datasets
+einops
 inflect
 pandas
 sacremoses>=0.0.43

@@ -1,6 +1,5 @@
 accelerated-scan
 boto3
-einops
 faiss-cpu
 fasttext
 flask_restful

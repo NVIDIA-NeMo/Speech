@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, Mapping, Optio
 import torch
 from torch import nn
 
+from nemo.lightning.megatron_init import initialize_model_parallel_for_nemo
+
 NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE = "NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE"
 
 
@@ -57,7 +59,6 @@ def init_parallel_ranks(
         seed (int, optional): The seed for random number generation. Defaults to 1234.
         fp8 (bool, optional): Whether to use fp8 precision for model parameters. Defaults to False.
     """
-    from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
     from nemo.utils import AppState
 
     app_state = AppState()
@@ -169,17 +170,20 @@ def set_model_parallel_attributes(model, parallelism):
 
 @contextmanager
 def megatron_lazy_init_context(config) -> Generator[None, None, None]:
-    from megatron.core.extensions import transformer_engine as _te
+    try:
+        from megatron.core.extensions import transformer_engine as _te
 
-    original = _te._get_extra_te_kwargs  # noqa: SLF001
+        original = _te._get_extra_te_kwargs  # noqa: SLF001
 
-    def _get_extra_te_kwargs_meta(c):
-        """Forces device to meta"""
-        kwargs = original(c)
-        kwargs['device'] = 'meta'
-        return kwargs
+        def _get_extra_te_kwargs_meta(c):
+            """Forces device to meta"""
+            kwargs = original(c)
+            kwargs['device'] = 'meta'
+            return kwargs
 
-    _te._get_extra_te_kwargs = _get_extra_te_kwargs_meta  # noqa: SLF001
+        _te._get_extra_te_kwargs = _get_extra_te_kwargs_meta  # noqa: SLF001
+    except ImportError:
+        pass
 
     _orig_perform_initialization = config.perform_initialization
     _orig_use_cpu_initialization = config.use_cpu_initialization
@@ -189,7 +193,13 @@ def megatron_lazy_init_context(config) -> Generator[None, None, None]:
 
     yield
 
-    _te._get_extra_te_kwargs = original  # noqa: SLF001
+    try:
+        from megatron.core.extensions import transformer_engine as _te
+
+        _te._get_extra_te_kwargs = original  # noqa: SLF001
+    except ImportError:
+        pass
+
     config.perform_initialization = _orig_perform_initialization
     config.use_cpu_initialization = _orig_use_cpu_initialization
 

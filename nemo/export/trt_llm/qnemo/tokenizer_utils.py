@@ -23,10 +23,16 @@ from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
 # from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
 TOKENIZER_CONFIG_FILE = "tokenizer_config.yaml"
+TOKENIZER_DIR = "tokenizer"
 
 
 def get_nmt_tokenizer(nemo_checkpoint_path: str):
     """Build tokenizer from Nemo tokenizer config."""
+
+    tokenizer_dir = os.path.join(nemo_checkpoint_path, TOKENIZER_DIR)
+    if os.path.exists(tokenizer_dir):
+        print(f"Initializing tokenizer from {TOKENIZER_DIR} directory")
+        return AutoTokenizer.from_pretrained(tokenizer_dir)
 
     print(f"Initializing tokenizer from {TOKENIZER_CONFIG_FILE}")
     tokenizer_cfg = OmegaConf.load(os.path.join(nemo_checkpoint_path, TOKENIZER_CONFIG_FILE))

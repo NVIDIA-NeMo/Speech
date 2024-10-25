@@ -4308,6 +4308,21 @@ jobs:
       SCRIPT: |
         bash tests/collections/llm/bitexact/mixtral/run.sh
 
+  L2_NeMo_2_PTQ_Llama2_FP8:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_PTQ_Llama2_FP8') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python tests/collections/llm/test_hf_import.py --hf_model /home/TestData/nlp/megatron_llama/llama-ci-hf --output_path /tmp/nemo2_ckpt
+
+        python scripts/llm/ptq.py -nc /tmp/nemo2_ckpt -algo fp8 -out /tmp/nemo2_ptq_engine
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/nemo2_ckpt
+        rm -rf /tmp/nemo2_ptq_engine
+
   Nemo_CICD_Test:
     needs: 
       - pre-flight
@@ -4455,6 +4470,7 @@ jobs:
       - L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
       - L2_Megatron_GPT_Reranker
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
+      - L2_NeMo_2_PTQ_Llama2_FP8
     if: always()
     runs-on: ubuntu-latest
     steps:  

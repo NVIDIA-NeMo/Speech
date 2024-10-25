@@ -57,8 +57,10 @@ def test_set_model_parallel_attributes() -> None:
     assert model.config.pipeline_dtype == torch.float32
 
 
-@patch('nemo.collections.nlp.modules.common.megatron.megatron_init.initialize_model_parallel_for_nemo')
-def test_init_parallel_ranks(mock_initialize_model_parallel) -> None:
+def test_init_parallel_ranks() -> None:
+    from megatron.core.num_microbatches_calculator import destroy_num_microbatches_calculator
+    from megatron.core.parallel_state import destroy_model_parallel
+
     from nemo.utils import AppState
 
     app_state = AppState()
@@ -80,27 +82,33 @@ def test_init_parallel_ranks(mock_initialize_model_parallel) -> None:
     mock_parallel_config.pipeline_model_parallel_split_rank = None
 
     _strategy_lib.init_parallel_ranks(
-        world_size=3,
+        world_size=24,
         global_rank=1,
         local_rank=0,
         parallel_config=mock_parallel_config,
         seed=1234,
         fp8=False,
     )
-    mock_initialize_model_parallel.assert_called_once_with(
-        world_size=3,
-        global_rank=1,
-        local_rank=0,
-        tensor_model_parallel_size=2,
-        pipeline_model_parallel_size=3,
-        virtual_pipeline_model_parallel_size=4,
-        context_parallel_size=2,
-        expert_model_parallel_size=2,
-        seed=1234,
-        pipeline_model_parallel_split_rank=None,
-        use_fp8=False,
-        init_mpi_proc_group=False,
-    )
+    expected_app_state = {
+        "world_size": 24,
+        "global_rank": 1,
+        "local_rank": 0,
+        "tensor_model_parallel_size": 2,
+        "pipeline_model_parallel_size": 3,
+        "virtual_pipeline_model_parallel_size": 4,
+        "context_parallel_size": 2,
+        "expert_model_parallel_size": 2,
+        "pipeline_model_parallel_split_rank": None,
+        "use_fp8": False,
+        "init_mpi_proc_group": False,
+    }
+    for k, v in expected_app_state.items():
+        assert hasattr(app_state, k), f"Expected to find {k} in AppState"
+        app_attr = getattr(app_state, k)
+        assert app_attr == v, f"{k} in AppState is incorrect, Expected: {v} Actual: {app_attr}"
+
+    destroy_model_parallel()
+    destroy_num_microbatches_calculator()
 
 
 @patch('torch.distributed.is_initialized', return_value=True)

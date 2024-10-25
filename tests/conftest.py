@@ -25,6 +25,8 @@ from typing import Tuple
 
 import pytest
 
+from nemo.utils.metaclasses import Singleton
+
 # Those variables probably should go to main NeMo configuration file (config.yaml).
 __TEST_DATA_FILENAME = "test_data.tar.gz"
 __TEST_DATA_URL = "https://github.com/NVIDIA/NeMo/releases/download/v1.0.0rc1/"
@@ -115,6 +117,11 @@ def cleanup_local_folder():
         rmtree('./nemo_experiments', ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def reset_singletons():
+    Singleton._Singleton__instances = {}
+
+
 @pytest.fixture(scope="session")
 def test_data_dir():
     """
@@ -173,6 +180,7 @@ def k2_cuda_is_enabled(k2_is_appropriate) -> Tuple[bool, str]:
         return k2_is_appropriate
 
     import torch  # noqa: E402
+
     from nemo.core.utils.k2_guard import k2  # noqa: E402
 
     if torch.cuda.is_available() and k2.with_cuda:

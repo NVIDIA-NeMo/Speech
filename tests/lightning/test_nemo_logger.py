@@ -115,7 +115,8 @@ class TestNeMoLogger:
             resume_ignore_no_checkpoint=True,
         ).setup(trainer)
 
-        path = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints").mkdir(parents=True)
+        path = Path(tmp_path / "test_resume" / "default" / "version_0" / "checkpoints")
+        path.mkdir(parents=True)
         # Error because checkpoints do not exist in folder
         with pytest.raises(NotFoundError):
             nl.AutoResume(

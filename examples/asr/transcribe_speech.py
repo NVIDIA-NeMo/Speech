@@ -58,8 +58,8 @@ Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate 
   rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word])
 
   (Optionally: You can limit the type of timestamp computations using below overrides)
-  ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word])
-  rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word])
+  ctc_decoding.ctc_timestamp_type="all"  # (default all, can be [all, char, word, segment])
+  rnnt_decoding.rnnt_timestamp_type="all"  # (default all, can be [all, char, word, segment])
 
   output_filename: Output filename where the transcriptions will be written
   batch_size: batch size during inference

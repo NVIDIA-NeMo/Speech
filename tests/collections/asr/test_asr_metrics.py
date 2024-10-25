@@ -402,7 +402,7 @@ class TestWordErrorRate:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestep) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -433,7 +433,7 @@ class TestWordErrorRate:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestep) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -472,7 +472,7 @@ class TestWordErrorRate:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestep) == 4
         assert hyp.alignments is None
 
     @pytest.mark.unit
@@ -503,7 +503,7 @@ class TestWordErrorRate:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestep) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -542,5 +542,5 @@ class TestWordErrorRate:
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestep) == 4
         assert hyp.alignments is None

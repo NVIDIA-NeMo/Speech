@@ -214,6 +214,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         max_symbols_per_step: Optional[int] = None,
         preserve_alignments=False,
         preserve_frame_confidence=False,
+        include_duration: bool = False,
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         allow_cuda_graphs: bool = True,
@@ -228,6 +229,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
             max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
             preserve_alignments: if alignments are needed
             preserve_frame_confidence: if frame confidence is needed
+            include_duration: if predicted token durations are needed to be added to the Hypothesis object
             include_duration_confidence: if duration confidence is needed to be added to the frame confidence
             confidence_method_cfg: config for the confidence
         """
@@ -241,6 +243,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         self.preserve_alignments = preserve_alignments
         self.preserve_frame_confidence = preserve_frame_confidence
         self.allow_cuda_graphs = allow_cuda_graphs
+        self.include_duration = include_duration
         self.include_duration_confidence = include_duration_confidence
         self._SOS = self._blank_index
         self._init_confidence_method(confidence_method_cfg=confidence_method_cfg)
@@ -260,6 +263,9 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
             return
 
         if not self.allow_cuda_graphs:
+            self.cuda_graphs_mode = None
+        elif self.include_duration:
+            logging.warning("`include_duration` is not implemented for CUDA graphs")
             self.cuda_graphs_mode = None
         else:
             # cuda graphs are allowed
@@ -514,6 +520,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
                     labels,
                     time_indices_current_labels,
                     scores,
+                    durations if self.include_duration else None,
                 )
             else:
                 # auto-adjusted storage
@@ -522,6 +529,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
                     labels,
                     time_indices_current_labels,
                     scores,
+                    durations if self.include_duration else None,
                 )
 
             # stage 4: to avoid looping, go to next frame after max_symbols emission
@@ -842,6 +850,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         self.state.time_indices_current_labels.copy_(self.state.time_indices, non_blocking=True)
         # for blank labels force duration >= 1
         durations.masked_fill_(torch.logical_and(durations == 0, self.state.blank_mask), 1)
+
         if self.state.alignments is not None:
             float_dtype = self.state.float_dtype
             self.state.alignments.add_results_masked_no_checks_(

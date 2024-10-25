@@ -20,9 +20,9 @@ def test_canary_prompt_formatter_training(canary_tokenizer):
     )
     assert set(ans) == {"input_ids", "context_ids", "answer_ids", "mask"}
     # fmt: off
-    assert ans["input_ids"].tolist() == [4, 8, 7, 8, 5, 11, 91, 30, 40, 3]
-    assert ans["context_ids"].tolist() == [4, 8, 7, 8, 5]
-    assert ans["answer_ids"].tolist() == [11, 91, 30, 40, 3]
+    assert canary_tokenizer.ids_to_text(ans["input_ids"].tolist()) == '<|startoftranscript|><|en|><|transcribe|><|en|><|pnc|> TEST<|endoftext|>'
+    assert canary_tokenizer.ids_to_text(ans["context_ids"].tolist()) == '<|startoftranscript|><|en|><|transcribe|><|en|><|pnc|>'
+    assert canary_tokenizer.ids_to_text(ans["answer_ids"].tolist()) == ' TEST<|endoftext|>'
     assert ans["mask"].tolist() == [False] * 5 + [True] * 5
     # fmt: on
 
@@ -46,5 +46,5 @@ def test_canary_prompt_formatter_inference(canary_tokenizer):
     assert set(ans) == {"input_ids", "context_ids"}
     # fmt: off
     assert ans["input_ids"].tolist() == ans["context_ids"].tolist()
-    assert ans["input_ids"].tolist() == [4, 8, 7, 8, 5]
+    assert canary_tokenizer.ids_to_text(ans["input_ids"].tolist()) == '<|startoftranscript|><|en|><|transcribe|><|en|><|pnc|>'
     # fmt: on

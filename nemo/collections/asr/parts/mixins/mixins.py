@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import tarfile
+import unicodedata
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -62,6 +63,8 @@ class ASRBPEMixin(ABC):
             self._setup_aggregate_tokenizer(tokenizer_cfg)
         else:
             self._setup_monolingual_tokenizer(tokenizer_cfg)
+
+        self._derive_tokenizer_properties()
 
     def _setup_monolingual_tokenizer(self, tokenizer_cfg: DictConfig):
         # Prevent tokenizer parallelism (unless user has explicitly set it)
@@ -470,6 +473,15 @@ class ASRBPEMixin(ABC):
                     os.rename(os.path.join(dir, member.name), os.path.join(dir, new_name))
 
                     logging.info(f"Saved {nemo_object_name} at {os.path.join(dir, new_name)}")
+
+    def _derive_tokenizer_properties(self):
+        vocab = self.tokenizer.tokenizer.get_vocab()
+
+        capitalized_tokens = {token.strip() for token in vocab if any(char.isupper() for char in token)}
+        self.tokenizer.supports_capitalization = bool(capitalized_tokens)
+
+        punctuation = {char for token in vocab for char in token if unicodedata.category(char).startswith('P')}
+        self.tokenizer.supported_punctuation = punctuation
 
 
 class ASRModuleMixin(ASRAdapterModelMixin):

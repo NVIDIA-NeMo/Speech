@@ -54,10 +54,17 @@ def check_char_timestamps(hyp: Hypothesis, decoding: CTCDecoding):
     assert 'timestep' in hyp.timestep
     assert 'char' in hyp.timestep
     assert 'word' in hyp.timestep
+    assert 'segment' in hyp.timestep
 
     words = hyp.text.split(decoding.word_seperator)
     words = list(filter(lambda x: x != '', words))
     assert len(hyp.timestep['word']) == len(words)
+
+    segments_count = sum([hyp.text.count(seperator) for seperator in decoding.segment_seperators])
+    if hyp.text[-1] not in decoding.segment_seperators:
+        segments_count += 1
+
+    assert len(hyp.timestep['segment']) == segments_count
 
 
 def check_subword_timestamps(hyp: Hypothesis, decoding: CTCBPEDecoding):
@@ -66,6 +73,7 @@ def check_subword_timestamps(hyp: Hypothesis, decoding: CTCBPEDecoding):
     assert 'timestep' in hyp.timestep
     assert 'char' in hyp.timestep
     assert 'word' in hyp.timestep
+    assert 'segment' in hyp.timestep
 
     chars = list(hyp.text)
     chars = list(filter(lambda x: x not in ['', ' ', '#'], chars))
@@ -73,6 +81,12 @@ def check_subword_timestamps(hyp: Hypothesis, decoding: CTCBPEDecoding):
     all_chars = [char for subword in all_chars for char in subword]
     all_chars = list(filter(lambda x: x not in ['', ' ', '#'], all_chars))
     assert len(chars) == len(all_chars)
+
+    segments_count = sum([hyp.text.count(seperator) for seperator in decoding.segment_seperators])
+    if hyp.text[-1] not in decoding.segment_seperators:
+        segments_count += 1
+
+    assert len(hyp.timestep['segment']) == segments_count
 
 
 class TestCTCDecoding:

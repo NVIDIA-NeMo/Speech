@@ -14,9 +14,10 @@
 
 import copy
 import re
+import unicodedata
 from abc import abstractmethod
 from dataclasses import dataclass, field, is_dataclass
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -27,7 +28,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConf
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.utils import logging
+from nemo.utils import logging, logging_mode
 
 
 class AbstractRNNTDecoding(ConfidenceMixin):
@@ -57,15 +58,22 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 Each value in the list (Ti) is a torch.Tensor (U), representing 1 or more targets from a vocabulary.
                 U is the number of target tokens for the current timestep Ti.
 
+            tdt_include_token_duration: Bool flag, which determines whether predicted durations for each token
+            need to be included in the Hypothesis object. Defaults to False.
+
             compute_timestamps: A bool flag, which determines whether to compute the character/subword, or
                 word based timestamp mapping the output log-probabilities to discrete intervals of timestamps.
                 The timestamps will be available in the returned Hypothesis.timestep as a dictionary.
 
             rnnt_timestamp_type: A str value, which represents the types of timestamps that should be calculated.
                 Can take the following values - "char" for character/subword time stamps, "word" for word level
-                time stamps and "all" (default), for both character level and word level time stamps.
+                time stamps, "segment" for segment level time stamps and "all" (default), for character, word and segment level time stamps.
 
             word_seperator: Str token representing the seperator between words.
+
+            segment_seperators: List containing tokens representing the seperator(s) between segments.
+
+            segment_gap_threshold: The threshold (in frames) that caps the gap between two words necessary for forming the segments.
 
             preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
                 generated during decoding (sample / batched). When set to true, the Hypothesis will contain
@@ -191,9 +199,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         decoder: The Decoder/Prediction network module.
         joint: The Joint network module.
         blank_id: The id of the RNNT blank token.
+        supported_punctuation: Set of punctuation marks in the vocabulary
     """
 
-    def __init__(self, decoding_cfg, decoder, joint, blank_id: int):
+    def __init__(self, decoding_cfg, decoder, joint, blank_id: int, supported_punctuation: Optional[Set] = None):
         super(AbstractRNNTDecoding, self).__init__()
 
         # Convert dataclass to config object
@@ -202,6 +211,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         self.cfg = decoding_cfg
         self.blank_id = blank_id
+        self.supported_punctuation = supported_punctuation
         self.num_extra_outputs = joint.num_extra_outputs
         self.big_blank_durations = self.cfg.get("big_blank_durations", None)
         self.durations = self.cfg.get("durations", None)
@@ -210,7 +220,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         self.preserve_alignments = self.cfg.get('preserve_alignments', None)
         self.joint_fused_batch_size = self.cfg.get('fused_batch_size', None)
         self.compute_timestamps = self.cfg.get('compute_timestamps', None)
+        self.tdt_include_token_duration = self.cfg.get('tdt_include_token_duration', False)
         self.word_seperator = self.cfg.get('word_seperator', ' ')
+        self.segment_seperators = self.cfg.get('segment_seperators', ['.', '?', '!'])
+        self.segment_gap_threshold = self.cfg.get('segment_gap_threshold', None)
 
         self._is_tdt = self.durations is not None and self.durations != []  # this means it's a TDT model.
         if self._is_tdt:
@@ -252,7 +265,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 self.compute_timestamps = self.cfg.beam.get('compute_timestamps', False)
 
         # Test if alignments are being preserved for RNNT
-        if self.compute_timestamps is True and self.preserve_alignments is False:
+        if not self._is_tdt and self.compute_timestamps is True and self.preserve_alignments is False:
             raise ValueError("If `compute_timesteps` flag is set, then `preserve_alignments` flag must also be set.")
 
         # initialize confidence-related fields
@@ -263,6 +276,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 raise ValueError(
                     "If `preserve_frame_confidence` flag is set, then `preserve_alignments` flag must also be set."
                 )
+            self.tdt_include_token_duration = self.tdt_include_token_duration or self.compute_timestamps
+            self._compute_offsets = self._compute_offsets_tdt
+            self._refine_timestamps = self._refine_timestamps_tdt
 
         # Confidence estimation is not implemented for these strategies
         if (
@@ -299,6 +315,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         ),
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
+                        include_duration=self.tdt_include_token_duration,
                         include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                     )
@@ -345,6 +362,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         ),
                         preserve_alignments=self.preserve_alignments,
                         preserve_frame_confidence=self.preserve_frame_confidence,
+                        include_duration=self.tdt_include_token_duration,
                         include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
@@ -548,7 +566,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 prediction = [p for p in prediction if p != self.blank_id]
 
             # De-tokenize the integer tokens; if not computing timestamps
-            if self.compute_timestamps is True:
+            if self.compute_timestamps is True and self._is_tdt:
+                hypothesis = (prediction, None, None)
+            elif self.compute_timestamps is True:
                 # keep the original predictions, wrap with the number of repetitions per token and alignments
                 # this is done so that `rnnt_decoder_predictions_tensor()` can process this hypothesis
                 # in order to compute exact time stamps.
@@ -731,7 +751,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             self.decoding.joint.set_fuse_loss_wer(False)
 
     def compute_rnnt_timestamps(self, hypothesis: Hypothesis, timestamp_type: str = "all"):
-        assert timestamp_type in ['char', 'word', 'all']
+        assert timestamp_type in ['char', 'word', 'segment', 'all']
 
         # Unpack the temporary storage
         decoded_prediction, alignments, token_repetitions = hypothesis.text
@@ -766,6 +786,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 decoded_chars.append(self.decode_tokens_to_str([int(char)]))
             char_offsets[i]["char"] = decoded_chars
 
+        encoded_char_offsets, char_offsets = self._refine_timestamps(
+            encoded_char_offsets, char_offsets, self.supported_punctuation
+        )
+
         # detect char vs subword models
         lens = []
         for v in char_offsets:
@@ -788,7 +812,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
 
         # retrieve word offsets from character offsets
         word_offsets = None
-        if timestamp_type in ['word', 'all']:
+        if timestamp_type in ['word', 'segment', 'all']:
             if text_type == 'char':
                 word_offsets = self._get_word_offsets_chars(char_offsets, word_delimiter_char=self.word_seperator)
             else:
@@ -800,6 +824,15 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     decode_ids_to_tokens=self.decode_ids_to_tokens,
                     decode_tokens_to_str=self.decode_tokens_to_str,
                 )
+
+        segment_offsets = None
+        if timestamp_type in ['segment', 'all']:
+            segment_offsets = self._get_segment_offsets(
+                word_offsets,
+                segment_delimiter_tokens=self.segment_seperators,
+                supported_punctuation=self.supported_punctuation,
+                segment_gap_threshold=self.segment_gap_threshold,
+            )
 
         # attach results
         if len(hypothesis.timestep) > 0:
@@ -817,6 +850,10 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # Add word time stamps
         if word_offsets is not None and timestamp_type in ['word', 'all']:
             hypothesis.timestep['word'] = word_offsets
+
+        # Add segment time stamps
+        if segment_offsets is not None and timestamp_type in ['segment', 'all']:
+            hypothesis.timestep['segment'] = segment_offsets
 
         # Convert the flattened token indices to text
         hypothesis.text = self.decode_tokens_to_str(hypothesis.text)
@@ -844,7 +881,9 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # If the exact timestep information is available, utilize the 1st non-rnnt blank token timestep
         # as the start index.
         if hypothesis.timestep is not None and len(hypothesis.timestep) > 0:
-            start_index = max(0, hypothesis.timestep[0] - 1)
+            first_timestep = hypothesis.timestep[0]
+            first_timestep = first_timestep if isinstance(first_timestep, int) else first_timestep.item()
+            start_index = max(0, first_timestep - 1)
 
         # Construct the start and end indices brackets
         end_indices = np.asarray(token_repetitions).cumsum()
@@ -866,6 +905,57 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         # time step for RNNT, so if 0th token is blank, then that timestep is skipped.
         offsets = list(filter(lambda offsets: offsets["char"][0] != rnnt_token, offsets))
         return offsets
+
+    @staticmethod
+    def _compute_offsets_tdt(hypothesis: Hypothesis, *args) -> List[Dict[str, Union[str, int]]]:
+        """
+        Utility method that calculates the indidual time indices where a token starts and ends.
+
+        Args:
+            hypothesis: A Hypothesis object that contains `text` field that holds the character / subword token
+                emitted at a specific time step considering predicted durations of the previous tokens.
+
+        Returns:
+
+        """
+        # Merge the results per token into a list of dictionaries
+        offsets = [
+            {"char": [t, -1], "start_offset": int(s), "end_offset": int(s + d)}
+            for t, s, d in zip(hypothesis.text[0], hypothesis.timestep, hypothesis.token_duration)
+        ]
+        return offsets
+
+    @staticmethod
+    def _refine_timestamps(
+        encoded_char_offsets: List[Dict[str, Union[str, int]]],
+        char_offsets: List[Dict[str, Union[str, int]]],
+        supported_punctuation: Optional[Set] = None,
+    ) -> List[Dict[str, Union[str, int]]]:
+
+        ## no refinement for rnnt
+
+        return encoded_char_offsets, char_offsets
+
+    @staticmethod
+    def _refine_timestamps_tdt(
+        encoded_char_offsets: List[Dict[str, Union[str, int]]],
+        char_offsets: List[Dict[str, Union[str, int]]],
+        supported_punctuation: Optional[Set] = None,
+    ) -> List[Dict[str, Union[str, int]]]:
+
+        if not supported_punctuation:
+            return encoded_char_offsets, char_offsets
+
+        for i, offset in enumerate(char_offsets):
+
+            # Check if token is a punctuation mark
+            # If so, set its start and end offset as start and end of the previous token
+            # This is done because there was observed a behaviour, when punctuation marks are predicted long after preceding token (i.e. after silence)
+            if offset['char'][0] in supported_punctuation and i > 0:
+                encoded_char_offsets[i]['start_offset'] = offset['start_offset'] = char_offsets[i - 1]['end_offset']
+                encoded_char_offsets[i]['end_offset'] = offset['end_offset'] = offset['start_offset']
+
+        return encoded_char_offsets, char_offsets
 
     @staticmethod
     def _get_word_offsets_chars(
@@ -964,7 +1054,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                             {
                                 "word": decode_tokens_to_str(built_token),
                                 "start_offset": offsets[previous_token_index]["start_offset"],
-                                "end_offset": offsets[i]["start_offset"],
+                                "end_offset": offsets[i - 1]["end_offset"],
                             }
                         )
 
@@ -1005,6 +1095,92 @@ class AbstractRNNTDecoding(ConfidenceMixin):
         built_token.clear()
 
         return word_offsets
+
+    @staticmethod
+    def _get_segment_offsets(
+        offsets: Dict[str, Union[str, float]],
+        segment_delimiter_tokens: List[str],
+        supported_punctuation: Optional[Set] = None,
+        segment_gap_threshold: Optional[int] = None,
+    ) -> Dict[str, Union[str, float]]:
+        """
+        Utility method which constructs segment time stamps out of word time stamps.
+
+        Args:
+            offsets: A list of dictionaries, each containing "word", "start_offset" and "end_offset".
+            segments_delimiter_tokens: List containing tokens representing the seperator(s) between segments.
+            supported_punctuation: Set containing punctuation marks in the vocabulary.
+            segment_gap_threshold: Number of frames between 2 consecutive words necessary to form segments out of plain text.
+        Returns:
+            A list of dictionaries containing the segment offsets. Each item contains "segment", "start_offset" and
+            "end_offset".
+        """
+        if (
+            supported_punctuation
+            and not set(segment_delimiter_tokens).intersection(supported_punctuation)
+            and not segment_gap_threshold
+        ):
+            logging.warning(
+                f"Specified segment seperators are not in supported punctuation {supported_punctuation}. "
+                "If the seperators are not punctuation marks, ignore this warning. "
+                "Otherwise, specify 'segment_gap_threshold' parameter in decoding config to form segments.",
+                mode=logging_mode.ONCE,
+            )
+
+        segment_offsets = []
+        segment_words = []
+        previous_word_index = 0
+
+        # For every offset word
+        for i, offset in enumerate(offsets):
+
+            word = offset['word']
+            # check if thr word ends with any delimeter token or the word itself is a delimeter
+            if segment_gap_threshold and segment_words:
+                gap_between_words = offset['start_offset'] - offsets[i - 1]['end_offset']
+
+                if gap_between_words >= segment_gap_threshold:
+                    segment_offsets.append(
+                        {
+                            "segment": ' '.join(segment_words),
+                            "start_offset": offsets[previous_word_index]["start_offset"],
+                            "end_offset": offsets[i - 1]["end_offset"],
+                        }
+                    )
+
+                    segment_words = [word]
+                    previous_word_index = i
+                    continue
+
+            elif word[-1] in segment_delimiter_tokens or word in segment_delimiter_tokens:
+                segment_words.append(word)
+                if segment_words:
+                    segment_offsets.append(
+                        {
+                            "segment": ' '.join(segment_words),
+                            "start_offset": offsets[previous_word_index]["start_offset"],
+                            "end_offset": offset["end_offset"],
+                        }
+                    )
+
+                segment_words = []
+                previous_word_index = i + 1
+                continue
+
+            segment_words.append(word)
+
+        if segment_words:
+            start_offset = offsets[previous_word_index]["start_offset"]
+            segment_offsets.append(
+                {
+                    "segment": ' '.join(segment_words),
+                    "start_offset": start_offset,
+                    "end_offset": offsets[-1]["end_offset"],
+                }
+            )
+        segment_words.clear()
+
+        return segment_offsets
 
 
 class RNNTDecoding(AbstractRNNTDecoding):
@@ -1183,6 +1359,9 @@ class RNNTDecoding(AbstractRNNTDecoding):
     ):
         # we need to ensure blank is the last token in the vocab for the case of RNNT and Multi-blank RNNT.
         blank_id = len(vocabulary) + joint.num_extra_outputs
+        supported_punctuation = {
+            char for token in vocabulary for char in token if unicodedata.category(char).startswith('P')
+        }
 
         if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'tdt':
             blank_id = len(vocabulary)
@@ -1194,6 +1373,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
             decoder=decoder,
             joint=joint,
             blank_id=blank_id,
+            supported_punctuation=supported_punctuation,
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
@@ -1309,6 +1489,10 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                 time stamps and "all" (default), for both character level and word level time stamps.
 
             word_seperator: Str token representing the seperator between words.
+
+            segment_seperators: List containing tokens representing the seperator(s) between segments.
+
+            segment_gap_threshold: The threshold (in frames) that caps the gap between two words necessary for forming the segments.
 
             preserve_frame_confidence: Bool flag which preserves the history of per-frame confidence scores
                 generated during decoding (sample / batched). When set to true, the Hypothesis will contain
@@ -1449,6 +1633,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
 
     def __init__(self, decoding_cfg, decoder, joint, tokenizer: TokenizerSpec):
         blank_id = tokenizer.tokenizer.vocab_size  # RNNT or TDT models.
+        supported_punctuation = tokenizer.supported_punctuation
 
         # multi-blank RNNTs
         if hasattr(decoding_cfg, 'model_type') and decoding_cfg.model_type == 'multiblank':
@@ -1457,7 +1642,11 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         self.tokenizer = tokenizer
 
         super(RNNTBPEDecoding, self).__init__(
-            decoding_cfg=decoding_cfg, decoder=decoder, joint=joint, blank_id=blank_id
+            decoding_cfg=decoding_cfg,
+            decoder=decoder,
+            joint=joint,
+            blank_id=blank_id,
+            supported_punctuation=supported_punctuation,
         )
 
         if isinstance(self.decoding, rnnt_beam_decoding.BeamRNNTInfer):
@@ -1577,6 +1766,9 @@ class RNNTDecodingConfig:
     # preserve decoding alignments
     preserve_alignments: Optional[bool] = None
 
+    # include token duration
+    tdt_include_token_duration: Optional[bool] = None
+
     #  confidence config
     confidence_cfg: ConfidenceConfig = field(default_factory=lambda: ConfidenceConfig())
 
@@ -1591,6 +1783,12 @@ class RNNTDecodingConfig:
 
     # token representing word seperator
     word_seperator: str = " "
+
+    # tokens representing segments seperators
+    segment_seperators: Optional[List[str]] = field(default_factory=lambda: [".", "!", "?"])
+
+    # threshold (in frames) that caps the gap between two words necessary for forming the segments
+    segment_gap_threshold: Optional[int] = None
 
     # type of timestamps to calculate
     rnnt_timestamp_type: str = "all"  # can be char, word or all for both

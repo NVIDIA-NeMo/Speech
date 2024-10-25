@@ -117,6 +117,47 @@ def decode_text_from_nbest_hypotheses(hyps, decoding):
     return hypotheses, all_hypotheses
 
 
+def check_char_timestamps(hyp: rnnt_utils.Hypothesis, decoding: RNNTDecoding):
+    assert hyp.timestep is not None
+    assert isinstance(hyp.timestep, dict)
+    assert 'timestep' in hyp.timestep
+    assert 'char' in hyp.timestep
+    assert 'word' in hyp.timestep
+    assert 'segment' in hyp.timestep
+
+    words = hyp.text.split(decoding.word_seperator)
+    words = list(filter(lambda x: x != '', words))
+    assert len(hyp.timestep['word']) == len(words)
+
+    segments_count = sum([hyp.text.count(seperator) for seperator in decoding.segment_seperators])
+    if hyp.text[-1] not in decoding.segment_seperators:
+        segments_count += 1
+
+    assert len(hyp.timestep['segment']) == segments_count
+
+
+def check_subword_timestamps(hyp: rnnt_utils.Hypothesis, decoding: RNNTBPEDecoding):
+    assert hyp.timestep is not None
+    assert isinstance(hyp.timestep, dict)
+    assert 'timestep' in hyp.timestep
+    assert 'char' in hyp.timestep
+    assert 'word' in hyp.timestep
+    assert 'segment' in hyp.timestep
+
+    chars = list(hyp.text)
+    chars = list(filter(lambda x: x not in ['', ' ', '#'], chars))
+    all_chars = [list(decoding.tokenizer.tokens_to_text(data['char'])) for data in hyp.timestep['char']]
+    all_chars = [char for subword in all_chars for char in subword]
+    all_chars = list(filter(lambda x: x not in ['', ' ', '#'], all_chars))
+    assert len(chars) == len(all_chars)
+
+    segments_count = sum([hyp.text.count(seperator) for seperator in decoding.segment_seperators])
+    if hyp.text[-1] not in decoding.segment_seperators:
+        segments_count += 1
+
+    assert len(hyp.timestep['segment']) == segments_count
+
+
 class TestRNNTDecoding:
     @pytest.mark.unit
     def test_constructor(self):
@@ -137,7 +178,8 @@ class TestRNNTDecoding:
         assert decoding is not None
 
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -178,7 +220,8 @@ class TestRNNTDecoding:
             print()
 
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -234,7 +277,8 @@ class TestRNNTDecoding:
                     t_u.append(int(label))
 
     @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE, reason='RNNTLoss has not been compiled with appropriate numba version.',
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
     )
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -242,9 +286,20 @@ class TestRNNTDecoding:
         "beam_config",
         [
             {"search_type": "greedy"},
-            {"search_type": "default", "beam_size": 2,},
-            {"search_type": "alsd", "alsd_max_target_len": 0.5, "beam_size": 2,},
-            {"search_type": "tsd", "tsd_max_sym_exp_per_step": 3, "beam_size": 2,},
+            {
+                "search_type": "default",
+                "beam_size": 2,
+            },
+            {
+                "search_type": "alsd",
+                "alsd_max_target_len": 0.5,
+                "beam_size": 2,
+            },
+            {
+                "search_type": "tsd",
+                "tsd_max_sym_exp_per_step": 3,
+                "beam_size": 2,
+            },
             {"search_type": "maes", "maes_num_steps": 2, "maes_expansion_beta": 2, "beam_size": 2},
             {"search_type": "maes", "maes_num_steps": 3, "maes_expansion_beta": 1, "beam_size": 2},
         ],
@@ -309,3 +364,73 @@ class TestRNNTDecoding:
                 assert len(hyp_.timestep) > 0
                 print("Timesteps", hyp_.timestep)
                 print()
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "model_name, decoding_strategy",
+        [
+            ("stt_en_conformer_transducer_small", "greedy"),
+            ("stt_en_conformer_transducer_small", "greedy_batch"),
+            ("stt_en_conformer_transducer_small", "beam"),
+            # ("stt_en_conformer_transducer_small", "tsd"),
+            ("stt_en_conformer_transducer_small", "alsd"),
+            ("nvidia/parakeet-tdt_ctc-110m", "greedy"),
+            ("nvidia/parakeet-tdt_ctc-110m", "greedy_batch"),
+        ],
+    )
+    def test_subword_decoding_compute_timestamps(self, test_data_dir, decoding_strategy, model_name):
+
+        model, encoded, encoded_len = get_model_encoder_output(test_data_dir, model_name)
+
+        cfg = DictConfig(model.cfg.decoding)
+        cfg['strategy'] = decoding_strategy
+        cfg['preserve_alignments'] = True
+        cfg['compute_timestamps'] = True
+
+        decoding = RNNTBPEDecoding(
+            decoding_cfg=cfg, decoder=model.decoder, joint=model.joint, tokenizer=model.tokenizer
+        )
+
+        hyps, _ = decoding.rnnt_decoder_predictions_tensor(encoded, encoded_len, return_hypotheses=True)
+
+        check_subword_timestamps(hyps[0], decoding)
+
+    @pytest.mark.skipif(
+        not NUMBA_RNNT_LOSS_AVAILABLE,
+        reason='RNNTLoss has not been compiled with appropriate numba version.',
+    )
+    @pytest.mark.with_downloads
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "model_name, decoding_strategy",
+        [
+            ("stt_en_conformer_transducer_small", "greedy"),
+            ("stt_en_conformer_transducer_small", "greedy_batch"),
+            ("stt_en_conformer_transducer_small", "beam"),
+            # ("stt_en_conformer_transducer_small", "tsd"),
+            ("stt_en_conformer_transducer_small", "alsd"),
+            ("nvidia/parakeet-tdt_ctc-110m", "greedy"),
+            ("nvidia/parakeet-tdt_ctc-110m", "greedy_batch"),
+        ],
+    )
+    def test_char_decoding_compute_timestamps(self, test_data_dir, decoding_strategy, model_name):
+
+        model, encoded, encoded_len = get_model_encoder_output(test_data_dir, model_name)
+
+        cfg = DictConfig(model.cfg.decoding)
+        cfg['strategy'] = decoding_strategy
+        cfg['preserve_alignments'] = True
+        cfg['compute_timestamps'] = True
+
+        vocab = [t[0] for t in model.tokenizer.vocab]
+
+        decoding = RNNTDecoding(decoding_cfg=cfg, decoder=model.decoder, joint=model.joint, vocabulary=vocab)
+
+        hyps, _ = decoding.rnnt_decoder_predictions_tensor(encoded, encoded_len, return_hypotheses=True)
+
+        check_char_timestamps(hyps[0], decoding)

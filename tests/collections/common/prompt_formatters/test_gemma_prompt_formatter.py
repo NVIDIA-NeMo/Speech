@@ -11,15 +11,9 @@ def test_gemma_prompt_formatter_training(bpe_tokenizer):
     )
     assert set(ans) == {"input_ids", "context_ids", "answer_ids", "mask"}
     # fmt: off
-    assert ans["input_ids"].tolist() == [ 21,  53,  18,  26,  18,   6,  60,   9,   7,  75,  31,   1,  81,  20,
-         30, 104,  59,  18,  26,  18,   6,  60,   9,   7,  21,  53,  18,  26,
-         18,   6,  60,   9,   7,  73,  61,  69,   1,  81,  20,  30, 104,  59,
-         18,  26,  18,   6,  60,   9,   7]
-    assert ans["context_ids"].tolist() == [ 21,  53,  18,  26,  18,   6,  60,   9,   7,  75,  31,   1,  81,  20,
-         30, 104,  59,  18,  26,  18,   6,  60,   9,   7,  21,  53,  18,  26,
-         18,   6,  60,   9,   7,  73,  61,  69]
-    assert ans["answer_ids"].tolist() == [1,  81,  20,  30, 104,  59,
-         18,  26,  18,   6,  60,   9,   7]
+    assert bpe_tokenizer.ids_to_text(ans["input_ids"].tolist()) == '<start_of_turn>user TEST<end_of_turn> <start_of_turn>model TEST<end_of_turn>'
+    assert bpe_tokenizer.ids_to_text(ans["context_ids"].tolist()) == '<start_of_turn>user TEST<end_of_turn> <start_of_turn>model'
+    assert bpe_tokenizer.ids_to_text(ans["answer_ids"].tolist()) == 'TEST<end_of_turn>'
     assert ans["mask"].tolist() == [False] * 36 + [True] * 13
     # fmt: on
 
@@ -34,7 +28,5 @@ def test_gemma_prompt_formatter_inference(bpe_tokenizer):
     assert set(ans) == {"input_ids", "context_ids"}
     # fmt: off
     assert ans["input_ids"].tolist() == ans["context_ids"].tolist()
-    assert ans["input_ids"].tolist() == [ 21,  53,  18,  26,  18,   6,  60,   9,   7,  75,  31,   1,  81,  20,
-                                          30, 104,  59,  18,  26,  18,   6,  60,   9,   7,  21,  53,  18,  26,
-                                          18,   6,  60,   9,   7,  73,  61,  69]
+    assert bpe_tokenizer.ids_to_text(ans["input_ids"].tolist()) == '<start_of_turn>user TEST<end_of_turn> <start_of_turn>model'
     # fmt: on

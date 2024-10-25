@@ -16,10 +16,10 @@ After :ref:`installing NeMo<installation>`, you can transcribe an audio file as 
     asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
     transcript = asr_model.transcribe(["path/to/audio_file.wav"])
 
-Obtain word timestamps
-^^^^^^^^^^^^^^^^^^^^^^^^^
+Obtain word/segment timestamps
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-You can also obtain timestamps for each word in the transcription as follows:
+You can also obtain timestamps for each word or segment in the transcription as follows:
 
 .. code-block:: python
 
@@ -28,11 +28,14 @@ You can also obtain timestamps for each word in the transcription as follows:
     asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
 
     # update decoding config to preserve alignments and compute timestamps
+    # if necessary also update the segment seperators or word seperator for segment and word level timestamps
     from omegaconf import OmegaConf, open_dict
     decoding_cfg = asr_model.cfg.decoding
     with open_dict(decoding_cfg):
         decoding_cfg.preserve_alignments = True
         decoding_cfg.compute_timestamps = True
+        decoding_cfg.segment_seperators = [".", "?", "!"]
+        decoding_cfg.word_seperator = " "
         asr_model.change_decoding_strategy(decoding_cfg)
 
     # specify flag `return_hypotheses=True``
@@ -50,6 +53,7 @@ You can also obtain timestamps for each word in the transcription as follows:
     time_stride = 8 * asr_model.cfg.preprocessor.window_stride
 
     word_timestamps = timestamp_dict['word']
+    segment_timestamps = timestamp_dict['segment']
 
     for stamp in word_timestamps:
         start = stamp['start_offset'] * time_stride
@@ -57,6 +61,13 @@ You can also obtain timestamps for each word in the transcription as follows:
         word = stamp['char'] if 'char' in stamp else stamp['word']
 
         print(f"Time : {start:0.2f} - {end:0.2f} - {word}")
+
+    for stamp in segment_timestamps:
+        start = stamp['start_offset'] * time_stride
+        end = stamp['end_offset'] * time_stride
+        segment = stamp['segment']
+
+        print(f"Time : {start:0.2f} - {end:0.2f} - {segment}")
 
 Transcribe speech via command line
 ----------------------------------

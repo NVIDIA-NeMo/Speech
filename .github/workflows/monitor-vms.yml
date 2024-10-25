@@ -1,0 +1,54 @@
+# Regularly updates the CI container
+name: Reboots VMs in a controlled way
+on:
+  schedule:
+    - cron: /15 * * * *
+  workflow_dispatch:
+  pull_request:
+  
+jobs:
+  pre-flight:
+    runs-on: ubuntu-latest
+    outputs:
+      list-of-vms: ${{ steps.main.outputs.main }}
+    environment: main
+    steps:
+      - name: Get list of VMs
+        id: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT }}
+        run: |
+          RUNNERS=$(curl -L \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/NVIDIA/NeMo/actions/runners)
+
+          MATRIX=$(echo $RUNNERS \
+            | jq -c '[
+                .runners[] 
+                | select(.status == "online")
+                | select(.name | contains("gpu")
+                | {
+                  "vm": .name, 
+                  "n_gpus": [
+                    .labels[] 
+                    | select(.name | endswith("gpu")) | .name
+                  ][0][:1]
+                }
+              ]
+            '
+          )
+          echo main=$MATRIX | tee -a "$GITHUB_OUTPUT"
+
+  maintenance:
+    needs: pre-flight
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.pre-flight.outputs.list-of-vms )}}
+    uses: .github/workflows/monitor-single-vm.yml
+    with:
+      vm: ${{ matrix.vm }}
+      n_gpus: ${{ matrix.n_gpus }}
+    secrets: inherit

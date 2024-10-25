@@ -1,0 +1,54 @@
+name: ~shut down a single VM
+
+on:
+  workflow_call:
+    inputs:
+      vm:
+        type: string
+        description: Name of VM
+        required: true
+      n_gpus:
+        type: string
+        description: Number of GPUs this VM has
+        required: true
+        
+jobs:
+  check-status-and-maybe-shutdown:
+    environment: main
+    runs-on: ${{ inputs.vm }}
+    outputs:
+      status: ${{ steps.status.outputs.main }}
+    steps:
+      - name: Check status
+        id: status
+        run: |
+          docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+
+          NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+
+          if [[ $NUM_GPUS -ne ${{ inputs.n_gpus }} ]]; then
+            echo "Issues with GPU detected, will take this runner offline."
+            echo "main=degraded" >> "$GITHUB_OUTPUT"
+          else
+            echo "main=healthy" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Send Slack message & Disconnect runner from GitHub
+        if: ${{ steps.status.outputs.main == 'degraded' || failure() }}
+        run: |
+          MESSAGE='{
+            "blocks": [
+              {
+                "type": "section",
+                "text": {
+                  "type": "mrkdwn",
+                  "text": ":alert: VM bot 🤖: Hey <!subteam^${{ secrets.SLACK_WEBHOOK_ADMIN }}>: VM `${{ inputs.vm }}` is having not the best day of their life, maybe bring them an apple or so."
+                }
+              }
+            ]
+          }'
+
+          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_WEBHOOK }}
+
+          cd /home/azureuser/actions-runner
+          echo ${{ secrets.VM_KEY }} | sudo -S ./svc.sh stop

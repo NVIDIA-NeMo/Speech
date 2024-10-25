@@ -266,11 +266,11 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
             try:
                 check_cuda_python_cuda_graphs_conditional_nodes_supported()
                 self.cuda_graphs_mode = self.CudaGraphsMode.FULL_GRAPH
-            except (ImportError, ModuleNotFoundError) as e:
+            except (ImportError, ModuleNotFoundError, EnvironmentError) as e:
                 logging.warning(
                     "No conditional node support for Cuda.\n"
                     "Cuda graphs with while loops are disabled, decoding speed will be slower\n"
-                    f"Reason: {e.msg}"
+                    f"Reason: {e}"
                 )
                 self.cuda_graphs_mode = self.CudaGraphsMode.NO_WHILE_LOOPS
         self.reset_cuda_graphs_state()

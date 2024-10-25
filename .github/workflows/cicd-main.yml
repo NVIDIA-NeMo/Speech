@@ -300,7 +300,7 @@ jobs:
      uses: ./.github/workflows/_test_template.yml
      if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_CPU_NLP') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
-       RUNNER: self-hosted-azure-cpu
+       RUNNER: self-hosted-azure
        TIMEOUT: 20
        SCRIPT: |
          CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/nlp -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

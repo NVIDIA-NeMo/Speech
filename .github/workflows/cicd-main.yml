@@ -4515,7 +4515,10 @@ jobs:
         if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}
         env: 
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_WEBHOOK_ADMIN: <!subteam^${{ secrets.SLACK_WEBHOOK_ADMIN }}>
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           PR_NUMBER: ${{ github.event.number }}
@@ -4571,13 +4574,15 @@ jobs:
             echo "* [$JOB_NAME]($JOB_URL)" | tee -a $GITHUB_STEP_SUMMARY
 
             LOGS=$(echo $JOB | yq '(.value.outputs.log | @base64d)' | tr -d '"')
+            LOGS=$([[ $(echo $LOGS | wc -c) -gt 0 ]] && echo -E "\`\`\`\n$LOGS\n\`\`\`" || echo "")
+            LOGS=$([[ $(echo $JOB | yq '.value.outputs.potential_infra_failure') == "true" ]] && echo -E "$LOGS\n\ncc: $SLACK_WEBHOOK_ADMIN" || echo -E "$LOGS")
             
             SUMMARY=$(echo "$SUMMARY" | jq \
               --arg pr "<$PR_URL|$PR_TITLE>" \
               --arg job "<$JOB_URL|$JOB_NAME>" \
-              --arg logs "$LOGS" \
-              --arg author "<https://github.com/${{ github.actor }}|${{ github.actor }}>" \
-              --arg branch "<https://github.com/$REPOSITORY/tree/${{ github.head_ref || github.ref_name }}|${{ github.head_ref || github.ref_name }}>"\
+              --arg logs "$(echo -e "$LOGS")" \
+              --arg author "<https://github.com/$GITHUB_ACTOR|$GITHUB_ACTOR>" \
+              --arg branch "<https://github.com/$REPOSITORY/tree/$BRANCH|$BRANCH>"\
               '. += [
               {
                 "type": "section",
@@ -4588,8 +4593,7 @@ jobs:
                     + "\nJob: " + $job
                     + "\nAuthor: " + $author
                     + "\nBranch: " + $branch
-                    + "\nLogs:" 
-                    + "```\n" + $logs + "\n```" 
+                    + "\nLogs:" + $logs
                   )
                 }
               }

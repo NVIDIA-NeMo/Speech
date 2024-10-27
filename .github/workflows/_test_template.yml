@@ -33,6 +33,9 @@ on:
       log:
         description: Last 2000 characters of the test step's log
         value: ${{ jobs.main.outputs.log }} 
+      potential_infra_failure:
+        description: Boolean flag when infra-related keyword spotted in logs.
+        value: ${{ jobs.main.outputs.potential_infra_failure }}
 jobs:
   
   main:
@@ -40,6 +43,7 @@ jobs:
     outputs:
       conclusion: ${{ steps.main.conclusion }}
       log: ${{ steps.main.outputs.log }}
+      potential_infra_failure: ${{ steps.main.outputs.potential_infra_failure }}
     steps:
         - name: Docker system cleanup
           run: |
@@ -75,6 +79,9 @@ jobs:
             
             echo "log=$(tail -c 2000 err.log |  base64 -w 0)" >> "$GITHUB_OUTPUT"
             
+            potential_infra_failure=$(cat err.log | grep -Eqi "gpu|cuda|device" && echo true || echo false)
+            echo "potential_infra_failure=$potential_infra_failure" >> "$GITHUB_OUTPUT"
+
             exit $EXIT_CODE
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"

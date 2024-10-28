@@ -64,7 +64,7 @@ class LLaVATemplateConfig(BaseConversationTemplateConfig):
 
 @dataclass
 class MultiModalSampleConfig:
-    image_token: ImageToken = ImageToken()
+    image_token: ImageToken = field(default_factory=ImageToken)
     ignore_place_holder: int = -100
-    conversation_template_config: LLaVATemplateConfig = LLaVATemplateConfig()
+    conversation_template_config: LLaVATemplateConfig = field(default_factory=LLaVATemplateConfig)
     image_following_text: bool = True

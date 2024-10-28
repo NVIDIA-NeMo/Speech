@@ -63,10 +63,14 @@ from nemo.utils.exp_manager import exp_manager
 @hydra_runner(config_path="conf", config_name="dialogue_config")
 def main(cfg: DictConfig) -> None:
     pl.seed_everything(42)
+    logging.warning('This script is no longer supported in NeMo and is scheduled for removal in the 23.11 release.')
     logging.info(f'Config: {OmegaConf.to_yaml(cfg)}')
 
     try:
-        strategy = NLPDDPStrategy(no_ddp_communication_hook=True, find_unused_parameters=True,)
+        strategy = NLPDDPStrategy(
+            no_ddp_communication_hook=True,
+            find_unused_parameters=True,
+        )
     except (ImportError, ModuleNotFoundError):
         strategy = 'auto'
 

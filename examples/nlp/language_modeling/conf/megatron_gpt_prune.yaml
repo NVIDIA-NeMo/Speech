@@ -23,19 +23,22 @@ trainer:
 model:
   tensor_model_parallel_size: 1 # Pruning currently only supports tensor_model_parallel_size=1
   pipeline_model_parallel_size: 1
-  restore_from_path: llama3.1-8b-base.nemo # Nemo file path
+  sequence_parallel: false # Sequence parallelism is not supported with pipeline parallelism
+  restore_from_path: llama3.1-8b-instruct.nemo # Nemo file path
 
   ## Activation Checkpoint
   activations_checkpoint_granularity: null # 'selective' or 'full'
   activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
 
 prune:
-  calib_dataset: cnn_dailymail # wikitext, cnn_dailymail, or a local dataset
-  num_calib_size: 512 # number of samples used for calibration
-  ffn_hidden_size: 3584 # ffn_hidden_size in the pruned model, ffn_hidden_size // 4
-  num_attention_heads: 8 # num_attention_heads in the pruned model, num_attention_heads // 4
-  num_query_groups: 4 # num_query_groups in the pruned model, num_query_groups // 2
-  hidden_size: 2048 # hidden_size in the pruned model, hidden_size // 2
+  calib_dataset: wikitext # wikitext, cnn_dailymail, or a local dataset
+  num_calib_size: 1024 # number of samples used for calibration
+  # pruning constraints (null means no pruning)
+  ffn_hidden_size: 9216 # ffn_hidden_size in the pruned model
+  num_attention_heads: null # num_attention_heads in the pruned model
+  num_query_groups: null # num_query_groups in the pruned model
+  hidden_size: 3072 # hidden_size (embedding size) in the pruned model
+  num_layers: null # num_layers (depth) in the pruned model
 
 export:
-  save_path: llama3.1-8b-base-pruned.nemo # Path where the pruned model will be saved
+  save_path: llama3.1-8b-instruct-pruned.nemo # Path where the pruned model will be saved

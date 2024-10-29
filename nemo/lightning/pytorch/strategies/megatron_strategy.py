@@ -297,6 +297,14 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.accelerator.setup(trainer)
         self.trainer = trainer
 
+        try:
+            self.model.optim.lr_scheduler.max_steps = trainer.max_steps
+            logging.info(f"Copying Trainer's 'max_steps' ({trainer.max_steps}) to LR scheduler's 'max_steps'.")
+        except AttributeError:
+            logging.warning(
+                "Could not copy Trainer's 'max_steps' to LR scheduler's 'max_steps'. If you are not using an LR scheduler, this warning can safely be ignored."
+            )
+
         # move the model to the correct device
         # self.model_to_device()
 

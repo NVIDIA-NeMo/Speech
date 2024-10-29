@@ -3880,6 +3880,34 @@ jobs:
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
 
+  L2_NeMo_2_llama3_pretraining_recipe:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_llama3_pretraining_recipe') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        python tests/collections/llm/llama3_pretraining.py \
+        --seq-length 1024 \
+        --devices=2 \
+        --max-steps=6 \
+        --early-stop=3 \
+        --experiment-dir=/tmp/llm_tests/llama_pretrain_results \
+        --data-path=/home/TestData/nlp/megatron_llama/data/rp2_sample_sentencepiece_preproc_text_document \
+        --tokenizer-path=/home/TestData/nlp/megatron_llama/tokenizer.model \
+        --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
+
+        python tests/collections/llm/llama3_pretraining.py \
+        --seq-length 1024 \
+        --devices=2 \
+        --max-steps=6 \
+        --experiment-dir=/tmp/llm_tests/llama_pretrain_results \
+        --data-path=/home/TestData/nlp/megatron_llama/data/rp2_sample_sentencepiece_preproc_text_document \
+        --tokenizer-path=/home/TestData/nlp/megatron_llama/tokenizer.model \
+        --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
+        --cp 1 --tp 2 --sp 1
+
   L2_NeMo_2_GPT_DDP_Param_Parity_check:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4432,6 +4460,7 @@ jobs:
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
       - L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
+      - L2_NeMo_2_llama3_pretraining_recipe 
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining

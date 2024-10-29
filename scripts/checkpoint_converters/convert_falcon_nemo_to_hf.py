@@ -51,7 +51,10 @@ This script can be used to 1) generate only the HF weights, or 2) generate an en
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--input_name_or_path", type=str, required=True, help="Path to .nemo file",
+        "--input_name_or_path",
+        type=str,
+        required=True,
+        help="Path to .nemo file",
     )
     parser.add_argument("--output_path", type=str, required=True, help="Path to HF .bin file")
     parser.add_argument(

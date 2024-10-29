@@ -180,8 +180,7 @@ def run_trt_llm_inference(
     stop_words_list=None,
     test_deployment=False,
     test_data_path=None,
-    backend="TensorRT-LLM",
-    save_trt_engine=False,
+    save_engine=False,
 ):
     if Path(checkpoint_path).exists():
         if n_gpu > torch.cuda.device_count():
@@ -319,14 +318,14 @@ def run_trt_llm_inference(
             if test_deployment:
                 nm.stop()
 
-            if not save_trt_engine:
+            if not save_engine:
                 shutil.rmtree(trt_llm_model_dir)
             return result
 
         if test_deployment:
             nm.stop()
 
-        if not save_trt_engine:
+        if not save_engine:
             shutil.rmtree(trt_llm_model_dir)
 
         return None, None, None, None, None
@@ -368,7 +367,7 @@ def run_existing_checkpoints(
     stop_words_list=None,
     test_data_path=None,
     backend="tensorrt-llm",
-    save_trt_engine=False,
+    save_engine=False,
 ):
     if n_gpus > torch.cuda.device_count():
         print("Skipping the test due to not enough number of GPUs")
@@ -433,7 +432,7 @@ def run_existing_checkpoints(
             stop_words_list=stop_words_list,
             test_deployment=test_deployment,
             test_data_path=test_data_path,
-            save_trt_engine=save_trt_engine,
+            save_engine=save_engine,
         )
 
 
@@ -573,7 +572,7 @@ def get_args():
         help="Different options to deploy nemo model.",
     )
     parser.add_argument(
-        "--save_trt_engine",
+        "--save_engine",
         type=str,
         default="False",
     )
@@ -587,10 +586,10 @@ def run_inference_tests(args):
     else:
         args.test_deployment = False
 
-    if args.save_trt_engine == "True":
-        args.save_trt_engine = True
+    if args.save_engine == "True":
+        args.save_engine = True
     else:
-        args.save_trt_engine = False
+        args.save_engine = False
 
     if args.run_accuracy == "True":
         args.run_accuracy = True
@@ -621,7 +620,7 @@ def run_inference_tests(args):
                 run_accuracy=args.run_accuracy,
                 test_data_path=args.test_data_path,
                 backend=args.backend.lower(),
-                save_trt_engine=args.save_trt_engine,
+                save_engine=args.save_engine,
             )
 
             n_gpus = n_gpus * 2
@@ -658,7 +657,7 @@ def run_inference_tests(args):
                     streaming=args.streaming,
                     test_deployment=args.test_deployment,
                     test_data_path=args.test_data_path,
-                    save_trt_engine=args.save_trt_engine,
+                    save_engine=args.save_engine,
                 )
             else:
                 result_dic[n_gpus] = run_in_framework_inference(

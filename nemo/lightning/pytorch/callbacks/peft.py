@@ -29,6 +29,7 @@ from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
 from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.io.pl import ckpt_to_dir
 from nemo.lightning.pytorch.callbacks.model_transform import ModelTransform
+from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils import logging
 from nemo.utils.callbacks.dist_ckpt_io import AsyncCompatibleCheckpointIO
 
@@ -171,6 +172,16 @@ class PEFT(IOMixin, ABC, ModelTransform):
             trainer.strategy.load_model_state_dict(adapter_state, strict=False)
             if trainer.state.fn == TrainerFn.FITTING:
                 trainer.strategy.load_optimizer_state_dict(adapter_state, selective_restore=True)
+
+        for cb in trainer.callbacks[::-1]:
+            if isinstance(cb, MegatronOptimizerModule):
+                cb.on_fit_start(trainer, trainer.lightning_module)
+                break
+        else:
+            logging.warning(
+                "MegatronOptimizerModule not found in trainer callbacks. finalize_model_grads is not "
+                "properly set up for PEFT."
+            )
 
     def adapter_key_filter(self, key: str) -> bool:
         return key in self.trainable_params or ".adapter." in key or key.endswith(".adapters")

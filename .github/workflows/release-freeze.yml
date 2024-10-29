@@ -16,13 +16,18 @@ on:
         type: string
 
 jobs:
-  create-release-branch:
+  code-freeze:
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml
+    with:
+      name_of_library: NeMo-Toolkit
+      type_of_release: ${{ inputs.type_of_release }}
+      python_package: nemo
+    secrets:
+      SLACK_RELEASE_ENDPOINT: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
+  
+  freeze-tags:
     runs-on: ubuntu-latest
-    if: contains(fromJSON('["ko3n1g"]'), github.actor)
-    environment: 
-      name: main
-    outputs:
-      version: ${{ steps.release-branch.outputs.version }}
+    needs: [code-freeze]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,139 +35,30 @@ jobs:
           path: ${{ github.run_id }}
           fetch-depth: 0
           fetch-tags: true
-          ref: main
+          ref: ${{ needs.code-freeze.outputs.release-branch }}
           token: ${{ secrets.PAT }}
-
-      - name: Get release branch ref
-        id: release-branch
-        run: |
-          cd ${{ github.run_id }}
-                    
-          if [[ "${{ inputs.type_of_release }}" != "pre_release" ]]; then
-            sed -i "/^PRE_RELEASE/c\PRE_RELEASE = ''" nemo/package_info.py 
-          fi
-
-          VERSION=$(python -c 'import nemo; print(nemo.__version__)')
-
-          echo "Release version r$VERSION" > version
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-          git switch --force-create r$VERSION origin/main
-          git push -u origin r$VERSION --force
 
       - name: Pin branch name in Notebooks
         run: |
           cd ${{ github.run_id }}
-          find tutorials -type f -name "*.ipynb" -exec sed -i "s/BRANCH = 'main'/BRANCH = 'r${{ steps.release-branch.outputs.version }}'/g" {} +
+          find tutorials -type f -name "*.ipynb" -exec sed -i "s/BRANCH = 'main'/BRANCH = '${{ needs.code-freeze.outputs.release-branch }}'/g" {} +
 
       - name: Pin MCore in Dockerfile
         run: |
           cd ${{ github.run_id }}
           sed -i 's/^ARG MCORE_TAG=.*$/ARG MCORE_TAG=${{ inputs.mcore_version }}/' Dockerfile.ci
 
-      - name: Create Release PR
+      - name: Create PR
         uses: peter-evans/create-pull-request@v6
         id: create-pull-request
         with:
           path: ${{ github.run_id }}
-          base: r${{ steps.release-branch.outputs.version }}
-          branch: ci/release-r${{ steps.release-branch.outputs.version }}
-          title: 'Release `${{ steps.release-branch.outputs.version }}`'
+          base: ${{ needs.code-freeze.outputs.release-branch }}
+          branch: ci/freeze-tags-${{ needs.code-freeze.outputs.release-branch }}
+          title: 'Freeze tags in in `${{ needs.code-freeze.outputs.release-branch }}`'
           body: |
-            🚀 PR to release NeMo `${{ steps.release-branch.outputs.version }}`.
+            🚀 PR to freeze tags in `${{ needs.code-freeze.outputs.release-branch }}`.
 
-            📝 Please remember the following to-do's before merge:
-            - [ ] Fill-in the comment `Highlights`
-            - [ ] Review the comment `Detailed Changelogs`
-
-            🚨 Please also keep in mind to _not_ delete the headings of the task commits. They are required by the post-merge automation.
-
-            🙏 Please merge this PR only if the CI workflow completed successfully.
-
-          commit-message: "[🤠]: Howdy folks, let's release NeMo `${{ steps.release-branch.outputs.version }}` !"
+          commit-message: "[🤠]: Howdy folks, let's release NeMo `${{ needs.code-freeze.outputs.release-branch }}` !"
           signoff: true
           assignees: okoenig
-          labels: 'Run CICD'
-
-  bump-next-version:
-    runs-on: ubuntu-latest
-    needs: [create-release-branch]
-    environment: 
-      name: main
-    env:
-      VERSION_FILE: nemo/package_info.py
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          path: ${{ github.run_id }}
-          fetch-depth: 0
-          fetch-tags: true
-          ref: main
-          token: ${{ secrets.PAT }}
-
-      - name: Bump version
-        id: bump-version
-        run: |
-          cd ${{ github.run_id }}
-          PRE_RELEASE=$(cat nemo/package_info.py | awk '/^PRE_RELEASE = /' | awk -F"= " '{print $2}' | tr -d '"' | tr -d "'")
-          MAJOR=$(cat nemo/package_info.py | awk '/^MAJOR = /' | awk -F"= " '{print $2}')
-          MINOR=$(cat nemo/package_info.py | awk '/^MINOR = /' | awk -F"= " '{print $2}')
-          PATCH=$(cat nemo/package_info.py | awk '/^PATCH = /' | awk -F"= " '{print $2}')
-
-          if [[ "${{ inputs.type_of_release }}" == "pre_release" ]]; then
-            NEXT_MAJOR=$MAJOR
-            NEXT_MINOR=$MINOR
-            NEXT_PRE_RELEASE=rc$(( $(echo $PRE_RELEASE | awk -F"rc" '{print $2}') + 1))
-          elif [[ "${{ inputs.type_of_release }}" == "major" ]]; then
-            NEXT_MAJOR=$(( MAJOR + 1))
-            NEXT_MINOR=0
-            NEXT_PRE_RELEASE=rc0
-          else
-            NEXT_MAJOR=$MAJOR
-            NEXT_MINOR=$(( MINOR + 1))
-            NEXT_PRE_RELEASE=rc0
-          fi
-
-          sed -i "/^MAJOR/c\MAJOR = $NEXT_MAJOR" nemo/package_info.py
-          sed -i "/^MINOR/c\MINOR = $NEXT_MINOR" nemo/package_info.py
-          sed -i "/^PRE_RELEASE/c\PRE_RELEASE = '$NEXT_PRE_RELEASE'" nemo/package_info.py
-
-          echo "version=$NEXT_MAJOR.$NEXT_MINOR.$PATCH$NEXT_PRE_RELEASE" >> "$GITHUB_OUTPUT"
-
-      - name: Create Version Bump PR
-        uses: peter-evans/create-pull-request@v6
-        id: create-pull-request
-        with:
-          path: ${{ github.run_id }}
-          branch: bot/chore/version-bump-${{ steps.bump-version.outputs.version }}
-          title: 'Version bump to `${{ steps.bump-version.outputs.version }}`'
-          body: |
-            🚀 Version bump NeMo-Toolkit to `${{ steps.bump-version.outputs.version }}`
-
-          commit-message: "[🤠]: Howdy folks, let's bump NeMo-Toolkit `${{ steps.bump-version.outputs.version }}` !"
-          signoff: true
-          assignees: okoenig
-          labels: 'Run CICD'
-
-  notify:
-    runs-on: ubuntu-latest
-    needs: [create-release-branch, bump-next-version]
-    environment: 
-      name: main
-    steps:
-      - name: Main
-        run: |
-          MESSAGE='{
-            "blocks": [
-              {
-                "type": "section",
-                "text": {
-                  "type": "mrkdwn",
-                  "text": "Releasebot 🤖: NeMo-Toolkit has been frozen 🎉 to branch `r${{ needs.create-release-branch.outputs.version }}`"
-                }
-              }
-            ]
-          }'
-
-          curl -X POST -H "Content-type: application/json" --data "$MESSAGE" ${{ secrets.SLACK_RELEASE_ENDPOINT }}

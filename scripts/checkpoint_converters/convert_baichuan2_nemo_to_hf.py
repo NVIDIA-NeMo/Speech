@@ -50,7 +50,11 @@ This script can be used to 1) generate only the HF weights, or 2) generate an en
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--input_name_or_path", type=str, default=None, required=True, help="Path to .nemo file",
+        "--input_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to .nemo file",
     )
     parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to HF .bin file")
     parser.add_argument(
@@ -94,6 +98,7 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
         model_config = MegatronGPTModel.restore_from(input_nemo_file, trainer=dummy_trainer, return_config=True)
         model_config.use_cpu_initialization = True
         model_config.tensor_model_parallel_size = 1
+        model_config.name = "te_gpt"
     else:
         map_location, model_config = None, None
 

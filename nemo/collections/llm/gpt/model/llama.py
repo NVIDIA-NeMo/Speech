@@ -56,7 +56,6 @@ class LlamaConfig(GPTConfig):
     persist_layer_norm: bool = True
     bias_dropout_fusion: bool = True
     apply_rope_fusion: bool = True
-    cross_entropy_loss_fusion: bool = False
 
 
 @dataclass

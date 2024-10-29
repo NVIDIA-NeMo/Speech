@@ -200,6 +200,38 @@ class T5Config(TransformerConfig, io.IOMixin):
         return model
 
 
+@dataclass
+class T5Config220M(T5Config):
+    """
+    NeMo's T5 model variant
+    https://github.com/NVIDIA/NeMo-Framework-Launcher/blob/main/launcher_scripts/conf/training/t5/220m.yaml
+    """
+
+    num_layers: int = 12
+    encoder_num_layers: int = 12
+    hidden_size: int = 768
+    ffn_hidden_size: int = 3072
+    num_attention_heads: int = 12
+
+
+@dataclass
+class T5Config3B(T5Config):
+    num_layers: int = 24
+    encoder_num_layers: int = 24
+    hidden_size: int = 2048
+    ffn_hidden_size: int = 5120
+    num_attention_heads: int = 32
+
+
+@dataclass
+class T5Config11B(T5Config):
+    num_layers: int = 24
+    encoder_num_layers: int = 24
+    hidden_size: int = 4096
+    ffn_hidden_size: int = 10240
+    num_attention_heads: int = 64
+
+
 class T5Model(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
     def __init__(
         self,

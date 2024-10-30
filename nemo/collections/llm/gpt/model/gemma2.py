@@ -14,10 +14,11 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, Optional
+from typing import TYPE_CHECKING, Annotated, Callable, Optional, Union
 
 import torch
 from megatron.core import parallel_state
+from megatron.core.transformer.spec_utils import ModuleSpec
 from torch import nn
 
 from nemo.collections.llm.fn.activation import openai_gelu
@@ -33,11 +34,17 @@ if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
+def gemma2_layer_spec(config: "GPTConfig") -> ModuleSpec:
+    from nemo.collections.nlp.models.language_modeling.megatron.gemma2.gemma2_spec import get_gemma2_layer_spec
+
+    return get_gemma2_layer_spec()
+
+
 # Note: Gemma requires huggingface transformers >= 4.38
 # Note: these Gemma configs are copied from the corresponding HF model. You may need to modify the parameter for
 # your own needs, in particular: seq_length and rotary_base.
 @dataclass
-class GemmaConfig(GPTConfig):
+class Gemma2Config(GPTConfig):
     # configs that are common across model sizes
     normalization: str = "RMSNorm"
     activation_func: Callable = openai_gelu
@@ -49,72 +56,90 @@ class GemmaConfig(GPTConfig):
     attention_dropout: float = 0.0
     hidden_dropout: float = 0.0
     share_embeddings_and_output_weights: bool = True
-    # Note: different behavior compared to Legacy NeMo
-    # Legacy NeMo does not set layernorm_zero_centered_gamma and instead adds 1 in the HF -> NeMo conversion script
-    # The present implementation is more in line with the official implementation
     layernorm_zero_centered_gamma: bool = True
+    layernorm_epsilon: float = 1e-6
+    rotary_base: float = 10000
+    window_size: tuple = (4096, 0)
+    vocab_size: int = 256000
+    gradient_accumulation_fusion: bool = False
+
+    transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = gemma2_layer_spec
+    # mcore customization
+    query_pre_attn_scalar: int = 224
+    attn_logit_softcapping: float = 50.0
+    final_logit_softcapping: float = 30.0
 
 
 @dataclass
-class GemmaConfig2B(GemmaConfig):
-    num_layers: int = 18
-    hidden_size: int = 2048
+class Gemma2Config2B(Gemma2Config):
+    num_layers: int = 26
+    hidden_size: int = 2304
     num_attention_heads: int = 8
-    num_query_groups: int = 1
-    ffn_hidden_size: int = 16384
+    num_query_groups: int = 4
+    ffn_hidden_size: int = 9216
+    query_pre_attn_scalar: int = 256
 
 
 @dataclass
-class GemmaConfig7B(GemmaConfig):
-    num_layers: int = 28
-    hidden_size: int = 3072
+class Gemma2Config9B(Gemma2Config):
+    num_layers: int = 42
+    hidden_size: int = 3584
     num_attention_heads: int = 16
+    num_query_groups: int = 8
+    ffn_hidden_size: int = 14336
+    query_pre_attn_scalar: int = 256
+
+
+@dataclass
+class Gemma2Config27B(Gemma2Config):
+    num_layers: int = 46
+    hidden_size: int = 4608
+    num_attention_heads: int = 32
     num_query_groups: int = 16
-    ffn_hidden_size: int = 24576
+    ffn_hidden_size: int = 36864
+    query_pre_attn_scalar: int = 144
 
 
-class CodeGemmaConfig2B(GemmaConfig2B):
-    pass
-
-
-class CodeGemmaConfig7B(GemmaConfig7B):
-    pass
-
-
-class GemmaModel(GPTModel):
+class Gemma2Model(GPTModel):
     def __init__(
         self,
-        config: Annotated[Optional[GemmaConfig], Config[GemmaConfig]] = None,
+        config: Annotated[Optional[Gemma2Config], Config[Gemma2Config]] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        super().__init__(config or GemmaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
+        super().__init__(config or Gemma2Config(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
 
     def configure_model(self):
         from nemo.collections.common.parts.utils import extend_instance
+        from nemo.collections.nlp.models.language_modeling.megatron.gemma2.gemma2_modules import Gemma2OutputLayer
         from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import EmbeddingScalingMixin
 
         super().configure_model()
         if parallel_state.is_pipeline_first_stage():
+            # Apply Embedding Scaling: sqrt(hidden_size)
             extend_instance(self.module.embedding, EmbeddingScalingMixin)
+        if parallel_state.is_pipeline_last_stage():
+            # Prevents final logits from growing excessively by scaling them to a fixed range
+            extend_instance(self.module.output_layer, Gemma2OutputLayer)
 
 
-@io.model_importer(GemmaModel, "hf")
-class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
-    def init(self) -> GemmaModel:
-        return GemmaModel(self.config, tokenizer=self.tokenizer)
+@io.model_importer(Gemma2Model, "hf")
+class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", Gemma2Model]):
+    def init(self) -> Gemma2Model:
+        return Gemma2Model(self.config, tokenizer=self.tokenizer)
 
     def apply(self, output_path: Path) -> Path:
-        from transformers import GemmaForCausalLM
+        from transformers import Gemma2ForCausalLM
 
-        source = GemmaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
+        source = Gemma2ForCausalLM.from_pretrained(str(self), torch_dtype='auto')
         target = self.init()
+
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
 
-        print(f"Converted Gemma model to Nemo, model saved to {output_path}")
+        print(f"Converted Gemma2 model to Nemo, model saved to {output_path}")
 
         teardown(trainer, target)
         del trainer, target
@@ -127,7 +152,9 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
             "model.layers.*.self_attn.o_proj.weight": "decoder.layers.*.self_attention.linear_proj.weight",
             "model.layers.*.mlp.down_proj.weight": "decoder.layers.*.mlp.linear_fc2.weight",
             "model.layers.*.input_layernorm.weight": "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
-            "model.layers.*.post_attention_layernorm.weight": "decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
+            "model.layers.*.pre_feedforward_layernorm.weight": "decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
+            "model.layers.*.post_feedforward_layernorm.weight": "decoder.layers.*.mlp.linear_fc2.post_layernorm.weight",
+            "model.layers.*.post_attention_layernorm.weight": "decoder.layers.*.self_attention.linear_proj.post_layernorm.weight",
             "model.norm.weight": "decoder.final_layernorm.weight",
         }
 
@@ -140,7 +167,7 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property
-    def config(self) -> GemmaConfig:
+    def config(self) -> Gemma2Config:
         from transformers import GemmaConfig as HFGemmaConfig
 
         source = HFGemmaConfig.from_pretrained(str(self))
@@ -151,7 +178,7 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
                 base //= 2
             return base
 
-        output = GemmaConfig(
+        output = Gemma2Config(
             num_layers=source.num_hidden_layers,
             hidden_size=source.hidden_size,
             ffn_hidden_size=source.intermediate_size,
@@ -160,8 +187,13 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
             layernorm_epsilon=source.rms_norm_eps,
             num_query_groups=source.num_key_value_heads,
             rotary_base=source.rope_theta,
+            query_pre_attn_scalar=source.query_pre_attn_scalar,
+            attn_logit_softcapping=source.attn_logit_softcapping,
+            final_logit_softcapping=source.final_logit_softcapping,
+            window_size=(source.sliding_window, 0),
             gated_linear_unit=True,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
+            vocab_size=source.vocab_size,
             share_embeddings_and_output_weights=True,
             fp16=(dtype_from_hf(source) == torch.float16),
             bf16=(dtype_from_hf(source) == torch.bfloat16),
@@ -171,8 +203,8 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
         return output
 
 
-@io.model_exporter(GemmaModel, "hf")
-class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
+@io.model_exporter(Gemma2Model, "hf")
+class HFGemmaExporter(io.ModelConnector[Gemma2Model, "GemmaForCausalLM"]):
     def init(self) -> "GemmaForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
@@ -198,6 +230,8 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.layers.*.input_layernorm.weight",
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.layers.*.post_attention_layernorm.weight",
+            "decoder.layers.*.mlp.linear_fc2.post_layernorm.weight": "model.layers.*.post_feedforward_layernorm.weight",
+            "decoder.layers.*.self_attention.linear_proj.post_layernorm.weight": "model.layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "model.norm.weight",
         }
 
@@ -208,10 +242,10 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
         return io.load_context(str(self)).model.tokenizer.tokenizer
 
     @property
-    def config(self) -> "GemmaConfig":
-        source: GemmaConfig = io.load_context(str(self)).model.config
+    def config(self) -> "Gemma2Config":
+        source: Gemma2Config = io.load_context(str(self)).model.config
 
-        from transformers import GemmaConfig as HFGemmaConfig
+        from transformers import Gemma2Config as HFGemmaConfig
 
         return HFGemmaConfig(
             num_hidden_layers=source.num_layers,
@@ -223,6 +257,10 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
             rms_norm_eps=source.layernorm_epsilon,
             num_key_value_heads=source.num_query_groups,
             vocab_size=self.tokenizer.vocab_size,
+            rope_theta=source.rotary_base,
+            query_pre_attn_scalar=source.query_pre_attn_scalar,
+            attn_logit_softcapping=source.attn_logit_softcapping,
+            final_logit_softcapping=source.final_logit_softcapping,
         )
 
 
@@ -265,6 +303,17 @@ def _import_qkv(ctx: io.TransformCTX, q, k, v):
     qkv_weights = qkv_weights.reshape([head_size * (head_num + 2 * num_query_groups), hidden_size])
 
     return qkv_weights
+
+
+@io.state_transform(
+    source_key="model.layers.*.post_feedforward_layernorm.weight",
+    target_key=(
+        "decoder.layers.*.self_attention.linear_proj.post_layernorm.weight",
+        "decoder.layers.*.mlp.linear_fc2.post_layernorm.weight",
+    ),
+)
+def _import_post_ffn_ln(ctx: io.TransformCTX, ln):
+    return ln, ln
 
 
 @io.state_transform(
@@ -321,10 +370,9 @@ def _export_linear_fc1(linear_fc1):
 
 
 __all__ = [
-    "GemmaConfig",
-    "GemmaConfig2B",
-    "GemmaConfig7B",
-    "CodeGemmaConfig2B",
-    "CodeGemmaConfig7B",
-    "GemmaModel",
+    "Gemma2Config",
+    "Gemma2Config2B",
+    "Gemma2Config9B",
+    "Gemma2Config27B",
+    "Gemma2Model",
 ]

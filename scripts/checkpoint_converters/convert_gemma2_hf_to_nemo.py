@@ -194,7 +194,7 @@ def adjust_nemo_config(model_config, ref_config):
     model_config["num_query_groups"] = ref_config["num_key_value_heads"]
     model_config["kv_channels"] = ref_config["head_dim"]
     model_config["layernorm_epsilon"] = ref_config["rms_norm_eps"]
-    model_config["window_size"] = (ref_config["sliding_window_size"], 0)
+    model_config["window_size"] = (ref_config["sliding_window"], 0)
     model_config["layernorm_zero_centered_gamma"] = True
     model_config["name"] = 'megatron_gemma2'
     model_config['mcore_customization_config'] = {

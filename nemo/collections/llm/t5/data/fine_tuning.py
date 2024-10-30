@@ -71,10 +71,18 @@ class FineTuningDataModule(pl.LightningDataModule):
         self.seed = seed
         self.dataset_root = Path(dataset_root)
 
-        # add additional tokens for T5 tokenizer
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        # create tokenizer if tokenizer is None
+        if tokenizer is None:
+            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
-        self.tokenizer = tokenizer or get_nmt_tokenizer("megatron", "BertWordPieceCase")
+            special_tokens = {}
+            special_tokens['additional_special_tokens'] = [f'<extra_id_{i}>' for i in range(100)]
+            tokenizer = get_nmt_tokenizer(
+                "megatron",
+                "BertWordPieceCase",
+                special_tokens=special_tokens,
+            )
+        self.tokenizer = tokenizer
 
         self.memmap_workers = memmap_workers
         self.num_workers = num_workers

@@ -26,7 +26,7 @@ from nemo.collections.llm.gpt.data import (
     PreTrainingDataModule,
     SquadDataModule,
 )
-from nemo.collections.llm.gpt.data.api import dolly, mock, squad
+from nemo.collections.llm.gpt.data.api import dolly, hf_dataset, mock, squad
 from nemo.collections.llm.gpt.model import (
     Baichuan2Config,
     Baichuan2Config7B,
@@ -197,6 +197,7 @@ __all__ = [
     "squad",
     "dolly",
     "peft",
+    "hf_dataset",
     "HfAutoModelForCausalLM",
 ]
 

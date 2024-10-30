@@ -12,27 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import nemo_run as run
 import pytorch_lightning as pl
 
 from nemo.collections.llm.gpt.data.dolly import DollyDataModule
+from nemo.collections.llm.gpt.data.hf_dataset import HfDatasetDataModule
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
-from nemo.collections.llm.utils import factory
 
 
-@factory
+@run.cli.factory
+@run.autoconvert
 def mock() -> pl.LightningDataModule:
     return MockDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
 
 
-@factory
+@run.cli.factory
+@run.autoconvert
 def squad() -> pl.LightningDataModule:
     return SquadDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
 
 
-@factory
+@run.cli.factory
+@run.autoconvert
 def dolly() -> pl.LightningDataModule:
     return DollyDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
 
 
-__all__ = ["mock", "squad", "dolly"]
+@run.cli.factory
+@run.autoconvert
+def hf_dataset(dataset: str) -> pl.LightningDataModule:
+    return HfDatasetDataModule(dataset=dataset, global_batch_size=16, micro_batch_size=2)
+
+
+__all__ = ["mock", "squad", "dolly", "hf_dataset"]

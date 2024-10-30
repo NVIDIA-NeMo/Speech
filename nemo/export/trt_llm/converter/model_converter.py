@@ -254,6 +254,8 @@ def model_to_trtllm_ckpt(
                 layer_num = int(new_key.split(".")[2])
                 if layer_num in layers_range:
                     new_key = new_key.replace(f"layers.{layer_num}", f"layers.{layer_num-layers_range[0]}")
+                else:
+                    continue
             if config.get("new_decoder_architecture", False) and "post_layernorm" in new_key:
                 new_key = new_key.replace("post_layernorm", "mlp_layernorm")
             weights_dict_local[new_key] = v

@@ -101,13 +101,14 @@ class PackedSequenceSpecs:
     This field is set by llm.finetune api.
     """
 
-    packed_data_path: Path = None
+    packed_data_path: str = None
     """
     If specified, use the packed dataset from this file instead of the default path.
     """
 
     def __post_init__(self):
         if self.packed_data_path is not None:
+            self.packed_data_path = Path(self.packed_data_path)
             assert (
                 self.packed_data_path.suffix == ".npy"
             ), f"packed data file must be a .npy file: {self.packed_data_path}"

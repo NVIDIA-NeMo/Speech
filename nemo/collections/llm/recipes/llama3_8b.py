@@ -292,6 +292,7 @@ def finetune_recipe(
         recipe.peft.dim = 8
         recipe.peft.alpha = 16
         recipe.peft.target_modules = ['linear_qkv']
+        recipe.optim.config.use_distributed_optimizer = False
 
         # some settings currently do not function correctly with LoRA
         recipe.model.config.cross_entropy_loss_fusion = False

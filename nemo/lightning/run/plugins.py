@@ -294,10 +294,6 @@ class PerfEnvPlugin(run.Plugin):
                 executor.env_vars["NVTE_FWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
                 executor.env_vars["NVTE_BWD_LAYERNORM_SM_MARGIN"] = str(self.layernorm_sm_margin)
 
-        # Force Transformer Engine to use cuDNN attention over HazyResearch's Flash Attention
-        executor.env_vars["NVTE_FLASH_ATTN"] = "0"
-        executor.env_vars["NVTE_FUSED_ATTN"] = "1"
-
         # Improve perf by steering power to tensor cores, may not work on all systems
         if self.enable_vboost and isinstance(executor, run.SlurmExecutor):
             vboost_cmd = self.get_vboost_srun_cmd(executor.nodes, executor.job_dir)

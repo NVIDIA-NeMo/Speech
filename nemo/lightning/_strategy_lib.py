@@ -135,16 +135,6 @@ def init_model_parallel(model: Optional[nn.Module] = None) -> None:
             if app_state.init_mpi_proc_group:
                 torch.distributed.new_group(backend="mpi")
 
-        if model:
-            # Set TP group
-            # Deep iterate but skip self to avoid infinite recursion.
-            for index, child in enumerate(model.modules()):
-                if index == 0:
-                    continue
-                if hasattr(child, "set_tensor_parallel_group"):
-                    tp_group = parallel_state.get_tensor_model_parallel_group()
-                    child.set_tensor_parallel_group(tp_group)
-
 
 def set_model_parallel_attributes(model, parallelism):
     # Right now mcore sub-classes ModelParellelConfig, we should remove that

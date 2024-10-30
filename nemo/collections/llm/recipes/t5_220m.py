@@ -24,9 +24,12 @@ from pytorch_lightning.callbacks.callback import Callback
 
 from nemo import lightning as nl
 from nemo.collections.llm.api import finetune, pretrain
+from nemo.collections.llm.peft.lora import LoRA
+from nemo.collections.llm.recipes.finetune_default import default_finetune_trainer, nemo_resume
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 from nemo.collections.llm.t5.data.mock import MockDataModule
+from nemo.collections.llm.t5.data.squad import SquadDataModule
 from nemo.collections.llm.t5.model.t5 import T5Config220M, T5Model
 from nemo.lightning.pytorch.optim.lr_scheduler import WarmupAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
@@ -132,7 +135,6 @@ def trainer(
         plugins=bf16_mixed(),
         strategy=strategy,
         use_distributed_sampler=False,
-        # DEBUGGING
         val_check_interval=2000,
     )
 
@@ -201,3 +203,83 @@ def pretrain_recipe(
         optim=MegatronOptimizerModule(config=opt_config, lr_scheduler=lr_scheduler),
         resume=default_resume(),
     )
+
+
+@run.cli.factory(target=finetune, name=NAME)
+def finetune_recipe(
+    checkpoint_path: str = "",
+    dir: Optional[str] = None,
+    name: str = "default",
+    num_nodes: int = 1,
+    num_gpus_per_node: int = 8,
+    peft_scheme: Optional[str] = 'lora',
+) -> run.Partial:
+    """
+    Create a fine-tuning recipe for T5 220M model.
+
+    This function sets up a complete configuration for fine-tuning, including
+    model, trainer, data, logging, optimization, and resumption settings.
+    The recipe uses LoRA (Low-Rank Adaptation) for efficient fine-tuning, unless peft_scheme is set to None.
+
+    Args:
+        checkpoint_path (str): Path to pretrained checkpoint
+        dir (Optional[str]): Directory for saving logs and checkpoints.
+        name (str): Name of the fine-tuning run.
+        num_nodes (int): Number of compute nodes to use.
+        num_gpus_per_node (int): Number of GPUs per node.
+        peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning. Allowed values: 'lora', 'none'/None.
+
+    Returns:
+        run.Partial: Partial configuration for fine-tuning.
+
+    Examples:
+        CLI usage:
+            $ nemo llm finetune --factory t5_220m
+
+        Python API usage:
+            >>> recipe = finetune_recipe(name="t5_220m_finetune", num_nodes=1)
+            >>> print(recipe)
+
+    Note:
+        This recipe uses the SQuAD dataset for fine-tuning. For more information
+        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
+        `examples/llm/finetune/` directory.
+    """
+    opt_config = OptimizerConfig(
+        optimizer='adam',
+        lr=1e-4,
+        use_distributed_optimizer=True,
+        bf16=True,
+        weight_decay=0.01,
+    )
+
+    lr_scheduler = WarmupAnnealingScheduler(
+        warmup_steps=50,
+        max_steps=2000,
+        min_lr=0.00001,
+    )
+
+    recipe = run.Partial(
+        finetune,
+        model=model(),
+        trainer=default_finetune_trainer(
+            num_nodes=num_nodes,
+            num_gpus_per_node=num_gpus_per_node,
+        ),
+        data=run.Config(
+            SquadDataModule, seq_length=512, seq_length_dec=128, global_batch_size=128, micro_batch_size=1
+        ),
+        log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
+        optim=MegatronOptimizerModule(config=opt_config, lr_scheduler=lr_scheduler),
+        resume=nemo_resume(checkpoint_path),
+    )
+
+    if peft_scheme is None or peft_scheme.lower() == 'none':
+        recipe.trainer.strategy.tensor_model_parallel_size = 1
+        recipe.optim.config.lr = 5e-6
+    elif peft_scheme.lower() == 'lora':
+        recipe.peft = run.Config(LoRA)
+        recipe.optim.config.lr = 1e-4
+    else:
+        raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
+    return recipe

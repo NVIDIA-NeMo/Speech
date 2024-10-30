@@ -141,8 +141,18 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         self.index_mapping_dir = index_mapping_dir
         self.init_global_step = 0
 
-        # add additional tokens for T5 tokenizer
-        from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+        # create tokenizer if tokenizer is None
+        if tokenizer is None:
+            from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+
+            special_tokens = {}
+            special_tokens['additional_special_tokens'] = [f'<extra_id_{i}>' for i in range(100)]
+            tokenizer = get_nmt_tokenizer(
+                "megatron",
+                "BertWordPieceCase",
+                special_tokens=special_tokens,
+            )
+        self.tokenizer = tokenizer
 
         self.data_sampler = MegatronDataSampler(
             seq_len=self.seq_length,

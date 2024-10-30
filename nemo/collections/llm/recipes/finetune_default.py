@@ -42,7 +42,7 @@ def default_finetune_recipe(
 
     Args:
         model (run.Config[pl.LightningModule]): Configuration for a NeMo model.
-        resume_path (str): Path to the Huggingface model.
+        resume_path (str): Path to the Huggingface model or pretrained distributed checkpoint for resume
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
@@ -134,7 +134,7 @@ def nemo_resume(model_id: str) -> run.Config[nl.AutoResume]:
     This translates to the full path {NEMO_HOME}/models/{model_id}.
 
     Args:
-        model_id (str): The Huggingface model to resume.
+        model_id (str): Path to the Huggingface model or pretrained distributed checkpoint for resume
 
     Returns:
         run.Config[nl.AutoResume]: Configuration for resuming from NeMo checkpoint.

@@ -281,7 +281,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             model.config = update_config_with_dtype_overrides(dtype_config, model.config)
 
         has_optim = getattr(model, "optim", None)
-        if has_optim:
+        if has_optim and self._setup_optimizers:
             opt_config = getattr(model.optim, "config", None)
             if isinstance(opt_config, OptimizerConfig):
                 mcore_opt_config: OptimizerConfig = cast(OptimizerConfig, opt_config)

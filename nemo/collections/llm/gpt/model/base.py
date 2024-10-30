@@ -147,6 +147,15 @@ def default_layer_spec(config: "GPTConfig") -> ModuleSpec:
         return local_layer_spec(config)
 
 
+def torch_dtype_from_mcore_config(config: TransformerConfig):
+    if config.fp16:
+        return torch.float16
+    elif config.bf16:
+        return torch.bfloat16
+    else:
+        return torch.float
+
+
 @dataclass
 class GPTConfig(TransformerConfig, io.IOMixin):
     # From megatron.core.models.gpt.gpt_model.GPTModel

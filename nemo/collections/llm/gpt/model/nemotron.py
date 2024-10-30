@@ -20,7 +20,8 @@ import torch
 from torch import nn
 
 from nemo.collections.llm.fn.activation import squared_relu
-from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
+from nemo.collections.llm.gpt.model.llama import _export_embedding, _export_head
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -211,15 +212,15 @@ class HFNemotronImporter(io.ModelConnector["NemotronForCausalLM", NemotronModel]
 
 @io.model_exporter(NemotronModel, "hf")
 class HFNemotronExporter(io.ModelConnector[NemotronModel, "NemotronForCausalLM"]):
-    def init(self) -> "NemotronForCausalLM":
+    def init(self, dtype=torch.bfloat16) -> "NemotronForCausalLM":
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return NemotronForCausalLM.from_config(self.config)
+            return NemotronForCausalLM.from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
-        target = self.init()
         source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)
 
         target = target.cpu()
@@ -230,7 +231,6 @@ class HFNemotronExporter(io.ModelConnector[NemotronModel, "NemotronForCausalLM"]
 
     def convert_state(self, source, target):
         mapping = {
-            "embedding.word_embeddings.weight": "model.embed_tokens.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
             "decoder.layers.*.mlp.linear_fc1.weight": "model.layers.*.mlp.up_proj.weight",
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
@@ -240,10 +240,11 @@ class HFNemotronExporter(io.ModelConnector[NemotronModel, "NemotronForCausalLM"]
             "decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "model.layers.*.post_attention_layernorm.bias",
             "decoder.final_layernorm.weight": "model.norm.weight",
             "decoder.final_layernorm.bias": "model.norm.bias",
-            "output_layer.weight": "lm_head.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv])
+        return io.apply_transforms(
+            source, target, mapping=mapping, transforms=[_export_qkv, _export_embedding, _export_head]
+        )
 
     @property
     def tokenizer(self):

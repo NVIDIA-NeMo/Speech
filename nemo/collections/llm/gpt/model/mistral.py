@@ -22,7 +22,8 @@ import torch.nn.functional as F
 from torch import nn
 from typing_extensions import Annotated
 
-from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
+from nemo.collections.llm.gpt.model.llama import _export_embedding, _export_head
 from nemo.collections.llm.utils import Config
 from nemo.lightning import io, teardown
 from nemo.lightning.pytorch.optim import OptimizerModule
@@ -186,19 +187,19 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
 
 @io.model_exporter(MistralModel, "hf")
 class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
-    def init(self) -> "MistralForCausalLM":
+    def init(self, dtype=torch.bfloat16) -> "MistralForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return AutoModelForCausalLM.from_config(self.config)
+            return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
         # TODO: Make it work with lazy init
         # with torch.device("meta"):
         #     target = self.init()
-        target = self.init()
         source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)
 
         # TODO: Make sure we don't need to do this
@@ -210,16 +211,19 @@ class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
 
     def convert_state(self, source, target):
         mapping = {
-            "embedding.word_embeddings.weight": "model.embed_tokens.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.layers.*.input_layernorm.weight",
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "model.norm.weight",
-            "output_layer.weight": "lm_head.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv, _export_linear_fc1])
+        return io.apply_transforms(
+            source,
+            target,
+            mapping=mapping,
+            transforms=[_export_qkv, _export_linear_fc1, _export_embedding, _export_head],
+        )
 
     @property
     def tokenizer(self):

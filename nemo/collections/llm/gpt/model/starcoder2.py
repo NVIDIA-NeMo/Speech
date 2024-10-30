@@ -202,7 +202,6 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
 
     def convert_state(self, source, target):
         mapping = {
-            "embedding.word_embeddings.weight": "model.embed_tokens.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
             "decoder.layers.*.self_attention.linear_proj.bias": "model.layers.*.self_attn.o_proj.bias",
             "decoder.layers.*.mlp.linear_fc1.weight": "model.layers.*.mlp.c_fc.weight",
@@ -215,7 +214,6 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
             "decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "model.layers.*.post_attention_layernorm.bias",
             "decoder.final_layernorm.weight": "model.norm.weight",
             "decoder.final_layernorm.bias": "model.norm.bias",
-            "output_layer.weight": "lm_head.weight",
         }
 
         return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv_weight, _export_qkv_bias])

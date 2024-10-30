@@ -51,7 +51,17 @@ def load_context(path: Path, subpath: Optional[str] = None, build: bool = True):
         checkpoint: TrainerContext = load_ckpt("/path/to/checkpoint", subpath="model.config")
 
     """
-    return load(path, output_type=TrainerContext, subpath=subpath, build=build)
+    if not isinstance(path, Path):
+        path = Path(path)
+    try:
+        return load(path, output_type=TrainerContext, subpath=subpath, build=build)
+    except FileNotFoundError:
+        # Maintain backwards compatibility with checkpoints that don't have '/context' dir.
+        if path.parts[-1] == 'context':
+            path = path.parent
+        else:
+            path = path / 'context'
+        return load(path, output_type=TrainerContext, subpath=subpath, build=build)
 
 
 def model_importer(target: Type[ConnectorMixin], ext: str) -> Callable[[Type[ConnT]], Type[ConnT]]:

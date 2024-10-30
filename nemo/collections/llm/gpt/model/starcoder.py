@@ -16,10 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
+import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -157,16 +158,16 @@ class HFStarcoderImporter(io.ModelConnector["GPTBigCodeForCausalLM", StarcoderMo
 
 @io.model_exporter(StarcoderModel, "hf")
 class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausalLM"]):
-    def init(self) -> "GPTBigCodeForCausalLM":
+    def init(self, dtype=torch.bfloat16) -> "GPTBigCodeForCausalLM":
         from transformers import GPTBigCodeForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return GPTBigCodeForCausalLM._from_config(self.config)
+            return GPTBigCodeForCausalLM._from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
-        target = self.init()
         source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)
 
         target = target.cpu()
@@ -177,7 +178,6 @@ class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausal
 
     def convert_state(self, source, target):
         mapping = {
-            "embedding.word_embeddings.weight": "transformer.wte.weight",
             "embedding.position_embeddings.weight": "transformer.wpe.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "transformer.h.*.attn.c_proj.weight",
             "decoder.layers.*.self_attention.linear_proj.bias": "transformer.h.*.attn.c_proj.bias",
@@ -193,10 +193,9 @@ class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausal
             "decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "transformer.h.*.ln_2.bias",
             "decoder.final_layernorm.weight": "transformer.ln_f.weight",
             "decoder.final_layernorm.bias": "transformer.ln_f.bias",
-            "output_layer.weight": "lm_head.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping)
+        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_embedding, _export_head])
 
     @property
     def tokenizer(self):
@@ -225,3 +224,23 @@ class HFStarcoderExporter(io.ModelConnector[StarcoderModel, "GPTBigCodeForCausal
             num_key_value_heads=source.num_query_groups,
             vocab_size=self.tokenizer.vocab_size,
         )
+
+
+@io.state_transform(
+    source_key="embedding.word_embeddings.weight",
+    target_key="transformer.wte.weight",
+)
+def _export_embedding(ctx: io.TransformCTX, embedding):
+    megatron_config = ctx.target.config
+    # prune padding.
+    return embedding[: megatron_config.vocab_size, :]
+
+
+@io.state_transform(
+    source_key="output_layer.weight",
+    target_key="lm_head.weight",
+)
+def _export_head(ctx: io.TransformCTX, embedding):
+    megatron_config = ctx.target.config
+    # prune padding.
+    return embedding[: megatron_config.vocab_size, :]

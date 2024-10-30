@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.pytorch.utils import dtype_from_hf
@@ -139,16 +139,16 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
 
 @io.model_exporter(ChatGLMModel, "hf")
 class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"]):
-    def init(self) -> "AutoModelForCausalLM":
+    def init(self, dtype=torch.bfloat16) -> "AutoModelForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True)
+            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
-        target = self.init()
         source, _ = self.nemo_load(str(self))
+        target = self.init(torch_dtype_from_mcore_config(source.config))
         target = self.convert_state(source, target)
 
         target = target.cpu()
@@ -159,14 +159,12 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
 
     def convert_state(self, source, target):
         mapping = {
-            "embedding.word_embeddings.weight": "transformer.embedding.word_embeddings.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "transformer.encoder.layers.*.self_attention.dense.weight",
             "decoder.layers.*.mlp.linear_fc1.weight": "transformer.encoder.layers.*.mlp.dense_h_to_4h.weight",
             "decoder.layers.*.mlp.linear_fc2.weight": "transformer.encoder.layers.*.mlp.dense_4h_to_h.weight",
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "transformer.encoder.layers.*.input_layernorm.weight",
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "transformer.encoder.layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "transformer.encoder.final_layernorm.weight",
-            "output_layer.weight": "transformer.output_layer.weight",
         }
 
         return io.apply_transforms(
@@ -176,6 +174,8 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
             transforms=[
                 _export_qkv_weight,
                 _export_qkv_bias,
+                _export_embedding,
+                _export_head,
             ],
         )
 
@@ -196,6 +196,26 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
             multi_query_group_num=source.num_query_groups,
             padded_vocab_size=self.tokenizer.vocab_size,
         )
+
+
+@io.state_transform(
+    source_key="embedding.word_embeddings.weight",
+    target_key="transformer.embedding.word_embeddings.weight",
+)
+def _export_embedding(ctx: io.TransformCTX, embedding):
+    megatron_config = ctx.target.config
+    # prune padding.
+    return embedding[: megatron_config.vocab_size, :]
+
+
+@io.state_transform(
+    source_key="output_layer.weight",
+    target_key="transformer.output_layer.weight",
+)
+def _export_head(ctx: io.TransformCTX, embedding):
+    megatron_config = ctx.target.config
+    # prune padding.
+    return embedding[: megatron_config.vocab_size, :]
 
 
 @io.state_transform(

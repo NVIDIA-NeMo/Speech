@@ -212,7 +212,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
             tp_comm_overlap=True,
             defer_embedding_wgrad_compute=True,
             wgrad_deferral_limit=22,
-            overlap_param_gather_with_optimizer_step=True,
+            overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to an issue with checkpointing
             align_param_gather=True,
         )
     )

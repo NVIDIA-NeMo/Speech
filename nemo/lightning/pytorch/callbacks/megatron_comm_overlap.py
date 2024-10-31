@@ -181,7 +181,8 @@ class MegatronCommOverlapCallback(Callback):
             comm_overlap_cfg.overlap_grad_reduce = True
             comm_overlap_cfg.overlap_param_gather = True
             if parallelism_cfg.pipeline_model_parallel_size > 1 and vp_size > 1:
-                comm_overlap_cfg.overlap_param_gather_with_optimizer_step = True
+                # Currently disabled due to an issue with checkpointing
+                # comm_overlap_cfg.overlap_param_gather_with_optimizer_step = True
                 comm_overlap_cfg.align_param_gather = True
 
         comm_overlap_cfg = self._override_user_cfgs(comm_overlap_cfg)

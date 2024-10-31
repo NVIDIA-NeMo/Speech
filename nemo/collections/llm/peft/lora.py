@@ -66,7 +66,6 @@ class AdapterParallelAdd(AdapterWrapper):
         elif len(linear_output) == 3:
             linear_output, bias, layernorm_output = linear_output
             x = layernorm_output
-
         adapter_output = self.adapter(x.contiguous())
         return linear_output + adapter_output, bias
 
@@ -112,6 +111,10 @@ class LinearAdapter(nn.Module):
         if self.dropout_position == 'post':
             lora_res = self.dropout(lora_res)
         return res + lora_res
+
+
+def is_expert_linear(fqn):
+    return re.match('.*mlp\.experts\.local_experts.[0-9]+\.linear_fc[1-2]$', fqn) is not None
 
 
 @dataclass
@@ -237,6 +240,7 @@ class LoRA(PEFT):
                 dropout_position=self.dropout_position,
                 model_parallel_config=getattr(m, "config", None),
                 alpha=self.alpha,
+                is_expert=is_expert_linear(full_name),
             )
             return AdapterParallelAdd(m, adapter)
         return m

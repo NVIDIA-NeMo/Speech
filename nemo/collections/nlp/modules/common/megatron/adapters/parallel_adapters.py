@@ -136,6 +136,26 @@ class MLPInfusedAdapterConfig(InfusedAdapterConfig):
     _target_: str = "{0}.{1}".format(MLPInfusedAdapter.__module__, MLPInfusedAdapter.__name__)
 
 
+def pad_seq_to_mult(x, mult):
+    import torch.nn.functional as F
+
+    if x.shape[0] % mult == 0:
+        return x, 0
+    pad_len = mult - (x.shape[0] % mult)
+    with torch.no_grad():
+        # pad at the tail
+        x = torch.nn.functional.pad(x, (0, 0, 0, pad_len))
+    return x, pad_len
+
+
+def unpad_seq_to_mult(x, pad_len):
+    if pad_len <= 0:
+        return x
+    with torch.no_grad():
+        # prune tail padding
+        return x[:-pad_len, :]
+
+
 class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
     def __init__(
         self,
@@ -154,6 +174,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         alpha: float | None = None,
         dropout_position: str = 'post',
         a2a_experimental: bool = False,  # TODO: should rename this or make it a default feature
+        is_expert: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -167,6 +188,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         self.input_is_parallel = input_is_parallel
         self.dropout_position = dropout_position
         self.use_a2a = a2a_experimental
+        self.is_expert = is_expert
 
         # megatron_gpt_peft_models will provide this arg, but deprecated ones do not.
         # in case this arg is not provided, use the dummy default config.
@@ -292,6 +314,10 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
         if self.dropout is not None and self.dropout_position == 'pre':
             x = self.dropout(x)
 
+        pad_len = 0
+        if self.is_expert:
+            x, pad_len = pad_seq_to_mult(x, self.config.tensor_model_parallel_size)
+
         if self.norm_position == 'pre':
             x = self.layer_norm(x)
         if self._sequence_parallel and not self.input_is_parallel:
@@ -311,7 +337,7 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             x.activation_offloading = True
         x, _ = self.linear_out(x)
 
-        if self._sequence_parallel and self.input_is_parallel:
+        if self._sequence_parallel and self.input_is_parallel and not self.is_expert:
             # for attention_dense and linear_fc2
             # layernorm after lora is impacted by sequence parallel,
             # hence seq dim need to be scattered right after lora linear layers
@@ -330,6 +356,10 @@ class ParallelLinearAdapter(nn.Module, AdapterModuleUtil):
             x = self.dropout(x)
 
         x = x * (self.alpha / self.dim)
+
+        if pad_len > 0:
+            # Remove MoE padding.
+            x = unpad_seq_to_mult(x, pad_len)
 
         return x
 

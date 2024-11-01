@@ -244,7 +244,7 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
 def finetune_recipe(
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 1,
+    num_nodes: int = None,
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
     seq_length: Optional[int] = None,
@@ -293,11 +293,16 @@ def finetune_recipe(
     if seq_length is None:
         seq_length = 4096 if packed_sequence else 2048
 
+    if num_nodes is None:
+        if peft_scheme is None or peft_scheme.lower() == 'none':
+            num_nodes = 4
+        elif peft_scheme.lower() == 'lora':
+            num_nodes = 1
+
     recipe = default_finetune_recipe(
         model(), "meta-llama/Meta-Llama-3-70B", dir, name, num_nodes, num_gpus_per_node, packed_sequence
     )
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        assert num_nodes >= 4
         recipe.trainer.strategy.tensor_model_parallel_size = 8
         recipe.trainer.strategy.pipeline_model_parallel_size = 4
         recipe.optim.config.lr = 5e-6

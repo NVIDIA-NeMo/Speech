@@ -15,7 +15,7 @@
 import math
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
@@ -50,9 +50,8 @@ class FineTuningDataModule(pl.LightningDataModule):
         num_workers (int, optional): The number of worker processes for data loading. Defaults to 8.
         pin_memory (bool, optional): Whether to pin memory during data loading for faster GPU training. Defaults to True.
         persistent_workers (bool, optional): Whether to keep data loading workers persistent across epochs. Defaults to False.
-        max_train_steps (int, optional): Maximum number of steps to train. Used to calculate samples mapping for the mmap dataset
-        pad_to_max_length (bool, optional): Whether to pad the input to the max sequence length. If False, will pad to the max length of the current batch.
         packed_sequence_specs (PackedSequenceSpecs, optional): See PackedSequenceSpecs for details
+        dataset_kwargs (Optional[Dict[str, Any]], optional): Keyword arguments to pass into the GPTSFTDataset class
     """
 
     def __init__(
@@ -68,9 +67,8 @@ class FineTuningDataModule(pl.LightningDataModule):
         num_workers: int = 8,
         pin_memory: bool = True,
         persistent_workers: bool = False,
-        pad_to_max_length: bool = False,
         packed_sequence_specs: Optional["PackedSequenceSpecs"] = None,
-        sanity_check_dist_workers: bool = True,
+        dataset_kwargs: Optional[Dict[str, Any]] = None,
     ):
         super().__init__()
         self.seq_length = seq_length
@@ -86,11 +84,10 @@ class FineTuningDataModule(pl.LightningDataModule):
         self.rampup_batch_size = rampup_batch_size
         self.data_sampler = None
         self.max_train_samples = None
-        self.pad_to_max_length = pad_to_max_length
         self.packed_sequence_specs = packed_sequence_specs
         self.packed_sequence_size = -1 if not packed_sequence_specs else packed_sequence_specs.packed_sequence_size
         self.validate_batch_size_for_packed_sequence()
-        self._sanity_check_dist_workers = sanity_check_dist_workers
+        self.dataset_kwargs = dataset_kwargs or {}
 
     def validate_batch_size_for_packed_sequence(self):
         if self.packed_sequence_size > 0 and self.micro_batch_size > 1:
@@ -135,8 +132,7 @@ class FineTuningDataModule(pl.LightningDataModule):
             self._create_dataset(
                 self.train_path if self.packed_sequence_size <= 0 else self.train_path_packed,
                 max_num_samples=self.max_train_samples,
-                pad_to_max_length=self.pad_to_max_length,
-                sanity_check_dist_workers=self._sanity_check_dist_workers,
+                **self.dataset_kwargs,
             )
         )
 
@@ -145,8 +141,7 @@ class FineTuningDataModule(pl.LightningDataModule):
             self._create_dataset(
                 self.validation_path,
                 is_test=True,
-                pad_to_max_length=self.pad_to_max_length,
-                sanity_check_dist_workers=self._sanity_check_dist_workers,
+                **self.dataset_kwargs,
             ),
         )
 
@@ -156,8 +151,7 @@ class FineTuningDataModule(pl.LightningDataModule):
                 self.test_path,
                 tokens_to_generate=32,
                 is_test=True,
-                pad_to_max_length=self.pad_to_max_length,
-                sanity_check_dist_workers=self._sanity_check_dist_workers,
+                **self.dataset_kwargs,
             )
         )
 

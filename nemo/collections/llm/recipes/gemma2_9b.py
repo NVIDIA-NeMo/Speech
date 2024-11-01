@@ -213,6 +213,9 @@ def finetune_recipe(
     recipe = default_finetune_recipe(
         model(), "google/gemma-2-9b", dir, name, num_nodes, num_gpus_per_node, packed_sequence
     )
+    # Gemma requires BOS
+    recipe.data.dataset_kwargs = {'add_bos': True}
+
     if peft_scheme is None or peft_scheme.lower() == 'none':
         recipe.optim.config.lr = 5e-6
         recipe.trainer.strategy.tensor_model_parallel_size = 4

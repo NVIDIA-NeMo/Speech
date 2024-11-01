@@ -109,7 +109,7 @@ if __name__ == "__main__":
         global_batch_size=4,
         tokenizer=model.tokenizer,
         num_workers=0,
-        pad_to_max_length=True,
+        dataset_kwargs={"pad_to_max_length": True},
     )
 
     app_state = _setup(

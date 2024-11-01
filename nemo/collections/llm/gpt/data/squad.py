@@ -13,7 +13,7 @@
 # limitations under the License.
 import json
 import shutil
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from datasets import DatasetDict, load_dataset
 
@@ -54,9 +54,8 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
         num_workers: int = 8,
         pin_memory: bool = True,
         persistent_workers: bool = False,
-        pad_to_max_length: bool = False,
         packed_sequence_specs: Optional["PackedSequenceSpecs"] = None,
-        sanity_check_dist_workers: bool = True,
+        dataset_kwargs: Optional[Dict[str, Any]] = None,
     ):
         self.force_redownload = force_redownload
         self.delete_raw = delete_raw
@@ -73,9 +72,8 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent_workers,
-            pad_to_max_length=pad_to_max_length,
             packed_sequence_specs=packed_sequence_specs,
-            sanity_check_dist_workers=sanity_check_dist_workers,
+            dataset_kwargs=dataset_kwargs,
         )
 
     def prepare_data(self) -> None:

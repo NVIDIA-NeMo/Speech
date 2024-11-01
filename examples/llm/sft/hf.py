@@ -41,7 +41,7 @@ def squad(tokenizer) -> pl.LightningDataModule:
         micro_batch_size=2,
         global_batch_size=128,  # assert gbs == mbs * accumulate_grad_batches
         num_workers=0,
-        sanity_check_dist_workers=False,
+        dataset_kwargs={"sanity_check_dist_workers": False},
     )
 
 

@@ -17,7 +17,7 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.1.0
     with:
       name_of_library: NeMo-Toolkit
       type_of_release: ${{ inputs.type_of_release }}

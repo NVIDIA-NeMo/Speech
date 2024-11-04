@@ -80,7 +80,8 @@ def pytorch_adam_with_cosine_annealing(
     return run.Config(
         PytorchOptimizerModule,
         optim_cls=Adam,
-        config=dict(
+        config=run.Config(
+            dict,
             lr=max_lr,
             weight_decay=0.1,
             betas=(0.9, 0.95),
@@ -109,7 +110,8 @@ def pytorch_adam_with_flat_lr(
     return run.Config(
         PytorchOptimizerModule,
         optim_cls=Adam,
-        config=dict(
+        config=run.Config(
+            dict,
             lr=max_lr,
             weight_decay=0.1,
             betas=(0.9, 0.95),

@@ -22,10 +22,6 @@ from nemo.collections.llm import fn
 from nemo.lightning import io
 
 
-def _extract_non_bias_params(model):
-    return list(map(lambda x: x[1], filter(lambda x: not 'bias' in x[0], model.named_parameters())))
-
-
 def masked_cross_entropy(logits, targets, mask=None):
     if mask is not None:
         loss = F.cross_entropy(logits, targets, reduction='none')
@@ -35,7 +31,14 @@ def masked_cross_entropy(logits, targets, mask=None):
 
 
 class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
-    def __init__(self, model_name='gpt2', load_pretrained_weights=True, tokenizer=None, loss_fn=masked_cross_entropy):
+    def __init__(
+        self,
+        model_name='gpt2',
+        load_pretrained_weights=True,
+        tokenizer=None,
+        loss_fn=masked_cross_entropy,
+        model_transform=None,
+    ):
         super().__init__()
         self.save_hyperparameters()
         self.model_name = model_name
@@ -44,6 +47,7 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.loss_fn = loss_fn
         self.load_pretrained_weights = load_pretrained_weights
         self.is_hf_model = True
+        self.model_transform = model_transform
 
     @property
     def tokenizer(self):
@@ -67,7 +71,7 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         else:
             from transformers import AutoConfig
 
-            config = AutoConfig.from_pretained(self.model_name)
+            config = AutoConfig.from_pretrained(self.model_name)
             self.model = AutoModelForCausalLM.from_config(config)
         self.model.train()
 

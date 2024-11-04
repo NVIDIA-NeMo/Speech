@@ -80,15 +80,16 @@ class _RNNTNumba(Function):
                 if grads is not None:
                     grads /= minibatch_size
 
-        ctx.grads = grads
+        ctx.save_for_backward(grads)
 
         return costs
 
     @staticmethod
     def backward(ctx, grad_output):
-        if grad_output is not None and ctx.grads is not None:
-            grad_output = grad_output.view(-1, 1, 1, 1).to(ctx.grads)
-            return ctx.grads.mul_(grad_output), None, None, None, None, None, None, None
+        (grads,) = ctx.saved_tensors
+        if grad_output is not None and grads is not None:
+            grad_output = grad_output.view(-1, 1, 1, 1).to(grads)
+            return grads.mul_(grad_output), None, None, None, None, None, None, None
 
 
 class _TDTNumba(Function):
@@ -170,18 +171,18 @@ class _TDTNumba(Function):
                     label_grads /= minibatch_size
                     duration_grads /= minibatch_size
 
-        ctx.label_grads = label_grads
-        ctx.duration_grads = duration_grads
+        ctx.save_for_backward(label_grads, duration_grads)
 
         return costs
 
     @staticmethod
     def backward(ctx, grad_output):
-        if grad_output is not None and ctx.label_grads is not None:
-            grad_output = grad_output.view(-1, 1, 1, 1).to(ctx.label_grads)
+        label_grads, duration_grads = ctx.saved_tensors
+        if grad_output is not None and label_grads is not None:
+            grad_output = grad_output.view(-1, 1, 1, 1).to(label_grads)
             return (
-                ctx.label_grads.mul_(grad_output),
-                ctx.duration_grads.mul_(grad_output),
+                label_grads.mul_(grad_output),
+                duration_grads.mul_(grad_output),
                 None,
                 None,
                 None,
@@ -251,15 +252,16 @@ class _MultiblankRNNTNumba(Function):
                 if grads is not None:
                     grads /= minibatch_size
 
-        ctx.grads = grads
+        ctx.save_for_backward(grads)
 
         return costs
 
     @staticmethod
     def backward(ctx, grad_output):
-        if grad_output is not None and ctx.grads is not None:
-            grad_output = grad_output.view(-1, 1, 1, 1).to(ctx.grads)
-            return ctx.grads.mul_(grad_output), None, None, None, None, None, None, None, None, None, None
+        (grads,) = ctx.saved_tensors
+        if grad_output is not None and grads is not None:
+            grad_output = grad_output.view(-1, 1, 1, 1).to(grads)
+            return grads.mul_(grad_output), None, None, None, None, None, None, None, None, None, None
 
 
 def rnnt_loss(

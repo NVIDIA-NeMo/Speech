@@ -143,9 +143,9 @@ def pretrain_recipe(
     dir: Optional[str] = None,
     name: str = "default",
     # Trainer
-    tensor_parallelism: int = 2,
-    pipeline_parallelism: int = 1,
-    pipeline_parallelism_type: Optional[torch.dtype] = None,
+    tensor_parallelism: int = 1,
+    pipeline_parallelism: int = 8,
+    pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
     virtual_pipeline_parallelism: Optional[int] = None,
     context_parallelism: int = 1,
     sequence_parallelism: bool = False,

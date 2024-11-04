@@ -298,3 +298,7 @@ class AutoTokenizer(TokenizerSpec):
     def save_vocabulary(self, save_directory: str, filename_prefix: str = None):
         """Saves tokenizer's vocabulary and other artifacts to the specified directory"""
         return self.tokenizer.save_vocabulary(save_directory=save_directory, filename_prefix=filename_prefix)
+
+    def save_pretrained(self, save_directory: str):
+        """Saves tokenizer's vocabulary and other artifacts to the specified directory"""
+        return self.tokenizer.save_pretrained(save_directory)

@@ -20,6 +20,7 @@ from transformers import AutoModelForCausalLM
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
+from nemo.utils import logging
 
 
 def masked_cross_entropy(logits, targets, mask=None):
@@ -111,3 +112,11 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         loss = output.loss
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+
+    def save_pretrained(self, path):
+        assert self.model is not None, "Model has to be created first."
+        self.model.save_pretrained(path)
+        if self._tokenizer is not None:
+            self._tokenizer.save_pretrained(path)
+        else:
+            logging.warning("A tokenizer wasn't created before to save.")

@@ -55,6 +55,7 @@ if __name__ == '__main__':
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
+    parser.add_argument('--model-save-path', type=str, default=None)
     args = parser.parse_args()
 
     wandb = None
@@ -70,9 +71,12 @@ if __name__ == '__main__':
         grad_clip = None
     use_dist_samp = False
 
+    model = llm.HfAutoModelForCausalLM(args.model)
+    tokenizer = model.tokenizer
+
     llm.api.finetune(
-        model=llm.HfAutoModelForCausalLM(args.model),
-        data=squad(llm.HfAutoModelForCausalLM.configure_tokenizer(args.model)),
+        model=model,
+        data=squad(tokenizer),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -89,3 +93,6 @@ if __name__ == '__main__':
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(max_lr=1e-5, clip_grad=0.5)),
         log=None,
     )
+
+    if args.model_save_path is not None:
+        model.save_pretrained(args.model_save_path)

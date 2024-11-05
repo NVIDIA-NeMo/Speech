@@ -37,7 +37,7 @@ from megatron.core.parallel_state import get_data_parallel_group
 from torch import nn
 from typing_extensions import Self, override
 
-from nemo.lightning.ckpt_utils import ckpt_to_dir
+from nemo.lightning.ckpt_utils import WEIGHTS_PATH, ckpt_to_dir
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.mixin import IOMixin
 
@@ -76,6 +76,26 @@ class TrainerContext(IOMixin, Generic[LightningModuleT]):
             extra["datamodule"] = trainer.datamodule.__io__
 
         return extra
+
+
+def ckpt_to_weights_subdir(filepath: Union[str, Path], is_saving) -> Path:
+    """Given an input checkpoint filepath, clean it using `ckpt_to_dir` and then return the weights subdirectory, if it exists."""
+    filepath = ckpt_to_dir(filepath=filepath)
+    base_dir = filepath
+    assert isinstance(base_dir, Path)
+    if base_dir.parts[-1] != WEIGHTS_PATH:
+        maybe_base_dir = base_dir / WEIGHTS_PATH
+        if maybe_base_dir.is_dir() or is_saving:
+            base_dir = maybe_base_dir
+    ## handle adapter paths
+    if hasattr(base_dir, "base_model_path") and base_dir.base_model_path.parts[-1] != WEIGHTS_PATH:
+        maybe_base_model_path = base_dir.base_model_path / WEIGHTS_PATH
+        if maybe_base_model_path.is_dir() or is_saving:
+            base_dir.base_model_path = base_dir.base_model_path / WEIGHTS_PATH
+    if is_saving:
+        assert base_dir.parts[-1] == WEIGHTS_PATH
+        assert base_dir.parent == Path(filepath)
+    return base_dir
 
 
 class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
@@ -132,7 +152,8 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
                 f" storage_options, but {storage_options=} was provided."
                 f" Ignoring given storage_options"
             )
-        checkpoint_dir = ckpt_to_dir(path)
+        checkpoint_dir = ckpt_to_weights_subdir(path, is_saving=True)
+
         fs = get_filesystem(checkpoint_dir)
         if fs.isdir(checkpoint_dir) and dist_checkpointing.check_is_distributed_checkpoint(checkpoint_dir):
             logging.info(f'Distributed checkpoint at path {checkpoint_dir} already exists, skipping saving')
@@ -179,6 +200,11 @@ class MegatronCheckpointIO(AsyncCompatibleCheckpointIO, IOMixin):
             raise FileNotFoundError(f"Checkpoint file not found: {path}")
         if not fs.isdir(path):
             raise ValueError(f"Distributed checkpoints should be a directory. Found: {path}.")
+
+        # Load from ckpt_path/weights (new format) if it exists
+        path = ckpt_to_weights_subdir(path, is_saving=False)
+        if hasattr(path, "base_model_path") and not path.base_model_path.exists():
+            path.base_model_path = path.base_model_path.parent
 
         if self.save_ckpt_format == 'zarr' and self.load_directly_on_device:
             from megatron.core.dist_checkpointing.strategies.tensorstore import TensorStoreLoadShardedStrategy

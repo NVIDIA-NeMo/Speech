@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import filecmp
+import json
 import os
 import shutil
 import tempfile
-from typing import Callable, Dict, Optional, Set, Union
+from typing import Any, Callable, Dict, Optional, Set, Union
 
 import pytest
 import torch
@@ -57,6 +58,18 @@ def getattr2(object, attr):
     else:
         arr = attr.split('.')
         return getattr2(getattr(object, arr[0]), '.'.join(arr[1:]))
+
+
+def _is_json_serializable(value: Any) -> bool:
+    """Test whether a variable can be encoded as json."""
+    if value is None or isinstance(value, (bool, int, float, str, list, dict)):  # fast path
+        return True
+    try:
+        json.dumps(value)
+        return True
+    except (TypeError, OverflowError):
+        # OverflowError is raised if number is too large to encode
+        return False
 
 
 class MockModel(ModelPT):
@@ -1192,6 +1205,8 @@ class TestSaveRestore:
             # test parent can be saved/restored
             parent = self.__test_restore_elsewhere(parent, map_location='cpu')
             assert isinstance(parent.ctc_model, EncDecCTCModel)
+
+            assert _is_json_serializable(parent.ctc_model.hparams_initial)
 
     @pytest.mark.unit
     def test_mock_model_nested_custom_config_field(self):

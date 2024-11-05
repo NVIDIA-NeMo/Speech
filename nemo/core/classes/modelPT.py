@@ -1027,6 +1027,7 @@ class ModelPT(LightningModule, Model):
 
             if 'log' in output_dict:
                 self.log_dict(output_dict.pop('log'), on_epoch=True)
+
             # return everything else
             return output_dict
 
@@ -1646,6 +1647,14 @@ class ModelPT(LightningModule, Model):
         self._cfg (e.g., in self.setup_optimization()) that was not done via `self.cfg = new_cfg`.
         """
         self._set_hparams(OmegaConf.create({'cfg': self._cfg}))
+
+        if (
+            hasattr(self, '_hparams_initial')
+            and 'cfg' in self._hparams_initial
+            and isinstance(self._hparams_initial['cfg'], DictConfig)
+        ):
+            self._hparams_initial['cfg'] = OmegaConf.to_object(self._hparams_initial['cfg'])
+
         return super().hparams
 
     @property

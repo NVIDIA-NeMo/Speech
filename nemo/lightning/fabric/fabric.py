@@ -22,7 +22,7 @@ import pytorch_lightning as pl
 from torch import nn
 from typing_extensions import Self, override
 
-from nemo.lightning.ckpt_utils import ckpt_to_context_subdir, ckpt_to_weights_subdir
+from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.io.mixin import IOMixin, serialization, track_io
 
 if TYPE_CHECKING:
@@ -83,7 +83,7 @@ class Fabric(lb.Fabric, IOMixin):
             model = context.model
 
         dist_model = self.setup_module(model)
-        self.load(ckpt_to_weights_subdir(path), {"state_dict": dist_model})
+        self.load(path, {"state_dict": dist_model})
 
         return dist_model
 

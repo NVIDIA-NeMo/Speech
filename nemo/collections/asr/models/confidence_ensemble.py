@@ -33,6 +33,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import (
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.core.classes import ModelPT
 from nemo.utils import model_utils
+from nemo.utils.decorators import deprecated
 
 
 # frozen is required to allow hashing of this class and use it
@@ -151,6 +152,7 @@ def compute_confidence(hypothesis: Hypothesis, confidence_cfg: ConfidenceConfig)
     return conf_value
 
 
+@deprecated(version='v2.1.0')
 class ConfidenceEnsembleModel(ModelPT):
     """Implementation of the confidence ensemble model.
 

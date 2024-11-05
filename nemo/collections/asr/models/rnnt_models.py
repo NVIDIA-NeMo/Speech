@@ -46,6 +46,7 @@ from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AcousticEncodedRepresentation, AudioSignal, LengthsType, NeuralType, SpectrogramType
 from nemo.utils import logging
+from nemo.utils.decorators import deprecated
 
 
 class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTranscriptionMixin):
@@ -899,6 +900,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
         output = dict(encoded=encoded, encoded_len=encoded_len)
         return output
 
+    @deprecated(
+        explanation='The return type of args will be updated in the upcoming release to ensure a consistent output format across all decoder types, such that a "Hypothesis" object is always returned.'
+    )
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
     ) -> Tuple[List['Hypothesis'], List['Hypothesis']]:

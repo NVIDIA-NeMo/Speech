@@ -39,6 +39,7 @@ from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types import *
 from nemo.utils import logging, model_utils
 from nemo.utils.cast_utils import cast_all
+from nemo.utils.decorators import deprecated
 
 __all__ = ['EncDecClassificationModel', 'EncDecRegressionModel']
 
@@ -483,6 +484,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel, TranscriptionMixin):
         return ClassificationInferConfig()
 
 
+@deprecated(explanation='EncDecClassificationModel will be merged with EncDecSpeakerLabelModel class.')
 class EncDecClassificationModel(_EncDecBaseModel):
     """Encoder decoder Classification models."""
 

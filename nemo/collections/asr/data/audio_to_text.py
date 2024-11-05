@@ -42,6 +42,7 @@ from nemo.utils.data_utils import (
     is_datastore_path,
     is_tarred_path,
 )
+from nemo.utils.decorators import deprecated
 from nemo.utils.distributed import webdataset_split_by_workers
 from nemo.utils.get_rank import is_global_rank_zero
 
@@ -730,6 +731,9 @@ class AudioToBPEDataset(_AudioTextDataset):
         )
 
 
+@deprecated(
+    explanation='Webdataset support will be removed in v2.1.0 versions, please use LhotseSpeechToTextBpeDataset class instead'
+)
 class _TarredAudioToTextDataset(IterableDataset):
     """
     A similar Dataset to the AudioToCharDataset/AudioToBPEDataset, but which loads tarred audio files.

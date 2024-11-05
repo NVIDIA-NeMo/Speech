@@ -80,11 +80,21 @@ class MCoreTransformerBlockMixin(TransformerBlock, MCoreAdapterModuleMixin):
         context: Tensor = None,
         context_mask: Tensor = None,
         rotary_pos_emb: Tensor = None,
+        rotary_pos_cos: Tensor = None,
+        rotary_pos_sin: Tensor = None,
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
     ):
         hidden_states = super().forward(
-            hidden_states, attention_mask, context, context_mask, rotary_pos_emb, inference_params, packed_seq_params
+            hidden_states,
+            attention_mask,
+            context,
+            context_mask,
+            rotary_pos_emb,
+            rotary_pos_cos,
+            rotary_pos_sin,
+            inference_params,
+            packed_seq_params,
         )
 
         mlp_head_adapter = self.get_adapter_module(AdapterName.MLP_HEAD_ADAPTER)
@@ -220,6 +230,8 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         inference_params=None,
         rotary_pos_emb=None,
         packed_seq_params=None,
+        rotary_pos_cos=None,
+        rotary_pos_sin=None,
     ):
         # hidden_states: [sq, b, h]
 
@@ -237,8 +249,8 @@ class MCoreSelfAttentionMixin(SelfAttention, MCoreAdapterModuleMixin):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, key, value, rotary_pos_emb
+        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+            inference_params, query, key, value, rotary_pos_emb
         )
 
         if packed_seq_params is not None:

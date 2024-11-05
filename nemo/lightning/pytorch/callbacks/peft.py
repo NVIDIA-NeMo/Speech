@@ -94,18 +94,15 @@ class PEFT(IOMixin, ABC, ModelTransform):
         Returns:
             nn.Module: The transformed model with PEFT applied.
         """
+        self.freeze_model(model)
 
-        # If using megatron virtual pipeline parallelism, model is a list of
-        # model chunks so iterate over model
+        # apply walk to model(s)
         if isinstance(model, MegatronParallel) and len(model) > 1:
             for model_chunk in model:
-                model_chunk.freeze()
                 model_chunk.walk(self.transform)
         elif isinstance(model, torch.nn.parallel.distributed.DistributedDataParallel):
-            model.module.freeze()
             model.module.walk(self.transform)
         else:
-            model.freeze()
             model.walk(self.transform)
 
         return model
@@ -122,12 +119,14 @@ class PEFT(IOMixin, ABC, ModelTransform):
         Returns:
             nn.Module: The transformed model with PEFT applied.
         """
+        if isinstance(model, MegatronParallel) and len(model) > 1:
+            for model_chunk in model:
+                model_chunk.freeze()
         if isinstance(model, torch.nn.parallel.distributed.DistributedDataParallel):
             model.module.freeze()
-            model.module.walk(self.transform)
         else:
             model.freeze()
-            model.train(mode=True)
+        model.train(mode=True)
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:
         from nemo.lightning.pytorch.strategies.utils import create_checkpoint_io
@@ -136,7 +135,6 @@ class PEFT(IOMixin, ABC, ModelTransform):
 
         trainer.strategy.trainer = trainer
         wrapped_io = partial(WrappedAdapterIO, peft=self)
-        ckpt_io_kwargs = {}
 
         ckpt_io_kwarg_names = [
             "save_ckpt_format",

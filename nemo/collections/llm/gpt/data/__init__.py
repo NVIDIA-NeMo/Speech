@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo.collections.llm.gpt.data.alpaca import AlpacaDataModule
 from nemo.collections.llm.gpt.data.dolly import DollyDataModule
 from nemo.collections.llm.gpt.data.fine_tuning import FineTuningDataModule
 from nemo.collections.llm.gpt.data.hf_dataset import HfDatasetDataModule
@@ -21,6 +22,7 @@ from nemo.collections.llm.gpt.data.squad import SquadDataModule
 
 __all__ = [
     "FineTuningDataModule",
+    "AlpacaDataModule",
     "SquadDataModule",
     "DollyDataModule",
     "MockDataModule",

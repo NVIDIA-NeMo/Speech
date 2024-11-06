@@ -19,6 +19,7 @@ safe_import("transformer_engine")
 
 from nemo.collections.llm import peft
 from nemo.collections.llm.gpt.data import (
+    AlpacaDataModule,
     DollyDataModule,
     FineTuningDataModule,
     HfDatasetDataModule,

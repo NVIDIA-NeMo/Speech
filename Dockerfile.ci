@@ -15,9 +15,10 @@
 # limitations under the License.
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
-
+ARG IMAGE_LABEL
 FROM ${BASE_IMAGE}
-LABEL "nemo.library"="nemo-core"
+
+LABEL "nemo.library"=${IMAGE_LABEL}
 
 ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1

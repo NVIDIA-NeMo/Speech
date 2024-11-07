@@ -51,6 +51,7 @@ jobs:
 
       - name: black
         uses: psf/black@stable
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         with:
           options: "--verbose"
           # apply only to changed files (pass explicitly the files)
@@ -59,6 +60,7 @@ jobs:
 
       - name: isort
         uses: isort/isort-action@v1
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' }}
         with:
           isort-version: "5.13.2"
           # reformat all files with isort – safe since the whole repo is already reformatted
@@ -71,13 +73,15 @@ jobs:
             commit: --signoff
 
       - name: pylint
-        if: ${{ !contains( github.event.pull_request.labels.*.name, 'skip-docs') }}
+        if: ${{ steps.changed-files.outputs.any_changed == 'true' && !contains( github.event.pull_request.labels.*.name, 'skip-docs') }}
+        env:
+          # only *.py files included
+          CHANGED_FILES: "${{ steps.changed-files.outputs.all_changed_files }}"
         run: |
           pip install pylint
-          
-          CHANGED_FILES=$(git diff --name-only --diff-filter=d --merge-base origin/main nemo/ | grep '\.py$' || true)
 
           ADDITIONAL_PYLINT_ARGS=()
           echo ${{ github.event.pull_request.labels.*.name }}
 
-          pylint ${ADDITIONAL_PYLINT_ARGS[@]} $CHANGED_FILES
+          pylint ${ADDITIONAL_PYLINT_ARGS[@]} $CHANGED_FILES || \
+            { echo "Pylint failed. In case of long strings, format docstrings and other strings manually."; exit 1; }

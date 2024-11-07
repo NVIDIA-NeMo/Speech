@@ -995,7 +995,7 @@ def plot(
     unit_frame_len: float = 0.01,
     label_repeat: int = 1,
     xticks_step: int = 5,
-) -> ipd.Audio:
+) -> "ipd.Audio":
     """
     Plot Audio and/or VAD output and/or groundtruth labels for visualization
     Args:
@@ -1462,7 +1462,7 @@ def plot_sample_from_rttm(
     show: bool = True,
     offset: float = 0.0,
     unit_frame_len: float = 0.01,
-):
+) -> "ipd.Audio":
     """
     Plot audio signal and frame-level labels from RTTM file
     """

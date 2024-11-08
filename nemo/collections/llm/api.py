@@ -564,6 +564,72 @@ def generate(
     inference_params: Optional["CommonInferenceParams"] = None,
     text_only: bool = False,
 ) -> list[Union["InferenceRequest", str]]:
+    """
+    Generates text using a NeMo LLM model.
+
+    This function takes a checkpoint path and a list of prompts,
+    and generates text based on the loaded model and parameters.
+    It returns a list of generated text, either as a string or as an InferenceRequest object.
+
+    Python Usage:
+    ```python
+    strategy = nl.MegatronStrategy(
+        tensor_model_parallel_size=2,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        sequence_parallel=False,
+        setup_optimizers=False,
+        store_optimizer_states=False,
+    )
+
+    trainer = nl.Trainer(
+        accelerator="gpu",
+        devices=2,
+        num_nodes=1,
+        strategy=strategy,
+        plugins=nl.MegatronMixedPrecision(
+            precision="bf16-mixed",
+            params_dtype=torch.bfloat16,
+            pipeline_dtype=torch.bfloat16,
+            autocast_enabled=False,
+            grad_reduce_in_fp32=False,
+        ),
+    )
+    prompts = [
+        "Hello, how are you?",
+        "How many r's are in the word 'strawberry'?",
+        "Which number is bigger? 10.119 or 10.19?",
+    ]
+
+    if __name__ == "__main__":
+        results = api.generate(
+            path=os.path.join(os.environ["NEMO_HOME"], "models", "meta-llama/Meta-Llama-3-8B"),
+            prompts=prompts,
+            trainer=trainer,
+            inference_params=CommonInferenceParams(temperature=0.1, top_k=10, num_tokens_to_generate=512),
+            text_only=True,
+        )
+    ```
+
+    Args:
+        path (Union[Path, str]): The path to the model checkpoint.
+        prompts (list[str]): The list of prompts to generate text for.
+        trainer (nl.Trainer): The trainer object.
+        encoder_prompts (Optional[list[str]], optional): The list of encoder prompts. Defaults to None.
+        params_dtype (torch.dtype, optional): The data type of the model parameters. Defaults to torch.bfloat16.
+        add_BOS (bool, optional): Whether to add the beginning of sequence token. Defaults to False.
+        max_batch_size (int, optional): The maximum batch size. Defaults to 4.
+        random_seed (Optional[int], optional): The random seed. Defaults to None.
+        inference_batch_times_seqlen_threshold (int, optional): If batch-size times sequence-length is smaller than
+            this threshold then we will not use pipelining, otherwise we will. Defaults to 1000.
+        inference_params (Optional["CommonInferenceParams"], optional): The inference parameters defined in
+            Mcore's CommonInferenceParams. Defaults to None.
+        text_only (bool, optional): Whether to return only the generated text as a string. Defaults to False.
+
+    Returns:
+        list[Union["InferenceRequest", str]]: A list of generated text,
+            either as a string or as an InferenceRequest object.
+    """
     from nemo.collections.llm import inference
 
     inference_wrapped_model, mcore_tokenizer = inference.setup_model_and_tokenizer(

@@ -1,6 +1,6 @@
 .. _drop_layers:
 
-Drop Model Laeyrs
+Drop Model Layers
 -----------------
 
 To trim the model layers, use the following script:

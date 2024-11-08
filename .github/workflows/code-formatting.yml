@@ -20,7 +20,7 @@ defaults:
     shell: bash -x -e -u -o pipefail {0}
 
 jobs:
-  reformat_with_isort_and_black_and_pylint:
+  reformat_with_isort_and_black:
     runs-on: ubuntu-latest
     permissions:
       # write permissions required to commit changes
@@ -72,16 +72,133 @@ jobs:
             message: Apply isort and black reformatting
             commit: --signoff
 
+  check_pylint:
+    name: "check_pylint (strict-mode: ${{ matrix.strict-mode }})"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      THRESHOLD: 1730937600  # On this date (2024/11/07) we decided to add Pylint. It shall only run in strict mode for files added past this date. For files prior to this date, we will only add a PR comment with PyLint's stdout. 
+    strategy:
+      matrix:
+        strict-mode: ["true", "false"]
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          # setup repository and ref for PRs, see
+          # https://github.com/EndBug/add-and-commit?tab=readme-ov-file#working-with-prs
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      # https://github.com/tj-actions/changed-files
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files: |
+            **.py
+
+      - name: Setup Python env
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: pylint
         if: ${{ steps.changed-files.outputs.any_changed == 'true' && !contains( github.event.pull_request.labels.*.name, 'skip-docs') }}
+        id: pylint
         env:
           # only *.py files included
+          STRICT_MODE: ${{ matrix.strict-mode }}
           CHANGED_FILES: "${{ steps.changed-files.outputs.all_changed_files }}"
         run: |
           pip install pylint
 
-          ADDITIONAL_PYLINT_ARGS=()
-          echo ${{ github.event.pull_request.labels.*.name }}
+          FILTERED=()
+          for file in $CHANGED_FILES; do
+            DATE=$(git log --format=%ad --date=unix $file | tail -1)
 
-          pylint ${ADDITIONAL_PYLINT_ARGS[@]} $CHANGED_FILES || \
-            { echo "Pylint failed. In case of long strings, format docstrings and other strings manually."; exit 1; }
+            if [[ "$STRICT_MODE" == "true" ]]; then
+              if [[ "$DATE" -gt "$THRESHOLD" ]]; then
+                FILTERED+=("$file")
+              fi
+            else
+              if [[ "$DATE" -le "$THRESHOLD" ]]; then
+                FILTERED+=("$file")
+              fi
+            fi
+          done
+
+          if [ ${#FILTERED[@]} -eq 0 ]; then
+            echo "No files to check."
+            exit 0
+          fi
+          
+          echo "Will run on these files:
+          ${FILTERED[@]}"
+
+          set +e
+          LOG=$(pylint ${FILTERED[@]})          
+          EXIT_CODE=$?
+          set -e
+          
+          echo "$LOG"
+          echo "OUTPUT<<EOF" >> $GITHUB_ENV
+          echo "$LOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "log=$LOG"
+
+          if [[ "${{ matrix.strict-mode }}" == "true" ]]; then
+            HEADER="🚨 The following files must be fixed before merge!"
+          else
+            HEADER="🙏 The following files have warnings. In case you are familiar with these, please try helping us to improve the code base."
+          fi
+          echo "header=$HEADER" | tee -a "$GITHUB_OUTPUT"
+
+          exit $([[ "$EXIT_CODE" -ne 0 && "$STRICT_MODE" == "true" ]] && echo $EXIT_CODE || echo 0)
+
+      - name: Find Comment
+        if: ${{ always() && env.OUTPUT != '' }}
+        uses: peter-evans/find-comment@v3
+        id: fc
+        with:
+          issue-number: ${{ github.event.number }}
+          body-includes: <!-- pylint-output-strict-mode-${{ matrix.strict-mode }} -->
+
+      - name: Delete comment
+        if: ${{ always() && env.OUTPUT != '' && steps.fc.outputs.comment-id != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.github_token }}
+          REPOSITORY: ${{ github.repository }}
+          COMMENT_ID: ${{ steps.fc.outputs.comment-id }}
+        run: |
+          curl -L \
+            -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/$REPOSITORY/issues/comments/$COMMENT_ID
+
+      - name: Add PR comment for PyLint 
+        if: ${{ always() && env.OUTPUT != '' }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.number }}
+          body: |
+            <!-- pylint-output-strict-mode-${{ matrix.strict-mode }} -->
+            
+            beep boop 🤖: ${{ steps.pylint.outputs.header }}
+
+            ---
+
+            Your code was analyzed with PyLint. The following annotations have been identified:
+
+            ```
+            ${{ env.OUTPUT }}
+            ```
+
+            ---
+
+            Thank you for improving NeMo's documentation!

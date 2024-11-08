@@ -62,7 +62,7 @@ class MultiModalTaskEncoder(
         image_processor (ImageProcessor): The image processor used for preprocessing images across different sample types.
         multimodal_sample_config (MultiModalSampleConfig): Configuration object for multimodal samples, including tokens and placeholders.
         """
-
+        self.tokenizer = tokenizer
         self.encoders: Dict[str, SampleEncoder] = {
             VQASample.__name__: VQASampleEncoder(
                 tokenizer=tokenizer,

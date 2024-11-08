@@ -257,10 +257,12 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
 
             _base = Path(NEMO_MODELS_CACHE)
 
-        # If the useu supplied `hf:///path/to/downloaded/my-model/`
+        # If the user supplied `hf:///path/to/downloaded/my-model/`
         # then extract the last dir-name (i.e. my-model) and append it to _base
         if str(self).startswith('/'):
-            return _base / PurePath((str(self))).name
+            if self.suffix in ['.pt', '.pth']:
+                return _base / self.parent.name
+            return _base / self.name
         return _base / str(self).replace("://", "/")
 
     def on_import_ckpt(self, model: pl.LightningModule):

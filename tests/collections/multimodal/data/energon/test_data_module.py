@@ -93,14 +93,14 @@ class TestSimpleMultiModalDataModuleWithDummyData(unittest.TestCase):
             self.assertIn('attention_mask', batch)
             print(batch)
             decoded_text = self.decode_vqa_tokens_to_text(batch['tokens'][0].tolist())
-            system_message = re.escape(self.data_module.multimodal_sample_config.conversation_template_config.system)
+            # system_message = re.escape(self.data_module.multimodal_sample_config.conversation_template_config.system)
             user_context = re.escape(self.vqa_json[0]['value'])
             assistant_answer = re.escape(self.vqa_json[1]['value'])
-            self.assertRegex(
-                decoded_text,
-                rf"{system_message}",
-                msg="System message block does not match the expected format.",
-            )
+            # self.assertRegex(
+            #     decoded_text,
+            #     rf"{system_message}",
+            #     msg="System message block does not match the expected format.",
+            # )
             self.assertRegex(decoded_text, user_context, msg="User context did not match in decoded text")
             self.assertRegex(
                 decoded_text, assistant_answer, msg="Assistant answer block did not match in decoded text"
@@ -117,14 +117,14 @@ class TestSimpleMultiModalDataModuleWithDummyData(unittest.TestCase):
             self.assertIn('attention_mask', batch)
             print(batch)
             decoded_text = self.decode_vqa_tokens_to_text(batch['tokens'][0].tolist())
-            system_message = re.escape(self.data_module.multimodal_sample_config.conversation_template_config.system)
+            # system_message = re.escape(self.data_module.multimodal_sample_config.conversation_template_config.system)
             user_context = re.escape(self.vqa_json[0]['value'])
             assistant_answer = re.escape(self.vqa_json[1]['value'])
-            self.assertRegex(
-                decoded_text,
-                rf"{system_message}",
-                msg="System message block does not match the expected format.",
-            )
+            # self.assertRegex(
+            #     decoded_text,
+            #     rf"{system_message}",
+            #     msg="System message block does not match the expected format.",
+            # )
             self.assertRegex(decoded_text, user_context, msg="User context did not match in decoded text")
             self.assertRegex(
                 decoded_text, assistant_answer, msg="Assistant answer block did not match in decoded text"

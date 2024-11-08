@@ -139,6 +139,9 @@ class MultimodalProjectorConfig(TransformerConfig, io.IOMixin):
                     ),
                 )
                 self.layer_spec = self.layer_spec.submodules
+            elif self.projector_type == "mcore_affine":
+                self.projector_type = "affine"  # strip "mcore_" for mcore init
+                self.layer_spec = MLPSubmodules(linear_fc1=TEColumnParallelLinear, linear_fc2=None)
             else:
                 raise NotImplementedError(f"Not supported projector type `{self.projector_type}`")
 
@@ -620,7 +623,6 @@ class NevaModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
     def __init__(
         self,
         config: NevaConfig,
-        # TODO: Add transformer_layer_spec when we update mcore
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,

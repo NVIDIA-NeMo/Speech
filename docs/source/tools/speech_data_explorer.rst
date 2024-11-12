@@ -18,16 +18,6 @@ Speech Data Explorer (SDE) is a `Dash <https://plotly.com/dash/>`__-based web ap
 | estimation of audio signal parameters [peak level, frequency bandwidth]                                                  |
 +--------------------------------------------------------------------------------------------------------------------------+
 
-SDE Demo Instance
------------------
-
-To demonstrate both the :doc:`CTC-Segmentation <./ctc_segmentation>` and Speech Data Explorer tools, we re-segmenting the development set as of `the LibriSpeech corpus <http://www.danielpovey.com/files/2015_icassp_librispeech.pdf>`_.
-We concatenated all audio files from the dev-clean split into a single file and set up the CTC-Segmentation tool to cut the long audio file into original utterances.
-We used the CTC-based `QuartzNet15x5Base-En ASR model <https://ngc.nvidia.com/catalog/models/nvidia:nemospeechmodels>`_.
-The segmented corpus has 3.82% WER and contains 300 out of the initial 323 minutes of audio.
-The remaining 23 minutes are the silence at the beginning and end of the audio removed during the segmentation.
-A `running instance of the SDE <http://18.223.252.228:8050/>`_ demonstrates the re-segmented corpus.
-
 Getting Started
 ---------------
 SDE could be found in `NeMo/tools/speech_data_explorer <https://github.com/NVIDIA/NeMo/tree/stable/tools/speech_data_explorer>`__.

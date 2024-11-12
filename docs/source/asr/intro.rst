@@ -127,8 +127,8 @@ You can get a good improvement in transcription accuracy even using a simple N-g
 
 After :ref:`training <train-ngram-lm>` an N-gram LM, you can use it for transcribing audio as follows:
 
-1. Install the OpenSeq2Seq beam search decoding and KenLM libraries using the `install_beamsearch_decoders script <scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`_.
-2. Perform transcription using the `eval_beamsearch_ngram script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram.py>`_:
+1. Install the OpenSeq2Seq beam search decoding and KenLM libraries using the `install_beamsearch_decoders script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh>`_.
+2. Perform transcription using the `eval_beamsearch_ngram script <https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_beamsearch_ngram_ctc.py>`_:
 
 .. code-block:: bash
 

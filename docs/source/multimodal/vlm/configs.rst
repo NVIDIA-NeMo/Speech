@@ -5,7 +5,7 @@ This section provides a detailed overview of the NeMo configuration file setup s
 
 Within the configuration files of the NeMo Multimodal Language Model, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
 
-Discover exemplary configuration files for all NeMo Multimodal Language Model scripts in the `config directory of the examples <http://TODOURL>`_.
+Discover exemplary configuration files for all NeMo Multimodal Language Model scripts in the `config directories of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/multimodal/vision_language_foundation/clip/conf>`__.
 
 Dataset Configuration
 =====================

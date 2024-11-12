@@ -294,8 +294,8 @@ CLI
 With NeMo and Hydra, every aspect of model training can be modified from the command-line. This is extremely helpful for running lots 
 of experiments on compute clusters or for quickly testing parameters during development.
 
-All NeMo `examples <https://github.com/NVIDIA/NeMo/tree/v1.0.2/examples>`_ come with instructions on how to
-run the training/inference script from the command-line (see `here <https://github.com/NVIDIA/NeMo/blob/4e9da75f021fe23c9f49404cd2e7da4597cb5879/examples/asr/asr_ctc/speech_to_text_ctc.py#L24>`__
+All NeMo `examples <https://github.com/NVIDIA/NeMo/tree/stable/examples>`_ come with instructions on how to
+run the training/inference script from the command-line (e.g. see `here <https://github.com/NVIDIA/NeMo/blob/stable/examples/asr/asr_ctc/speech_to_text_ctc.py>`__
 for an example).
 
 With Hydra, arguments are set using the ``=`` operator:

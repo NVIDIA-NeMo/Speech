@@ -31,7 +31,7 @@ Imagen has two types of UNet: Regular UNet and EfficientUNet.
 Regular UNet
 ~~~~~~~~~~~~
 Regular UNet is used for Imagen base64 model. You can also use regular UNet for SR models
-(see example config file `sr256-400m-edm.yaml <http://TODOURL>`_), but this typically
+(see example config file `sr256-400m-edm.yaml <https://github.com/NVIDIA/NeMo/blob/stable/examples/multimodal/text_to_image/imagen/conf/sr256-400m-edm.yaml>`__), but this typically
 results in a larger memory footprint during training for the same model size.
 
 Recommended UNet size for base64 and SR256 models are listed below:

@@ -283,16 +283,17 @@ def copy_tokenizer_files(config, out_dir):
                 outfile.write(infile.read())
 
 
-def get_tokenzier(tokenizer_dir_or_path: Path) -> PreTrainedTokenizer:
-    """Loads the tokenizer from the decoded NEMO weights dir."""
+def get_tokenizer(tokenizer_dir_or_path: Union[str, Path]) -> PreTrainedTokenizer:
+    """Loads the tokenizer from the decoded NeMo weights dir."""
+    tokenizer_dir_or_path = Path(tokenizer_dir_or_path)
     if (tokenizer_dir_or_path / "nemo_context").exists():
         from nemo.lightning import io
 
         tokenizer_spec = io.load_context((tokenizer_dir_or_path / "nemo_context"), subpath="model.tokenizer")
         return build_tokenizer(tokenizer_spec)
     else:
-        if os.path.isdir(os.path.join(tokenizer_dir_or_path, "huggingface_tokenizer")):
-            return AutoTokenizer.from_pretrained(os.path.join(tokenizer_dir_or_path, "huggingface_tokenizer"))
+        if (tokenizer_dir_or_path / "huggingface_tokenizer").is_dir():
+            return AutoTokenizer.from_pretrained(tokenizer_dir_or_path / "huggingface_tokenizer")
 
         model_path = (
             tokenizer_dir_or_path / "tokenizer.model" if tokenizer_dir_or_path.is_dir() else tokenizer_dir_or_path

@@ -37,12 +37,12 @@ from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import dist_model_to_tr
 from nemo.export.trt_llm.converter.utils import init_model_parallel_from_nemo
 from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import (
     build_tokenizer,
-    get_tokenzier,
+    get_tokenizer,
     is_nemo_file,
     load_nemo_model,
 )
 from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
-from nemo.export.trt_llm.qnemo.tokenizer_utils import get_nmt_tokenizer
+from nemo.export.trt_llm.qnemo.tokenizer_utils import TOKENIZER_CONFIG_FILE, get_nmt_tokenizer
 from nemo.export.trt_llm.qnemo.utils import is_qnemo_checkpoint
 from nemo.export.trt_llm.tensorrt_llm_build import build_and_save_engine
 from nemo.export.trt_llm.tensorrt_llm_run import (
@@ -294,7 +294,14 @@ class TensorRTLLM(ITritonDeployable):
                 else:
                     unpack_tarball(nemo_checkpoint_path, tmp_dir.name)
                     nemo_checkpoint_path = tmp_dir.name
-                self.tokenizer = get_nmt_tokenizer(nemo_checkpoint_path)
+
+                if os.path.exists(os.path.join(nemo_checkpoint_path, TOKENIZER_CONFIG_FILE)):
+                    # Instantiate tokenizer for a legacy "Nemo 1" quantized checkpoint from a tokenizer config.
+                    # Note that using the config is deprecated and it will be removed in future releases.
+                    LOGGER.warning("Detected legacy tokenizer_config.yaml, using it to build tokenizer.")
+                    self.tokenizer = get_nmt_tokenizer(nemo_checkpoint_path)
+                else:
+                    self.tokenizer = get_tokenizer(nemo_checkpoint_path)
 
                 qnemo_to_tensorrt_llm(
                     nemo_checkpoint_path=nemo_checkpoint_path,
@@ -1092,7 +1099,7 @@ class TensorRTLLM(ITritonDeployable):
             if len(folders) > 0:
                 try:
                     self._load_config_file()
-                    self.tokenizer = get_tokenzier(Path(os.path.join(self.model_dir)))
+                    self.tokenizer = get_tokenizer(self.model_dir)
                     self.model = load(
                         tokenizer=self.tokenizer,
                         engine_dir=self.model_dir,

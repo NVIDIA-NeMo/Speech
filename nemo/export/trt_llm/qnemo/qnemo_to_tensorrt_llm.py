@@ -77,8 +77,6 @@ def qnemo_to_tensorrt_llm(
 
     use_qdq = quant_algo in ["FP8", "W8A8_SQ_PER_CHANNEL"]
 
-    builder_opt = 4 if "RecurrentGemma" not in config.architecture else 0
-
     speculative_decoding_mode = "medusa" if "Medusa" in config.architecture else None
 
     build_cmd = "trtllm-build "
@@ -90,7 +88,6 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--max_input_len {max_input_len} "
     build_cmd += f"--max_beam_width {max_beam_width} "
     build_cmd += f"--max_prompt_embedding_table_size {max_prompt_embedding_table_size} "
-    build_cmd += f"--builder_opt {builder_opt} "
     build_cmd += f"--paged_kv_cache {'enable' if paged_kv_cache else 'disable'} "
     build_cmd += f"--use_paged_context_fmha {'enable' if paged_context_fmha else 'disable'} "
     build_cmd += f"--remove_input_padding {'enable' if remove_input_padding else 'disable'} "

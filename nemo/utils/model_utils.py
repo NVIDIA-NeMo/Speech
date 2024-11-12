@@ -724,6 +724,10 @@ def save_artifacts(model, output_dir: str, use_abspath: bool = False) -> None:
     app_state = AppState()
     model_file = app_state.model_restore_path
     model_cfg = copy.deepcopy(model.cfg)
+
+    if model_cfg.tokenizer.library == "huggingface":
+        model.tokenizer.save_pretrained(os.path.join(output_dir, "huggingface_tokenizer"))
+
     if not hasattr(model, "artifacts"):
         if hasattr(model_cfg, "tokenizer"):
             OmegaConf.save(model_cfg.tokenizer, os.path.join(output_dir, "tokenizer_config.yaml"))

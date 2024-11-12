@@ -92,7 +92,7 @@ def main():
     quantizer = quantization.Quantizer(quantization_config, export_config)
     model = quantization.load_with_modelopt_layer_spec(args.nemo_checkpoint, args.calib_tp, args.calib_pp)
     model = quantizer.quantize(model)
-    quantizer.export(model)
+    quantizer.export(model, args.nemo_checkpoint)
 
 
 if __name__ == '__main__':

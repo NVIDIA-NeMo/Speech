@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import shutil
 from dataclasses import dataclass
 from typing import Optional, Union
 
@@ -22,6 +23,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 from nemo.collections import llm
+from nemo.lightning.ckpt_utils import CONTEXT_PATH
 from nemo.utils import logging
 
 from .utils import get_unwrapped_mcore_model
@@ -259,7 +261,7 @@ class Quantizer:
 
         return loop
 
-    def export(self, model: llm.GPTModel) -> None:
+    def export(self, model: llm.GPTModel, model_dir: str) -> None:
         assert self.export_config is not None, "Export config is not set"
         # TODO: Add sample generate
         # TODO: Support megatron_amp_O2
@@ -277,15 +279,16 @@ class Quantizer:
             use_nfs_workspace=use_nfs_workspace,
         )
 
-        dist.barrier()  # Wait until all ranks complete export_model_config step
-        logging.info(f"Export succeeded, model has been exported to {export_dir}. Saving tokenizer if possible...")
+        # Save the model context in order to restore its tokenizer later. The destination
+        # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
+        shutil.copytree(
+            os.path.join(model_dir, CONTEXT_PATH),
+            os.path.join(export_dir, "nemo_context"),
+            dirs_exist_ok=True,
+        )
+        logging.info(f"Model context saved.")
 
-        if dist.get_rank() == 0:
-            try:
-                tokenizer_dst = os.path.join(export_dir, 'tokenizer')
-                model.tokenizer.tokenizer.save_pretrained(tokenizer_dst)
-            except Exception as err:
-                logging.warning("Could not save the tokenizer: " + str(err))
+        logging.info(f"Export succeeded, model has been exported to {export_dir}.")
 
 
 def get_calib_data_iter(

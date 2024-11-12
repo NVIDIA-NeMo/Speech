@@ -5,14 +5,14 @@ This section provides a detailed overview of the NeMo configuration file setup s
 
 Within the configuration files of the NeMo Multimodal Language Model, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
 
-Discover exemplary configuration files for all NeMo Multimodal Language Model scripts in the `config directory of the examples <https://TODOURL>`_.
+Discover exemplary configuration files for all NeMo Multimodal Language Model scripts in the `config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/multimodal/multimodal_llm/neva/conf>`_.
 
 Dataset Configuration
 ---------------------
 
 The NeMo multimodal language model currently supports a conversation data format, inspired by and designed from https://github.com/haotian-liu/LLaVA/tree/main. To explore a sample dataset, visit https://github.com/haotian-liu/LLaVA/blob/main/docs/Data.md.
 
-The configuration file allows setting any initialization parameter accepted by the Dataset class used in the experiment. For a comprehensive list of Datasets and their parameters, visit the `Datasets <./api.html#Datasets>`__ section of the API.
+The configuration file allows setting any initialization parameter accepted by the Dataset class used in the experiment. For a comprehensive list of Datasets and their parameters, visit the :doc:`Datasets <./datasets>` section of the API.
 
 A typical training configuration is as follows:
 

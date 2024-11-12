@@ -4,7 +4,7 @@ This section provides a detailed overview of the NeMo configuration file setup s
 
 Within the configuration files of the NeMo vision models, details concerning dataset(s), augmentation, optimization parameters, and model architectural specifications are central. This page explores each of these aspects.
 
-Discover exemplary configuration files for all NeMo vision models scripts in the `config directory of the examples <http://TODOURL>`_.
+Discover exemplary configuration files for all NeMo vision models scripts in the `config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/vision/vision_transformer/conf>`__.
 
 Dataset Configuration
 =====================
@@ -12,7 +12,6 @@ Dataset Configuration
 The configuration file delineates parameters for dataset path.
 
 All initialization parameters supported by the Dataset class utilized in the experiment can be defined in the config file. 
-.. For a comprehensive list of Datasets and their associated parameters, consult the `Datasets <./api.html#Datasets>`__ section of the API.
 
 A representative training configuration appears as:
 

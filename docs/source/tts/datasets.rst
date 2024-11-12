@@ -141,7 +141,7 @@ There are two German neutral datasets released by Thorsten Müller for now, 21.0
 
 HUI Audio Corpus German
 ~~~~~~~~~~~~~~~~~~~~~~~
-* Dataset URL: https://opendata.iisys.de/datasets.html
+* Dataset URL: https://github.com/iisys-hof/HUI-Audio-Corpus-German
 * Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/hui_acg/get_data.py
 * Command Line Instruction:
 

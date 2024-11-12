@@ -87,7 +87,7 @@ Data upsampling
 ---------------
 
 Data upsampling is an effective way to increase the training data for better model performance, especially on the long tail of semiotic tokens.
-We used upsampling for training an English text normalization model, see `data/en/upsampling.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/duplex_text_normalization/data/en/upsampling.py>`__.
+We used upsampling for training an English text normalization model, see `data/en/upsampling.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/duplex_text_normalization/data/en/upsample.py>`__.
 Currently this script only upsamples a few classes, that are diverse in semiotic tokens but at the same time underrepresented in the training data.
 Of all the input files in `train` folder created by `data/data_split.py <https://github.com/NVIDIA/NeMo/tree/stable/examples/nlp/duplex_text_normalization/data/data_split.py>`__. this script takes the first file and detects the class patterns that occur in it.
 For those that are underrepresented, quantitatively defined as lower than `min_number`, the other files are scanned for sentences that have the missing patterns. 

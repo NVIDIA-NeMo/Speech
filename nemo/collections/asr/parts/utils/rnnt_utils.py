@@ -85,6 +85,8 @@ class Hypothesis:
     tokens: (Optional) A list of decoded tokens (can be characters or word-pieces.
 
     last_token (Optional): A token or batch of tokens which was predicted in the last step.
+
+    last_frame (Optional): Index of the last decoding step hypothesis was updated including blank token prediction.
     """
 
     score: float
@@ -105,6 +107,7 @@ class Hypothesis:
     tokens: Optional[Union[List[int], torch.Tensor]] = None
     last_token: Optional[torch.Tensor] = None
     token_duration: Optional[List[int]] = None
+    last_frame: Optional[int] = None
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:
@@ -244,7 +247,8 @@ class BatchedHyps:
 
         Args:
             batch_size: batch size for hypotheses
-            init_length: initial estimate for the length of hypotheses (if the real length is higher, tensors will be reallocated)
+            init_length: initial estimate for the length of hypotheses (if the real length is higher,
+                tensors will be reallocated)
             device: device for storing hypotheses
             float_dtype: float type for scores
         """
@@ -274,6 +278,9 @@ class BatchedHyps:
         self._ones_batch = torch.ones_like(self._batch_indices)
 
     def clear_(self):
+        """
+        Clears batched hypotheses state.
+        """
         self.current_lengths.fill_(0)
         self.transcript.fill_(0)
         self.timesteps.fill_(0)
@@ -497,6 +504,9 @@ class BatchedAlignments:
         self._batch_indices = torch.arange(batch_size, device=device)
 
     def clear_(self):
+        """
+        Clears batched hypotheses state.
+        """
         self.current_lengths.fill_(0)
         self.timesteps.fill_(0)
         self.logits.fill_(0.0)

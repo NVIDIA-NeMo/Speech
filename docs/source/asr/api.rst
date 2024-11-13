@@ -276,6 +276,21 @@ RNNT Decoding
     :show-inheritance:
     :members:
 
+TDT Decoding
+~~~~~~~~~~~~~
+
+.. autoclass:: nemo.collections.asr.parts.submodules.rnnt_greedy_decoding.GreedyTDTInfer
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.asr.parts.submodules.rnnt_greedy_decoding.GreedyBatchedTDTInfer
+    :show-inheritance:
+    :members:
+
+.. autoclass:: nemo.collections.asr.parts.submodules.tdt_beam_decoding.BeamTDTInfer
+    :show-inheritance:
+    :members:
+
 Hypotheses
 ~~~~~~~~~~
 

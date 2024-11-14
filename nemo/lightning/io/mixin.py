@@ -608,7 +608,9 @@ def _io_flatten_object(instance):
 
 
 def _io_unflatten_object(values, metadata):
-    assert hasattr(_thread_local, "output_dir")
+    if not hasattr(_thread_local, "output_dir"):
+        return fdl.Config.__unflatten__(values, metadata)
+
     output_dir = _thread_local.output_dir
 
     if len(values) == 1:

@@ -239,7 +239,7 @@ def run_resume_train(mbs, gbs, num_dev):
             resume=AutoResume(
                 resume_if_exists=True,
                 resume_ignore_no_checkpoint=False,
-                resume_from_path=f'{EXP_DIR}default/v1/checkpoints/default--None=0.0000-epoch=0/',
+                resume_from_path=f'{EXP_DIR}default/v1/checkpoints/default--None=0.0000-epoch=0-consumed_samples=20.0/',
             ),
         )
         trainer._teardown()

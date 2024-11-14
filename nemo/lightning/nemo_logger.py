@@ -220,7 +220,7 @@ class NeMoLogger(IOMixin):
                 if callback.dirpath is None:
                     callback.dirpath = Path(log_dir / "checkpoints")
                 if callback.filename is None:
-                    callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}"
+                    callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}-{{consumed_samples}}"
                 ModelCheckpoint.CHECKPOINT_NAME_LAST = callback.filename + "-last"
 
     def _handle_task_config(self, task_config, log_dir):

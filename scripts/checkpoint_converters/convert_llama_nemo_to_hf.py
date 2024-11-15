@@ -26,7 +26,7 @@ from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.utils import logging
 
 """
-Script to convert a llama2 checkpoint in nemo (mcore path) into a HuggingFace checkpoint.
+Script to convert a llama checkpoint in nemo (mcore path) into a HuggingFace checkpoint.
 This script can be used to 1) generate only the HF weights, or 2) generate an entire HF model folder.
 
 1) Generate only HF weights from a nemo file:
@@ -41,9 +41,17 @@ This script can be used to 1) generate only the HF weights, or 2) generate an en
     --input_name_or_path /path/to/file.nemo or /path/to/extracted_folder \
     --output_path /path/to/pytorch_model.bin \
     --hf_input_path /path/to/input_hf_folder \
+    --hf_output_path /path/to/output_hf_folder
+
+3) Generate the full HF model folder with a custom tokenizer
+
+    python convert_llama_nemo_to_hf.py \
+    --input_name_or_path /path/to/file.nemo or /path/to/extracted_folder \
+    --output_path /path/to/pytorch_model.bin \
+    --hf_input_path /path/to/input_hf_folder \
     --hf_output_path /path/to/output_hf_folder \
-    --input_tokenizer /path/to/tokenizer \
-    --hf_output_tokenizer /path/to/output_tokenizer \
+    --input_tokenizer /path/to/custom_nemo_tokenizer.model \
+    --hf_output_tokenizer /path/to/output_tokenizer
 
     Use the --cpu-only flag if the model cannot fit in the GPU (e.g. Llama2 70b). 
     However this option makes the conversion script significantly slower.
@@ -143,7 +151,7 @@ def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> 
     ffn_hidden_size = model.cfg.ffn_hidden_size
     num_query_groups = model.cfg.get("num_query_groups", head_num)  # different num_query_groups for 70B
 
-    head_size = hidden_size // head_num
+    head_size = model.cfg.get("kv_channels") or (hidden_size // head_num)  # equivalent to hf's head_dim
     heads_per_group = head_num // num_query_groups
     qkv_total_dim = head_num + 2 * num_query_groups
 
@@ -246,21 +254,25 @@ def replace_hf_weights_and_tokenizer(
     nemo_exported = torch.load(weights_file)
 
     if tokenizer_path:
-        tokenizer = LlamaTokenizer.from_pretrained(
-            tokenizer_path,
-            local_files_only=True,
-            legacy=False,
-        )
-        tmp_tokenizer = convert_slow_tokenizer.convert_slow_tokenizer(tokenizer)
-        fast_tokenizer = LlamaTokenizerFast(tokenizer_object=tmp_tokenizer)
-        tokenizer_length = len(fast_tokenizer)
-        model.resize_token_embeddings(tokenizer_length)
+        try:
+            tokenizer = LlamaTokenizer.from_pretrained(
+                tokenizer_path,
+                local_files_only=True,
+                legacy=False,
+            )
+            tmp_tokenizer = convert_slow_tokenizer.convert_slow_tokenizer(tokenizer)
+            fast_tokenizer = LlamaTokenizerFast(tokenizer_object=tmp_tokenizer)
+            tokenizer_length = len(fast_tokenizer)
+            model.resize_token_embeddings(tokenizer_length)
+        except:
+            tokenizer = None
+            logging.warning("Could not load custom tokenizer, proceeding with default tokenizer")
 
     model.load_state_dict(nemo_exported)
     model.save_pretrained(output_hf_path)
     logging.info(f"Full HF model saved to {output_hf_path}")
 
-    if tokenizer_path:
+    if tokenizer_path and (tokenizer is not None):
         fast_tokenizer.save_pretrained(output_hf_tokenizer)
         tokenizer.save_pretrained(output_hf_tokenizer)
         logging.info(f"Tokenizer saved to {output_hf_tokenizer}")

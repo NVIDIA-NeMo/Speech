@@ -113,7 +113,7 @@ class MegatronModule(torch.nn.Module):
 
     def initialize_word_embeddings(self, init_method, vocab_size, hidden_size):
         if not self.share_token_embeddings:
-            raise Exception('initialize_word_embeddings() was called but ' 'share_token_embeddings is false')
+            raise Exception('initialize_word_embeddings() was called but share_token_embeddings is false')
 
         # This function just initializes the word embeddings in the final stage
         # when we are using pipeline parallelism. If we aren't using pipeline
@@ -140,7 +140,10 @@ class MegatronModule(torch.nn.Module):
             # set word_embeddings weights to 0 here, then copy first
             # stage's weights using all_reduce below.
             self.word_embeddings = tensor_parallel.VocabParallelEmbedding(
-                vocab_size, hidden_size, init_method=init_method, config=self.config,
+                vocab_size,
+                hidden_size,
+                init_method=init_method,
+                config=self.config,
             )
             self.word_embeddings.weight.data.fill_(0)
             self.word_embeddings.weight.shared = True

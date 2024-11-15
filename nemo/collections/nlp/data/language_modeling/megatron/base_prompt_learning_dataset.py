@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import omegaconf
 import torch
 
 from nemo.collections.nlp.modules.common import VirtualPromptSource
@@ -70,8 +71,55 @@ class BasePromptLearningDataset(Dataset):
         # Datasets are a list of file path strings to .json or .jsonl files
         elif isinstance(datasets[0], str):
             for path in datasets:
-                dataset = open(path, 'r', encoding='utf-8')
-                self.load_data(dataset)
+                with open(path, 'r', encoding='utf-8') as dataset:
+                    dataset_examples = self.load_data(dataset)
+                self.examples.extend(dataset_examples)
+        elif isinstance(datasets[0], omegaconf.ListConfig) or isinstance(datasets[0], list):
+            # Dataset is a list of tuples with the first element being the probability of sampling from the dataset
+            # This code repeates the smaller datasets to approximately match the target probabilities
+            total_examples = 0
+            dataset_lengths = []
+            target_probs = []
+            datasets_examples_list = []
+            for prob_and_path in datasets:
+                prob = prob_and_path[0]
+                path = prob_and_path[1]
+                with open(path, 'r', encoding='utf-8') as dataset:
+                    dataset_examples = self.load_data(dataset)
+                datasets_examples_list.append(dataset_examples)
+                dataset_lengths.append(len(dataset_examples))
+                total_examples += len(dataset_examples)
+                target_probs.append(prob)
+
+            # Normalize the target probs
+            target_probs = [prob / sum(target_probs) for prob in target_probs]
+            current_probs = [dataset_lengths[i] / total_examples for i in range(len(dataset_lengths))]
+
+            # Increase number of examples needed without reducing the larger datasets with low target probs
+            new_total_examples = total_examples
+            for dataset_idx in range(len(datasets)):
+                if target_probs[dataset_idx] < current_probs[dataset_idx]:
+                    target_total_examples = int(dataset_lengths[dataset_idx] / target_probs[dataset_idx])
+                    new_total_examples = max(new_total_examples, target_total_examples)
+
+            final_total_examples = 0
+            final_dataset_lengths = []
+            for dataset_idx in range(len(datasets)):
+                num_samples_required = int(new_total_examples * target_probs[dataset_idx])
+                num_repeat = max(
+                    int(round(num_samples_required // dataset_lengths[dataset_idx])), 1
+                )  # At least 1 repeat
+                logging.info("dataset idx {}, num_repeat {}".format(dataset_idx, num_repeat))
+                dataset_examples_repeated = datasets_examples_list[dataset_idx] * num_repeat
+                final_dataset_lengths.append(len(dataset_examples_repeated))
+                final_total_examples += len(dataset_examples_repeated)
+                self.examples.extend(dataset_examples_repeated)
+
+            final_probs = [final_dataset_lengths[i] / final_total_examples for i in range(len(final_dataset_lengths))]
+            logging.info("Target probs: {}".format(target_probs))
+            logging.info("Final probs: {}".format(final_probs))
+            logging.info("Initial total examples: {}".format(total_examples))
+            logging.info("Final total examples: {}".format(final_total_examples))
         else:
             raise ValueError("Datasets must be a list of dicts or a list of filepath strings")
 

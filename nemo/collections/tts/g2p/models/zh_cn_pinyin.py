@@ -93,7 +93,7 @@ class ChineseG2p(BaseG2p):
         self.ascii_letter_dict = {
             x: ascii_letter_prefix + x for x in get_grapheme_character_set(locale="en-US", case=ascii_letter_case)
         }
-        self.ascii_letter_list = sorted(self.ascii_letter_dict)
+        self.ascii_letter_list = sorted(self.ascii_letter_dict.values())
         self.ascii_letter_case = ascii_letter_case
 
         if apply_to_oov_word is None:
@@ -181,6 +181,7 @@ class ChineseG2p(BaseG2p):
         `['wo3', 'jin1', 'tian1', 'qu4', 'le5', 'A', 'p', 'p', 'l', 'e', ' ', 'S', 't', 'o', 'r', 'e', ',', ' ', 'mai3',
          'le5', 'yi2', 'ge4', 'i', 'P', 'h', 'o', 'n', 'e', '。']`
         """
+        err = False
         text = set_grapheme_case(text, case=self.ascii_letter_case)
 
         pinyin_seq = []
@@ -201,7 +202,15 @@ class ChineseG2p(BaseG2p):
             tone_hyp = pinyin[-1]
             if tone_hyp in self.tone_dict:
                 syllable = pinyin[:-1]
-                assert syllable in self.phoneme_dict, f"Syllable <{syllable}> does not exist in the dictionary."
+                # TODO: skipping the syllable that does not exist in the dictionary will lead to deletion errors in the
+                #   synthesized speech. Even though this case is uncommon, it should be fixed in future.
+                if syllable not in self.phoneme_dict:
+                    err = True
+                    logging.error(
+                        f"Syllable <{syllable}> does not exist in the dictionary. You should expect symbol "
+                        f"deletion risks!!"
+                    )
+                    continue
                 phoneme_seq += self.phoneme_dict[syllable]
                 phoneme_seq.append(self.tone_dict[tone_hyp])
             # All pinyin would end up with a number in 1-5, which represents tones of the pinyin.
@@ -211,4 +220,6 @@ class ChineseG2p(BaseG2p):
                 phoneme_seq.append(self.ascii_letter_dict[tone_hyp])
             else:
                 phoneme_seq.append(pinyin)
+        if err:
+            logging.error(f"|{text}| contained unknown syllables")
         return phoneme_seq

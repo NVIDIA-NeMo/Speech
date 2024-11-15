@@ -11,3 +11,5 @@ nltk
 pandas
 pypinyin
 pypinyin-dict
+seaborn
+

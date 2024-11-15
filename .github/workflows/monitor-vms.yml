@@ -27,7 +27,7 @@ jobs:
             | jq -c '[
                 .runners[] 
                 | select(.status == "online")
-                | select(.name | contains("gpu"))
+                | select(.name | contains("cpu") | not)
                 | {
                   "vm": .name, 
                   "n_gpus": [

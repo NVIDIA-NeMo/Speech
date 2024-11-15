@@ -161,7 +161,7 @@ def convert_model_to_trt_llm_ckpt(
         or nemo_model_config.get("layernorm_zero_centered_gamma", False),
         "tp_size": training_tp_size,
         "split_gated_activation": nemo_model_config.get("activation", "gelu")
-        in ["swiglu", "geglu", "fast-swiglu", "fast-geglu"]
+        in ["swiglu", "geglu", "fast-swiglu", "fast-geglu", "openai-gelu"]
         and (decoder_type == "gptnext" or is_mcore),
         "num_attention_heads": num_attention_heads,
         "num_kv_heads": num_kv_heads,
@@ -336,7 +336,7 @@ def dist_model_to_trt_llm_ckpt(
         "apply_layernorm_1p": nemo_model_config.get("normalization", "") == "layernorm1p",
         "tp_size": tp_size,
         "split_gated_activation": nemo_model_config.get("activation", "gelu")
-        in ["swiglu", "geglu", "fast-swiglu", "fast-geglu"],
+        in ["swiglu", "geglu", "fast-swiglu", "fast-geglu", "openai-gelu"],
         "num_attention_heads": nemo_model_config["num_attention_heads"],
         "num_kv_heads": nemo_model_config.get('num_query_groups', nemo_model_config['num_attention_heads']),
         "convert_on_device": True,

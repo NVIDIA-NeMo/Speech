@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """Transformer based language model."""
-from ast import Mod
+from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.megatron_transformer_decoder import MegatronTransformerDecoderModule
 from nemo.collections.nlp.modules.common.megatron.retrieval_transformer import (
     MegatronRetrievalTransformerDecoderModule,
@@ -87,7 +87,7 @@ def get_decoder_model(
     transformer_block_type="pre_ln",
     hidden_steps=-1,
     parent_model_type=ModelType.encoder_or_decoder,
-    layer_type=None,
+    layer_type=LayerType.decoder,
     chunk_size=64,
     layer_number_offset=0,  # this is use only for attention norm_factor scaling
     megatron_legacy=False,
@@ -158,6 +158,7 @@ def get_decoder_model(
             moe_dropout=moe_dropout,
             position_embedding_type=position_embedding_type,
             use_flash_attention=use_flash_attention,
+            layer_type=layer_type,
         )
     elif arch == "retro":
         decoder = MegatronRetrievalTransformerDecoderModule(

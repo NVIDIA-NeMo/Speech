@@ -18,7 +18,6 @@ import math
 from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
-import torch.nn as nn
 from torch import Tensor
 
 from nemo.utils import logging, logging_mode
@@ -474,9 +473,25 @@ def get_iterator_k_split(
     else:
         # Split a list of torch tensors
         assert batch[0].shape[0] % num_microbatches == 0, "Issue with batch size configuration!"
-        split_batch = [
-            torch.tensor_split(item, num_microbatches, dim=0) if torch.is_tensor(item) else item for item in batch
-        ]
+        split_batch = []
+        for item in batch:
+            if torch.is_tensor(item):
+                split_batch.append(torch.tensor_split(item, num_microbatches, dim=0))
+            elif isinstance(item, list):
+                if isinstance(item[0], torch.Tensor):
+                    split_tensors = [torch.tensor_split(elem, num_microbatches, dim=0) for elem in item]
+                    split_tuple = []
+                    for mbi in range(num_microbatches):
+                        split_tuple.append([split_tensors[i][mbi] for i in range(len(split_tensors))])
+                    split_tuple = tuple(split_tuple)
+                    split_batch.append(split_tuple)
+                else:
+                    split_batch.append(split_list(item, num_microbatches))
+            elif item is None:
+                split_batch.append(item)
+            else:
+                raise ValueError(f"Unsupported item type: {type(item)}")
+
         microbatches = [
             [elem[i] if elem is not None else elem for elem in split_batch] for i in range(num_microbatches)
         ]

@@ -380,6 +380,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         rotary_pos_emb=None,  # rotary positional embedding
         relative_position_bias=None,
         checkpoint_core_attention=False,
+        return_scores=False,
     ):
         # hidden_states: [sq, b, h]
 
@@ -398,7 +399,9 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         # Some consistency check.
         if inference_max_sequence_len:
-            assert self.inference_current_sequence_len < self.inference_key_memory.size(0)
+            # Added equals to as inference key_memory size refers to cross-attention key size
+            # which is already equal to the current "sequence length"
+            assert self.inference_current_sequence_len <= self.inference_key_memory.size(0)
             assert inference_max_sequence_len == self.inference_key_memory.size(0)
         # This is added for safety. In case inference_max_sequence_len
         # is not provided, make sure there is no potential memory left
@@ -433,28 +436,40 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             (query_layer, key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(
                 mixed_x_layer, 3, contiguous_split_chunks=True
             )
-        else:
+        else:  # Else in cross_attention
             # Attention heads [sk, b, h] --> [sk, b, (np * 2 * hn)]
-            mixed_kv_layer, _ = self.key_value(encoder_output)
-            if self.is_adapter_available():
-                lora_kv_adapter = self.get_adapter_module(AdapterName.LORA_KV_ADAPTER)
-                if lora_kv_adapter and self.adapter_cfg[AdapterName.LORA_KV_ADAPTER]['enabled']:
-                    lora_mixed_kv_layer = lora_kv_adapter(encoder_output)
-                    mixed_kv_layer = mixed_kv_layer + lora_mixed_kv_layer
+            if (
+                inference_max_sequence_len is None
+            ) or self.inference_current_sequence_len < inference_max_sequence_len:
+                # If we are in traning and inference_max_sequence_len is None
+                # Or we haven't cached the key and value part of cross attention in the decoder on step 0,
+                # Do the caching
+                mixed_kv_layer, _ = self.key_value(encoder_output)
+                if self.is_adapter_available():
+                    lora_kv_adapter = self.get_adapter_module(AdapterName.LORA_KV_ADAPTER)
+                    if lora_kv_adapter and self.adapter_cfg[AdapterName.LORA_KV_ADAPTER]['enabled']:
+                        lora_mixed_kv_layer = lora_kv_adapter(encoder_output)
+                        mixed_kv_layer = mixed_kv_layer + lora_mixed_kv_layer
 
-            # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
-            new_tensor_shape = mixed_kv_layer.size()[:-1] + (
-                self.num_attention_heads_per_partition,
-                2 * self.hidden_size_per_attention_head,
-            )
-            if self.megatron_legacy:
-                mixed_kv_layer = self._transpose_last_dim(mixed_kv_layer, 2, True)
-            mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
+                # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
+                new_tensor_shape = mixed_kv_layer.size()[:-1] + (
+                    self.num_attention_heads_per_partition,
+                    2 * self.hidden_size_per_attention_head,
+                )
+                if self.megatron_legacy:
+                    mixed_kv_layer = self._transpose_last_dim(mixed_kv_layer, 2, True)
+                mixed_kv_layer = mixed_kv_layer.view(*new_tensor_shape)
 
-            # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
-            (key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(
-                mixed_kv_layer, 2, contiguous_split_chunks=True
-            )
+                # [sk, b, np, 2 * hn] --> 2 [sk, b, np, hn]
+                (key_layer, value_layer) = tensor_parallel.split_tensor_along_last_dim(
+                    mixed_kv_layer, 2, contiguous_split_chunks=True
+                )
+            else:
+                # else if we are in inference and have already cached key, value, can just read cache
+                key_layer = self.inference_key_memory[: self.inference_current_sequence_len, ...]
+                value_layer = self.inference_value_memory[: self.inference_current_sequence_len, ...]
+                if attention_mask is not None:
+                    attention_mask = attention_mask[..., -1, :].unsqueeze(-2)
 
             # Attention head [sq, b, h] --> [sq, b, hp]
             query_layer, _ = self.query(hidden_states)
@@ -490,7 +505,9 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
         if rotary_pos_emb is not None:
             rotary_pos_emb = rotary_pos_emb if isinstance(rotary_pos_emb, tuple) else ((rotary_pos_emb,) * 2)
 
-        if inference_max_sequence_len:
+        # If we are in cross attention (inference_current_sequence_len == inference_max_sequence_len == inference_key_memory.size(0))
+        # We only need to cache this once
+        if inference_max_sequence_len and self.inference_current_sequence_len < inference_max_sequence_len:
             # Adjust the range variables.
             start = self.inference_current_sequence_len
             self.inference_current_sequence_len += key_layer.size(0)
@@ -501,7 +518,7 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
             key_layer = self.inference_key_memory[:end, ...]
             value_layer = self.inference_value_memory[:end, ...]
             # Adjust attention mask
-            if attention_mask is not None:
+            if attention_mask is not None and self.attention_type == AttnType.self_attn:
                 attention_mask = attention_mask[..., start:end, :end]
             # adjust the key rotary positional embedding
             if rotary_pos_emb is not None:
@@ -569,7 +586,10 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
                 relative_position_bias=relative_position_bias,
                 headscale_tensor=self.head_scale_tensor if self.headscale else None,
                 inference_mode=inference_max_sequence_len is not None and query_layer.shape[0] == 1,
+                return_scores=return_scores,
             )
+            if return_scores:
+                context_layer, attention_probs = context_layer
 
         # =================
         # Output. [sq, b, h]
@@ -584,6 +604,9 @@ class ParallelAttention(MegatronModule, adapter_mixins.AdapterModuleMixin):
 
         if get_key_value:
             output = [output, present]
+
+        if return_scores:
+            output = [output, attention_probs]
 
         return output, bias
 
@@ -857,6 +880,7 @@ class CoreAttention(MegatronModule):
         relative_position_bias=None,
         headscale_tensor=None,
         inference_mode=None,
+        return_scores=None,
     ):
         b, np, sq, sk, hn = (
             query_layer.size(1),
@@ -914,9 +938,27 @@ class CoreAttention(MegatronModule):
         # relative_position_bias [b, np, sq, sk]
         # context_layer [b, np, sq, hn]
         # ==================================================
-        context_layer = self.attn_fn(
-            query_layer, key_layer, value_layer, attention_mask, relative_position_bias, inference_mode
-        )
+        if not return_scores:
+            context_layer = self.attn_fn(
+                query_layer,
+                key_layer,
+                value_layer,
+                attention_mask,
+                relative_position_bias,
+                inference_mode,
+            )
+        else:
+            # SpeechLLM TTS modifications
+            context_layer = self.torch_attention_with_prior(
+                query_layer,
+                key_layer,
+                value_layer,
+                attention_mask,
+                relative_position_bias,
+                inference_mode,
+                return_scores=return_scores,
+            )
+            context_layer, attention_probs = context_layer
 
         if headscale_tensor is not None:
             context_layer = context_layer * headscale_tensor
@@ -928,7 +970,10 @@ class CoreAttention(MegatronModule):
         new_context_layer_shape = context_layer.size()[:-2] + (self.hidden_size_per_partition,)
         context_layer = context_layer.view(*new_context_layer_shape)
 
-        return context_layer
+        if return_scores:
+            return context_layer, attention_probs
+        else:
+            return context_layer
 
     def torch_attention(self, query_layer, key_layer, value_layer, attention_mask, attention_bias, inference_mode):
         sq, b, np, hn = query_layer.shape
@@ -985,6 +1030,69 @@ class CoreAttention(MegatronModule):
         context_layer = rearrange(context_layer, '(b np) sq hn -> b np sq hn', np=np)
 
         return context_layer
+
+    def torch_attention_with_prior(
+        self, query_layer, key_layer, value_layer, attention_mask, attention_bias, inference_mode, return_scores=False
+    ):
+        sq, b, np, hn = query_layer.shape
+        sk = key_layer.shape[0]
+
+        if self.multi_query_attention:
+            query_layer = rearrange(query_layer, 'sq b np hn -> b (np sq) hn')
+            key_layer = rearrange(key_layer, 'sk b 1 hn -> b hn sk')
+            value_layer = rearrange(value_layer, 'sv b np hn -> (b np) sv hn')
+        else:
+            query_layer = rearrange(query_layer, 'sq b np hn -> (b np) sq hn')
+            key_layer = rearrange(key_layer, 'sk b np hn -> (b np) hn sk')
+            value_layer = rearrange(value_layer, 'sv b np hn -> (b np) sv hn')
+
+        matmul_input_buffer = torch.empty(
+            query_layer.shape[0],
+            query_layer.shape[1],
+            key_layer.shape[2],
+            dtype=query_layer.dtype,
+            device=query_layer.device,
+        )
+
+        matmul_result = torch.baddbmm(
+            matmul_input_buffer,
+            query_layer,
+            key_layer,
+            beta=0.0,
+            alpha=(1.0 / self.norm_factor) if self.normalize_attention_scores else 1.0,
+        )
+
+        # change view to [b, np, sq, sk]
+        attention_scores = matmul_result.view(b, np, sq, sk)
+
+        if attention_bias is not None:
+            # attention_bias is not None only for cross attention layers right now in T5
+            attention_scores = torch.log_softmax(attention_scores, dim=-1) + attention_bias
+
+        _attention_probs = self.scale_mask_softmax(attention_scores, attention_mask)
+        # This is actually dropping out entire tokens to attend to, which might
+        # seem a bit unusual, but is taken from the original Transformer paper.
+
+        if not self.sequence_parallel:
+            with tensor_parallel.random.get_cuda_rng_tracker().fork():
+                attention_probs = self.attention_dropout(_attention_probs)
+        else:
+            attention_probs = self.attention_dropout(_attention_probs)
+
+        # change view [b * np, sq, sk]
+        attention_probs = rearrange(attention_probs, 'b np sq sk -> (b np) sq sk')
+
+        # matmul: [b * np, sq, hn]
+        context_layer = torch.bmm(attention_probs, value_layer)
+
+        # change view [b, np, sq, hn]
+        context_layer = rearrange(context_layer, '(b np) sq hn -> b np sq hn', np=np)
+
+        if return_scores:
+            # return context_layer, _attention_probs
+            return context_layer, attention_scores
+        else:
+            return context_layer
 
     def flash_attention(self, query_layer, key_layer, value_layer, attention_mask, attention_bias, inference_mode):
         query_layer = rearrange(query_layer, 'sq b np hn -> b sq np hn')

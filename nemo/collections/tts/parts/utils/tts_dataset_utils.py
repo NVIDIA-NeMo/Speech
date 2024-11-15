@@ -67,8 +67,7 @@ def get_audio_filepaths(manifest_entry: Dict[str, Any], audio_dir: Path) -> Tupl
 
 
 def normalize_volume(audio: np.array, volume_level: float = 0.95) -> np.array:
-    """Apply peak normalization to the input audio.
-    """
+    """Apply peak normalization to the input audio."""
     if not (0.0 <= volume_level <= 1.0):
         raise ValueError(f"Volume must be in range [0.0, 1.0], received {volume_level}")
 
@@ -88,10 +87,11 @@ class BetaBinomialInterpolator:
     The implementation is taken from https://github.com/NVIDIA/DeepLearningExamples/blob/master/PyTorch/SpeechSynthesis/FastPitch/fastpitch/data_function.py
     """
 
-    def __init__(self, round_mel_len_to=50, round_text_len_to=10, cache_size=500):
+    def __init__(self, round_mel_len_to=50, round_text_len_to=10, cache_size=500, scaling_factor: float = 1.0):
         self.round_mel_len_to = round_mel_len_to
         self.round_text_len_to = round_text_len_to
-        self.bank = functools.lru_cache(maxsize=cache_size)(beta_binomial_prior_distribution)
+        cached_func = lambda x, y: beta_binomial_prior_distribution(x, y, scaling_factor=scaling_factor)
+        self.bank = functools.lru_cache(maxsize=cache_size)(cached_func)
 
     @staticmethod
     def round(val, to):
@@ -315,7 +315,11 @@ def load_audio(
 
 
 def sample_audio(
-    manifest_entry: Dict[str, Any], audio_dir: Path, sample_rate: int, n_samples: int, volume_norm: bool = False,
+    manifest_entry: Dict[str, Any],
+    audio_dir: Path,
+    sample_rate: int,
+    n_samples: int,
+    volume_norm: bool = False,
 ) -> Tuple[np.ndarray, Path, Path]:
     """
     Randomly sample an audio segment from a manifest entry.

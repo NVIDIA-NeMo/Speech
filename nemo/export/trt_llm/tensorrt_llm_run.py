@@ -647,6 +647,7 @@ def generate(
     streaming: bool = False,
     output_log_probs=False,
     multiprocessed_env=False,
+    output_generation_logits=False,
     **sampling_kwargs,
 ) -> Optional[List[List[str]]]:
     """Generate the output sequence from the input sequence.
@@ -692,6 +693,7 @@ def generate(
         multiprocessed_env=multiprocessed_env,
         **sampling_kwargs,
     )
+
     assert outputs is not None
     if tensorrt_llm.mpi_rank() != 0:
         return None
@@ -705,8 +707,8 @@ def generate(
         for b in range(output_ids.shape[0])
     ]
 
-    if output_log_probs:
-        return output_lines_list, log_probs
+    if output_generation_logits:
+        return output_lines_list, outputs['generation_logits']
     return output_lines_list
 
 

@@ -237,3 +237,10 @@ try:
     __all__.append("deploy")
 except ImportError as error:
     logging.warning(f"The deploy module could not be imported: {error}")
+
+try:
+    from nemo.collections.llm.api import evaluate
+
+    __all__.append("evaluate")
+except ImportError as error:
+    logging.warning(f"The evaluate module could not be imported: {error}")

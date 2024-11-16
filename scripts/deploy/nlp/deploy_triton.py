@@ -419,13 +419,14 @@ def nemo_deploy(argv):
 
         LOGGER.info("Triton deploy function will be called.")
         nm.deploy()
+        nm.run()
     except Exception as error:
         LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))
         return
 
     try:
         LOGGER.info("Model serving on Triton is will be started.")
-        if args.start_rest_service == "True":
+        if args.start_rest_service:
             try:
                 LOGGER.info("REST service will be started.")
                 uvicorn.run(

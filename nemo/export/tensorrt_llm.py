@@ -180,6 +180,8 @@ class TensorRTLLM(ITritonDeployable):
         reduce_fusion: bool = True,
         fp8_quantized: Optional[bool] = None,
         fp8_kvcache: Optional[bool] = None,
+        gather_context_logits: Optional[bool] = False,
+        gather_generation_logits: Optional[bool] = False,
     ):
         """
         Exports nemo checkpoints to TensorRT-LLM.
@@ -218,6 +220,8 @@ class TensorRTLLM(ITritonDeployable):
             reduce_fusion (bool): enables fusing extra kernels after custom TRT-LLM allReduce
             fp8_quantized (Optional[bool]): enables exporting to FP8 TRT-LLM checkpoints. If not set, autodetects the type.
             fp8_kvcache (Optional[bool]): enables FP8 KV-cache quantization. If not set, autodetects the type.
+            gather_context_logits (Optional[bool]): if True, enables gather_context_logits while building trtllm engine. Default: False
+            gather_generation_logits (Optional[bool]): if True, enables gather_generation_logits while building trtllm engine. Default: False
         """
         if n_gpus is not None:
             warnings.warn(
@@ -495,6 +499,8 @@ class TensorRTLLM(ITritonDeployable):
                             multiple_profiles=multiple_profiles,
                             gpt_attention_plugin=gpt_attention_plugin,
                             gemm_plugin=gemm_plugin,
+                            gather_context_logits=gather_context_logits,
+                            gather_generation_logits=gather_generation_logits,
                         )
 
             tokenizer_path = os.path.join(nemo_export_dir, "tokenizer.model")
@@ -688,6 +694,7 @@ class TensorRTLLM(ITritonDeployable):
         prompt_embeddings_checkpoint_path: str = None,
         streaming: bool = False,
         output_log_probs: bool = False,
+        output_generation_logits: bool = False,
         **sampling_kwargs,
     ):
         """
@@ -706,6 +713,7 @@ class TensorRTLLM(ITritonDeployable):
             task_ids (List(str)): list of the task ids for the prompt tables.
             prompt_embeddings_table (List(float)): prompt embeddings table.
             prompt_embeddings_checkpoint_path (str): path for the nemo checkpoint for the prompt embedding table.
+            output_generation_logits (bool): if True returns generation_logits in the outout of generate method.
             sampling_kwargs: Additional kwargs to set in the SamplingConfig.
         """
 
@@ -784,6 +792,7 @@ class TensorRTLLM(ITritonDeployable):
                     no_repeat_ngram_size=no_repeat_ngram_size,
                     output_log_probs=output_log_probs,
                     multiprocessed_env=multiprocessed_env,
+                    output_generation_logits=output_generation_logits,
                     **sampling_kwargs,
                 )
             else:
@@ -862,16 +871,21 @@ class TensorRTLLM(ITritonDeployable):
             Tensor(name="no_repeat_ngram_size", shape=(-1,), dtype=np.single, optional=True),
             Tensor(name="task_id", shape=(-1,), dtype=bytes, optional=True),
             Tensor(name="lora_uids", shape=(-1,), dtype=bytes, optional=True),
+            Tensor(name="output_generation_logits", shape=(-1,), dtype=np.bool_, optional=False),
         )
         return inputs
 
     @property
     def get_triton_output(self):
-        outputs = (Tensor(name="outputs", shape=(-1,), dtype=bytes),)
+        outputs = (
+            Tensor(name="outputs", shape=(-1,), dtype=bytes),
+            Tensor(name="generation_logits", shape=(-1,), dtype=np.single),
+        )
         return outputs
 
     @batch
     def triton_infer_fn(self, **inputs: np.ndarray):
+        output_dict = {}
         try:
             infer_input = {"input_texts": str_ndarray2list(inputs.pop("prompts"))}
             if "max_output_len" in inputs:
@@ -898,14 +912,20 @@ class TensorRTLLM(ITritonDeployable):
             if "lora_uids" in inputs:
                 lora_uids = np.char.decode(inputs.pop("lora_uids").astype("bytes"), encoding="utf-8")
                 infer_input["lora_uids"] = lora_uids[0].tolist()
+            if "output_generation_logits" in inputs:
+                infer_input["output_generation_logits"] = inputs.pop("output_generation_logits")[0][0]
 
-            output_texts = self.forward(**infer_input)
-            output = cast_output(output_texts, np.bytes_)
+            if infer_input["output_generation_logits"]:
+                output_texts, generation_logits = self.forward(**infer_input)
+                output_dict["generation_logits"] = np.array(generation_logits.cpu().numpy())
+            else:
+                output_texts = self.forward(**infer_input)
+            output_dict["outputs"] = cast_output(output_texts, np.bytes_)
         except Exception as error:
             err_msg = "An error occurred: {0}".format(str(error))
-            output = cast_output([err_msg], np.bytes_)
+            output_dict["outputs"] = cast_output([err_msg], np.bytes_)
 
-        return {"outputs": output}
+        return output_dict
 
     @batch
     def triton_infer_fn_streaming(self, **inputs: np.ndarray):

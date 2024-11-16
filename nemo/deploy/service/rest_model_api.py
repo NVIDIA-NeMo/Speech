@@ -8,8 +8,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-import json
 import os
 from pathlib import Path
 import requests
@@ -19,6 +17,7 @@ from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
 from nemo.deploy.nlp import NemoQueryLLM
+from nemo.utils import logging
 
 
 class TritonSettings(BaseSettings):
@@ -29,14 +28,13 @@ class TritonSettings(BaseSettings):
     def __init__(self):
         super(TritonSettings, self).__init__()
         try:
-            with open(os.path.join(Path.cwd(), 'nemo/deploy/service/config.json')) as config:
-                config_json = json.load(config)
-                self._triton_service_port = config_json["triton_service_port"]
-                self._triton_service_ip = config_json["triton_service_ip"]
-                self._triton_request_timeout = config_json["triton_request_timeout"]
-                self._openai_format_response = config_json["openai_format_response"]
+            self._triton_service_port = int(os.environ.get('TRITON_PORT', 8080))
+            self._triton_service_ip = os.environ.get('TRITON_HTTP_ADDRESS', '0.0.0.0')
+            self._triton_request_timeout = int(os.environ.get('TRITON_REQUEST_TIMEOUT', 60))
+            self._openai_format_response = os.environ.get('OPENAI_FORMAT_RESPONSE', 'False').lower() == 'true'
+            self._output_generation_logits = os.environ.get('OUTPUT_GENERATION_LOGITS', 'False').lower() == 'true'
         except Exception as error:
-            print("An exception occurred:", error)
+            logging.error("An exception occurred trying to retrieve set args in TritonSettings class. Error:", error)
             return
 
     @property
@@ -54,10 +52,16 @@ class TritonSettings(BaseSettings):
     @property
     def openai_format_response(self):
         """
-        Retuns the response from Triton server in OpenAI compatible formar if set to True,
-        default set in config.json is false.
+        Retuns the response from Triton server in OpenAI compatible format if set to True.
         """
         return self._openai_format_response
+
+    @property
+    def output_generation_logits(self):
+        """
+        Retuns the generation logits along with text in Triton server output if set to True.
+        """
+        return self._output_generation_logits
 
 
 app = FastAPI()
@@ -70,19 +74,27 @@ class CompletionRequest(BaseModel):
     max_tokens: int = 512
     temperature: float = 1.0
     top_p: float = 0.0
-    n: int = 1
+    top_k: int = 1
     stream: bool = False
     stop: str | None = None
     frequency_penalty: float = 1.0
 
 
-@app.get("/triton_health")
+@app.get("/v1/health")
+def health_check():
+    return {"status": "ok"}
+
+
+@app.get("/v1/triton_health")
 async def check_triton_health():
     """
     This method exposes endpoint "/triton_health" which can be used to verify if Triton server is accessible while running the REST or FastAPI application.
-    Verify by running: curl http://service_http_address:service_port/triton_health and the returned status should inform if the server is accessible.
+    Verify by running: curl http://service_http_address:service_port/v1/triton_health and the returned status should inform if the server is accessible.
     """
-    triton_url = f"triton_settings.triton_service_ip:str(triton_settings.triton_service_port)/v2/health/ready"
+    triton_url = (
+        f"http://{triton_settings.triton_service_ip}:{str(triton_settings.triton_service_port)}/v2/health/ready"
+    )
+    logging.info(f"Attempting to connect to Triton server at: {triton_url}")
     try:
         response = requests.get(triton_url, timeout=5)
         if response.status_code == 200:
@@ -101,11 +113,13 @@ def completions_v1(request: CompletionRequest):
         output = nq.query_llm(
             prompts=[request.prompt],
             max_output_len=request.max_tokens,
-            top_k=request.n,
+            # when these below params are passed as None
+            top_k=request.top_k,
             top_p=request.top_p,
             temperature=request.temperature,
             init_timeout=triton_settings.triton_request_timeout,
             openai_format_response=triton_settings.openai_format_response,
+            output_generation_logits=triton_settings.output_generation_logits,
         )
         if triton_settings.openai_format_response:
             return output
@@ -114,5 +128,5 @@ def completions_v1(request: CompletionRequest):
                 "output": output[0][0],
             }
     except Exception as error:
-        print("An exception occurred:", error)
+        logging.error("An exception occurred with the post request to /v1/completions/ endpoint:", error)
         return {"error": "An exception occurred"}

@@ -18,6 +18,7 @@ import torch
 
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.collections.llm.inference.base import _setup_trainer_and_restore_model
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.utils import logging
 
@@ -42,25 +43,44 @@ def quantizable_model_config(model_cfg: llm.GPTConfig) -> llm.GPTConfig:
     return model_cfg
 
 
-def load_with_modelopt_layer_spec(nemo_checkpoint_path: str, calib_tp: int = 1, calib_pp: int = 1) -> llm.GPTModel:
+def load_with_modelopt_layer_spec(
+    nemo_checkpoint_path: str, calib_tp: int = 1, calib_pp: int = 1, inference_only: bool = True
+):
+    # TODO: setting ddp="pytorch" with manually deleting model.optim is a hackish way to disable DDP initialization. Needs a systematic solution.
+    if inference_only:
+        strategy = nl.MegatronStrategy(
+            tensor_model_parallel_size=calib_tp,
+            pipeline_model_parallel_size=calib_pp,
+            pipeline_dtype=torch.bfloat16,
+            ckpt_load_optimizer=False,
+            ckpt_parallel_save_optim=False,
+            setup_optimizers=False,
+            lazy_init=True,
+            ddp="pytorch",
+        )
+    else:
+        strategy = nl.MegatronStrategy(
+            tensor_model_parallel_size=calib_tp, pipeline_model_parallel_size=calib_pp, pipeline_dtype=torch.bfloat16
+        )
+
     trainer = nl.Trainer(
         devices=calib_tp,
         num_nodes=calib_pp,
-        strategy=nl.MegatronStrategy(
-            tensor_model_parallel_size=calib_tp, pipeline_model_parallel_size=calib_pp, pipeline_dtype=torch.bfloat16
-        ),
-        plugins=nl.MegatronMixedPrecision(precision='bf16', pipeline_dtype=torch.bfloat16, autocast_enabled=True),
+        strategy=strategy,
+        plugins=nl.MegatronMixedPrecision(precision='bf16', params_dtype=torch.bfloat16, autocast_enabled=True),
     )
-    fabric = trainer.to_fabric()
-    fabric.launch()
-
     model_path = Path(nemo_checkpoint_path)
-    model = nl.io.load_context(ckpt_to_context_subdir(model_path)).model
+    model = nl.io.load_context(path=ckpt_to_context_subdir(model_path), subpath="model")
     model.config = quantizable_model_config(model.config)
-    return fabric.load_model(nemo_checkpoint_path, model=model)
+
+    if inference_only:
+        del model.optim
+
+    _setup_trainer_and_restore_model(nemo_checkpoint_path, trainer, model)
+    return model
 
 
-def get_unwrapped_mcore_model(model: llm.GPTModel):
+def get_unwrapped_mcore_model(model):
     from megatron.core.models.gpt import GPTModel as MCoreGPTModel
 
     unwrapped_model = model

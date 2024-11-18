@@ -272,9 +272,8 @@ class Quantizer:
         # TODO: Add sample generate
         # TODO: Support megatron_amp_O2
         export_dir = self.export_config.path
-        use_nfs_workspace = (model.trainer._fabric.__io__.num_nodes > 1) or (
-            model.config.pipeline_model_parallel_size > 1
-        )
+
+        use_nfs_workspace = model.config.pipeline_model_parallel_size > 1
         export_tensorrt_llm_checkpoint(
             model=get_unwrapped_mcore_model(model),
             decoder_type=self._get_decoder_type(model.config),
@@ -284,15 +283,17 @@ class Quantizer:
             inference_pipeline_parallel=self.export_config.inference_pipeline_parallel,
             use_nfs_workspace=use_nfs_workspace,
         )
+        dist.barrier()
 
         # Save the model context in order to restore its tokenizer later. The destination
         # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
-        shutil.copytree(
-            os.path.join(model_dir, CONTEXT_PATH),
-            os.path.join(export_dir, "nemo_context"),
-            dirs_exist_ok=True,
-        )
-        logging.info(f"Model context saved.")
+        if dist.get_rank() == 0:
+            shutil.copytree(
+                os.path.join(model_dir, CONTEXT_PATH),
+                os.path.join(export_dir, "nemo_context"),
+                dirs_exist_ok=True,
+            )
+            logging.info("Model context saved.")
 
         logging.info(f"Export succeeded, model has been exported to {export_dir}.")
 

@@ -27,7 +27,7 @@ fast_dev_run=false will save checkpoints for the model
 """
 
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models import MultiLabelIntentSlotClassificationModel

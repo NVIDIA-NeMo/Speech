@@ -21,8 +21,8 @@ from math import ceil, floor
 from typing import Any, Dict, List, Optional, Union
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 from torchmetrics import Accuracy
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError

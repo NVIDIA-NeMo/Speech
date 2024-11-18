@@ -13,9 +13,9 @@
 # limitations under the License.
 
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
+from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.strategies import DDPStrategy
 
 from nemo.collections.nlp.models.language_modeling import BERTLMModel
 from nemo.core.config import hydra_runner

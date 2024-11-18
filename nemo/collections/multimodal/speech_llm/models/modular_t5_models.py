@@ -21,10 +21,10 @@ from typing import Any, Optional, Union
 
 import sacrebleu
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import ListConfig
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.asr.models import ASRModel, SpeechEncDecSelfSupervisedModel
 from nemo.collections.common.data.utils import move_data_to_device

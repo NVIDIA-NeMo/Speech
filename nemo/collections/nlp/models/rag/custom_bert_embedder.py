@@ -15,10 +15,10 @@
 from typing import Any, List
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.embeddings import BaseEmbedding
 from omegaconf import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.information_retrieval.megatron_bert_embedding_model import MegatronBertEmbeddingModel
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy

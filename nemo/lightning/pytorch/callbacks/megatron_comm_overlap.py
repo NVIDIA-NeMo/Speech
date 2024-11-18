@@ -13,12 +13,12 @@
 # limitations under the License.
 
 from dataclasses import asdict, dataclass, fields
-import pytorch_lightning as pl
 
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks.callback import Callback
 from megatron.core import ModelParallelConfig
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning.callbacks.callback import Callback
 
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import TransformerLayerTPOverlapCfg
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy, ParallelismConfig

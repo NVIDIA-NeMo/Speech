@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field, is_dataclass
 from typing import List, Optional, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 

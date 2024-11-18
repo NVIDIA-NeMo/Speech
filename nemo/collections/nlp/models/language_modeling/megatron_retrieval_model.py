@@ -16,8 +16,8 @@ import math
 from typing import Any, List, Optional, Union
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.data_samplers import (
     MegatronPretrainingRandomSampler,
@@ -294,7 +294,10 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
             self.log('lr', lr, batch_size=1)
             self.log('global_step', self.trainer.global_step, prog_bar=True, batch_size=1)
             self.log(
-                'consumed_samples', self._compute_consumed_samples_after_training_step(), prog_bar=True, batch_size=1,
+                'consumed_samples',
+                self._compute_consumed_samples_after_training_step(),
+                prog_bar=True,
+                batch_size=1,
             )
             self._reduced_loss_buffer = []
         return lm_loss
@@ -427,7 +430,10 @@ class MegatronRetrievalModel(MegatronBaseModel, TextGeneration):
 
         # Torch dataloader.
         return torch.utils.data.DataLoader(
-            dataset, batch_sampler=batch_sampler, num_workers=self.cfg.data.num_workers, pin_memory=True,
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=self.cfg.data.num_workers,
+            pin_memory=True,
         )
 
     def setup(self, stage=None):

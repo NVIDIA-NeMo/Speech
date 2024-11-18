@@ -20,8 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 from tqdm import tqdm
 
 from nemo.collections.common.losses import AggregatorLoss, CrossEntropyLoss
@@ -812,7 +812,13 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                 raise ValueError(
                     f"If `use_tarred_dataset` is `False`, then you need to provide `tokens_in_batch` parameter."
                 )
-            text_file, labels_file, = Path(cfg.ds_item) / cfg.text_file, Path(cfg.ds_item) / cfg.labels_file
+            (
+                text_file,
+                labels_file,
+            ) = (
+                Path(cfg.ds_item) / cfg.text_file,
+                Path(cfg.ds_item) / cfg.labels_file,
+            )
             if cfg.audio_file:
                 audio_file = Path(cfg.ds_item) / cfg.audio_file
             if self.label_ids_are_set:
@@ -1010,7 +1016,8 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             stm = self._remove_margins(stm, margin, keep_left=first, keep_right=last)
             for b_probs, logits in [(b_punct_probs, pl), (b_capit_probs, cl)]:
                 p = torch.nn.functional.softmax(
-                    self._remove_margins(logits, margin, keep_left=first, keep_right=last)[stm], dim=-1,
+                    self._remove_margins(logits, margin, keep_left=first, keep_right=last)[stm],
+                    dim=-1,
                 )
                 b_probs.append(p.detach().cpu().numpy())
         return b_punct_probs, b_capit_probs, new_start_word_ids
@@ -1191,7 +1198,9 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
             ):
                 inp_ids, inp_type_ids, inp_mask, subtokens_mask, start_word_ids, query_ids, is_first, is_last = batch
                 punct_logits, capit_logits = self.forward(
-                    input_ids=inp_ids.to(d), token_type_ids=inp_type_ids.to(d), attention_mask=inp_mask.to(d),
+                    input_ids=inp_ids.to(d),
+                    token_type_ids=inp_type_ids.to(d),
+                    attention_mask=inp_mask.to(d),
                 )
                 _res = self._transform_logit_to_prob_and_remove_margins_and_extract_word_probs(
                     punct_logits, capit_logits, subtokens_mask, start_word_ids, margin, is_first, is_last
@@ -1208,7 +1217,9 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
                             acc_probs[q_i] = b_probs_i
                         else:
                             all_preds[q_i], acc_probs[q_i] = self._move_acc_probs_to_token_preds(
-                                all_preds[q_i], acc_probs[q_i], start_word_id - len(all_preds[q_i]),
+                                all_preds[q_i],
+                                acc_probs[q_i],
+                                start_word_id - len(all_preds[q_i]),
                             )
                             acc_probs[q_i] = self._update_accumulated_probabilities(acc_probs[q_i], b_probs_i)
             for all_preds, acc_probs in [(all_punct_preds, acc_punct_probs), (all_capit_preds, acc_capit_probs)]:

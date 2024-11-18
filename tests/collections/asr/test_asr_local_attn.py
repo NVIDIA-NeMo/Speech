@@ -15,8 +15,8 @@ import os
 import shutil
 import tempfile
 
+import lightning.pytorch as pl
 import pytest
-import pytorch_lightning as pl
 import torch
 from omegaconf import DictConfig
 
@@ -89,10 +89,12 @@ class TestASRLocalAttention:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
-        "global_tokens", [0, 1, 4],
+        "global_tokens",
+        [0, 1, 4],
     )
     @pytest.mark.parametrize(
-        "global_tokens_spacing", [1, 4],
+        "global_tokens_spacing",
+        [1, 4],
     )
     def test_train(self, global_tokens, global_tokens_spacing):
         preprocessor_config = {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor'}
@@ -178,15 +180,18 @@ class TestASRLocalAttention:
         trainer.fit(
             asr_model,
             train_dataloaders=torch.utils.data.DataLoader(
-                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                DummyDataset([input_signal, input_length, target, target_length]),
+                collate_fn=lambda x: x[0],
             ),
             val_dataloaders=torch.utils.data.DataLoader(
-                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                DummyDataset([input_signal, input_length, target, target_length]),
+                collate_fn=lambda x: x[0],
             ),
         )
         trainer.test(
             asr_model,
             dataloaders=torch.utils.data.DataLoader(
-                DummyDataset([input_signal, input_length, target, target_length]), collate_fn=lambda x: x[0],
+                DummyDataset([input_signal, input_length, target, target_length]),
+                collate_fn=lambda x: x[0],
             ),
         )

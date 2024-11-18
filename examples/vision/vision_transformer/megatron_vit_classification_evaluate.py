@@ -15,9 +15,9 @@
 import os
 
 import torch
+from lightning.pytorch import Trainer
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -38,7 +38,8 @@ def main(cfg) -> None:
 
     plugins = []
     strategy = NLPDDPStrategy(
-        no_ddp_communication_hook=True, find_unused_parameters=False,  # we don't use DDP for async grad allreduce
+        no_ddp_communication_hook=True,
+        find_unused_parameters=False,  # we don't use DDP for async grad allreduce
     )
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
@@ -82,7 +83,10 @@ def main(cfg) -> None:
     model.eval()
 
     val_transform = ClassificationTransform(model.cfg, (model.cfg.img_h, model.cfg.img_w), train=False)
-    val_data = ImageFolder(root=cfg.model.data.imagenet_val, transform=val_transform,)
+    val_data = ImageFolder(
+        root=cfg.model.data.imagenet_val,
+        transform=val_transform,
+    )
 
     def dummy():
         return
@@ -91,12 +95,20 @@ def main(cfg) -> None:
         trainer.strategy.launcher.launch(dummy, trainer=trainer)
     trainer.strategy.setup_environment()
 
-    test_loader = DataLoader(val_data, batch_size=cfg.model.micro_batch_size, num_workers=cfg.model.data.num_workers,)
+    test_loader = DataLoader(
+        val_data,
+        batch_size=cfg.model.micro_batch_size,
+        num_workers=cfg.model.data.num_workers,
+    )
 
     autocast_dtype = torch_dtype_from_precision(trainer.precision)
 
-    with torch.no_grad(), torch.cuda.amp.autocast(
-        enabled=autocast_dtype in (torch.half, torch.bfloat16), dtype=autocast_dtype,
+    with (
+        torch.no_grad(),
+        torch.cuda.amp.autocast(
+            enabled=autocast_dtype in (torch.half, torch.bfloat16),
+            dtype=autocast_dtype,
+        ),
     ):
         total = correct = 0.0
         for tokens, labels in tqdm(test_loader):

@@ -14,8 +14,8 @@
 
 
 import hydra
+import lightning.pytorch
 import omegaconf
-import pytorch_lightning
 
 from nemo.core.classes.common import (
     FileIO,

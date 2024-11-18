@@ -27,10 +27,10 @@ import tempfile
 from argparse import ArgumentParser
 
 import torch
-from lightning_fabric.utilities.cloud_io import _load as pl_load
+from lightning.fabric.utilities.cloud_io import _load as pl_load
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.controlnet.controlnet import MegatronControlNet
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.diffusion_engine import MegatronDiffusionEngine

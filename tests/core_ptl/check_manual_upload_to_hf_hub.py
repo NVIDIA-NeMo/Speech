@@ -14,7 +14,7 @@
 import shutil
 
 from huggingface_hub import HfApi
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from nemo.core import ModelPT
 from nemo.utils import AppState, logging
@@ -40,7 +40,9 @@ def load_model_from_unpacked_hf_dir(repo_id):
 def upload_model_as_single_nemo_file(model: ModelPT, repo_id, token):
     # Upload the model to HF Hub
     model.push_to_hf_hub(
-        repo_id=repo_id, pack_nemo_file=True, token=token,
+        repo_id=repo_id,
+        pack_nemo_file=True,
+        token=token,
     )
 
 
@@ -48,7 +50,9 @@ def upload_model_as_single_nemo_file(model: ModelPT, repo_id, token):
 def upload_model_as_single_nemo_file(model: ModelPT, repo_id, token):
     # Upload the model to HF Hub
     model.push_to_hf_hub(
-        repo_id=repo_id, pack_nemo_file=True, token=token,
+        repo_id=repo_id,
+        pack_nemo_file=True,
+        token=token,
     )
 
 
@@ -56,7 +60,9 @@ def upload_model_as_single_nemo_file(model: ModelPT, repo_id, token):
 def upload_model_as_unpacked_files(model: ModelPT, repo_id, token):
     # Upload the model to HF Hub
     model.push_to_hf_hub(
-        repo_id=repo_id, pack_nemo_file=False, token=token,
+        repo_id=repo_id,
+        pack_nemo_file=False,
+        token=token,
     )
 
 

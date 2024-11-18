@@ -17,8 +17,8 @@ import os
 from argparse import ArgumentParser
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.nlp.data.language_modeling.megatron.request_dataset import T5RequestDataset
@@ -40,13 +40,22 @@ def main():
         "--tokens_to_generate", type=int, default="16", required=False, help="How many tokens to add to prompt"
     )
     parser.add_argument(
-        "--tensor_model_parallel_size", type=int, default=-1, required=False,
+        "--tensor_model_parallel_size",
+        type=int,
+        default=-1,
+        required=False,
     )
     parser.add_argument(
-        "--pipeline_model_parallel_size", type=int, default=-1, required=False,
+        "--pipeline_model_parallel_size",
+        type=int,
+        default=-1,
+        required=False,
     )
     parser.add_argument(
-        "--pipeline_model_parallel_split_rank", type=int, default=-1, required=False,
+        "--pipeline_model_parallel_split_rank",
+        type=int,
+        default=-1,
+        required=False,
     )
     parser.add_argument("--precision", default="16", type=str, help="PyTorch Lightning Trainer precision flag")
     parser.add_argument("--decoder_starts_with_pad", action="store_true", help="Decoder starts with pad token")

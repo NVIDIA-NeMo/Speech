@@ -17,8 +17,8 @@ import json
 import os
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.data.question_answering.input_example.qa_input_example import QAExample
@@ -63,7 +63,9 @@ class RequestDataSet(Dataset):
         self.sentences = sentences
         self.neighbors = neighbors
 
-    def __len__(self,):
+    def __len__(
+        self,
+    ):
         return len(self.sentences)
 
     def __getitem__(self, idx):

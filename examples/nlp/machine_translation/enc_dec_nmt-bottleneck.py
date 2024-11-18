@@ -15,8 +15,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.data.machine_translation.preproc_mt_data import MTDataPreproc
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_bottleneck_model import MTBottleneckModel
@@ -28,7 +28,6 @@ from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.utils import logging
 from nemo.utils.config_utils import update_model_config
 from nemo.utils.exp_manager import ExpManagerConfig, exp_manager
-
 
 """
 Usage:

@@ -45,7 +45,7 @@ python speech_to_text_bpe_with_text_finetune.py \
 """
 
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models.hybrid_asr_tts_models import ASRWithTTSModel

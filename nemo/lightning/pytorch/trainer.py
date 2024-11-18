@@ -16,9 +16,9 @@ import warnings
 from copy import deepcopy
 
 import fiddle as fdl
-import pytorch_lightning as pl
-from pytorch_lightning.loops import _TrainingEpochLoop
-from pytorch_lightning.loops.fetchers import _DataFetcher
+import lightning.pytorch as pl
+from lightning.pytorch.loops import _TrainingEpochLoop
+from lightning.pytorch.loops.fetchers import _DataFetcher
 from typing_extensions import Self
 
 from nemo.lightning.fabric.conversion import to_fabric

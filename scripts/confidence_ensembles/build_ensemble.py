@@ -80,8 +80,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import joblib
+import lightning.pytorch as pl
 import numpy as np
-import pytorch_lightning as pl
 from omegaconf import MISSING, DictConfig, OmegaConf
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import confusion_matrix
@@ -215,7 +215,12 @@ class BuildEnsembleConfig:
             preserve_frame_confidence=True,
             exclude_blank=True,
             aggregation="mean",
-            method_cfg=ConfidenceMethodConfig(name="entropy", entropy_type="renyi", alpha=0.25, entropy_norm="lin",),
+            method_cfg=ConfidenceMethodConfig(
+                name="entropy",
+                entropy_type="renyi",
+                alpha=0.25,
+                entropy_norm="lin",
+            ),
         )
     )
     temperature: float = 1.0
@@ -499,7 +504,12 @@ def find_best_confidence(
         dev_features = np.array(list(zip(*cur_dev_confidences)))
         dev_labels = np.array(dev_labels)
         pipe, score = train_model_selection(
-            training_features, training_labels, dev_features, dev_labels, tune_lr, tune_lr_config,
+            training_features,
+            training_labels,
+            dev_features,
+            dev_labels,
+            tune_lr,
+            tune_lr_config,
         )
         if max_score < score:
             max_score = score
@@ -513,7 +523,7 @@ def find_best_confidence(
 @hydra_runner(config_name="BuildEnsembleConfig", schema=BuildEnsembleConfig)
 def main(cfg: BuildEnsembleConfig):
     # silencing all messages from nemo/ptl to avoid dumping tons of configs to the stdout
-    logging.getLogger('pytorch_lightning').setLevel(logging.CRITICAL)
+    logging.getLogger('lightning.pytorch').setLevel(logging.CRITICAL)
     logging.getLogger('nemo_logger').setLevel(logging.CRITICAL)
     LOG.info(f'Build ensemble config:\n{OmegaConf.to_yaml(cfg)}')
 

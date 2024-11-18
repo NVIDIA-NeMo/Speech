@@ -17,8 +17,8 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from typing import List, Optional
 
-import pytorch_lightning as L
-from pytorch_lightning.utilities.types import OptimizerLRScheduler
+import lightning.pytorch as L
+from lightning.pytorch.utilities.types import OptimizerLRScheduler
 from torch.optim import Optimizer
 
 from nemo.lightning.io.mixin import IOMixin

@@ -15,7 +15,7 @@
 import time
 from typing import Optional
 
-from pytorch_lightning import Callback, LightningModule, Trainer
+from lightning.pytorch import Callback, LightningModule, Trainer
 
 from nemo.utils import logging
 

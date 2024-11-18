@@ -145,7 +145,7 @@ trainer:
   val_check_interval: 1.0 # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
   accelerator: auto
   strategy:
-    _target_: pytorch_lightning.strategies.DDPStrategy
+    _target_: lightning.pytorch.strategies.DDPStrategy
     gradient_as_bucket_view: true
   accumulate_grad_batches: 1
   gradient_clip_val: 0.0

@@ -16,8 +16,8 @@ import os
 from typing import Dict, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.common.losses import AggregatorLoss, CrossEntropyLoss, SmoothedCrossEntropyLoss
@@ -75,7 +75,11 @@ class BERTLMModel(ModelPT):
             config_file = self.register_artifact('language_model.config_file', cfg.language_model.config_file)
 
         self.bert_model = get_lm_model(
-            config_file=config_file, config_dict=config_dict, vocab_file=vocab_file, trainer=trainer, cfg=cfg,
+            config_file=config_file,
+            config_dict=config_dict,
+            vocab_file=vocab_file,
+            trainer=trainer,
+            cfg=cfg,
         )
 
         self.hidden_size = self.bert_model.config.hidden_size
@@ -127,7 +131,9 @@ class BERTLMModel(ModelPT):
         in the `nn.Module` in vanilla PyTorch.
         """
         hidden_states = self.bert_model(
-            input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask,
+            input_ids=input_ids,
+            token_type_ids=token_type_ids,
+            attention_mask=attention_mask,
         )
         if isinstance(hidden_states, tuple):
             hidden_states = hidden_states[0]
@@ -225,7 +231,9 @@ class BERTLMModel(ModelPT):
             files = [dataset]
         files.sort()
         dl = BertPretrainingPreprocessedDataloader(
-            data_files=files, max_predictions_per_seq=max_predictions_per_seq, batch_size=batch_size,
+            data_files=files,
+            max_predictions_per_seq=max_predictions_per_seq,
+            batch_size=batch_size,
         )
         return dl
 

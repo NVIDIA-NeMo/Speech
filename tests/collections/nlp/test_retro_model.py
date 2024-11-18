@@ -16,8 +16,8 @@ import json
 
 import pytest
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_retro_model import MegatronRetroModel
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids

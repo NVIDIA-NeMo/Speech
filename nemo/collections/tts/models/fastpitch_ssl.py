@@ -16,9 +16,9 @@ from typing import Iterable
 
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
+from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import TensorBoardLogger
 
 from nemo.collections.tts.losses.fastpitchloss import DurationLoss, MelLoss, PitchLoss
 from nemo.collections.tts.modules.fastpitch import FastPitchSSLModule, average_features
@@ -34,7 +34,7 @@ from nemo.utils.decorators import experimental
 class FastPitchModel_SSL(ModelPT):
     """
     FastPitch based model that can synthesize mel spectrograms from content and speaker embeddings
-    obtained from SSLDisentangler. This model can be used for voice conversion by swapping the speaker embedding 
+    obtained from SSLDisentangler. This model can be used for voice conversion by swapping the speaker embedding
     of a given source utterance, with the speaker embedding of a target speaker.
     """
 
@@ -133,9 +133,21 @@ class FastPitchModel_SSL(ModelPT):
         return self._tb_logger
 
     def forward(
-        self, *, enc_out=None, enc_mask=None, durs=None, pitch=None, pace=1.0,
+        self,
+        *,
+        enc_out=None,
+        enc_mask=None,
+        durs=None,
+        pitch=None,
+        pace=1.0,
     ):
-        return self.fastpitch(enc_out=enc_out, enc_mask=enc_mask, durs=durs, pitch=pitch, pace=pace,)
+        return self.fastpitch(
+            enc_out=enc_out,
+            enc_mask=enc_mask,
+            durs=durs,
+            pitch=pitch,
+            pace=pace,
+        )
 
     def compute_encoding(self, content_embedding, speaker_embedding, dataset_id=None):
         # content embedding is (B, C, T)
@@ -177,7 +189,11 @@ class FastPitchModel_SSL(ModelPT):
         enc_mask = enc_mask[:, :, None]
 
         mels_pred, _, _, log_durs_pred, pitch_pred, pitch = self(
-            enc_out=enc_out, enc_mask=enc_mask, durs=durs, pitch=pitch, pace=1.0,
+            enc_out=enc_out,
+            enc_mask=enc_mask,
+            durs=durs,
+            pitch=pitch,
+            pace=1.0,
         )
 
         loss = 0
@@ -208,7 +224,10 @@ class FastPitchModel_SSL(ModelPT):
             )
             spec_predict = mels_pred[0].data.cpu().float().numpy()
             self.tb_logger.add_image(
-                "train_mel_predicted", plot_spectrogram_to_numpy(spec_predict), self.global_step, dataformats="HWC",
+                "train_mel_predicted",
+                plot_spectrogram_to_numpy(spec_predict),
+                self.global_step,
+                dataformats="HWC",
             )
 
         return loss
@@ -286,7 +305,10 @@ class FastPitchModel_SSL(ModelPT):
             )
             spec_predict = spec_predict[_rand_idx].data.cpu().float().numpy()
             self.tb_logger.add_image(
-                "val_mel_predicted", plot_spectrogram_to_numpy(spec_predict), self.global_step, dataformats="HWC",
+                "val_mel_predicted",
+                plot_spectrogram_to_numpy(spec_predict),
+                self.global_step,
+                dataformats="HWC",
             )
 
             if self.pitch_conditioning:
@@ -321,10 +343,10 @@ class FastPitchModel_SSL(ModelPT):
     ):
         """
         Args:
-            content_embedding : Content embedding from SSL backbone (B, C, T) 
+            content_embedding : Content embedding from SSL backbone (B, C, T)
             speaker_embedding : Speaker embedding from SSL backbone (B, C)
             pitch_contour : Normalized Pitch contour derived from the mel spectrogram
-            encoded_len: Length of each content embedding, optional if batch size is 1. 
+            encoded_len: Length of each content embedding, optional if batch size is 1.
             compute_pitch: if true, predict pitch contour from content and speaker embedding.
             compute_duration: if true, predict duration from content and speaker embedding.
             durs_gt: Ground truth duration of each content embedding, ignored if compute_duration is True.

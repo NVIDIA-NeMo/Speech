@@ -143,7 +143,7 @@ For documentation on existing pretrained models, please visit -
 https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_classification/results.html#
 
 """
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 

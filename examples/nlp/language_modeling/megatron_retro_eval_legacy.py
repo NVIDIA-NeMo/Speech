@@ -15,8 +15,8 @@
 import os
 
 from examples.nlp.language_modeling.megatron_gpt_eval import RequestDataSet
+from lightning.pytorch import Trainer
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
@@ -69,7 +69,10 @@ def main(cfg) -> None:
         save_restore_connector.model_extracted_dir = model_path
 
     model_cfg = MegatronRetrievalModel.restore_from(
-        model_path, trainer=trainer, return_config=True, save_restore_connector=save_restore_connector,
+        model_path,
+        trainer=trainer,
+        return_config=True,
+        save_restore_connector=save_restore_connector,
     )
 
     with open_dict(model_cfg):
@@ -89,7 +92,10 @@ def main(cfg) -> None:
             cfg.pipeline_model_parallel_split_rank = model_cfg.get('pipeline_model_parallel_split_rank', 0)
 
     model = MegatronRetrievalModel.restore_from(
-        model_path, trainer=trainer, save_restore_connector=save_restore_connector, override_config_path=model_cfg,
+        model_path,
+        trainer=trainer,
+        save_restore_connector=save_restore_connector,
+        override_config_path=model_cfg,
     )
 
     length_params: LengthParam = {

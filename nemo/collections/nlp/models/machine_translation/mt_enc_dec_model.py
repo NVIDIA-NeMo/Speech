@@ -25,9 +25,9 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.utils.data as pt_data
+from lightning.pytorch import Trainer
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from pytorch_lightning import Trainer
-from pytorch_lightning.utilities import rank_zero_only
 from sacrebleu import corpus_bleu
 
 from nemo.collections.common.data import ConcatDataset
@@ -120,17 +120,21 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         encoder_tokenizer, decoder_tokenizer = MTEncDecModel.setup_enc_dec_tokenizers(
             encoder_tokenizer_library=self.encoder_tokenizer_library,
             encoder_tokenizer_model=encoder_tokenizer_model,
-            encoder_bpe_dropout=cfg.encoder_tokenizer.get('bpe_dropout', 0.0)
-            if cfg.encoder_tokenizer.get('bpe_dropout', 0.0) is not None
-            else 0.0,
+            encoder_bpe_dropout=(
+                cfg.encoder_tokenizer.get('bpe_dropout', 0.0)
+                if cfg.encoder_tokenizer.get('bpe_dropout', 0.0) is not None
+                else 0.0
+            ),
             encoder_model_name=cfg.encoder.get('model_name') if hasattr(cfg.encoder, 'model_name') else None,
             encoder_r2l=cfg.encoder_tokenizer.get('r2l', False),
             decoder_tokenizer_library=self.decoder_tokenizer_library,
             encoder_tokenizer_vocab_file=encoder_vocab_file,
             decoder_tokenizer_model=decoder_tokenizer_model,
-            decoder_bpe_dropout=cfg.decoder_tokenizer.get('bpe_dropout', 0.0)
-            if cfg.decoder_tokenizer.get('bpe_dropout', 0.0) is not None
-            else 0.0,
+            decoder_bpe_dropout=(
+                cfg.decoder_tokenizer.get('bpe_dropout', 0.0)
+                if cfg.decoder_tokenizer.get('bpe_dropout', 0.0) is not None
+                else 0.0
+            ),
             decoder_model_name=cfg.decoder.get('model_name') if hasattr(cfg.decoder, 'model_name') else None,
             decoder_r2l=cfg.decoder_tokenizer.get('r2l', False),
             special_tokens=self.special_tokens,
@@ -254,7 +258,7 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         self.log_softmax.mlp.layer0.weight = self.decoder.embedding.token_embedding.weight
 
         # TODO: encoder and decoder with different hidden size?
-        std_init_range = 1 / self.encoder.hidden_size ** 0.5
+        std_init_range = 1 / self.encoder.hidden_size**0.5
 
         # initialize weights if not using pretrained encoder/decoder
         if not self._cfg.encoder.get('pretrained', False):
@@ -341,7 +345,10 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         return ids
 
     def test_encoder_ids(self, ids, raise_error=False):
-        invalid_ids = torch.logical_or((ids >= self.encoder_tokenizer.vocab_size).any(), (ids < 0).any(),)
+        invalid_ids = torch.logical_or(
+            (ids >= self.encoder_tokenizer.vocab_size).any(),
+            (ids < 0).any(),
+        )
 
         if raise_error and invalid_ids:
             raise ValueError("Encoder ids are out of range (tip: check encoder tokenizer)")
@@ -349,7 +356,10 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         return not invalid_ids
 
     def test_decoder_ids(self, ids, raise_error=False):
-        invalid_ids = torch.logical_or((ids >= self.decoder_tokenizer.vocab_size).any(), (ids < 0).any(),)
+        invalid_ids = torch.logical_or(
+            (ids >= self.decoder_tokenizer.vocab_size).any(),
+            (ids < 0).any(),
+        )
 
         if raise_error and invalid_ids:
             raise ValueError("Decoder ids are out of range (tip: check decoder tokenizer)")
@@ -655,7 +665,10 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
             multilingual=self.multilingual,
             multilingual_ids=self.multilingual_ids,
         )
-        self._train_dl = MTEncDecModel._setup_dataloader_from_config(cfg=train_data_config, dataset=self._train_ds,)
+        self._train_dl = MTEncDecModel._setup_dataloader_from_config(
+            cfg=train_data_config,
+            dataset=self._train_ds,
+        )
 
         # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
         # of samples rather than the number of batches, and this messes up the tqdm progress bar.
@@ -714,7 +727,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
             for dataloader_idx in range(len(self._validation_dl)):
                 if dataloader_idx == 0:
                     setattr(
-                        self, f'val_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+                        self,
+                        f'val_loss',
+                        GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
                     )
                 else:
                     setattr(
@@ -737,7 +752,9 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
             for dataloader_idx in range(len(self._test_dl)):
                 if dataloader_idx == 0:
                     setattr(
-                        self, f'test_loss', GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
+                        self,
+                        f'test_loss',
+                        GlobalAverageLossMetric(dist_sync_on_step=False, take_avg_loss=True),
                     )
                 else:
                     setattr(
@@ -886,13 +903,15 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=1,
-            sampler=None
-            if (
-                cfg.get("use_tarred_dataset", False)
-                or cfg.get("dataset_type", "") == "tarred"
-                or isinstance(dataset, ConcatDataset)
-            )
-            else sampler,
+            sampler=(
+                None
+                if (
+                    cfg.get("use_tarred_dataset", False)
+                    or cfg.get("dataset_type", "") == "tarred"
+                    or isinstance(dataset, ConcatDataset)
+                )
+                else sampler
+            ),
             num_workers=cfg.get("num_workers", 2),
             pin_memory=cfg.get("pin_memory", False),
             drop_last=cfg.get("drop_last", False),
@@ -983,9 +1002,11 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
                 torch.utils.data.DataLoader(
                     dataset=dataset,
                     batch_size=1,
-                    sampler=None
-                    if (cfg.get("use_tarred_dataset", False) or isinstance(datasets[0], ConcatDataset))
-                    else sampler,
+                    sampler=(
+                        None
+                        if (cfg.get("use_tarred_dataset", False) or isinstance(datasets[0], ConcatDataset))
+                        else sampler
+                    ),
                     num_workers=cfg.get("num_workers", 2),
                     pin_memory=cfg.get("pin_memory", False),
                     drop_last=cfg.get("drop_last", False),
@@ -1188,7 +1209,10 @@ class MTEncDecModel(EncDecNLPModel, Exportable):
             )
             if return_beam_scores:
                 _, all_translations, scores, best_translations = self.batch_translate(
-                    src, src_mask, return_beam_scores=True, cache=cache,
+                    src,
+                    src_mask,
+                    return_beam_scores=True,
+                    cache=cache,
                 )
                 return_val = all_translations, scores, best_translations
             else:

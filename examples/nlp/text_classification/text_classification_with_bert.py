@@ -95,7 +95,7 @@ You may restore the saved model like this:
     eval_model.set_trainer(eval_trainer)
     eval_trainer.test(model=eval_model, verbose=False)
 """
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models.text_classification import TextClassificationModel

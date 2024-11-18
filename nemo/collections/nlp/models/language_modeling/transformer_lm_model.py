@@ -19,8 +19,8 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 import torch.utils.data as pt_data
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.losses import SmoothedCrossEntropyLoss
 from nemo.collections.common.metrics import GlobalAverageLossMetric
@@ -59,9 +59,11 @@ class TransformerLMModel(ModelPT):
             tokenizer_model=cfg.tokenizer.get("tokenizer_model", None),
             vocab_file=cfg.tokenizer.get("vocab_file", None),
             bpe_dropout=cfg.tokenizer.get("bpe_dropout", 0.0),
-            special_tokens=OmegaConf.to_container(cfg.tokenizer.special_tokens)
-            if cfg.tokenizer.get("special_tokens", None)
-            else None,
+            special_tokens=(
+                OmegaConf.to_container(cfg.tokenizer.special_tokens)
+                if cfg.tokenizer.get("special_tokens", None)
+                else None
+            ),
         )
 
         # init superclass
@@ -99,7 +101,7 @@ class TransformerLMModel(ModelPT):
         # tie weights of embedding and softmax matrices
         self.log_softmax.mlp.layer0.weight = self.encoder.embedding.token_embedding.weight
 
-        std_init_range = 1 / self.encoder.hidden_size ** 0.5
+        std_init_range = 1 / self.encoder.hidden_size**0.5
 
         # initialize weights if not using pretrained encoder
         if not self._cfg.encoder.get('pretrained', False):
@@ -199,7 +201,12 @@ class TransformerLMModel(ModelPT):
         self.test_step_outputs.clear()  # free memory
 
     def setup_tokenizer(
-        self, tokenizer_name=None, tokenizer_model=None, vocab_file=None, bpe_dropout=0.0, special_tokens=None,
+        self,
+        tokenizer_name=None,
+        tokenizer_model=None,
+        vocab_file=None,
+        bpe_dropout=0.0,
+        special_tokens=None,
     ):
 
         supported_tokenizers = ['huggingface', 'sentencepiece', 'word']

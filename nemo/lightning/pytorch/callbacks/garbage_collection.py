@@ -15,7 +15,7 @@
 import gc
 from typing import Any
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from nemo.utils import logging
 
 

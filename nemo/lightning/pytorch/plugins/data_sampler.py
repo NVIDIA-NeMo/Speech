@@ -16,7 +16,7 @@ import dataclasses
 import logging
 from typing import List, Literal, Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch.utils.data import DataLoader
 
 from nemo.lightning.megatron_parallel import MegatronStep

@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 
 from nemo.collections.tts.g2p.data.ctc import CTCG2PBPEDataset
@@ -101,11 +101,21 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
 
         self.decoding = CTCBPEDecoding(self.cfg.decoding, tokenizer=self.tokenizer)
 
-        self.wer = WER(decoding=self.decoding, use_cer=False, log_prediction=False, dist_sync_on_step=True,)
-        self.per = WER(decoding=self.decoding, use_cer=True, log_prediction=False, dist_sync_on_step=True,)
+        self.wer = WER(
+            decoding=self.decoding,
+            use_cer=False,
+            log_prediction=False,
+            dist_sync_on_step=True,
+        )
+        self.per = WER(
+            decoding=self.decoding,
+            use_cer=True,
+            log_prediction=False,
+            dist_sync_on_step=True,
+        )
 
     def setup_grapheme_tokenizer(self, cfg):
-        """ Initialized grapheme tokenizer """
+        """Initialized grapheme tokenizer"""
 
         if self.mode == "byt5":
             # Load appropriate tokenizer from HuggingFace
@@ -315,7 +325,10 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
         )
 
     @torch.no_grad()
-    def _infer(self, config: DictConfig,) -> List[int]:
+    def _infer(
+        self,
+        config: DictConfig,
+    ) -> List[int]:
         """
         Runs model inference.
 

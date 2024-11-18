@@ -24,7 +24,7 @@ from typing import Callable, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from lightning_fabric.utilities.seed import seed_everything
+from lightning.fabric.utilities.seed import seed_everything
 
 from nemo.collections.common.tokenizers.tabular_tokenizer import TabularTokenizer
 from nemo.collections.multimodal.data.neva.conversation import (

@@ -17,8 +17,8 @@ import os
 from typing import Dict, List, Optional, Union
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 
 from nemo.collections.asr.losses.rnnt import RNNTLoss
 from nemo.collections.asr.metrics.wer import WER
@@ -68,7 +68,10 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
 
         # Setup decoding object
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=self.cfg.decoding, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=self.cfg.decoding,
+            decoder=self.decoder,
+            joint=self.joint,
+            tokenizer=self.tokenizer,
         )
 
         # Setup wer object
@@ -165,7 +168,10 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=decoding_cfg,
+            decoder=self.decoder,
+            joint=self.joint,
+            tokenizer=self.tokenizer,
         )
 
         self.wer = WER(
@@ -214,7 +220,10 @@ class VisualEncDecRNNTBPEModel(VisualEncDecRNNTModel, ASRBPEMixin):
         decoding_cfg = OmegaConf.merge(decoding_cls, decoding_cfg)
 
         self.decoding = RNNTBPEDecoding(
-            decoding_cfg=decoding_cfg, decoder=self.decoder, joint=self.joint, tokenizer=self.tokenizer,
+            decoding_cfg=decoding_cfg,
+            decoder=self.decoder,
+            joint=self.joint,
+            tokenizer=self.tokenizer,
         )
 
         self.wer = WER(

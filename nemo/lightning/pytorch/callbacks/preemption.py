@@ -18,8 +18,8 @@ import sys
 from typing import Optional
 
 import torch
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.lightning.io.mixin import IOMixin
 from nemo.utils import logging

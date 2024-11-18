@@ -21,8 +21,8 @@ import tarfile
 import tempfile
 
 from joblib import Parallel, delayed
+from lightning.pytorch import Trainer
 from omegaconf import ListConfig, OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer, create_spt_model
 from nemo.collections.nlp.data.language_modeling.sentence_dataset import SentenceDataset
@@ -33,23 +33,23 @@ from nemo.utils import logging
 
 
 class MTDataPreproc:
-    """ Automatically trains tokenizers and preprocesses machine translation data based on the MTEncDecModelConfig.
-        For training NMT models with datasets larger than 5M sentence pairs, 
-        it can be inefficient to train them without first creating a tarred dataset. 
-        If the user wants to change the tokenizer, vocab size, or batch size, for example, 
-        they must reprocess the data with the correct configuration. 
-        With MTDataPreproc users can sweep through data configurations and the tarred dataset will 
-        be automatically created according to the model configuration.
-        To train tokenizer model and create tarred dataset specify in configuration:
-            model.preproc_out_dir=/path/to/preproc_out
-            model.encoder_tokenizer.vocab_size=32000
-            model.decoder_tokenizer.vocab_size=32000 
-            model.train_ds.use_tarred_dataset=True 
-            model.train_ds.src_file_name=/path/to/src.txt
-            model.train_ds.tgt_file_name=/path/to/tgt.txt
-            model.train_ds.tokens_in_batch=16000 
-        Once a dataset has been constructed based on this configuration, MTDataPreproc will not process it again.
-        If a previously trained tokenizer model or tarred dataset is found, MTDataPreproc will not preprocess the data.
+    """Automatically trains tokenizers and preprocesses machine translation data based on the MTEncDecModelConfig.
+    For training NMT models with datasets larger than 5M sentence pairs,
+    it can be inefficient to train them without first creating a tarred dataset.
+    If the user wants to change the tokenizer, vocab size, or batch size, for example,
+    they must reprocess the data with the correct configuration.
+    With MTDataPreproc users can sweep through data configurations and the tarred dataset will
+    be automatically created according to the model configuration.
+    To train tokenizer model and create tarred dataset specify in configuration:
+        model.preproc_out_dir=/path/to/preproc_out
+        model.encoder_tokenizer.vocab_size=32000
+        model.decoder_tokenizer.vocab_size=32000
+        model.train_ds.use_tarred_dataset=True
+        model.train_ds.src_file_name=/path/to/src.txt
+        model.train_ds.tgt_file_name=/path/to/tgt.txt
+        model.train_ds.tokens_in_batch=16000
+    Once a dataset has been constructed based on this configuration, MTDataPreproc will not process it again.
+    If a previously trained tokenizer model or tarred dataset is found, MTDataPreproc will not preprocess the data.
     """
 
     def __init__(self, cfg: MTEncDecModelConfig, trainer: Trainer = None) -> None:
@@ -147,12 +147,16 @@ class MTDataPreproc:
                         global_rank=self.global_rank,
                         encoder_training_sample_size=cfg.encoder_tokenizer.get('training_sample_size', -1),
                         decoder_training_sample_size=cfg.decoder_tokenizer.get('training_sample_size', -1),
-                        encoder_special_tokens=OmegaConf.to_container(cfg.encoder_tokenizer.special_tokens)
-                        if cfg.encoder_tokenizer.special_tokens
-                        else None,
-                        decoder_special_tokens=OmegaConf.to_container(cfg.decoder_tokenizer.special_tokens)
-                        if cfg.decoder_tokenizer.special_tokens
-                        else None,
+                        encoder_special_tokens=(
+                            OmegaConf.to_container(cfg.encoder_tokenizer.special_tokens)
+                            if cfg.encoder_tokenizer.special_tokens
+                            else None
+                        ),
+                        decoder_special_tokens=(
+                            OmegaConf.to_container(cfg.decoder_tokenizer.special_tokens)
+                            if cfg.decoder_tokenizer.special_tokens
+                            else None
+                        ),
                         spt_symbols=spt_symbols,
                     )
                     # update config
@@ -280,10 +284,10 @@ class MTDataPreproc:
                     )
 
     def tar_files_to_string(self, tar_files):
-        """ Tar files are generated in the following format: basename.number.tar
+        """Tar files are generated in the following format: basename.number.tar
             Where number is an integer from 1 to the number of tar files.
             We convert this list to a string that can be used in the model config to specify
-            tarred datasets: basename_OP_1..num_tar_files_CL_.tar 
+            tarred datasets: basename_OP_1..num_tar_files_CL_.tar
 
         Args:
             tar_files (List[str]): List of tar files generated by preprocess_parallel_dataset
@@ -337,7 +341,9 @@ class MTDataPreproc:
 
     @staticmethod
     def get_monolingual_tokenizer(
-        tokenizer_name=None, tokenizer_model=None, bpe_dropout=0.0,
+        tokenizer_name=None,
+        tokenizer_model=None,
+        bpe_dropout=0.0,
     ):
         if tokenizer_name == 'sentencepiece':
             tokenizer = SentencePieceTokenizer(model_path=tokenizer_model)
@@ -385,14 +391,14 @@ class MTDataPreproc:
             src_fname (str): path to source text data
             tgt_fname (str): path to target text data
             out_dir (str): path to write tarred dataset
-            encoder_tokenizer (Any): tokenizer for encoder 
+            encoder_tokenizer (Any): tokenizer for encoder
             decoder_tokenizer (Any): tokenizer for decoder
-            max_seq_length (int): maximum sequence length 
-            min_seq_length (int): minimum sequence length 
-            tokens_in_batch (int): tokens per batch per GPU, effectively batch size 
+            max_seq_length (int): maximum sequence length
+            min_seq_length (int): minimum sequence length
+            tokens_in_batch (int): tokens per batch per GPU, effectively batch size
             lines_per_dataset_fragment (int): number of lines to consider for bucketing and padding
             num_batches_per_tarfile (int): number of batches (pickle files) within each tarfile
-            tar_file_prefix (str) : add string prefix to tar files 
+            tar_file_prefix (str) : add string prefix to tar files
             n_jobs (int): number of processes to use for data processing (-2 to use all but 2)
         """
 
@@ -471,7 +477,10 @@ class MTDataPreproc:
                                 out_dir,
                                 f'remainder-batches.tokens.{tokens_in_batch}.tar_file_{remainder_tar_file_ctr}.tar',
                             )
-                            remainder_tar_file_ptr = tarfile.open(remainder_tar_file_path, 'w',)
+                            remainder_tar_file_ptr = tarfile.open(
+                                remainder_tar_file_path,
+                                'w',
+                            )
                             batch_in_tar_ctr = 0
                     tar_file_ptr.close()
                     os.remove(tar_file_path)
@@ -631,9 +640,9 @@ class MTDataPreproc:
             fname (str): Path to source text data
             out_dir (str): Path to write tarred dataset
             tokenizer (Any): Path to tokenizer model
-            max_seq_length (int): maximum sequence length 
-            min_seq_length (int): minimum sequence length 
-            tokens_in_batch (int): tokens per batch per GPU, effectively batch size 
+            max_seq_length (int): maximum sequence length
+            min_seq_length (int): minimum sequence length
+            tokens_in_batch (int): tokens per batch per GPU, effectively batch size
             lines_per_dataset_fragment (int): number of lines to consider for bucketing and padding
             num_batches_per_tarfile (int): number of batches (pickle files) within each tarfile
             global_rank (int): if set to zero, data will be processed on this node
@@ -808,7 +817,8 @@ class MTDataPreproc:
                                 split_by_whitespace=split_by_whitespace,
                             )
                             os.rename(
-                                os.path.join(out_dir, 'tokenizer.model'), encoder_tokenizer_model,
+                                os.path.join(out_dir, 'tokenizer.model'),
+                                encoder_tokenizer_model,
                             )
         else:
             if encoder_tokenizer_name in supported_train_tokenizers:
@@ -1007,7 +1017,10 @@ class MTDataPreproc:
                 tar_file_path = os.path.join(
                     out_dir, 'fragment-%s-batches.tokens.%d.%d.tar' % (fragment_index, num_tokens, tar_file_ctr)
                 )
-                tar_file_ptr = tarfile.open(tar_file_path, 'w',)
+                tar_file_ptr = tarfile.open(
+                    tar_file_path,
+                    'w',
+                )
                 batch_ctr = 0
 
         # return tar files paths that have batches remaining

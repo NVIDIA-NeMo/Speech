@@ -17,11 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from lightning.pytorch.loggers import Logger
+from lightning.pytorch.utilities import rank_zero_only
+from lightning.pytorch.utilities.parsing import AttributeDict
 from lightning_utilities.core.apply_func import apply_to_collection
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from pytorch_lightning.loggers import Logger
-from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.utilities.parsing import AttributeDict
 
 from nemo.utils import logging
 
@@ -34,7 +34,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_DLLOGGER = False
 
 try:
-    from lightning_fabric.utilities.logger import _convert_params, _flatten_dict, _sanitize_callable_params
+    from lightning.fabric.utilities.logger import _convert_params, _flatten_dict, _sanitize_callable_params
 
     PL_LOGGER_UTILITIES = True
 except (ImportError, ModuleNotFoundError):

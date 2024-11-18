@@ -63,7 +63,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 try:
-    from pytorch_lightning.utilities import rank_zero_only
+    from lightning.pytorch.utilities import rank_zero_only
 except ModuleNotFoundError:
     from functools import wraps
 

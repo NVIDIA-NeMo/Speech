@@ -16,13 +16,11 @@ import logging
 import os
 
 import numpy as np
-
-
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from megatron.core.models.bert.bert_layer_specs import bert_layer_with_transformer_engine_spec
 from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.distributed import all_gather as all_gather_no_backprop
 from torch.distributed.nn.functional import all_gather as all_gather_with_backprop
 
@@ -45,7 +43,6 @@ from nemo.collections.nlp.modules.common.megatron.utils import (
 )
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.utils import logging
-
 
 try:
     from megatron.core import parallel_state

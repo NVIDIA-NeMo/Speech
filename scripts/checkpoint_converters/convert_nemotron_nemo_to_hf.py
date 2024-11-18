@@ -19,7 +19,7 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 from transformers import LlamaTokenizer, PreTrainedTokenizerFast
 from transformers.convert_slow_tokenizer import LlamaConverter
 

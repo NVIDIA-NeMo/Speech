@@ -39,7 +39,7 @@ However, shorter label strings are also supported for smaller file sizes. For ex
 
 """
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import OmegaConf
 from nemo.collections.asr.models.classification_models import EncDecFrameClassificationModel
 

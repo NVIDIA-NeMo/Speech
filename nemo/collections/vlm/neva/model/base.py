@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
 
-import pytorch_lightning as L
+import lightning.pytorch as L
 import torch
 import torch.distributed
 import torch.nn.functional as F

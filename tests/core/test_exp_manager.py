@@ -18,13 +18,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+import lightning.pytorch as pl
 import pytest
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch import Callback
+from lightning.pytorch.loops import _TrainingEpochLoop
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
-from pytorch_lightning import Callback
-from pytorch_lightning.loops import _TrainingEpochLoop
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.constants import NEMO_ENV_VARNAME_VERSION

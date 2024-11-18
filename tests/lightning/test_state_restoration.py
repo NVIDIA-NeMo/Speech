@@ -17,8 +17,8 @@ import random
 
 import pytest
 import torch
+from lightning.pytorch.callbacks import Callback
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning.callbacks import Callback
 
 from nemo import lightning as nl
 from nemo.collections import llm

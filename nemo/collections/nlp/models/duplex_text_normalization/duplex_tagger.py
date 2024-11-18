@@ -16,8 +16,8 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 from torch import nn
 from transformers import AutoModelForTokenClassification, AutoTokenizer, DataCollatorForTokenClassification
 from transformers.tokenization_utils_base import BatchEncoding
@@ -151,7 +151,7 @@ class DuplexTaggerModel(NLPModel):
     # Functions for inference
     @torch.no_grad()
     def _infer(self, sents: List[List[str]], inst_directions: List[str]):
-        """ Main function for Inference
+        """Main function for Inference
 
         Args:
             sents: A list of inputs tokenized by a basic tokenizer.
@@ -248,7 +248,7 @@ class DuplexTaggerModel(NLPModel):
         return all_tag_preds, nb_spans, span_starts, span_ends
 
     def _postprocess_tag_preds(self, words: List[str], inst_dir: str, preds: List[str]):
-        """ Function for postprocessing the raw tag predictions of the model. It
+        """Function for postprocessing the raw tag predictions of the model. It
         corrects obvious mistakes in the tag predictions such as a TRANSFORM span
         starts with I_TRANSFORM_TAG (instead of B_TRANSFORM_TAG).
 
@@ -280,7 +280,7 @@ class DuplexTaggerModel(NLPModel):
         return final_preds
 
     def decode_tag_preds(self, tag_preds: List[List[str]]):
-        """ Decoding the raw tag predictions to locate the semiotic spans in the
+        """Decoding the raw tag predictions to locate the semiotic spans in the
         input texts.
 
         Args:

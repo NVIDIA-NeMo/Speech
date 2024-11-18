@@ -16,13 +16,13 @@ import os
 import tempfile
 from pathlib import Path
 
+import lightning.pytorch as pl
 import numpy as np
 import pytest
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
 from megatron.core import parallel_state
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 
 from nemo.collections.multimodal.speech_llm.models import modular_models
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import shift_tokens_by_multi_audios

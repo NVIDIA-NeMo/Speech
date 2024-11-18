@@ -15,7 +15,7 @@
 from unittest.mock import MagicMock, call, patch
 
 import torch.nn as nn
-from pytorch_lightning.trainer.states import TrainerFn
+from lightning.pytorch.trainer.states import TrainerFn
 from nemo.collections.llm import fn
 from nemo.lightning.pytorch.callbacks.peft import PEFT, WrappedAdapterIO
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO

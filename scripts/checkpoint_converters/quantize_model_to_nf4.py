@@ -16,7 +16,7 @@ from argparse import ArgumentParser
 from typing import List
 
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 from torch import nn
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel

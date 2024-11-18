@@ -37,15 +37,15 @@ from dataclasses import dataclass
 from types import MethodType
 from typing import Any, Dict
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning import LightningModule
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.loops.optimization.automatic import ClosureResult
-from pytorch_lightning.trainer.connectors.logger_connector.result import _ResultCollection, _ResultMetric
-from pytorch_lightning.utilities import CombinedLoader, rank_zero_info
-from pytorch_lightning.utilities.signature_utils import is_param_in_hook_signature
-from pytorch_lightning.utilities.types import STEP_OUTPUT
+from lightning.pytorch import LightningModule
+from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.loops.optimization.automatic import ClosureResult
+from lightning.pytorch.trainer.connectors.logger_connector.result import _ResultCollection, _ResultMetric
+from lightning.pytorch.utilities import CombinedLoader, rank_zero_info
+from lightning.pytorch.utilities.signature_utils import is_param_in_hook_signature
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from torch.nn.parallel import DistributedDataParallel
 
 __all__ = ["CUDAGraphCallback"]
@@ -431,8 +431,8 @@ class CUDAGraphCallback(Callback):
         Called when saving a checkpoint to give you a chance to store anything else you might want to save.
 
         Args:
-            trainer: the current :class:`~pytorch_lightning.trainer.Trainer` instance.
-            pl_module: the current :class:`~pytorch_lightning.core.module.LightningModule` instance.
+            trainer: the current :class:`~lightning.pytorch.trainer.Trainer` instance.
+            pl_module: the current :class:`~lightning.pytorch.core.module.LightningModule` instance.
             checkpoint: the checkpoint dictionary that will be saved.
         """
         # Since we've add bound method to optimizer and lr_scheduler, it can lead to more

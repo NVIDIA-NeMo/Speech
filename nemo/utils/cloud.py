@@ -17,8 +17,8 @@ from pathlib import Path
 from time import sleep
 
 import wget
-from pytorch_lightning.plugins.environments import LightningEnvironment
-from pytorch_lightning.strategies import DDPStrategy, StrategyRegistry
+from lightning.pytorch.plugins.environments import LightningEnvironment
+from lightning.pytorch.strategies import DDPStrategy, StrategyRegistry
 
 from nemo.utils import logging
 
@@ -105,7 +105,10 @@ def initialize_sagemaker() -> None:
     """
 
     StrategyRegistry.register(
-        name='smddp', strategy=SageMakerDDPStrategy, process_group_backend="smddp", find_unused_parameters=False,
+        name='smddp',
+        strategy=SageMakerDDPStrategy,
+        process_group_backend="smddp",
+        find_unused_parameters=False,
     )
 
     def _install_system_libraries() -> None:

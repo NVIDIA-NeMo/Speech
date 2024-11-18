@@ -18,8 +18,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from hydra.utils import instantiate
+from lightning.pytorch.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning.loggers.wandb import WandbLogger
 
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss
 from nemo.collections.tts.models.base import Vocoder
@@ -313,7 +313,7 @@ class HifiGanModel(Vocoder, Exportable):
             comp = torch.stft(x.squeeze(1), n_fft=1024, hop_length=256, win_length=1024, return_complex=True)
             comp = torch.view_as_real(comp)
             real, imag = comp[..., 0], comp[..., 1]
-            mags = torch.sqrt(real ** 2 + imag ** 2)
+            mags = torch.sqrt(real**2 + imag**2)
             phase = torch.atan2(imag, real)
             return mags, phase
 

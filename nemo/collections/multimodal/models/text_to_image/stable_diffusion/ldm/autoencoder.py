@@ -13,7 +13,7 @@
 # limitations under the License.
 from contextlib import contextmanager
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import torch.nn.functional as F
 from nemo.utils import logging

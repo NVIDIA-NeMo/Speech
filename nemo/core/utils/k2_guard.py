@@ -21,8 +21,9 @@ If there is an error, the module will raise an exception with a helpful message.
 
 import textwrap
 
+from lightning.pytorch.utilities.imports import package_available
 from packaging.version import Version
-from pytorch_lightning.utilities.imports import package_available
+
 from nemo.core.utils.k2_utils import K2_INSTALLATION_MESSAGE
 
 __K2_MINIMUM_MAJOR_VERSION = 1

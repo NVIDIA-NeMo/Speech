@@ -16,7 +16,7 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.collections.common.losses import NLLLoss
 from nemo.collections.nlp.models.machine_translation.mt_enc_dec_config import MTBottleneckModelConfig
@@ -184,7 +184,11 @@ class MTBottleneckModel(MTEncDecModel):
             output_mask = (tgt_labels != self.decoder_tokenizer.pad_id).type_as(tgt_log_probs)
 
             log_p_x_given_z_per_token = (
-                -recon_loss_fn(log_probs=tgt_log_probs, labels=tgt_labels,).view(tgt_log_probs.shape[:2]) * output_mask
+                -recon_loss_fn(
+                    log_probs=tgt_log_probs,
+                    labels=tgt_labels,
+                ).view(tgt_log_probs.shape[:2])
+                * output_mask
             )
 
             # probability per sample
@@ -216,7 +220,10 @@ class MTBottleneckModel(MTEncDecModel):
 
         if self.model_type in ["mim", "vae"]:
             # tokens = tgt_mask.sum()
-            q_z_given_x = torch.distributions.Normal(loc=z_mean, scale=torch.exp(0.5 * z_logv),)
+            q_z_given_x = torch.distributions.Normal(
+                loc=z_mean,
+                scale=torch.exp(0.5 * z_logv),
+            )
             # average latent distribution to match averaging of observations
             if self.recon_per_token:
                 # average latent per dimension - to heuristically match per-token reconstruction
@@ -225,7 +232,10 @@ class MTBottleneckModel(MTEncDecModel):
                 log_q_z_given_x = q_z_given_x.log_prob(z).sum(-1).sum(-1).mean()
 
             # build prior distribution
-            p_z = torch.distributions.Normal(loc=torch.zeros_like(z), scale=torch.ones_like(z),)
+            p_z = torch.distributions.Normal(
+                loc=torch.zeros_like(z),
+                scale=torch.ones_like(z),
+            )
             if self.recon_per_token:
                 # average latent distribution similar to averaging of observations
                 log_p_z = p_z.log_prob(z).mean(-1).mean(-1).mean()
@@ -267,7 +277,11 @@ class MTBottleneckModel(MTEncDecModel):
 
         if timer is not None:
             timer.start("encoder")
-        enc_hiddens, enc_mask = self.encoder(input_ids=src, encoder_mask=src_mask, return_mask=True,)
+        enc_hiddens, enc_mask = self.encoder(
+            input_ids=src,
+            encoder_mask=src_mask,
+            return_mask=True,
+        )
 
         # build posterior distribution q(x|z)
         z, z_mean, z_logv = self.encode_latent(hidden=enc_hiddens)
@@ -283,7 +297,10 @@ class MTBottleneckModel(MTEncDecModel):
         context_hiddens = self.latent2hidden(z)
 
         tgt_hiddens = self.decoder(
-            input_ids=tgt, decoder_mask=tgt_mask, encoder_embeddings=context_hiddens, encoder_mask=enc_mask,
+            input_ids=tgt,
+            decoder_mask=tgt_mask,
+            encoder_embeddings=context_hiddens,
+            encoder_mask=enc_mask,
         )
 
         # build decoding distribution
@@ -426,18 +443,25 @@ class MTBottleneckModel(MTEncDecModel):
             return_info=True,
         )
         # pass cache to sampler in order to reuse encoder's output
-        cache = dict(z=z, z_mean=z_mean, z_mask=z_mask, timer=timer,)
+        cache = dict(
+            z=z,
+            z_mean=z_mean,
+            z_mask=z_mask,
+            timer=timer,
+        )
 
         inputs, translations = self.batch_translate(src=src_ids, src_mask=src_mask, cache=cache)
 
         num_measurements = labels.shape[0] * labels.shape[1]
         if dataloader_idx == 0:
             getattr(self, f'{mode}_loss')(
-                loss=eval_loss, num_measurements=num_measurements,
+                loss=eval_loss,
+                num_measurements=num_measurements,
             )
         else:
             getattr(self, f'{mode}_loss_{dataloader_idx}')(
-                loss=eval_loss, num_measurements=num_measurements,
+                loss=eval_loss,
+                num_measurements=num_measurements,
             )
         np_tgt = tgt_ids.detach().cpu().numpy()
         ground_truths = [self.decoder_tokenizer.ids_to_text(tgt) for tgt in np_tgt]

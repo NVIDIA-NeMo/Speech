@@ -19,7 +19,7 @@ from itertools import chain
 from typing import List, Literal, Optional
 
 import torch
-from pytorch_lightning.overrides.distributed import _IndexBatchSamplerWrapper
+from lightning.pytorch.overrides.distributed import _IndexBatchSamplerWrapper
 from torch.utils.data import DataLoader, Dataset
 
 

@@ -17,8 +17,8 @@ from typing import Dict, Optional
 import einops
 import hydra
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.audio.models.audio_to_audio import AudioToAudioModel
 from nemo.core.classes.common import PretrainedModelInfo, typecheck

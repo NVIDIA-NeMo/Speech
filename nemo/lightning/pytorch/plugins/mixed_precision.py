@@ -16,9 +16,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from typing import Any, Callable, Generator, List, Literal, Tuple, TypeVar, Union
 
-import pytorch_lightning as pl
 import torch
-from pytorch_lightning.plugins.precision import Precision
+from lightning.pytorch.plugins.precision import Precision
 from torch.nn import Module
 from torch.optim import Optimizer
 

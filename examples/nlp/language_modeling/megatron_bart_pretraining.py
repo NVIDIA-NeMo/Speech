@@ -13,11 +13,11 @@
 # limitations under the License.
 
 
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import ModelSummary
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
+from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelSummary
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_bart_model import MegatronBARTModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -48,7 +48,7 @@ def main(cfg) -> None:
         scaler = None
         if cfg.trainer.precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
+                init_scale=cfg.model.get('native_amp_init_scale', 2**32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 hysteresis=cfg.model.get('hysteresis', 2),
             )

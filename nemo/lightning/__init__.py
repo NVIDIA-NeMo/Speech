@@ -14,8 +14,8 @@
 
 from typing import Union
 
-from lightning_fabric.plugins.environments import slurm
-from pytorch_lightning import plugins as _pl_plugins
+from lightning.fabric.plugins.environments import slurm
+from lightning.pytorch import plugins as _pl_plugins
 
 # This is here to import it once, which improves the speed of launch when in debug-mode
 from nemo.utils.import_utils import safe_import

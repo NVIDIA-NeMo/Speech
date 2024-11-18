@@ -17,14 +17,14 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from lightning_fabric.plugins import CheckpointIO
-from lightning_fabric.strategies.fsdp import _get_sharded_state_dict_context
+from lightning.fabric.plugins import CheckpointIO
+from lightning.fabric.strategies.fsdp import _get_sharded_state_dict_context
+from lightning.pytorch.strategies.fsdp import FSDPStrategy as PLFSDPStrategy
+from lightning.pytorch.trainer.states import TrainerFn
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from megatron.core.transformer.transformer_layer import TransformerLayer
-from pytorch_lightning.strategies.fsdp import FSDPStrategy as PLFSDPStrategy
-from pytorch_lightning.trainer.states import TrainerFn
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from torch.distributed.checkpoint.state_dict import (  # get_state_dict,
     StateDictOptions,
     get_optimizer_state_dict,

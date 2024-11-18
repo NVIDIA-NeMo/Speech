@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import lightning.pytorch as pl
 import nemo_run as run
-import pytorch_lightning as pl
 
 from nemo.collections.llm.gpt.data.dolly import DollyDataModule
 from nemo.collections.llm.gpt.data.hf_dataset import HfDatasetDataModule

@@ -15,7 +15,7 @@
 import inspect
 from typing import Callable, List, Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.utils import get_model_config

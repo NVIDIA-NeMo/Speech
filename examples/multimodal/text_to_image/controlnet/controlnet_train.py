@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.controlnet.controlnet import MegatronControlNet
 from nemo.collections.multimodal.models.text_to_image.controlnet.util import ImageLogger

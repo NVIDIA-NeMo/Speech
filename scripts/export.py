@@ -30,8 +30,8 @@ import argparse
 import sys
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning import Trainer
 
 import nemo
 from nemo.core import ModelPT

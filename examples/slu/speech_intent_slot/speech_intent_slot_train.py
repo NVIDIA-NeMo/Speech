@@ -66,7 +66,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/speech_int
 
 from pathlib import Path
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 

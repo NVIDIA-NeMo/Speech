@@ -28,8 +28,8 @@ import os
 from argparse import ArgumentParser
 
 import torch
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.vision.models.megatron_vit_classification_models import MegatronVitClassificationModel

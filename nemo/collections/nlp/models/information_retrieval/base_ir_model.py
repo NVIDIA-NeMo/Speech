@@ -17,8 +17,8 @@ from typing import Dict, Optional
 
 import numpy as np
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.data import BertInformationRetrievalDataset
 from nemo.collections.nlp.models.nlp_model import NLPModel

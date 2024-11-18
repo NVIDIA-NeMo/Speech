@@ -24,8 +24,8 @@ import numpy as np
 import soundfile as sf
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from sklearn.metrics import roc_curve
 from torchmetrics import Accuracy
 from tqdm import tqdm

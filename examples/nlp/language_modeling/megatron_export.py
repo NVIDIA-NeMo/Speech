@@ -28,8 +28,8 @@
 
 import os
 
+from lightning.pytorch import Trainer
 from omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_bart_model import MegatronBARTModel
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel

@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-import pytorch_lightning as L
+import lightning.pytorch as L
 import torch
 import torch.distributed
 from einops import rearrange

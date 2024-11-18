@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Generator, Literal, TypeVar
 
 import torch
-from lightning_fabric.plugins.precision import MixedPrecision
+from lightning.fabric.plugins.precision import MixedPrecision
 from torch import nn
 from torch.optim import Optimizer
 

@@ -15,8 +15,8 @@ import json
 from functools import partial
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import DictConfig, ListConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.data import ConcatMapDataset
 from nemo.collections.common.metrics import MetricStringToTorchMetric
@@ -50,11 +50,13 @@ __all__ = ['MegatronRetroFinetuneModel']
 
 
 def build_all_datasets(
-    cfg, tokenizer, train_valid_test_num_samples,
+    cfg,
+    tokenizer,
+    train_valid_test_num_samples,
 ):
     """Build train, valid, and test RETRO datasets.
-       There is one to one mapping between data_prefix and knn_map_path.
-       Currently only supports one retrieval dataset.
+    There is one to one mapping between data_prefix and knn_map_path.
+    Currently only supports one retrieval dataset.
     """
     train_dataset = RetroQAFineTuneDataset(
         cfg.train_ds.get('file_name'),
@@ -97,7 +99,7 @@ def build_all_datasets(
 
 
 class MegatronRetroFinetuneModel(MegatronRetrievalModel):
-    """Finetune RETRO Model """
+    """Finetune RETRO Model"""
 
     def build_train_valid_test_datasets(self):
         logging.info('Building RETRO datasets.')
@@ -114,7 +116,9 @@ class MegatronRetroFinetuneModel(MegatronRetrievalModel):
         ]
 
         self._train_ds, self._validation_ds, self._test_ds = build_all_datasets(
-            cfg=self.cfg.data, tokenizer=self.tokenizer, train_valid_test_num_samples=train_valid_test_num_samples,
+            cfg=self.cfg.data,
+            tokenizer=self.tokenizer,
+            train_valid_test_num_samples=train_valid_test_num_samples,
         )
         if self._train_ds is not None:
             logging.info(f'Length of train dataset: {len(self._train_ds)}')
@@ -143,5 +147,9 @@ class MegatronRetroFinetuneModel(MegatronRetrievalModel):
             drop_last=True,
         )
         return torch.utils.data.DataLoader(
-            dataset, batch_sampler=batch_sampler, collate_fn=collate_fn, num_workers=0, pin_memory=True,
+            dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=collate_fn,
+            num_workers=0,
+            pin_memory=True,
         )

@@ -88,7 +88,7 @@ python text2sparql.py \
     exp_manager.exp_dir=./NeMo_logs
 """
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models.text2sparql import Text2SparqlModel

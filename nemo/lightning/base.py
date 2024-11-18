@@ -19,7 +19,7 @@ from typing import Optional
 
 import torch
 import torch.distributed
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 from torch import nn
 
 

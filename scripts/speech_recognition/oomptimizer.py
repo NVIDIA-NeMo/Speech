@@ -20,7 +20,7 @@ from numbers import Number
 from typing import Iterable, Literal
 
 import click
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from lhotse import compute_num_samples
 from omegaconf import OmegaConf

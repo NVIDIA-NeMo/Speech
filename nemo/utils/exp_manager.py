@@ -26,18 +26,18 @@ from pathlib import Path
 from shutil import copy, move
 from typing import Any, Collection, Dict, List, Optional, Tuple, Union
 
-import pytorch_lightning
+import lightning.pytorch
 import torch
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import get_original_cwd
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.callbacks.timer import Interval, Timer
+from lightning.pytorch.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
+from lightning.pytorch.loops import _TrainingEpochLoop
+from lightning.pytorch.strategies.ddp import DDPStrategy
+from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning.callbacks import Callback, ModelCheckpoint
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from pytorch_lightning.callbacks.timer import Interval, Timer
-from pytorch_lightning.loggers import MLFlowLogger, NeptuneLogger, TensorBoardLogger, WandbLogger
-from pytorch_lightning.loops import _TrainingEpochLoop
-from pytorch_lightning.strategies.ddp import DDPStrategy
-from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
 from nemo.collections.common.callbacks import EMA
 from nemo.constants import NEMO_ENV_VARNAME_TESTING, NEMO_ENV_VARNAME_VERSION
@@ -343,7 +343,7 @@ class DeltaTimingCallback(Callback):
         self._on_batch_end("validation_step_timing in s", trainer, pl_module)
 
 
-def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None) -> Optional[Path]:
+def exp_manager(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None) -> Optional[Path]:
     """
     exp_manager is a helper function used to manage folders for experiments. It follows the pytorch lightning paradigm
     of exp_dir/model_or_experiment_name/version. If the lightning trainer has a logger, exp_manager will get exp_dir,
@@ -362,7 +362,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     resume_if_exists is set to True, creating the version folders is ignored.
 
     Args:
-        trainer (pytorch_lightning.Trainer): The lightning trainer.
+        trainer (lightning.pytorch.Trainer): The lightning trainer.
         cfg (DictConfig, dict): Can have the following keys:
 
             - explicit_log_dir (str, Path): Can be used to override exp_dir/name/version folder creation. Defaults to
@@ -680,7 +680,7 @@ def exp_manager(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictCo
     return log_dir
 
 
-def error_checks(trainer: 'pytorch_lightning.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None):
+def error_checks(trainer: 'lightning.pytorch.Trainer', cfg: Optional[Union[DictConfig, Dict]] = None):
     """
     Checks that the passed trainer is compliant with NeMo and exp_manager's passed configuration. Checks that:
         - Throws error when hydra has changed the working directory. This causes issues with lightning's DDP
@@ -728,7 +728,7 @@ def _filter_out_unfinished_checkpoints(checkpoint_paths: Collection[Union[Path, 
 
 
 def check_resume(
-    trainer: 'pytorch_lightning.Trainer',
+    trainer: 'lightning.pytorch.Trainer',
     log_dir: str,
     resume_if_exists: bool = False,
     resume_past_end: bool = False,
@@ -886,7 +886,7 @@ def check_resume(
 
 
 def check_explicit_log_dir(
-    trainer: 'pytorch_lightning.Trainer', explicit_log_dir: Union[Path, str], exp_dir: str, name: str, version: str
+    trainer: 'lightning.pytorch.Trainer', explicit_log_dir: Union[Path, str], exp_dir: str, name: str, version: str
 ) -> Tuple[Path, str, str, str]:
     """Checks that the passed arguments are compatible with explicit_log_dir.
 
@@ -917,7 +917,7 @@ def check_explicit_log_dir(
 
 
 def get_log_dir(
-    trainer: 'pytorch_lightning.Trainer',
+    trainer: 'lightning.pytorch.Trainer',
     exp_dir: str = None,
     name: str = None,
     version: str = None,
@@ -1025,7 +1025,7 @@ def get_git_diff():
 
 
 def configure_loggers(
-    trainer: 'pytorch_lightning.Trainer',
+    trainer: 'lightning.pytorch.Trainer',
     exp_dir: [Path, str],
     log_dir: [Path, str],
     name: str,
@@ -1136,7 +1136,7 @@ class NeMoCheckpointConnector(_CheckpointConnector):
 
 
 def configure_checkpointing(
-    trainer: 'pytorch_lightning.Trainer',
+    trainer: 'lightning.pytorch.Trainer',
     log_dir: Path,
     name: str,
     resume: bool,
@@ -1257,12 +1257,12 @@ class StatelessTimer(Timer):
                 monitor_candidates = checkpoint_callback._monitor_candidates(trainer)
                 checkpoint_callback._save_last_checkpoint(trainer, monitor_candidates)
             # Throw this exception to signal to Lightning to terminate gracefully.
-            from pytorch_lightning.utilities.exceptions import _TunerExitException
+            from lightning.pytorch.utilities.exceptions import _TunerExitException
 
             raise _TunerExitException()
 
 
-def configure_no_restart_validation_training_loop(trainer: pytorch_lightning.Trainer) -> None:
+def configure_no_restart_validation_training_loop(trainer: lightning.pytorch.Trainer) -> None:
     if type(trainer.fit_loop.epoch_loop) != _TrainingEpochLoop:
         warnings.warn("Detected custom epoch loop. Skipping no validation on restart support.", UserWarning)
         return

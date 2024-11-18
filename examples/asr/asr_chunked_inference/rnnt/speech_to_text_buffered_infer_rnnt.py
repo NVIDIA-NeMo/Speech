@@ -64,7 +64,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 

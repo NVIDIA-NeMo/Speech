@@ -19,8 +19,8 @@
 from typing import Dict, List, Optional, Tuple
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 from transformers import AutoModel, BartForConditionalGeneration, EncoderDecoderModel
 
 from nemo.collections.common.metrics import Perplexity
@@ -145,7 +145,10 @@ class Text2SparqlModel(ModelPT):
         """
         input_ids, input_mask, decoder_input_ids, labels = batch
         loss = self.forward(
-            input_ids=input_ids, attention_mask=input_mask, decoder_input_ids=decoder_input_ids, labels=labels,
+            input_ids=input_ids,
+            attention_mask=input_mask,
+            decoder_input_ids=decoder_input_ids,
+            labels=labels,
         )[0]
 
         tensorboard_logs = {"train_loss": loss, "lr": self._optimizer.param_groups[0]["lr"]}
@@ -159,7 +162,10 @@ class Text2SparqlModel(ModelPT):
         """
         input_ids, input_mask, decoder_input_ids, labels = batch
         loss, logits = self.forward(
-            input_ids=input_ids, attention_mask=input_mask, decoder_input_ids=decoder_input_ids, labels=labels,
+            input_ids=input_ids,
+            attention_mask=input_mask,
+            decoder_input_ids=decoder_input_ids,
+            labels=labels,
         )[:2]
 
         self.validation_perplexity(logits=logits)

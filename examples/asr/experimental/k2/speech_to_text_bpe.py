@@ -74,7 +74,7 @@ python speech_to_text_ctc_bpe.py \
     model.graph_module_cfg.background_cfg.intersect_pruned=False \
     model.graph_module_cfg.background_cfg.boost_coeff=0.0
 """
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models.configs.k2_sequence_models_config import EncDecK2SeqModelConfig

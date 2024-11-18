@@ -77,7 +77,7 @@ import os
 from dataclasses import dataclass, field, is_dataclass
 from typing import Optional
 
-import pytorch_lightning as ptl
+import lightning.pytorch as ptl
 import torch
 from omegaconf import MISSING, OmegaConf
 

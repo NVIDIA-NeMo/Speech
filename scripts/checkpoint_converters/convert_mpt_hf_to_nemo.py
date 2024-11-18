@@ -56,7 +56,7 @@ python convert_mpt_hf_to_nemo.py \
 import argparse
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import yaml
 from omegaconf import OmegaConf
@@ -68,7 +68,11 @@ from nemo.utils import logging
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--input_name_or_path", type=str, default=None, required=True, help="Path to Huggingface MPT checkpoints",
+        "--input_name_or_path",
+        type=str,
+        default=None,
+        required=True,
+        help="Path to Huggingface MPT checkpoints",
     )
     parser.add_argument("--output_path", type=str, default=None, required=True, help="Path to output .nemo file.")
     parser.add_argument(

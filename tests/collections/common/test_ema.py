@@ -15,13 +15,13 @@
 import os.path
 from typing import Any, Dict, Union
 
+import lightning.pytorch as pl
 import pytest
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch import Callback, Trainer
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Callback, Trainer
-from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 
 from nemo.collections.common.callbacks import EMA
 from nemo.collections.common.callbacks.ema import EMAOptimizer
@@ -349,7 +349,12 @@ class TestEMATrain:
     @pytest.mark.parametrize("validate_original_weights", [True, False])
     @pytest.mark.run_only_on('GPU')
     def test_ema_run_cuda(
-        self, test_data_dir, precision, accumulate_grad_batches, validate_original_weights, tmpdir,
+        self,
+        test_data_dir,
+        precision,
+        accumulate_grad_batches,
+        validate_original_weights,
+        tmpdir,
     ):
         self.run_training_test(
             accumulate_grad_batches=accumulate_grad_batches,

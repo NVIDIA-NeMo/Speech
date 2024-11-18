@@ -15,9 +15,9 @@
 from collections import defaultdict
 from typing import Any
 
+from lightning.pytorch.callbacks.progress import ProgressBar
+from lightning.pytorch.utilities.types import STEP_OUTPUT
 from megatron.core.num_microbatches_calculator import get_num_microbatches
-from pytorch_lightning.callbacks.progress import ProgressBar
-from pytorch_lightning.utilities.types import STEP_OUTPUT
 from typing_extensions import override
 
 

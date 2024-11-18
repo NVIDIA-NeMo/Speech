@@ -26,7 +26,7 @@ from argparse import ArgumentParser
 
 import torch
 import torch.nn.functional as F
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 from transformers import AutoTokenizer, BertConfig, BertModel
 
 from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
@@ -207,10 +207,16 @@ def convert_config(ref_config, hf_state_dict):
 def get_args():
     parser = ArgumentParser()
     parser.add_argument(
-        "--input_name_or_path", type=str, required=True, help="Path to .nemo file",
+        "--input_name_or_path",
+        type=str,
+        required=True,
+        help="Path to .nemo file",
     )
     parser.add_argument(
-        "--output_path", type=str, required=True, help="Output HF model path",
+        "--output_path",
+        type=str,
+        required=True,
+        help="Output HF model path",
     )
 
     args = parser.parse_args()

@@ -16,7 +16,7 @@
 import pytest
 import torch
 from einops import rearrange
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.collections.nlp.modules.common.megatron.attention import ParallelChunkedCrossAttention
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
@@ -73,7 +73,13 @@ class TestRetrievalModule:
         MB_SIZE = 4
         GB_SIZE = 8
         SEED = 1234
-        trainer = Trainer(strategy=NLPDDPStrategy(), devices=GPUS, accelerator='gpu', num_nodes=1, logger=None,)
+        trainer = Trainer(
+            strategy=NLPDDPStrategy(),
+            devices=GPUS,
+            accelerator='gpu',
+            num_nodes=1,
+            logger=None,
+        )
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,
@@ -134,7 +140,9 @@ class TestRetrievalModule:
         dec_attn_mask = rearrange(hidden_mask, '(k n) b -> (b k) n', k=chunks)
         context_attn_mask = rearrange(context_mask, 'k r n b -> (b k) (r n)')
         enc_dec_attn_mask_3d = build_attention_mask_3d(
-            source_mask=dec_attn_mask, target_mask=context_attn_mask, attn_mask_type=AttnMaskType.padding,
+            source_mask=dec_attn_mask,
+            target_mask=context_attn_mask,
+            attn_mask_type=AttnMaskType.padding,
         )
         enc_dec_attn_mask_3d = enc_dec_attn_mask_3d[:, None, :, :]
 

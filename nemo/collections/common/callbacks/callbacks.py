@@ -13,15 +13,14 @@
 # limitations under the License.
 import time
 
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.utilities import rank_zero_only
 
 # from sacrebleu import corpus_bleu
 
 
 class LogEpochTimeCallback(Callback):
-    """Simple callback that logs how long each epoch takes, in seconds, to a pytorch lightning log
-    """
+    """Simple callback that logs how long each epoch takes, in seconds, to a pytorch lightning log"""
 
     @rank_zero_only
     def on_train_epoch_start(self, trainer, pl_module):

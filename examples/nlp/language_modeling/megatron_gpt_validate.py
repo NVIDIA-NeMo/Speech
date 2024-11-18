@@ -15,8 +15,8 @@
 import os
 import tempfile
 
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.megatron.megatron_init import fake_initialize_model_parallel
@@ -140,7 +140,9 @@ def main(cfg) -> None:
         with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
             OmegaConf.save(config=pretrained_cfg, f=f.name)
             model = MegatronGPTModel.load_from_checkpoint(
-                checkpoint_path=checkpoint_path, trainer=trainer, hparams_file=f.name,
+                checkpoint_path=checkpoint_path,
+                trainer=trainer,
+                hparams_file=f.name,
             )
     else:
         raise ValueError("need at least a nemo file or checkpoint dir")

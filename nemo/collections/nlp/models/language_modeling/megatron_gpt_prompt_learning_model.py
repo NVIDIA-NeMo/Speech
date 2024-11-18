@@ -18,9 +18,9 @@ from functools import partial
 from typing import Any, List, Optional, Union
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
 from omegaconf.omegaconf import open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.collections.nlp.data.language_modeling.megatron.gpt_prompt_learning_dataset import GPTPromptLearningDataset

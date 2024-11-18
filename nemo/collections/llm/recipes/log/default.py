@@ -16,8 +16,8 @@
 from datetime import timedelta
 from typing import Optional
 
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from nemo_run import Config, cli
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 from nemo import lightning as nl
 

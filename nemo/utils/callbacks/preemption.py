@@ -16,7 +16,7 @@ import signal
 import sys
 
 import torch
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 from nemo.utils import logging
 
@@ -24,7 +24,7 @@ from nemo.utils import logging
 class PreemptionCallback(Callback):
     """
     PreemptionCallback class creates a callback that checks for preemption during training at the end of every step.
-    Upon preemption the callback provides a function to gracefully exit the training immediately and also saves the current state in a checkpoint as *last.ckpt. 
+    Upon preemption the callback provides a function to gracefully exit the training immediately and also saves the current state in a checkpoint as *last.ckpt.
     (to be able to start from the same step without wasting any compute while resuming the next time).
 
     PreemptionCallback is always enabled by default via the arg create_preemption_callback under ExpManagerConfig. To disable please pass
@@ -47,7 +47,7 @@ class PreemptionCallback(Callback):
 
     def on_train_start(self, trainer, pl_module):
         """
-        Defines custom handlers at the beginning of training to be executed when the 
+        Defines custom handlers at the beginning of training to be executed when the
         preemption signal is received.
         """
 

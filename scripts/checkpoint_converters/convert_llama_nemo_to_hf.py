@@ -17,8 +17,8 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import open_dict
-from pytorch_lightning import Trainer
 from transformers import AutoModelForCausalLM, LlamaTokenizer, LlamaTokenizerFast, convert_slow_tokenizer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel

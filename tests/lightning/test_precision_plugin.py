@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import lightning.pytorch as pl
 import pytest
-import pytorch_lightning as pl
 import torch
 from megatron.core.optimizer import OptimizerConfig
 

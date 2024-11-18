@@ -35,8 +35,8 @@ import os
 import sys
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core import ModelPT
@@ -60,7 +60,10 @@ def main():
         help='A list of Python file names to "from FILE import *" (Needed when some classes were defined in __main__ of a script)',
     )
     parser.add_argument(
-        '--class_path', type=str, default='', help='A path to class "module.submodule.class" (if given)',
+        '--class_path',
+        type=str,
+        default='',
+        help='A path to class "module.submodule.class" (if given)',
     )
     args = parser.parse_args()
 

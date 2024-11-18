@@ -16,8 +16,8 @@ import os
 import pickle
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.imagen.imagen_pipeline import (
     ImagenPipeline,
@@ -65,7 +65,11 @@ def main(inference_config):
         seed = batch_idx + chuncksize
 
         with torch.no_grad():
-            images, all_res_images, throughput = pipeline(prompts=batch_captions, seed=seeds, single_batch_mode=True,)
+            images, all_res_images, throughput = pipeline(
+                prompts=batch_captions,
+                seed=seeds,
+                single_batch_mode=True,
+            )
 
         for outpath, one_res in zip(outpaths, all_res_images):
             for idx, (caption, image) in enumerate(zip(batch_captions, one_res[0])):

@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning.pytorch.strategies import DDPStrategy
 from omegaconf import OmegaConf
-from pytorch_lightning.strategies import DDPStrategy
 
 from nemo.utils.trainer_utils import resolve_trainer_cfg
 
@@ -25,7 +25,7 @@ def test_resolve_trainer_cfg_strategy():
     assert ans["strategy"] == "ddp"
 
     cfg = OmegaConf.create(
-        {"strategy": {"_target_": "pytorch_lightning.strategies.DDPStrategy", "gradient_as_bucket_view": True}}
+        {"strategy": {"_target_": "lightning.pytorch.strategies.DDPStrategy", "gradient_as_bucket_view": True}}
     )
     ans = resolve_trainer_cfg(cfg)
     assert isinstance(ans, dict)

@@ -23,24 +23,24 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, Iterator, List, Literal, Mapping, Optional, Sized, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from lightning_fabric.plugins import TorchCheckpointIO
-from lightning_fabric.utilities.cloud_io import get_filesystem
-from lightning_fabric.utilities.optimizer import _optimizer_to_device
+from lightning.fabric.plugins import TorchCheckpointIO
+from lightning.fabric.utilities.cloud_io import get_filesystem
+from lightning.fabric.utilities.optimizer import _optimizer_to_device
+from lightning.pytorch.callbacks.progress import TQDMProgressBar
+from lightning.pytorch.callbacks.progress.tqdm_progress import _update_n
+from lightning.pytorch.core.optimizer import LightningOptimizer
+from lightning.pytorch.loops.fetchers import _DataFetcher
+from lightning.pytorch.plugins import ClusterEnvironment
+from lightning.pytorch.plugins.io.checkpoint_plugin import CheckpointIO
+from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
+from lightning.pytorch.plugins.precision import MixedPrecisionPlugin
+from lightning.pytorch.plugins.precision.fsdp import FSDPPrecision
+from lightning.pytorch.strategies import DDPStrategy, FSDPStrategy
+from lightning.pytorch.trainer.states import TrainerFn
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning.callbacks.progress import TQDMProgressBar
-from pytorch_lightning.callbacks.progress.tqdm_progress import _update_n
-from pytorch_lightning.core.optimizer import LightningOptimizer
-from pytorch_lightning.loops.fetchers import _DataFetcher
-from pytorch_lightning.plugins import ClusterEnvironment
-from pytorch_lightning.plugins.io.checkpoint_plugin import CheckpointIO
-from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
-from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
-from pytorch_lightning.plugins.precision.fsdp import FSDPPrecision
-from pytorch_lightning.strategies import DDPStrategy, FSDPStrategy
-from pytorch_lightning.trainer.states import TrainerFn
-from pytorch_lightning.trainer.trainer import Trainer
 from torch._C._distributed_c10d import ReduceOp
 from torch.distributed.algorithms.ddp_comm_hooks.debugging_hooks import noop_hook
 from torch.distributed.fsdp import BackwardPrefetch, FullStateDictConfig
@@ -107,6 +107,7 @@ try:
     from megatron.core.tensor_parallel.layers import param_is_not_tensor_parallel_duplicate
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_layer import TransformerLayer as MCoreTransformerLayer
+
     from nemo.utils.callbacks.dist_ckpt_io import DistributedCheckpointIO
 
     HAVE_MEGATRON_CORE = True

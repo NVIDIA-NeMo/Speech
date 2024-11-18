@@ -18,10 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Union
 
-import lightning_fabric as fl
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
-from pytorch_lightning.loggers import Logger, TensorBoardLogger, WandbLogger
+import lightning.fabric as fl
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
+from lightning.pytorch.loggers import Logger, TensorBoardLogger, WandbLogger
 
 from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint

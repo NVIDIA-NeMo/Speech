@@ -19,7 +19,7 @@ from pathlib import Path
 import fiddle as fdl
 import pytest
 import yaml
-from pytorch_lightning.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm

@@ -19,8 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from lightning.pytorch import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.asr.models import ASRModel, EncDecCTCModelBPE, EncDecRNNTBPEModel
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig

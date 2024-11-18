@@ -28,7 +28,7 @@ NEMO_MEGATRON_MODEL_PARALLEL_APPSTATE_OVERRIDE = "NEMO_MEGATRON_MODEL_PARALLEL_A
 
 
 if TYPE_CHECKING:
-    from lightning_fabric.utilities.types import Optimizable
+    from lightning.fabric.utilities.types import Optimizable
     from megatron.core.model_parallel_config import ModelParallelConfig
 
 

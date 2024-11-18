@@ -17,11 +17,11 @@ import os
 import threading
 from typing import Any, Dict, Iterable
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning import Callback
-from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.rank_zero import rank_zero_info
+from lightning.pytorch import Callback
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 
 class EMA(Callback):
@@ -40,7 +40,11 @@ class EMA(Callback):
     """
 
     def __init__(
-        self, decay: float, validate_original_weights: bool = False, every_n_steps: int = 1, cpu_offload: bool = False,
+        self,
+        decay: float,
+        validate_original_weights: bool = False,
+        every_n_steps: int = 1,
+        cpu_offload: bool = False,
     ):
         if not (0 <= decay <= 1):
             raise MisconfigurationException("EMA decay value must be between 0 and 1")
@@ -149,7 +153,9 @@ class EMA(Callback):
 def ema_update(ema_model_tuple, current_model_tuple, decay):
     torch._foreach_mul_(ema_model_tuple, decay)
     torch._foreach_add_(
-        ema_model_tuple, current_model_tuple, alpha=(1.0 - decay),
+        ema_model_tuple,
+        current_model_tuple,
+        alpha=(1.0 - decay),
     )
 
 
@@ -272,7 +278,13 @@ class EMAOptimizer(torch.optim.Optimizer):
 
         if self.device.type == 'cpu':
             self.thread = threading.Thread(
-                target=run_ema_update_cpu, args=(self.ema_params, current_model_state, self.decay, self.stream,),
+                target=run_ema_update_cpu,
+                args=(
+                    self.ema_params,
+                    current_model_state,
+                    self.decay,
+                    self.stream,
+                ),
             )
             self.thread.start()
 

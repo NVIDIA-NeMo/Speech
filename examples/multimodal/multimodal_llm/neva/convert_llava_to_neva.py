@@ -34,10 +34,10 @@ from argparse import ArgumentParser
 from collections import OrderedDict
 
 import torch
+from lightning.pytorch.core.saving import _load_state as ptl_load_state
+from lightning.pytorch.trainer.trainer import Trainer
 from llava import LlavaLlamaForCausalLM
 from omegaconf import OmegaConf
-from pytorch_lightning.core.saving import _load_state as ptl_load_state
-from pytorch_lightning.trainer.trainer import Trainer
 from safetensors import safe_open
 from transformers import LlamaTokenizer
 

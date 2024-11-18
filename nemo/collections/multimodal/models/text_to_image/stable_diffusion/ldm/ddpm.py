@@ -17,18 +17,18 @@ import time
 from functools import partial
 from typing import Any, Dict, List, Optional, Union
 
+import lightning.pytorch as pl
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
-from lightning_fabric.utilities.cloud_io import _load as pl_load
+from lightning.fabric.utilities.cloud_io import _load as pl_load
+from lightning.pytorch import Trainer
+from lightning.pytorch.core.saving import _load_state as ptl_load_state
+from lightning.pytorch.core.saving import load_hparams_from_tags_csv, load_hparams_from_yaml
+from lightning.pytorch.utilities.migration import pl_legacy_patch
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from omegaconf import DictConfig, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.core.saving import _load_state as ptl_load_state
-from pytorch_lightning.core.saving import load_hparams_from_tags_csv, load_hparams_from_yaml
-from pytorch_lightning.utilities.migration import pl_legacy_patch
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torch._inductor import config as inductor_config
 from torchvision.utils import make_grid
 from tqdm import tqdm

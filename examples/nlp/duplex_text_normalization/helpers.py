@@ -14,7 +14,7 @@
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig
 
 from nemo.collections.nlp.data.text_normalization import constants
@@ -29,7 +29,7 @@ MODEL_NAMES = [TAGGER_MODEL, DECODER_MODEL]
 
 
 def instantiate_model_and_trainer(cfg: DictConfig, model_name: str, do_training: bool):
-    """ Function for instantiating a model and a trainer
+    """Function for instantiating a model and a trainer
     Args:
         cfg: The config used to instantiate the model and the trainer.
         model_name: A str indicates whether the model to be instantiated is a tagger or a decoder (i.e., model_name should be either TAGGER_MODEL or DECODER_MODEL).

@@ -14,7 +14,7 @@
 
 from dataclasses import asdict
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.models import EncDecCTCModel, configs
@@ -64,7 +64,13 @@ qn_15x5 = [
     ),
     # ... repeat 14 more times
     nemo_asr.modules.conv_asr.JasperEncoderConfig(
-        filters=1024, repeat=1, kernel=[1], stride=[1], dilation=[1], dropout=cfg.model.dropout, residual=False,
+        filters=1024,
+        repeat=1,
+        kernel=[1],
+        stride=[1],
+        dilation=[1],
+        dropout=cfg.model.dropout,
+        residual=False,
     ),
 ]
 

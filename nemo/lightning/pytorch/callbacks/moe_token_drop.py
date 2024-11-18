@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
+from lightning.pytorch.callbacks.callback import Callback
 from megatron.core import ModelParallelConfig
-from pytorch_lightning.callbacks.callback import Callback
 
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 

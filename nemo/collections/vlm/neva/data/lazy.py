@@ -20,12 +20,12 @@ import tarfile
 from typing import Any, Dict, List, Optional, Sequence
 
 import decord
+import lightning.pytorch as pl
 import numpy as np
-import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from PIL import Image
-from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.utils import data
 from torch.utils.data import DataLoader, Dataset, default_collate
 from transformers import CLIPImageProcessor, SiglipImageProcessor

@@ -32,7 +32,7 @@ import os
 import time
 from typing import Dict
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import yaml
 from omegaconf import OmegaConf
@@ -83,11 +83,11 @@ def convert_state_dict(state_dict: Dict[str, torch.Tensor], amp: bool = False):
 
 
 def load_falcon_config(args) -> FalconConfig:
-    """ Helper utility to load FalconConfig.
+    """Helper utility to load FalconConfig.
 
     Legacy Falcon-7B and Falcon-40B are not compatible with `transformers.FalconConfig` and
     `transformers.FalconModel`. need to manually set the config values
-    and force to `falcon` model type. 
+    and force to `falcon` model type.
     """
     config = FalconConfig.from_pretrained(args.input_name_or_path)
     if config.model_type == 'RefinedWeb':

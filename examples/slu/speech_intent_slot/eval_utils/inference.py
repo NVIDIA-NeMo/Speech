@@ -21,7 +21,7 @@ from dataclasses import dataclass, is_dataclass
 from pathlib import Path
 from typing import List, Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm

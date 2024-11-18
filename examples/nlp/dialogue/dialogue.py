@@ -42,7 +42,7 @@ by default. You may update the config file from the file directly. The other opt
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models.dialogue.dialogue_gpt_classification_model import DialogueGPTClassificationModel

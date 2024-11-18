@@ -14,7 +14,7 @@
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 
 from nemo.collections.common.callbacks import LogEpochTimeCallback

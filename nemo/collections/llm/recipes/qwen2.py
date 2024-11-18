@@ -14,10 +14,10 @@
 
 from typing import Optional
 
+import lightning.pytorch as pl
 import nemo_run as run
-import pytorch_lightning as pl
 import torch
-from pytorch_lightning.callbacks.callback import Callback
+from lightning.pytorch.callbacks.callback import Callback
 
 from nemo import lightning as nl
 from nemo.collections.llm.gpt.model.qwen2 import (

@@ -14,8 +14,8 @@
 
 from typing import List, Optional
 
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.asr.models.ctc_bpe_models import EncDecCTCModelBPE
 from nemo.collections.asr.models.ctc_models import EncDecCTCModel
@@ -76,7 +76,11 @@ class EncDecK2SeqModel(EncDecCTCModel, ASRK2Mixin):
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None,
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        processed_signal=None,
+        processed_signal_length=None,
     ):
         """
         Forward pass of the model.
@@ -159,7 +163,11 @@ class EncDecK2SeqModelBPE(EncDecCTCModelBPE, ASRK2Mixin):
 
     @typecheck()
     def forward(
-        self, input_signal=None, input_signal_length=None, processed_signal=None, processed_signal_length=None,
+        self,
+        input_signal=None,
+        input_signal_length=None,
+        processed_signal=None,
+        processed_signal_length=None,
     ):
         """
         Forward pass of the model.

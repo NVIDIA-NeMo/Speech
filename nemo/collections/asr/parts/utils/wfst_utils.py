@@ -32,7 +32,7 @@ try:
     import kaldifst
 
     # check that kaldifst package is not empty
-    # Note: pytorch_lightning.utilities.imports.package_available may not help here
+    # Note: lightning.pytorch.utilities.imports.package_available may not help here
     kaldifst.StdVectorFst()
     _KALDIFST_AVAILABLE = True
 except (ImportError, ModuleNotFoundError, AttributeError):

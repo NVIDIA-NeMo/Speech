@@ -16,8 +16,8 @@ import json
 
 import numpy as np
 import torch
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataset
 from nemo.collections.asr.models import EncDecSpeakerLabelModel
@@ -55,10 +55,18 @@ def main(cfg):
             speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_path)
 
         enroll_embs, _, enroll_truelabels, _ = speaker_model.batch_inference(
-            enrollment_manifest, batch_size, sample_rate, device=device,
+            enrollment_manifest,
+            batch_size,
+            sample_rate,
+            device=device,
         )
 
-        test_embs, _, _, _ = speaker_model.batch_inference(test_manifest, batch_size, sample_rate, device=device,)
+        test_embs, _, _, _ = speaker_model.batch_inference(
+            test_manifest,
+            batch_size,
+            sample_rate,
+            device=device,
+        )
 
         # length normalize
         enroll_embs = enroll_embs / (np.linalg.norm(enroll_embs, ord=2, axis=-1, keepdims=True))
@@ -91,7 +99,12 @@ def main(cfg):
                 "number of labels mis match. Make sure you trained or finetuned neural classifier with labels from enrollement manifest_filepath"
             )
 
-        _, test_logits, _, _ = speaker_model.batch_inference(test_manifest, batch_size, sample_rate, device=device,)
+        _, test_logits, _, _ = speaker_model.batch_inference(
+            test_manifest,
+            batch_size,
+            sample_rate,
+            device=device,
+        )
         matched_labels = test_logits.argmax(axis=-1)
 
     with open(test_manifest, 'rb') as f1, open(out_manifest, 'w', encoding='utf-8') as f2:

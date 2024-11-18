@@ -16,7 +16,7 @@ import tempfile
 from typing import Any, Dict
 
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.ldm.ddpm import MegatronLatentDiffusion
 from nemo.collections.multimodal.parts.utils import setup_trainer_and_model_for_inference

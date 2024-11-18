@@ -19,8 +19,8 @@ from typing import List, Optional
 
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.losses import CrossEntropyLoss
 from nemo.collections.nlp.metrics.classification_report import ClassificationReport
@@ -113,9 +113,9 @@ class HeteronymClassificationModel(NLPModel):
 
     def training_step(self, batch, batch_idx):
         """
-		Lightning calls this inside the training loop with the data from the training dataloader
-		passed in as `batch`.
-		"""
+        Lightning calls this inside the training loop with the data from the training dataloader
+        passed in as `batch`.
+        """
 
         loss, logits = self.make_step(batch)
         self.log('train_loss', loss)
@@ -267,7 +267,11 @@ class HeteronymClassificationModel(NLPModel):
                 item = {"text_graphemes": cur_sentence, "start_end": cur_start_ends, "heteronym_span": cur_heteronyms}
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
 
-        all_preds = self._disambiguate(manifest=tmp_manifest, batch_size=batch_size, num_workers=num_workers,)
+        all_preds = self._disambiguate(
+            manifest=tmp_manifest,
+            batch_size=batch_size,
+            num_workers=num_workers,
+        )
 
         if wordid_to_phonemes_file is not None:
             self.set_wordid_to_phonemes(wordid_to_phonemes_file)

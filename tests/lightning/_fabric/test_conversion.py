@@ -13,10 +13,10 @@
 # limitations under the License.
 
 import pytest
-from lightning_fabric import plugins as fl_plugins
-from lightning_fabric import strategies as fl_strategies
-from pytorch_lightning import plugins as pl_plugins
-from pytorch_lightning import strategies as pl_strategies
+from lightning.fabric import plugins as fl_plugins
+from lightning.fabric import strategies as fl_strategies
+from lightning.pytorch import plugins as pl_plugins
+from lightning.pytorch import strategies as pl_strategies
 
 from nemo import lightning as nl
 from nemo.lightning.fabric.conversion import to_fabric

@@ -21,8 +21,8 @@ def set_env():
 
 from pathlib import Path
 
+import lightning.pytorch as pl
 import pytest
-import pytorch_lightning as pl
 import torch
 
 import nemo.lightning as nl

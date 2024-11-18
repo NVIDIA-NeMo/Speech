@@ -14,7 +14,7 @@
 
 from dataclasses import asdict
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 
 from nemo.collections.asr.models import EncDecCTCModel, configs
 from nemo.core.config import modelPT, optimizers, schedulers

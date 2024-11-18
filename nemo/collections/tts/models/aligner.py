@@ -18,9 +18,9 @@ import numpy as np
 import omegaconf
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss

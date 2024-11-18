@@ -16,8 +16,8 @@ import os
 from typing import List, Optional, Union
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.common.losses import CrossEntropyLoss

@@ -18,9 +18,9 @@ import einops
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
+from lightning.pytorch import Trainer
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from torch._inductor import config as inductor_config
 
 from nemo.collections.multimodal.data.controlnet.controlnet_dataset import build_train_valid_datasets

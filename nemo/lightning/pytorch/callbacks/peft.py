@@ -18,12 +18,12 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 import torch.nn as nn
-from lightning_fabric.utilities.types import _PATH
-from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
-from pytorch_lightning.trainer.states import TrainerFn
+from lightning.fabric.utilities.types import _PATH
+from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
+from lightning.pytorch.trainer.states import TrainerFn
 from typing_extensions import override
 
 from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME

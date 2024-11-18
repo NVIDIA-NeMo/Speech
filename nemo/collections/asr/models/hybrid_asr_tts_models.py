@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import MISSING, DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from torch.nn.utils.rnn import pad_sequence
 
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
@@ -324,7 +324,9 @@ class ASRWithTTSModel(ASRModel):
         return super().__setattr__(name, value)
 
     def setup_optimization(
-        self, optim_config: Optional[Union[DictConfig, Dict]] = None, optim_kwargs: Optional[Dict[str, Any]] = None,
+        self,
+        optim_config: Optional[Union[DictConfig, Dict]] = None,
+        optim_kwargs: Optional[Dict[str, Any]] = None,
     ):
         """
         Setup optimizer and scheduler. Ensure tts model is frozen.
@@ -430,7 +432,8 @@ class ASRWithTTSModel(ASRModel):
         elif isinstance(batch, TextOrAudioToTextBatch):
             tts_spectrogram, tts_spectrogram_len = self._get_tts_spectrogram(batch.tts_texts, batch.speakers)
             asr_spectrogram, asr_spectrogram_len = self.asr_model.preprocessor(
-                input_signal=batch.audio_signals, length=batch.audio_signal_lengths,
+                input_signal=batch.audio_signals,
+                length=batch.audio_signal_lengths,
             )
 
             spectrogram = pad_sequence(

@@ -17,12 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Generic, Optional, TypeVar, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from lightning_fabric.plugins import CheckpointIO
-from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
-from lightning_fabric.utilities.cloud_io import get_filesystem
-from lightning_fabric.utilities.types import _PATH
+from lightning.fabric.plugins import CheckpointIO
+from lightning.fabric.plugins.io.checkpoint_io import CheckpointIO
+from lightning.fabric.utilities.cloud_io import get_filesystem
+from lightning.fabric.utilities.types import _PATH
 from megatron.core.dist_checkpointing.serialization import (
     get_default_load_sharded_strategy,
     get_default_save_sharded_strategy,

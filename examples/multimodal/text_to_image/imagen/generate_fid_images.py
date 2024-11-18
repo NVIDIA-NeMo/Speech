@@ -15,7 +15,7 @@
 import os
 
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.imagen.imagen_pipeline import ImagenPipeline
 from nemo.core.config import hydra_runner
@@ -79,7 +79,10 @@ def main(cfg):
         seeds = [local_task_id * chunk_size + batch_idx * batch_size + idx for idx in range(len(batch_captions))]
         with torch.no_grad():
             images, all_res_images, *_ = pipeline(
-                prompts=batch_captions, seed=seeds, single_batch_mode=True, classifier_free_guidance=current_node_cfg,
+                prompts=batch_captions,
+                seed=seeds,
+                single_batch_mode=True,
+                classifier_free_guidance=current_node_cfg,
             )
 
         if cfg.fid.save_all_res:

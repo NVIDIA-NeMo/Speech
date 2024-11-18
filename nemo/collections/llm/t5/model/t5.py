@@ -16,7 +16,7 @@ import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, Literal, Optional, Union
 
-import pytorch_lightning as L
+import lightning.pytorch as L
 import torch
 import torch.distributed
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig

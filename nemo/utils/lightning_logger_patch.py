@@ -15,7 +15,7 @@
 import logging as _logging
 from logging.handlers import MemoryHandler
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 
 HANDLERS = {}
 PATCHED = False

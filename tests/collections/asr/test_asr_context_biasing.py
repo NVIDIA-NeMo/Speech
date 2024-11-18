@@ -19,7 +19,7 @@ import tempfile
 import numpy as np
 import pytest
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.collections.asr.models import EncDecCTCModelBPE
 from nemo.collections.asr.parts import context_biasing
@@ -105,25 +105,43 @@ class TestContextBiasingUtils:
         # ctc argmax predictions
         preds = np.array([120, 29, blank_idx, blank_idx])
         pred_text, raw_text = context_biasing.merge_alignment_with_ws_hyps(
-            preds, asr_model, ws_results, decoder_type="ctc", blank_idx=blank_idx,
+            preds,
+            asr_model,
+            ws_results,
+            decoder_type="ctc",
+            blank_idx=blank_idx,
         )
         assert raw_text == "gp"
         assert pred_text == "gpu"
 
         # rnnt token predictions
         preds = rnnt_utils.Hypothesis(
-            y_sequence=torch.tensor([120, 29]), score=0.0, timestep=torch.tensor([0, 1, 2, 3]),
+            y_sequence=torch.tensor([120, 29]),
+            score=0.0,
+            timestep=torch.tensor([0, 1, 2, 3]),
         )
         pred_text, raw_text = context_biasing.merge_alignment_with_ws_hyps(
-            preds, asr_model, ws_results, decoder_type="rnnt", blank_idx=blank_idx,
+            preds,
+            asr_model,
+            ws_results,
+            decoder_type="rnnt",
+            blank_idx=blank_idx,
         )
         assert raw_text == "gp"
         assert pred_text == "gpu"
 
         # rnnt empty token predictions
-        preds = rnnt_utils.Hypothesis(y_sequence=[], score=0.0, timestep=[],)
+        preds = rnnt_utils.Hypothesis(
+            y_sequence=[],
+            score=0.0,
+            timestep=[],
+        )
         pred_text, raw_text = context_biasing.merge_alignment_with_ws_hyps(
-            preds, asr_model, ws_results, decoder_type="rnnt", blank_idx=blank_idx,
+            preds,
+            asr_model,
+            ws_results,
+            decoder_type="rnnt",
+            blank_idx=blank_idx,
         )
         assert raw_text == ""
         assert pred_text == "gpu"

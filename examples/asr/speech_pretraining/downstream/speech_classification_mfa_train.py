@@ -14,7 +14,7 @@
 
 from collections import OrderedDict
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 

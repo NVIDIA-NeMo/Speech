@@ -28,7 +28,7 @@ PyTorch Lightning Trainer arguments and args of the model and the optimizer can 
 """
 from enum import Enum
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 

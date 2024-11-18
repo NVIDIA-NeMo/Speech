@@ -15,8 +15,8 @@
 from functools import cache
 
 import torch
+from lightning.pytorch.callbacks.callback import Callback
 from megatron.core.utils import check_param_hashes_across_dp_replicas
-from pytorch_lightning.callbacks.callback import Callback
 
 from nemo.lightning import io
 from nemo.utils import logging

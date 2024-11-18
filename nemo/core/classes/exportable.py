@@ -15,7 +15,7 @@ from abc import ABC
 from typing import Dict, List, Optional, Union
 
 import torch
-from pytorch_lightning.core.module import _jit_is_scripting
+from lightning.pytorch.core.module import _jit_is_scripting
 
 from nemo.core.classes import typecheck
 from nemo.core.neural_types import NeuralType

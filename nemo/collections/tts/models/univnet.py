@@ -18,8 +18,8 @@ from typing import Dict
 import torch
 import torch.nn.functional as F
 from hydra.utils import instantiate
+from lightning.pytorch.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning.loggers.wandb import WandbLogger
 
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, GeneratorLoss
 from nemo.collections.tts.losses.stftlosses import MultiResolutionSTFTLoss
@@ -114,8 +114,14 @@ class UnivNetModel(Vocoder, Exportable):
         if sched_config is None and 'sched' in self._cfg:
             sched_config = self._cfg.sched
 
-        optim_g = instantiate(optim_config, params=self.generator.parameters(),)
-        optim_d = instantiate(optim_config, params=itertools.chain(self.mrd.parameters(), self.mpd.parameters()),)
+        optim_g = instantiate(
+            optim_config,
+            params=self.generator.parameters(),
+        )
+        optim_d = instantiate(
+            optim_config,
+            params=itertools.chain(self.mrd.parameters(), self.mpd.parameters()),
+        )
 
         if sched_config is not None:
             max_steps = self._cfg.get("max_steps", None)
@@ -290,7 +296,7 @@ class UnivNetModel(Vocoder, Exportable):
             comp = torch.stft(x.squeeze(1), n_fft=1024, hop_length=256, win_length=1024, return_complex=True)
             comp = torch.view_as_real(comp)
             real, imag = comp[..., 0], comp[..., 1]
-            mags = torch.sqrt(real ** 2 + imag ** 2)
+            mags = torch.sqrt(real**2 + imag**2)
             phase = torch.atan2(imag, real)
             return mags, phase
 

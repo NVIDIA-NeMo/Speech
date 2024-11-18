@@ -17,8 +17,8 @@ import os
 from typing import Dict, List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.losses import CrossEntropyLoss
 from nemo.collections.nlp.data.text_classification import TextClassificationDataset, calc_class_weights

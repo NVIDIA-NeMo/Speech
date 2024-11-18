@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Optional, Type, overload
 import fiddle as fdl
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 
 from nemo.lightning.io.mixin import ConnectorMixin, ConnT, ModelConnector, load
 from nemo.lightning.io.pl import TrainerContext

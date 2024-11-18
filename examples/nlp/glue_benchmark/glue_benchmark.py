@@ -35,7 +35,7 @@ Note, MNLI task includes both matched and mismatched dev sets
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models import GLUEModel

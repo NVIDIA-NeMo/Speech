@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import DictConfig
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_base_model import MegatronBaseModel
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_sft_model import MegatronGPTSFTModel
@@ -48,8 +48,8 @@ class MegatronGriffinSFTModel(MegatronGPTSFTModel, MegatronGriffinModel):
 
     def on_validation_model_zero_grad(self) -> None:
         """
-         Skip gradient zeroing at the beginning of validation routine.
-         This is needed when overlapping the AllGather of the updated parameters with the following valdation step.
-         """
+        Skip gradient zeroing at the beginning of validation routine.
+        This is needed when overlapping the AllGather of the updated parameters with the following valdation step.
+        """
         if not self.validation_param_sync_overlap:
             MegatronBaseModel.on_validation_model_zero_grad(self)

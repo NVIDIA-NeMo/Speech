@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.models import EncDecDiarLabelModel
 from nemo.core.config import hydra_runner

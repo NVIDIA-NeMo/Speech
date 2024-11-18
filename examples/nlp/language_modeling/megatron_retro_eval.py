@@ -16,8 +16,8 @@ import datetime
 import os
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_retro_model import MegatronRetroModel
@@ -60,7 +60,9 @@ class RequestDataSet(Dataset):
         self.sentences = sentences
         self.neighbors = neighbors
 
-    def __len__(self,):
+    def __len__(
+        self,
+    ):
         return len(self.sentences)
 
     def __getitem__(self, idx):

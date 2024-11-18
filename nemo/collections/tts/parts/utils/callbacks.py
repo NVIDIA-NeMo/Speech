@@ -23,10 +23,10 @@ import numpy as np
 import soundfile as sf
 import torch
 from einops import rearrange
-from pytorch_lightning import Callback, LightningModule, Trainer
-from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.loggers.logger import Logger
-from pytorch_lightning.loggers.wandb import WandbLogger
+from lightning.pytorch import Callback, LightningModule, Trainer
+from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers.logger import Logger
+from lightning.pytorch.loggers.wandb import WandbLogger
 from torch import Tensor
 
 from nemo.collections.tts.parts.utils.helpers import create_plot
@@ -194,7 +194,10 @@ class LoggingCallback(Callback):
 
         if self.tensorboard_logger:
             self.tensorboard_logger.add_audio(
-                tag=audio.id, snd_tensor=audio.data, global_step=step, sample_rate=audio.sample_rate,
+                tag=audio.id,
+                snd_tensor=audio.data,
+                global_step=step,
+                sample_rate=audio.sample_rate,
             )
 
         if self.wandb_logger:
@@ -212,7 +215,10 @@ class LoggingCallback(Callback):
 
         if self.tensorboard_logger:
             self.tensorboard_logger.add_image(
-                tag=image.id, img_tensor=image_plot, global_step=step, dataformats="HWC",
+                tag=image.id,
+                img_tensor=image_plot,
+                global_step=step,
+                dataformats="HWC",
             )
 
         if self.wandb_logger:
@@ -220,8 +226,7 @@ class LoggingCallback(Callback):
             self.wandb_logger.log({image.id: wandb_image})
 
     def _log_artifacts(self, audio_list: list, image_list: list, log_dir: Optional[Path] = None, global_step: int = 0):
-        """Log audio and image artifacts.
-        """
+        """Log audio and image artifacts."""
         if log_dir is not None:
             log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -232,8 +237,7 @@ class LoggingCallback(Callback):
             self._log_image(image=image, log_dir=log_dir, step=global_step)
 
     def on_fit_start(self, trainer: Trainer, model: LightningModule):
-        """Log initial data artifacts.
-        """
+        """Log initial data artifacts."""
         audio_list = []
         image_list = []
         for batch_dict in self.data_loader:
@@ -255,8 +259,7 @@ class LoggingCallback(Callback):
         self._log_artifacts(audio_list=audio_list, image_list=image_list, log_dir=log_dir)
 
     def on_train_epoch_end(self, trainer: Trainer, model: LightningModule):
-        """Log artifacts at the end of an epoch.
-        """
+        """Log artifacts at the end of an epoch."""
         epoch = 1 + model.current_epoch
         if (epoch not in self.log_epochs) and (epoch % self.epoch_frequency != 0):
             return
@@ -306,7 +309,10 @@ class VocoderArtifactGenerator(ArtifactGenerator):
                 audio_gt_path = Path(f"{dataset_name}/{audio_id}_gt.wav")
                 audio_gt_i = audio[i, : audio_len[i]].cpu().numpy()
                 audio_artifact = AudioArtifact(
-                    id=f"audio_gt_{audio_id}", data=audio_gt_i, filepath=audio_gt_path, sample_rate=model.sample_rate,
+                    id=f"audio_gt_{audio_id}",
+                    data=audio_gt_i,
+                    filepath=audio_gt_path,
+                    sample_rate=model.sample_rate,
                 )
                 audio_artifacts.append(audio_artifact)
             return audio_artifacts, []
@@ -321,7 +327,10 @@ class VocoderArtifactGenerator(ArtifactGenerator):
             audio_pred_path = Path(f"{dataset_name}/{audio_id}.wav")
             audio_pred_i = audio_pred[i, : audio_len[i]].cpu().numpy()
             audio_artifact = AudioArtifact(
-                id=f"audio_{audio_id}", data=audio_pred_i, filepath=audio_pred_path, sample_rate=model.sample_rate,
+                id=f"audio_{audio_id}",
+                data=audio_pred_i,
+                filepath=audio_pred_path,
+                sample_rate=model.sample_rate,
             )
             audio_artifacts.append(audio_artifact)
 
@@ -378,7 +387,10 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
             audio_pred_path = Path(f"{dataset_name}/{audio_id}_audio_out.wav")
             audio_pred_i = audio_pred[i, : audio_pred_len[i]].cpu().numpy()
             audio_artifact = AudioArtifact(
-                id=f"audio_out_{audio_id}", data=audio_pred_i, filepath=audio_pred_path, sample_rate=model.sample_rate,
+                id=f"audio_out_{audio_id}",
+                data=audio_pred_i,
+                filepath=audio_pred_path,
+                sample_rate=model.sample_rate,
             )
             audio_artifacts.append(audio_artifact)
 
@@ -388,7 +400,10 @@ class AudioCodecArtifactGenerator(ArtifactGenerator):
                 audio_in_path = Path(f"{dataset_name}/{audio_id}_audio_in.wav")
                 audio_in_i = audio[i, : audio_len[i]].cpu().numpy()
                 audio_artifact = AudioArtifact(
-                    id=f"audio_in_{audio_id}", data=audio_in_i, filepath=audio_in_path, sample_rate=model.sample_rate,
+                    id=f"audio_in_{audio_id}",
+                    data=audio_in_i,
+                    filepath=audio_in_path,
+                    sample_rate=model.sample_rate,
                 )
                 audio_artifacts.append(audio_artifact)
 
@@ -538,7 +553,11 @@ class FastPitchArtifactGenerator(ArtifactGenerator):
             spec_gt_path = Path(f"{dataset_name}/{audio_id}_spec_gt.png")
             spec_gt_i = spec[i, :, : spec_len[i]].cpu().numpy()
             spec_artifact = ImageArtifact(
-                id=f"spec_{audio_id}", data=spec_gt_i, filepath=spec_gt_path, x_axis="Audio Frames", y_axis="Channels",
+                id=f"spec_{audio_id}",
+                data=spec_gt_i,
+                filepath=spec_gt_path,
+                x_axis="Audio Frames",
+                y_axis="Channels",
             )
             image_artifacts.append(spec_artifact)
 
@@ -565,14 +584,22 @@ class FastPitchArtifactGenerator(ArtifactGenerator):
 
         with torch.no_grad():
             # [B, C, T_spec]
-            mels_pred, mels_pred_len, *_ = model.forward(text=text, input_lens=text_lens, speaker=speaker,)
+            mels_pred, mels_pred_len, *_ = model.forward(
+                text=text,
+                input_lens=text_lens,
+                speaker=speaker,
+            )
 
         if self.log_spectrogram:
             for i, (dataset_name, audio_id) in enumerate(zip(dataset_names, audio_ids)):
                 spec_path = Path(f"{dataset_name}/{audio_id}_spec.png")
                 spec_i = mels_pred[i, :, : mels_pred_len[i]].cpu().numpy()
                 spec_artifact = ImageArtifact(
-                    id=f"spec_{audio_id}", data=spec_i, filepath=spec_path, x_axis="Audio Frames", y_axis="Channels",
+                    id=f"spec_{audio_id}",
+                    data=spec_i,
+                    filepath=spec_path,
+                    x_axis="Audio Frames",
+                    y_axis="Channels",
                 )
                 image_artifacts.append(spec_artifact)
 

@@ -19,8 +19,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from pytorch_lightning.callbacks import ModelCheckpoint as PTLModelCheckpoint
-from pytorch_lightning.loggers import WandbLogger
+from lightning.pytorch.callbacks import ModelCheckpoint as PTLModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.constants import NEMO_ENV_VARNAME_VERSION

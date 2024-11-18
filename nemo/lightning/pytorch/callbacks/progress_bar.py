@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pytorch_lightning.callbacks.progress import TQDMProgressBar
-from pytorch_lightning.callbacks.progress.tqdm_progress import _update_n
+from lightning.pytorch.callbacks.progress import TQDMProgressBar
+from lightning.pytorch.callbacks.progress.tqdm_progress import _update_n
 
 
 class MegatronProgressBar(TQDMProgressBar):

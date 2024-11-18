@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import MISSING, OmegaConf
 from sklearn.model_selection import ParameterGrid

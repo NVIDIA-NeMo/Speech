@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 
 from nemo.collections.vlm.neva.data.lazy import NevaLazyDataModule
 from nemo.collections.vlm.neva.data.mock import MockDataModule

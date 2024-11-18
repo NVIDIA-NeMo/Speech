@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 import torch
-from pytorch_lightning import Trainer
+from lightning.pytorch import Trainer
 
 from nemo.lightning.pytorch.callbacks.preemption import PreemptionCallback
 

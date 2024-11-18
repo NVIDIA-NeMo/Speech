@@ -33,8 +33,8 @@ import tempfile
 from typing import Any, Dict, List
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel

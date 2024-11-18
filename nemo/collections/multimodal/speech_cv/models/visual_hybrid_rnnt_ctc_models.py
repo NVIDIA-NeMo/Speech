@@ -19,8 +19,8 @@ import tempfile
 from typing import List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from tqdm.auto import tqdm
 
 from nemo.collections.asr.losses.ctc import CTCLoss

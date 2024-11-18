@@ -28,9 +28,9 @@ from typing import Callable, Dict, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.trainer.trainer import Trainer
 from matplotlib import pyplot as plt
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 from sklearn.metrics import classification_report, confusion_matrix
 from torch import Tensor
 

@@ -18,7 +18,7 @@ import os
 from dataclasses import dataclass, is_dataclass
 from typing import Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf
 
@@ -56,9 +56,9 @@ class TranscriptionConfig:
 
     # path to .json manifest inference, if not provided, interactive mode will be enabled
     manifest: Optional[str] = None  # Path to .json manifest
-    output_manifest: Optional[
-        str
-    ] = "predictions.json"  # Path to .json manifest to save prediction, will be saved in "pred_text" field
+    output_manifest: Optional[str] = (
+        "predictions.json"  # Path to .json manifest to save prediction, will be saved in "pred_text" field
+    )
     grapheme_field: str = "text_graphemes"  # name of the field in .json manifest for input grapheme text
 
     # mapping from wordid predicted by the model to phonemes, e.g.,
@@ -132,9 +132,10 @@ def main(cfg):
         save_errors = True
         correct = 0
         total = 0
-        with open(cfg.output_manifest, "r", encoding="utf-8") as f_preds, open(
-            cfg.errors_file, "w", encoding="utf-8"
-        ) as f_errors:
+        with (
+            open(cfg.output_manifest, "r", encoding="utf-8") as f_preds,
+            open(cfg.errors_file, "w", encoding="utf-8") as f_errors,
+        ):
             for line in f_preds:
                 line = json.loads(line)
                 predictions = line["pred_wordid"]

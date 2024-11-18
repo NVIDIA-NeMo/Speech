@@ -14,10 +14,10 @@
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.core.config import hydra_runner

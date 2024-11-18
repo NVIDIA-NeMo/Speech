@@ -30,7 +30,7 @@ import argparse
 import logging
 import sys
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import OmegaConf, open_dict
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector

@@ -14,9 +14,9 @@
 
 from typing import Callable, Dict, List, Optional, Union
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils import logging

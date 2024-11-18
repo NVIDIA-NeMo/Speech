@@ -19,9 +19,9 @@ from math import isclose
 from typing import Any, List, Optional, Union
 
 import torch
+from lightning.pytorch.callbacks import BasePredictionWriter
 from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.listconfig import ListConfig
-from pytorch_lightning.callbacks import BasePredictionWriter
 from torch.utils.data import ChainDataset
 
 from nemo.collections.asr.data import audio_to_text, audio_to_text_dali

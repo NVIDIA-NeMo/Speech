@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 
 use_pytorch_lightning = True
 try:
-    from pytorch_lightning import Trainer
+    from lightning.pytorch import Trainer
 except Exception:
     use_pytorch_lightning = False
 

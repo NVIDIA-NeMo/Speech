@@ -15,12 +15,12 @@
 import datetime
 import os
 
+from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks.timer import Timer
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
+from lightning.pytorch.plugins.precision import MixedPrecisionPlugin
+from lightning.pytorch.trainer.connectors.checkpoint_connector import _CheckpointConnector
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks.timer import Timer
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
-from pytorch_lightning.trainer.connectors.checkpoint_connector import _CheckpointConnector
 
 from nemo.collections.nlp.models.language_modeling.megatron_retro_fine_tune_model import MegatronRetroFinetuneModel
 from nemo.collections.nlp.parts.nlp_overrides import (
@@ -87,7 +87,7 @@ def main(cfg) -> None:
         scaler = None
         if cfg.trainer.precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
+                init_scale=cfg.model.get('native_amp_init_scale', 2**32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 hysteresis=cfg.model.get('hysteresis', 2),
             )
@@ -118,7 +118,9 @@ def main(cfg) -> None:
     # Override timer callback to a stateless one
     for idx, callback in enumerate(trainer.callbacks):
         if isinstance(callback, Timer):
-            trainer.callbacks[idx] = StatelessTimer(cfg.trainer.max_time,)
+            trainer.callbacks[idx] = StatelessTimer(
+                cfg.trainer.max_time,
+            )
 
     # load existing or init new soft prompt GPT model
     if cfg.model.get("restore_path", None):

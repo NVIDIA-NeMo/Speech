@@ -21,8 +21,8 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, ListConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 
 from nemo.collections.asr.data.audio_to_text_lhotse_prompted import (
@@ -61,7 +61,6 @@ from nemo.core.neural_types import (
 )
 from nemo.utils import logging, model_utils
 from nemo.utils.decorators import deprecated
-
 
 __all__ = ['EncDecMultiTaskModel']
 

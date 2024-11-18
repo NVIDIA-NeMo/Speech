@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning.pytorch import Trainer
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
+from lightning.pytorch.plugins.precision import MixedPrecisionPlugin
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
-from pytorch_lightning.plugins.precision import MixedPrecisionPlugin
 
 from nemo.collections.nlp.models.language_modeling.megatron_retrieval_model import MegatronRetrievalModel
 from nemo.collections.nlp.modules.common.megatron.mup.shape import make_base_shapes
@@ -46,7 +46,7 @@ def main(cfg) -> None:
         scaler = None
         if cfg.trainer.precision in [16, '16', '16-mixed']:
             scaler = GradScaler(
-                init_scale=cfg.model.get('native_amp_init_scale', 2 ** 32),
+                init_scale=cfg.model.get('native_amp_init_scale', 2**32),
                 growth_interval=cfg.model.get('native_amp_growth_interval', 1000),
                 hysteresis=cfg.model.get('hysteresis', 2),
             )

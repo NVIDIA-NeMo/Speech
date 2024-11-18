@@ -15,7 +15,7 @@
 from functools import wraps
 from typing import Any, Callable, Optional, TypeVar
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from torch import nn
 
 from nemo.utils import logging
@@ -85,7 +85,7 @@ class ModelTransform(pl.Callback):
 
     def apply_transform(self, trainer):
         self.model_transform(trainer.model)
-        from pytorch_lightning.utilities import model_summary
+        from lightning.pytorch.utilities import model_summary
 
         logging.info(
             f"After applying model_transform:\n" f"{model_summary.summarize(trainer.lightning_module, max_depth=1)}"

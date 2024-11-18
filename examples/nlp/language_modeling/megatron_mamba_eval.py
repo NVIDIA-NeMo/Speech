@@ -20,8 +20,8 @@ import threading
 from functools import partial
 
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import OmegaConf, open_dict
-from pytorch_lightning.trainer.trainer import Trainer
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.models.language_modeling.megatron_mamba_model import MegatronMambaModel

@@ -17,7 +17,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.collections.nlp.modules.common.megatron.attention import ParallelChunkedCrossAttention
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
@@ -73,7 +73,13 @@ class TestRetrievalModuleInference:
         MB_SIZE = 4
         GB_SIZE = 8
         SEED = 1234
-        trainer = Trainer(strategy=NLPDDPStrategy(), devices=GPUS, accelerator='gpu', num_nodes=1, logger=None,)
+        trainer = Trainer(
+            strategy=NLPDDPStrategy(),
+            devices=GPUS,
+            accelerator='gpu',
+            num_nodes=1,
+            logger=None,
+        )
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,
@@ -176,15 +182,33 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, :64]).abs().max().item() < 1e-5
-        assert (out_gt[:, 0,] - out_2[:, 0]).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_2[:, 0]
+        ).abs().max().item() < 1e-2
         out_test = encoder(
             retrieved_emb[:, :1],
             context_mask[:, :1],
             context_attn_mask=hidden_mask[:, :64],
             encoder_output=hidden_emb[:, :64],
         )
-        assert (out_gt[:, 0,] - out_test[:, 0]).abs().max().item() < 1e-2
-        assert (out_gt[:, 0,] - out_2[:, 0]).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_test[:, 0]
+        ).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_2[:, 0]
+        ).abs().max().item() < 1e-2
 
         for i in range(64, 127):
             out_3 = encoder(
@@ -207,7 +231,13 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, 64:128]).abs().max().item() < 1e-5
-        assert (out_gt[:, :2,] - out_3).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :2,
+            ]
+            - out_3
+        ).abs().max().item() < 1e-2
         # test inference
         for i in range(128, 191):
             out_4 = encoder(
@@ -231,7 +261,13 @@ class TestRetrievalModuleInference:
         )
 
         assert (encoder.encoder_output - hidden_emb[:, 128:192]).abs().max().item() < 1e-5
-        assert (out_gt[:, :3,] - out_4).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :3,
+            ]
+            - out_4
+        ).abs().max().item() < 1e-2
 
         out_2 = encoder(
             retrieved_emb[:, :2],
@@ -263,7 +299,13 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, 128:192]).abs().max().item() < 1e-5
-        assert (out_gt[:, :3,] - out_4).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :3,
+            ]
+            - out_4
+        ).abs().max().item() < 1e-2
 
     @pytest.mark.unit
     def test_cross_attn_inference(self, model_parallel_config):
@@ -309,7 +351,9 @@ class TestRetrievalModuleInference:
             dec_attn_mask = rearrange(hidden_mask, '(k n) b -> (b k) n', k=chunks)
             context_attn_mask = rearrange(context_mask, 'k r n b -> (b k) (r n)')
             enc_dec_attn_mask_3d = build_attention_mask_3d(
-                source_mask=dec_attn_mask, target_mask=context_attn_mask, attn_mask_type=AttnMaskType.padding,
+                source_mask=dec_attn_mask,
+                target_mask=context_attn_mask,
+                attn_mask_type=AttnMaskType.padding,
             )
             enc_dec_attn_mask_3d = enc_dec_attn_mask_3d[:, None, :, :]
             return enc_dec_attn_mask_3d

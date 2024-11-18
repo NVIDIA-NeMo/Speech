@@ -22,8 +22,8 @@ from copy import deepcopy
 from typing import Any, List, Optional, Union
 
 import torch
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.utilities import rank_zero_only
 from tqdm import tqdm
 
 from nemo.collections.asr.metrics.der import score_labels
@@ -48,7 +48,6 @@ from nemo.collections.asr.parts.utils.vad_utils import (
 )
 from nemo.core.classes import Model
 from nemo.utils import logging, model_utils
-
 
 __all__ = ['ClusteringDiarizer']
 

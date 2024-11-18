@@ -15,7 +15,7 @@
 import os
 
 import torch
-from pytorch_lightning.callbacks.callback import Callback
+from lightning.pytorch.callbacks.callback import Callback
 from torch.utils.viz._cycles import warn_tensor_cycles
 
 from nemo.lightning import io

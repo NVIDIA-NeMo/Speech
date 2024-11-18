@@ -19,8 +19,8 @@ from math import ceil
 from typing import Dict, List, Optional, Union
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, DataCollatorForSeq2Seq
 
 import nemo.collections.nlp.data.text_normalization.constants as constants
@@ -307,7 +307,7 @@ class DuplexDecoderModel(NLPModel):
         span_ends: List[List[int]],
         inst_directions: List[str],
     ):
-        """ Main function for Inference
+        """Main function for Inference
         Args:
             sents: A list of inputs tokenized by a basic tokenizer.
             nb_spans: A list of ints where each int indicates the number of semiotic spans in each input.
@@ -521,9 +521,9 @@ class DuplexDecoderModel(NLPModel):
                 tokenizer_name=self.transformer_name,
                 mode=self.mode,
                 max_len=self.max_sequence_len,
-                decoder_data_augmentation=cfg.get('decoder_data_augmentation', False)
-                if data_split == "train"
-                else False,
+                decoder_data_augmentation=(
+                    cfg.get('decoder_data_augmentation', False) if data_split == "train" else False
+                ),
                 lang=self.lang,
                 use_cache=cfg.get('use_cache', False),
                 max_insts=cfg.get('max_insts', -1),

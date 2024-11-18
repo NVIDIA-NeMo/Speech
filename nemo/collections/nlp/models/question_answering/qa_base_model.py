@@ -15,8 +15,8 @@
 from typing import Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.nlp.data.question_answering.data_processor.qa_processing import (
     EVALUATION_MODE,

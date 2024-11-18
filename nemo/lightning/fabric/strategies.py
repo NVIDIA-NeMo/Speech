@@ -29,21 +29,21 @@ from typing import (
 )
 
 import torch
-from lightning_fabric.accelerators import CPUAccelerator
-from lightning_fabric.accelerators.accelerator import Accelerator
-from lightning_fabric.plugins.collectives.torch_collective import default_pg_timeout
-from lightning_fabric.plugins.environments.cluster_environment import ClusterEnvironment
-from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
-from lightning_fabric.plugins.precision import Precision
-from lightning_fabric.strategies import DDPStrategy
-from lightning_fabric.strategies.strategy import _validate_keys_for_strict_loading
-from lightning_fabric.utilities.types import _PATH, _Stateful
+from lightning.fabric.accelerators import CPUAccelerator
+from lightning.fabric.accelerators.accelerator import Accelerator
+from lightning.fabric.plugins.collectives.torch_collective import default_pg_timeout
+from lightning.fabric.plugins.environments.cluster_environment import ClusterEnvironment
+from lightning.fabric.plugins.io.checkpoint_io import CheckpointIO
+from lightning.fabric.plugins.precision import Precision
+from lightning.fabric.strategies import DDPStrategy
+from lightning.fabric.strategies.strategy import _validate_keys_for_strict_loading
+from lightning.fabric.utilities.types import _PATH, _Stateful
+from lightning.pytorch import LightningDataModule
+from lightning.pytorch.loops.fetchers import _DataFetcher
+from lightning.pytorch.plugins.io.wrapper import _WrappingCheckpointIO
+from lightning.pytorch.utilities.combined_loader import CombinedLoader
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning import LightningDataModule
-from pytorch_lightning.loops.fetchers import _DataFetcher
-from pytorch_lightning.plugins.io.wrapper import _WrappingCheckpointIO
-from pytorch_lightning.utilities.combined_loader import CombinedLoader
 from torch import Tensor, nn
 from torch.distributed.algorithms.ddp_comm_hooks.debugging_hooks import noop_hook
 from torch.nn import Module

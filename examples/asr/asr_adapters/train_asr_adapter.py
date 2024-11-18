@@ -84,7 +84,7 @@ https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/main/asr/results.ht
 import os
 from dataclasses import is_dataclass
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf, open_dict
 
 from nemo.collections.asr.models import ASRModel

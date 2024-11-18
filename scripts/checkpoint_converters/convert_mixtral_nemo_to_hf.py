@@ -26,7 +26,7 @@ from collections import OrderedDict
 import megatron.core.parallel_state as parallel_state
 import torch
 import torch.nn
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.trainer.trainer import Trainer
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel

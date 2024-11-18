@@ -18,8 +18,8 @@ from typing import Dict, Optional, Union
 
 import numpy as np
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from torch.utils.data import DataLoader
 from transformers import AutoModelForSeq2SeqLM
 

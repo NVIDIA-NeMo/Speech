@@ -17,8 +17,8 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.losses import CrossEntropyLoss
 from nemo.collections.nlp.data.text_normalization_as_tagging import (
@@ -289,7 +289,7 @@ class ThutmoseTaggerModel(NLPModel):
     # Functions for inference
     @torch.no_grad()
     def _infer(self, sents: List[str]) -> List[List[int]]:
-        """ Main function for Inference
+        """Main function for Inference
 
         Args:
             sents: A list of input sentences (lowercase spoken-domain words separated by space).

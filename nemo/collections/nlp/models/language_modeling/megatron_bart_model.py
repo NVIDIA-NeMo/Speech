@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model
 
@@ -48,7 +48,9 @@ class MegatronBARTModel(MegatronT5Model):
     @property
     def _build_train_valid_test_datasets_kwargs(self):
         """allows child classes to add kwargs to dataset building"""
-        return dict(delete_mask_prob=self._cfg.data.get('delete_mask_prob', 0.0),)
+        return dict(
+            delete_mask_prob=self._cfg.data.get('delete_mask_prob', 0.0),
+        )
 
     def list_available_models(self):
         pass

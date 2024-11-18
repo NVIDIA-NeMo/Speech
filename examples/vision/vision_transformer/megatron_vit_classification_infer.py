@@ -16,10 +16,10 @@ import glob
 import os
 
 import torch
+from lightning.pytorch import Trainer
+from lightning.pytorch.plugins.environments import TorchElasticEnvironment
 from omegaconf.omegaconf import OmegaConf, open_dict
 from PIL import Image
-from pytorch_lightning import Trainer
-from pytorch_lightning.plugins.environments import TorchElasticEnvironment
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
@@ -63,7 +63,8 @@ def main(cfg) -> None:
 
     plugins = []
     strategy = NLPDDPStrategy(
-        no_ddp_communication_hook=True, find_unused_parameters=False,  # we don't use DDP for async grad allreduce
+        no_ddp_communication_hook=True,
+        find_unused_parameters=False,  # we don't use DDP for async grad allreduce
     )
     if cfg.get('cluster_type', None) == 'BCP':
         plugins.append(TorchElasticEnvironment())
@@ -107,7 +108,10 @@ def main(cfg) -> None:
     model.eval()
 
     test_transform = ClassificationTransform(cfg.model, (model_cfg.img_h, model_cfg.img_w), train=False)
-    test_data = ImageFolderDataset(folder_path=cfg.data_path, transform=test_transform,)
+    test_data = ImageFolderDataset(
+        folder_path=cfg.data_path,
+        transform=test_transform,
+    )
     test_loader = DataLoader(test_data, batch_size=8)
 
     def dummy():
@@ -119,8 +123,12 @@ def main(cfg) -> None:
 
     autocast_dtype = torch_dtype_from_precision(trainer.precision)
 
-    with torch.no_grad(), torch.cuda.amp.autocast(
-        enabled=autocast_dtype in (torch.half, torch.bfloat16), dtype=autocast_dtype,
+    with (
+        torch.no_grad(),
+        torch.cuda.amp.autocast(
+            enabled=autocast_dtype in (torch.half, torch.bfloat16),
+            dtype=autocast_dtype,
+        ),
     ):
         class_names = []
         for tokens in test_loader:

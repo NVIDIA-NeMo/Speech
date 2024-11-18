@@ -40,7 +40,7 @@ python speech_to_text_transformer.py \
 
 """
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models import EncDecTransfModelBPE

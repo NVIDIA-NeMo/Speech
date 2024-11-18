@@ -16,8 +16,8 @@ import collections
 from typing import List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from torch.cuda.amp import autocast
 from transformers import AutoModelForSeq2SeqLM
 

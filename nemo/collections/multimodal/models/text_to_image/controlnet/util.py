@@ -17,9 +17,9 @@ import os
 import numpy as np
 import torch
 import torchvision
+from lightning.pytorch import Callback
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 from PIL import Image
-from pytorch_lightning import Callback
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 
 class ImageLogger(Callback):

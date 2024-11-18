@@ -15,8 +15,8 @@
 from typing import Dict, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 from transformers import AutoTokenizer
 
 from nemo.collections.common.losses import MultiSimilarityLoss

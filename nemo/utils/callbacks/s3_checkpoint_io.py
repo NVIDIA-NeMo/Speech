@@ -22,7 +22,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Dict, Optional, Union
 
 import torch
-from lightning_fabric.plugins.io.checkpoint_io import CheckpointIO
+from lightning.fabric.plugins.io.checkpoint_io import CheckpointIO
 
 from nemo.utils import logging
 from nemo.utils.s3_utils import (

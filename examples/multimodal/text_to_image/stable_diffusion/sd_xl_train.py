@@ -13,10 +13,11 @@
 # limitations under the License.
 
 import sys
+
 import torch
 import torch._dynamo.config as dynamo_config
+from lightning.pytorch import Trainer
 from omegaconf.omegaconf import OmegaConf
-from pytorch_lightning import Trainer
 
 from nemo.collections.multimodal.models.text_to_image.stable_diffusion.diffusion_engine import MegatronDiffusionEngine
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronTrainerBuilder

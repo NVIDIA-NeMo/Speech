@@ -53,8 +53,8 @@ import tempfile
 from argparse import ArgumentParser
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf.omegaconf import OmegaConf, open_dict
-from pytorch_lightning import Trainer
 from transformers import AutoTokenizer, T5ForConditionalGeneration
 
 from nemo.collections.nlp.models.language_modeling.megatron_t5_model import MegatronT5Model

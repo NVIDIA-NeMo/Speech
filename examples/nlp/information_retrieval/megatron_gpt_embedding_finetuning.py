@@ -15,8 +15,8 @@
 from collections.abc import MutableMapping
 
 import torch.multiprocessing as mp
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf.omegaconf import OmegaConf
-from pytorch_lightning.loggers import WandbLogger
 
 from nemo.collections.nlp.models.information_retrieval.megatron_gpt_embedding_model import MegatronGPTEmbeddingModel
 from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder

@@ -35,9 +35,9 @@ except (ImportError, ModuleNotFoundError):
 
     HAVE_MEGATRON_CORE = False
 
+from lightning.pytorch import LightningModule, Trainer
+from lightning.pytorch.utilities import model_summary, rank_zero_only
 from omegaconf import DictConfig, OmegaConf, open_dict
-from pytorch_lightning import LightningModule, Trainer
-from pytorch_lightning.utilities import model_summary, rank_zero_only
 
 from nemo import package_info
 from nemo.core import optim
@@ -79,7 +79,7 @@ class ModelPT(LightningModule, Model):
         """
         if trainer is not None and not isinstance(trainer, Trainer):
             raise ValueError(
-                f"trainer constructor argument must be either None or pytorch_lightning.Trainer. But got {type(trainer)} instead."
+                f"trainer constructor argument must be either None or lightning.pytorch.Trainer. But got {type(trainer)} instead."
             )
         super().__init__()
 

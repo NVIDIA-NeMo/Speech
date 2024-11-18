@@ -14,8 +14,8 @@
 
 from typing import Callable, List, Optional
 
-import pytorch_lightning as pl
-import pytorch_lightning as L
+import lightning.pytorch as pl
+import lightning.pytorch as L
 from torch.optim import Optimizer
 from torch.optim.optimizer import ParamsT
 

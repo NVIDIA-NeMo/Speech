@@ -15,8 +15,8 @@
 import enum
 import math
 
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import build_train_valid_test_datasets
 from nemo.collections.nlp.models.language_modeling.megatron_lm_encoder_decoder_model import (
@@ -79,7 +79,9 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
     @property
     def _build_train_valid_test_datasets_kwargs(self):
         """allows child classes to add kwargs to dataset building"""
-        return dict(max_seq_length_dec=self._cfg.data.seq_length_dec,)
+        return dict(
+            max_seq_length_dec=self._cfg.data.seq_length_dec,
+        )
 
     def _build_vocab(self):
         self.num_sentinel_tokens = self._cfg.tokenizer.num_sentinel_tokens
@@ -210,9 +212,9 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         ]
 
         if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
-            train_valid_test_num_samples[
-                1
-            ] = 1  # This is to make sure we only have one epoch on every validation iteration
+            train_valid_test_num_samples[1] = (
+                1  # This is to make sure we only have one epoch on every validation iteration
+            )
 
         self._train_ds, self._validation_ds, self._test_ds = build_train_valid_test_datasets(
             cfg=self._cfg,

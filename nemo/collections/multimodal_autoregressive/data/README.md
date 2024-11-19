@@ -8,27 +8,7 @@ This is an example of how to do autoregressive generation for multiple modalitie
 ### 1. Vision Understanding using EMU3 Tokenizer
 
 #### Download and Extract data 
-We will be working with coyo dataset which has 700 million images. 
-
-First create credentials for rclone . Create this file at `~/.config/rclone/rclone.conf`
-```
-[pbss-team-vfm-share-ro-s3]
-type = s3
-env_auth = true
-access_key_id = <ACCESS ID>
-secret_access_key = <ACCESS KEY>
-region = us-east-1
-endpoint = https://pdx.s8k.io
-```
-To download the images
-```
-rclone copy pbss-team-vfm-share-ro-s3:webdataset_images/webdataset_edify_image_v3/coyo_700m/resolution_lt_720/aspect_ratio_16_9/images images --transfers=16 --multi-thread-streams=16 --checkers=8 -P --stats 5s
-```
-
-To download the captions 
-```
-rclone copy pbss-team-vfm-share-ro-s3:webdataset_images/webdataset_edify_image_v3/coyo_700m/resolution_lt_720/aspect_ratio_16_9/captions_ai_v3p1 captions_ai_v3p1 --transfers=16 --multi-thread-streams=16 --checkers=8 -P --stats 5s
-```
+Download the [COYO700M dataset](https://github.com/kakaobrain/coyo-dataset)
 
 Once downloaded extract the data using tar utilities. 
 
@@ -70,13 +50,13 @@ Follow usual nemo instructions to train any autoregressive model.
 ```
 
 #### Inference 
-To run inference edit the [inference config file](examples/multimodal_autoregressive/conf/megatron_mm_ar_inference.yaml)
+To run inference edit the [inference config file](examples/multimodal_autoregressive/conf/megatron_mm_ar_inference_vision_understanding.yaml)
 *NOTE* Make sure you have a .nemo file (checkpoint). If you just have a regular megatron checkpoint you  have to do a conversion as shown in [this doc](https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/gpt/checkpointconversion.html?highlight=convert)
 
 Run inference as follows
 
 ```
-torchrun --nproc-per-node 2 examples/multimodal_autoregressive/megatron_mm_autoregressive_eval.py
+torchrun --nproc-per-node 2 examples/multimodal_autoregressive/megatron_mm_autoregressive_eval_vision_understanding.py
 ```
 
 
@@ -116,13 +96,11 @@ Follow usual nemo instructions to train any autoregressive model.
 ```
 
 #### Inference 
-To run inference edit the [inference config file](examples/multimodal_autoregressive/conf/megatron_mm_ar_inference.yaml)
+To run inference edit the [inference config file](examples/multimodal_autoregressive/conf/megatron_mm_ar_inference_image_generation.yaml)
 *NOTE* Make sure you have a .nemo file (checkpoint). If you just have a regular megatron checkpoint you  have to do a conversion as shown in [this doc](https://docs.nvidia.com/nemo-framework/user-guide/latest/llms/gpt/checkpointconversion.html?highlight=convert)
 
 Run inference as follows
 
 ```
-torchrun --nproc-per-node 2 examples/multimodal_autoregressive/megatron_mm_autoregressive_eval.py
+torchrun --nproc-per-node 2 examples/multimodal_autoregressive/megatron_mm_autoregressive_eval_image_generation.py
 ```
-
-TODO : Instructions to convert visual tokens to images coming soon. 

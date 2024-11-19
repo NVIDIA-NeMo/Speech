@@ -39,6 +39,7 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         tokenizer=None,
         loss_fn=masked_cross_entropy,
         model_transform=None,
+        trust_remote_code=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -49,11 +50,14 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.load_pretrained_weights = load_pretrained_weights
         self.is_hf_model = True
         self.model_transform = model_transform
+        self.trust_remote_code = trust_remote_code
 
     @property
     def tokenizer(self):
         if self._tokenizer is None:
-            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(self.model_name)
+            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(
+                self.model_name, trust_remote_code=self.trust_remote_code
+            )
         return self._tokenizer
 
     @tokenizer.setter
@@ -68,12 +72,14 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     def configure_model(self):
         # create all your layers here
         if self.load_pretrained_weights:
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_name, torch_dtype='auto')
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name, torch_dtype='auto', trust_remote_code=self.trust_remote_code
+            )
         else:
             from transformers import AutoConfig
 
-            config = AutoConfig.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_config(config)
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
+            self.model = AutoModelForCausalLM.from_config(config, trust_remote_code=self.trust_remote_code)
         self.model.train()
 
     def forward(self, input_ids, attention_mask=None, labels=None, loss_mask=None):

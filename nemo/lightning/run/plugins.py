@@ -28,9 +28,14 @@ from nemo.lightning.pytorch.callbacks import NsysCallback, PreemptionCallback
 from nemo.lightning.pytorch.strategies.megatron_strategy import MegatronStrategy
 from nemo.utils import logging
 
+from nemo.utils.import_utils import safe_import
+
+res_module, HAVE_RES = safe_import('nvidia_resiliency_ext.ptl_resiliency')
+
 # This file contains plugins based on NeMo-Run's run.Plugin API.
 # Plugins operate both on a configured task and an executor at the same time, and are specific to NeMo-Run.
-# If you are adding functionality that goes directly into the Pytorch Lightning trainer, you may consider adding a callback instead of a plugin.
+# If you are adding functionality that goes directly into the Pytorch Lightning trainer,
+# you may consider adding a callback instead of a plugin.
 
 
 def _merge_callbacks(partial: run.Partial, callbacks: list[run.Config[Callback]]):
@@ -77,6 +82,55 @@ class PreemptionPlugin(run.Plugin):
             executor.signal = f"TERM@{self.preempt_time}"
 
         _merge_callbacks(task, callbacks=self.callbacks)
+
+
+@dataclass(kw_only=True)
+class FaultTolerancePlugin(run.Plugin):
+    """
+    A plugin for setting up the fault tolerance callback from nvidia-resiliency-ext.
+    This plugin enables workload hang detection, automatic calculation of timeouts used for hang detection, detection of rank(s) terminated due to an error and workload respawning in case of a failure.
+    Note: FaultTolerancePlugin does not work with the NsysPlugin.
+    Args:
+        num_in_process_restarts (int): Max number of restarts on failure, within the same job. Default is 3.
+        num_job_retries_on_failure (int): Max number of new job restarts on failure. Default is 2.
+        initial_rank_heartbeat_timeout (int): Timeouts are time intervals used by a rank monitor to detect that a rank is not alive. This is the max timeout for the initial heartbeat. Default is 1800.
+        rank_heartbeat_timeout (int): This is the timeout for subsequent hearbeats after the initial heartbeat. Default is 300.
+    """
+
+    num_in_process_restarts: int = 3
+    num_job_retries_on_failure: int = 2
+    initial_rank_heartbeat_timeout: int = 1800
+    rank_heartbeat_timeout: int = 300
+
+    def setup(self, task: run.Partial | run.Script, executor: run.Executor):
+
+        assert HAVE_RES, "nvidia-resiliency-ext.ptl_resiliency is required to use the FaultTolerancePlugin."
+
+        executor.launcher = run.FaultTolerance(
+            max_restarts=self.num_in_process_restarts,
+            initial_rank_heartbeat_timeout=self.initial_rank_heartbeat_timeout,
+            rank_heartbeat_timeout=self.rank_heartbeat_timeout,
+        )
+        executor.retries = self.num_job_retries_on_failure
+
+        assert isinstance(task, run.Partial)
+
+        callbacks = [
+            run.Config(
+                res_module.FaultToleranceCallback, autoresume=True, calculate_timeouts=True, exp_dir=task.log.log_dir
+            )
+        ]
+
+        assert not executor.launcher.nsys_profile, "Nsys not supported with the FaultTolerancePlugin."
+        if hasattr(task, "trainer") and hasattr(task.trainer, "callbacks"):
+            assert all(
+                map(
+                    lambda cb: not cb.__fn_or_cls__ == NsysCallback if "__fn_or_cls__" in dir(cb) else True,
+                    task.trainer.callbacks,
+                )
+            ), "Nsys not supported with FaultTolerancePlugin."
+
+        _merge_callbacks(task, callbacks=callbacks)
 
 
 @dataclass(kw_only=True)

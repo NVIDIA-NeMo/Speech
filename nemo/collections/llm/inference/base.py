@@ -242,7 +242,7 @@ def generate(
         text_generation_controller=text_generation_controller, max_batch_size=max_batch_size, random_seed=random_seed
     )
 
-    common_inference_params = inference_params or CommonInferenceParams(num_tokens_to_generate=512)
+    common_inference_params = inference_params or CommonInferenceParams(num_tokens_to_generate=512, top_k=1)
 
     results = mcore_engine.generate(
         prompts=prompts,

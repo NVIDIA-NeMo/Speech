@@ -169,6 +169,8 @@ class ParallelVisionTransformerLayer_(ParallelTransformerLayer_):
         self_attention_relative_position_bias=None,
         cross_attention_relative_position_bias=None,
         checkpoint_core_attention=False,
+        decoder_max_sequence_len=None,
+        encoder_max_sequence_len=None,
     ):
         # Self attention.
         if rotary_pos_emb is not None:
@@ -373,6 +375,8 @@ class ParallelVisionTransformerLayer(ParallelVisionTransformerLayer_):
         self_attention_relative_position_bias=None,
         cross_attention_relative_position_bias=None,
         checkpoint_core_attention=False,
+        decoder_max_sequence_len=None,
+        encoder_max_sequence_len=None,
     ):
         kwargs = locals()
         for key in ["self", "__class__"]:

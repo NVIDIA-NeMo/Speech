@@ -314,7 +314,6 @@ def finetune_recipe(
         recipe.peft = run.Config(LoRA)
         recipe.peft.dim = 16
         recipe.peft.alpha = 32
-        recipe.peft.target_modules = ['linear_qkv']
         recipe.optim.config.use_distributed_optimizer = False
 
         # some settings currently do not function correctly with LoRA
@@ -388,6 +387,7 @@ def finetune_performance_optimizations(
         recipe.trainer.strategy.tensor_model_parallel_size = 2
         recipe.trainer.strategy.pipeline_model_parallel_size = 4
         recipe.trainer.strategy.virtual_pipeline_model_parallel_size = 5
+        recipe.peft.target_modules = ['linear_qkv']
 
     recipe.trainer.strategy.sequence_parallel = True
 

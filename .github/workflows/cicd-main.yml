@@ -3457,7 +3457,20 @@ jobs:
         inference.repetition_penalty=1.0 \
         inference.outfile_path=/tmp/nlp_mcore_t5_lora_tuning_tp2/out.jsonl
 
-  # L2: Megatron Mock Data Generation                
+
+  L2_HF_Transformer_SFT_TE_Acceleration:
+    needs: [ cicd-test-container-setup ]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_HF_Transformer_SFT_TE_Acceleration') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/llm/sft/hf.py --model /home/TestData/nlp/hf_gemma/hf_gemma_2b --model-accelerator te
+      AFTER_SCRIPT: |
+        rm -rf nemo_experiments
+        
+
+  # L2: Megatron Mock Data Generation
   L2_Megatron_Mock_Data_Generation_MockGPTDataset:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -3578,12 +3591,12 @@ jobs:
   #   timeout-minutes: 10
   #   container:
   #     image: nemoci.azurecr.io/nemo_container:${{ github.run_id }}
-  #     options: 
+  #     options:
   #       # --user 0:128
   #       --device=/dev/nvidia0
   #       --gpus all
   #       --shm-size=8g
-  #       --env TRANSFORMERS_OFFLINE=0 
+  #       --env TRANSFORMERS_OFFLINE=0
   #       --env HYDRA_FULL_ERROR=1
   #       --volume /mnt/datadrive/TestData:/home/TestData
   #   steps:
@@ -3643,12 +3656,12 @@ jobs:
   #   runs-on: self-hosted-azure
   #   container:
   #     image: nemoci.azurecr.io/nemo_container:${{ github.run_id }}
-  #     options: 
+  #     options:
   #       # --user 0:128
   #       --device=/dev/nvidia0
   #       --gpus all
-  #       --shm-size=8g 
-  #       --env TRANSFORMERS_OFFLINE=0 
+  #       --shm-size=8g
+  #       --env TRANSFORMERS_OFFLINE=0
   #       --env HYDRA_FULL_ERROR=1
   #       --volume /mnt/datadrive/TestData:/home/TestData
   #   steps:
@@ -4333,7 +4346,7 @@ jobs:
         rm -rf /tmp/nemo2_ptq_engine
 
   Nemo_CICD_Test:
-    needs: 
+    needs:
       - pre-flight
       - cicd-test-container-setup
 
@@ -4348,7 +4361,7 @@ jobs:
       - L0_Unit_Tests_GPU_Hydra
       - L0_Unit_Tests_GPU_Lightning
       - L0_Unit_Tests_GPU_Others
-      
+
       - L0_Unit_Tests_CPU_ASR
       - L0_Unit_Tests_CPU_Audio
       - L0_Unit_Tests_CPU_Common
@@ -4446,7 +4459,8 @@ jobs:
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
       - L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
-      - L2_NeMo_2_llama3_pretraining_recipe 
+      - L2_NeMo_2_llama3_pretraining_recipe
+      - L2_HF_Transformer_SFT_TE_Acceleration
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
       - L2_NeMo_2_T5_Pretraining
@@ -4485,7 +4499,7 @@ jobs:
       - L2_NeMo_2_PTQ_Llama2_FP8
     if: always()
     runs-on: ubuntu-latest
-    steps:  
+    steps:
       - name: Evaluate conclusion
         if: ${{ always() }}
         id: pipeline-conclusion
@@ -4499,14 +4513,14 @@ jobs:
           echo "SUCCESS=$SUCCESS" >> $GITHUB_OUTPUT
 
       # This should depend on all the tests so we block/unblock based on all tests passing
-      - name: Pipeline successful, set exit code to 0 
+      - name: Pipeline successful, set exit code to 0
         if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' }}
         run: exit 0
 
-      - name: Pipeline successful, add PR comment 
+      - name: Pipeline successful, add PR comment
         if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'true' && github.event_name == 'pull_request' && env.SLACK_WEBHOOK != '' }}
         uses: peter-evans/create-or-update-comment@v4
-        env: 
+        env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
@@ -4525,7 +4539,7 @@ jobs:
 
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
         if: ${{ always() && steps.pipeline-conclusion.outputs.FAILED == 'true' && env.SLACK_WEBHOOK != '' }}
-        env: 
+        env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
           SLACK_WEBHOOK_ADMIN: <!subteam^${{ secrets.SLACK_WEBHOOK_ADMIN }}>
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

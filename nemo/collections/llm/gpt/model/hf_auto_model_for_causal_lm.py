@@ -55,9 +55,7 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     @property
     def tokenizer(self):
         if self._tokenizer is None:
-            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(
-                self.model_name, trust_remote_code=self.trust_remote_code
-            )
+            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(self.model_name)
         return self._tokenizer
 
     @tokenizer.setter

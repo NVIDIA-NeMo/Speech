@@ -19,6 +19,8 @@ from torch.utils.data import DataLoader
 
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.lightning.pytorch.accelerate.transformer_engine import is_te_accelerated, te_accelerate
+from nemo.lightning.pytorch.callbacks import ModelCallback
 
 
 class SquadDataModuleWithPthDataloader(llm.SquadDataModule):
@@ -53,7 +55,9 @@ if __name__ == '__main__':
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp'])
     parser.add_argument('--devices', default=1)
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
+    parser.add_argument('--model-accelerator', default=None, choices=['te'])
     parser.add_argument('--max-steps', type=int, default=100)
+    parser.add_argument("--fp8-autocast", default=False, action='store_true')
     parser.add_argument('--wandb-project', type=str, default=None)
     parser.add_argument('--model-save-path', type=str, default=None)
     args = parser.parse_args()
@@ -74,6 +78,14 @@ if __name__ == '__main__':
     model = llm.HfAutoModelForCausalLM(args.model)
     tokenizer = model.tokenizer
 
+    callbacks = []
+    if args.model_accelerator:
+        if args.model_accelerator == "te":
+            model_transform = ModelCallback(
+                on_train_start=lambda model: te_accelerate(model, fp8_autocast=args.fp8_autocast)
+            )
+            callbacks.append(model_transform)
+
     llm.api.finetune(
         model=model,
         data=squad(tokenizer),
@@ -88,11 +100,18 @@ if __name__ == '__main__':
             accumulate_grad_batches=10,
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
+            callbacks=callbacks,
             logger=wandb,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,
     )
+
+    if args.model_accelerator:
+        if args.model_accelerator == "te":
+            te_acc = is_te_accelerated(model.model)
+            assert te_acc, "Transformer Engine acceleration was unsuccessful"
+            print("TE Accelerated: ", te_acc)
 
     if args.model_save_path is not None:
         model.save_pretrained(args.model_save_path)

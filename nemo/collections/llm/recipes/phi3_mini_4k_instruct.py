@@ -264,7 +264,6 @@ def finetune_recipe(
         recipe.peft = run.Config(LoRA)
         recipe.peft.dim = 8
         recipe.peft.alpha = 16
-        recipe.peft.target_modules = ['linear_qkv']
         recipe.optim.config.use_distributed_optimizer = False
 
         # some settings currently do not function correctly with LoRA

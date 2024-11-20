@@ -175,7 +175,8 @@ def pretrain_recipe(
         guide in the `examples/llm/pretrain/` directory.
     """
 
-    opt_config = OptimizerConfig(
+    opt_config = run.Config(
+        OptimizerConfig,
         optimizer='adam',
         lr=0.0001,
         use_distributed_optimizer=True,
@@ -183,7 +184,8 @@ def pretrain_recipe(
         weight_decay=0.01,
     )
 
-    lr_scheduler = WarmupAnnealingScheduler(
+    lr_scheduler = run.Config(
+        WarmupAnnealingScheduler,
         warmup_steps=None,
         warmup_ratio=0.01,
         max_steps=1000000,
@@ -200,7 +202,7 @@ def pretrain_recipe(
         ),
         data=run.Config(MockDataModule, seq_length=512, seq_length_dec=128, global_batch_size=512, micro_batch_size=1),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
-        optim=MegatronOptimizerModule(config=opt_config, lr_scheduler=lr_scheduler),
+        optim=run.Config(MegatronOptimizerModule, config=opt_config, lr_scheduler=lr_scheduler),
         resume=default_resume(),
     )
 

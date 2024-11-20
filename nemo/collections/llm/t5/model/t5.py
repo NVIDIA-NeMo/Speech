@@ -152,6 +152,8 @@ class T5Config(TransformerConfig, io.IOMixin):
     max_position_embeddings: int = 512
     rotary_percent: float = 1.0
     seq_len_interpolation_factor: Optional[float] = None
+    seq_length: int = 512
+    seq_length_dec: int = 128
     encoder_pipeline_model_parallel_size: int = 0
     attention_softmax_in_fp32: float = False
     bias_activation_fusion: bool = True

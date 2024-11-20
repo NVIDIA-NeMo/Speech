@@ -115,10 +115,15 @@ from nemo.collections.llm.gpt.model import (
     gpt_forward_step,
 )
 from nemo.collections.llm.quantization import Quantizer, get_calib_data_iter
+from nemo.collections.llm.t5.data import FineTuningDataModule as T5FineTuningDataModule
+from nemo.collections.llm.t5.data import MockDataModule as T5MockDataModule
+from nemo.collections.llm.t5.data import PreTrainingDataModule as T5PreTrainingDataModule
+from nemo.collections.llm.t5.data import SquadDataModule as T5SquadDataModule
 from nemo.collections.llm.t5.model import T5Config, T5Model, t5_data_step, t5_forward_step
 
 __all__ = [
     "MockDataModule",
+    "T5MockDataModule",
     "GPTModel",
     "GPTConfig",
     "gpt_data_step",
@@ -198,6 +203,10 @@ __all__ = [
     "PreTrainingDataModule",
     "FineTuningDataModule",
     "SquadDataModule",
+    "T5PreTrainingDataModule",
+    "T5FineTuningDataModule",
+    "T5SquadDataModule",
+    "T5MockDataModule",
     "DollyDataModule",
     "tokenizer",
     "mock",

@@ -317,24 +317,31 @@ def build_tokenizer(tokenizer):
         if tokenizer.eos_token_id is None:
             tokenizer.add_special_tokens({"eos_token": "</s>"})
     else:
-        try:
-            # If NeMo tokenizer, monkey patch interface
-            from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+        # For NeMo tokenizers, monkey patch encode & batch_decode methods for unified interface
+        from nemo.collections.common.tokenizers import AutoTokenizer, SentencePieceTokenizer, TokenizerSpec
 
-            if isinstance(tokenizer, TokenizerSpec):
-
-                def batch_encode_patch(self, ids):
+        if isinstance(tokenizer, TokenizerSpec):
+            if isinstance(tokenizer, AutoTokenizer):
+                # Unwrap the original methods of HF tokenizer
+                batch_decode = tokenizer.tokenizer.batch_decode
+                encode = tokenizer.tokenizer.encode
+            elif isinstance(tokenizer, SentencePieceTokenizer):
+                # Define HF equivalents based on available SP methods
+                def batch_decode(self, ids):
                     if torch.is_tensor(ids):
                         ids = ids.cpu().numpy()
-                        ids = ids[0] if len(ids.shape) > 1 else ids
-                    return self.ids_to_text(ids)
+                    if isinstance(ids, np.ndarray):
+                        ids = ids.tolist()
+                    return self.tokenizer.decode(ids)
 
-                tokenizer.bos_token_id = tokenizer.bos_id
-                tokenizer.eos_token_id = tokenizer.eos_id
-                tokenizer.encode = tokenizer.text_to_ids
-                TokenizerSpec.batch_decode = batch_encode_patch
-        except:
-            raise TypeError(f'Unsupported tokenizer build input: {type(tokenizer)}')
+                encode = tokenizer.tokenizer.encode_as_ids
+            else:
+                raise NotImplementedError(f"Patching tokenizer methods for {type(tokenizer)} is not available")
+
+            tokenizer.bos_token_id = tokenizer.bos_id
+            tokenizer.eos_token_id = tokenizer.eos_id
+            TokenizerSpec.encode = encode
+            TokenizerSpec.batch_decode = batch_decode
 
     return tokenizer
 

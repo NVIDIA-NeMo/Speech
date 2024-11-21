@@ -14,6 +14,7 @@
 
 from nemo.collections.vlm.neva.data.config import DataConfig, ImageDataConfig, VideoDataConfig
 from nemo.collections.vlm.neva.data.lazy import NevaLazyDataModule
+from nemo.collections.vlm.neva.data.llava_next_energon import LlavaNextTaskEncoder
 from nemo.collections.vlm.neva.data.mock import MockDataModule as NevaMockDataModule
 from nemo.collections.vlm.neva.data.multimodal_tokens import ImageToken, MultiModalToken, VideoToken
 
@@ -26,4 +27,5 @@ __all__ = [
     "MultiModalToken",
     "ImageToken",
     "VideoToken",
+    "LlavaNextTaskEncoder",
 ]

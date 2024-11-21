@@ -179,7 +179,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     forward_step_fn: Callable = gpt_forward_step
     data_step_fn: Callable = gpt_data_step
 
-    def configure_model(self, tokenizer) -> "MCoreGPTModel":
+    def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreGPTModel":
         vp_size = self.virtual_pipeline_model_parallel_size
         if vp_size:
             p_size = self.pipeline_model_parallel_size
@@ -214,8 +214,8 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             rotary_percent=self.rotary_percent,
             rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=parallel_state.is_pipeline_first_stage(),
-            post_process=parallel_state.is_pipeline_last_stage(),
+            pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
+            post_process=post_process or parallel_state.is_pipeline_last_stage(),
         )
 
         # If using full TE layer, need to set TP, CP group since the module call

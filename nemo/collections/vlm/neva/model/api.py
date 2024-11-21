@@ -14,18 +14,18 @@
 
 import lightning.pytorch as pl
 
-from nemo.collections.vlm.neva.model import Llava1_5Config7B, Llava1_5Config13B, LlavaModel
+from nemo.collections.vlm.neva.model import Llava15Config7B, Llava15Config13B, LlavaModel
 
 
-def llava1_5_7b() -> pl.LightningModule:
-    return LlavaModel(Llava1_5Config7B())
+def llava15_7b() -> pl.LightningModule:
+    return LlavaModel(Llava15Config7B())
 
 
-def llava1_5_13b() -> pl.LightningModule:
-    return LlavaModel(Llava1_5Config13B())
+def llava15_13b() -> pl.LightningModule:
+    return LlavaModel(Llava15Config13B())
 
 
 __all__ = [
-    "llava1_5_7b",
-    "llava1_5_13b",
+    "llava15_7b",
+    "llava15_13b",
 ]

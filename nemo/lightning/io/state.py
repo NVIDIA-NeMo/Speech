@@ -242,7 +242,12 @@ class StateDictTransform(Generic[F]):
             source_matches_dict = {k: _match_keys(list(source_dict.keys()), v) for k, v in source_key_dict.items()}
             target_matches = _match_keys(list(target_dict.keys()), target_key)
             param_names = list(filter(lambda x: x in source_matches_dict, fn_params))
-            for layer_names_group in zip(*([source_matches_dict[v] for v in param_names] + [target_matches])):
+            source_matches = [
+                source_matches_dict[v] if source_matches_dict[v].ndim > 0 else [source_matches_dict[v].item()]
+                for v in param_names
+            ]
+            target_matches = [target_matches if target_matches.ndim > 0 else [target_matches.item()]]
+            for layer_names_group in zip(*(source_matches + target_matches)):
                 # Wrap in a list if it's a single layer (ie non-expert)
                 if isinstance(layer_names_group[0], str):
                     layer_names_group = [[x] for x in layer_names_group]

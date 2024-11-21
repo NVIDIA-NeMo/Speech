@@ -77,7 +77,6 @@ class Conversation:
 
     def get_prompt(self):
         messages = self.messages
-        messages = self.process_prompt_with_images(messages)
 
         if self.sep_style == SeparatorStyle.SINGLE:
             ret = self.system + self.sep
@@ -100,6 +99,8 @@ class Conversation:
                     if type(message) is tuple:
                         message, _, _ = message
                     ret += role + ": " + message + seps[i % 2]
+                    # Add space to make sure the labels can be correctly generated.
+                    self.messages[i][1] = " " + self.messages[i][1]
                 else:
                     ret += role + ":"
 
@@ -155,7 +156,6 @@ class Conversation:
             ret = self.process_chat_template(tokenizer_name_or_path, messages)
 
         elif self.sep_style == SeparatorStyle.MLLAMA:
-            """ """
             tokenizer_name_or_path = self.tokenizer_name_or_path or "meta-llama/Llama-3.2-11B-Vision-Instruct"
             ret = self.process_chat_template(tokenizer_name_or_path, messages)
 

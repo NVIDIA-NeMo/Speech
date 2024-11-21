@@ -86,7 +86,7 @@ class SSMConfig(TransformerConfig, io.IOMixin):
     data_step_fn: Callable = gpt_data_step
     tokenizer_model_path: str = None
 
-    def configure_model(self, tokenizer) -> "MCoreMambaModel":
+    def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreMambaModel":
 
         return MCoreMambaModel(
             self,
@@ -101,8 +101,8 @@ class SSMConfig(TransformerConfig, io.IOMixin):
             rotary_percent=self.rotary_percent,
             rotary_base=self.rotary_base,
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=parallel_state.is_pipeline_first_stage(),
-            post_process=parallel_state.is_pipeline_last_stage(),
+            pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
+            post_process=post_process or parallel_state.is_pipeline_last_stage(),
         )
 
 

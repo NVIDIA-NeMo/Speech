@@ -23,26 +23,29 @@ from torch.utils.data import DataLoader, Dataset
 
 from nemo.collections.vlm.neva.data.multimodal_tokens import IMAGE_TOKEN_INDEX
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
+from nemo.utils import logging
 
 
 class MockDataModule(pl.LightningDataModule):
     def __init__(
         self,
         seq_length: int = 2048,
+        decoder_seq_length: Optional[int] = None,
         tokenizer: Optional = None,
         image_processor: Optional = None,
         micro_batch_size: int = 4,
         global_batch_size: int = 8,
         rampup_batch_size: Optional[List[int]] = None,
-        num_train_samples: int = 10_000,
-        num_val_samples: int = 10_000,
-        num_test_samples: int = 10_000,
+        num_train_samples: int = 10_000_000,
+        num_val_samples: int = 10_000_000,
+        num_test_samples: int = 10_000_000,
         num_workers: int = 8,
         pin_memory: bool = True,
         persistent_workers: bool = False,
     ):
         super().__init__()
         self.seq_length = seq_length
+        self.decoder_seq_len = decoder_seq_length
         self.num_train_samples = num_train_samples
         self.num_val_samples = num_val_samples
         self.num_test_samples = num_test_samples
@@ -51,13 +54,16 @@ class MockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
 
         if tokenizer is None or image_processor is None:
+            logging.warning(f"Processor or tokenizer are not provided! Fall back to `llava-hf/llava-1.5-7b-hf`.")
             from transformers import AutoProcessor
+            from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
             processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
-            self.tokenizer = tokenizer or processor.tokenizer
+            self.tokenizer = tokenizer or AutoTokenizer("llava-hf/llava-1.5-7b-hf")
             self.image_processor = image_processor or processor.image_processor
         self.data_sampler = MegatronDataSampler(
             seq_len=self.seq_length,
+            decoder_seq_len=self.decoder_seq_len,
             micro_batch_size=micro_batch_size,
             global_batch_size=global_batch_size,
             rampup_batch_size=rampup_batch_size,

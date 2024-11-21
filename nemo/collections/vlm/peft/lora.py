@@ -48,7 +48,7 @@ class LoRA(LLMLoRA):
     """
 
     freeze_language_model: bool = True
-    freeze_vision_model: bool = False
+    freeze_vision_model: bool = True
 
     def freeze_model(self, model: nn.Module) -> None:
         modules = []

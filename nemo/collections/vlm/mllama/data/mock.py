@@ -34,6 +34,8 @@ class MockDataModule(pl.LightningDataModule):
         micro_batch_size: int = 4,
         global_batch_size: int = 8,
         rampup_batch_size: Optional[List[int]] = None,
+        tokenizer: Optional = None,
+        image_processor: Optional = None,
         num_train_samples: int = 10_000,
         num_val_samples: int = 10_000,
         num_test_samples: int = 10_000,
@@ -52,6 +54,8 @@ class MockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
         self.vocab_size = vocab_size
         self.crop_size = crop_size
+        self.tokenizer = tokenizer
+        self.image_processor = image_processor
 
         self.data_sampler = MegatronDataSampler(
             seq_len=self.seq_length,
@@ -142,8 +146,8 @@ class _MockMLlamaDataset(Dataset):
 
         return {
             "images": images,
-            "masks": [[5, 512]],
-            "num_chunks": [4],
+            "masks": torch.tensor([[5, 512]]),
+            "num_chunks": torch.tensor([4]),
             "tokens": tokens,
             "aspect_ratio_ids": aspect_ratio_ids,
             "loss_mask": self.loss_mask,

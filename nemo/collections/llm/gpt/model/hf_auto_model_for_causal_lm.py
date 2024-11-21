@@ -55,7 +55,7 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     @property
     def tokenizer(self):
         if self._tokenizer is None:
-            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(self.model_name)
+            self._tokenizer = HfAutoModelForCausalLM.configure_tokenizer(self.model_name, self.trust_remote_code)
         return self._tokenizer
 
     @tokenizer.setter
@@ -64,8 +64,8 @@ class HfAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self._tokenizer = value
 
     @staticmethod
-    def configure_tokenizer(model_name):
-        return AutoTokenizer(model_name)
+    def configure_tokenizer(model_name, trust_remote_code=False):
+        return AutoTokenizer(model_name, trust_remote_code=trust_remote_code)
 
     def configure_model(self):
         # create all your layers here

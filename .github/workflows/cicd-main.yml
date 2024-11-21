@@ -4319,7 +4319,18 @@ jobs:
         --mbs 1 \
         --model mistral \
         --dist-opt
+  
+  L2_NEMO_2_LoRA_MERGE:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NEMO_2_LoRA_MERGE') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
 
+        python tests/collections/llm/peft/lora_merge.py \
+        --lora_checkpoint_path=/home/TestData/nemo2_ckpt/llama_lora_ci_checkpoint/ \
+        --output_path=/tmp/nemo2_lora_merge/${{ github.run_id }}
 
   L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact:
     needs: [cicd-test-container-setup]

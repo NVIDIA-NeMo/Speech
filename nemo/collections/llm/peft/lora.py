@@ -227,3 +227,43 @@ class LoRA(PEFT):
             )
             return AdapterParallelAdd(m, adapter)
         return m
+
+
+class LoRAMerge(PEFT):
+    """
+    Implements the LoRA weight merge for parameter-efficient fine-tuning.
+
+    Example:
+    --------
+        >>> from nemo.collections.llm.peft.lora import LoRAMerge
+        >>> lora_merge = LoRAMerge()
+        >>> merged_model = lora_merge(trainer.strategy.megatron_parallel)
+    """
+
+    @torch.no_grad()
+    def transform(self, m: nn.Module, name=None, prefix=None):
+        """
+        Merges the LoRA adapter with the base model weights.
+
+        Args:
+            m (nn.Module): The module to apply LoRA merge to.
+            name (str, optional): Name of the module to merge. Defaults to None.
+            prefix (str, optional): Prefix for the module name. Defaults to None.
+
+        Returns:
+            nn.Module: The modified module with the LoRA adapter merged into the base model weights.
+        """
+
+        if not isinstance(m, AdapterParallelAdd):
+            return m
+        logging.info(f'merging {(prefix if prefix else "") + "." + (name if name else "")}')
+        base_weight = m.to_wrap.weight
+        lora_weight = (
+            m.adapter.alpha
+            / m.adapter.dim
+            * m.adapter.linear_out.weight.to(base_weight.device)
+            @ m.adapter.linear_in.weight.to(base_weight.device)
+        )
+        merged_weight = base_weight + lora_weight
+        m.to_wrap.weight.data = merged_weight
+        return m

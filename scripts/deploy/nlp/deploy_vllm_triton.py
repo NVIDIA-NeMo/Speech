@@ -41,7 +41,7 @@ def get_args(argv):
         "-mt",
         "--model_type",
         type=str,
-        required=False,
+        required=True,
         choices=["llama", "mistral", "mixtral", "starcoder2", "gemma"],
         help="Type of the model",
     )

@@ -318,14 +318,14 @@ def build_tokenizer(tokenizer):
             tokenizer.add_special_tokens({"eos_token": "</s>"})
     else:
         # For NeMo tokenizers, monkey patch encode & batch_decode methods for unified interface
-        from nemo.collections.common.tokenizers import AutoTokenizer, SentencePieceTokenizer, TokenizerSpec
+        import nemo.collections.common.tokenizers as nemo_tokenizers
 
-        if isinstance(tokenizer, TokenizerSpec):
-            if isinstance(tokenizer, AutoTokenizer):
+        if isinstance(tokenizer, nemo_tokenizers.TokenizerSpec):
+            if isinstance(tokenizer, nemo_tokenizers.AutoTokenizer):
                 # Unwrap the original methods of HF tokenizer
                 batch_decode = tokenizer.tokenizer.batch_decode
                 encode = tokenizer.tokenizer.encode
-            elif isinstance(tokenizer, SentencePieceTokenizer):
+            elif isinstance(tokenizer, nemo_tokenizers.SentencePieceTokenizer):
                 # Define HF equivalents based on available SP methods
                 def batch_decode(self, ids):
                     if torch.is_tensor(ids):
@@ -340,8 +340,8 @@ def build_tokenizer(tokenizer):
 
             tokenizer.bos_token_id = tokenizer.bos_id
             tokenizer.eos_token_id = tokenizer.eos_id
-            TokenizerSpec.encode = encode
-            TokenizerSpec.batch_decode = batch_decode
+            nemo_tokenizers.TokenizerSpec.encode = encode
+            nemo_tokenizers.TokenizerSpec.batch_decode = batch_decode
 
     return tokenizer
 

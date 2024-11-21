@@ -5,7 +5,7 @@ diffusers>=0.19.3
 einops_exts
 imageio
 kornia
-megatron-energon
+megatron-energon<3.0.0
 nerfacc>=0.5.3
 open_clip_torch==2.24.0
 PyMCubes

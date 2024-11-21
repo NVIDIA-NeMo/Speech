@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 
 from omegaconf import OmegaConf
@@ -24,22 +25,23 @@ from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
 
 TOKENIZER_CONFIG_FILE = "tokenizer_config.yaml"
 TOKENIZER_DIR = "tokenizer"
+LOGGER = logging.getLogger("NeMo")
 
 
 def get_nmt_tokenizer(nemo_checkpoint_path: str):
     """Build tokenizer from Nemo tokenizer config."""
 
-    print(f"Initializing tokenizer from {TOKENIZER_CONFIG_FILE}")
+    LOGGER.info(f"Initializing tokenizer from {TOKENIZER_CONFIG_FILE}")
     tokenizer_cfg = OmegaConf.load(os.path.join(nemo_checkpoint_path, TOKENIZER_CONFIG_FILE))
 
     library = tokenizer_cfg.library
     legacy = tokenizer_cfg.get("sentencepiece_legacy", library == "sentencepiece")
 
     if library == "huggingface":
-        print(f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_cfg.type}")
+        LOGGER.info(f"Getting HuggingFace AutoTokenizer with pretrained_model_name: {tokenizer_cfg.type}")
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_cfg["type"], use_fast=tokenizer_cfg.get("use_fast", False))
     elif library == "sentencepiece":
-        print(f"Getting SentencePieceTokenizer with model: {tokenizer_cfg.model}")
+        LOGGER.info(f"Getting SentencePieceTokenizer with model: {tokenizer_cfg.model}")
         tokenizer = SentencePieceTokenizer(
             model_path=os.path.join(nemo_checkpoint_path, tokenizer_cfg.model), legacy=legacy
         )

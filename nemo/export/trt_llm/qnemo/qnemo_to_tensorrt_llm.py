@@ -18,7 +18,6 @@ import subprocess
 import warnings
 from typing import List, Optional
 
-import tensorrt_llm
 from tensorrt_llm.models import PretrainedConfig
 
 from nemo.export.trt_llm.qnemo.utils import CONFIG_NAME, WEIGHTS_NAME
@@ -51,7 +50,7 @@ def qnemo_to_tensorrt_llm(
 
     warnings.warn(
         "Note that setting tensor_parallel_size, pipeline_parallel_size and use_parallel_embedding "
-        " parameters for quantized models is done on calibration step with nemo.export.quantize module."
+        " parameters for quantized models is done on the calibration step (in PTQ workflow)."
         " These parameters are ignored when building and running TensorRT-LLM engine below.",
         UserWarning,
         stacklevel=3,
@@ -93,11 +92,7 @@ def qnemo_to_tensorrt_llm(
     build_cmd += f"--remove_input_padding {'enable' if remove_input_padding else 'disable'} "
     build_cmd += f"--multiple_profiles {'enable' if multiple_profiles else 'disable'} "
     build_cmd += f"--reduce_fusion {'enable' if reduce_fusion else 'disable'} "
-    # TODO: resolve version check for setting use_fused_mlp once we move to 0.13.0 in the NeMo container
-    if tensorrt_llm.__version__ >= "0.13.0":
-        build_cmd += f"--use_fused_mlp {'enable' if use_fused_mlp else 'disable'} "
-    else:
-        build_cmd += "--use_fused_mlp " if use_fused_mlp else ""
+    build_cmd += f"--use_fused_mlp {'enable' if use_fused_mlp else 'disable'} "
 
     if not use_qdq:
         build_cmd += f"--gemm_plugin auto "

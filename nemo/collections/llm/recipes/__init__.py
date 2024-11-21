@@ -73,6 +73,7 @@ from nemo.collections.llm.recipes import (
 )
 from nemo.collections.llm.recipes.log.default import default_log, default_resume
 from nemo.collections.llm.recipes.optim import adam
+from nemo.collections.llm.recipes.run.executor import torchrun
 
 __all__ = [
     "baichuan2_7b",
@@ -134,4 +135,5 @@ __all__ = [
     "adam",
     "default_log",
     "default_resume",
+    "torchrun",
 ]

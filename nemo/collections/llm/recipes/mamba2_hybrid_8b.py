@@ -39,7 +39,7 @@ def tokenizer(tokenizer_model: str = None) -> run.Config[pl.LightningModule]:
 
     return run.Config(
         get_nmt_tokenizer,
-        library='megatronNVIDIAMambaConfig8B',
+        library='megatron',
         model_name="GPTSentencePieceTokenizer",
         tokenizer_model=tokenizer_model,
         use_fast=True,

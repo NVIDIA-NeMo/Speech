@@ -14,6 +14,7 @@
 
 import math
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
@@ -86,7 +87,7 @@ class Llama2Config70B(LlamaConfig):
 
 
 @dataclass
-class Llama3Config(GPTConfig):
+class Llama3Config(LlamaConfig):
     num_query_groups: int = 8
     hidden_dropout: float = 0.0
     attention_dropout: float = 0.0
@@ -183,6 +184,32 @@ class Llama31Config405B(Llama31Config):
 
 
 @dataclass
+class Llama32Config1B(Llama31Config):
+    scale_factor: int = 32
+    share_embeddings_and_output_weights: bool = True
+    rotary_base: int = 500_000
+    num_layers: int = 16
+    hidden_size: int = 2048
+    ffn_hidden_size: int = 8192
+    num_attention_heads: int = 32
+    num_query_groups: int = 8
+    make_vocab_size_divisible_by: int = 128
+
+
+@dataclass
+class Llama32Config3B(Llama31Config):
+    scale_factor: int = 32
+    share_embeddings_and_output_weights: bool = True
+    rotary_base: int = 500_000
+    num_layers: int = 28
+    hidden_size: int = 3072
+    ffn_hidden_size: int = 8192
+    num_attention_heads: int = 24
+    num_query_groups: int = 8
+    make_vocab_size_divisible_by: int = 128
+
+
+@dataclass
 class CodeLlamaConfig7B(Llama2Config7B):
     rotary_base: int = 1_000_000
     seq_length: int = 16384
@@ -252,6 +279,9 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             "model.norm.weight": "decoder.final_layernorm.weight",
             "lm_head.weight": "output_layer.weight",
         }
+        if getattr(source.config, "tie_word_embeddings", False):
+            # llama 3.2 1B and 3B models have no shared input output embeddings
+            del mapping["lm_head.weight"]
 
         return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv, _import_linear_fc1])
 
@@ -275,7 +305,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
 
         if getattr(source, 'rope_scaling', None) is not None and source.rope_scaling.get('rope_type') == 'llama3':
             # Apply Llama3.1 customize rope scaling
-            cls = Llama31Config
+            cls = partial(Llama31Config, scale_factor=source.rope_scaling.get("factor", 8.0))
         else:
             cls = LlamaConfig
         output = cls(
@@ -289,7 +319,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             rotary_base=source.rope_theta,
             gated_linear_unit=True,
             make_vocab_size_divisible_by=make_vocab_size_divisible_by(source.vocab_size),
-            share_embeddings_and_output_weights=False,
+            share_embeddings_and_output_weights=getattr(source, "tie_word_embeddings", False),
             fp16=(dtype_from_hf(source) == torch.float16),
             bf16=(dtype_from_hf(source) == torch.bfloat16),
             params_dtype=dtype_from_hf(source),
@@ -355,6 +385,7 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             num_key_value_heads=source.num_query_groups,
             rope_theta=source.rotary_base,
             vocab_size=self.tokenizer.vocab_size,
+            tie_word_embeddings=source.share_embeddings_and_output_weights,
         )
 
 
@@ -509,6 +540,8 @@ __all__ = [
     "Llama31Config8B",
     "Llama31Config70B",
     "Llama31Config405B",
+    "Llama32Config1B",
+    "Llama32Config3B",
     "CodeLlamaConfig7B",
     "CodeLlamaConfig13B",
     "CodeLlamaConfig34B",

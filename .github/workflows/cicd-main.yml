@@ -2224,11 +2224,6 @@ jobs:
           --hparams_file /tmp/nemo_conversion_ckpt/megatron_gpt/version_0/hparams.yaml \
           --convert_mlm
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo_conversion_ckpt
-        rm -rf /tmp/mlm_conversion_ckpt
-        rm -rf /tmp/mlm_to_nemo_test.nemo
-
   L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml

@@ -397,7 +397,22 @@ class NLPModel(ModelPT, Exportable):
                         model.trainer.strategy.launcher.launch(dummy, trainer=model.trainer)
                     model.trainer.strategy.setup_environment()
                 sharded_state_dict = model.sharded_state_dict()
-                checkpoint['state_dict'] = sharded_state_dict
+                if kwargs.get("load_mlm", False):
+                    mlm_sharded_state_dict = {}
+                    for k, v in sharded_state_dict.items():
+                        # Remove 'model.' from the sharded_state_dict keys
+                        new_key = k.replace('model.', '', 1)
+
+                        # Update the key attribute of the ShardedTensor value
+                        new_value = v
+                        if hasattr(v, 'key'):
+                            new_value.key = v.key.replace('model.', '', 1)
+
+                        # Add the updated key-value pair to the new dictionary
+                        mlm_sharded_state_dict[new_key] = new_value
+                    checkpoint['state_dict'] = mlm_sharded_state_dict
+                else:
+                    checkpoint['state_dict'] = sharded_state_dict
                 # load the checkpoint from disk
                 checkpoint = dist_checkpointing.load(sharded_state_dict=checkpoint, checkpoint_dir=checkpoint_dir)
                 # restore the weights

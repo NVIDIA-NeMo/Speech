@@ -21,7 +21,7 @@ from collections import OrderedDict
 import torch
 from lightning.pytorch import Trainer
 from transformers import LlamaTokenizer, PreTrainedTokenizerFast
-from transformers.convert_slow_tokenizer import LlamaConverter
+from transformers.convert_slow_tokenizer import LlamaConverter, TikTokenConverter
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
@@ -128,6 +128,20 @@ def convert_hf_config(nemo_config, tokenizer, vocab_size, dtype, hf_output_path,
     if nemo_config.get("kv_channels", None) is not None:
         hf_config["head_dim"] = nemo_config.kv_channels
     json.dump(hf_config, open(f"{hf_output_path}/config.json", "w"), indent=2)
+
+
+def convert_tiktoken(vocab_file) -> None:
+    with open(vocab_file, 'r') as f:
+        vocab = json.load(f)
+    os.remove(vocab_file)
+
+    lines = []
+    for line in vocab:
+        lines.append(f"{line['token_bytes']} {line['rank']}")
+
+    for line in lines:
+        with open(vocab_file, 'a') as f:
+            f.write(line + '\n')
 
 
 def convert(input_nemo_file, output_hf_file, precision=None, cpu_only=False) -> None:
@@ -323,6 +337,28 @@ def extract_nemotron_tokenizer(nemo_file, model_config, output_hf_path, nemo_tok
         )
         tokenizer.save_pretrained(output_hf_path)
         logging.info(f"Setencepiece tokenizer has been saved to {output_tokenizer}")
+    elif tokenizer_cfg.library == "tiktoken":
+        tokenizer_fn = tokenizer_cfg.model[5:]
+        special_tokens = ["<unk>", "<s>", "</s>"]
+        import tarfile
+
+        archive = tarfile.open(nemo_file, "r")
+        tokenizer_filename = "./" + tokenizer_fn  # exclude 'nemo:' prefix
+        archive.extract(tokenizer_filename, output_hf_path)
+        archive.close()
+        vocab_file = os.path.join(output_hf_path, tokenizer_fn)
+        convert_tiktoken(vocab_file)
+        converted_tokenizer = TikTokenConverter(
+            vocab_file=vocab_file, additional_special_tokens=special_tokens
+        ).converted()
+        os.remove(vocab_file)
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=converted_tokenizer,
+            model_input_names=["input_ids", "attention_mask"],
+            bos_token="<s>",
+            eos_token="</s>",
+        )
+        tokenizer.save_pretrained(output_hf_path)
     elif isinstance(nemo_tokenizer, AutoTokenizer):
         nemo_tokenizer.tokenizer.save_pretrained(output_hf_path)
         logging.info(f"HF AutoTokenizer has been saved to {output_hf_path}")

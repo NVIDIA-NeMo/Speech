@@ -69,6 +69,7 @@ def model(tokenizer_model: str = None) -> run.Config[pl.LightningModule]:
     )
 
 
+@run.cli.factory(target=finetune, name=NAME)
 def trainer(
     tensor_parallelism: int = 8,
     pipeline_parallelism: int = 1,
@@ -78,7 +79,11 @@ def trainer(
     sequence_parallelism: bool = False,
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
-    max_steps: int = 1168251,
+    max_steps: int = 100,
+    val_check_interval: int = 100,
+    limit_test_batches: int = 50,
+    limit_val_batches: int = 32,
+    log_every_n_steps: int = 10,
     callbacks: Optional[list[run.Config[Callback]]] = None,
 ) -> run.Config[nl.Trainer]:
     """
@@ -139,15 +144,15 @@ def trainer(
         accumulate_grad_batches=1,
         callbacks=callbacks,
         devices=num_gpus_per_node,
-        limit_test_batches=50,
-        limit_val_batches=32,
-        log_every_n_steps=10,
         max_steps=max_steps,
         num_nodes=num_nodes,
         plugins=bf16_mixed(),
         strategy=strategy,
         use_distributed_sampler=False,
-        val_check_interval=2000,
+        val_check_interval=val_check_interval,
+        limit_test_batches=limit_test_batches,
+        limit_val_batches=limit_val_batches,
+        log_every_n_steps=log_every_n_steps,
     )
 
     return trainer
@@ -160,6 +165,16 @@ def pretrain_recipe(
     tokenizer_model: str = None,
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
+    tensor_parallelism: int = 8,
+    pipeline_parallelism: int = 1,
+    max_steps: int = 100,
+    val_check_interval: int = 100,
+    limit_test_batches: int = 50,
+    limit_val_batches: int = 32,
+    log_every_n_steps: int = 10,
+    seq_length: int = 4096,
+    gbs: int = 8,
+    mbs: int = 1,
     fn=pretrain,
 ) -> run.Partial:
     """
@@ -193,17 +208,24 @@ def pretrain_recipe(
     """
     return run.Partial(
         fn,
-        model=model(),
+        model=model(tokenizer_model=tokenizer_model),
         trainer=trainer(
+            max_steps=max_steps,
             num_nodes=num_nodes,
+            tensor_parallelism=tensor_parallelism,
+            pipeline_parallelism=pipeline_parallelism,
             num_gpus_per_node=num_gpus_per_node,
+            val_check_interval=val_check_interval,
+            limit_test_batches=limit_test_batches,
+            limit_val_batches=limit_val_batches,
+            log_every_n_steps=log_every_n_steps,
             callbacks=[run.Config(TimingCallback)],
         ),
         data=run.Config(
             MockDataModule,
-            seq_length=4096,
-            global_batch_size=8,
-            micro_batch_size=1,
+            seq_length=seq_length,
+            global_batch_size=gbs,
+            micro_batch_size=mbs,
             tokenizer=tokenizer(tokenizer_model=tokenizer_model),
         ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
@@ -220,6 +242,14 @@ def finetune_recipe(
     name: str = "default",
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
+    tensor_model_parallel_size: int = 8,
+    pipeline_model_parallel_size: int = 1,
+    seq_length: int = 4096,
+    max_steps: int = 100,
+    val_check_interval: int = 100,
+    limit_test_batches: int = 50,
+    limit_val_batches: int = 32,
+    log_every_n_steps: int = 10,
     gbs: int = 8,
     mbs: int = 1,
     peft_scheme: Optional[str] = 'none',
@@ -268,8 +298,8 @@ def finetune_recipe(
     )
     strategy = run.Config(
         nl.MegatronStrategy,
-        tensor_model_parallel_size=8,
-        pipeline_model_parallel_size=1,
+        tensor_model_parallel_size=tensor_model_parallel_size,
+        pipeline_model_parallel_size=pipeline_model_parallel_size,
         gradient_as_bucket_view=True,
         ckpt_load_optimizer=False,
         ckpt_save_optimizer=False,
@@ -285,10 +315,11 @@ def finetune_recipe(
         accelerator="gpu",
         accumulate_grad_batches=1,
         devices=num_gpus_per_node,
-        limit_test_batches=10,
-        limit_val_batches=10,
-        log_every_n_steps=20,
-        max_steps=100,
+        max_steps=max_steps,
+        val_check_interval=val_check_interval,
+        limit_test_batches=limit_test_batches,
+        limit_val_batches=limit_val_batches,
+        log_every_n_steps=log_every_n_steps,
         num_nodes=num_nodes,
         plugins=run.Config(
             nl.MegatronMixedPrecision,
@@ -298,7 +329,6 @@ def finetune_recipe(
         callbacks=[checkpoint_callback],
         strategy=strategy,
         use_distributed_sampler=False,
-        val_check_interval=20,
     )
     recipe = run.Partial(
         llm.finetune,
@@ -306,7 +336,7 @@ def finetune_recipe(
         trainer=trainer,
         data=run.Config(
             llm.SquadDataModule,
-            seq_length=2048,
+            seq_length=seq_length,
             global_batch_size=gbs,
             micro_batch_size=mbs,
             tokenizer=tokenizer(tokenizer_model=tokenizer_model),

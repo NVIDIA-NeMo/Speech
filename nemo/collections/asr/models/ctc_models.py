@@ -160,7 +160,6 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as 
             paths2audio_files
         """
-        timestamps = timestamps or override_config.timestamps if override_config is not None else None
         if timestamps is not None:
             # else retain the decoder state (users can set it using change_decoding_strategy)
             if timestamps or (override_config is not None and override_config.timestamps):

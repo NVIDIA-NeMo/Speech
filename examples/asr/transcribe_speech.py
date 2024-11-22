@@ -276,6 +276,9 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
     # we will adjust this flag if the model does not support it
     compute_langs = cfg.compute_langs
 
+    if cfg.timestamps:
+        cfg.return_hypotheses = True
+
     # Check whether model and decoder type match
     if isinstance(asr_model, EncDecCTCModel):
         if cfg.decoder_type and cfg.decoder_type != 'ctc':

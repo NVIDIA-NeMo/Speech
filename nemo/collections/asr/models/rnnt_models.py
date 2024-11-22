@@ -285,7 +285,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, ExportableEncDecModel, ASRTransc
             * A list of greedy transcript texts / Hypothesis
             * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
         """
-
+        timestamps = timestamps or (override_config.timestamps if override_config is not None else None)
         if timestamps is not None:
             if timestamps or (override_config is not None and override_config.timestamps):
                 logging.info(

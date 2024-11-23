@@ -124,6 +124,7 @@ class LoRA(PEFT):
         dropout (float): Dropout rate for the low-rank projection. Defaults to 0.0.
         dropout_position (Literal['pre', 'post'], optional): Position for applying dropout.
             Can be 'pre' (before the low-rank projection) or 'post' (after). Defaults to 'post'.
+        a2a_experimental (bool): Enables the experimental All-to-All (A2A) communication strategy. Defaults to False.
 
     Example:
     --------
@@ -151,6 +152,7 @@ class LoRA(PEFT):
     dropout_position: Literal['pre', 'post'] = 'post'
     lora_A_init_method: str = "xavier"
     lora_B_init_method: str = "zero"
+    a2a_experimental: bool = False
 
     def transform(self, m: nn.Module, name=None, prefix=None):
         """
@@ -224,6 +226,7 @@ class LoRA(PEFT):
                 model_parallel_config=getattr(m, "config", None),
                 alpha=self.alpha,
                 is_expert=is_expert_linear(full_name),
+                a2a_experimental=self.a2a_experimental,
             )
             return AdapterParallelAdd(m, adapter)
         return m

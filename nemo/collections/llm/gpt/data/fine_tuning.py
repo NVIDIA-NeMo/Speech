@@ -117,17 +117,28 @@ class FineTuningDataModule(pl.LightningDataModule):
         """
         Prepare packed sequence data
         """
-        if self.packed_sequence_size > 0 and not self.train_path_packed.is_file():
+        if self.packed_sequence_size > 0:
             from nemo.collections.llm.gpt.data.packed_sequence import prepare_packed_sequence_data
 
-            prepare_packed_sequence_data(
-                input_path=self.train_path,
-                output_path=self.train_path_packed,
-                packed_sequence_size=self.packed_sequence_size,
-                tokenizer=self.tokenizer,
-                max_seq_length=self.seq_length,
-                seed=self.seed,
-            )
+            if not self.train_path_packed.is_file():
+                prepare_packed_sequence_data(
+                    input_path=self.train_path,
+                    output_path=self.train_path_packed,
+                    packed_sequence_size=self.packed_sequence_size,
+                    tokenizer=self.tokenizer,
+                    max_seq_length=self.seq_length,
+                    seed=self.seed,
+                )
+
+            if not self.validation_path_packed.is_file():
+                prepare_packed_sequence_data(
+                    input_path=self.validation_path,
+                    output_path=self.validation_path_packed,
+                    packed_sequence_size=self.packed_sequence_size,
+                    tokenizer=self.tokenizer,
+                    max_seq_length=self.seq_length,
+                    seed=self.seed,
+                )
 
     def setup(self, stage: str):
         """Called by pytorch lightning in datamodule setup"""
@@ -195,7 +206,7 @@ class FineTuningDataModule(pl.LightningDataModule):
         # pylint: disable=C0115,C0116
         return self._create_dataloader(
             self._create_dataset(
-                self.validation_path,
+                self.validation_path if self.packed_sequence_size <= 0 else self.validation_path_packed,
                 is_test=True,
                 **self.dataset_kwargs,
             ),
@@ -249,14 +260,28 @@ class FineTuningDataModule(pl.LightningDataModule):
         """Path to training dataset file for packed sequence. The file path contains a reference to the
         tokenizer/model name since packed sequence dataset consists of tokenized indices."""
         if self.packed_sequence_size > 0:
-            if self.packed_sequence_specs.packed_data_path is not None:
-                return self.packed_sequence_specs.packed_data_path
+            if self.packed_sequence_specs.packed_train_data_path is not None:
+                return self.packed_sequence_specs.packed_train_data_path
             tokenizer_model_name = self._extract_tokenizer_model_name()
             folder_name = self.dataset_root / "packed" / tokenizer_model_name
             folder_name.mkdir(parents=True, exist_ok=True)
             return folder_name / f"training_{self.packed_sequence_size}.npy"
         else:
             raise ValueError("`train_path_packed` invalid since packed sequence size is not specified.")
+
+    @property
+    def validation_path_packed(self) -> Path:
+        """Path to validation dataset file for packed sequence. The file path contains a reference to the
+        tokenizer/model name since packed sequence dataset consists of tokenized indices."""
+        if self.packed_sequence_size > 0:
+            if self.packed_sequence_specs.packed_val_data_path is not None:
+                return self.packed_sequence_specs.packed_val_data_path
+            tokenizer_model_name = self._extract_tokenizer_model_name()
+            folder_name = self.dataset_root / "packed" / tokenizer_model_name
+            folder_name.mkdir(parents=True, exist_ok=True)
+            return folder_name / f"validation_{self.packed_sequence_size}.npy"
+        else:
+            raise ValueError("`validation_path_packed` invalid since packed sequence size is not specified.")
 
     @property
     def validation_path(self) -> Path:

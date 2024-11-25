@@ -25,6 +25,26 @@ from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
 
 class MockDataModule(pl.LightningDataModule):
+    """
+    Mock DataModule for testing and development.
+    Generates synthetic data for training, validation, and testing purposes.
+
+    Args:
+        seq_length (int): Sequence length for the generated data.
+        decoder_seq_length (Optional[int]): Decoder sequence length if applicable, used in pp.
+        vocab_size (int): Size of the vocabulary of tokenizer.
+        crop_size (Tuple[int, int]): Image crop size (height, width).
+        micro_batch_size (int): Micro batch size for data loading.
+        global_batch_size (int): Global batch size across all processes.
+        rampup_batch_size (Optional[List[int]]): Batch size ramp-up configuration.
+        num_train_samples (int): Number of training samples to generate.
+        num_val_samples (int): Number of validation samples to generate.
+        num_test_samples (int): Number of test samples to generate.
+        num_workers (int): Number of workers for data loading.
+        pin_memory (bool): Whether to pin memory for data loading.
+        persistent_workers (bool): Whether workers should remain persistent.
+    """
+
     def __init__(
         self,
         seq_length: int = 2048,
@@ -66,6 +86,7 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage: str = "") -> None:
+        """Set up datasets for the specified stage."""
         self._train_ds = _MockMLlamaDataset(
             self.vocab_size, self.crop_size, "train", self.num_train_samples, self.decoder_seq_length
         )
@@ -77,21 +98,25 @@ class MockDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
+        """Returns the DataLoader for training."""
         if not hasattr(self, "_train_ds"):
             self.setup()
         return self._create_dataloader(self._train_ds)
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
+        """Returns the DataLoader for validation."""
         if not hasattr(self, "_validation_ds"):
             self.setup()
         return self._create_dataloader(self._validation_ds)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
+        """Returns the DataLoader for testing."""
         if not hasattr(self, "_test_ds"):
             self.setup()
         return self._create_dataloader(self._test_ds)
 
     def _create_dataloader(self, dataset, **kwargs) -> DataLoader:
+        """Creates a DataLoader for the specified dataset."""
         return DataLoader(
             dataset,
             num_workers=self.num_workers,
@@ -103,6 +128,18 @@ class MockDataModule(pl.LightningDataModule):
 
 
 class _MockMLlamaDataset(Dataset):
+    """
+    Mock dataset for generating synthetic data with text and image components.
+
+    Args:
+        vocab_size (int): Vocabulary size for text data.
+        crop_size (Tuple[int, int]): Image crop size (height, width).
+        name (str): Name of the dataset split ('train', 'valid', 'test').
+        num_samples (int): Number of samples in the dataset.
+        seq_length (int): Sequence length for the text data.
+        seed (int): Seed for random number generation.
+    """
+
     def __init__(
         self,
         vocab_size,
@@ -127,13 +164,16 @@ class _MockMLlamaDataset(Dataset):
         self.position_ids = torch.arange(self.seq_length, dtype=torch.int64)
 
     def __len__(self) -> int:
+        """Returns the number of samples in the dataset."""
         return self.length
 
     def _get_text(self, idx: int) -> np.ndarray:
+        """Generates a random sequence of integers representing text tokens."""
         np_gen = np.random.default_rng(seed=(self.seed + idx))
         return np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64)
 
     def __getitem__(self, idx) -> Dict[str, torch.Tensor]:
+        """Generates a single data sample."""
         # Generate data of the expected size and datatype (based on GPTDataset).
         np_gen = np.random.default_rng(seed=(self.seed + idx))
         tokens = torch.from_numpy(np_gen.integers(self.vocab_size, size=[self.seq_length + 1], dtype=np.int64))

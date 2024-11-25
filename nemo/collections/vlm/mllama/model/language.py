@@ -60,6 +60,10 @@ except ImportError:
 
 @dataclass
 class MLlamaCrossAttentionSubmodules:
+    """
+    Defines the submodules required for cross-attention layers in the Llama architecture.
+    """
+
     linear_q: Union[ModuleSpec, type] = None
     linear_kv: Union[ModuleSpec, type] = None
     core_attention: Union[ModuleSpec, type] = None
@@ -69,6 +73,10 @@ class MLlamaCrossAttentionSubmodules:
 
 
 class CrossAttentionTextModel(MCoreGPTModel):
+    """
+    GPT-based model with integrated cross-attention layers for multimodal tasks.
+    """
+
     def __init__(
         self,
         config: TransformerConfig,
@@ -122,6 +130,7 @@ class CrossAttentionTextModel(MCoreGPTModel):
             self._thresh = self.num_frozen_embeddings - 1
 
     def get_partially_trainable_embedding(self, x):
+        """Get word embedding w/ few extra learnable tokens."""
         xz = torch.zeros_like(x, device=x.device)
         oz = torch.ones_like(x, device=x.device)
         x_orig = torch.minimum(x, torch.tensor(self._thresh, device=x.device))
@@ -148,7 +157,7 @@ class CrossAttentionTextModel(MCoreGPTModel):
         packed_seq_params: PackedSeqParams = None,
         extra_block_kwargs: dict = None,
     ) -> Tensor:
-
+        """Forward."""
         # Decoder embedding.
         if decoder_input is not None:
             pass
@@ -171,6 +180,9 @@ class CrossAttentionTextModel(MCoreGPTModel):
             )
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
 
+        dtype = decoder_input.dtype
+        cross_attention_bias = cross_attention_masks.to(dtype) * torch.finfo(dtype).min
+
         # Run decoder.
         hidden_states = self.decoder(
             hidden_states=decoder_input,
@@ -178,9 +190,10 @@ class CrossAttentionTextModel(MCoreGPTModel):
             inference_params=inference_params,
             rotary_pos_emb=rotary_pos_emb,
             packed_seq_params=packed_seq_params,
-            cross_attention_masks=cross_attention_masks,
+            cross_attention_masks=None,
             full_text_row_masked_out_mask=full_text_row_masked_out_mask,
             xattn_caches=xattn_caches,
+            cross_attention_bias=cross_attention_bias,
             **(extra_block_kwargs or {}),
         )
 
@@ -203,6 +216,10 @@ class CrossAttentionTextModel(MCoreGPTModel):
 
 
 class CrossAttentionTransformerBlock(TransformerBlock):
+    """
+    Transformer block with integrated cross-attention layers for multimodal tasks.
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -220,7 +237,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
                     submodules=TransformerLayerSubmodules(
                         cross_attention=ModuleSpec(
                             module=MLlamaCrossAttention,
-                            params={"attn_mask_type": AttnMaskType.arbitrary},
+                            params={"attn_mask_type": AttnMaskType.no_mask},
                             submodules=MLlamaCrossAttentionSubmodules(
                                 linear_q=TELayerNormColumnParallelLinear,  # This wraps attention_norm before attention
                                 linear_kv=TEColumnParallelLinear,
@@ -250,6 +267,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
         assert len(self.xattn_layers) == len(self.layers), 'Check PP implementation for cross attention layers!'
 
     def _get_layer_offset(self):
+        """Get correct layer offset when encoder pipeline parallel size > 0."""
         encoder_pipeline_model_parallel_size = getattr(self.config, "encoder_pipeline_model_parallel_size", 0)
         decoder_pipeline_model_parallel_rank = (
             parallel_state.get_pipeline_model_parallel_rank() - encoder_pipeline_model_parallel_size
@@ -264,9 +282,12 @@ class CrossAttentionTransformerBlock(TransformerBlock):
         cross_attention_masks: Tensor = None,
         full_text_row_masked_out_mask: Tensor = None,
         rotary_pos_emb: Tensor = None,
+        attention_bias: Tensor = None,
+        cross_attention_bias: Tensor = None,
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
     ):
+        """Forward."""
         # hidden_states (float): [s, b, h]
         # attention_mask (bool): [1, 1, s, s]
 
@@ -324,6 +345,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
                                 xattn_cache=xattn_caches[l_no],
                                 full_text_row_masked_out_mask=full_text_row_masked_out_mask,
                                 rotary_pos_emb=rotary_pos_emb,
+                                cross_attention_bias=cross_attention_bias,
                                 inference_params=inference_params,
                                 packed_seq_params=packed_seq_params,
                             )
@@ -331,6 +353,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
                                 hidden_states=hidden_states,
                                 attention_mask=attention_mask,
                                 rotary_pos_emb=rotary_pos_emb,
+                                attention_bias=attention_bias,
                                 inference_params=inference_params,
                                 packed_seq_params=packed_seq_params,
                             )
@@ -361,6 +384,7 @@ class CrossAttentionTransformerBlock(TransformerBlock):
     def sharded_state_dict(
         self, prefix: str = '', sharded_offsets: tuple = (), metadata: dict = None
     ) -> ShardedStateDict:
+        """Update shareded state dict for cross-attention layers"""
         sharded_state_dict = {}
 
         layer_prefix = f'{prefix}layers.'
@@ -399,6 +423,10 @@ class CrossAttentionTransformerBlock(TransformerBlock):
 
 
 class CrossAttentionTransformerLayer(TransformerLayer):
+    """
+    Transformer layer with cross-attention for integration.
+    """
+
     def __init__(
         self,
         config: TransformerConfig,
@@ -417,6 +445,7 @@ class CrossAttentionTransformerLayer(TransformerLayer):
         self.gate_ffn = nn.Parameter(torch.zeros(1, dtype=self.config.params_dtype))
 
     def compute_xattn_kv_cache(self, xattn_tokens: Tensor) -> Tensor:
+        """Compute cross-attention kv cahce."""
         return self.cross_attention._compute_xattn_kv_cache(xattn_tokens)
 
     def forward(
@@ -426,9 +455,11 @@ class CrossAttentionTransformerLayer(TransformerLayer):
         xattn_cache=None,
         full_text_row_masked_out_mask=None,
         rotary_pos_emb=None,
+        cross_attention_bias=None,
         inference_params=None,
         packed_seq_params=None,
     ):
+        """Forward."""
         # hidden_states: [s, b, h]
 
         # Residual connection.
@@ -444,6 +475,7 @@ class CrossAttentionTransformerLayer(TransformerLayer):
             xattn_cache=xattn_cache,
             full_text_row_masked_out_mask=full_text_row_masked_out_mask,
             rotary_pos_emb=rotary_pos_emb,
+            cross_attention_bias=cross_attention_bias,
             inference_params=inference_params,
         )
 
@@ -507,11 +539,13 @@ class DummyCrossAttentionTransformerLayer(MegatronModule):
         return hidden_states, None
 
     def compute_xattn_kv_cache(self, xattn_tokens: Tensor) -> Optional[Tensor]:
+        # pylint: disable=C0115,C0116
         return None
 
 
 class MLlamaCrossAttention(Attention):
-    """Cross-attention layer class for Llama VLM support
+    """
+    Cross-attention layer for Llama multimodal tasks.
 
     Cross-attention layer takes input with size [s, b, h] and context with size
     [s, b, h] and returns output of the same size.
@@ -574,6 +608,7 @@ class MLlamaCrossAttention(Attention):
         )
 
     def get_key_value_tensors(self, key_value_states):
+        """Get key value tensors."""
         mixed_kv, _ = self.linear_kv(key_value_states)
 
         # [sk, b, (np * 2 * hn)] --> [sk, b, np, 2 * hn]
@@ -590,7 +625,7 @@ class MLlamaCrossAttention(Attention):
         return key, value
 
     def get_query_tensor(self, hidden_states):
-
+        """ "Get query tensor."""
         # Attention head [sq, b, h] --> [sq, b, hp]
         query, _ = self.linear_q(hidden_states)
 
@@ -607,6 +642,7 @@ class MLlamaCrossAttention(Attention):
         return query
 
     def get_query_key_value_tensors(self, hidden_states, key_value_states):
+        """Get query key value tensors."""
         query = self.get_query_tensor(hidden_states)
         key, value = self.get_key_value_tensors(key_value_states)
         return query, key, value
@@ -619,8 +655,17 @@ class MLlamaCrossAttention(Attention):
         full_text_row_masked_out_mask=None,
         inference_params=None,
         rotary_pos_emb=None,
+        rotary_pos_cos=None,
+        rotary_pos_sin=None,
+        cross_attention_bias=None,
         packed_seq_params=None,
     ):
+        """Forward."""
+        # hidden_states: [sq, b, h]
+        if self.config.flash_decode:
+            rotary_pos_emb = None
+        else:
+            assert rotary_pos_cos is None and rotary_pos_sin is None
 
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
         if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
@@ -637,8 +682,8 @@ class MLlamaCrossAttention(Attention):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, key, value, rotary_pos_emb
+        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+            inference_params, query, key, value, rotary_pos_emb, rotary_pos_cos, rotary_pos_sin
         )
 
         if packed_seq_params is not None:
@@ -650,9 +695,6 @@ class MLlamaCrossAttention(Attention):
         # core attention computation
         # ==================================
 
-        # In TE "True" means masked out
-        cross_attention_masks = torch.where(cross_attention_masks == 0, False, True)
-
         if self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
@@ -660,6 +702,7 @@ class MLlamaCrossAttention(Attention):
                 value,
                 cross_attention_masks,
                 attn_mask_type=attn_mask_type,
+                attention_bias=cross_attention_bias,
                 packed_seq_params=packed_seq_params,
             )
         else:
@@ -669,6 +712,7 @@ class MLlamaCrossAttention(Attention):
                 value,
                 cross_attention_masks,
                 attn_mask_type=attn_mask_type,
+                attention_bias=cross_attention_bias,
                 packed_seq_params=packed_seq_params,
             )
 
@@ -702,8 +746,22 @@ def apply_rope_scaling(
     high_freq_factor: int = 4,
     old_context_len: int = 8192,
 ):
+    """
+    Apply scaling to rotary embeddings for positional encoding.
+
+    Args:
+        inv_freq (Tensor): Tensor of inverse frequencies.
+        factor (int): Scaling factor for medium-to-high frequencies.
+        low_freq_factor (int): Factor for identifying low frequencies.
+        high_freq_factor (int): Factor for identifying high frequencies.
+        old_context_len (int): Original context length for scaling computation.
+
+    Returns:
+        Tensor: Scaled inverse frequencies.
+    """
     logging.info(
-        f"Apply rope scaling with factor={factor}, low_freq_factor={low_freq_factor}, high_freq_factor={high_freq_factor}, old_context_len={old_context_len}."
+        f"Apply rope scaling with factor={factor}, low_freq_factor={low_freq_factor}, "
+        f"high_freq_factor={high_freq_factor}, old_context_len={old_context_len}."
     )
 
     low_freq_wavelen = old_context_len / low_freq_factor

@@ -18,11 +18,7 @@ import nemo_run as run
 def torchrun(devices: int = 8) -> run.Config[run.LocalExecutor]:
     """Local executor using torchrun."""
     env_vars = {
-        "TRANSFORMERS_OFFLINE": "1",
         "TORCH_NCCL_AVOID_RECORD_STREAMS": "1",
-        "NCCL_NVLS_ENABLE": "0",
-        "NVTE_DP_AMAX_REDUCE_INTERVAL": "0",
-        "NVTE_ASYNC_AMAX_REDUCTION": "1",
     }
 
     executor = run.Config(

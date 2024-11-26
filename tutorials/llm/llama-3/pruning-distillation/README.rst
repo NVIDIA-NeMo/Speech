@@ -16,7 +16,7 @@ Llama 3.1 Pruning and Distillation with NeMo Framework
 Objectives
 ----------
 
-This tutorial demonstrates how to perform depth-pruning, width-pruning, teacher fine-tuning, and distillation on **Llama 3.1 8B** using the `WikiText-103-v1 <https://huggingface.co/datasets/Salesforce/wikitext/viewer/wikitext-103-v1>_ dataset with the NeMo Framework. The WikiText-103-v1 <https://huggingface.co/datasets/Salesforce/wikitext/viewer/wikitext-103-v1>`_ language modeling dataset comprises over 100 million tokens extracted from verified Good and Featured articles on Wikipedia.
+This tutorial demonstrates how to perform depth-pruning, width-pruning, teacher fine-tuning, and distillation on **Llama 3.1 8B** using the `WikiText-103-v1 <https://huggingface.co/datasets/Salesforce/wikitext/viewer/wikitext-103-v1>`_ dataset with the NeMo Framework. The `WikiText-103-v1 <https://huggingface.co/datasets/Salesforce/wikitext/viewer/wikitext-103-v1>`_ language modeling dataset comprises over 100 million tokens extracted from verified Good and Featured articles on Wikipedia.
 
 For this demonstration, we will perform teacher correction by running a light fine-tuning procedure on the ``Meta LLama 3.1 8B`` teacher model to generate a fine-tuned teacher model, ``megatron_llama_ft.nemo``, needed for optimal distillation. This fine-tuned teacher model is then trimmed. There are two methods to prune a model: depth-pruning and width-pruning. We will explore both techniques, yielding ``4b_depth_pruned_model.nemo`` and ``4b_width_pruned_model.nemo``, respectively. These models will serve as starting points for distillation to create the final distilled 4B models.
 

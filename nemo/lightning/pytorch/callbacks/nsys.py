@@ -74,10 +74,14 @@ class NsysCallback(Callback):
         """
 
         device = trainer.strategy.root_device
-        current_step = trainer.strategy.current_epoch_step
+        try:
+            # Not all strategies have this. e.g.:
+            #    AttributeError: 'SingleDeviceStrategy' object has no attribute 'current_epoch_step'
+            current_step = trainer.strategy.current_epoch_step
+        except AttributeError:
+            current_step = self._nsys_profile_start_step
         if device.type == 'cuda':
             if current_step == self._nsys_profile_start_step and get_rank() in self._nsys_profile_ranks:
-                logging.info("====== Start nsys profiling ======")
                 torch.cuda.cudart().cudaProfilerStart()
                 if self._nsys_profile_gen_shape:
                     torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
@@ -91,9 +95,11 @@ class NsysCallback(Callback):
         """
 
         device = trainer.strategy.root_device
-        current_step = trainer.strategy.current_epoch_step
+        try:
+            current_step = trainer.strategy.current_epoch_step
+        except AttributeError:
+            current_step = self._nsys_profile_end_step
         if device.type == 'cuda':
             if current_step == self._nsys_profile_end_step and get_rank() in self._nsys_profile_ranks:
-                logging.info("====== End nsys profiling ======")
                 torch.cuda.cudart().cudaProfilerStop()
                 torch.autograd.profiler.emit_nvtx().__exit__(None, None, None)

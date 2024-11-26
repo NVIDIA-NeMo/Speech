@@ -103,7 +103,13 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
             expected_output = record["last_word"].strip().lower()
             all_expected_outputs.append(expected_output)
             if model is not None:
-                if isinstance(model, MegatronLLMDeployable):
+
+                in_framework_model = False
+                if in_framework_supported:
+                    if isinstance(model, MegatronLLMDeployable):
+                        in_framework_model = True
+
+                if in_framework_model:
                     model_output = model.generate(
                         inputs=[prompt],
                         length_params={"min_length": 1, "max_length": 1},

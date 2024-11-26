@@ -278,7 +278,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         """Attaches a model to strategy."""
         super().connect(model)
 
-        assert not 'is_hf_model' in model.__dict__, "Cannot use HfAutoModelForCausalLM with MegatronParallel"
+        assert not 'is_hf_model' in model.__dict__, "Cannot use HFAutoModelForCausalLM with MegatronParallel"
 
         dtype_config = getattr(self._precision_plugin, "dtype_config", None)
         if self.pipeline_dtype is None and dtype_config:

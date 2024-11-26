@@ -84,7 +84,7 @@ if __name__ == '__main__':
 
     from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
 
-    model = llm.HfAutoModelForCausalLM(model_name=args.model, model_accelerator=model_accelerator)
+    model = llm.HFAutoModelForCausalLM(model_name=args.model, model_accelerator=model_accelerator)
     tokenizer = model.tokenizer
 
     llm.api.finetune(

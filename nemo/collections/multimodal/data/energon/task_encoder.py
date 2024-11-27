@@ -48,7 +48,8 @@ class MultiModalTaskEncoder(
     and similarity interleaved samples.
 
     This class extends the DefaultTaskEncoder and provides a flexible mechanism to handle and encode
-    different types of multimodal data. Support for VQA, captioning and interleaved samples is provided by default. It supports registering custom encoders for each sample type
+    different types of multimodal data. Support for VQA, captioning and interleaved samples is provided by default.
+    It supports registering custom encoders for each sample type
     and provides methods for encoding individual samples, batching them, and further processing the batch
     for model input.
     """
@@ -59,8 +60,8 @@ class MultiModalTaskEncoder(
 
         Parameters:
         tokenizer (Tokenizer): The tokenizer used for processing text across different sample types.
-        image_processor (ImageProcessor): The image processor used for preprocessing images across different sample types.
-        multimodal_sample_config (MultiModalSampleConfig): Configuration object for multimodal samples, including tokens and placeholders.
+        image_processor (ImageProcessor): The image processor used for preprocessing images.
+        multimodal_sample_config (MultiModalSampleConfig): MultiModalSampleConfig object.
         """
         self.tokenizer = tokenizer
         self.encoders: Dict[str, SampleEncoder] = {
@@ -173,5 +174,6 @@ class MultiModalTaskEncoder(
         position_ids = torch.arange(seq_length, dtype=torch.long)
         position_ids = position_ids.unsqueeze(0).repeat(micro_batch_size, 1)
         batch_dict['position_ids'] = position_ids
-        batch_dict['attention_mask'] = None
+        if 'attention_mask' not in batch_dict:
+            batch_dict['attention_mask'] = None
         return batch_dict

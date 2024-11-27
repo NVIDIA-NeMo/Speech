@@ -11,3 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from nemo.collections.vlm.llava_next.data.energon import LlavaNextTaskEncoder
+from nemo.collections.vlm.llava_next.data.mock import MockDataModule as LlavaNextMockDataModule
+
+__all__ = [
+    "LlavaNextMockDataModule",
+    "LlavaNextTaskEncoder",
+]

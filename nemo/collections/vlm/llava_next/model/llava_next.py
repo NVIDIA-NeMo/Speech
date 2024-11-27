@@ -12,46 +12,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 import torch
 import torch.distributed
 from megatron.core.inference_params import InferenceParams
 from megatron.core.optimizer import OptimizerConfig
+from megatron.core.transformer.transformer_config import TransformerConfig
 from transformers import LlavaNextForConditionalGeneration
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
-from nemo.collections.llm import LlamaConfig
-from nemo.collections.vlm import Llava15Config7B, Llava15Config13B, NevaModel
+from nemo.collections.llm import Llama2Config7B, Llama2Config13B, LlamaConfig
 from nemo.collections.vlm.llava_next.model.base import LlavaNextConfig, MCoreLlavaNextModel
-from nemo.collections.vlm.neva.model.base import HFCLIPVisionConfig, MultimodalProjectorConfig
+from nemo.collections.vlm.neva.model.base import HFCLIPVisionConfig, MultimodalProjectorConfig, NevaModel
 from nemo.collections.vlm.neva.model.llava import HFLlavaImporter
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModule
 
 
 @dataclass
-class LlavaNextConfig7B(Llava15Config7B):
+class LlavaNextConfig7B(LlavaNextConfig):
     """
     Configuration class for the 7B parameter variant of the LLaVA 16 model.
 
     Inherits all attributes and methods from Llava15Config7B without modification.
     """
 
-    pass
+    from transformers import PretrainedConfig
+
+    language_transformer_config: TransformerConfig = field(default_factory=lambda: Llama2Config7B())
+    vision_transformer_config: Union[TransformerConfig, PretrainedConfig] = field(
+        default_factory=lambda: HFCLIPVisionConfig(pretrained_model_name_or_path="openai/clip-vit-large-patch14-336")
+    )
+    vision_projection_config: TransformerConfig = field(
+        default_factory=lambda: MultimodalProjectorConfig(input_size=1024, hidden_size=4096, ffn_hidden_size=4096)
+    )
 
 
 @dataclass
-class LlavaNextConfig13B(Llava15Config13B):
+class LlavaNextConfig13B(LlavaNextConfig):
     """
     Configuration class for the 13B parameter variant of the LLaVA 16 model.
 
     Inherits all attributes and methods from Llava15Config13B without modification.
     """
 
-    pass
+    from transformers import PretrainedConfig
+
+    language_transformer_config: TransformerConfig = field(default_factory=lambda: Llama2Config13B())
+    vision_transformer_config: Union[TransformerConfig, PretrainedConfig] = field(
+        default_factory=lambda: HFCLIPVisionConfig(pretrained_model_name_or_path="openai/clip-vit-large-patch14-336")
+    )
+    vision_projection_config: TransformerConfig = field(
+        default_factory=lambda: MultimodalProjectorConfig(input_size=1024, hidden_size=5120, ffn_hidden_size=5120)
+    )
 
 
 class LlavaNextModel(NevaModel):
@@ -85,7 +101,6 @@ class LlavaNextModel(NevaModel):
         """
         super().__init__(
             config=config,
-            tokenizer=tokenizer,
             optim=optim or MegatronOptimizerModule(config=OptimizerConfig(lr=1e-4, use_distributed_optimizer=True)),
             tokenizer=tokenizer,
             model_transform=model_transform,

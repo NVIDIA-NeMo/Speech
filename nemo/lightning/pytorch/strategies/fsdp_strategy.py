@@ -213,17 +213,17 @@ class FSDPStrategy(PLFSDPStrategy, io.IOMixin):
         checkpoint["sharded_state_dict"] = pyt_to_mcore_state_dict(checkpoint.pop("state_dict"))
         checkpoint["state_dict"] = OrderedDict([])
 
-        ## replace unsharded optimizer_states with sharded dict.
-        ## note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
-        ## the checkpoint will contain only model weights. Optimizer states will be omitted.
-        if (
-            "optimizer_states" in checkpoint
-            and self.trainer.state.fn == TrainerFn.FITTING
-            and self.ckpt_save_optimizer
-        ):
+        if "optimizer_states" in checkpoint and self.trainer.state.fn == TrainerFn.FITTING:
+            # Clear the optimizer states. This handles the case where ckpt_save_optimizer=False
+            # Ideally, the optimizer state dicts should not be generated in this case
             checkpoint["optimizer_states"] = {}
-            checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
-            pyt_to_mcore_state_dict(checkpoint['optimizer']['state'], prefix="optimizer.state.")
+
+            ## replace unsharded optimizer_states with sharded dict.
+            ## note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
+            ## the checkpoint will contain only model weights. Optimizer states will be omitted.
+            if self.ckpt_save_optimizer:
+                checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
+                pyt_to_mcore_state_dict(checkpoint['optimizer']['state'], prefix="optimizer.state.")
 
         self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)
 

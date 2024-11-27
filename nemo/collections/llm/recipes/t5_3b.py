@@ -175,7 +175,8 @@ def pretrain_recipe(
         guide in the `examples/llm/pretrain/` directory.
     """
 
-    opt_config = OptimizerConfig(
+    opt_config = run.Config(
+        OptimizerConfig,
         optimizer='adam',
         lr=0.0001,
         use_distributed_optimizer=True,
@@ -183,7 +184,8 @@ def pretrain_recipe(
         weight_decay=0.01,
     )
 
-    lr_scheduler = WarmupAnnealingScheduler(
+    lr_scheduler = run.Config(
+        WarmupAnnealingScheduler,
         warmup_steps=None,
         warmup_ratio=0.01,
         max_steps=1000000,
@@ -202,7 +204,7 @@ def pretrain_recipe(
             MockDataModule, seq_length=512, seq_length_dec=128, global_batch_size=1920, micro_batch_size=24
         ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
-        optim=MegatronOptimizerModule(config=opt_config, lr_scheduler=lr_scheduler),
+        optim=run.Config(MegatronOptimizerModule, config=opt_config, lr_scheduler=lr_scheduler),
         resume=default_resume(),
     )
 
@@ -248,15 +250,17 @@ def finetune_recipe(
         on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
         `examples/llm/finetune/` directory.
     """
-    opt_config = OptimizerConfig(
+    opt_config = run.Config(
+        OptimizerConfig,
         optimizer='adam',
-        lr=1e-4,
+        lr=0.0001,
         use_distributed_optimizer=True,
         bf16=True,
         weight_decay=0.01,
     )
 
-    lr_scheduler = WarmupAnnealingScheduler(
+    lr_scheduler = run.Config(
+        WarmupAnnealingScheduler,
         warmup_steps=50,
         max_steps=2000,
         min_lr=0.00001,
@@ -273,7 +277,7 @@ def finetune_recipe(
             SquadDataModule, seq_length=512, seq_length_dec=128, global_batch_size=128, micro_batch_size=1
         ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
-        optim=MegatronOptimizerModule(config=opt_config, lr_scheduler=lr_scheduler),
+        optim=run.Config(MegatronOptimizerModule, config=opt_config, lr_scheduler=lr_scheduler),
         resume=nemo_resume(checkpoint_path),
     )
 

@@ -265,12 +265,11 @@ def validate(
 @run.cli.entrypoint(name="ptq", namespace="llm")
 def ptq(
     nemo_checkpoint: str,
+    export_config: ExportConfig,
     calib_tp: int = 1,
     calib_pp: int = 1,
     quantization_config: Annotated[Optional[QuantizationConfig], run.Config[QuantizationConfig]] = None,
-    export_config: Optional[Union[ExportConfig, run.Config[ExportConfig]]] = None,
 ) -> Path:
-    # TODO: Fix "nemo_run.cli.cli_parser.CLIException: An unexpected error occurred (Argument: , Context: {})"
     """
     Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
     calibration for a small dataset to collect scaling factors low-precision GEMMs used by desired quantization method.
@@ -297,6 +296,9 @@ def ptq(
     Returns:
         Path: The path where the quantized checkpoint has been saved after calibration.
     """
+    if not quantization_config:
+        quantization_config = QuantizationConfig()
+
     if export_config.path is None:
         raise ValueError("The export_config.path needs to be specified, got None.")
 

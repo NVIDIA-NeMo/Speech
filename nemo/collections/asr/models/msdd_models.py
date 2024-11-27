@@ -70,6 +70,7 @@ except ImportError:
 
     @contextmanager
     def autocast(enabled=None):
+        """auto-casting context manager"""
         yield
 
 
@@ -78,8 +79,8 @@ __all__ = ['EncDecDiarLabelModel', 'ClusterEmbedding', 'NeuralDiarizer']
 
 class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
     """
-    Encoder decoder class for multiscale diarization decoder (MSDD). Model class creates training, validation methods for setting
-    up data performing model forward pass.
+    Encoder decoder class for multiscale diarization decoder (MSDD). Model class creates training,
+    validation methods for setting up data performing model forward pass.
 
     This model class expects config dict for:
         * preprocessor
@@ -99,15 +100,18 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
         model = PretrainedModelInfo(
             pretrained_model_name="diar_msdd_telephonic",
-            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/diar_msdd_telephonic/versions/1.0.1/files/diar_msdd_telephonic.nemo",
-            description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:diar_msdd_telephonic",
+            location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/"
+            "diar_msdd_telephonic/versions/1.0.1/files/diar_msdd_telephonic.nemo",
+            description="For details about this model, please visit "
+            "https://ngc.nvidia.com/catalog/models/nvidia:nemo:diar_msdd_telephonic",
         )
         result.append(model)
         return result
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         """
-        Initialize an MSDD model and the specified speaker embedding model. In this init function, training and validation datasets are prepared.
+        Initialize an MSDD model and the specified speaker embedding model. In this init function,
+        training and validation datasets are prepared.
         """
         self._trainer = trainer if trainer else None
         self.cfg_msdd_model = cfg
@@ -173,9 +177,9 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
     def _init_speaker_model(self):
         """
-        Initialize speaker embedding model with model name or path passed through config. Note that speaker embedding model is loaded to
-        `self.msdd` to enable multi-gpu and multi-node training. In addition, speaker embedding model is also saved with msdd model when
-        `.ckpt` files are saved.
+        Initialize speaker embedding model with model name or path passed through config. Note that
+        speaker embedding model is loaded to `self.msdd` to enable multi-gpu and multi-node training.
+        In addition, speaker embedding model is also saved with msdd model when `.ckpt` files are saved.
         """
         model_path = self.cfg_msdd_model.diarizer.speaker_embeddings.model_path
         self._diarizer_params = self.cfg_msdd_model.diarizer
@@ -341,15 +345,17 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
                 Merged embeddings without zero-padding in the batch. See `ms_seg_counts` for details.
                 Shape: (Total number of segments in the batch, emb_dim)
             scale_mapping (Tensor):
-                The element at the m-th row and the n-th column of the scale mapping matrix indicates the (m+1)-th scale
-                segment index which has the closest center distance with (n+1)-th segment in the base scale.
+                The element at the m-th row and the n-th column of the scale mapping matrix indicates
+                the (m+1)-th scale segment index which has the closest center distance with (n+1)-th segment
+                in the base scale.
+
                 Example:
                     scale_mapping_argmat[2][101] = 85
-                In the above example, it means that 86-th segment in the 3rd scale (python index is 2) is mapped with
-                102-th segment in the base scale. Thus, the longer segments bound to have more repeating numbers since
-                multiple base scale segments (since the base scale has the shortest length) fall into the range of the
-                longer segments. At the same time, each row contains N numbers of indices where N is number of
-                segments in the base-scale (i.e., the finest scale).
+                In the above example, it means that 86-th segment in the 3rd scale (python index is 2)
+                is mapped with 102-th segment in the base scale. Thus, the longer segments bound to have more
+                repeating numbers since multiple base scale segments (since the base scale has the shortest length)
+                fall into the range of the longer segments. At the same time, each row contains N numbers of
+                indices where N is number of segments in the base-scale (i.e., the finest scale).
                 Shape: (batch_size, scale_n, self.diar_window_length)
             ms_seg_counts (Tensor):
                 Cumulative sum of the number of segments in each scale. This information is needed to reconstruct
@@ -366,8 +372,8 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
         Returns:
             ms_emb_seq (Tensor):
-                Multi-scale embedding sequence that is mapped, matched and repeated. The longer scales are less repeated,
-                while shorter scales are more frequently repeated following the scale mapping tensor.
+                Multi-scale embedding sequence that is mapped, matched and repeated. The longer scales are
+                less repeated, while shorter scales are more frequently repeated following the scale mapping tensor.
         """
         scale_n, batch_size = scale_mapping[0].shape[0], scale_mapping.shape[0]
         split_emb_tup = torch.split(embs, ms_seg_counts.view(-1).tolist(), dim=0)
@@ -388,19 +394,20 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         self, embs: torch.Tensor, clus_label_index: torch.Tensor, ms_seg_counts: torch.Tensor, scale_mapping
     ) -> torch.Tensor:
         """
-        Calculate the cluster-average speaker embedding based on the ground-truth speaker labels (i.e., cluster labels).
+        Calculate the cluster-average speaker embedding based on the ground-truth speaker labels
+        (i.e., cluster labels).
 
         Args:
             embs (Tensor):
                 Merged embeddings without zero-padding in the batch. See `ms_seg_counts` for details.
                 Shape: (Total number of segments in the batch, emb_dim)
             clus_label_index (Tensor):
-                Merged ground-truth cluster labels from all scales with zero-padding. Each scale's index can be
-                retrieved by using segment index in `ms_seg_counts`.
+                Merged ground-truth cluster labels from all scales with zero-padding. Each scale's
+                index can be retrieved by using segment index in `ms_seg_counts`.
                 Shape: (batch_size, maximum total segment count among the samples in the batch)
             ms_seg_counts (Tensor):
-                Cumulative sum of the number of segments in each scale. This information is needed to reconstruct
-                multi-scale input tensors during forward propagating.
+                Cumulative sum of the number of segments in each scale. This information is needed
+                to reconstruct multi-scale input tensors during forward propagating.
 
                 Example: `batch_size=3, scale_n=6, emb_dim=192`
                     .. code:: python
@@ -420,8 +427,9 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
         Returns:
             ms_avg_embs (Tensor):
-                Multi-scale cluster-average speaker embedding vectors. These embedding vectors are used as reference for
-                each speaker to predict the speaker label for the given multi-scale embedding sequences.
+                Multi-scale cluster-average speaker embedding vectors. These embedding vectors are used
+                as reference for each speaker to predict the speaker label for the given multi-scale
+                embedding sequences.
                 Shape: (batch_size, scale_n, emb_dim, self.num_spks_per_model)
         """
         scale_n, batch_size = scale_mapping[0].shape[0], scale_mapping.shape[0]
@@ -534,7 +542,8 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
     def forward_infer(self, input_signal, input_signal_length, emb_vectors, targets):
         """
-        Wrapper function for inference case.
+        Wrapper function for inference case. This `forward_infer` is only used during inference, where `forward`
+        is used for training and validation.
         """
         preds, scale_weights = self.msdd(
             ms_emb_seq=input_signal, length=input_signal_length, ms_avg_embs=emb_vectors, targets=targets
@@ -545,6 +554,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
     def forward(
         self, features, feature_length, ms_seg_timestamps, ms_seg_counts, clus_label_index, scale_mapping, targets
     ):
+        """Function to compute forward pass for training/validation."""
         processed_signal, processed_signal_len = self.msdd._speaker_model.preprocessor(
             input_signal=features, length=feature_length
         )
@@ -577,6 +587,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         return preds, scale_weights
 
     def training_step(self, batch: list, batch_idx: int):
+        """Function to compute training step."""
         features, feature_length, ms_seg_timestamps, ms_seg_counts, clus_label_index, scale_mapping, targets = batch
         sequence_lengths = torch.tensor([x[-1] for x in ms_seg_counts.detach()])
         preds, _ = self.forward(
@@ -588,10 +599,11 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
             scale_mapping=scale_mapping,
             targets=targets,
         )
-        loss = self.loss(probs=preds, labels=targets, signal_lengths=sequence_lengths)
+        # loss = self.loss(probs=preds, labels=targets, signal_lengths=sequence_lengths)
+        loss = self.loss(probs=preds, labels=targets, target_lens=sequence_lengths)
         self._accuracy_train(preds, targets, sequence_lengths)
         torch.cuda.empty_cache()
-        f1_acc = self._accuracy_train.compute()
+        f1_acc, _, _ = self._accuracy_train.compute()
         self.log('loss', loss, sync_dist=True)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'], sync_dist=True)
         self.log('train_f1_acc', f1_acc, sync_dist=True)
@@ -599,6 +611,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
         return {'loss': loss}
 
     def validation_step(self, batch: list, batch_idx: int, dataloader_idx: int = 0):
+        """Function to compute validation step."""
         features, feature_length, ms_seg_timestamps, ms_seg_counts, clus_label_index, scale_mapping, targets = batch
         sequence_lengths = torch.tensor([x[-1] for x in ms_seg_counts])
         preds, _ = self.forward(
@@ -610,9 +623,10 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
             scale_mapping=scale_mapping,
             targets=targets,
         )
-        loss = self.loss(probs=preds, labels=targets, signal_lengths=sequence_lengths)
+        # loss = self.loss(probs=preds, labels=targets, signal_lengths=sequence_lengths)
+        loss = self.loss(probs=preds, labels=targets, target_lens=sequence_lengths)
         self._accuracy_valid(preds, targets, sequence_lengths)
-        f1_acc = self._accuracy_valid.compute()
+        f1_acc, _, _ = self._accuracy_valid.compute()
         self.log('val_loss', loss, sync_dist=True)
         self.log('val_f1_acc', f1_acc, sync_dist=True)
         return {
@@ -622,7 +636,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
     def multi_validation_epoch_end(self, outputs: list, dataloader_idx: int = 0):
         val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        f1_acc = self._accuracy_valid.compute()
+        f1_acc, _, _ = self._accuracy_valid.compute()
         self._accuracy_valid.reset()
 
         self.log('val_loss', val_loss_mean, sync_dist=True)
@@ -634,7 +648,7 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
     def multi_test_epoch_end(self, outputs: List[Dict[str, torch.Tensor]], dataloader_idx: int = 0):
         test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        f1_acc = self._accuracy_test.compute()
+        f1_acc, _, _ = self._accuracy_test.compute()
         self._accuracy_test.reset()
         self.log('test_f1_acc', f1_acc, sync_dist=True)
         return {
@@ -648,9 +662,10 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
         Returns:
             f1_score (float): F1 score of the estimated diarized speaker label sequences.
-            simple_acc (float): Accuracy of predicted speaker labels: (total # of correct labels)/(total # of sigmoid values)
+            simple_acc (float): Accuracy of predicted speaker labels:
+                (total # of correct labels)/(total # of sigmoid values)
         """
-        f1_score = self._accuracy_test.compute()
+        f1_score, _, _ = self._accuracy_test.compute()
         num_correct = torch.sum(self._accuracy_test.true.bool())
         total_count = torch.prod(torch.tensor(self._accuracy_test.targets.shape))
         simple_acc = num_correct / total_count
@@ -659,7 +674,9 @@ class EncDecDiarLabelModel(ModelPT, ExportableEncDecModel):
 
 class ClusterEmbedding(torch.nn.Module):
     """
-    This class is built for calculating cluster-average embeddings, segmentation and load/save of the estimated cluster labels.
+    This class is built for calculating cluster-average embeddings, segmentation and load/save of
+    the estimated cluster labels.
+
     The methods in this class is used for the inference of MSDD models.
 
     Args:
@@ -708,10 +725,10 @@ class ClusterEmbedding(torch.nn.Module):
 
     def assign_labels_to_longer_segs(self, base_clus_label_dict: Dict, session_scale_mapping_dict: Dict):
         """
-        In multi-scale speaker diarization system, clustering result is solely based on the base-scale (the shortest scale).
-        To calculate cluster-average speaker embeddings for each scale that are longer than the base-scale, this function assigns
-        clustering results for the base-scale to the longer scales by measuring the distance between subsegment timestamps in the
-        base-scale and non-base-scales.
+        In multi-scale speaker diarization system, clustering result is solely based on the base-scale
+        (the shortest scale). To calculate cluster-average speaker embeddings for each scale that are longer
+        than the base-scale, this function assigns clustering results for the base-scale to the longer scales
+        by measuring the distance between subsegment timestamps in the base-scale and non-base-scales.
 
         Args:
             base_clus_label_dict (dict):
@@ -754,7 +771,8 @@ class ClusterEmbedding(torch.nn.Module):
                 Dictionary containing multiscale embedding input sequences.
         Returns:
             base_clus_label_dict (dict):
-                Dictionary containing start and end of base scale segments and its cluster label. Indexed by `uniq_id`.
+                Dictionary containing start and end of base scale segments and its cluster label.
+                Indexed by `uniq_id`.
             emb_dim (int):
                 Embedding dimension in integer.
         """
@@ -771,17 +789,18 @@ class ClusterEmbedding(torch.nn.Module):
         self, emb_scale_seq_dict: Dict, clus_labels: List, speaker_mapping_dict: Dict, session_scale_mapping_dict: Dict
     ):
         """
-        MSDD requires cluster-average speaker embedding vectors for each scale. This function calculates an average embedding vector for each cluster (speaker)
-        and each scale.
+        MSDD requires cluster-average speaker embedding vectors for each scale. This function calculates
+        an average embedding vector for each cluster (speaker) and each scale.
 
         Args:
             emb_scale_seq_dict (dict):
                 Dictionary containing embedding sequence for each scale. Keys are scale index in integer.
             clus_labels (list):
-                Clustering results from clustering diarizer including all the sessions provided in input manifest files.
+                Clustering results from clustering diarizer including all the sessions provided
+                in input manifest files.
             speaker_mapping_dict (dict):
-                Speaker mapping dictionary in case RTTM files are provided. This is mapping between integer based speaker index and
-                speaker ID tokens in RTTM files.
+                Speaker mapping dictionary in case RTTM files are provided. This is mapping between
+                integer based speaker index and speaker ID tokens in RTTM files.
                 Example:
                     {'en_0638': {'speaker_0': 'en_0638_A', 'speaker_1': 'en_0638_B'},
                      'en_4065': {'speaker_0': 'en_4065_B', 'speaker_1': 'en_4065_A'}, ...,}
@@ -793,7 +812,8 @@ class ClusterEmbedding(torch.nn.Module):
                 Dictionary containing speaker mapping information and cluster-average speaker embedding vector.
                 Each session-level dictionary is indexed by scale index in integer.
             output_clus_label_dict (dict):
-                Subegmentation timestamps in float type and Clustering result in integer type. Indexed by `uniq_id` keys.
+                Subegmentation timestamps in float type and Clustering result in integer type.
+                Indexed by `uniq_id` keys.
         """
         self.scale_n = len(emb_scale_seq_dict.keys())
         emb_sess_avg_dict = {
@@ -830,9 +850,10 @@ class ClusterEmbedding(torch.nn.Module):
 
     def run_clustering_diarizer(self, manifest_filepath: str, emb_dir: str):
         """
-        If no pre-existing data is provided, run clustering diarizer from scratch. This will create scale-wise speaker embedding
-        sequence, cluster-average embeddings, scale mapping and base scale clustering labels. Note that speaker embedding `state_dict`
-        is loaded from the `state_dict` in the provided MSDD checkpoint.
+        If no pre-existing data is provided, run clustering diarizer from scratch. This will create
+        scale-wise speaker embedding sequence, cluster-average embeddings, scale mapping and base scale
+        clustering labels. Note that speaker embedding `state_dict` is loaded from the `state_dict`
+        in the provided MSDD checkpoint.
 
         Args:
             manifest_filepath (str):
@@ -846,7 +867,8 @@ class ClusterEmbedding(torch.nn.Module):
             emb_scale_seq_dict (dict):
                 Dictionary containing embedding tensors which are indexed by scale numbers.
             base_clus_label_dict (dict):
-                Dictionary containing clustering results. Clustering results are cluster labels for the base scale segments.
+                Dictionary containing clustering results. Clustering results are cluster labels
+                for the base scale segments.
         """
         self.cfg_diar_infer.diarizer.manifest_filepath = manifest_filepath
         self.cfg_diar_infer.diarizer.out_dir = emb_dir
@@ -974,9 +996,9 @@ class ClusterEmbedding(torch.nn.Module):
 
 class NeuralDiarizer(LightningModule):
     """
-    Class for inference based on multiscale diarization decoder (MSDD). MSDD requires initializing clustering results from
-    clustering diarizer. Overlap-aware diarizer requires separate RTTM generation and evaluation modules to check the effect of
-    overlap detection in speaker diarization.
+    Class for inference based on multiscale diarization decoder (MSDD). MSDD requires initializing
+    clustering results from clustering diarizer. Overlap-aware diarizer requires separate RTTM
+    generation and evaluation modules to check the effect of overlap detection in speaker diarization.
     """
 
     def __init__(self, cfg: Union[DictConfig, NeuralDiarizerInferenceConfig]):
@@ -1029,7 +1051,8 @@ class NeuralDiarizer(LightningModule):
         You can use "restore_from" method to fully restore instance from .nemo file.
 
         .nemo file is an archive (tar.gz) with the following:
-            model_config.yaml - model configuration in .yaml format. You can deserialize this into cfg argument for model's constructor
+            model_config.yaml - model configuration in .yaml format.
+                                You can deserialize this into cfg argument for model's constructor
             model_wights.chpt - model checkpoint
 
         Args:
@@ -1053,8 +1076,8 @@ class NeuralDiarizer(LightningModule):
 
     def extract_standalone_speaker_model(self, prefix: str = 'msdd._speaker_model.') -> EncDecSpeakerLabelModel:
         """
-        MSDD model file contains speaker embedding model and MSDD model. This function extracts standalone speaker model and save it to
-        `self.spk_emb_state_dict` to be loaded separately for clustering diarizer.
+        MSDD model file contains speaker embedding model and MSDD model. This function extracts standalone
+        speaker model and save it to `self.spk_emb_state_dict` to be loaded separately for clustering diarizer.
 
         Args:
             ext (str):
@@ -1104,20 +1127,22 @@ class NeuralDiarizer(LightningModule):
 
     def get_pred_mat(self, data_list: List[Union[Tuple[int], List[torch.Tensor]]]) -> torch.Tensor:
         """
-        This module puts together the pairwise, two-speaker, predicted results to form a finalized matrix that has dimension of
-        `(total_len, n_est_spks)`. The pairwise results are evenutally averaged. For example, in 4 speaker case (speaker 1, 2, 3, 4),
-        the sum of the pairwise results (1, 2), (1, 3), (1, 4) are then divided by 3 to take average of the sigmoid values.
+        This module puts together the pairwise, two-speaker, predicted results to form a finalized matrix
+        that has dimension of `(total_len, n_est_spks)`. The pairwise results are evenutally averaged.
+        For example, in 4 speaker case (speaker 1, 2, 3, 4), the sum of the pairwise results
+        (1, 2), (1, 3), (1, 4) are then divided by 3 to take average of the sigmoid values.
 
         Args:
             data_list (list):
-                List containing data points from `test_data_collection` variable. `data_list` has sublists `data` as follows:
-                data[0]: `target_spks` tuple
-                    Examples: (0, 1, 2)
-                data[1]: Tensor containing estimaged sigmoid values.
-                   [[0.0264, 0.9995],
-                    [0.0112, 1.0000],
-                    ...,
-                    [1.0000, 0.0512]]
+                List containing data points from `test_data_collection` variable. `data_list`
+                has sublists `data` as follows:
+                    data[0]: `target_spks` tuple
+                        Examples: (0, 1, 2)
+                    data[1]: Tensor containing estimaged sigmoid values.
+                    [[0.0264, 0.9995],
+                        [0.0112, 1.0000],
+                        ...,
+                        [1.0000, 0.0512]]
 
         Returns:
             sum_pred (Tensor):
@@ -1152,7 +1177,8 @@ class NeuralDiarizer(LightningModule):
             uniq_id_list (list):
                 List containing `uniq_id` values.
             test_data_collection (collections.DiarizationLabelEntity):
-                Class instance that is containing session information such as targeted speaker indices, audio filepaths and RTTM filepaths.
+                Class instance that is containing session information such as targeted speaker indices,
+                audio filepaths and RTTM filepaths.
             preds_list (list):
                 List containing tensors filled with sigmoid values.
 
@@ -1177,9 +1203,11 @@ class NeuralDiarizer(LightningModule):
     @torch.no_grad()
     def diarize(self) -> Optional[List[Optional[List[Tuple[DiarizationErrorRate, Dict]]]]]:
         """
-        Launch diarization pipeline which starts from VAD (or a oracle VAD stamp generation), initialization clustering and multiscale diarization decoder (MSDD).
-        Note that the result of MSDD can include multiple speakers at the same time. Therefore, RTTM output of MSDD needs to be based on `make_rttm_with_overlap()`
-        function that can generate overlapping timestamps. `self.run_overlap_aware_eval()` function performs DER evaluation.
+        Launch diarization pipeline which starts from VAD (or a oracle VAD stamp generation),
+        initialization clustering and multiscale diarization decoder (MSDD). Note that the result of MSDD
+        can include multiple speakers at the same time. Therefore, RTTM output of MSDD needs to be based on
+        `make_rttm_with_overlap()` function that can generate overlapping timestamps.
+        `self.run_overlap_aware_eval()` function performs DER evaluation.
         """
         self.clustering_embedding.prepare_cluster_embs_infer()
         self.msdd_model.pairwise_infer = True
@@ -1192,10 +1220,11 @@ class NeuralDiarizer(LightningModule):
         self, signals: torch.Tensor, emb_vectors: torch.Tensor, diar_window_index: int, test_data_collection: List[Any]
     ) -> Tuple[torch.Tensor, torch.Tensor, int]:
         """
-        This function is only used when `split_infer=True`. This module calculates cluster-average embeddings for the given short range.
-        The range length is set by `self.diar_window_length`, and each cluster-average is only calculated for the specified range.
-        Note that if the specified range does not contain some speakers (e.g. the range contains speaker 1, 3) compared to the global speaker sets
-        (e.g. speaker 1, 2, 3, 4) then the missing speakers (e.g. speakers 2, 4) are assigned with zero-filled cluster-average speaker embedding.
+        This function is only used when `split_infer=True`. This module calculates cluster-average embeddings
+        for the given short range. The range length is set by `self.diar_window_length`, and each cluster-average
+        is only calculated for the specified range. Note that if the specified range does not contain some speakers
+        (e.g. the range contains speaker 1, 3) compared to the global speaker sets (e.g. speaker 1, 2, 3, 4) then
+        the missing speakers (e.g. speakers 2, 4) are assigned with zero-filled cluster-average speaker embedding.
 
         Args:
             signals (Tensor):
@@ -1207,7 +1236,8 @@ class NeuralDiarizer(LightningModule):
             diar_window_index (int):
                 Index of split diarization wondows.
             test_data_collection (collections.DiarizationLabelEntity)
-                Class instance that is containing session information such as targeted speaker indices, audio filepath and RTTM filepath.
+                Class instance that is containing session information such as targeted speaker indices,
+                audio filepath and RTTM filepath.
 
         Returns:
             return emb_vectors_split (Tensor):
@@ -1237,7 +1267,8 @@ class NeuralDiarizer(LightningModule):
                 )
                 target_clus_label_bool = target_clus_label_tensor == test_data_collection.target_spks[spk_idx]
 
-                # There are cases where there is no corresponding speaker in split range, so any(target_clus_label_bool) could be False.
+                # There are cases where there is no corresponding speaker in split range,
+                # so any(target_clus_label_bool) could be False.
                 if any(target_clus_label_bool):
                     emb_vectors_split[:, :, spk_idx] = torch.mean(emb_seq[target_clus_label_bool], dim=0)
 
@@ -1263,14 +1294,17 @@ class NeuralDiarizer(LightningModule):
         self, test_batch: List[torch.Tensor], _test_data_collection: List[Any], device: torch.device('cpu')
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        This function is only used when `get_range_average` function is called. This module calculates cluster-average embeddings for
-        the given short range. The range length is set by `self.diar_window_length`, and each cluster-average is only calculated for the specified range.
+        This function is only used when `get_range_average` function is called. This module calculates
+        cluster-average embeddings for the given short range. The range length is set by `self.diar_window_length`,
+        and each cluster-average is only calculated for the specified range.
 
         Args:
             test_batch: (list)
-                List containing embedding sequences, length of embedding sequences, ground truth labels (if exists) and initializing embedding vectors.
+                List containing embedding sequences, length of embedding sequences, ground truth labels
+                (if exists) and initializing embedding vectors.
             test_data_collection: (list)
-                List containing test-set dataloader contents. test_data_collection includes wav file path, RTTM file path, clustered speaker indices.
+                List containing test-set dataloader contents. test_data_collection includes wav file path,
+                RTTM file path, clustered speaker indices.
 
         Returns:
             sess_emb_vectors (Tensor):
@@ -1305,16 +1339,18 @@ class NeuralDiarizer(LightningModule):
         self, test_batch: List[torch.Tensor], test_data_collection: List[Any]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Launch forward_infer() function by feeding the session-wise embedding sequences to get pairwise speaker prediction values.
-        If split_infer is True, the input audio clips are broken into short sequences then cluster average embeddings are calculated
-        for inference. Split-infer might result in an improved results if calculating clustering average on the shorter tim-espan can
-        help speaker assignment.
+        Launch forward_infer() function by feeding the session-wise embedding sequences to get pairwise
+        speaker prediction values. If split_infer is True, the input audio clips are broken into short
+        sequences then cluster average embeddings are calculated for inference. Split-infer might result in
+        an improved results if calculating clustering average on the shorter tim-espan can help speaker assignment.
 
         Args:
             test_batch: (list)
-                List containing embedding sequences, length of embedding sequences, ground truth labels (if exists) and initializing embedding vectors.
+                List containing embedding sequences, length of embedding sequences, ground truth labels (if exists)
+                and initializing embedding vectors.
             test_data_collection: (list)
-                List containing test-set dataloader contents. test_data_collection includes wav file path, RTTM file path, clustered speaker indices.
+                List containing test-set dataloader contents. test_data_collection includes wav file path,
+                RTTM file path, clustered speaker indices.
 
         Returns:
             preds (Tensor):
@@ -1353,8 +1389,9 @@ class NeuralDiarizer(LightningModule):
     @torch.no_grad()
     def run_pairwise_diarization(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[torch.Tensor]]:
         """
-        Setup the parameters needed for batch inference and run batch inference. Note that each sample is pairwise speaker input.
-        The pairwise inference results are reconstructed to make session-wise prediction results.
+        Setup the parameters needed for batch inference and run batch inference. Note that each sample is
+        pairwise speaker input. The pairwise inference results are reconstructed to make session-wise
+        prediction results.
 
         Returns:
             integrated_preds_list: (list)
@@ -1405,7 +1442,8 @@ class NeuralDiarizer(LightningModule):
                     - If threshold is 0.0, all speakers are considered active at any time step.
         """
         logging.info(
-            f"     [Threshold: {threshold:.4f}] [use_clus_as_main={self.use_clus_as_main}] [diar_window={self.diar_window_length}]"
+            f"     [Threshold: {threshold:.4f}] [use_clus_as_main={self.use_clus_as_main}] "
+            f"[diar_window={self.diar_window_length}]"
         )
         outputs = []
         manifest_filepath = self.msdd_model.cfg.test_ds.manifest_filepath

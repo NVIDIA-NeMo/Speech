@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 import torch
@@ -22,7 +23,6 @@ from megatron.core.inference_params import InferenceParams
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
 
 from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank, get_packed_seq_params
-from nemo.collections.vlm import MCoreNevaModel, NevaConfig
 from nemo.collections.vlm.llava_next.model.utils import merge_input_ids_with_image_features, pack_image_features
 from nemo.collections.vlm.neva.data.multimodal_tokens import IMAGE_TOKEN_INDEX
 
@@ -64,14 +64,9 @@ def llava_next_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
         )
     )
     if parallel_state.is_pipeline_first_stage():
-        required_keys.update(("position_ids",))
+        required_keys.update(("position_ids", "attention_mask"))
     if parallel_state.is_pipeline_last_stage():
-        required_keys.update(
-            (
-                "labels",
-                "loss_mask",
-            )
-        )
+        required_keys.update(("labels", "loss_mask", "attention_mask"))
 
     _batch = {
         key: val.cuda(non_blocking=True) if key in required_keys and val is not None else None
@@ -114,6 +109,10 @@ def llava_next_forward_step(model, batch) -> torch.Tensor:
     return model(**forward_args)
 
 
+from nemo.collections.vlm.neva.model.base import MCoreNevaModel, NevaConfig
+
+
+@dataclass
 class LlavaNextConfig(NevaConfig):
     """
     Configuration class for the LLaVA Next model.
@@ -121,8 +120,8 @@ class LlavaNextConfig(NevaConfig):
 
     """
 
-    forward_step_fn: Callable = llava_next_forward_step
-    data_step_fn: Callable = llava_next_data_step
+    forward_step_fn: Callable = field(default=llava_next_forward_step)
+    data_step_fn: Callable = field(default=llava_next_data_step)
 
     def configure_model(self, tokenizer) -> "MCoreLlavaNextModel":
         """
@@ -244,7 +243,6 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             output (torch.Tensor): Loss ([b, s]) if labels are provided; logits ([b, s, vocab_size]) otherwise.
             loss_mask (torch.Tensor): Loss mask expanded to combined sequence length. Shape [b, s].
         """
-
         use_inference_kv_cache = (
             inference_params is not None and "image_tokens_count" in inference_params.key_value_memory_dict
         )
@@ -275,11 +273,9 @@ class MCoreLlavaNextModel(MCoreNevaModel):
                 media_embeddings = media_embeddings[:, class_token_len:, :]
 
             # contiguous() required as `permute` can sparsify the tensor and this breaks pipelining
-            media_embeddings = media_embeddings.permute(1, 0, 2).contiguous()  # [img_seq_len, num_tiles, h_vision]
-
+            media_embeddings = media_embeddings.contiguous()
             # map vision model output size to language model input size.
             media_embeddings = self.vision_projection(media_embeddings)  # [img_seq_len, num_tiles, h_language]
-
             # TODO: Support batched inference.
             # In inference, the language model KV cache will be updated for image token positions.
             # Store the image tokens sequence length to be used as an offset to the KV cache later.
@@ -354,7 +350,6 @@ class MCoreLlavaNextModel(MCoreNevaModel):
                 image_token_index=media_token_index,
             )
         )
-
         combined_embeddings = combined_embeddings.permute(1, 0, 2)
         combined_embeddings = combined_embeddings.contiguous()
         output = self.language_model(

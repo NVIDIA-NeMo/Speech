@@ -79,8 +79,11 @@ class MockDataModule(pl.LightningDataModule):
         self.persistent_workers = persistent_workers
 
         if tokenizer is None or image_processor is None:
-            logging.warning(f"Processor or tokenizer are not provided! Fall back to `llava-hf/llava-1.5-7b-hf`.")
+            logging.warning(
+                f"Processor or tokenizer are not provided! Fall back to `llava-hf/llava-v1.6-vicuna-7b-hf`."
+            )
             from transformers import AutoProcessor
+
             from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
             model_name = "llava-hf/llava-v1.6-vicuna-7b-hf"

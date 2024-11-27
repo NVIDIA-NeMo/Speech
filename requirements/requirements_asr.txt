@@ -8,6 +8,7 @@ kaldiio
 lhotse>=1.26.0
 librosa>=0.10.2
 marshmallow
+optuna
 packaging
 pyannote.core
 pyannote.metrics

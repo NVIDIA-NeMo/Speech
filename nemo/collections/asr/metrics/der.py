@@ -36,12 +36,12 @@ __all__ = [
 
 def get_partial_ref_labels(pred_labels: List[str], ref_labels: List[str]) -> List[str]:
     """
-    For evaluation of online diarization performance, generate partial reference labels 
+    For evaluation of online diarization performance, generate partial reference labels
     from the last prediction time.
 
     Args:
         pred_labels (list[str]): list of partial prediction labels
-        ref_labels (list[str]): list of full reference labels 
+        ref_labels (list[str]): list of full reference labels
 
     Returns:
         ref_labels_out (list[str]): list of partial reference labels
@@ -84,8 +84,8 @@ def get_online_DER_stats(
     For evaluation of online diarization performance, add cumulative, average, and maximum DER/CER.
 
     Args:
-        DER (float): Diarization Error Rate from the start to the current point 
-        CER (float): Confusion Error Rate from the start to the current point 
+        DER (float): Diarization Error Rate from the start to the current point
+        CER (float): Confusion Error Rate from the start to the current point
         FA (float): False Alarm from the start to the current point
         MISS (float): Miss rate from the start to the current point
         diar_eval_count (int): Number of evaluation sessions
@@ -123,30 +123,45 @@ def uem_timeline_from_file(uem_file, uniq_name=''):
         lines = f.readlines()
         for line in lines:
             line = line.strip()
-            speaker_id, channel, start_time, end_time = line.split()
+            _, _, start_time, end_time = line.split()
             timeline.add(Segment(float(start_time), float(end_time)))
 
     return timeline
 
 
 def score_labels(
-    AUDIO_RTTM_MAP, all_reference, all_hypothesis, collar=0.25, ignore_overlap=True, verbose: bool = True
+    AUDIO_RTTM_MAP,
+    all_reference: list,
+    all_hypothesis: list,
+    all_uem: List[List[float]] = None,
+    collar: float = 0.25,
+    ignore_overlap: bool = True,
+    verbose: bool = True,
 ) -> Optional[Tuple[DiarizationErrorRate, Dict]]:
     """
     Calculate DER, CER, FA and MISS rate from hypotheses and references. Hypothesis results are
     coming from Pyannote-formatted speaker diarization results and References are coming from
     Pyannote-formatted RTTM data.
 
-
     Args:
         AUDIO_RTTM_MAP (dict): Dictionary containing information provided from manifestpath
         all_reference (list[uniq_name,Annotation]): reference annotations for score calculation
         all_hypothesis (list[uniq_name,Annotation]): hypothesis annotations for score calculation
-        verbose (bool): Warns if RTTM file is not found.
+        all_uem (list[list[float]]): List of UEM segments for each audio file. If UEM file is not provided,
+                                     it will be read from manifestpath
+        collar (float): Length of collar (in seconds) for diarization error rate calculation
+        ignore_overlap (bool): If True, overlapping segments in reference and hypothesis will be ignored
+        verbose (bool): If True, warning messages will be printed
 
     Returns:
-        metric (pyannote.DiarizationErrorRate): Pyannote Diarization Error Rate metric object. This object contains detailed scores of each audiofile.
+        metric (pyannote.DiarizationErrorRate): Pyannote Diarization Error Rate metric object.
+                                                This object contains detailed scores of each audiofile.
         mapping (dict): Mapping dict containing the mapping speaker label for each audio input
+        itemized_errors (tuple): Tuple containing (DER, CER, FA, MISS) for each audio file.
+            - DER: Diarization Error Rate, which is sum of all three errors, CER + FA + MISS.
+            - CER: Confusion Error Rate, which is sum of all errors
+            - FA: False Alarm Rate, which is the number of false alarm segments
+            - MISS: Missed Detection Rate, which is the number of missed detection segments
 
     < Caveat >
     Unlike md-eval.pl, "no score" collar in pyannote.metrics is the maximum length of
@@ -157,33 +172,51 @@ def score_labels(
     if len(all_reference) == len(all_hypothesis):
         metric = DiarizationErrorRate(collar=2 * collar, skip_overlap=ignore_overlap)
 
-        mapping_dict = {}
-        for (reference, hypothesis) in zip(all_reference, all_hypothesis):
+        mapping_dict, correct_spk_count = {}, 0
+        for idx, (reference, hypothesis) in enumerate(zip(all_reference, all_hypothesis)):
             ref_key, ref_labels = reference
             _, hyp_labels = hypothesis
-            uem = AUDIO_RTTM_MAP[ref_key].get('uem_filepath', None)
-            if uem is not None:
-                uem = uem_timeline_from_file(uem_file=uem, uniq_name=ref_key)
-            metric(ref_labels, hyp_labels, uem=uem, detailed=True)
+            if len(ref_labels.labels()) == len(hyp_labels.labels()):
+                correct_spk_count += 1
+            if verbose and len(ref_labels.labels()) != len(hyp_labels.labels()):
+                logging.info(
+                    f"Wrong Spk. Count with uniq_id:...{ref_key[-10:]}, "
+                    f"Ref: {len(ref_labels.labels())}, Hyp: {len(hyp_labels.labels())}"
+                )
+            uem_obj = None
+            if all_uem is not None:
+                metric(ref_labels, hyp_labels, uem=all_uem[idx], detailed=True)
+            elif AUDIO_RTTM_MAP[ref_key].get('uem_filepath', None) is not None:
+                uem_file = AUDIO_RTTM_MAP[ref_key].get('uem_filepath', None)
+                uem_obj = uem_timeline_from_file(uem_file=uem_file, uniq_name=ref_key)
+                metric(ref_labels, hyp_labels, uem=uem_obj, detailed=True)
+            else:
+                metric(ref_labels, hyp_labels, detailed=True)
             mapping_dict[ref_key] = metric.optimal_mapping(ref_labels, hyp_labels)
 
+        spk_count_acc = correct_spk_count / len(all_reference)
         DER = abs(metric)
+        if metric['total'] == 0:
+            raise ValueError("Total evaluation time is 0. Abort.")
         CER = metric['confusion'] / metric['total']
         FA = metric['false alarm'] / metric['total']
         MISS = metric['missed detection'] / metric['total']
+
         itemized_errors = (DER, CER, FA, MISS)
 
+        if verbose:
+            logging.info(f"\n{metric.report()}")
         logging.info(
-            "Cumulative Results for collar {} sec and ignore_overlap {}: \n FA: {:.4f}\t MISS {:.4f}\t \
-                Diarization ER: {:.4f}\t, Confusion ER:{:.4f}".format(
-                collar, ignore_overlap, FA, MISS, DER, CER
-            )
+            f"Cumulative Results for collar {collar} sec and ignore_overlap {ignore_overlap}: \n"
+            f"| FA: {FA:.4f} | MISS: {MISS:.4f} | CER: {CER:.4f} | DER: {DER:.4f} | "
+            f"Spk. Count Acc. {spk_count_acc:.4f}\n"
         )
 
         return metric, mapping_dict, itemized_errors
     elif verbose:
         logging.warning(
-            "Check if each ground truth RTTMs were present in the provided manifest file. Skipping calculation of Diariazation Error Rate"
+            "Check if each ground truth RTTMs were present in the provided manifest file. "
+            "Skipping calculation of Diariazation Error Rate"
         )
     return None
 
@@ -365,7 +398,7 @@ def calculate_session_cpWER(
         # Calculate WER for each speaker in hypothesis with reference
         # There are (number of hyp speakers) x (number of ref speakers) combinations
         lsa_wer_list = []
-        for (spk_hyp_trans, spk_ref_trans) in all_pairs:
+        for spk_hyp_trans, spk_ref_trans in all_pairs:
             spk_wer = word_error_rate(hypotheses=[spk_hyp_trans], references=[spk_ref_trans])
             lsa_wer_list.append(spk_wer)
 
@@ -419,7 +452,7 @@ def concat_perm_word_error_rate(
             f"{len(spk_hypotheses)} and {len(spk_references)} correspondingly"
         )
     cpWER_values, hyps_spk, refs_spk = [], [], []
-    for (spk_hypothesis, spk_reference) in zip(spk_hypotheses, spk_references):
+    for spk_hypothesis, spk_reference in zip(spk_hypotheses, spk_references):
         cpWER, min_hypothesis, concat_reference = calculate_session_cpWER(spk_hypothesis, spk_reference)
         cpWER_values.append(cpWER)
         hyps_spk.append(min_hypothesis)

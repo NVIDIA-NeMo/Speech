@@ -871,7 +871,6 @@ class ASRPredictionWriter(BasePredictionWriter):
                     item["audio_filepath"] = sample.recording.sources[0].source
                 else:
                     item["audio_filepath"] = sample.id
-                item["audio_filepath"] = sample.recording.sources[0].source
                 item["offset"] = sample.start
                 item["duration"] = sample.duration
                 item["text"] = sample.supervisions[0].text or ''

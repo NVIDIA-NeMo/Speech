@@ -88,6 +88,14 @@ def tokenize_dataset(cfg: 'DictConfig'):
     # using the same template as SFT/PEFT script. This may be overkill but guarantees the preprocess settings
     # are identical to normal SFT training
     data_cfg = cfg.model.data.train_ds
+    pad_seq_length_to_mult = 16
+    cp_size = cfg.model.get("context_parallel_size", 1)
+
+    # if context parallel is used, each individual data length in one packed dataset sample
+    # needs to be a multiple of (cp_size * 2): https://github.com/NVIDIA/TransformerEngine/pull/641
+    if cp_size > 1:
+        pad_seq_length_to_mult = max(pad_seq_length_to_mult, cp_size * 2)
+
     if os.path.isdir(cfg.tokenizer_path):
         # pass in a Hugging Face folder which contains tokenizer.json
         tokenizer = get_nmt_tokenizer(library="huggingface", model_name=cfg.tokenizer_path, use_fast=True)
@@ -99,7 +107,7 @@ def tokenize_dataset(cfg: 'DictConfig'):
         tokenizer=tokenizer,
         max_seq_length=data_cfg.max_seq_length,
         min_seq_length=data_cfg.min_seq_length,
-        pad_seq_length_to_mult=16,  # adds padding in collate_fn so this value is irrelevant here
+        pad_seq_length_to_mult=pad_seq_length_to_mult,
         add_bos=data_cfg.get('add_bos', False),
         add_eos=data_cfg.get('add_eos', True),
         add_sep=data_cfg.get('add_sep', False),
@@ -121,7 +129,40 @@ def tokenize_dataset(cfg: 'DictConfig'):
         is_test=True,
     )
 
-    return np.array([dataset[i] for i in range(len(dataset))])
+    max_seq_length = dataset.max_seq_length
+    pad_id = dataset.tokenizer.eos_id
+    pad_seq_length_to_mult = dataset.pad_seq_length_to_mult
+    dataset = np.array([dataset[i] for i in range(len(dataset))])
+    if cp_size > 1:
+
+        def pre_pad_dataset(data, max_seq_length, max_length_to_pad, pad_id):
+            '''
+            pad each individual data point to the length of max_length
+            '''
+            assert max_seq_length >= max_length_to_pad
+            for key, val in data.items():
+                if key in {'input_ids', 'context_ids'}:
+                    if len(val) <= max_length_to_pad:
+                        # because input_ids are truncated by 1 for inputs and labels,
+                        # we add 1 extra padding here to make sure padded inputs and labels
+                        # are is a multiple of (cp_size * 2)
+                        val = val + [pad_id] * (max_length_to_pad - len(val) + 1)
+                        data[key] = val
+                    elif len(val) > max_seq_length:
+                        logging.info(
+                            f"""The current sequence length {len(val)} for packing is
+                                        larger than the max_seq_length specified ({max_seq_length}).
+                                        The current seqquence length is truncated to the size of max_seq_length.
+                                        Please consider increase the sequence packing size"""
+                        )
+                        data[key] = val[:max_seq_length]
+            return
+
+        ceil_to_nearest = lambda n, m: (n + m - 1) // m * m
+        for data in dataset:
+            max_length_to_pad = min(max_seq_length, ceil_to_nearest(len(data['input_ids']), pad_seq_length_to_mult))
+            pre_pad_dataset(data, max_seq_length, max_length_to_pad, pad_id)
+    return dataset
 
 
 @dataclass

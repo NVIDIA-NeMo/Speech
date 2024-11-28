@@ -115,7 +115,7 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
     logging.info("Creating histogram from tokenized dataset...")
 
     sequences = collections.defaultdict(list)
-    counts = [0] * truncate_seq_len
+    counts = [0] * (truncate_seq_len + 1)
 
     for item_dict in dataset:
         # Minus 1 here to account for the fact that transformer input and label have one less token than the full sequence
@@ -129,7 +129,7 @@ def create_hist(dataset: np.array, truncate_seq_len: int):
     logging.debug(counts)
 
     histogram = []
-    for seq_len in range(truncate_seq_len):
+    for seq_len in range(truncate_seq_len + 1):
         histogram.append(len(sequences[seq_len]))
 
     return sequences, histogram

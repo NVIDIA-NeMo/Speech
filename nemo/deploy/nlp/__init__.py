@@ -12,15 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-use_query_llm = True
-try:
-    from nemo.deploy.nlp.query_llm import NemoQueryLLM, NemoQueryLLMPyTorch
-except Exception:
-    use_query_llm = False
-
-use_megatron_llm = True
-try:
-    from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
-except Exception:
-    use_megatron_llm = False
+from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
+from nemo.deploy.nlp.query_llm import NemoQueryLLM, NemoQueryLLMPyTorch

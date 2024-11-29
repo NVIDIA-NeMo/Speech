@@ -43,7 +43,8 @@ try:
     from nemo.deploy.nlp import MegatronLLMDeployable, NemoQueryLLMPyTorch
 except Exception as e:
     LOGGER.warning(
-        f"Cannot import MegatronLLMDeployable, in-framework inference will not be available. {type(e).__name__}: {e}"
+        "Cannot import MegatronLLMDeployable or NemoQueryLLMPyTorch,"
+        f" in-framework inference will not be available. {type(e).__name__}: {e}"
     )
     in_framework_supported = False
 
@@ -104,12 +105,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
             all_expected_outputs.append(expected_output)
             if model is not None:
 
-                in_framework_model = False
-                if in_framework_supported:
-                    if isinstance(model, MegatronLLMDeployable):
-                        in_framework_model = True
-
-                if in_framework_model:
+                if in_framework_supported and isinstance(model, MegatronLLMDeployable):
                     model_output = model.generate(
                         inputs=[prompt],
                         length_params={"min_length": 1, "max_length": 1},
@@ -153,7 +149,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                     correct_answers_relaxed += 1
 
             if nq is not None:
-                if isinstance(nq, NemoQueryLLMPyTorch):
+                if in_framework_supported and isinstance(nq, NemoQueryLLMPyTorch):
                     deployed_output = nq.query_llm(
                         prompts=[prompt],
                         max_length=1,

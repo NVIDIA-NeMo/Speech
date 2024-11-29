@@ -21,7 +21,7 @@ from pathlib import Path
 
 import torch
 
-from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
+from nemo.deploy.nlp import MegatronLLMDeployable
 from tests.infer_data_path import get_infer_test_data
 
 run_export_tests = True

@@ -15,7 +15,7 @@
 import argparse
 import sys
 
-from nemo.deploy.nlp.query_llm import NemoQueryLLMPyTorch
+from nemo.deploy.nlp import NemoQueryLLMPyTorch
 
 
 def get_args(argv):

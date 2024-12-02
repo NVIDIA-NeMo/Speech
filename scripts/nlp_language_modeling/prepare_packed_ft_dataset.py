@@ -131,6 +131,7 @@ def tokenize_dataset(cfg: 'DictConfig'):
 
     max_seq_length = dataset.max_seq_length
     pad_id = dataset.tokenizer.eos_id
+    tokenizer = dataset.tokenizer
     pad_seq_length_to_mult = dataset.pad_seq_length_to_mult
     dataset = np.array([dataset[i] for i in range(len(dataset))])
     if cp_size > 1:
@@ -162,7 +163,7 @@ def tokenize_dataset(cfg: 'DictConfig'):
         for data in dataset:
             max_length_to_pad = min(max_seq_length, ceil_to_nearest(len(data['input_ids']), pad_seq_length_to_mult))
             pre_pad_dataset(data, max_seq_length, max_length_to_pad, pad_id)
-    return dataset
+    return dataset, tokenizer
 
 
 @dataclass
@@ -187,11 +188,11 @@ class PackingArgs:
 )
 def main(cfg: 'DictConfig') -> None:
     args = PackingArgs().from_config(cfg)
-    dataset = tokenize_dataset(cfg)
+    dataset, tokenizer = tokenize_dataset(cfg)
     sequences, histogram = create_hist(dataset, cfg.model.data.train_ds.max_seq_length)
     for pack_size in args.pack_sizes:
         assignments = create_packing_strategy(histogram, pack_size, args.packing_algorithm)
-        output_data = fill_packing_strategy(assignments, sequences, pack_size)
+        output_data = fill_packing_strategy(assignments, sequences, pack_size, tokenizer.eos_id)
 
         # save output data
         os.makedirs(args.output_dir, exist_ok=True)

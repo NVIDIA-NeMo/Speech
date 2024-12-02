@@ -78,7 +78,7 @@ def prepare_packed_sequence_data(
     sequences, histogram = create_hist(dataset, max_seq_length)
 
     assignments = create_packing_strategy(histogram, packed_sequence_size, packing_algorithm)
-    output_data = fill_packing_strategy(assignments, sequences, packed_sequence_size)
+    output_data = fill_packing_strategy(assignments, sequences, packed_sequence_size, tokenizer.eos_id)
 
     # save output data
     np.save(output_path, output_data)

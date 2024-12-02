@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # NOTE: This script is only an example of using NeMo with NeMo-Run's APIs and is subject to change without notice.
-# This script is used for pretraining a Llama3 model, specifically for the 8b or 70b model variants, on local and slurm executors.
-# It uses NeMo 2.0 recipes (https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/llama3_8b.py#L74) and NeMo-Run (https://github.com/NVIDIA/NeMo-Run) to configure and execute the runs.
+# This script is used for pretraining on local and slurm executors.
+# It uses NeMo 2.0 recipes (https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/) and NeMo-Run (https://github.com/NVIDIA/NeMo-Run) to configure and execute the runs.
 
 import argparse
 from functools import partial
@@ -26,12 +26,12 @@ from nemo.collections import llm
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(description="Llama3 Pretraining")
+    parser = argparse.ArgumentParser(description="NeMo2.0 Pretraining")
     parser.add_argument(
-        "--size",
+        "--recipe",
         type=str,
-        default="8b",
-        help="Choose llama3 model size 70b/8b",
+        default="llama3_8b",
+        help="Choose NeMo 2.0 recipe. Recipes are named in the format of <model_name>_<model_size>(_<long_sequenth_length> or other special settings)",
     )
     parser.add_argument(
         "--tag",
@@ -66,7 +66,7 @@ def slurm_executor(
     time: str = "01:00:00",
     custom_mounts: Optional[list[str]] = None,
     custom_env_vars: Optional[dict[str, str]] = None,
-    container_image: str = "nvcr.io/nvidia/nemo:dev",
+    container_image: str = "nvcr.io/nvidia/nemo:24.09",
     retries: int = 0,
 ) -> run.SlurmExecutor:
     if not (user and host and remote_job_dir and account and partition and nodes and devices):
@@ -102,7 +102,7 @@ def slurm_executor(
         mem="0",
         exclusive=True,
         gres="gpu:8",
-        packager=run.GitArchivePackager(subpath="examples/llm/run"),
+        packager=run.GitArchivePackager(),
     )
 
     executor.container_image = container_image
@@ -134,28 +134,14 @@ def main():
     if args.tag and not args.tag.startswith("-"):
         args.tag = "-" + args.tag
 
-    MODEL_SIZE_MAPPING: dict[str, dict[str, Any]] = {
-        "8b": {
-            "exp_name": "llama3-8b",
-            "nemo": {
-                "pretrain": partial(llm.llama3_8b.pretrain_recipe, num_nodes=1, num_gpus_per_node=8),
-            },
-        },
-        "70b": {
-            "exp_name": "llama3-70b",
-            "nemo": {
-                "pretrain": partial(llm.llama3_70b.pretrain_recipe, num_nodes=128, num_gpus_per_node=8),
-            },
-        },
-    }
-
-    exp_name = MODEL_SIZE_MAPPING[args.size]["exp_name"]
+    exp_name = args.recipe
 
     # Uses configs from NeMo directly
-    pretrain = MODEL_SIZE_MAPPING[args.size]["nemo"]["pretrain"](
-        name=exp_name,
-        ckpt_dir="/nemo_run/checkpoints",
-    )
+    assert hasattr(
+        llm, args.recipe
+    ), f"Recipe named {args.recipe} not found. General format is <model_name>_<model_size>(_<long_sequenth_length> or other special settings)"
+    pretrain_recipe = getattr(llm, args.recipe).pretrain_recipe
+    pretrain = partial(pretrain_recipe)(name=exp_name, dir="/nemo_run/checkpoints")
 
     # Overwrite the dataloader in the recipe to use your custom dataloader.
     # dataloader = set_your_custom_dataloader

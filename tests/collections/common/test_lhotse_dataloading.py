@@ -25,6 +25,7 @@ from lhotse import CutSet, MonoCut, NumpyFilesWriter, Recording, SupervisionSegm
 from lhotse.audio import AudioLoadingError
 from lhotse.cut import Cut, MixedCut
 from lhotse.cut.text import TextPairExample
+from lhotse.shar import JsonlShardWriter
 from lhotse.testing.dummies import dummy_recording
 from omegaconf import OmegaConf
 
@@ -411,6 +412,64 @@ def test_dataloader_from_lhotse_shar_cuts(cutset_shar_path: Path):
     b = batches[3]
     assert set(b.keys()) == {"audio", "audio_lens", "ids"}
     assert b["audio"].shape[0] == b["audio_lens"].shape[0] == 3
+
+
+def test_dataloader_from_lhotse_shar_cuts_via_fields(cutset_shar_path: Path):
+    config = OmegaConf.create(
+        {
+            "shar_path": {
+                "cuts": f"{cutset_shar_path}/cuts._OP_000000..000001_CL_.jsonl.gz",
+                "recording": f"{cutset_shar_path}/recording._OP_000000..000001_CL_.tar",
+            },
+            "sample_rate": 16000,
+            "num_workers": 0,
+            "shuffle": False,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    batch = next(iter(dl))
+    assert len(batch) == 4
+    audio = batch[0].load_audio()
+    assert isinstance(audio, np.ndarray)
+
+
+def test_dataloader_from_lhotse_shar_cuts_add_new_field(tmp_path_factory, cutset_shar_path: Path):
+
+    # We're creating a new field called "wer" that will be dynamically attached to Lhotse Shar cuts.
+    # Each "wer" shard is a jsonl manifest that has to match the "cuts" sharded manifest.
+    # It must have a "cut_id" field used for runtime check that the user provided correct paths.
+    # "wer" will be attached to each cut under `cut.wer` / cut.custom["wer"].
+    wer_dir = tmp_path_factory.mktemp("wer_dir")
+    with JsonlShardWriter(f"{wer_dir}/wer.%06d.jsonl.gz", shard_size=5) as writer:
+        for i in range(10):
+            writer.write({"cut_id": "dummy-mono-cut-%04d" % i, "wer": 0.5})
+
+    config = OmegaConf.create(
+        {
+            "shar_path": {
+                "cuts": f"{cutset_shar_path}/cuts._OP_000000..000001_CL_.jsonl.gz",
+                "recording": f"{cutset_shar_path}/recording._OP_000000..000001_CL_.tar",
+                "wer": f"{wer_dir}/wer._OP_000000..000001_CL_.jsonl.gz",
+            },
+            "sample_rate": 16000,
+            "num_workers": 0,
+            "shuffle": False,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    batch = next(iter(dl))
+    assert len(batch) == 4
+    assert batch[0].wer == 0.5
 
 
 def test_dataloader_from_nemo_manifest(nemo_manifest_path: Path):

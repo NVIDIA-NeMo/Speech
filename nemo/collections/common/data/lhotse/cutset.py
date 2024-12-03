@@ -17,7 +17,7 @@ import warnings
 from functools import partial
 from itertools import repeat
 from pathlib import Path
-from typing import Sequence, Tuple, Union
+from typing import Mapping, Sequence, Tuple, Union
 
 import omegaconf
 from lhotse import CutSet, Features, Recording
@@ -25,7 +25,11 @@ from lhotse.array import Array, TemporalArray
 from lhotse.cut import Cut, MixedCut, PaddingCut
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from nemo.collections.common.data.lhotse.nemo_adapters import LazyNeMoIterator, LazyNeMoTarredIterator
+from nemo.collections.common.data.lhotse.nemo_adapters import (
+    LazyNeMoIterator,
+    LazyNeMoTarredIterator,
+    expand_sharded_filepaths,
+)
 from nemo.collections.common.data.lhotse.text_adapters import LhotseTextAdapter, LhotseTextPairAdapter
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 
@@ -281,7 +285,7 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
             )
             if not metadata_only and not force_finite:
                 cuts = cuts.repeat()
-        else:
+        elif isinstance(config.shar_path, Sequence):
             # Multiple datasets in Lhotse Shar format: we will dynamically multiplex them
             # with probability approximately proportional to their size
             logging.info(
@@ -317,6 +321,23 @@ def read_lhotse_manifest(config, is_tarred: bool) -> CutSet:
                 max_open_streams=config.max_open_streams,
                 seed=config.shard_seed,
                 force_finite=force_finite,
+            )
+        elif isinstance(config.shar_path, Mapping):
+            fields = {k: expand_sharded_filepaths(v) for k, v in config.shar_path.items()}
+            assert "cuts" in config.shar_path.keys(), (
+                f"Invalid value for key 'shar_path': a dict was provided, but didn't specify key 'cuts' pointing "
+                f"to the manifests. We got the following: {config.shar_path=}"
+            )
+            if metadata_only:
+                fields = {"cuts": fields["cuts"]}
+            cuts = CutSet.from_shar(fields=fields, shuffle_shards=True, seed=shard_seed)
+            if not metadata_only and not force_finite:
+                cuts = cuts.repeat()
+        else:
+            raise RuntimeError(
+                f"Unexpected value for key 'shar_path'. We support string, list of strings, "
+                f"list of tuples[string,float], and dict[string,list[string]], "
+                f"but got: {type(config.shar_path)=} {config.shar_path=}"
             )
     else:
         # Regular Lhotse manifest points to individual audio files (like native NeMo manifest).

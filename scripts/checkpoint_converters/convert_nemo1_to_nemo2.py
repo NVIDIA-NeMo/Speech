@@ -23,7 +23,7 @@ a. Convert a .nemo checkpoint
         --output_path=your_output_dir \
         --model_id=meta-llama/Meta-Llama-3-8B
 
-b. Convert a model weight directory. 
+b. Convert a model weight directory.
    The checkpoint should be similar to `model_weights` subdir after extracting the .nemo file.
    Please also provide tokenizer_library and tokenizer_path when loading from weight directory.
     python /opt/NeMo/scripts/checkpoint_converters/convert_nemo1_to_nemo2.py \
@@ -78,7 +78,7 @@ def get_args():
     Parse the command line arguments.
     """
     parser = ArgumentParser(
-        description="""Script to convert NeMo 1.0 checkpoints to NeMo 2.0 format. 
+        description="""Script to convert NeMo 1.0 checkpoints to NeMo 2.0 format.
                     This script may download from Hugging Face, make sure you have
                     access to gate repo and have logged into Hugging Face (e.g. huggingface-cli login)"""
     )
@@ -88,7 +88,7 @@ def get_args():
         default=None,
         required=True,
         help="""Path to NeMo 1.0 checkpoints. Could be .nemo file, or `model_weights` directory a
-        fter untar the .nemo. Please also provide tokenizer_library and tokenizer_path if you pass 
+        fter untar the .nemo. Please also provide tokenizer_library and tokenizer_path if you pass
         in `model_weights` directory.""",
     )
     parser.add_argument(
@@ -123,6 +123,13 @@ def get_nemo2_model(model_id, tokenizer) -> llm.GPTModel:
     Returns:
         llm.GPTModel: NeMo 2.0 model instance
     """
+    if os.path.isdir(model_id):
+        from nemo.lightning import io
+
+        model = io.load_context(Path(model_id), subpath="model")
+        model.config.bf16 = True
+        model.config.params_dtype = torch.bfloat16
+        return model
 
     if model_id not in MODEL_CONFIG_MAPPING:
         valid_ids = "\n- ".join([""] + list(MODEL_CONFIG_MAPPING.keys()))

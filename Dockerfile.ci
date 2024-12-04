@@ -84,6 +84,9 @@ git checkout ${MCORE_TAG} && \
 popd
 export PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
 
+# Install nvidia-resiliency-ext
+pip install --no-cache-dir "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
+
 EOF
 
 # Copy over NeMo code

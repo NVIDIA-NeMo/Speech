@@ -78,7 +78,7 @@ jobs:
       run: |
         docker run --rm --device=/dev/nvidia0 --gpus all --shm-size=8g --env TRANSFORMERS_OFFLINE=0 --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
           # PyTorch Lightning version
-          python -c "import pytorch_lightning; print(pytorch_lightning.__version__)"
+          python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
           # PyTorch Lightning DDP Checks
           CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
@@ -3921,6 +3921,46 @@ jobs:
         --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
         --cp 1 --tp 2 --sp 1
 
+  L2_NeMo_2_llama3_fault_tolerance_plugin:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_llama3_fault_tolerance_plugin') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        mkdir -p /tmp/llm_tests/llama_pretrain_results \
+        export FAULT_TOL_CFG_PATH="/tmp/llm_tests/llama_pretrain_results/sample_job_ft_cfg.yml"; \
+        export FAULT_TOL_FINISHED_FLAG_FILE="/tmp/llm_tests/llama_pretrain_results/sample_job_finished_flag"; \
+        python tests/collections/llm/test_fault_nvrx.py \
+        --devices=2 \
+        --crash-step=16 \
+        --experiment-dir=/tmp/llm_tests/llama_pretrain_results \
+        --data-path=/home/TestData/nlp/megatron_llama/data/rp2_sample_sentencepiece_preproc_text_document \
+        --tokenizer-path=/home/TestData/nlp/megatron_llama/tokenizer.model \
+        --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
+        2>&1 | tee /tmp/llm_tests/llama_pretrain_results/run.log \
+
+  L2_NeMo_2_llama3_straggler_detection:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_llama3_straggler_detection') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+
+        mkdir -p /tmp/llm_tests/llama_pretrain_results \
+        export FAULT_TOL_CFG_PATH="/tmp/llm_tests/llama_pretrain_results/sample_job_ft_cfg.yml"; \
+        export FAULT_TOL_FINISHED_FLAG_FILE="/tmp/llm_tests/llama_pretrain_results/sample_job_finished_flag"; \
+        python tests/collections/llm/test_fault_nvrx.py \
+        --devices=2 \
+        --check-report=True \
+        --experiment-dir=/tmp/llm_tests/llama_pretrain_results \
+        --data-path=/home/TestData/nlp/megatron_llama/data/rp2_sample_sentencepiece_preproc_text_document \
+        --tokenizer-path=/home/TestData/nlp/megatron_llama/tokenizer.model \
+        --index-mapping-dir=/tmp/llm_tests/llama_index_mappings \
+        2>&1 | tee /tmp/llm_tests/llama_pretrain_results/run.log \
+
   L2_NeMo_2_GPT_DDP_Param_Parity_check:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4587,6 +4627,8 @@ jobs:
       - L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT
       - L2_NeMo_2_llama3_pretraining_recipe
+      - L2_NeMo_2_llama3_fault_tolerance_plugin
+      - L2_NeMo_2_llama3_straggler_detection
       - L2_HF_Transformer_SFT_TE_Acceleration
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning

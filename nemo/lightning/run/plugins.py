@@ -91,13 +91,13 @@ class FaultTolerancePlugin(run.Plugin):
     This plugin enables workload hang detection, automatic calculation of timeouts used for hang detection, detection of rank(s) terminated due to an error and workload respawning in case of a failure.
     Note: FaultTolerancePlugin does not work with the NsysPlugin.
     Args:
-        num_in_process_restarts (int): Max number of restarts on failure, within the same job. Default is 3.
+        num_in_job_restarts (int): Max number of restarts on failure, within the same job. Default is 3.
         num_job_retries_on_failure (int): Max number of new job restarts on failure. Default is 2.
         initial_rank_heartbeat_timeout (int): Timeouts are time intervals used by a rank monitor to detect that a rank is not alive. This is the max timeout for the initial heartbeat. Default is 1800.
         rank_heartbeat_timeout (int): This is the timeout for subsequent hearbeats after the initial heartbeat. Default is 300.
     """
 
-    num_in_process_restarts: int = 3
+    num_in_job_restarts: int = 3
     num_job_retries_on_failure: int = 2
     initial_rank_heartbeat_timeout: int = 1800
     rank_heartbeat_timeout: int = 300
@@ -107,7 +107,7 @@ class FaultTolerancePlugin(run.Plugin):
         assert HAVE_RES, "nvidia-resiliency-ext.ptl_resiliency is required to use the FaultTolerancePlugin."
 
         executor.launcher = run.FaultTolerance(
-            max_restarts=self.num_in_process_restarts,
+            max_restarts=self.num_in_job_restarts,
             initial_rank_heartbeat_timeout=self.initial_rank_heartbeat_timeout,
             rank_heartbeat_timeout=self.rank_heartbeat_timeout,
         )

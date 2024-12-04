@@ -80,7 +80,7 @@ def main():
         dir=args.experiment_dir, name=exp_name, num_gpus_per_node=args.devices
     )
 
-    pretrain_recipe.model = llm.LlamaModel(small_llama_cfg(args.seq_length))
+    pretrain_recipe.model = run.Config(llm.LlamaModel, small_llama_cfg(args.seq_length))
 
     if args.data_path and args.tokenizer_path:
         pretrain_recipe.data = train_data(

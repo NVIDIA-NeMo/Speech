@@ -23,7 +23,7 @@ import pytest
 import torch
 from lhotse import CutSet, MonoCut, NumpyFilesWriter, Recording, SupervisionSegment, compute_num_samples
 from lhotse.audio import AudioLoadingError
-from lhotse.cut import Cut, MixedCut
+from lhotse.cut import Cut, MixedCut, PaddingCut
 from lhotse.cut.text import TextPairExample
 from lhotse.shar import JsonlShardWriter
 from lhotse.testing.dummies import dummy_recording
@@ -310,6 +310,32 @@ def test_dataloader_from_lhotse_cuts_cut_into_windows(cutset_path: Path):
     assert batches[3]["audio"].shape == (4, 8000)
     assert batches[4]["audio"].shape == (4, 8000)
     # exactly 20 cuts were used because we cut 10x 1s cuts into 20x 0.5s cuts
+
+
+def test_dataloader_from_lhotse_cuts_pad_min_duration(cutset_path: Path):
+    config = OmegaConf.create(
+        {
+            "cuts_path": cutset_path,
+            "pad_min_duration": 21.0,
+            "pad_direction": "left",
+            "sample_rate": 16000,
+            "shuffle": True,
+            "use_lhotse": True,
+            "num_workers": 0,
+            "batch_size": 1,
+            "seed": 0,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+
+    batch = next(iter(dl))
+    (cut,) = batch
+    assert cut.duration == 21.0
+    assert isinstance(cut, MixedCut)
+    assert len(cut.tracks) == 2
+    assert isinstance(cut.tracks[0].cut, PaddingCut)
+    assert isinstance(cut.tracks[1].cut, MonoCut)
 
 
 def test_dataloader_from_lhotse_cuts_channel_selector(mc_cutset_path: Path):

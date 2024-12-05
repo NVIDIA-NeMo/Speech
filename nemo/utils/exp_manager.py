@@ -264,7 +264,7 @@ class TimingCallback(Callback):
         # Set the `batch_size=1` as WAR for `dataloader_iter`, which is not used for any metric
         pl_module.log(
             name + ' in s',
-            self.timer[name],
+            torch.as_tensor(self.timer[name]),
             on_step=True,
             on_epoch=False,
             batch_size=1,

@@ -24,11 +24,12 @@ spl_tokens:
 model:
   sample_rate: 16000
   label_smoothing: 0.0
-  context_len_for_AR_decoding: 5 # Length of input prompt tokens. For example, in Canary models, we use [BOS,src_lang,task,tgt_lang,pnc] and thus the length is 5
+  use_loss_mask_for_prompt: false
   log_prediction: true # enables logging sample predictions in the output during training
 
   # Important ! Set the prompt format to the class you need
   prompt_format: ???   # Options supported: ["canary"]
+  prompt_defaults: null
 
   model_defaults:
     asr_enc_hidden: 1024

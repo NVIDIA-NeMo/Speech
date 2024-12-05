@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import re
 from functools import cached_property
 from pathlib import Path
 from typing import Dict, List
@@ -30,6 +31,7 @@ CANARY_PAD = "<pad>"
 CANARY_NOSPEECH = "<|nospeech|>"
 CANARY_PNC = "<|pnc|>"
 CANARY_NOPNC = "<|nopnc|>"
+CANARY2_BOCTX = "<|startofcontext|>"
 DEFAULT_TOKENS = [CANARY_NOSPEECH, CANARY_PAD, CANARY_EOS, CANARY_BOS, CANARY_PNC, CANARY_NOPNC]
 
 CANARY_SPECIAL_TOKENIZER = "spl_tokens"
@@ -69,22 +71,34 @@ class CanaryTokenizer(AggregateTokenizer):
     def text_to_ids(self, text, lang_id) -> list[int]:
         if lang_id == CANARY_SPECIAL_TOKENIZER:
             return self._tokenize_special_prompt(text)
+        lang_id = _map_canary1_to_canary2_lang(lang_id, self.langs)
         if text.endswith(CANARY_EOS):
             return super().text_to_ids(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
         return super().text_to_ids(text, lang_id)
 
     def _tokenize_special_prompt(self, text: str) -> list[int]:
         """
-        Tokenize the input special prompt of the following schema:
-
-        <|startoftranscript|><|source_lang|><|taskname|><|target_lang|><|pnc|>
+        Tokenize the input special prompt of Canary family of models.
 
         Required because otherwise self.text_to_ids() returns a different result than what Canary had been trained with.
         """
         ans = []
-        assert text.count('>') == 5, f"Expected exactly 5 special tokens in Canary's prompt, got: {text}."
-        assert text.startswith(CANARY_BOS), text
-        for _ in range(5):
+
+        if text.startswith(CANARY2_BOCTX):
+            # Canary 2 prompt format. It starts with decoder context, which should be tokenized using
+            # a different tokenizer than spl_tokens. We don't really know what it is, so we'll use the
+            # following HACK solution: look up 5th token which is target_lang and tokenize this part
+            # using its tokenizer. We skip this when decoder context is empty.
+            ans.append(self.special_tokens[CANARY2_BOCTX])
+            text = text[len(CANARY2_BOCTX) :]
+            ctx_end_idx = text.find(CANARY_BOS)
+            if decoder_ctx := text[:ctx_end_idx]:
+                target_lang = text.split("<|")[4].replace("|>", "")  # sorry
+                ans.extend(self.text_to_ids(decoder_ctx, target_lang))
+                text = text[ctx_end_idx:]
+
+        num_special_tokens = text.count(">")
+        for _ in range(num_special_tokens):
             token = text[: text.find(">") + 1]
             ans.append(self.special_tokens[token])
             text = text[len(token) :]
@@ -106,7 +120,9 @@ class CanaryTokenizer(AggregateTokenizer):
             for file in ["tokenizer.model", "tokenizer.vocab", "vocab.txt", "train_text.txt"]:
                 if os.path.exists(file):
                     os.remove(file)
-        tokens = DEFAULT_TOKENS + [f"<|{t}|>" for t in tokens]
+        spl_tok_re = re.compile(r"<\|.+\|>")
+        tokens = DEFAULT_TOKENS + [f"<|{t}|>" if spl_tok_re.match(t) is None else t for t in tokens]
+        tokens = list(dict.fromkeys(tokens))  # remove duplicates while preserving order
         output_dir = Path(model_dir)
         output_dir.mkdir(exist_ok=True, parents=True)
         text_path = output_dir / "train_text.txt"
@@ -123,3 +139,15 @@ class CanaryTokenizer(AggregateTokenizer):
         )
         spl_tokenizer = SentencePieceTokenizer(str(model_path))
         return spl_tokenizer
+
+
+def _map_canary1_to_canary2_lang(lang: str, available_langs: list[str]) -> str:
+    if len(lang) != 2 or lang in available_langs:
+        return lang
+
+    if (
+        mapped := {"en": "en-US", "es": "es-ES", "fr": "fr-FR", "de": "de-DE"}.get(lang)
+    ) is not None and mapped in available_langs:
+        return mapped
+
+    raise RuntimeError(f"Unsupported language: '{lang}' for CanaryTokenizer with languages: {available_langs}")

@@ -239,7 +239,7 @@ class AdapterWrapper(nn.Module):
         implement the forward method.
 
     Example:
-        class AdapterParallelAdd(AdapterWrapper):
+        class LoRALinear(AdapterWrapper):
             def __init__(self, to_wrap, adapter):
                 super().__init__(to_wrap, adapter)
 
@@ -248,7 +248,7 @@ class AdapterWrapper(nn.Module):
 
         main_module = nn.Linear(100, 100)
         adapter = nn.Linear(100, 100)
-        parallel_adapter = AdapterParallelAdd(main_module, adapter)
+        parallel_adapter = LoRALinear(main_module, adapter)
     """
 
     def __init__(self, to_wrap: nn.Module, adapter: nn.Module):

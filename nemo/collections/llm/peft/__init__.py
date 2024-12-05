@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from nemo.collections.llm.peft.api import gpt_lora, merge_lora
+from nemo.collections.llm.peft.canonical_lora import CanonicalLoRA
 from nemo.collections.llm.peft.dora import DoRA
 from nemo.collections.llm.peft.lora import LoRA
 
@@ -21,6 +22,8 @@ PEFT_STR2CLS = {
     "lora": LoRA,
     "DoRA": DoRA,
     "dora": DoRA,
+    "CanonicalLoRA": CanonicalLoRA,
+    "canonical_lora": CanonicalLoRA,
 }
 
-__all__ = ["LoRA", "DoRA", "gpt_lora", "PEFT_STR2CLS", "merge_lora"]
+__all__ = ["LoRA", "DoRA", "CanonicalLoRA", "gpt_lora", "PEFT_STR2CLS", "merge_lora"]

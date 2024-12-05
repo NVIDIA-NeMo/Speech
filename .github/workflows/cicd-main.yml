@@ -4401,6 +4401,34 @@ jobs:
         --pp_size 1 \
         --mbs 1 --packed
 
+  L2_NeMo_2_GPT_CLoRA_TP1PP1_MBS1_PACKED:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_GPT_CLoRA_TP1PP1_MBS1_PACKED') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+  
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 3 \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
+        --peft canonical_lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1 --packed
+        
+        python tests/collections/llm/gpt_finetuning.py \
+        --restore_path /home/TestData/nemo2_ckpt/llama_68M \
+        --devices 2 \
+        --max_steps 6 \
+        --experiment_dir /tmp/nemo2_gpt_finetune/${{ github.run_id }} \
+        --peft canonical_lora \
+        --tp_size 1 \
+        --pp_size 1 \
+        --mbs 1 --packed
+
   L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -4646,6 +4674,7 @@ jobs:
       - L2_NeMo_2_GPT_LoRA_TP2PP1_MBS2
       - L2_NeMo_2_GPT_LoRA_TP1PP1_MBS1_PACKED
       - L2_NeMo_2_GPT_DoRA_TP1PP1_MBS1_PACKED
+      - L2_NeMo_2_GPT_CLoRA_TP1PP1_MBS1_PACKED
       - L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2
       - L2_NeMo_2_Mixtral_LoRA_TP1PP1_MBS1
       - L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1

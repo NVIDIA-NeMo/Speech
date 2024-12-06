@@ -763,7 +763,7 @@ class TensorRTLLM(ITritonDeployable):
 
         nemo_model_conversion_dict = {}
         for key, value in DEFAULT_CONVERSION_DICT.items():
-            if 'layers' in key:
+            if 'layers' in key and model_prefix:
                 nemo_model_conversion_dict[f'{model_prefix}.{key}'] = value
             else:
                 nemo_model_conversion_dict[key] = value

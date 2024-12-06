@@ -2109,10 +2109,10 @@ jobs:
     #    }
     #  }
 
-  OPTIONAL_L2_Megatron_LM_To_NeMo_Conversion:
+  L2_Megatron_LM_To_NeMo_Conversion:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L2_Megatron_LM_To_NeMo_Conversion') || needs.cicd-test-container-setup.outputs.all == 'true'
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_Megatron_LM_To_NeMo_Conversion') || needs.cicd-test-container-setup.outputs.all == 'true'
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -2223,7 +2223,6 @@ jobs:
           --model_type gpt \
           --hparams_file /tmp/nemo_conversion_ckpt/megatron_gpt/version_0/hparams.yaml \
           --convert_mlm
-      IS_OPTIONAL: true
 
   L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2:
     needs: [cicd-test-container-setup]
@@ -4617,7 +4616,7 @@ jobs:
       - L2_RAG_Pipeline_Generating
       - L2_Megatron_GPT_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_Skip_Train
-      #- OPTIONAL_L2_Megatron_LM_To_NeMo_Conversion
+      - L2_Megatron_LM_To_NeMo_Conversion
       - L2_Megatron_GPT_with_Rope_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_ResetLR_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_Drop_Optimizer_States_TP2

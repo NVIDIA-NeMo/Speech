@@ -1,6 +1,4 @@
 name: megatron_llama
-restore_from_path: null # used when starting from a .nemo file
-
 trainer:
   devices: 1
   num_nodes: 1
@@ -41,6 +39,10 @@ exp_manager:
     model_parallel_size: ${multiply:${model.tensor_model_parallel_size}, ${model.pipeline_model_parallel_size}}
 
 model:
+  # The following two settings are used for continual training:
+  restore_from_path: null # Set this to a .nemo file path to restore only the model weights
+  restore_from_ckpt: null # Set this to a training ckpt path to restore both model weights and optimizer states
+
   mcore_gpt: True
   # specify micro_batch_size, global_batch_size, and model parallelism
   # gradient accumulation will be done automatically based on data_parallel_size

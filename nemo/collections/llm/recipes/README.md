@@ -10,6 +10,8 @@ A recipe in NeMo is a Python file that defines a complete configuration for trai
 4. Optimization configuration: Defines the optimizer and learning rate schedule.
 5. Logging and checkpointing configuration: Specifies how to save model checkpoints and log training progress.
 
+See [CONFIGURATION-HIERARCHY.md](CONFIGURATION-HIERARCHY.md) for an extensive list of parameters and features available in the recipe modules outlined above.
+
 Recipes are designed to be modular and extensible, allowing users to easily customize settings for their specific use cases.
 
 ## Usage

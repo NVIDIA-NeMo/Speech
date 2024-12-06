@@ -98,3 +98,7 @@ from .my_new_model_12b import pretrain_recipe, finetune_recipe
 ## Step 6: Add tests for the recipe
 
 Add tests for the recipe in the [tests](../../../../tests/collections/llm/recipes) directory. You can use [test_llama3_8b.py](../../../../tests/collections/llm/recipes/test_llama3_8b.py) as an example.
+
+## Step 7: Customize the recipe
+
+Refer [CONFIGURATION-HIERARCHY.md](CONFIGURATION-HIERARCHY.md) to customize your recipe with additional features as needed.

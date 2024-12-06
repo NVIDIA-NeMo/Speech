@@ -653,6 +653,24 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
         raise ValueError("Could not find sharded state dict")
 
+    def enable_forward_pre_hook(self):
+        for model in self:
+            model_chunk = model.module
+            assert isinstance(model_chunk, DDP)
+            model_chunk.enable_forward_pre_hook()
+
+    def disable_forward_pre_hook(self):
+        for model in self:
+            model_chunk = model.module
+            assert isinstance(model_chunk, DDP)
+            model_chunk.disable_forward_pre_hook()
+
+    def force_param_sync(self):
+        for model in self:
+            model_chunk = model.module
+            assert isinstance(model_chunk, DDP)
+            model_chunk.start_param_sync(force_sync=True)
+
     @property
     def pipeline(self) -> Union[ModelT, List[ModelT]]:
         if len(self) == 1:

@@ -35,7 +35,7 @@ Start the NeMo Framework Container
 .. code:: bash
 
    docker run \
-     --gpus device=1 \
+     --gpus all \
      --shm-size=2g \
      --net=host \
      --ulimit memlock=-1 \
@@ -43,6 +43,12 @@ Start the NeMo Framework Container
      -v ${PWD}:/workspace \
      -w /workspace \
      nvcr.io/nvidia/nemo:dev bash
+
+Once you are inside the container, you can run `nvidia-smi` to verify that the GPUs are accessible.
+
+.. code:: bash
+
+   nvidia-smi
 
 
 2. You need to request download permission from Meta and Hugging Face. Then, from within the container, log in through `huggingface-cli` using your Hugging Face token. 

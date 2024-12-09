@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union
+from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -20,14 +20,19 @@ from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokeniz
 
 
 class AbstractEmbModel(nn.Module):
-    def __init__(self, enable_lora_finetune=False, target_block=[], target_module=[]):
+    def __init__(
+        self,
+        enable_lora_finetune: bool = False,
+        target_block: Optional[List[str]] = None,
+        target_module: Optional[List[str]] = None,
+    ) -> None:
         super().__init__()
         self._is_trainable = None
         self._ucg_rate = None
         self._input_key = None
 
-        self.TARGET_BLOCK = target_block
-        self.TARGET_MODULE = target_module
+        self.TARGET_BLOCK = target_block or []
+        self.TARGET_MODULE = target_module or []
         if enable_lora_finetune:
             self.lora_layers = []
 

@@ -894,16 +894,17 @@ def _validate_config(
 ) -> None:
 
     ## Model validation
-    assert getattr(model.config, "seq_length", 1) > 0
-    assert getattr(model.config, "max_position_embeddings", 1) > 0
-    assert model.config.num_layers > 0
-    assert model.config.hidden_size > 0
-    assert model.config.num_attention_heads > 0
-    assert model.config.ffn_hidden_size > 0
+    if hasattr(model, "config"):
+        assert getattr(model.config, "seq_length", 1) > 0
+        assert getattr(model.config, "max_position_embeddings", 1) > 0
+        assert model.config.num_layers > 0
+        assert model.config.hidden_size > 0
+        assert model.config.num_attention_heads > 0
+        assert model.config.ffn_hidden_size > 0
 
-    if hasattr(model.config, "seq_length"):
-        if getattr(model.config, "max_position_embeddings", None) is not None:
-            assert model.config.seq_length <= model.config.max_position_embeddings
+        if hasattr(model.config, "seq_length"):
+            if getattr(model.config, "max_position_embeddings", None) is not None:
+                assert model.config.seq_length <= model.config.max_position_embeddings
 
     ## Data validation
     assert data.micro_batch_size > 0

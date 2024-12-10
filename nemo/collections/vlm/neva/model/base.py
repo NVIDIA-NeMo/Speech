@@ -23,8 +23,8 @@ import torch.distributed
 import torch.nn.functional as F
 from megatron.core import dist_checkpointing
 from megatron.core import parallel_state as ps
+from megatron.core import tensor_parallel
 from megatron.core.enums import ModelType
-from megatron.core.extensions.transformer_engine import TEDotProductAttention
 from megatron.core.inference_params import InferenceParams
 from megatron.core.models.multimodal.llava_model import LLaVAModel as MCoreLLaVAModel
 from megatron.core.models.vision.clip_vit_model import CLIPViTModel as MCoreCLIPViTModel
@@ -46,7 +46,7 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model import transformer_engine_layer_spec
 from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank, get_packed_seq_params
-from nemo.collections.vlm.neva.data.multimodal_tokens import IMAGE_TOKEN_INDEX
+from nemo.collections.vlm.neva.data.multimodal_tokens import IGNORE_INDEX, IMAGE_TOKEN_INDEX
 from nemo.lightning import io
 from nemo.lightning.io.pl import ckpt_to_weights_subdir
 from nemo.lightning.megatron_parallel import MaskedTokenLossReductionWithLossMask
@@ -318,6 +318,7 @@ class NevaConfig(TransformerConfig, io.IOMixin):
         self.vision_transformer_config.tensor_model_parallel_size = self.tensor_model_parallel_size
         self.vision_projection_config.tensor_model_parallel_size = self.tensor_model_parallel_size
         self.language_transformer_config.pipeline_model_parallel_size = self.pipeline_model_parallel_size
+        self.language_transformer_config.context_parallel_size = self.context_parallel_size
 
         if self.encoder_pipeline_model_parallel_size > 0:
             assert self.encoder_pipeline_model_parallel_size == 1, "ViT can only live on 1 pipeline stage."
@@ -390,6 +391,8 @@ class MCoreNevaModel(MCoreLLaVAModel):
 
         self.sequence_parallel_lm = language_transformer_config.sequence_parallel
         self.tp_comm_overlap_lm = language_transformer_config.tp_comm_overlap
+        self.context_parallel_lm = language_transformer_config.context_parallel_size
+        self.tensor_model_parallel_size_lm = language_transformer_config.tensor_model_parallel_size
 
         self.share_embeddings_and_output_weights = False
         if self.add_decoder:
@@ -614,6 +617,237 @@ class MCoreNevaModel(MCoreLLaVAModel):
             self.encoder_hidden_state = input_tensor[0]
         else:
             self.language_model.set_input_tensor(input_tensor[0])
+
+    def _preprocess_data(
+        self,
+        image_embeddings,
+        language_embeddings,
+        input_ids,
+        loss_mask,
+        labels,
+        use_inference_kv_cache,
+        image_token_index,
+        num_image_tiles,
+        attention_mask,
+    ):
+        """Preprocess input data before input to language model.
+
+        This function is adopted from
+        https://github.com/huggingface/transformers/blob/85817d98fb60977c97e3014196a462b732d2ed1a/src/transformers/models/llava_next/modeling_llava_next.py#L409
+        for our input data conventions.
+
+        image_token_index = -200 indicates the image position in the input_ids = [0, 1, -200, 2, 3]
+        and labels = [1, -200, 2, 3, 4], for example.
+        We want to replace the image position (-200) with image_embeddings and return the following:
+        - final_embeddings = [0, 1, image_embeddings, 2, 3],
+        - final_labels = [1, -100, 2, 3, 4]
+        - final_loss_mask = [1, 0, 0, 1, 1]
+
+        This function handles samples without images (text-only sample). It also handles samples
+        with images that are split into multiples tiles.
+
+        If pipeline parallelism is not used, then self.pre_process and self.post_process
+        are both True and we update both input embeddings, labels and loss masks (if available).
+
+        If pipeline parallelism is used, then we do the following
+        - the first language model chunk has self.pre_process = True and
+          self.post_process = False. We update input embeddings.
+        - the middle language model chunk(s) has self.pre_process = False and
+          self.post_process = False. We don't need to update anything.
+        - the last language model chunk has self.pre_process = False and
+          self.post_process = True. We update labels and loss mask.
+
+        TODO: This function should adjust the attention mask too.
+        Currently, we assume the language model uses a causal mask.
+
+        Returns:
+            final_embedding (torch.Tensor): image and text embeddings [combined_seq_len, b, h].
+            final_labels (torch.Tensor): labels for image and text positions [b, combined_seq_len].
+            final_loss_mask (torch.Tensor): loss mask [b, combined_seq_len].
+        """
+        assert self.add_decoder, "input text preprocessing is only needed for the language model"
+
+        # No pre- or postprocessing needed.
+        # With pipeline parallel > 2, this means a chunk in the middle of the model.
+        if not self.pre_process and not self.post_process:
+            return language_embeddings, loss_mask, labels, attention_mask
+
+        # If using the inference KV cache, the image tokens are already computed.
+        if use_inference_kv_cache:
+            return language_embeddings, loss_mask, labels, attention_mask
+
+        img_seq_len = self._img_seq_len
+        batch_size, text_seq_len = input_ids.shape
+
+        has_labels = labels is not None
+        if has_labels:
+            assert (
+                labels.shape == loss_mask.shape
+            ), f"mismatching labels shape {labels.shape} and loss mask shape {loss_mask.shape}"
+
+        # Create indices for new text and label positions.
+        with torch.no_grad():
+            image_token_mask = input_ids == image_token_index
+            num_images_per_sample = torch.sum(image_token_mask, dim=-1)
+
+            # Number of tiles per sample.
+            num_image_tiles_batch = num_image_tiles.split(num_images_per_sample.tolist(), dim=0)
+            num_image_tiles_batch = torch.tensor([x.sum() for x in num_image_tiles_batch], device=input_ids.device)
+
+            # Sequence length for each sample is the image sequence length multiplied by
+            # the number of tiles for that image, minus image token indices,
+            # plus text sequence length.
+            seq_lens = num_image_tiles_batch * img_seq_len - num_images_per_sample + text_seq_len
+            max_seq_len = seq_lens.max()
+            # Pipeline parallel expects fixed input size. Check if we need to pad.
+            if self._language_is_pipeline_parallel and max_seq_len < self._language_max_sequence_length:
+                max_seq_len = self._language_max_sequence_length
+
+            if self.sequence_parallel_lm:
+                if self.tp_comm_overlap_lm:
+                    # If shorter: Pad to language_max_sequence_length to use TP Comm overlap.
+                    # If longer: Gets truncated later.
+                    if max_seq_len < self._language_max_sequence_length:
+                        padded_seq_len = self._language_max_sequence_length
+                else:
+                    # Pad to multiple of tp size for sequence parallelism
+                    tp_world_size = ps.get_tensor_model_parallel_world_size()
+                    padded_seq_len = int((max_seq_len + (tp_world_size - 1)) // tp_world_size * tp_world_size)
+                sp_padding_needed = padded_seq_len - max_seq_len
+                max_seq_len = padded_seq_len
+            batch_indices, non_image_indices = torch.where(input_ids != image_token_index)
+
+            # New position ids for the text tokens, shifted by the image sequence length.
+            # E.g. for input_ids = [-200, 1, 2, 3] and img_seq_len = 576, we get
+            # new_position_ids = [576, 577, 578, 579]. text_position_ids are then [577, 578, 579].
+            image_token_mask_lens = image_token_mask.int().clone()
+            # -1 is for the removed image token index.
+            image_token_mask_lens[image_token_mask] = num_image_tiles * img_seq_len - 1
+            # +1 is needed here for the cumulative sum. -1 is adjusting for zero-based indexing.
+            new_position_ids = torch.cumsum((image_token_mask_lens + 1), dim=-1) - 1
+            text_position_ids = new_position_ids[batch_indices, non_image_indices]
+
+            # Labels are shifted to left by one.
+            # So, shift text position ids and non-image indices to left by one.
+            if has_labels:
+                label_text_position_ids = text_position_ids - 1
+                valid_label_text_position_ids = label_text_position_ids >= 0
+                label_text_position_ids = label_text_position_ids[valid_label_text_position_ids]
+
+                label_batch_indices = batch_indices[valid_label_text_position_ids]
+
+                label_non_image_indices = non_image_indices - 1
+                valid_label_non_image_indices = label_non_image_indices >= 0
+                label_non_image_indices = label_non_image_indices[valid_label_non_image_indices]
+
+            # Create a mask for the image embedding positions.
+            images_mask = torch.full((batch_size, max_seq_len), True, dtype=torch.bool, device=input_ids.device)
+            # No images in the text positions.
+            images_mask[batch_indices, text_position_ids] = False
+            # Samples can have different amount of images tokens.
+            # new_position_ids[:, -1] gives the last text position id for each sample.
+            # Padding is needed when the number of image tokens differs.
+            first_padding_idx = new_position_ids[:, -1] + 1
+            images_mask[
+                torch.arange(max_seq_len, device=first_padding_idx.device).repeat(batch_size, 1)
+                >= first_padding_idx.unsqueeze(1)
+            ] = False
+
+        # Create the final input embedding (if this is the first language model stage).
+        final_embedding = None
+        if self.pre_process:
+            embed_dim = language_embeddings.shape[-1]
+            final_embedding = torch.zeros(
+                batch_size,
+                max_seq_len,
+                embed_dim,
+                dtype=language_embeddings.dtype,
+                device=language_embeddings.device,
+            )
+
+            # Put text embeddings to the text positions in the result tensor.
+            final_embedding[batch_indices, text_position_ids] = language_embeddings[batch_indices, non_image_indices]
+
+            # Put image embeddings to image positions.
+            final_embedding[images_mask] = image_embeddings.permute(1, 0, 2).reshape(-1, embed_dim).contiguous()
+
+        # Create the final labels and loss mask (if this is the last language model stage).
+        final_labels, final_loss_mask = None, None
+        if has_labels:
+            final_labels = torch.full(
+                (batch_size, max_seq_len), IGNORE_INDEX, dtype=labels.dtype, device=labels.device
+            )
+            final_loss_mask = torch.full((batch_size, max_seq_len), 0, dtype=loss_mask.dtype, device=loss_mask.device)
+
+            # Put text labels and loss mask to the text positions.
+            final_labels[label_batch_indices, label_text_position_ids] = labels[
+                label_batch_indices, label_non_image_indices
+            ]
+
+            final_loss_mask[batch_indices, text_position_ids] = loss_mask[batch_indices, non_image_indices]
+
+            # For labels, pick the last label index that got dropped by the shift to left.
+            label_extra_text_position_ids = seq_lens - 1
+            batch_range = torch.arange(len(label_extra_text_position_ids))
+            final_labels[batch_range, label_extra_text_position_ids] = labels[batch_range, -1]
+
+            # Loss mask the image positions.
+            final_loss_mask[images_mask] = 0
+
+            # Loss mask last text position just before an image
+            # so that text token does not need to predict the first image token.
+            batch_image_indices, image_indices = torch.where(image_token_mask)
+            # Indices just before image tokens. If it's -1, skip it.
+            before_image_indices = image_indices - 1
+            valid = before_image_indices >= 0
+            valid_batch_image_indices = batch_image_indices[valid]
+            valid_before_image_indices = before_image_indices[valid]
+            # Map those indices those position ids.
+            valid_before_image_indices = new_position_ids[valid_batch_image_indices, valid_before_image_indices]
+
+            final_loss_mask[valid_batch_image_indices, valid_before_image_indices] = 0
+
+        if final_embedding is not None and has_labels:
+            assert (
+                final_embedding.shape[:2] == final_labels.shape == final_loss_mask.shape
+            ), "unexpected shapes after data preprocessing"
+
+        truncate_labels = has_labels and final_labels.shape[1] > self._language_max_sequence_length
+        if truncate_labels:
+            final_labels = final_labels[:, : self._language_max_sequence_length]
+            final_loss_mask = final_loss_mask[:, : self._language_max_sequence_length]
+
+        if final_embedding is not None:
+            final_embedding = final_embedding.transpose(1, 0).contiguous()
+            # Truncate if exceeding the language model's max sequence length.
+            if final_embedding.shape[0] > self._language_max_sequence_length:
+                final_embedding = final_embedding[: self._language_max_sequence_length]
+            if self.sequence_parallel_lm:
+                # Create an attention mask. This ensures correct computation.
+                # This is done even when no padding was done as we set mask_type to
+                # 'padding' or 'padding_causal' when using SP.
+                if attention_mask is None:
+                    # Create base attention mask with original seq len to indicate valid tokens
+                    attention_mask = (
+                        torch.ones(
+                            (
+                                final_embedding.shape[1],
+                                final_embedding.shape[0] - sp_padding_needed,
+                            ),
+                            device=final_embedding.device,
+                        )
+                        .unsqueeze(1)
+                        .unsqueeze(1)
+                    )  # [b, 1, 1, final seq len - sp_padding_needed]
+                if sp_padding_needed > 0:
+                    # Add the padding portion of the mask
+                    attention_mask = torch.nn.functional.pad(attention_mask, (0, sp_padding_needed))
+
+                # Attention mask True/False meaning flipped in 1.7.0
+                attention_mask = attention_mask < 0.5
+                final_embedding = tensor_parallel.scatter_to_sequence_parallel_region(final_embedding)
+
+        return final_embedding, final_labels, final_loss_mask, attention_mask
 
 
 class NevaModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):

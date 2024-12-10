@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 @dataclass
 class LlavaConfig(NevaConfig):
     drop_vision_class_token: bool = True
+    freeze_vision_model: bool = True
 
 
 @dataclass

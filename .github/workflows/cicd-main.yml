@@ -4075,6 +4075,31 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/t5_peft_results/${{ github.run_id }}
 
+  L2_NeMo_2_NEVA_MOCK_TRAINING:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_NEVA_MOCK_TRAINING') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python tests/collections/vlm/neva_train.py \
+        --devices=1 \
+        --max-steps=5 \
+        --experiment-dir=/tmp/nemo2_neva_results/${{ github.run_id }}
+
+  L2_NeMo_2_MLLAMA_MOCK_TRAINING:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_MLLAMA_MOCK_TRAINING') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        TRANSFORMERS_OFFLINE=1 \
+        python tests/collections/vlm/mllama_train.py \
+        --devices=1 \
+        --max-steps=5 \
+        --experiment-dir=/tmp/nemo2_mllama_results/${{ github.run_id }}
+
   L2_NeMo_2_Mixtral_Pretraining:
       needs: [cicd-test-container-setup]
       uses: ./.github/workflows/_test_template.yml
@@ -4652,6 +4677,8 @@ jobs:
       - L2_TTS_Fast_dev_runs_1_Hifigan
       - Speech_Checkpoints_tests
       - L2_Stable_Diffusion_Training
+      - L2_NeMo_2_NEVA_MOCK_TRAINING
+      - L2_NeMo_2_MLLAMA_MOCK_TRAINING
       - L2_NeMo_2_GPT_Pretraining_no_transformer_engine
       - L2_NeMo_2_GPT_DDP_Param_Parity_check
       - L2_NeMo_2_HF_MODEL_IMPORT

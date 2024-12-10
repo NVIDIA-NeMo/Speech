@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Example:
+  python scripts/vlm/neva_generate.py --load_from_hf
+"""
+
 import argparse
 
 import requests

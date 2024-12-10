@@ -12,99 +12,94 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Example:
+  torchrun --nproc_per_node=8 scripts/vlm/neva_finetune.py \
+  --devices=8 --tp=4 --data_type=mock
+"""
+
 import argparse
 
 import torch
 from megatron.core.optimizer import OptimizerConfig
 from pytorch_lightning.loggers import WandbLogger
-from transformers import AutoProcessor
 
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
 from nemo.collections.vlm import ImageDataConfig
-from nemo.collections.vlm.mllama.data.lazy import MLlamaLazyDataModule
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.exp_manager import TimingCallback
 
-"""
-Example:
-  torchrun --nproc_per_node=8 scripts/vlm/mllama_finetune.py \
-  --devices=8 --tp=4 --data_type=mock
-"""
-
 
 def main(args):
-    """
-    Main function for setting up and training the MLLama model.
+    # pylint: disable=C0115,C0116
 
-    This function prepares the data module, model, training strategy,
-    logger, checkpointing, and optimizer configuration. It then starts
-    the training loop using PyTorch Lightning's trainer.
-
-    Args:
-        args (argparse.Namespace): The command-line arguments passed to the script.
-    """
-    # Setting gbs, mbs, and max_steps from arguments
+    # Global and micro batch sizes
     gbs = args.gbs
     mbs = args.mbs
     max_steps = args.max_steps
 
-    # encoder (vision) seq length
-    # ((img_res / patch_size) ** 2 + cls_token) * num_tiles, = ((560 / 14) ** 2 + 1) * 4 = 6404
-    seq_length = 6404
-    decoder_seq_length = 1024  # decoder (llm) seq length
+    decoder_seq_length = 4096
 
-    if args.restore_path is not None and args.restore_path.startswith("nemo://"):
-        model_id = args.restore_path[len("nemo://") :]
-    else:
-        model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-
-    processor = AutoProcessor.from_pretrained(model_id)
-    image_processor = processor.image_processor
-    tokenizer = processor.tokenizer
     if args.data_type == "llava":
         # Data configuration
         data_config = ImageDataConfig(
             image_folder=args.image_folder,
-            conv_template="mllama",
+            conv_template="v1",
         )
 
         # Data module setup
-        data = MLlamaLazyDataModule(
+        data = vlm.NevaLazyDataModule(
             paths=args.data_path,
             data_config=data_config,
-            seq_length=seq_length,
-            decoder_seq_length=decoder_seq_length,
+            seq_length=decoder_seq_length,
+            decoder_seq_length=None,
             global_batch_size=gbs,
             micro_batch_size=mbs,
-            tokenizer=tokenizer,
-            image_processor=image_processor,
-            num_workers=16,
+            tokenizer=None,
+            image_processor=None,
+            num_workers=8,
         )
     elif args.data_type == "mock":
-        data = vlm.MLlamaMockDataModule(
-            seq_length=seq_length,
-            decoder_seq_length=decoder_seq_length,
+        data = vlm.NevaMockDataModule(
+            seq_length=decoder_seq_length,
             global_batch_size=gbs,
             micro_batch_size=mbs,
-            tokenizer=tokenizer,
-            image_processor=image_processor,
+            tokenizer=None,
+            image_processor=None,
             num_workers=4,
         )
     else:
         raise ValueError(f"Data type {args.data_type} not supported")
 
-    model_configs = {
-        "meta-llama/Llama-3.2-11B-Vision": vlm.MLlamaConfig11B,
-        "meta-llama/Llama-3.2-11B-Vision-Instruct": vlm.MLlamaConfig11BInstruct,
-        "meta-llama/Llama-3.2-90B-Vision": vlm.MLlamaConfig90B,
-        "meta-llama/Llama-3.2-90B-Vision-Instruct": vlm.MLlamaConfig90BInstruct,
-    }
-    conf = model_configs[model_id]()
-    if args.pp_size > 1:
-        conf.language_model_config.first_pipeline_num_layers = 0
-    model = vlm.MLlamaModel(conf, tokenizer=tokenizer)
+    # Submodules configurations
+    language_transformer_config = llm.Llama2Config7B(
+        seq_length=decoder_seq_length,
+    )
+    vision_transformer_config = vlm.HFCLIPVisionConfig(
+        pretrained_model_name_or_path="openai/clip-vit-large-patch14-336"
+    )
+    vision_projection_config = vlm.MultimodalProjectorConfig(
+        projector_type=args.projector_type,
+        input_size=vision_transformer_config.hidden_size,
+        hidden_size=language_transformer_config.hidden_size,
+        ffn_hidden_size=language_transformer_config.hidden_size,
+    )
+
+    # NEVA model configuration
+    neva_config = vlm.NevaConfig(
+        language_transformer_config=language_transformer_config,
+        vision_transformer_config=vision_transformer_config,
+        vision_projection_config=vision_projection_config,
+        language_model_from_pretrained=args.language_model_path,
+        freeze_language_model=False,
+        freeze_vision_model=True,
+    )
+
+    model = vlm.NevaModel(neva_config, tokenizer=data.tokenizer)
+
+    from megatron.core.distributed import DistributedDataParallelConfig
 
     # Training strategy setup
     strategy = nl.MegatronStrategy(
@@ -112,14 +107,22 @@ def main(args):
         pipeline_model_parallel_size=args.pp_size,
         encoder_pipeline_model_parallel_size=args.encoder_pp_size,
         pipeline_dtype=torch.bfloat16,
+        sequence_parallel=True,
+        ddp=DistributedDataParallelConfig(
+            check_for_nan_in_grad=True,
+            grad_reduce_in_fp32=True,
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+            average_in_collective=True,
+        ),
     )
 
     # Checkpoint callback setup
     checkpoint_callback = nl.ModelCheckpoint(
         save_last=True,
         monitor="reduced_train_loss",
-        save_top_k=6,
-        every_n_train_steps=100,
+        save_top_k=2,
+        every_n_train_steps=1000,
         dirpath=args.log_dir,
     )
 
@@ -164,25 +167,21 @@ def main(args):
     )
     sched = CosineAnnealingScheduler(
         max_steps=trainer.max_steps,
-        warmup_steps=100,
+        warmup_steps=150,
         constant_steps=0,
-        min_lr=args.lr,
+        min_lr=1.0e-07,
     )
     opt = MegatronOptimizerModule(opt_config, sched)
 
     # PEFT setup
     if args.peft == 'lora':
         peft = vlm.peft.LoRA(
-            freeze_vision_model=True,
             target_modules=[
                 "linear_qkv",
-                "linear_q",
-                "linear_kv",
-            ],
-            dim=8,
-            alpha=32,
-            dropout=0.05,
-            dropout_position="pre",
+                "linear_proj",
+                "linear_fc1",
+                "linear_fc2",
+            ]
         )
     else:
         peft = None
@@ -199,20 +198,20 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Mllama Model Training Script")
+    parser = argparse.ArgumentParser(description="NEVA Model Training Script")
 
+    # Argument parsing
+    parser.add_argument("--data_type", type=str, required=False, default="mock", help="mock | llava")
+    parser.add_argument("--data_path", type=str, required=False, default=None, help="Path to the dataset JSON file")
+    parser.add_argument("--image_folder", type=str, required=False, default=None, help="Path to the image folder")
+    parser.add_argument(
+        "--log_dir", type=str, required=False, default="/results", help="Directory for logging and checkpoints"
+    )
+    parser.add_argument(
+        "--language_model_path", type=str, required=False, default=None, help="Path to the pretrained language model"
+    )
     parser.add_argument(
         "--restore_path", type=str, required=False, default=None, help="Path to restore model from checkpoint"
-    )
-    parser.add_argument("--data_type", type=str, required=False, default="mock", help="mock | llava")
-    parser.add_argument("--data_path", type=str, required=False, help="Path to the dataset")
-    parser.add_argument("--image_folder", type=str, required=False, help="Path to the image folder")
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        required=False,
-        default="/results",
-        help="Directory for logging and checkpoints",
     )
     parser.add_argument("--devices", type=int, required=False, default=1)
     parser.add_argument("--num_nodes", type=int, required=False, default=1)
@@ -220,6 +219,7 @@ if __name__ == "__main__":
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--pp_size", type=int, required=False, default=1)
     parser.add_argument("--encoder_pp_size", type=int, required=False, default=0)
+    parser.add_argument("--projector_type", type=str, required=False, default="mcore_mlp")
     parser.add_argument("--name", type=str, required=False, default="neva_pretrain")
     parser.add_argument("--peft", type=str, default='none', help="none | lora")
     parser.add_argument("--wandb_project", type=str, required=False, default=None)

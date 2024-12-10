@@ -243,7 +243,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.ckpt_load_optimizer = ckpt_load_optimizer
         self.ckpt_save_optimizer = ckpt_save_optimizer
         self.ckpt_load_strictness = ckpt_load_strictness
-        self.pipeline_dtype = pipeline_dtype
+        self._pipeline_dtype = pipeline_dtype
         self._setup_optimizers = setup_optimizers
         self._init_model_parallel = init_model_parallel
         self.log_train_loss = bool(int(os.getenv("NEMO_LOG_TRAIN_LOSS", 1)))
@@ -278,6 +278,18 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         # used in NVIDIA NGC PyTorch containers
         _strategy_lib.enable_nvidia_optimizations()
 
+    @property
+    def pipeline_dtype(self):
+        if self._pipeline_dtype is None:
+            dtype_config = getattr(self._precision_plugin, "dtype_config", None)
+            if dtype_config is not None:
+                self._pipeline_dtype = dtype_config.pipeline_dtype
+        return self._pipeline_dtype
+
+    @pipeline_dtype.setter
+    def pipeline_dtype(self, value):
+        self._pipeline_dtype = value
+
     @override
     def connect(self, model: pl.LightningModule) -> None:
         """Attaches a model to strategy."""
@@ -286,8 +298,6 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         assert not 'is_hf_model' in model.__dict__, "Cannot use HFAutoModelForCausalLM with MegatronParallel"
 
         dtype_config = getattr(self._precision_plugin, "dtype_config", None)
-        if self.pipeline_dtype is None and dtype_config:
-            self.pipeline_dtype = dtype_config.pipeline_dtype
 
         _maybe_mcore_config = _strategy_lib.set_model_parallel_attributes(model, self.parallelism)
         if _maybe_mcore_config:

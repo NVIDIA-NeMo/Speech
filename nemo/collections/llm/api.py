@@ -905,6 +905,8 @@ def _validate_config(
         if hasattr(model.config, "seq_length"):
             if getattr(model.config, "max_position_embeddings", None) is not None:
                 assert model.config.seq_length <= model.config.max_position_embeddings
+    else:
+        assert not isinstance(trainer.strategy, nl.MegatronStrategy), "Expected model.config to exist"
 
     ## Data validation
     assert data.micro_batch_size > 0

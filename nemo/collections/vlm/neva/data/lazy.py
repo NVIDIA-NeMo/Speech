@@ -442,8 +442,6 @@ class NevaDataset(LazySupervisedDataset):
         if media_type == 'image':
             media = [instance.pop('image') for instance in instances]
             media = torch.cat(media, dim=0)
-            if media.size(0) == 0:
-                media = None
         elif media_type == 'video':
             media = [instance.pop('video', None) for instance in instances]
         else:
@@ -525,6 +523,8 @@ class NevaLazyDataModule(pl.LightningDataModule):
         self.data_config = data_config
         self.seq_length = seq_length
         self.decoder_seq_length = decoder_seq_length
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.num_train_samples = num_train_samples

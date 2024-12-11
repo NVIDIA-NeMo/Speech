@@ -111,7 +111,7 @@ def main(args):
         ddp=DistributedDataParallelConfig(
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,
-            overlap_grad_reduce=True,
+            overlap_grad_reduce=False,
             overlap_param_gather=True,
             average_in_collective=True,
         ),

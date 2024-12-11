@@ -92,6 +92,8 @@ class SimpleMultiModalDataModule(pl.LightningDataModule, IOMixin):
         self.decoder_seq_length = decoder_seq_length
         self.micro_batch_size = micro_batch_size
         self.global_batch_size = global_batch_size
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.multimodal_sample_config = multimodal_sample_config

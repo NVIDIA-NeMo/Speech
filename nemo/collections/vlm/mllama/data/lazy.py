@@ -205,6 +205,8 @@ class MLlamaLazyDataModule(pl.LightningDataModule):
         self.data_config = data_config
         self.seq_length = seq_length
         self.decoder_seq_length = decoder_seq_length
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
         self.tokenizer = tokenizer
         self.image_processor = image_processor
         self.num_train_samples = num_train_samples

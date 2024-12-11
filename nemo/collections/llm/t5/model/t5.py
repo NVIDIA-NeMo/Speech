@@ -20,7 +20,7 @@ import lightning.pytorch as L
 import torch
 import torch.distributed
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
-from megatron.core.inference.model_inference_wrappers.t5.t5_inference_wrapper import T5InferenceWrapper
+
 from megatron.core.models.T5.t5_model import T5Model as MCoreT5Model
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.spec_utils import ModuleSpec
@@ -319,6 +319,7 @@ class T5Model(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
             padded_vocab_size=self.tokenizer.vocab_size,
         )
+        from megatron.core.inference.model_inference_wrappers.t5.t5_inference_wrapper import T5InferenceWrapper
 
         model_inference_wrapper = T5InferenceWrapper(mcore_model, inference_wrapper_config)
         return model_inference_wrapper

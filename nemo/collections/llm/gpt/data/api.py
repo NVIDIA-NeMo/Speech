@@ -41,8 +41,8 @@ def dolly() -> pl.LightningDataModule:
 
 @run.cli.factory
 @run.autoconvert
-def hf_dataset(dataset: str) -> pl.LightningDataModule:
-    return HFDatasetDataModule(dataset=dataset, global_batch_size=16, micro_batch_size=2)
+def hf_dataset(path: str) -> pl.LightningDataModule:
+    return HFDatasetDataModule(path=path, global_batch_size=16, micro_batch_size=2)
 
 
 __all__ = ["mock", "squad", "dolly", "hf_dataset"]

@@ -25,9 +25,6 @@ from megatron.core.inference.engines.mcore_engine import MCoreEngine
 from megatron.core.inference.model_inference_wrappers.abstract_model_inference_wrapper import (
     AbstractModelInferenceWrapper,
 )
-from megatron.core.inference.text_generation_controllers.encoder_decoder_text_generation_controller import (
-    EncoderDecoderTextGenerationController,
-)
 from megatron.core.inference.text_generation_controllers.simple_text_generation_controller import (
     SimpleTextGenerationController,
 )
@@ -232,6 +229,10 @@ def generate(
     Returns:
         dict: A dictionary containing the generated results.
     """
+    from megatron.core.inference.text_generation_controllers.encoder_decoder_text_generation_controller import (
+        EncoderDecoderTextGenerationController,
+    )
+
     if encoder_prompts is not None:
         text_generation_controller = EncoderDecoderTextGenerationController(
             inference_wrapped_model=model, tokenizer=tokenizer

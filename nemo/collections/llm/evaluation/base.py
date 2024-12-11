@@ -167,7 +167,7 @@ class NeMoFWLMEval(LM):
         return results
 
 
-def wait_for_rest_service(rest_url, max_retries=60, retry_interval=2):
+def wait_for_rest_service(rest_url, max_retries=600, retry_interval=2):
     """
     Wait for REST service to be ready.
 

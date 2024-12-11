@@ -167,7 +167,8 @@ Overall, these enhancements make NeMo 2.0 a powerful, scalable, and user-friendl
 
 All NeMo models are trained with
 [Lightning](https://github.com/Lightning-AI/lightning). Training is
-automatically scalable to 1000s of GPUs.
+automatically scalable to 1000s of GPUs. You can check the performance benchmarks using the
+latest NeMo Framework container [here](https://docs.nvidia.com/nemo-framework/user-guide/latest/performance/performance_summary.html).
 
 When applicable, NeMo models leverage cutting-edge distributed training
 techniques, incorporating [parallelism

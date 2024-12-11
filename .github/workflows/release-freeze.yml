@@ -23,9 +23,10 @@ jobs:
   code-freeze:
     uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.16.0
     with:
-      library_name: NeMo-Toolkit
-      python_package: nemo
-      type_of_release: ${{ inputs.type_of_release }}
+      library-name: NeMo-Toolkit
+      python-package: nemo
+      release-type: ${{ inputs.type_of_release }}
+      freeze-commit: ${{ inputs.freeze-commit }}
     secrets:
       SLACK_RELEASE_ENDPOINT: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}

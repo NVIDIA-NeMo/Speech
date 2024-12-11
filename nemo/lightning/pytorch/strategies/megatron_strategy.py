@@ -158,7 +158,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             Defaults to True.
         ckpt_load_strictness (StrictHandling, optional): defines loading strictness.
             If not None, overwrites the `strict` flag passed to `load_checkpoint`.
-            Defaults to None.
+            Defaults to None. For a list of supported values, refer to the Megatron Core documentation:
+            https://github.com/NVIDIA/Megatron-LM/blob/d4e72c0d33edc0c53aeb624f617eb77cebce6ae9/megatron/core/dist_checkpointing/validation.py#L46
         setup_optimizers (bool): Whether to call the trainer's setup_optimizers function to perform any
             necessary conversions of optimizer parameters and move optimizer parameters to the correct device.
             Defaults to True.

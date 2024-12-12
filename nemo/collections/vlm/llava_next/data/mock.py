@@ -77,6 +77,8 @@ class MockDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.persistent_workers = persistent_workers
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
 
         if tokenizer is None or image_processor is None:
             logging.warning(

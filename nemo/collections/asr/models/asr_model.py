@@ -201,7 +201,7 @@ class ASRModel(ModelPT, ABC):
         EncDecRNNTModel.decoding.decoding is the inference class with CUDA graphs.
         """
         WithOptionalCudaGraphs.disable_cuda_graphs_recursive(self, attribute_path="decoding.decoding")
-        return super().on_validation_epoch_end()
+        return super().on_validation_epoch_end(sync_metrics=True)
 
     def on_test_epoch_start(self) -> None:
         """

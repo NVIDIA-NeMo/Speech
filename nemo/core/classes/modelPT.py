@@ -950,7 +950,7 @@ class ModelPT(LightningModule, Model):
 
         return self._test_dl
 
-    def on_validation_epoch_end(self) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
+    def on_validation_epoch_end(self, sync_metrics: bool = False) -> Optional[Dict[str, Dict[str, torch.Tensor]]]:
         """
         Default DataLoader for Validation set which automatically supports multiple data loaders
         via `multi_validation_epoch_end`.
@@ -980,7 +980,7 @@ class ModelPT(LightningModule, Model):
             output_dict = self.multi_validation_epoch_end(self.validation_step_outputs, dataloader_idx=0)
 
             if output_dict is not None and 'log' in output_dict:
-                self.log_dict(output_dict.pop('log'), on_epoch=True)
+                self.log_dict(output_dict.pop('log'), on_epoch=True, sync_dist=sync_metrics)
 
             self.validation_step_outputs.clear()  # free memory
             return output_dict
@@ -1041,7 +1041,7 @@ class ModelPT(LightningModule, Model):
                 self.validation_step_outputs[dataloader_idx].clear()  # free memory
 
             if 'log' in output_dict:
-                self.log_dict(output_dict.pop('log'), on_epoch=True)
+                self.log_dict(output_dict.pop('log'), on_epoch=True, sync_dist=sync_metrics)
 
             # return everything else
             return output_dict

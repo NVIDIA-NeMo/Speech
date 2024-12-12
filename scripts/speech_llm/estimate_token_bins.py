@@ -11,13 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0115
+# pylint: disable=C0116
+# pylint: disable=C0301
 
 import argparse
 import ast
 import math
 from functools import partial
 from itertools import islice
-from pathlib import Path
 from typing import Callable, Iterable
 
 import numpy as np
@@ -27,11 +29,12 @@ from omegaconf import OmegaConf
 
 from nemo.collections.asr.data.audio_to_text_lhotse import TokenizerWrapper
 from nemo.collections.common.data.lhotse.cutset import read_cutset_from_config
-from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig, tokenize
+from nemo.collections.common.data.lhotse.dataloader import LhotseDataLoadingConfig, tokenize, tokenize_with_prompt
 from nemo.collections.common.data.lhotse.sampling import (
-    DurationFilter,
-    FixedBucketBatchSizeConstraint2D,
-    TokenPerSecondFilter,
+    MultimodalFixedBucketBatchSizeConstraint2D,
+    MultimodalSamplingConstraint,
+    TokenCountFilter,
+    TokenPerTokenFilter,
 )
 from nemo.collections.common.prompts.formatter import PromptFormatter
 from nemo.collections.common.tokenizers import AggregateTokenizer, SentencePieceTokenizer
@@ -39,24 +42,16 @@ from nemo.collections.common.tokenizers import AggregateTokenizer, SentencePiece
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Estimate duration bins for Lhotse dynamic bucketing using a sample of the input dataset. "
+        description="Estimate token bins for Lhotse dynamic bucketing using a sample of the input dataset. "
         "The dataset is read either from one or more manifest files and supports data weighting. "
-        "Unlike estimate_duration_bins.py, this script prepares the setup for 2D bucketing. "
-        "This means that each main bucket for audio duration is sub-divided into sub-buckets "
-        "for the number of output tokens (supporting BPE and Aggregated tokenizers). "
-        "2D bucketing is especially useful for encoder-decoder models where input audio duration is often "
-        "not sufficient to stratify the sampling with an optimal GPU utilization.",
+        "Unlike estimate_duration_bins.py, this script is intended for text data only. "
+        "It supports 2D bucketing. ",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "input",
-        help='Data input. Options: '
-        '1) "path.json" - any single NeMo manifest; '
-        '2) "[[path1.json],[path2.json],...]" - any collection of NeMo manifests; '
-        '3) "[[path1.json,weight1],[path2.json,weight2],...]" - any collection of weighted NeMo manifests; '
-        '4) "input_cfg.yaml" - a new option supporting input configs, same as in model training \'input_cfg\' arg; '
-        '5) "path/to/shar_data" - a path to Lhotse Shar data directory; '
-        '6) "key=val" - in case none of the previous variants cover your case: "key" is the key you\'d use in NeMo training config with its corresponding value ',
+        help='Path to a data input configuration YAML file. '
+        'This is the only type of input specification supported for text data.',
     )
     parser.add_argument(
         "-t",
@@ -79,11 +74,10 @@ def parse_args():
         "-s",
         "--sub-buckets",
         type=int,
-        default=2,
-        help="The desired number of sub-buckets (dim1 => covers output sequence length / num_tokens).",
+        default=None,
+        help="The desired number of sub-buckets (dim1 => covers output sequence length / num_tokens). "
+        "If not provided, we'll only perform 1D bucketing. ",
     )
-    parser.add_argument("--text-field", default="text", help="The key in manifests to read transcripts from.")
-    parser.add_argument("--lang-field", default="lang", help="The key in manifests to read language from.")
     parser.add_argument(
         "-n",
         "--num_examples",
@@ -94,24 +88,23 @@ def parse_args():
     )
     parser.add_argument(
         "-l",
-        "--min_duration",
+        "--min_tokens",
         type=float,
         default=-float("inf"),
-        help="If specified, we'll filter out utterances shorter than this.",
+        help="If specified, we'll filter out examples with less tokens than this number.",
     )
     parser.add_argument(
         "-u",
-        "--max_duration",
+        "--max_tokens",
         type=float,
         default=float("inf"),
-        help="If specified, we'll filter out utterances longer than this.",
+        help="If specified, we'll filter out examples with more tokens than this number.",
     )
     parser.add_argument(
-        "--max_tps",
+        "--max_tpt",
         type=float,
         default=float("inf"),
-        help="If specified, we'll filter out utterances with more tokens/second than this. "
-        "On regular utterances and BPE tokenizers with 1024 tokens 10-12tps is generally a reasonable limit.",
+        help="If specified, we'll filter out examples with more output tokens per input token than this. ",
     )
     parser.add_argument(
         "-q", "--quiet", type=bool, default=False, help="When specified, only print the estimated duration bins."
@@ -131,15 +124,20 @@ def parse_args():
         help="Prompt slots provided as a Python list of dicts. It is used together with --prompt-format option."
         "For example, with Canary-1B you may use: [{'role':'user','slots':{'source_lang':'en','target_lang':'en','task':'asr','pnc':'yes'}]",
     )
+    parser.add_argument(
+        "-m",
+        "--measure-total-length",
+        type=bool,
+        default=False,
+        help="When specified, we'll measure the total length (context+answer, i.e. input_ids) instead of context-only length. Total length is more suitable for decoder-only models while context-only length is more suitable for encoder-decoder models.",
+    )
     return parser.parse_args()
 
 
-def estimate_duration_buckets(
+def estimate_token_buckets(
     cuts: Iterable[Cut],
     num_buckets: int,
-    num_subbuckets: int,
-    max_tps: float,
-    max_duration: float,
+    num_subbuckets: int | None,
     quiet: bool,
 ) -> list[tuple[float, float]]:
     """
@@ -147,53 +145,63 @@ def estimate_duration_buckets(
     It extends it to a 2D bucketing case.
     """
     assert num_buckets > 1
+    is_2d = num_subbuckets is not None
 
-    constraint = FixedBucketBatchSizeConstraint2D([(0.0, 0.0)], [0])
+    if is_2d:
+        constraint = MultimodalFixedBucketBatchSizeConstraint2D([(0.0, 0.0)], [0], measure_total_length=False)
+    else:
+        constraint = MultimodalSamplingConstraint(measure_total_length=True)
 
     # Gather the duration and token count statistics for the dataset.
-    sizes = []
-    num_tokens = []
+    num_input_tokens = []
+    num_output_tokens = []
     for c in cuts:
-        dur, toks = constraint.measure_length(c)
-        sizes.append(dur)
-        num_tokens.append(toks)
-    sizes = np.array(sizes, dtype=np.float32)
-    num_tokens = np.array(num_tokens, dtype=np.int32)
-    joint = np.rec.fromarrays([sizes, num_tokens])
-    joint.sort()
-    sizes = joint.f0
-    num_tokens = joint.f1
+        ans = constraint.measure_length(c)
+        if is_2d:
+            itoks, otoks = ans
+            num_input_tokens.append(itoks)
+            num_output_tokens.append(otoks)
+        else:
+            num_input_tokens.append(ans)
+    num_input_tokens = np.array(num_input_tokens, dtype=np.int32)
+    if is_2d:
+        num_output_tokens = np.array(num_output_tokens, dtype=np.int32)
+        joint = np.rec.fromarrays([num_input_tokens, num_output_tokens])
+        joint.sort()
+        num_input_tokens = joint.f0
+        num_output_tokens = joint.f1
+    else:
+        num_input_tokens.sort()
 
     # We are building buckets with equal duration (empirically leads to more even bucket exhaustion over time).
     # We need to determine how much duration to allocate per bucket.
-    size_per_bucket = sizes.sum() / num_buckets
+    size_per_bucket = num_input_tokens.sum() / num_buckets
 
     if not quiet:
         print("Duration distribution:")
-        print(pd.Series(sizes).describe(percentiles=[0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]))
-    if math.isinf(max_duration):
-        max_duration = sizes[-1]
+        print(pd.Series(num_input_tokens).describe(percentiles=[0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]))
+    max_input_tokens = num_input_tokens[-1]
 
-    tps = num_tokens / sizes
-    if not quiet:
-        print("Token per second distribution:")
-        print(pd.Series(tps).describe(percentiles=[0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]))
-    if math.isinf(max_tps):
-        max_tps = tps.max()
-    del tps
+    if is_2d:
+        tpt = num_output_tokens / num_input_tokens
+        if not quiet:
+            print("Output tokens per input token distribution:")
+            print(pd.Series(tpt).describe(percentiles=[0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]))
+        max_tpt = tpt.max()
+        del tpt
 
     bins = []
     bin_indexes = [0]
     tot = 0.0
 
-    def _estimate_token_buckets(max_bucket_duration):
+    def _estimate_output_token_buckets(max_bucket_duration):
         # Since this is 2D bucketing, apply the same bin creation logic
         # for the second dimension (i.e. token count) as for the first dimension (duration).
         # That means we aim to have each bucket contain roughly the same number of tokens.
         # Note that this estimation is biased towards more padding if you have
         # a lot of zero-token examples (e.g. non-speech).
         nonlocal bins
-        num_tokens_bucket = num_tokens[bin_indexes[-1] : binidx]
+        num_tokens_bucket = num_output_tokens[bin_indexes[-1] : binidx]
         num_tokens_bucket.sort()
         tokens_per_subbucket = num_tokens_bucket.sum() / num_subbuckets
         tot_toks = 0
@@ -204,18 +212,22 @@ def estimate_duration_buckets(
                 bins.append((max_bucket_duration, num_toks))
                 tot_toks = 0
             tot_toks += num_toks
-        bins.append((size, math.ceil(size * max_tps)))
+        bins.append((size, math.ceil(size * max_tpt)))
 
     # Iterate over data, and whenever we hit size_per_bucket, create a new bucket bin.
-    for binidx, size in enumerate(sizes):
+    for binidx, size in enumerate(num_input_tokens):
         if tot > size_per_bucket:
             # Threshold hit: we are creating a new duration bin (multiplied by number of token bins).
-            _estimate_token_buckets(max_bucket_duration=size)
+            if is_2d:
+                _estimate_output_token_buckets(max_bucket_duration=size)
+            else:
+                bins.append(size)
             tot = 0.0
         tot += size
 
     # Estimate an extra 2D bin set for global max duration.
-    _estimate_token_buckets(max_bucket_duration=max_duration)
+    if num_subbuckets is not None:
+        _estimate_output_token_buckets(max_bucket_duration=max_input_tokens)
 
     return bins
 
@@ -233,19 +245,9 @@ def load_tokenizer(paths: list[str], langs: list[str] = None) -> TokenizerWrappe
 
 def apply_tokenizer(cut, tokenizer=None, prompt: PromptFormatter = None):
     if prompt is not None:
-        turns = prompt.get_default_dialog_slots()
-        last_turn = {"role": prompt.OUTPUT_ROLE, "slots": prompt.get_slots(prompt.OUTPUT_ROLE)}
-        assert len(last_turn["slots"]) == 1  # TODO: not sure how to handle multi-slot for system output here
-        for key in last_turn["slots"]:
-            last_turn["slots"][key] = cut.supervisions[0].text
-        last_turn["slots"][prompt.PROMPT_LANGUAGE_SLOT] = cut.supervisions[0].language
-        turns.append(last_turn)
-        ans = prompt.encode_dialog(turns)
-        cut.supervisions[0].tokens = ans["input_ids"]
-
+        cut = tokenize_with_prompt(cut, tokenizer, prompt)
     elif tokenizer is not None:
         cut = tokenize(cut, tokenizer)
-
     return cut
 
 
@@ -284,46 +286,42 @@ def main():
                 prompt_defaults = ast.literal_eval(args.prompt)
             prompt = PromptFormatter.resolve(args.prompt_format)(tokenizer._tokenizer, defaults=prompt_defaults)
 
-    if '=' in args.input:
-        inp_arg = args.input
-    elif args.input.endswith(".yaml"):
-        inp_arg = f"input_cfg={args.input}"
-    elif Path(args.input).is_dir():
-        inp_arg = f"shar_path={args.input}"
-    else:
-        inp_arg = f"manifest_filepath={args.input}"
+    assert args.input.endswith(".yaml")
     config = OmegaConf.merge(
         OmegaConf.structured(LhotseDataLoadingConfig),
-        OmegaConf.from_dotlist(
-            [inp_arg, "metadata_only=true", f"text_field={args.text_field}", f"lang_field={args.lang_field}"]
-        ),
+        OmegaConf.from_dotlist([f"input_cfg={args.input}"]),
     )
     cuts, _ = read_cutset_from_config(config)
-    duration_filter = RejectionsCounter(DurationFilter(args.min_duration, args.max_duration), "Duration filtering")
-    cuts = cuts.filter(duration_filter)
-    cuts = cuts.map(partial(apply_tokenizer, tokenizer=tokenizer, prompt=prompt))
-    tps_filter = RejectionsCounter(TokenPerSecondFilter(-1, args.max_tps), "Token per second filtering")
-    cuts = cuts.filter(tps_filter)
+    cuts = cuts.map(partial(apply_tokenizer, tokenizer=tokenizer, prompt=prompt), apply_fn=None)
+    if hasattr(cuts, "prefetch"):
+        cuts = cuts.prefetch()  # to be released in lhotse 1.27
+    token_filter = RejectionsCounter(
+        TokenCountFilter(args.min_tokens, args.max_tokens, args.measure_total_length), "Token count filtering"
+    )
+    cuts = cuts.filter(token_filter)
+    tpt_filter = RejectionsCounter(TokenPerTokenFilter(-1, args.max_tpt), "Output tokens per input token filtering")
+    cuts = cuts.filter(tpt_filter)
     if (N := args.num_examples) > 0:
         cuts = islice(cuts, N)
 
-    duration_bins = estimate_duration_buckets(
+    token_bins = estimate_token_buckets(
         cuts,
         num_buckets=args.buckets,
         num_subbuckets=args.sub_buckets,
-        max_tps=args.max_tps,
-        max_duration=args.max_duration,
         quiet=args.quiet,
     )
-    duration_bins = "[" + ','.join(f"[{b:.3f},{sb:d}]" for b, sb in duration_bins) + "]"
+    if args.sub_buckets is not None:
+        token_bins = "[" + ','.join(f"[{b:d},{sb:d}]" for b, sb in token_bins) + "]"
+    else:
+        token_bins = "[" + ','.join(f"{b:d}" for b in token_bins) + "]"
     if args.quiet:
-        print(duration_bins)
+        print(token_bins)
         return
-    duration_filter.print_report()
-    tps_filter.print_report()
+    token_filter.print_report()
+    tpt_filter.print_report()
     print("Use the following options in your config:")
     print(f"\tnum_buckets={args.buckets}")
-    print(f"\tbucket_duration_bins={duration_bins}")
+    print(f"\tbucket_duration_bins={token_bins}")
 
 
 if __name__ == "__main__":

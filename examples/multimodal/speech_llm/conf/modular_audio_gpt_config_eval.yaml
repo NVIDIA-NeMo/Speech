@@ -104,7 +104,7 @@ model:
       prompt_template: ${data.train_ds.prompt_template} # don't change, let hydra resolve from saved config
       tokens_to_generate: 512
       log_every_n_steps: 1
-      sample_rate: ${data.train_ds.sample_rate} # don't change, let hydra resolve from saved config
+      sample_rate: 16000 # don't change, let hydra resolve from saved config
       audio_locator: null # set it to allow multiple audios in a sample, e.g. '|audio|', and use it in the context field of manifest to specify the locations of audios (`audio_filepath` is a list of audios).
 
       metric:

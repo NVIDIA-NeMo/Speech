@@ -31,7 +31,7 @@ from nemo.collections.asr.parts.submodules import multitask_beam_decoding as bea
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.streaming_utils import FrameBatchMultiTaskAED
 from nemo.collections.common.prompts.canary import CanaryPromptFormatter, canary
-from nemo.collections.common.prompts.canary2 import canary2
+from nemo.collections.common.prompts.canary2 import Canary2PromptFormatter, canary2
 from nemo.collections.common.tokenizers import CanaryTokenizer
 
 
@@ -238,7 +238,9 @@ class TestEncDecMultiTaskModel:
             c.target_lang = "en"
             c.task = "asr"
             c.pnc = "no"
-        dataset = PromptedAudioToTextLhotseDataset(tokenizer=asr_model.tokenizer, prompt_format_fn=canary)
+        dataset = PromptedAudioToTextLhotseDataset(
+            tokenizer=asr_model.tokenizer, prompt=CanaryPromptFormatter(asr_model.tokenizer)
+        )
         batch = dataset[cuts]
 
         ans = asr_model.training_step(batch, batch_nb=0)
@@ -282,7 +284,9 @@ class TestEncDecMultiTaskModel:
             c.target_lang = "en"
             c.task = "asr"
             c.pnc = "no"
-        dataset = PromptedAudioToTextLhotseDataset(tokenizer=asr_model.tokenizer, prompt_format_fn=canary)
+        dataset = PromptedAudioToTextLhotseDataset(
+            tokenizer=asr_model.tokenizer, prompt=CanaryPromptFormatter(asr_model.tokenizer)
+        )
         batch = dataset[cuts]
 
         with torch.no_grad():
@@ -512,7 +516,9 @@ class TestEncDecMultiTaskModel:
         c.target_lang = "en"
         c.task = "asr"
         c.pnc = "no"
-        dataset = PromptedAudioToTextLhotseDataset(tokenizer=asr_model.tokenizer, prompt_format_fn=canary)
+        dataset = PromptedAudioToTextLhotseDataset(
+            tokenizer=asr_model.tokenizer, prompt=CanaryPromptFormatter(asr_model.tokenizer)
+        )
         batch = dataset[cuts]
 
         # Numpy array test
@@ -544,7 +550,9 @@ class TestEncDecMultiTaskModel:
 
 @pytest.mark.unit
 def test_prompted_dataset(asr_model):
-    dataset = PromptedAudioToTextLhotseDataset(tokenizer=asr_model.tokenizer, prompt_format_fn=canary)
+    dataset = PromptedAudioToTextLhotseDataset(
+        tokenizer=asr_model.tokenizer, prompt=CanaryPromptFormatter(asr_model.tokenizer)
+    )
 
     cuts = DummyManifest(CutSet, begin_id=0, end_id=3, with_data=True)
 
@@ -647,7 +655,9 @@ def canary2_tokenizer(asr_model, tmp_path):
 
 @pytest.mark.unit
 def test_prompted_dataset_canary2(canary2_tokenizer):
-    dataset = PromptedAudioToTextLhotseDataset(tokenizer=canary2_tokenizer, prompt_format_fn=canary2)
+    dataset = PromptedAudioToTextLhotseDataset(
+        tokenizer=canary2_tokenizer, prompt=Canary2PromptFormatter(canary2_tokenizer)
+    )
 
     cuts = DummyManifest(CutSet, begin_id=0, end_id=3, with_data=True)
 

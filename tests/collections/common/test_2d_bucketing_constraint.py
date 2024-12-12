@@ -17,7 +17,7 @@ import pytest
 from lhotse import CutSet, Seconds, SupervisionSegment
 from lhotse.dataset import DynamicBucketingSampler
 from lhotse.testing.dummies import DummyManifest, dummy_cut
-from nemo.collections.common.data.lhotse.dataloader import FixedBucketBatchSizeConstraint2D
+from nemo.collections.common.data.lhotse.sampling import FixedBucketBatchSizeConstraint2D
 
 
 @pytest.fixture

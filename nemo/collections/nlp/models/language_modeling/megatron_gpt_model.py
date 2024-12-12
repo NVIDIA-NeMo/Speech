@@ -672,7 +672,9 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # bucket.
             def make_parameter_bucket(module: torch.nn.Module) -> List[torch.nn.Parameter]:
                 bucket = [
-                    param for param in module.parameters() if not getattr(param, '_disable_overlap_grad_sync', False)
+                    param
+                    for param in module.parameters()
+                    if not getattr(param, '_disable_overlap_grad_sync', False) and param.requires_grad
                 ]
                 if any(is_float8tensor(param) for param in bucket):
                     bucket = list(filter(is_float8tensor, bucket))
@@ -693,7 +695,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                     buckets.extend(make_parameter_bucket(layer) for layer in layers)
             buckets.reverse()
             used_params = set(itertools.chain.from_iterable(buckets))
-            buckets[-1].extend(p for p in self.parameters() if p not in used_params)
+            buckets[-1].extend(p for p in self.parameters() if p not in used_params and p.requires_grad)
             self.distributed_adam_buckets = buckets
 
         return super().configure_optimizers()

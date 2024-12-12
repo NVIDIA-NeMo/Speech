@@ -238,3 +238,31 @@ class AggregateTokenizer(TokenizerSpec):
     @property
     def langs(self):
         return list(self.tokenizers_dict.keys())
+
+
+class TokenizerWrapper:
+    """
+    Provide a unified interface for NeMo Tokenizer, AggregateTokenizer, and (char) Parser.
+    """
+
+    def __init__(self, tokenizer):
+        self._tokenizer = tokenizer
+        if isinstance(tokenizer, AggregateTokenizer):
+            self._impl = self._call_agg_tokenizer
+        elif isinstance(tokenizer, TokenizerSpec):
+            self._impl = self._call_tokenizer
+        else:
+            self._impl = self._call_parser
+
+    def __call__(self, text: str, lang: str | None = None):
+        return self._impl(text, lang)
+
+    def _call_agg_tokenizer(self, text: str, lang: str | None = None):
+        assert lang is not None, "Expected 'lang' to be set for AggregateTokenizer."
+        return self._tokenizer.text_to_ids(text, lang)
+
+    def _call_tokenizer(self, text: str, lang: str | None = None):
+        return self._tokenizer.text_to_ids(text)
+
+    def _call_parser(self, text: str, lang: str | None = None):
+        return self._tokenizer(text)

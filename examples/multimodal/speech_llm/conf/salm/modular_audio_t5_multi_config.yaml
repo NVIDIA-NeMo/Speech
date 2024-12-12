@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: megatron_audio_gpt_bestow_lhotse
+
+# This configuration is similar to modular_audio_t5_multi_config.yaml,
+# with the difference being in how it performs multimodal sampling. 
+# The changes are in model.data.train_ds section.
+# You'll notice that it defines two sub-sections: audio and text.
+# Their names are arbitrary in the sense that you may define more subsections as you like, also with repeated modalities.
+# We still set up a single dataloader, but each sub-section produces its own sampler with its own batch size related settings.
+# That means each sub-section may decide about its own static/dynamic batch sizes, bucketing, etc.
+# These different samplers are later combined into a single sampler using one of three available sampler fusion strategies:
+# round_robin (taking turns), randomized_round_robin (at each step select a sampler according to weights), 
+# or zip (sample mini-batch from each and combine them).
+name: megatron_audio_t5_salm_lhotse_multi_sampler
+
+# Note: This config has been updated to work with PromptFormatter API.
+#       If you used an older version that defined a `train_ds.prompt_template` field,
+#       you should specify the prompt format using `train_ds.<group>.prompt_format` now instead.
 
 trainer:
   devices: 1
   accelerator: gpu
   num_nodes: 1
-  precision: 16
+  precision: bf16-mixed
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
@@ -30,7 +45,7 @@ trainer:
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
 
-model_target: nemo.collections.multimodal.speech_llm.models.modular_models.CrossAttendModularAudioGPTModel
+model_target: nemo.collections.multimodal.speech_llm.models.modular_t5_models.ModularizedAudioT5Model
 
 exp_manager:
   # explicit_log_dir: null
@@ -63,6 +78,8 @@ exp_manager:
 
 
 model:
+  virtual_prompt_style: 'no-prompts'  # make cls happy
+  audio_prompt_first: False
   seed: 1234
   tensor_model_parallel_size: 1 # intra-layer model parallelism
   pipeline_model_parallel_size: 1 # inter-layer model parallelism
@@ -73,14 +90,9 @@ model:
   freeze_modality_adapter: False
   load_audio_encoder: True
 
-  ## Legacy batch_size configuration
-  # When used with lhotse, the batch composition is decided by dataloader configs
-  # and batch size here is only used for deciding gradient accumulation.
-  # gradient accumulation = global_batch_size / micro_batch_size / data_parallel_size
-  # where data_parallel_size = num_nodes * num_gpus / TP_size
   global_batch_size: 128
   micro_batch_size: 4
-  restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
+  language_model_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
   resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
   save_nemo_on_validation_end: False # Saves an inference ready .nemo file every time a checkpoint is saved during training. 
   sync_batch_comm: False
@@ -100,7 +112,7 @@ model:
   activations_checkpoint_num_layers: null # not used with 'selective'
   activations_checkpoint_layers_per_pipeline: null
   answer_only_loss: True
-  gradient_as_bucket_view: False
+  gradient_as_bucket_view: True
 
   hidden_dropout: 0.0
   attention_dropout: 0.0
@@ -109,8 +121,16 @@ model:
   # use_am_tokenizer: True
   # override_vocab_size: 1024
 
+  lora_tuning:
+    kqv_adapter_dim: 128
+    kv_adapter_dim: 64
+    q_adapter_dim: 32
+    adapter_dropout: 0.0
+    column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+    row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
+
   peft:
-    peft_scheme: "lora"  # can be either lora, adapter, ia3 or ptuning
+    peft_scheme: "adapter"  # can be either adapter,ia3, or ptuning
     restore_from_path: null
     
     # Used for adapter peft training
@@ -122,21 +142,7 @@ model:
       column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
       row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
       norm_type: 'mixedfusedlayernorm' # IGNORED if layer_adapter is used,  options are ['layernorm', 'mixedfusedlayernorm']
-      layer_selection: null  # selects in which layers to add adapters, e.g. [1,12] will add adapters to layer 1 (lowest) and 12. null will apply adapters to all layers
-      weight_tying: False
-      position_embedding_strategy: null # used only when weight_tying is True
-
-    lora_tuning:
-      target_modules: ['attention_qkv','attention_dense','mlp_fc1','mlp_fc2'] # this can either be 'attention_qkv','attention_dense','mlp_fc1','mlp_fc2', attention (qkv & dense), mlp (fc1 & fc2)
-      adapter_dim: 32
-      alpha: ${model.peft.lora_tuning.adapter_dim} 
-      adapter_dropout: 0.0
-      column_init_method: 'xavier' # IGNORED if linear_adapter is used, options: xavier, zero or normal
-      row_init_method: 'zero' # IGNORED if linear_adapter is used, options: xavier, zero or normal
-      layer_selection:  null  # selects in which layers to add lora adapters. e.g. [1,12] will add lora to layer 1 (lowest) and 12. null will apply adapters to all layers
-      weight_tying: False
-      position_embedding_strategy: null # used only when weight_tying is True
-
+        
     # Used for p-tuning peft training
     p_tuning:
       virtual_tokens: 10  # The number of virtual tokens the prompt encoder should add at the start of the sequence
@@ -147,22 +153,6 @@ model:
   perception:
     target: nemo.collections.multimodal.speech_llm.modules.perception_modules.AudioPerceptionModule
     use_multi_layer_feat: false
-    xattn:
-      target: nemo.collections.multimodal.speech_llm.modules.perception_modules.TransformerCrossAttention
-      num_attention_heads: 8
-      attn_score_dropout: 0.1
-      attn_layer_dropout: 0.1
-      ffn_dropout: 0.1
-      hidden_act: "relu"
-      pre_ln: true
-      pre_ln_final_layer_norm: true
-
-    multi_layer_feat:
-      layer_idx_list: [0,16]  # layer indices to extract features from
-      aggregator:
-        mode: "cat"  # ways to combine features from different layers, choices=['cat','sum','mean', 'max', 'min'], default to concat ('cat')
-        pooling: "avg"  # ways to pool features if they have different temporal lengths and align_mode=min, choices=['mean', 'max', 'min']
-        align_mode: "min"  # if features have different temporal lengths, set `min` to pool to the shortest length or `max` to repeat to the longest.
 
     modality_adapter: 
       _target_: nemo.collections.asr.modules.ConformerEncoder
@@ -229,65 +219,59 @@ model:
     # preprocessor: null
 
   data:
-    end_string: "[EOG]"
     train_ds:
-      # Example of how to specify paths to multiple datasets
-      # manifest_filepath:
-      #   - /path/to/squad.jsonl
-      #   - /path/to/mnli.jsonl
-      #   - /path/to/boolq.jsonl
-      # Example of how each dataset is formatted
-      # {'audio_filepath': 'audio1.wav', 'offset': 0.0, 'duration': 12.3, 'question': 'transcribe this audio', 'answer': 'I have a dream...'}
-      # the 'answer' field can also be 'text', and a default 'question' field is added if missing in manigests, so as to work with ASR manifests
+      use_lhotse: true
+      seed: 0
+      shard_seed: "trng"
+      num_workers: 4
+      shuffle: true
+
+      multi_config: true
+      sampler_fusion: randomized_round_robin
+      sampler_weights:
+        audio: 0.5
+        text: 0.5
+
+      audio:
+        input_cfg: ???
+        prompt_format: t5nmt
+        batch_size: null
+        batch_duration: 360
+        quadratic_factor: 15
+        use_bucketing: true
+        num_buckets: 30
+        bucket_buffer_size: 20000
+      text:
+        input_cfg: ???
+        prompt_format: t5nmt
+        use_multimodal_sampling: true
+        batch_tokens: 8000
+        quadratic_factor: 192
+        use_bucketing: true
+        num_buckets: 30
+        bucket_buffer_size: 20000
+
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
-      shuffle: True
-      num_workers: 0
-      pin_memory: True
       max_seq_length: 2048
       min_seq_length: 1
-      drop_last: True
-      # Notably, the data weights are controlled by either bucketing_weights
-      # or concat_sampling_probabilities depending on the dataset type (tar and
-      # non-tar).
-      # See audio_text_qa_dataset.py for details.
-      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
       context_key: 'context'
       answer_key: 'answer'
       add_eos: True
       # add_eos: False
-      end_string: ${model.data.end_string}
-      add_sep: False
+      add_sep: True
       add_bos: False
       separate_prompt_and_response_with_newline: False
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: "[INST]\n<<SYS>>\nPlease answer the following based on the previous speech feature.\n<</SYS>>\n\n{context}[/INST] {answer}"
-      # ASR configs
-      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
-      max_duration: 24 # it is set for LibriSpeech, you may need to update it for your dataset
-      min_duration: 0.1
-      # tarred datasets
-      is_tarred: false
-      tarred_audio_filepaths: null
-      shuffle_n: 2048
-      # bucketing params
-      bucketing_strategy: "fully_randomized"
-      bucketing_batch_size: null
-      use_lhotse: True
-      text_field : "text"
-      batch_duration : 80  # 0
-      quadratic_duration : 30
-      num_buckets : 30
-      buffer_size : 10000
-      shuffle_buffer_size : 10000
-      duration_bins: null
 
     validation_ds:
+      force_finite: true  # workaround to allow using input_cfg
+      prompt_format: t5nmt
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
       shuffle: False
-      num_workers: 0
+      num_workers: 1
       pin_memory: True
       max_seq_length: 2048
       min_seq_length: 1
@@ -295,7 +279,6 @@ model:
       context_key: ${model.data.train_ds.context_key}
       answer_key: ${model.data.train_ds.answer_key}
       add_eos: ${model.data.train_ds.add_eos}
-      end_string: ${model.data.end_string}
       add_sep: ${model.data.train_ds.add_sep}
       add_bos: ${model.data.train_ds.add_bos}
       separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
@@ -303,16 +286,46 @@ model:
       output_file_path_prefix: null # Prefix of the file to write predictions to.
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       tokens_to_generate: 128
       # ASR configs
-      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
+      sample_rate: 16000
 
       log_every_n_steps: 10
       metric:
         name: "wer" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
         num_classes: null
+
+    test_ds:
+      manifest_filepath: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      force_finite: true  # workaround to allow using input_cfg
+      prompt_format: t5nmt
+      names: null # Names of the corresponding datasets used to log metrics.
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: False
+      num_workers: 1
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      context_key: ${model.data.train_ds.context_key}
+      answer_key: ${model.data.train_ds.answer_key}
+      add_eos: ${model.data.train_ds.add_eos}
+      add_sep: ${model.data.train_ds.add_sep}
+      add_bos: ${model.data.train_ds.add_bos}
+      separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: "context" # Options: ['context', 'answer']
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      # ASR configs
+      sample_rate: 16000
+
+    #   metric:
+    #     name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+    #     average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+    #     num_classes: null
 
   optim:
     name: fused_adam

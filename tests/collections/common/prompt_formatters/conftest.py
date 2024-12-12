@@ -56,6 +56,8 @@ def bpe_tokenizer(tmp_path_factory):
         do_lower_case=False,
         output_dir=str(tmpdir),
         remove_extra_whitespaces=True,
+        bos=True,
+        eos=True,
     )
     return SentencePieceTokenizer(str(tmpdir / "tokenizer.model"))
 

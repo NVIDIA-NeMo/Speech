@@ -12,13 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: megatron_audio_gpt_bestow_lhotse
+# This configuration is similar to modular_audio_gpt_config_cross_llama_lhotse.yaml,
+# with the difference being in how it performs multimodal sampling. 
+# The changes are in model.data.train_ds section.
+# You'll notice that it defines two sub-sections: audio and text.
+# Their names are arbitrary in the sense that you may define more subsections as you like, also with repeated modalities.
+# We still set up a single dataloader, but each sub-section produces its own sampler with its own batch size related settings.
+# That means each sub-section may decide about its own static/dynamic batch sizes, bucketing, etc.
+# These different samplers are later combined into a single sampler using one of three available sampler fusion strategies:
+# round_robin (taking turns), randomized_round_robin (at each step select a sampler according to weights), 
+# or zip (sample mini-batch from each and combine them).
+name: megatron_audio_gpt_bestow_lhotse_multi_sampler
+
+# Note: This config has been updated to work with PromptFormatter API.
+#       If you used an older version that defined a `train_ds.prompt_template` field,
+#       you should specify the prompt format using `train_ds.<group>.prompt_format` now instead.
 
 trainer:
   devices: 1
   accelerator: gpu
   num_nodes: 1
-  precision: 16
+  precision: bf16-mixed
   logger: False # logger provided by exp_manager
   enable_checkpointing: False
   use_distributed_sampler: False
@@ -73,11 +87,6 @@ model:
   freeze_modality_adapter: False
   load_audio_encoder: True
 
-  ## Legacy batch_size configuration
-  # When used with lhotse, the batch composition is decided by dataloader configs
-  # and batch size here is only used for deciding gradient accumulation.
-  # gradient accumulation = global_batch_size / micro_batch_size / data_parallel_size
-  # where data_parallel_size = num_nodes * num_gpus / TP_size
   global_batch_size: 128
   micro_batch_size: 4
   restore_from_path: ??? # Path to an existing .nemo model you wish to add new tasks to or run inference with
@@ -231,27 +240,41 @@ model:
   data:
     end_string: "[EOG]"
     train_ds:
-      # Example of how to specify paths to multiple datasets
-      # manifest_filepath:
-      #   - /path/to/squad.jsonl
-      #   - /path/to/mnli.jsonl
-      #   - /path/to/boolq.jsonl
-      # Example of how each dataset is formatted
-      # {'audio_filepath': 'audio1.wav', 'offset': 0.0, 'duration': 12.3, 'question': 'transcribe this audio', 'answer': 'I have a dream...'}
-      # the 'answer' field can also be 'text', and a default 'question' field is added if missing in manigests, so as to work with ASR manifests
+      use_lhotse: true
+      seed: 0
+      shard_seed: "trng"
+      num_workers: 4
+      shuffle: true
+
+      multi_config: true
+      sampler_fusion: randomized_round_robin
+      sampler_weights:
+        audio: 0.5
+        text: 0.5
+
+      audio:
+        input_cfg: ???
+        batch_size: null
+        batch_duration: 360
+        quadratic_factor: 15
+        use_bucketing: true
+        num_buckets: 30
+        bucket_buffer_size: 20000
+        prompt_format: llama2
+      text:
+        input_cfg: ???
+        use_multimodal_sampling: true
+        batch_tokens: 8000
+        quadratic_factor: 192
+        use_bucketing: true
+        num_buckets: 30
+        bucket_buffer_size: 20000
+        prompt_format: llama2
+
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
-      shuffle: True
-      num_workers: 0
-      pin_memory: True
       max_seq_length: 2048
       min_seq_length: 1
-      drop_last: True
-      # Notably, the data weights are controlled by either bucketing_weights
-      # or concat_sampling_probabilities depending on the dataset type (tar and
-      # non-tar).
-      # See audio_text_qa_dataset.py for details.
-      concat_sampling_probabilities: null # When providing a list of datasets, this arg defines the sampling probabilities from each dataset when strategy='random'
       context_key: 'context'
       answer_key: 'answer'
       add_eos: True
@@ -262,32 +285,14 @@ model:
       separate_prompt_and_response_with_newline: False
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: "[INST]\n<<SYS>>\nPlease answer the following based on the previous speech feature.\n<</SYS>>\n\n{context}[/INST] {answer}"
-      # ASR configs
-      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
-      max_duration: 24 # it is set for LibriSpeech, you may need to update it for your dataset
-      min_duration: 0.1
-      # tarred datasets
-      is_tarred: false
-      tarred_audio_filepaths: null
-      shuffle_n: 2048
-      # bucketing params
-      bucketing_strategy: "fully_randomized"
-      bucketing_batch_size: null
-      use_lhotse: True
-      text_field : "text"
-      batch_duration : 80  # 0
-      quadratic_duration : 30
-      num_buckets : 30
-      buffer_size : 10000
-      shuffle_buffer_size : 10000
-      duration_bins: null
 
     validation_ds:
+      manifest_filepath: ??? # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      force_finite: true  # workaround to allow using input_cfg
       global_batch_size: ${model.global_batch_size}
       micro_batch_size: ${model.micro_batch_size}
       shuffle: False
-      num_workers: 0
+      num_workers: 1
       pin_memory: True
       max_seq_length: 2048
       min_seq_length: 1
@@ -303,7 +308,6 @@ model:
       output_file_path_prefix: null # Prefix of the file to write predictions to.
       truncation_field: "context" # Options: ['context', 'answer']
       index_mapping_dir: null # Path to a directory to write index mapping files.
-      prompt_template: ${model.data.train_ds.prompt_template} # fstring to use for assistant prompt. Example: "Q: {input}\nA: {output}"
       tokens_to_generate: 128
       # ASR configs
       sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
@@ -313,6 +317,37 @@ model:
         name: "wer" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
         average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
         num_classes: null
+
+    test_ds:
+      manifest_filepath: null # Path to a list of JSONL files corresponding to the source data. Data format is identical to train_ds.
+      force_finite: true  # workaround to allow using input_cfg
+      names: null # Names of the corresponding datasets used to log metrics.
+      global_batch_size: ${model.global_batch_size}
+      micro_batch_size: ${model.micro_batch_size}
+      shuffle: False
+      num_workers: 1
+      pin_memory: True
+      max_seq_length: 2048
+      min_seq_length: 1
+      drop_last: False
+      context_key: ${model.data.train_ds.context_key}
+      answer_key: ${model.data.train_ds.answer_key}
+      add_eos: ${model.data.train_ds.add_eos}
+      end_string: ${model.data.end_string}
+      add_sep: ${model.data.train_ds.add_sep}
+      add_bos: ${model.data.train_ds.add_bos}
+      separate_prompt_and_response_with_newline: ${model.data.train_ds.separate_prompt_and_response_with_newline}
+      write_predictions_to_file: False
+      output_file_path_prefix: null # Prefix of the file to write predictions to.
+      truncation_field: "context" # Options: ['context', 'answer']
+      index_mapping_dir: null # Path to a directory to write index mapping files.
+      # ASR configs
+      sample_rate: 16000 #${model.audio_encoder.preprocessor.sample_rate}
+
+    #   metric:
+    #     name: "loss" # Name of the evaluation metric to use. Options: ['exact_string_match', 'loss']
+    #     average: null # Average the metric over the dataset. Options: ['macro', 'micro']. Works only for 'F1', 'accuracy' etc. Refer to torchmetrics for metrics where this is supported.
+    #     num_classes: null
 
   optim:
     name: fused_adam

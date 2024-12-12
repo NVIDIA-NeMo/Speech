@@ -11,14 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0115
+# pylint: disable=C0116
+# pylint: disable=C0301
 import torch
-from lhotse import CutSet, MonoCut
-from lhotse.cut import MixedCut
+from lhotse import MonoCut
+from lhotse.cut import Cut, MixedCut
 from lhotse.utils import ifnone
 
-from nemo.collections.common.prompts.fn import registered_prompt_format_fn
+from nemo.collections.common.data.prompt_fn import registered_prompt_format_fn
 from nemo.collections.common.prompts.formatter import Modality, PromptFormatter
-from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.common.tokenizers.canary_tokenizer import (
     CANARY2_BOCTX,
     CANARY_BOS,
@@ -145,71 +147,57 @@ def map_manifest_values_to_special_tokens(slot_values: dict[str, str]) -> dict[s
     return slot_values
 
 
-@registered_prompt_format_fn
-def canary2(
-    cuts: CutSet, tokenizer: TokenizerSpec
-) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+@registered_prompt_format_fn(Cut, Canary2PromptFormatter)
+def canary2(cut: Cut, prompt: Canary2PromptFormatter) -> dict[str, torch.Tensor]:
     """
     Prepend and append control tokens to the token sequence as per Canary 2.0 format.
 
     The prompt format syntax is defined in :class:`Canary2PromptFormatter`
     """
-    formatter = Canary2PromptFormatter(tokenizer)
-
-    prompts_with_answers, prompts, answers = [], [], []
-    for cut in cuts:
-        if isinstance(cut, MixedCut):
-            cut = cut._first_non_padding_cut
-        if not isinstance(cut, MonoCut):
-            raise TypeError(
-                f"Expected input audio to have a single channel (required MonoCut/MixedCut, but we received: {cut=})"
-            )
-
-        # first, validate the utterance
-        expected_slots = {"source_lang", "target_lang"}
-        missing_keys = expected_slots - set(cut.custom)
-        if missing_keys:
-            raise RuntimeError(
-                f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"
-                f"Please ensure that every utterance in the input manifests contains these keys."
-            )
-
-        optional_slots = {
-            "decodercontext": "",
-            "emotion": "<|emo:undefined|>",
-            "itn": "<|noitn|>",
-            "timestamp": "<|notimestamp|>",
-            "diarize": "<|nodiarize|>",
-            "pnc": "<|pnc|>",  # consistent with canary1
-        }
-        slots = {slot: cut.custom[slot] for slot in expected_slots}
-        slots[formatter.PROMPT_LANGUAGE_SLOT] = CANARY_SPECIAL_TOKENIZER
-        for k, v in optional_slots.items():
-            slots[k] = cut.custom[k] if k in cut.custom else v
-
-        turns = [dict(role="user", slots=slots)]
-        # If data has no transcript, create empty response with <eos> only.
-        text = ' '.join(s.text for s in cut.supervisions if s.text is not None)
-        turns.append(
-            dict(
-                role="assistant",
-                slots={
-                    "text": text,
-                    formatter.PROMPT_LANGUAGE_SLOT: ifnone(
-                        cut.supervisions[0].language, cut.custom.get("target_lang")
-                    ),
-                },
-            ),
+    if isinstance(cut, MixedCut):
+        cut = cut._first_non_padding_cut
+    if not isinstance(cut, MonoCut):
+        raise TypeError(
+            f"Expected input audio to have a single channel (required MonoCut/MixedCut, but we received: {cut=})"
         )
-        encoded = formatter.encode_dialog(turns)
-        prompts_with_answers.append(encoded["input_ids"])
-        prompts.append(encoded["context_ids"])
-        if "answer_ids" in encoded:
-            assert (
-                encoded["answer_ids"][-1].item() == formatter.tokenizer.eos
-            ), f"Expected the last token in answer_ids to be EOS, but we got {encoded['answer_ids']=}"
-            answers.append(encoded["answer_ids"][:-1])  # Strip Canary's EOS
-        else:
-            answers.append([])
 
-    return prompts_with_answers, prompts, answers
+    # first, validate the utterance
+    expected_slots = {"source_lang", "target_lang"}
+    missing_keys = expected_slots - set(cut.custom)
+    if missing_keys:
+        raise RuntimeError(
+            f"We found cut with ID {cut.id} that is missing the following keys: {missing_keys}"
+            f"Please ensure that every utterance in the input manifests contains these keys."
+        )
+
+    optional_slots = {
+        "decodercontext": "",
+        "emotion": "<|emo:undefined|>",
+        "itn": "<|noitn|>",
+        "timestamp": "<|notimestamp|>",
+        "diarize": "<|nodiarize|>",
+        "pnc": "<|pnc|>",  # consistent with canary1
+    }
+    slots = {slot: cut.custom[slot] for slot in expected_slots}
+    slots[prompt.PROMPT_LANGUAGE_SLOT] = CANARY_SPECIAL_TOKENIZER
+    for k, v in optional_slots.items():
+        slots[k] = cut.custom[k] if k in cut.custom else v
+
+    turns = [dict(role="user", slots=slots)]
+    # If data has no transcript, create empty response with <eos> only.
+    text = ' '.join(s.text for s in cut.supervisions if s.text is not None)
+    turns.append(
+        dict(
+            role="assistant",
+            slots={
+                "text": text,
+                prompt.PROMPT_LANGUAGE_SLOT: ifnone(cut.supervisions[0].language, cut.custom.get("target_lang")),
+            },
+        ),
+    )
+    ans = prompt.encode_dialog(turns)
+    assert (
+        ans["answer_ids"][-1].item() == prompt.tokenizer.eos
+    ), f"Expected the last token in answer_ids to be EOS, but we got {ans['answer_ids']}"
+    ans["answer_ids"] = ans["answer_ids"][:-1]  # Strip Canary's EOS
+    return ans

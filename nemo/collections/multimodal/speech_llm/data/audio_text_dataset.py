@@ -70,7 +70,7 @@ def _audio_collate_fn(audio_signals, audio_lengths):
     """
 
     max_audio_len = 0
-    has_audio = audio_lengths[0] is not None
+    has_audio = len(audio_lengths) > 0 and audio_lengths[0] is not None
     if has_audio:
         max_audio_len = max(audio_lengths).item()
 

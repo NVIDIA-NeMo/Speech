@@ -12,20 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+# pylint: disable=C0116
+# pylint: disable=C0301
 import importlib
 import math
 import sys
 from numbers import Number
-from typing import Iterable, Literal
 
 import click
-import lightning.pytorch as pl
+import pytorch_lightning as pl
 import torch
 from lhotse import compute_num_samples
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models.asr_model import ASRModel
+from nemo.collections.nlp.parts.megatron_trainer_builder import MegatronLMPPTrainerBuilder
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, MaskType, NeuralType
 from nemo.utils import logging
 
@@ -138,12 +139,12 @@ class ProfilingBatchGenerator:
             elif isinstance(nt.elements_type, LengthsType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.ones(B, dtype=torch.long, device=self.device) * seq_length
-            elif isinstance(nt.elements_type, LabelsType):
-                seq_length = select_seq_length[item["seq_length"]]
-                tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
             elif isinstance(nt.elements_type, MaskType):
                 seq_length = select_seq_length[item["seq_length"]]
                 tnsr = torch.ones(B, seq_length, device=self.device)
+            elif isinstance(nt.elements_type, LabelsType):
+                seq_length = select_seq_length[item["seq_length"]]
+                tnsr = torch.randint(0, item["vocab_size"], size=(B, seq_length), device=self.device)
             else:
                 raise RuntimeError("Unexpected item in oomptimizer schema: {item}")
             batch.append(tnsr)
@@ -215,6 +216,11 @@ class ProfilingBatchGenerator:
                 # Try the middle-point between the known extremes.
                 self._current = round((self._max_ok + self._min_err) / 2)
 
+        if self._current == 0:
+            raise RuntimeError(
+                "We diverged and arrived batch_size=0. Perhaps the input is too large for this model and hardware."
+            )
+
         return False
 
 
@@ -255,7 +261,12 @@ class FloatList(click.Option):
 @click.option(
     "-c", "--config-path", type=str, default=None, help="Path to the training configuration file for MODULE_NAME."
 )
-@click.option("-o", "--optimizer-name", type=str, default="adamw", help="Name of optimizer to use.")
+@click.option(
+    "--schema",
+    type=str,
+    default="audio",
+    help="Which schema to use (typically used for choosing the modality, i.e., 'audio' / 'text'",
+)
 @click.option(
     "-b",
     "--buckets",
@@ -284,7 +295,8 @@ class FloatList(click.Option):
     "For text->text it's output tokens per input token. "
     "In general larger ratio means longer output sequences and increased memory consumption. "
     "The default value is set adequately for automatic speech recognition. "
-    "This argument is ignored when 2D buckets are provided to --buckets option.",
+    "This argument is ignored when 2D buckets are provided to --buckets option. "
+    "For GPT-style models, use --ratio=1 ",
 )
 @click.option(
     "-f",
@@ -319,7 +331,7 @@ def oomptimizer(
     pretrained_name: str | None,
     module_name: str | None,
     config_path: str | None,
-    optimizer_name: str,
+    schema: str,
     buckets: list[float],
     threshold: float,
     start_batch_size: int,
@@ -366,8 +378,6 @@ def oomptimizer(
     logging.setLevel(logging.CRITICAL)
     torch.cuda.set_per_process_memory_fraction(memory_fraction, device)
 
-    trainer = pl.Trainer(barebones=True)
-    trainer.log_every_n_steps = 1000000
     model_clones = []
     for _ in range(2 if ddp else 1):
         if pretrained_name is not None:
@@ -375,16 +385,32 @@ def oomptimizer(
                 config_path is None and module_name is None
             ), "--pretrained-name cannot be used together with --module-name/--config-path"
             click.echo(f"Intializing ASR model from pretrained checkpoint {pretrained_name}.")
+            trainer = pl.Trainer(barebones=True)
+            trainer.log_every_n_steps = 1000000
             model = ASRModel.from_pretrained(pretrained_name, trainer=trainer).to(device)
         else:
             assert config_path is not None, "--module-name requires --config-path to be specified as well."
             assert module_name is not None, "--config-path requires --module-name to be specified as well."
             cfg = OmegaConf.load(config_path)
+            trainer = MegatronLMPPTrainerBuilder(cfg).create_trainer()
+            trainer.log_every_n_steps = 1000000
             namespace, name = module_name.rsplit('.', maxsplit=1)
             model_cls = getattr(importlib.import_module(namespace), name)
-            model = model_cls(cfg=cfg.model, trainer=trainer).to(device)
+            model = model_cls.restore_from_pretrained_models(cfg, trainer=trainer).to(device)
+            model.log = lambda *args, **kwargs: None
         model_clones.append(model)
     model = model_clones[-1]
+    model.init_consumed_samples = 0
+    model._compute_consumed_samples_after_training_step = lambda *args, **kwargs: 1
+
+    from megatron.core.parallel_state import initialize_model_parallel
+    from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+
+    initialize_model_parallel_for_nemo(
+        world_size=1, global_rank=0, local_rank=0, micro_batch_size=16, global_batch_size=16
+    )
+    torch.distributed.init_process_group("nccl", world_size=1, rank=0)
+    initialize_model_parallel()
 
     if not hasattr(model, "oomptimizer_schema"):
         click.secho(
@@ -394,10 +420,24 @@ def oomptimizer(
         )
         sys.exit(1)
 
-    schema = model.oomptimizer_schema
+    schema = model.oomptimizer_schema(schema)
 
     click.echo("Setting up the optimizers.")
-    optimizer, _ = model.setup_optimization({"name": optimizer_name, "lr": 1e-7, "weight_decay": 0.0})
+    optimizer = model.configure_optimizers()
+    if isinstance(optimizer, tuple):
+        optimizer = optimizer[0][0]
+
+    # warmup - preallocate model/optimizer memory for all modality modules
+    for sch_ in ("text", "audio"):
+        gen_ = ProfilingBatchGenerator(model.oomptimizer_schema(sch_), start_batch_size=1)
+        with torch.autocast("cuda", getattr(torch, dtype)):
+            if sch_ == "audio":
+                batch_ = gen_(17519, 13)
+            else:
+                batch_ = gen_(9, 7)
+            optimizer.zero_grad()
+            out = model.training_step(iter([batch_]))
+            optimizer.step()
 
     is_2d_bucketing = all(
         isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, Number) for v in item)
@@ -410,7 +450,7 @@ def oomptimizer(
             if any(
                 isinstance(item["type"].elements_type, LabelsType) and item["seq_length"] == direction
                 for item in schema["inputs"]
-                if item["type"] != "dummy"
+                if not isinstance(item["type"], str)
             )
             else "audio"
         )
@@ -468,10 +508,12 @@ def oomptimizer(
                 batch = gen(seq_len_in, seq_len_out)
                 oom = False
                 try:
-                    click.echo(f"\tCurrent gap: {gen.current_rel_gap}... ", nl=False)
+                    click.echo(
+                        f"\tCurrent settings | batch_size={gen._current} | gap: {gen.current_rel_gap}... ", nl=False
+                    )
                     optimizer.zero_grad()
-                    out = model.training_step(batch, batch_idx)
-                    out['loss'].sum().backward()
+                    # In SpeechLLM training_step performs both forward and backward; no need for manual backward
+                    out = model.training_step(iter([batch]))
                     optimizer.step()
                 except torch.cuda.OutOfMemoryError as e:
                     click.secho(f"OOM!", fg="yellow")

@@ -892,7 +892,17 @@ class MegatronBaseModel(NLPModel):
                     ]
                 for bucket in buckets:
                     self._optimizer.init_params_bucket(bucket)
-                self._optimizer.init_params_bucket(self.parameters())
+                try:
+                    # We first attempt to only get the parameters that require grad.
+                    # This is to support multimodal training in child classes
+                    # where some modules might be pretrained and frozen.
+                    params = self.parameters(requires_grad_only=True)
+                except TypeError as e:
+                    if "unexpected keyword argument 'requires_grad_only'" in str(e):
+                        params = self.parameters()
+                    else:
+                        raise
+                self._optimizer.init_params_bucket(params)
             if hasattr(self, 'distributed_adam_buckets'):
                 del self.distributed_adam_buckets
 

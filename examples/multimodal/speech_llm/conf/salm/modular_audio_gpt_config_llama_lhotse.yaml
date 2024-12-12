@@ -154,6 +154,7 @@ model:
 
     modality_adapter: 
       _target_: nemo.collections.asr.modules.ConformerEncoder
+      sync_max_audio_length: false
       feat_in: 1024
       feat_out: -1 # you may set it if you need different output size other than the default d_model
       n_layers: 2

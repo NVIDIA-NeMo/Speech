@@ -151,6 +151,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             Defaults to False.
         use_pytorch_sdpa_backends (list[str]): list of backend names to use in sdpa. None or empty list means all backends. e.g. ["MATH"]
             Defaults to None
+        sync_max_audio_length (bool): when true, performs NCCL all_reduce to allocate the same amount of memory for
+            positional encoding buffers on all GPUs. Disabling this setting may help with deadlocks in certain
+            scenarios such as model parallelism, or generally when this module is not being ran on some GPUs
+            as a part of the training step.
 
     """
 
@@ -301,6 +305,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         global_attn_separate: bool = False,
         use_pytorch_sdpa: bool = False,
         use_pytorch_sdpa_backends=None,
+        sync_max_audio_length: bool = True,
     ):
         super().__init__()
         d_ff = d_model * ff_expansion_factor
@@ -319,6 +324,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         if use_pytorch_sdpa_backends is None:
             use_pytorch_sdpa_backends = []
         self.use_pytorch_sdpa_backends = use_pytorch_sdpa_backends
+        self.sync_max_audio_length = sync_max_audio_length
 
         # Setting up the att_context_size
         (
@@ -672,7 +678,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
 
     def update_max_seq_length(self, seq_length: int, device):
         # Find global max audio length across all nodes
-        if torch.distributed.is_initialized():
+        if self.sync_max_audio_length and torch.distributed.is_initialized():
             global_max_len = torch.tensor([seq_length], dtype=torch.float32, device=device)
 
             # Update across all ranks in the distributed system

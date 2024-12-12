@@ -466,8 +466,12 @@ class MegatronT5LoraModel(MegatronT5BaseAdapterModel):
 
         self.frozen_model.freeze()
         logging.info(f'Before adding adapters:\n{self.frozen_model.summarize()}')
-        encoder = self.frozen_model.enc_dec_model.enc_dec_model.encoder
-        decoder = self.frozen_model.enc_dec_model.enc_dec_model.decoder
+        if self.megatron_amp_O2:
+            encoder = self.frozen_model.enc_dec_model.module.enc_dec_model.encoder
+            decoder = self.frozen_model.enc_dec_model.module.enc_dec_model.decoder
+        else:
+            encoder = self.frozen_model.enc_dec_model.enc_dec_model.encoder
+            decoder = self.frozen_model.enc_dec_model.enc_dec_model.decoder
 
         if encoder:
             encoder_cfg = self._get_component_cfg('encoder', frozen_model_cfg, cfg)

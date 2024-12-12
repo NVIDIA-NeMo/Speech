@@ -486,23 +486,26 @@ class TransformerCrossAttention(NeuralModule, Exportable):
         decoder_mems_list=None,
         return_mems=False,
     ):
-        assert input_embeds.shape[-1] == encoder_states.shape[-1]
-        enc_mask = lens_to_mask(encoded_len, encoder_states.shape[1]).to(encoder_states.dtype)
-        dec_mask = lens_to_mask(input_lengths, input_embeds.shape[1]).to(input_lengths.dtype)
-        y = self.xattn_decoder(
-            decoder_states=self.input_proj1(input_embeds),
-            decoder_mask=dec_mask,
-            encoder_states=self.input_proj2(encoder_states),
-            encoder_mask=enc_mask,
-            decoder_mems_list=decoder_mems_list,
-            return_mems=return_mems,
-            return_mems_as_list=False,
+        assert input_embeds.shape[-1] == encoder_states.shape[-1], (
+            f"Last dimension of the following shapes must be equal: " f"{input_embeds.shape=} {encoder_states.shape=}"
         )
-        if return_mems:
-            extra_outpus = {'decoder_mems_list': y}
-            y = y[-1][:, -input_embeds.shape[1] :]
-        else:
-            extra_outpus = {}
-        y = self.output_proj(y) + input_embeds
-        assert y.shape == input_embeds.shape
-        return y, extra_outpus
+        with torch.autocast(device_type="cuda"):  # megatron_amp_O2 friendly
+            enc_mask = lens_to_mask(encoded_len, encoder_states.shape[1]).to(encoder_states.dtype)
+            dec_mask = lens_to_mask(input_lengths, input_embeds.shape[1]).to(input_lengths.dtype)
+            y = self.xattn_decoder(
+                decoder_states=self.input_proj1(input_embeds),
+                decoder_mask=dec_mask,
+                encoder_states=self.input_proj2(encoder_states),
+                encoder_mask=enc_mask,
+                decoder_mems_list=decoder_mems_list,
+                return_mems=return_mems,
+                return_mems_as_list=False,
+            )
+            if return_mems:
+                extra_outpus = {'decoder_mems_list': y}
+                y = y[-1][:, -input_embeds.shape[1] :]
+            else:
+                extra_outpus = {}
+            y = self.output_proj(y) + input_embeds
+            assert y.shape == input_embeds.shape, f"{y.shape=} != {input_embeds.shape=}"
+            return y, extra_outpus

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from abc import ABC
-from enum import Enum
 from functools import lru_cache
 from typing import Any, Type
 
@@ -156,6 +155,15 @@ class PromptFormatter(ABC):
     # PromptFormatter.encode_dialog() ends with this role, it indicates a training example.
     OUTPUT_ROLE = None
 
+    # When set to true, we will insert BOS/EOS symbol at the very beginning/end of the dialog
+    # (i.e., not before/after every turn).
+    # This is intended specifically for LLMs that use sentencepiece tokenizers with BOS/EOS
+    # that don't normally exist in the tokenizer's vocab (i.e., no string input generates them
+    # and you must insert them programmatically);
+    # see: https://github.com/google/sentencepiece/issues/102#issuecomment-397150427
+    INSERT_BOS = False
+    INSERT_EOS = False
+
     # Internal reserved field.
     _REGISTERED_FORMATTERS = {}
 
@@ -255,6 +263,11 @@ class PromptFormatter(ABC):
         turn_token_counts = []
         turn_mask_values = []
 
+        if self.INSERT_BOS:
+            turn_tokens.append(self.tokenizer.bos)
+            turn_token_counts.append(1)
+            turn_mask_values.append(False)
+
         if "preamble" in self.TEMPLATE:
             preamble_turns = [idx for idx, t in enumerate(turns) if t["role"] == "preamble"]
             if not preamble_turns:
@@ -280,6 +293,12 @@ class PromptFormatter(ABC):
             turn_tokens.extend(tokens)
             turn_token_counts.append(len(tokens))
             turn_mask_values.append(role == self.OUTPUT_ROLE)
+
+        # Insert EOS only when the last turn comes from the OUTPUT_ROLE.
+        if self.INSERT_EOS and turns[-1]["role"] == self.OUTPUT_ROLE:
+            turn_tokens.append(self.tokenizer.eos)
+            turn_token_counts[-1] += 1
+            turn_mask_values.append(True)
 
         ans = {"input_ids": torch.tensor(turn_tokens, dtype=torch.long)}
         if turn_mask_values[-1]:

@@ -18,7 +18,7 @@ import torch.utils.data
 from lhotse.dataset import AudioSamples
 from lhotse.dataset.collation import collate_vectors
 
-from nemo.collections.common.tokenizers.aggregate_tokenizer import AggregateTokenizer
+from nemo.collections.common.tokenizers.aggregate_tokenizer import TokenizerWrapper
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType
 
@@ -43,7 +43,7 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
             'sample_id': NeuralType(tuple('B'), LengthsType(), optional=True),
         }
 
-    def __init__(self, tokenizer, return_cuts=False):
+    def __init__(self, tokenizer: TokenizerSpec, return_cuts: bool = False):
         super().__init__()
         self.tokenizer = TokenizerWrapper(tokenizer)
         self.load_audio = AudioSamples(fault_tolerant=True)
@@ -66,31 +66,3 @@ class LhotseSpeechToTextBpeDataset(torch.utils.data.Dataset):
         if self.return_cuts:
             return audio, audio_lens, tokens, token_lens, cuts.drop_in_memory_data()
         return audio, audio_lens, tokens, token_lens
-
-
-class TokenizerWrapper:
-    """
-    Provide a unified interface for NeMo Tokenizer, AggregateTokenizer, and (char) Parser.
-    """
-
-    def __init__(self, tokenizer):
-        self._tokenizer = tokenizer
-        if isinstance(tokenizer, AggregateTokenizer):
-            self._impl = self._call_agg_tokenizer
-        elif isinstance(tokenizer, TokenizerSpec):
-            self._impl = self._call_tokenizer
-        else:
-            self._impl = self._call_parser
-
-    def __call__(self, text: str, lang: str | None = None):
-        return self._impl(text, lang)
-
-    def _call_agg_tokenizer(self, text: str, lang: str | None = None):
-        assert lang is not None, "Expected 'lang' to be set for AggregateTokenizer."
-        return self._tokenizer.text_to_ids(text, lang)
-
-    def _call_tokenizer(self, text: str, lang: str | None = None):
-        return self._tokenizer.text_to_ids(text)
-
-    def _call_parser(self, text: str, lang: str | None = None):
-        return self._tokenizer(text)

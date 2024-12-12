@@ -15,6 +15,7 @@
 import argparse
 import logging
 import sys
+import torch
 
 from nemo.deploy import DeployPyTriton
 
@@ -22,7 +23,7 @@ LOGGER = logging.getLogger("NeMo")
 
 megatron_llm_supported = True
 try:
-    from nemo.deploy.nlp import MegatronLLMDeployable
+    from nemo.deploy.nlp import MegatronLLMDeploy
 except Exception as e:
     LOGGER.warning(f"Cannot import MegatronLLMDeployable, it will not be available. {type(e).__name__}: {e}")
     megatron_llm_supported = False
@@ -43,6 +44,10 @@ def get_args(argv):
         "-tha", "--triton_http_address", default="0.0.0.0", type=str, help="HTTP address for the Triton server"
     )
     parser.add_argument("-ng", "--num_gpus", default=1, type=int, help="Number of GPUs for the deployment")
+    parser.add_argument("-nn", "--num_nodes", default=1, type=int, help="Number of GPUs for the deployment")
+    parser.add_argument("-tps", "--tensor_parallelism_size", default=1, type=int, help="Tensor parallelism size")
+    parser.add_argument("-pps", "--pipeline_parallelism_size", default=1, type=int, help="Pipeline parallelism size")
+    parser.add_argument("-cps", "--context_parallel_size", default=1, type=int, help="Pipeline parallelism size")
     parser.add_argument("-mbs", "--max_batch_size", default=8, type=int, help="Max batch size of the model")
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
     args = parser.parse_args(argv)
@@ -53,7 +58,14 @@ def get_nemo_deployable(args):
     if args.nemo_checkpoint is None:
         raise ValueError("In-Framework deployment requires a .nemo checkpoint")
 
-    return MegatronLLMDeployable(args.nemo_checkpoint, args.num_gpus)
+    return MegatronLLMDeploy.get_deployable(
+        nemo_checkpoint_filepath=args.nemo_checkpoint,
+        num_devices=args.num_gpus,
+        num_nodes=args.num_nodes,
+        tensor_model_parallel_size=args.tensor_parallelism_size,
+        pipeline_model_parallel_size=args.pipeline_parallelism_size,
+        context_parallel_size=args.context_parallel_size,
+    )
 
 
 def nemo_deploy(argv):
@@ -72,31 +84,34 @@ def nemo_deploy(argv):
         raise ValueError("MegatronLLMDeployable is not supported in this environment.")
     triton_deployable = get_nemo_deployable(args)
 
-    try:
-        nm = DeployPyTriton(
-            model=triton_deployable,
-            triton_model_name=args.triton_model_name,
-            triton_model_version=args.triton_model_version,
-            max_batch_size=args.max_batch_size,
-            port=args.triton_port,
-            address=args.triton_http_address,
-        )
+    if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+        try:
+            nm = DeployPyTriton(
+                model=triton_deployable,
+                triton_model_name=args.triton_model_name,
+                triton_model_version=args.triton_model_version,
+                max_batch_size=args.max_batch_size,
+                port=args.triton_port,
+                address=args.triton_http_address,
+            )
 
-        LOGGER.info("Triton deploy function will be called.")
-        nm.deploy()
-    except Exception as error:
-        LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))
-        return
+            LOGGER.info("Triton deploy function will be called.")
+            nm.deploy()
+        except Exception as error:
+            LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))
+            return
 
-    try:
-        LOGGER.info("Model serving on Triton is will be started.")
-        nm.serve()
-    except Exception as error:
-        LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))
-        return
+        try:
+            LOGGER.info("Model serving on Triton is will be started.")
+            nm.serve()
+        except Exception as error:
+            LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))
+            return
 
-    LOGGER.info("Model serving will be stopped.")
-    nm.stop()
+        LOGGER.info("Model serving will be stopped.")
+        nm.stop()
+
+    torch.distributed.barrier()
 
 
 if __name__ == '__main__':

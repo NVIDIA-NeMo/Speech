@@ -33,6 +33,7 @@ def get_args(argv):
     parser.add_argument("-tpp", "--top_p", default=0.0, type=float, help="top_p")
     parser.add_argument("-t", "--temperature", default=1.0, type=float, help="temperature")
     parser.add_argument("-it", "--init_timeout", default=60.0, type=float, help="init timeout for the triton server")
+    parser.add_argument("-clp", "--compute_logprob", default=None, action='store_true', help="Returns log_probs")
 
     args = parser.parse_args(argv)
     return args
@@ -46,6 +47,7 @@ def query_llm(
     top_k=1,
     top_p=0.0,
     temperature=1.0,
+    compute_logprob=None,
     init_timeout=60.0,
 ):
     nemo_query = NemoQueryLLMPyTorch(url, model_name)
@@ -55,6 +57,7 @@ def query_llm(
         top_k=top_k,
         top_p=top_p,
         temperature=temperature,
+        compute_logprob=compute_logprob,
         init_timeout=init_timeout,
     )
 
@@ -74,9 +77,10 @@ def query(argv):
         top_k=args.top_k,
         top_p=args.top_p,
         temperature=args.temperature,
+        compute_logprob=args.compute_logprob,
         init_timeout=args.init_timeout,
     )
-    print(outputs["sentences"][0][0])
+    print(outputs)
 
 
 if __name__ == '__main__':

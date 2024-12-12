@@ -19,9 +19,13 @@ from typing import List
 
 import numpy as np
 import torch
+import torch.distributed
 import wrapt
-from lightning.pytorch.trainer.trainer import Trainer
+from megatron.core.inference.common_inference_params import CommonInferenceParams
+from pytorch_lightning.trainer.trainer import Trainer
 
+import nemo.lightning as nl
+from nemo.collections.llm import inference
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.text_generation_utils import (
     OutputType,
@@ -31,7 +35,7 @@ from nemo.collections.nlp.modules.common.text_generation_utils import (
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
 from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy
 from nemo.deploy import ITritonDeployable
-from nemo.deploy.utils import cast_output, str_ndarray2list
+from nemo.deploy.utils import NEMO2, cast_output, nemo_checkpoint_version, str_ndarray2list
 
 try:
     from megatron.core.dist_checkpointing.validation import StrictHandling
@@ -99,6 +103,152 @@ class ServerSync(IntEnum):
         return torch.tensor([self], dtype=torch.long, device='cuda')
 
 
+class MegatronLLMDeploy:
+
+    @staticmethod
+    def get_deployable(
+        nemo_checkpoint_filepath: str = None,
+        num_devices: int = 1,
+        num_nodes: int = 1,
+        tensor_model_parallel_size: int = 1,
+        pipeline_model_parallel_size: int = 1,
+        context_parallel_size: int = 1,
+    ):
+
+        if nemo_checkpoint_version(nemo_checkpoint_filepath) == NEMO2:
+            return MegatronLLMDeployableNemo2(
+                nemo_checkpoint_filepath=nemo_checkpoint_filepath,
+                num_devices=num_devices,
+                num_nodes=num_nodes,
+                tensor_model_parallel_size=tensor_model_parallel_size,
+                pipeline_model_parallel_size=pipeline_model_parallel_size,
+                context_parallel_size=context_parallel_size,
+            )
+        else:
+            return MegatronLLMDeployable(
+                nemo_checkpoint_filepath=nemo_checkpoint_filepath,
+                num_devices=num_devices,
+                num_nodes=num_nodes,
+            )
+
+
+class MegatronLLMDeployableNemo2(ITritonDeployable):
+    """Triton inference server compatible deploy class for a .nemo model file"""
+
+    def __init__(
+        self,
+        nemo_checkpoint_filepath: str = None,
+        num_devices: int = 1,
+        num_nodes: int = 1,
+        tensor_model_parallel_size: int = 1,
+        pipeline_model_parallel_size: int = 1,
+        context_parallel_size: int = 1,
+        params_dtype: torch.dtype = torch.bfloat16,
+        inference_batch_times_seqlen_threshold: int = 1000,
+    ):
+        self.nemo_checkpoint_filepath = nemo_checkpoint_filepath
+
+        strategy = nl.MegatronStrategy(
+            tensor_model_parallel_size=tensor_model_parallel_size,
+            pipeline_model_parallel_size=pipeline_model_parallel_size,
+            context_parallel_size=context_parallel_size,
+            sequence_parallel=False,
+            setup_optimizers=False,
+            store_optimizer_states=False,
+        )
+
+        trainer = nl.Trainer(
+            accelerator="gpu",
+            devices=num_devices,
+            num_nodes=num_nodes,
+            strategy=strategy,
+            plugins=nl.MegatronMixedPrecision(
+                precision="bf16-mixed",
+                params_dtype=torch.bfloat16,
+                pipeline_dtype=torch.bfloat16,
+                autocast_enabled=False,
+                grad_reduce_in_fp32=False,
+            ),
+        )
+
+        self.inference_wrapped_model, self.mcore_tokenizer = inference.setup_model_and_tokenizer(
+            path=Path(nemo_checkpoint_filepath),
+            trainer=trainer,
+            params_dtype=params_dtype,
+            inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
+        )
+
+    @property
+    def get_triton_input(self):
+        inputs = (
+            Tensor(name="prompts", shape=(-1,), dtype=bytes),
+            Tensor(name="max_length", shape=(-1,), dtype=np.int_, optional=True),
+            Tensor(name="max_batch_size", shape=(-1,), dtype=np.int_, optional=True),
+            Tensor(name="top_k", shape=(-1,), dtype=np.int_, optional=True),
+            Tensor(name="top_p", shape=(-1,), dtype=np.single, optional=True),
+            Tensor(name="temperature", shape=(-1,), dtype=np.single, optional=True),
+            Tensor(name="random_seed", shape=(-1,), dtype=np.int_, optional=True),
+            Tensor(name="max_length", shape=(-1,), dtype=np.int_, optional=True),
+            Tensor(name="compute_logprob", shape=(-1,), dtype=np.bool_, optional=True),
+        )
+        return inputs
+
+    @property
+    def get_triton_output(self):
+        return (
+            Tensor(name="sentences", shape=(-1,), dtype=bytes),
+            Tensor(name="log_probs", shape=(-1,), dtype=np.single),
+        )
+
+    @batch
+    def triton_infer_fn(self, **inputs: np.ndarray):
+        output_infer = {}
+        try:
+            prompts = str_ndarray2list(inputs.pop("prompts"))
+            max_batch_size = inputs.pop("max_batch_size")[0][0] if "max_batch_size" in inputs else 32
+            random_seed = inputs.pop("random_seed")[0][0] if "random_seed" in inputs else None
+            temperature = inputs.pop("temperature")[0][0] if "temperature" in inputs else 1.0
+            top_k = inputs.pop("top_k")[0][0] if "top_k" in inputs else 1
+            top_p = inputs.pop("top_p")[0][0] if "top_k" in inputs else 0.0
+            num_tokens_to_generate = inputs.pop("max_length")[0][0] if "max_length" in inputs else 256
+            log_probs = inputs.pop("compute_logprob")[0][0] if "compute_logprob" in inputs else False
+            text_only = True
+
+            inference_params = CommonInferenceParams(
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                num_tokens_to_generate=num_tokens_to_generate,
+                return_log_probs=log_probs,
+            )
+
+            results = inference.generate(
+                model=self.inference_wrapped_model,
+                tokenizer=self.mcore_tokenizer,
+                prompts=prompts,
+                max_batch_size=max_batch_size,
+                random_seed=random_seed,
+                inference_params=inference_params,
+            )
+
+            output_texts = [r.generated_text if text_only else r for r in results]
+            output_infer = {"sentences": cast_output(output_texts, np.bytes_)}
+            if log_probs:
+                output_log_probs = []
+                for r in results:
+                    lp = r.generated_log_probs.cpu().detach().numpy()
+                    if len(lp) == 0:
+                        output_log_probs.append([0])
+                    else:
+                        output_log_probs.append(lp)
+                output_infer["log_probs"] = np.array(output_log_probs)
+        except Exception as error:
+            err_msg = "An error occurred: {0}".format(str(error))
+            output_infer["sentences"] = cast_output([err_msg], np.bytes_)
+
+        return output_infer
+
+
 class MegatronLLMDeployable(ITritonDeployable):
     """Triton inference server compatible deploy class for a .nemo model file"""
 
@@ -127,8 +277,6 @@ class MegatronLLMDeployable(ITritonDeployable):
             self._load_from_nemo_checkpoint(nemo_checkpoint_filepath, num_devices, num_nodes)
 
         self.model.eval()
-        # helper threads spawned by torch.multiprocessing should loop inside this helper function
-        self._helper_thread_evaluation_loop()
 
     def _load_from_nemo_checkpoint(self, nemo_checkpoint_filepath: str, num_devices: int, num_nodes: int):
         if Path(nemo_checkpoint_filepath).exists():
@@ -167,15 +315,6 @@ class MegatronLLMDeployable(ITritonDeployable):
                 nemo_checkpoint_filepath, trainer=trainer, override_config_path=custom_config
             )
 
-    def _helper_thread_evaluation_loop(self):
-        # only deploy the server on main thread, other threads enter this evaluation loop
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
-            while True:
-                wait_value = ServerSync.WAIT.to_long_tensor()
-                torch.distributed.broadcast(wait_value, 0)
-                if wait_value.item() == ServerSync.SIGNAL:
-                    self.model.generate(inputs=[""], length_params=None)
-
     _INPUT_PARAMETER_FIELDS = {
         "prompts": (-1, bytes, False),
     }
@@ -199,12 +338,6 @@ class MegatronLLMDeployable(ITritonDeployable):
             Tensor(name=name, shape=(shape,), dtype=dtype, optional=optional)
             for name, (shape, dtype, optional) in self._INPUT_PARAMETER_FIELDS.items()
         )
-        '''
-        in theory, would like to use typedict2tensor() function to generate Tensors, but it purposely ignores 1D arrays
-        asked JakubK why on 2024-04-26, but he doesn't know who owns the code
-        sampling_parameters = typedict2tensor(SamplingParam)
-        length_parameters = typedict2tensor(LengthParam)
-        '''
         default_sampling_params: SamplingParam = get_default_sampling_params()
         sampling_parameters = tuple(
             Tensor(

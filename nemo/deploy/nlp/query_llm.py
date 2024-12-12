@@ -123,7 +123,31 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
 
         with ModelClient(self.url, self.model_name, init_timeout_s=init_timeout) as client:
             result_dict = client.infer_batch(**inputs)
-            return result_dict
+            output_type = client.model_config.outputs[0].dtype
+
+            log_probs_output = None
+            if "log_probs" in result_dict.keys():
+                log_probs_output = result_dict["log_probs"]
+
+            if output_type == np.bytes_:
+                if "sentences" in result_dict.keys():
+                    output = result_dict["sentences"]
+                else:
+                    return "Unknown output keyword."
+
+                sentences = np.char.decode(output.astype("bytes"), "utf-8")
+                openai_response = {
+                    "id": f"cmpl-{int(time.time())}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": self.model_name,
+                    "choices": [{"text": str(sentences)}],
+                }
+                if log_probs_output is not None:
+                    openai_response["log_probs"] = log_probs_output
+                return openai_response
+            else:
+                return result_dict["sentences"]
 
 
 class NemoQueryLLM(NemoQueryLLMBase):

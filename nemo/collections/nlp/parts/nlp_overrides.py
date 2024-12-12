@@ -97,7 +97,7 @@ except (ImportError, ModuleNotFoundError):
 try:
     from megatron.core import dist_checkpointing, parallel_state
     from megatron.core.dist_checkpointing.dict_utils import dict_list_map_outplace
-    from megatron.core.dist_checkpointing.mapping import LocalNonpersitentObject
+    from megatron.core.dist_checkpointing.mapping import LocalNonpersistentObject
     from megatron.core.dist_checkpointing.optimizer import (
         get_param_id_to_sharded_param_map,
         make_sharded_optimizer_tensor,
@@ -515,7 +515,7 @@ class NLPDDPStrategy(DDPStrategy):
             )
             if expert_index:
                 # Temporary empty params so that loading doesn't fail
-                model_param_groups.insert(expert_index, {'params': LocalNonpersitentObject([]), 'is_expert': True})
+                model_param_groups.insert(expert_index, {'params': LocalNonpersistentObject([]), 'is_expert': True})
                 if 'optimizer' in sharded_state_dict['optimizer_states'][0]:
                     sharded_state_dict['optimizer_states'][0]['optimizer']['param_groups'] = model_param_groups
                 else:

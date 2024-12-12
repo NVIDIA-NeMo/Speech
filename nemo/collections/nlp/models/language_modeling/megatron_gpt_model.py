@@ -84,7 +84,7 @@ try:
     from megatron.core.datasets.gpt_dataset import GPTDataset, GPTDatasetConfig, MockGPTDataset
     from megatron.core.datasets.utils import get_blend_from_list
     from megatron.core.dist_checkpointing.dict_utils import dict_list_map_inplace
-    from megatron.core.dist_checkpointing.mapping import LocalNonpersitentObject, ShardedObject
+    from megatron.core.dist_checkpointing.mapping import LocalNonpersistentObject, ShardedObject
     from megatron.core.distributed import DistributedDataParallel as McoreDDP
     from megatron.core.distributed import DistributedDataParallelConfig, finalize_model_grads
 
@@ -2028,7 +2028,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             # WAR: This is a temporary fix to skip loading FP8 parameters for Dot Product Attention
             def skip_fp8_load(x):
                 if isinstance(x, ShardedObject) and 'fused_attention' in x.key and '_extra_state' in x.key:
-                    x = LocalNonpersitentObject(x.data)  # use the FP8 state from initialization, not from ckpt
+                    x = LocalNonpersistentObject(x.data)  # use the FP8 state from initialization, not from ckpt
                 return x
 
             if self.cfg.get('skip_fp8_attention_checkpoint_load', True):

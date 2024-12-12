@@ -213,7 +213,7 @@ A sharded state dict is a (possibly nested) Python dictionary or list with the f
     a. ShardedTensor
     b. ShardedObject
     c. ShardedTensorFactory
-2. LocalNonpersitentObject
+2. LocalNonpersistentObject
 3. Arbitrary object
 
 

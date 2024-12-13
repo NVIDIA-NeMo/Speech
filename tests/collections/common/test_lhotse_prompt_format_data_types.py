@@ -17,10 +17,9 @@ from lhotse import CutSet, SupervisionSegment
 from lhotse.cut import Cut
 from lhotse.testing.dummies import dummy_cut
 
-from nemo.collections.common.data import (
+from nemo.collections.common.data.lhotse import (
     NeMoSFTExample,
     SourceTargetTextExample,
-    TextExample,
     get_lhotse_dataloader_from_config,
 )
 from nemo.collections.common.tokenizers import SentencePieceTokenizer

@@ -13,5 +13,4 @@
 # limitations under the License.
 
 from nemo.collections.common.data.dataset import CodeSwitchedDataset, ConcatDataset, ConcatMapDataset
-from nemo.collections.common.data.lhotse import *
 from nemo.collections.common.data.prompt_fn import apply_prompt_format_fn, get_prompt_format_fn

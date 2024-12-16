@@ -27,6 +27,7 @@ from pytorch_lightning.loggers import WandbLogger
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
 from nemo.collections.vlm import ImageDataConfig
+from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.exp_manager import TimingCallback
@@ -111,7 +112,7 @@ def main(args):
         ddp=DistributedDataParallelConfig(
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,
-            overlap_grad_reduce=False,
+            overlap_grad_reduce=True,
             overlap_param_gather=True,
             average_in_collective=True,
         ),
@@ -134,7 +135,11 @@ def main(args):
         accelerator="gpu",
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
-        callbacks=[checkpoint_callback, TimingCallback()],
+        callbacks=[
+            checkpoint_callback,
+            TimingCallback(),
+            MegatronCommOverlapCallback(tp_comm_overlap=True),
+        ],
         val_check_interval=500,
         limit_val_batches=gbs,
         log_every_n_steps=1,
@@ -223,7 +228,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", type=str, required=False, default="neva_pretrain")
     parser.add_argument("--peft", type=str, default='none', help="none | lora")
     parser.add_argument("--wandb_project", type=str, required=False, default=None)
-    parser.add_argument("--gbs", type=int, required=False, default=64, help="Global batch size")
+    parser.add_argument("--gbs", type=int, required=False, default=128, help="Global batch size")
     parser.add_argument("--mbs", type=int, required=False, default=2, help="Micro batch size")
     parser.add_argument("--lr", type=float, required=False, default=2.0e-06, help="Learning rate")
 

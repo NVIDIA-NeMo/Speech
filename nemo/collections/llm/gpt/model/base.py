@@ -171,7 +171,8 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     masked_softmax_fusion: bool = True
     cross_entropy_loss_fusion: bool = True
     gradient_accumulation_fusion: bool = _grad_accum_fusion_available
-    deallocate_pipeline_outputs = True
+    deallocate_pipeline_outputs: bool = True
+    scatter_embedding_sequence_parallel: bool = True
 
     use_transformer_engine_full_layer_spec: bool = False
     transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = default_layer_spec
@@ -216,6 +217,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             seq_len_interpolation_factor=self.seq_len_interpolation_factor,
             pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
             post_process=post_process or parallel_state.is_pipeline_last_stage(),
+            scatter_embedding_sequence_parallel=self.scatter_embedding_sequence_parallel,
         )
 
         # If using full TE layer, need to set TP, CP group since the module call

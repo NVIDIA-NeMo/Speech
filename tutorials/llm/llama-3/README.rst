@@ -20,3 +20,6 @@ This repository contains Jupyter Notebook tutorials using the NeMo Framework for
    * - `Llama 3.1 Pruning and Distillation with NeMo Framework <./pruning-distillation>`_
      - `WikiText-103-v1 <https://huggingface.co/datasets/Salesforce/wikitext/viewer/wikitext-103-v1>`_
      - Perform pruning and distillation on Llama 3.1 8B using the WikiText-103-v1 dataset with NeMo Framework.
+   * - `Llama3 LoRA Fine-Tuning and Supervised Fine-Tuning using NeMo2 <./nemo2-sft-peft>`_
+     - `SQuAD <https://arxiv.org/abs/1606.05250>`_ for LoRA and `Databricks-dolly-15k <https://huggingface.co/datasets/databricks/databricks-dolly-15k>`_ for SFT
+     - Perform LoRA PEFT and SFT on Llama 3 8B using NeMo 2.0

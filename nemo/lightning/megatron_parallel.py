@@ -1724,6 +1724,10 @@ def masked_token_loss_context_parallel(tensor: Tensor, mask: Tensor, num_valid_t
 
     losses = tensor.float()
     loss_mask = mask.view(-1).float()
+    if num_valid_tokens_in_ub is None:
+        num_valid_tokens_in_ub = loss_mask.sum()
+    if num_valid_tokens_in_ub < 0.5:  # no valid tokens
+        num_valid_tokens_in_ub += 1.0
     loss = torch.sum(losses.view(-1) * loss_mask) / num_valid_tokens_in_ub  # sequence level nll
     torch.distributed.all_reduce(loss, group=parallel_state.get_context_parallel_group())
 

@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import modelopt.torch.prune as mtp
-import torch
 import torch.multiprocessing as mp
 from datasets import load_dataset
 from lightning.pytorch.trainer.trainer import Trainer
@@ -36,7 +35,7 @@ models supported as well as how to set up data and inference for calibration (wi
 Example usage:
 ```
 python examples/nlp/language_modeling/megatron_gpt_prune.py \
-    model.restore_from_path=llama3.1-8b-instruct.nemo \
+    model.restore_from_path=llama3.1-8b.nemo \
     model.tensor_model_parallel_size=1 \
     model.pipeline_model_parallel_size=8 \
     trainer.num_nodes=1 \
@@ -46,13 +45,14 @@ python examples/nlp/language_modeling/megatron_gpt_prune.py \
     prune.num_attention_heads=null \
     prune.num_query_groups=null \
     prune.hidden_size=3072 \
-    export.save_path=llama3.1-8b-instruct-pruned.nemo
+    export.save_path=llama3.1-8b-pruned.nemo
 ```
-where tensor_model_parallel_size must be 1 because of the current prune API limitation
+where model.tensor_model_parallel_size and inference.batch_size must be 1 because of the current prune API limitation
 """
 
 
-def get_calib_data_iter(data="wikitext", batch_size=64, calib_size=512, max_sequence_length=512):
+def get_calib_data_iter(data="wikitext", batch_size=1, calib_size=1024, max_sequence_length=512):
+    """Get a data iterator for calibration."""
     if data == "wikitext":
         dataset = load_dataset("wikitext", "wikitext-103-v1", split="train")
         text_column = "text"
@@ -73,6 +73,7 @@ def get_calib_data_iter(data="wikitext", batch_size=64, calib_size=512, max_sequ
 
 @hydra_runner(config_path="conf", config_name="megatron_gpt_prune")
 def main(cfg) -> None:
+    """Prune a model using modelopt."""
     # Overwrite model config with the one from the model checkpoint and apply pruning modifications
     model_cfg = load_config(cfg.model.restore_from_path)
     model_cfg.update(cfg.model)

@@ -193,12 +193,23 @@ def load_model_from_config(trainer, cfg):
                     cfg.pipeline_model_parallel_size = model_config.get('pipeline_model_parallel_size', 1)
                     cfg.pipeline_model_parallel_split_rank = model_config.get('pipeline_model_parallel_split_rank', 0)
 
+            if model_config.get('context_parallel_size', 1) > 1:
+                logging.warning(
+                    f'Model config has context_parallel_size={model_config.context_parallel_size}. CP will be disabled for '
+                    f'inference. Considering using tensor parallelism or pipeline parallelism for fitting the model.'
+                )
+
     assert (
         cfg.trainer.devices * cfg.trainer.num_nodes
         == cfg.tensor_model_parallel_size
         * cfg.pipeline_model_parallel_size
         * max(1, cfg.get('expert_model_parallel_size', 1))
-    ), "devices * num_nodes should equal tensor_model_parallel_size * pipeline_model_parallel_size"
+    ), (
+        f"devices({cfg.trainer.devices}) * num_nodes({cfg.trainer.num_nodes}) should equal to "
+        f"tensor_model_parallel_size({cfg.tensor_model_parallel_size}) * "
+        f"pipeline_model_parallel_size ({cfg.pipeline_model_parallel_size}) * "
+        f"expert_model_parallel_size ({max(1, cfg.get('expert_model_parallel_size', 1))}) * "
+    )
 
     if cfg.gpt_model_file:
         save_restore_connector = NLPSaveRestoreConnector()
@@ -223,6 +234,7 @@ def load_model_from_config(trainer, cfg):
                 # with dist checkpointing we can use the model parallel config specified by the user
                 pretrained_cfg.tensor_model_parallel_size = cfg.tensor_model_parallel_size
                 pretrained_cfg.pipeline_model_parallel_size = cfg.pipeline_model_parallel_size
+                pretrained_cfg.context_parallel_size = 1  # context parallel is disable for inference
                 pretrained_cfg.expert_model_parallel_size = cfg.get('expert_model_parallel_size', 1)
                 pretrained_cfg.micro_batch_size = 1
             if trainer.precision == "16":
@@ -250,6 +262,7 @@ def load_model_from_config(trainer, cfg):
             )
             app_state.tensor_model_parallel_size = cfg.tensor_model_parallel_size
             app_state.pipeline_model_parallel_size = cfg.pipeline_model_parallel_size
+            app_state.context_parallel_size = 1  # context parallel is disable for inference
             app_state.expert_model_parallel_size = cfg.get('expert_model_parallel_size', 1)
             (
                 app_state.tensor_model_parallel_rank,

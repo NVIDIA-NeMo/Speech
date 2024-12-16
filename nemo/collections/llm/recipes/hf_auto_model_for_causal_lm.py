@@ -21,7 +21,10 @@ import torch
 from lightning.pytorch.callbacks.callback import Callback
 
 from nemo import lightning as nl
+from nemo.collections import llm
+from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm.api import finetune, pretrain
+from nemo.collections.llm.gpt.data.hf_dataset import SquadHFDataModule
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import HFAutoModelForCausalLM
 from nemo.collections.llm.peft.lora import LoRA
@@ -55,12 +58,6 @@ def model(model_name, load_pretrained_weights) -> run.Config[pl.LightningModule]
 
 
 def trainer(
-    tensor_parallelism: int = 1,
-    pipeline_parallelism: int = 1,
-    pipeline_parallelism_type: Optional[torch.dtype] = None,
-    virtual_pipeline_parallelism: Optional[int] = None,
-    context_parallelism: int = 2,
-    sequence_parallelism: bool = False,
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     max_steps: int = 100,
@@ -105,6 +102,7 @@ def trainer(
 
     trainer = run.Config(
         nl.Trainer,
+        num_nodes=num_nodes,
         devices=num_gpus_per_node,
         max_steps=max_steps,
         accelerator='gpu',
@@ -177,6 +175,7 @@ def finetune_recipe(
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
     model_name: str = '',
+    max_steps: int = 100,
 ) -> run.Partial:
     """
     Create a fine-tuning recipe for a HFAutoModelForCausalLM model.
@@ -208,24 +207,32 @@ def finetune_recipe(
         on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
         `examples/llm/finetune/` directory.
     """
+    tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(model_name)
     recipe = run.Partial(
         finetune,
         model=model(model_name, load_pretrained_weights=True),
         trainer=trainer(
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,
+            max_steps=max_steps,
             callbacks=[run.Config(TimingCallback)],
         ),
-        data=run.Config(MockDataModule, seq_length=4096, global_batch_size=512, micro_batch_size=1),
+        data=run.Config(
+            SquadHFDataModule,
+            path_or_dataset="rajpurkar/squad",
+            split="train",
+            pad_token_id=tokenizer.tokenizer.eos_token_id,
+            tokenizer=run.Config(AutoTokenizer, pretrained_model_name=model_name),
+        ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=pytorch_adam_with_cosine_annealing(max_lr=3e-4),
         resume=default_resume(),
     )
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        recipe.optim.config.lr = 5e-6
+        recipe.optim.optimizer_fn.lr = 5e-6
     elif peft_scheme.lower() == 'lora':
         recipe.peft = run.Config(LoRA, target_modules=['*_proj'])
-        recipe.optim.config.lr = 1e-4
+        recipe.optim.optimizer_fn.lr = 1e-4
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
     return recipe

@@ -263,3 +263,41 @@ class HFDatasetDataModule(pl.LightningDataModule):
             if subset is None:
                 continue
             dataset_splits[split_name] = subset.map(function, **kwargs)
+
+
+class SquadHFDataModule(HFDatasetDataModule):
+    def __init__(self, tokenizer, **kwargs):
+        super().__init__(**kwargs)
+        self.tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+
+    def formatting_prompts_func(self, examples):
+        EOS_TOKEN = self.tokenizer.eos_token  # Must add EOS_TOKEN
+        alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+        ### Instruction:
+        {}
+
+        ### Input:
+        {}
+
+        ### Response:
+        {}"""
+        instruction = examples["context"]
+        input = examples["question"]
+        output = examples["answers"]['text']
+        if isinstance(output, list):
+            output = output[0]
+        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
+        ans = self.tokenizer(text)
+        ans['labels'] = ans['input_ids']
+        return ans
+
+    def setup(self, stage):
+        super().setup(stage)
+        self.tokenizer = getattr(self.tokenizer, 'tokenizer', self.tokenizer)
+        self.map(
+            self.formatting_prompts_func,
+            batched=False,
+            batch_size=2,
+            remove_columns=["id", "title", "context", "question", 'answers'],
+        )

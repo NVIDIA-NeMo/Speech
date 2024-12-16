@@ -55,12 +55,12 @@ def quantizable_model_config(model_cfg: llm.GPTConfig) -> llm.GPTConfig:
         get_gpt_layer_modelopt_spec,
     )
 
-    model_cfg.transformer_layer_spec = get_gpt_layer_modelopt_spec()
+    model_cfg.transformer_layer_spec = get_gpt_layer_modelopt_spec(num_experts=model_cfg.num_moe_experts)
     if model_cfg.sequence_parallel:
         logging.warning("Disabling sequence parallelism for quantization...")
         model_cfg.sequence_parallel = False
-    # Only custom ModelOpt spec is supported for Quantization: this custom spec is largely based on local Megatron-LM
-    # layer definitions to avoid Transformer Engine implementations that are currently not supported.
+    # Only custom ModelOpt spec is supported for quantization: this custom spec is largely based on local
+    # Megatron-LM layer definitions to avoid Transformer Engine implementations that are currently not supported.
     # This layer spec also requires RoPE fusion to be disabled for tensor view operations in attention
     # layer implementation from megatron/core/transformer/dot_product_attention.py to be functional.
     model_cfg.name = "modelopt"

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 try:
     from megatron.core.extensions.transformer_engine import TEDotProductAttention, TENorm
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
@@ -37,7 +39,7 @@ except (ImportError, ModuleNotFoundError) as e:
 
 
 # Use this spec for Model Optimizer PTQ and TensorRT-LLM export
-def get_gpt_layer_modelopt_spec(num_experts: int = None) -> ModuleSpec:
+def get_gpt_layer_modelopt_spec(num_experts: Optional[int] = None) -> ModuleSpec:
     """Mix the native spec with TENorm and TEDotProductAttention.
 
     This is essentially the native local spec except for the layernorm implementation
@@ -45,6 +47,12 @@ def get_gpt_layer_modelopt_spec(num_experts: int = None) -> ModuleSpec:
     prevents the apex dependency.
 
     TEDotProductAttention is used to support sliding window attention.
+
+    Args:
+        num_experts (int): Number of experts. Defaults to None.
+
+    Returns:
+        ModuleSpec: Module specification with Megatron-Core modules.
     """
     if not HAVE_MEGATRON_CORE:
         raise IMPORT_ERROR
@@ -79,7 +87,7 @@ def get_gpt_layer_modelopt_spec(num_experts: int = None) -> ModuleSpec:
 
 
 # Helper function to get module spec for MLP/MoE
-def _get_mlp_module_spec(num_experts: int = None) -> ModuleSpec:
+def _get_mlp_module_spec(num_experts: Optional[int] = None) -> ModuleSpec:
     if num_experts is None:
         # Dense MLP w/ or w/o TE modules.
         return ModuleSpec(

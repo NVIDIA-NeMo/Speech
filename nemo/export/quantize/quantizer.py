@@ -164,10 +164,6 @@ class Quantizer:
             if model_cfg.get("sequence_parallel", False):
                 logging.warning("Disabling sequence parallelism for quantization...")
                 model_cfg.sequence_parallel = False
-            # Only custom ModelOpt spec is supported for Quantization: this custom spec is largely based on local Megatron-LM
-            # layer definitions to avoid Transformer Engine implementations that are currently not supported.
-            # This layer spec also requires RoPE fusion to be disabled for tensor view operations in attention
-            # layer implementation from megatron/core/transformer/dot_product_attention.py to be functional.
             model_cfg.name = "modelopt"
             model_cfg.apply_rope_fusion = False
 
@@ -248,7 +244,8 @@ class Quantizer:
             )
             dist.barrier()  # Wait until all ranks complete export_model_config step
             logging.info(
-                f"Exporting quantized weights, model artifacts, and tokenizer config to {self.export_config.save_path}..."
+                "Exporting quantized weights, model artifacts,"
+                f" and tokenizer config to {self.export_config.save_path}..."
             )
             if dist.get_rank() == 0:
                 save_artifacts(model, export_dir)

@@ -94,7 +94,7 @@ jobs:
             exit $EXIT_CODE
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-          if: failure() && inputs.IS_OPTIONAL == false
+          if: failure() && inputs.IS_OPTIONAL == false && !contains(github.event.pull_request.labels.*.name, 'no-fail-fast')
         - name: after_script
           if: always() && inputs.AFTER_SCRIPT != ':'
           run: |

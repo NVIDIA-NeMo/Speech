@@ -118,7 +118,7 @@ jobs:
 
           FILTERED=()
           for file in $CHANGED_FILES; do
-            DATE=$(git log --format=%ad --date=unix $file | tail -1)
+            DATE=$(git log --format=%ad --date=unix "$file" | tail -1)
 
             if [[ "$STRICT_MODE" == "true" ]]; then
               if [[ "$DATE" -gt "$THRESHOLD" ]]; then
@@ -139,16 +139,18 @@ jobs:
           echo "Will run on these files:
           ${FILTERED[@]}"
 
-          set +e
+          set +xe
           LOG=$(pylint ${FILTERED[@]})          
           EXIT_CODE=$?
           set -e
           
-          echo "$LOG"
           echo "OUTPUT<<EOF" >> $GITHUB_ENV
           echo "$LOG" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
           echo "log=$LOG"
+          set -x
+
+          echo "exit-code=$EXIT_CODE" | tee -a "$GITHUB_OUTPUT"
 
           if [[ "${{ matrix.strict-mode }}" == "true" ]]; then
             HEADER="🚨 The following files must be fixed before merge!"
@@ -160,7 +162,7 @@ jobs:
           exit $([[ "$EXIT_CODE" -ne 0 && "$STRICT_MODE" == "true" ]] && echo $EXIT_CODE || echo 0)
 
       - name: Find Comment
-        if: ${{ always() && env.OUTPUT != '' }}
+        if: ${{ always() }}
         uses: peter-evans/find-comment@v3
         id: fc
         with:
@@ -168,7 +170,7 @@ jobs:
           body-includes: <!-- pylint-output-strict-mode-${{ matrix.strict-mode }} -->
 
       - name: Delete comment
-        if: ${{ always() && env.OUTPUT != '' && steps.fc.outputs.comment-id != '' }}
+        if: ${{ always() && steps.fc.outputs.comment-id != '' }}
         env:
           GH_TOKEN: ${{ secrets.github_token }}
           REPOSITORY: ${{ github.repository }}
@@ -182,7 +184,7 @@ jobs:
             https://api.github.com/repos/$REPOSITORY/issues/comments/$COMMENT_ID
 
       - name: Add PR comment for PyLint 
-        if: ${{ always() && env.OUTPUT != '' }}
+        if: ${{ always() && steps.pylint.outputs.exit-code != '0' }}
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.number }}
@@ -200,5 +202,13 @@ jobs:
             ```
 
             ---
+            
+            Mitigation guide:
+
+            * Add sensible and useful docstrings to functions and methods
+            * For trivial methods like getter/setters, consider adding `# pylint: disable=C0116` inside the function itself
+            * To disable multiple functions/methods at once, put a `# pylint: disable=C0116` before the first and a `# pylint: enable=C0116` after the last.
+
+            By applying these rules, we reduce the occurance of this message in future.
 
             Thank you for improving NeMo's documentation!

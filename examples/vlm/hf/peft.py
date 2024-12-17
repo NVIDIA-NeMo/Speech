@@ -13,62 +13,78 @@
 # limitations under the License.
 
 import fiddle as fdl
+import torch
 from lightning.pytorch.loggers import WandbLogger
+
 from nemo import lightning as nl
-from nemo.collections import llm
-from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
+from nemo.collections import llm, vlm
 
 
-def make_squad_hf_dataset(tokenizer):
-    EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
+def mk_hf_vlm_dataset(processor, mbs, gbs):
+    """Creates vlm dataset"""
+    skipped_tokens = vlm.HFAutoModelForImageTextToText.extract_skipped_token_ids(processor)
 
-    def formatting_prompts_func(examples):
-        alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+    def collate_fn(examples, processor):
+        def fmt(sample):
+            instruction = "Describe accurately the given image."
+            conversation = [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": instruction}, {"type": "image", "image": sample["image"]}],
+                },
+                {"role": "assistant", "content": [{"type": "text", "text": sample["text"]}]},
+            ]
+            return {"conversation": conversation, "images": [sample['image']]}
 
-    ### Instruction:
-    {}
+        text = []
+        images = []
+        for example in map(fmt, examples):
+            text.append(
+                processor.apply_chat_template(
+                    example["conversation"],
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+            )
+            images += example['images']
 
-    ### Input:
-    {}
+        # Tokenize the text and process the images
+        batch = processor(
+            text=text,
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        )
 
-    ### Response:
-    {}"""
-        instruction = examples["context"]
-        input = examples["question"]
-        output = examples["answers"]['text']
-        if isinstance(output, list):
-            output = output[0]
-        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
-        ans = tokenizer(text)
-        # 'input_ids' is a list, we want to remove EOS_TOKEN from input_ids and the first token from
-        # labels to align the two:
-        ans['labels'] = list(ans['input_ids'][1:])
-        ans['input_ids'] = ans['input_ids'][:-1]
-        ans['attention_mask'] = ans['attention_mask'][:-1]
-        return ans
+        assert batch["input_ids"].ndim == 2, 'Expected input_ids to be 2D'
+        batch["pixel_values"] = batch["pixel_values"].to(torch.bfloat16)
+        labels = batch["input_ids"].clone()
+        labels[torch.isin(labels, skipped_tokens)] = -100
+        batch["labels"] = labels[:, 1:]
+        batch["input_ids"] = batch["input_ids"][:, :-1]
+        return batch
 
-    tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_token_id)
-    datamodule.map(
-        formatting_prompts_func,
-        batched=False,
-        batch_size=2,
-        remove_columns=["id", "title", "context", "question", 'answers'],
+    return vlm.HFDatasetDataModule(
+        "quintend/rdr-items",
+        split="train",
+        micro_batch_size=mbs,
+        global_batch_size=gbs,
+        collate_fn=lambda x: collate_fn(x, processor=processor),
     )
-    return datamodule
 
 
-def main():
+if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', default='meta-llama/Llama-3.2-1B')
+    parser.add_argument('--model', default='Qwen/Qwen2-VL-2B-Instruct')
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp'])
     parser.add_argument('--devices', default=1)
+    parser.add_argument('--mbs', default=1)
+    parser.add_argument('--gbs', default=1)
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
-    parser.add_argument('--use-torch-jit', action='store_true')
     args = parser.parse_args()
 
     wandb = None
@@ -84,16 +100,11 @@ def main():
         # https://github.com/Lightning-AI/pytorch-lightning/blob/8ad3e29816a63d8ce5c00ac104b14729a4176f4f/src/lightning/pytorch/plugins/precision/fsdp.py#L81
         grad_clip = None
     use_dist_samp = False
-    tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)
-
-    callbacks = []
-    if args.use_torch_jit:
-        jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': True}, use_thunder=False)
-        callbacks = [JitTransform(jit_config)]
+    processor = vlm.HFAutoModelForImageTextToText.configure_processor(args.model)
 
     llm.api.finetune(
-        model=llm.HFAutoModelForCausalLM(args.model),
-        data=make_squad_hf_dataset(tokenizer.tokenizer),
+        model=vlm.HFAutoModelForImageTextToText(args.model),
+        data=mk_hf_vlm_dataset(processor, args.mbs, args.gbs),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -106,16 +117,11 @@ def main():
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
             logger=wandb,
-            callbacks=callbacks,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,
         peft=llm.peft.LoRA(
             target_modules=['*_proj'],
-            dim=32,
+            dim=16,
         ),
     )
-
-
-if __name__ == '__main__':
-    main()

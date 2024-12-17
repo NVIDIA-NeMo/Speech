@@ -45,7 +45,14 @@ class LinearAdapter(nn.Module):
     """
 
     def __init__(
-        self, orig_linear, dim=8, alpha=32, dropout=0.1, dropout_position='post', lora_A_init_method='xavier'
+        self,
+        orig_linear,
+        dim=8,
+        alpha=32,
+        dropout=0.1,
+        dropout_position='post',
+        lora_A_init_method='xavier',
+        lora_dtype=None,
     ):
         super(LinearAdapter, self).__init__()
         assert isinstance(orig_linear, nn.Linear)
@@ -62,7 +69,8 @@ class LinearAdapter(nn.Module):
 
         in_features = self.orig_linear.in_features
         out_features = self.orig_linear.out_features
-        dtype = self.orig_linear.weight.dtype
+        dtype = lora_dtype or self.orig_linear.weight.dtype
+
         self.lora_a = nn.Parameter(torch.zeros((in_features, dim), dtype=dtype, device=device))
         self.lora_b = nn.Parameter(torch.zeros((dim, out_features), dtype=dtype, device=device))
         if lora_A_init_method == 'xavier':
@@ -112,6 +120,7 @@ class LoRA(PEFT):
         dropout_position (Literal['pre', 'post'], optional): Position for applying dropout.
             Can be 'pre' (before the low-rank projection) or 'post' (after). Defaults to 'pre'.
         a2a_experimental (bool): Enables the experimental All-to-All (A2A) communication strategy. Defaults to False.
+        lora_drype (torch.dtype): Parameter data type for LoRA weights. Default None (will use model's dtype).
 
     Example:
     --------
@@ -140,6 +149,7 @@ class LoRA(PEFT):
     lora_A_init_method: str = "xavier"
     lora_B_init_method: str = "zero"
     a2a_experimental: bool = False
+    lora_dtype: torch.dtype = None
 
     def transform(self, m: nn.Module, name=None, prefix=None):
         """
@@ -159,7 +169,12 @@ class LoRA(PEFT):
         if name in self.target_modules or any(wildcard_match(pattern, full_name) for pattern in self.target_modules):
             if isinstance(m, nn.Linear):
                 return LinearAdapter(
-                    m, dim=self.dim, alpha=self.alpha, dropout=self.dropout, lora_A_init_method=self.lora_A_init_method
+                    m,
+                    dim=self.dim,
+                    alpha=self.alpha,
+                    dropout=self.dropout,
+                    lora_A_init_method=self.lora_A_init_method,
+                    lora_dtype=self.lora_dtype,
                 )
 
             input_is_parallel, in_features, out_features = get_adapter_attributes_from_linear(m)

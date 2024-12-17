@@ -605,7 +605,7 @@ def import_ckpt(
 
 
 def load_connector_from_trainer_ckpt(path: Path, target: str) -> io.ModelConnector:
-    return io.load_context(path).model.exporter(target, path)
+    return io.load_context(path, subpath="model").exporter(target, path)
 
 
 @run.cli.entrypoint(name="export", namespace="llm")

@@ -226,7 +226,7 @@ class ModelConnector(Connector, Generic[SourceT, TargetT]):
         from nemo.lightning import MegatronStrategy, Trainer, _strategy_lib
         from nemo.lightning.io.api import load_context
 
-        model = load_context(path).model
+        model = load_context(path, subpath="model")
         _trainer = trainer or Trainer(
             devices=1,
             accelerator="cpu" if cpu else "gpu",

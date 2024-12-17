@@ -37,7 +37,7 @@ from nemo.lightning import (
     io,
 )
 from nemo.lightning.base import NEMO_MODELS_CACHE
-from nemo.lightning.pytorch.callbacks import PEFT, ModelTransform
+from nemo.lightning.pytorch.callbacks import PEFT, JitTransform, ModelTransform
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
 
@@ -875,7 +875,14 @@ def _setup(
                 trainer.callbacks.append(model_transform)
             else:
                 trainer.callbacks.append(ModelTransform())
-
+    # Move jit callback at the end ensure it's applied on top of any model transformations (peft)
+    jit_cb = None
+    for i, cb in enumerate(trainer.callbacks):
+        if isinstance(cb, JitTransform):
+            assert jit_cb is None
+            jit_cb = trainer.callbacks.pop(i)
+    if jit_cb is not None:
+        trainer.callbacks.append(jit_cb)
     return app_state
 
 

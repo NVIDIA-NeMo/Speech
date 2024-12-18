@@ -62,7 +62,7 @@ def pretrain_recipe(
     virtual_pipeline_parallelism: Optional[int] = None,
     context_parallelism: int = 1,
     sequence_parallelism: bool = False,
-    num_nodes: int = 1,
+    num_nodes: int = 2,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     precision: str = "bf16-mixed",

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from dataclasses import dataclass
 
 import lightning.pytorch as pl
 import nemo_run as run
@@ -191,3 +192,12 @@ def create_verify_precision(precision: torch.dtype):
         assert tensor.dtype == precision
 
     return verify_precision
+
+
+@dataclass
+class Llama3ConfigCI(llm.Llama3Config8B):
+    seq_length: int = 2048
+    num_layers: int = 2
+    hidden_size: int = 768
+    ffn_hidden_size: int = 3072
+    num_attention_heads: int = 8

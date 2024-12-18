@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import inspect
 import json
 from pathlib import Path
 from typing import Optional, Union
@@ -61,7 +61,10 @@ class MCoreTokenizerWrappper:
         Returns:
             str: The detokenized string.
         """
-        return self.tokenizer.ids_to_text(tokens, remove_special_tokens)
+        if 'remove_special_tokens' in inspect.signature(self.tokenizer.ids_to_text).parameters:
+            return self.tokenizer.ids_to_text(tokens, remove_special_tokens)
+        else:
+            return self.tokenizer.ids_to_text(tokens)
 
     def tokenize(self, prompt):
         """

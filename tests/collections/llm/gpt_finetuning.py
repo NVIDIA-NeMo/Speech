@@ -22,17 +22,10 @@ from nemo import lightning as nl
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from tests.collections.llm.common import Llama3ConfigCI
+
 
 ## NOTE: This script is present for github-actions testing only.
-
-
-@dataclass
-class Llama3ConfigCI(llm.Llama3Config8B):
-    seq_length: int = 2048
-    num_layers: int = 2
-    hidden_size: int = 768
-    ffn_hidden_size: int = 3072
-    num_attention_heads: int = 8
 
 
 def get_args():

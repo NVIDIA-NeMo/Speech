@@ -73,6 +73,12 @@ def get_args():
         help="""top_p to be used in megatron.core.inference.common_inference_params.CommonInferenceParams""",
     )
     parser.add_argument(
+        "--top_k",
+        type=float,
+        default=0,
+        help="""top_k to be used in megatron.core.inference.common_inference_params.CommonInferenceParams""",
+    )
+    parser.add_argument(
         "--num_tokens_to_generate",
         type=int,
         default=4,
@@ -118,7 +124,10 @@ if __name__ == "__main__":
         prompts=prompts,
         trainer=trainer,
         inference_params=CommonInferenceParams(
-            temperature=args.temperature, top_p=args.top_p, num_tokens_to_generate=args.num_tokens_to_generate
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            num_tokens_to_generate=args.num_tokens_to_generate,
         ),
         text_only=True,
     )

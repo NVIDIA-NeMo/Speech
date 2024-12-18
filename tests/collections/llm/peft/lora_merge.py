@@ -12,18 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-from dataclasses import dataclass
-
 from nemo.collections import llm
-
-
-@dataclass
-class Llama3ConfigCI(llm.Llama3Config8B):
-    seq_length: int = 2048
-    num_layers: int = 2
-    hidden_size: int = 768
-    ffn_hidden_size: int = 3072
-    num_attention_heads: int = 8
 
 
 def get_args():

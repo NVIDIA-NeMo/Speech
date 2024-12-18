@@ -32,6 +32,7 @@ from nemo.lightning.io.pl import ckpt_to_dir, ckpt_to_weights_subdir
 from nemo.lightning.megatron_parallel import MegatronParallel
 from nemo.lightning.pytorch.callbacks.model_transform import ModelTransform
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
+from nemo.lightning.pytorch.utils import is_trainer_attached
 from nemo.utils import logging
 from nemo.utils.callbacks.dist_ckpt_io import AsyncCompatibleCheckpointIO
 
@@ -105,7 +106,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
         else:
             model.walk(self.transform)
 
-        if hasattr(model, "trainer") and model.trainer.state.fn != TrainerFn.FITTING:
+        if is_trainer_attached(model) and model.trainer.state.fn != TrainerFn.FITTING:
             self.freeze_model(model)
         return model
 
@@ -128,7 +129,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
             model.module.freeze()
         else:
             model.freeze()
-        if hasattr(model, "trainer") and model.trainer.state.fn == TrainerFn.FITTING:
+        if is_trainer_attached(model) and model.trainer.state.fn == TrainerFn.FITTING:
             model.train(mode=True)
 
     def setup(self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str) -> None:

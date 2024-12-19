@@ -139,11 +139,12 @@ jobs:
           echo "Will run on these files:
           ${FILTERED[@]}"
 
-          set +xe
+          set +e
           LOG=$(pylint ${FILTERED[@]})          
           EXIT_CODE=$?
           set -e
           
+          set +x
           echo "OUTPUT<<EOF" >> $GITHUB_ENV
           echo "$LOG" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV

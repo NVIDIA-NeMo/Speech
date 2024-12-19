@@ -13,6 +13,8 @@
 # limitations under the License.
 
 r"""
+NOTE: This script will be deprecated soon in favor of `megatron_gpt_prune.py`. Please use the new script for trimming layers.
+
 Script to trim model layers.
   Example to run the script with checkpoint:
     python -m torch.distributed.launch --nproc_per_node=<tensor_model_parallel_size> * <pipeline_model_parallel_size> \
@@ -112,6 +114,8 @@ def trim_layers(model, layers_to_trim):
 
 
 def main(local_rank, rank, world_size, args):
+    logging.warning("This script will be deprecated soon in favor of `megatron_gpt_prune.py`.")
+
     app_state = AppState()
     app_state.data_parallel_rank = 0
     num_nodes = world_size // args.gpus_per_node

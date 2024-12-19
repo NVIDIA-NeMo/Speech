@@ -571,9 +571,24 @@ jobs:
           prune.num_attention_heads=2 \
           prune.num_query_groups=2 \
           prune.hidden_size=128 \
-          export.save_path=examples/nlp/language_modeling/ci_prune_width.nemo
-      AFTER_SCRIPT: |
-          rm -rf examples/nlp/language_modeling/ci_prune_width.nemo
+          export.save_path=/tmp/ci_prune_width.nemo
+
+  L2_Prune_Depth_Llama2:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_Prune_Depth_Llama2') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python examples/nlp/language_modeling/megatron_gpt_prune.py \
+          trainer.devices=2 \
+          trainer.num_nodes=1 \
+          trainer.precision=bf16 \
+          model.restore_from_path=/home/TestData/nlp/megatron_llama/llama_ci.nemo \
+          model.tensor_model_parallel_size=2 \
+          model.pipeline_model_parallel_size=1 \
+          'prune.drop_layers=[1]' \
+          export.save_path=/tmp/ci_prune_depth.nemo
 
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:
@@ -4923,6 +4938,7 @@ jobs:
       - L2_Community_LLM_Checkpoints_tests_Llama3
       - L2_Distill_Llama2
       - L2_Prune_Width_Llama2
+      - L2_Prune_Depth_Llama2
       - L2_Speech_to_Text_AED
       - L2_Speech_Estimate_Duration_Bins
       - L2_Speech_Batch_Size_OOMptimizer

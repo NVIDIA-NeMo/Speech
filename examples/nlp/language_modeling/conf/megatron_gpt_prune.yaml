@@ -1,14 +1,14 @@
 inference:
   greedy: false # Whether or not to use sampling ; use greedy decoding otherwise
-  top_k: 0  # The number of highest probability vocabulary tokens to keep for top-k-filtering.
+  top_k: 0 # The number of highest probability vocabulary tokens to keep for top-k-filtering.
   top_p: 0.9 # If set to float < 1, only the most probable tokens with probabilities that add up to top_p or higher are kept for generation.
   temperature: 1.0 # sampling temperature
   add_BOS: true # add the bos token at the begining of the prompt
   tokens_to_generate: 30 # The minimum length of the sequence to be generated.
-  all_probs: false  # whether return the log prob for all the tokens in vocab
-  repetition_penalty: 1.2  # The parameter for repetition penalty. 1.0 means no penalty.
-  min_tokens_to_generate: 0  # The minimum length of the sequence to be generated.
-  compute_logprob: false  # a flag used to compute logprob of all the input text, a very special case of running inference, default False
+  all_probs: false # whether return the log prob for all the tokens in vocab
+  repetition_penalty: 1.2 # The parameter for repetition penalty. 1.0 means no penalty.
+  min_tokens_to_generate: 0 # The minimum length of the sequence to be generated.
+  compute_logprob: false # a flag used to compute logprob of all the input text, a very special case of running inference, default False
   batch_size: 1 # batch size for inference
   max_context_length: 512 # max length of the context, input sequence will be truncated if it is longer than this
 
@@ -38,7 +38,8 @@ prune:
   num_attention_heads: null # num_attention_heads in the pruned model
   num_query_groups: null # num_query_groups in the pruned model
   hidden_size: null # hidden_size (embedding size) in the pruned model
-  num_layers: null # num_layers (depth) in the pruned model
+  num_layers: null # num_layers (depth) in the pruned model using on cosine-similarity based importance
+  drop_layers: [] # drop specified layer numbers (comma separated, 1-indexed). Cannot be used with other constraints
 
 export:
   save_path: ??? # Path where the pruned model will be saved

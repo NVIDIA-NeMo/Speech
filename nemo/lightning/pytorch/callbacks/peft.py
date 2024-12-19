@@ -204,7 +204,12 @@ class PEFT(IOMixin, ABC, ModelTransform):
             )
             trainer.strategy.load_model_state_dict(adapter_state, strict=False)
             if trainer.state.fn == TrainerFn.FITTING:
-                trainer.strategy.load_optimizer_state_dict(adapter_state, selective_restore=True)
+                # Load optimizer
+                trainer.strategy.load_optimizer_state_dict(adapter_state, selective_restore=False)
+                # Load lr scheduler
+                if (lr_schedulers := adapter_state.get('lr_schedulers', None)) is not None:
+                    for config, lrs_state in zip(trainer.lr_scheduler_configs, lr_schedulers):
+                        config.scheduler.load_state_dict(lrs_state)
 
         for cb in trainer.callbacks[::-1]:
             if isinstance(cb, MegatronOptimizerModule):

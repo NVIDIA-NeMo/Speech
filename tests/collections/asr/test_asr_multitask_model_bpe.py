@@ -643,7 +643,9 @@ def canary2_tokenizer(asr_model, tmp_path):
                     "<|notimestamp|>",
                     "<|emo:undefined|>",
                     "<|emo:happy|>",
-                ],
+                ]
+                # Timestamp frame special tokens
+                + [f"<|{i}|>" for i in range(900)],
                 tmp_path,
                 force_rebuild=False,
             ),
@@ -659,7 +661,7 @@ def test_prompted_dataset_canary2(canary2_tokenizer):
         tokenizer=canary2_tokenizer, prompt=Canary2PromptFormatter(canary2_tokenizer)
     )
 
-    cuts = DummyManifest(CutSet, begin_id=0, end_id=3, with_data=True)
+    cuts = DummyManifest(CutSet, begin_id=0, end_id=4, with_data=True)
 
     # backward compatibility
     c = cuts[0]
@@ -693,11 +695,24 @@ def test_prompted_dataset_canary2(canary2_tokenizer):
     c.emotion = "<|emo:happy|>"
     c.decodercontext = "some decoder context"
 
+    # transcript with timestamps
+    c = cuts[3]
+    c.supervisions[0].language = "en"
+    c.supervisions[0].text = "<|0|> hello <|3|> <|4|> world <|5|>"
+    c.source_lang = "en"
+    c.target_lang = "en"
+    c.pnc = "<|pnc|>"
+    c.itn = "<|noitn|>"
+    c.diarize = "<|diarize|>"
+    c.timestamp = "<|timestamp|>"
+    c.emotion = "<|emo:happy|>"
+    c.decodercontext = "some decoder context"
+
     batch = dataset[cuts]
 
     assert isinstance(batch, PromptedAudioToTextMiniBatch)
-    assert batch.audio.shape == (3, 16000)
-    assert batch.audio_lens.tolist() == [16000, 16000, 16000]
+    assert batch.audio.shape == (4, 16000)
+    assert batch.audio_lens.tolist() == [16000, 16000, 16000, 16000]
 
     # Test example 0
     i = 0
@@ -706,11 +721,11 @@ def test_prompted_dataset_canary2(canary2_tokenizer):
         == '<|startofcontext|><|startoftranscript|><|emo:undefined|><|en|><|en|><|pnc|><|noitn|><|notimestamp|><|nodiarize|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
     )
     assert batch.prompt_lens[i] == 9
-    assert canary2_tokenizer.ids_to_text(batch.transcript[i]) == 'i##r##r##el##e##v##a##nt'
+    assert canary2_tokenizer.ids_to_text(batch.transcript[i]) == 'i##r##r##el##e##v##a##nt<pad><pad><pad><pad><pad>'
     assert batch.transcript_lens[i] == 8
     assert (
         canary2_tokenizer.ids_to_text(batch.prompted_transcript[i])
-        == '<|startofcontext|><|startoftranscript|><|emo:undefined|><|en|><|en|><|pnc|><|noitn|><|notimestamp|><|nodiarize|>i##r##r##el##e##v##a##nt<|endoftext|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
+        == '<|startofcontext|><|startoftranscript|><|emo:undefined|><|en|><|en|><|pnc|><|noitn|><|notimestamp|><|nodiarize|>i##r##r##el##e##v##a##nt<|endoftext|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
     )
     assert batch.prompted_transcript_lens[i] == 18
 
@@ -721,11 +736,14 @@ def test_prompted_dataset_canary2(canary2_tokenizer):
         == '<|startofcontext|><|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|itn|><|timestamp|><|diarize|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
     )
     assert batch.prompt_lens[i] == 9
-    assert canary2_tokenizer.ids_to_text(batch.transcript[i]) == 'a##s##d<pad><pad><pad><pad><pad>'
+    assert (
+        canary2_tokenizer.ids_to_text(batch.transcript[i])
+        == 'a##s##d<pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
+    )
     assert batch.transcript_lens[i] == 3
     assert (
         canary2_tokenizer.ids_to_text(batch.prompted_transcript[i])
-        == '<|startofcontext|><|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|itn|><|timestamp|><|diarize|>a##s##d<|endoftext|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
+        == '<|startofcontext|><|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|itn|><|timestamp|><|diarize|>a##s##d<|endoftext|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
     )
     assert batch.prompted_transcript_lens[i] == 13
 
@@ -736,10 +754,28 @@ def test_prompted_dataset_canary2(canary2_tokenizer):
         == '<|startofcontext|>s##o##m##ed##e##c##o##d##erc##o##nt##e##x##t<|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|noitn|><|timestamp|><|diarize|>'
     )
     assert batch.prompt_lens[i] == 25
-    assert canary2_tokenizer.ids_to_text(batch.transcript[i]) == 'a##s##d<pad><pad><pad><pad><pad>'
+    assert (
+        canary2_tokenizer.ids_to_text(batch.transcript[i])
+        == 'a##s##d<pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
+    )
     assert batch.transcript_lens[i] == 3
     assert (
         canary2_tokenizer.ids_to_text(batch.prompted_transcript[i])
-        == '<|startofcontext|>s##o##m##ed##e##c##o##d##erc##o##nt##e##x##t<|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|noitn|><|timestamp|><|diarize|>a##s##d<|endoftext|>'
+        == '<|startofcontext|>s##o##m##ed##e##c##o##d##erc##o##nt##e##x##t<|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|noitn|><|timestamp|><|diarize|>a##s##d<|endoftext|><pad><pad><pad><pad><pad><pad><pad><pad><pad><pad>'
     )
     assert batch.prompted_transcript_lens[i] == 29
+
+    # Test example 3
+    i = 3
+    assert (
+        canary2_tokenizer.ids_to_text(batch.prompt[i])
+        == '<|startofcontext|>s##o##m##ed##e##c##o##d##erc##o##nt##e##x##t<|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|noitn|><|timestamp|><|diarize|>'
+    )
+    assert batch.prompt_lens[i] == 25
+    assert canary2_tokenizer.ids_to_text(batch.transcript[i]) == '<|0|>h##el##l##o<|3|><|4|>w##o##r##l##d<|5|>'
+    assert batch.transcript_lens[i] == 13
+    assert (
+        canary2_tokenizer.ids_to_text(batch.prompted_transcript[i])
+        == '<|startofcontext|>s##o##m##ed##e##c##o##d##erc##o##nt##e##x##t<|startoftranscript|><|emo:happy|><|en|><|en|><|pnc|><|noitn|><|timestamp|><|diarize|><|0|>h##el##l##o<|3|><|4|>w##o##r##l##d<|5|><|endoftext|>'
+    )
+    assert batch.prompted_transcript_lens[i] == 39

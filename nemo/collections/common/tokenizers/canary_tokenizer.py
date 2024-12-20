@@ -68,13 +68,63 @@ class CanaryTokenizer(AggregateTokenizer):
     def pad_id(self) -> int:
         return self.special_tokens[CANARY_PAD]
 
+    def _text_with_timestamps_to_ids(self, text_without_timestamps, time_text, lang_id) -> list[int]:
+        trans_words = text_without_timestamps.split()
+
+        # Get timestamp ids
+        time_ids = self._tokenize_special_prompt(time_text)
+
+        # Tokenize text word by wordd
+        word_ids = []
+        result_ids = []
+        time_index = 0
+
+        timestamp_every_n_words = 1  # Add timestmap for every N words
+        word_index = 0
+        # Both start and end time
+        for word in trans_words:
+            # Insert the first time_id once
+            if word_index == 0 and time_index < len(time_ids):
+                result_ids.append(time_ids[time_index])
+                time_index += 1
+            # Tokenize the word
+            word_ids += super().text_to_ids(word, lang_id)
+            result_ids += super().text_to_ids(word, lang_id)
+            word_index += 1
+            # Insert time ids every N words after the first one
+            if word_index % timestamp_every_n_words == 0 and word_index != 0 and time_index < len(time_ids):
+                result_ids.append(time_ids[time_index])
+                time_index += 1
+                if time_index < len(time_ids):
+                    result_ids.append(time_ids[time_index])
+                    time_index += 1
+            else:
+                time_index += 2
+        # Ensure the last time_id is appended at the end
+        if time_index < len(time_ids):
+            result_ids.append(time_ids[-1])
+        # Make sure the last time_id is appended only once
+        if time_index < len(time_ids) and result_ids[-1] != (time_ids[-1]):
+            result_ids.append(time_ids[-1])
+        return result_ids
+
+    def _text_to_ids_maybe_with_timestamps(self, text_no_eos, lang_id) -> list[int]:
+        time_pattern = re.compile(r"<\|\d+\|>")
+        time_text = "".join(time_pattern.findall(text_no_eos))
+        has_timestamp = bool(time_text)
+        if not has_timestamp:
+            return super().text_to_ids(text_no_eos, lang_id)
+        else:
+            text_without_timestamps = time_pattern.sub("", text_no_eos).strip()
+            return self._text_with_timestamps_to_ids(text_without_timestamps, time_text, lang_id)
+
     def text_to_ids(self, text, lang_id) -> list[int]:
         if lang_id == CANARY_SPECIAL_TOKENIZER:
             return self._tokenize_special_prompt(text)
         lang_id = _map_canary1_to_canary2_lang(lang_id, self.langs)
         if text.endswith(CANARY_EOS):
-            return super().text_to_ids(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
-        return super().text_to_ids(text, lang_id)
+            return self._text_to_ids_maybe_with_timestamps(text[: -len(CANARY_EOS)], lang_id) + [self.eos_id]
+        return self._text_to_ids_maybe_with_timestamps(text, lang_id)
 
     def _tokenize_special_prompt(self, text: str) -> list[int]:
         """

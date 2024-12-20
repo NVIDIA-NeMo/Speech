@@ -3626,6 +3626,17 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
 
+  L2_VLM_HF_Transformer_PEFT_FSDP:
+    needs: [ cicd-test-container-setup ]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_VLM_HF_Transformer_PEFT_FSDP') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        TRANSFORMERS_OFFLINE=1 python tests/collections/vlm/hf/peft.py --model /home/TestData/vlm/qwen2-2b/ --max-steps 3 --disable-ckpt --strategy fsdp --devices 2
+      AFTER_SCRIPT: |
+        rm -rf nemo_experiments
+
   L2_HF_Transformer_PEFT:
     needs: [ cicd-test-container-setup ]
     uses: ./.github/workflows/_test_template.yml
@@ -4906,6 +4917,7 @@ jobs:
       - L2_HF_Transformer_SFT_nemorun
       - L2_HF_Transformer_SFT_2gpu
       - L2_VLM_HF_Transformer_PEFT
+      - L2_VLM_HF_Transformer_PEFT_FSDP
       - L2_HF_Transformer_SFT_2gpu_nemorun
       - L2_HF_Transformer_SFT_TE_Acceleration
       - L2_NeMo_2_SSM_Pretraining

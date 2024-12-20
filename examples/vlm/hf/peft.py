@@ -116,6 +116,7 @@ if __name__ == '__main__':
             accumulate_grad_batches=10,
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
+            precision="bf16",
             logger=wandb,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),

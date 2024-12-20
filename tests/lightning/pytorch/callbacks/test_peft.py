@@ -14,8 +14,10 @@
 
 from unittest.mock import MagicMock, call, patch
 
+import torch
 import torch.nn as nn
 from lightning.pytorch.trainer.states import TrainerFn
+
 from nemo.collections.llm import fn
 from nemo.lightning.pytorch.callbacks.peft import PEFT, WrappedAdapterIO
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
@@ -48,6 +50,51 @@ class TestPEFT:
         ), "peft methods may subclass `freeze_model()`, so it must be called"
         assert transformed_model.linear.weight.requires_grad == False
         assert transformed_model.conv.weight.requires_grad == False
+
+    def test_linear_adapter(self):
+        from nemo.collections.llm.peft.lora import LinearAdapter
+
+        for has_bias in [True, False]:
+            linear = nn.Linear(10, 10, bias=has_bias)
+            linear_adapter = LinearAdapter(linear)
+            bias_in_state_dict = 'bias' in linear.state_dict()
+            if has_bias:
+                assert bias_in_state_dict
+            else:
+                assert not bias_in_state_dict
+
+            # Check if the state-dict keys changed
+            for key, val in linear.state_dict().items():
+                assert key in linear_adapter.state_dict(), f"Key {key} not found in LinearAdapter"
+                assert torch.equal(val, linear_adapter.state_dict()[key]), f"Key {key} diff. val in LinearAdapter"
+            # Make sure the additional keys are in the allow list
+            for key, val in linear_adapter.state_dict().items():
+                if key in linear.state_dict():
+                    continue
+                assert key in ['lora_a', 'lora_b']
+
+    def test_linear_adapter_monkey_patch(self):
+        from copy import deepcopy
+
+        from nemo.collections.llm.peft.lora import patch_linear_module
+
+        linear = nn.Linear(10, 10)
+        state_init = deepcopy(linear.state_dict())
+        linear_adapter = patch_linear_module(linear)
+        # Check if the state-dict keys changed
+        for key, val in state_init.items():
+            assert key in linear_adapter.state_dict(), f"Key {key} not found in LinearAdapter"
+            assert torch.equal(val, linear_adapter.state_dict()[key]), f"Key {key} diff. val in LinearAdapter"
+        # Make sure the additional keys are in the allow list
+        for key, val in linear_adapter.state_dict().items():
+            if key in state_init:
+                continue
+            assert key in ['lora_a', 'lora_b']
+
+        for key in ['lora_a', 'lora_b']:
+            assert hasattr(linear_adapter, key), f"Expected {key} to be in module"
+            assert key in linear_adapter.state_dict(), f"Expected {key} to be in state dict"
+            assert getattr(linear_adapter, key).requires_grad == True, "Expected {key} to require_grad"
 
     def test_peft_setup(self):
         peft = self.DummyPEFT()

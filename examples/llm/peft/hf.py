@@ -107,6 +107,7 @@ def main():
             use_distributed_sampler=use_dist_samp,
             logger=wandb,
             callbacks=callbacks,
+            precision="bf16",
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,

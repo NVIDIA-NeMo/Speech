@@ -35,29 +35,34 @@ import os
 import sys
 
 import torch
-from lightning.pytorch.trainer.trainer import Trainer
-from omegaconf.omegaconf import OmegaConf, open_dict
+from tqdm.auto import tqdm
 
-from nemo.collections.nlp.parts.nlp_overrides import NLPDDPStrategy, NLPSaveRestoreConnector
 from nemo.core import ModelPT
 from nemo.utils import logging, model_utils
 
 
 def main():
+    """
+    Main function
+    """
+
+    logging.info("This script is deprecated and will be removed in the 25.01 release.")
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         'model_fname_list',
-        metavar='N',
+        metavar='NEMO_FILE_OR_FOLDER',
         type=str,
         nargs='+',
         help='Input .nemo files (or folders who contains them) to parse',
     )
     parser.add_argument(
         '--import_fname_list',
+        metavar='FILE',
         type=str,
         nargs='+',
         default=[],
-        help='A list of Python file names to "from FILE import *" (Needed when some classes were defined in __main__ of a script)',
+        help='A list of Python file names to "from FILE import *"',
     )
     parser.add_argument(
         '--class_path',
@@ -68,7 +73,9 @@ def main():
     args = parser.parse_args()
 
     logging.info(
-        f"\n\nIMPORTANT: Use --import_fname_list for all files that contain missing classes (AttributeError: Can't get attribute '???' on <module '__main__' from '???'>)\n\n"
+        f"\n\nIMPORTANT:\nIf you get the following error:\n\t"
+        "(AttributeError: Can't get attribute '???' on <module '__main__' from '???'>)\nuse:\n\t"
+        "--import_fname_list\nfor all files that contain missing classes.\n\n"
     )
 
     for fn in args.import_fname_list:
@@ -78,16 +85,15 @@ def main():
 
     device = torch.device("cpu")
 
-    trainer = Trainer(strategy=NLPDDPStrategy(), devices=1, num_nodes=1, precision=16, accelerator='gpu')
     # loop over all folders with .nemo files (or .nemo files)
     for model_fname_i, model_fname in enumerate(args.model_fname_list):
         if not model_fname.endswith(".nemo"):
-            # assume model_fname is a folder which contains a .nemo file (filter .nemo files which matches with "*-averaged.nemo")
+            # assume model_fname is a folder which contains a .nemo file
             nemo_files = list(
                 filter(lambda fn: not fn.endswith("-averaged.nemo"), glob.glob(os.path.join(model_fname, "*.nemo")))
             )
             if len(nemo_files) != 1:
-                raise RuntimeError(f"Expected only a single .nemo files but discovered {len(nemo_files)} .nemo files")
+                raise RuntimeError(f"Expected exactly one .nemo file but discovered {len(nemo_files)} .nemo files")
 
             model_fname = nemo_files[0]
 
@@ -98,30 +104,14 @@ def main():
         logging.info(f"\n===> [{model_fname_i+1} / {len(args.model_fname_list)}] Parsing folder {model_folder_path}\n")
 
         # restore model from .nemo file path
-        model_cfg = ModelPT.restore_from(
-            restore_path=model_fname,
-            return_config=True,
-            save_restore_connector=NLPSaveRestoreConnector(),
-            trainer=trainer,
-        )
+        model_cfg = ModelPT.restore_from(restore_path=model_fname, return_config=True)
         if args.class_path:
             classpath = args.class_path
         else:
             classpath = model_cfg.target  # original class path
-
-        OmegaConf.set_struct(model_cfg, True)
-        with open_dict(model_cfg):
-            if model_cfg.get('megatron_amp_O2', False):
-                model_cfg.megatron_amp_O2 = False
         imported_class = model_utils.import_class_by_path(classpath)
         logging.info(f"Loading model {model_fname}")
-        nemo_model = imported_class.restore_from(
-            restore_path=model_fname,
-            map_location=device,
-            save_restore_connector=NLPSaveRestoreConnector(),
-            trainer=trainer,
-            override_config_path=model_cfg,
-        )
+        nemo_model = imported_class.restore_from(restore_path=model_fname, map_location=device)
 
         # search for all checkpoints (ignore -last.ckpt)
         checkpoint_paths = [
@@ -136,22 +126,25 @@ def main():
 
         logging.info(f"Averaging {n} checkpoints ...")
 
-        for ix, path in enumerate(checkpoint_paths):
+        for ix, path in enumerate(tqdm(checkpoint_paths, total=n, desc='Averaging checkpoints')):
             checkpoint = torch.load(path, map_location=device)
+
             if 'state_dict' in checkpoint:
                 checkpoint = checkpoint['state_dict']
+            else:
+                raise RuntimeError(f"Checkpoint from {path} does not include a state_dict.")
 
             if ix == 0:
                 # Initial state
                 avg_state = checkpoint
 
-                logging.info(f"Initialized average state dict with checkpoint : {path}")
+                logging.info(f"Initialized average state dict with checkpoint:\n\t{path}")
             else:
                 # Accumulated state
                 for k in avg_state:
                     avg_state[k] = avg_state[k] + checkpoint[k]
 
-                logging.info(f"Updated average state dict with state from checkpoint : {path}")
+                logging.info(f"Updated average state dict with state from checkpoint:\n\t{path}")
 
         for k in avg_state:
             if str(avg_state[k].dtype).startswith("torch.int"):
@@ -164,7 +157,7 @@ def main():
         # restore merged weights into model
         nemo_model.load_state_dict(avg_state, strict=True)
         # Save model
-        logging.info(f"Saving average mdel to: {avg_model_fname}")
+        logging.info(f"Saving average model to:\n\t{avg_model_fname}")
         nemo_model.save_to(avg_model_fname)
 
 

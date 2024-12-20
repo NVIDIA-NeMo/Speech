@@ -46,12 +46,20 @@ from nemo.utils import logging
 
 
 def main():
+    """
+    Main function
+    """
+
+    logging.info("This script is deprecated and will be removed in the 25.01 release.")
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--name_prefix', help='Name of the final checkpoint. Will append -averaged.ckpt automatically.',
+        '--name_prefix',
+        help='Name of the final checkpoint. Will append -averaged.ckpt automatically.',
     )
     parser.add_argument(
-        '--checkpoint_dir', help='Folder containing all mp_rank_X subfolders.',
+        '--checkpoint_dir',
+        help='Folder containing all mp_rank_X subfolders.',
     )
     args = parser.parse_args()
 

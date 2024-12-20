@@ -27,10 +27,10 @@
 # limitations under the License.
 
 """
-Example: python scripts/checkpoint_averaging/distributed_checkpoint_averaging.py \
+Example: python scripts/checkpoint_averaging/zarr_distributed_checkpoint_averaging.py \
              --name_prefix=<checkpoint name> \
-             --checkpoint_dir=<folder with mp_rank_X subfolders containing checkpoints>
-             --steps <optinally a list of checkpoint steps to average, if not provided, it will average all the checkpoints>
+             --checkpoint_dir=<folder containing checkpoints> \
+             --steps <list of checkpoint steps to average, if not provided, it will average all the checkpoints>
 
 will generate a new directory in each of the distributed checkpoint subfolders named <checkpoint name>-averaged
 """
@@ -40,19 +40,24 @@ import logging
 import os
 import shutil
 import numpy as np
-import tensorstore  # need to import it for bf16 support
 import zarr
 
 logging.basicConfig(level=logging.INFO)
 
 
 def main():
+    """
+    Main function
+    """
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '--name_prefix', help='Name of the final checkpoint. Will append -averaged automatically.',
+        '--name_prefix',
+        help='Name of the final checkpoint. Will append -averaged automatically.',
     )
     parser.add_argument(
-        '--checkpoint_dir', help='Folder containing all the distributed checkpoints.',
+        '--checkpoint_dir',
+        help='Folder containing all the distributed checkpoints.',
     )
     # list of checkpoint steps to average
     parser.add_argument(

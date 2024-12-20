@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from nemo.collections.multimodal.data.energon.base import SimpleMultiModalDataModule
+from nemo.collections.multimodal.data.energon.base import EnergonMultiModalDataModule
 from nemo.collections.multimodal.data.energon.config import (
     ImageTextSample,
     ImageToken,
@@ -28,7 +28,7 @@ from nemo.collections.multimodal.data.energon.sample_encoder import (
 )
 
 __all__ = [
-    "SimpleMultiModalDataModule",
+    "EnergonMultiModalDataModule",
     "ImageToken",
     "ImageTextSample",
     "MultiModalSampleConfig",

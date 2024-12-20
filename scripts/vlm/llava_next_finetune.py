@@ -49,7 +49,7 @@ def main(args):
         from transformers import AutoProcessor
 
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
-        from nemo.collections.multimodal.data.energon import SimpleMultiModalDataModule
+        from nemo.collections.multimodal.data.energon import EnergonMultiModalDataModule
         from nemo.collections.multimodal.data.energon.config import MultiModalSampleConfig
         from nemo.collections.vlm import LlavaNextTaskEncoder
 
@@ -65,7 +65,7 @@ def main(args):
             image_processor=processor.image_processor,
             multimodal_sample_config=multimodal_sample_config,
         )
-        data = SimpleMultiModalDataModule(
+        data = EnergonMultiModalDataModule(
             path=data_path,
             tokenizer=tokenizer,
             image_processor=processor.image_processor,

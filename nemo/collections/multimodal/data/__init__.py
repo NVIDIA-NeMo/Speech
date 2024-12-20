@@ -14,7 +14,7 @@
 
 from nemo.utils.import_utils import safe_import_from
 
-SimpleMultiModalDataModule, _ = safe_import_from(
-    "nemo.collections.multimodal.data.energon", "SimpleMultiModalDataModule"
+EnergonMultiModalDataModule, _ = safe_import_from(
+    "nemo.collections.multimodal.data.energon", "EnergonMultiModalDataModule"
 )
-__all__ = ["SimpleMultiModalDataModule"]
+__all__ = ["EnergonMultiModalDataModule"]

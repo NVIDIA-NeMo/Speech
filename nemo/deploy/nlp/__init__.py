@@ -12,5 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeploy, MegatronLLMDeployable
 from nemo.deploy.nlp.query_llm import NemoQueryLLM, NemoQueryLLMPyTorch

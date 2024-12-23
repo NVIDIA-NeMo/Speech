@@ -23,7 +23,7 @@ LOGGER = logging.getLogger("NeMo")
 
 megatron_llm_supported = True
 try:
-    from nemo.deploy.nlp import MegatronLLMDeploy
+    from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeploy
 except Exception as e:
     LOGGER.warning(f"Cannot import MegatronLLMDeployable, it will not be available. {type(e).__name__}: {e}")
     megatron_llm_supported = False

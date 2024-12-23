@@ -40,7 +40,8 @@ except Exception as e:
 
 in_framework_supported = True
 try:
-    from nemo.deploy.nlp import MegatronLLMDeployable, NemoQueryLLMPyTorch
+    from nemo.deploy.nlp import NemoQueryLLMPyTorch
+    from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
 except Exception as e:
     LOGGER.warning(
         "Cannot import MegatronLLMDeployable or NemoQueryLLMPyTorch,"

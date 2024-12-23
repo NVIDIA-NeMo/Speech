@@ -154,6 +154,17 @@ def main():
 
     pretrain.trainer.max_steps = 1000
 
+    # Change here and add your files to custom_mounts
+    vocab_file = None
+    merges_file = None
+    pretrain.data = MockDataModule(
+        seq_length=pretrain.data.seq_length,
+        global_batch_size=pretrain.data.global_batch_size,
+        micro_batch_size=pretrain.data.micro_batch_size,
+        vocab_file=vocab_file,
+        merges_file=merges_file,
+    )
+
     executor: run.Executor
 
     if args.slurm:
@@ -166,6 +177,7 @@ def main():
             partition="",
             nodes=pretrain.trainer.num_nodes,
             devices=pretrain.trainer.devices,
+            custom_mounts=[],
         )
     else:
         executor = local_executor_torchrun(nodes=pretrain.trainer.num_nodes, devices=pretrain.trainer.devices)

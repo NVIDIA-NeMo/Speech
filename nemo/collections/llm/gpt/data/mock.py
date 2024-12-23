@@ -45,6 +45,8 @@ class MockDataModule(pl.LightningDataModule):
         pin_memory: bool = True,
         persistent_workers: bool = False,
         create_attention_mask: bool = False,
+        vocab_file: Optional[str] = None,
+        merges_file: Optional[str] = None,
     ):
         super().__init__()
         self.seq_length = seq_length
@@ -61,7 +63,9 @@ class MockDataModule(pl.LightningDataModule):
         if tokenizer is None:
             from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 
-            self.tokenizer = get_nmt_tokenizer("megatron", "GPT2BPETokenizer")
+            self.tokenizer = get_nmt_tokenizer(
+                "megatron", "GPT2BPETokenizer", vocab_file=vocab_file, merges_file=merges_file
+            )
         else:
             self.tokenizer = tokenizer
 

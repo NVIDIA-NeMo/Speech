@@ -46,6 +46,7 @@ class AutoTokenizer(TokenizerSpec):
         additional_special_tokens: Optional[List] = [],
         use_fast: Optional[bool] = False,
         trust_remote_code: Optional[bool] = False,
+        include_special_tokens: bool = False,
     ):
         """
         Args:
@@ -63,6 +64,7 @@ class AutoTokenizer(TokenizerSpec):
             unk_token: token to use for unknown tokens
             additional_special_tokens: list of other tokens beside standard special tokens (bos, eos, pad, etc.). For example, sentinel tokens for T5 (<extra_id_0>, <extra_id_1>, etc.)
             use_fast: whether to use fast HuggingFace tokenizer
+            include_special_tokens: when True, converting text to ids will include special tokens / prompt tokens (if any), yielding self.tokenizer(text).input_ids
         """
         try:
             # this logic deals with different huggingface tokenizers having different positional args
@@ -92,6 +94,7 @@ class AutoTokenizer(TokenizerSpec):
                 f'Unable to instantiate HuggingFace AUTOTOKENIZER for {pretrained_model_name}. Exception: {e}'
             )
 
+        self.include_special_tokens = include_special_tokens
         self.original_vocab_size = len(self.tokenizer)
         special_tokens_dict = {}
 
@@ -220,6 +223,8 @@ class AutoTokenizer(TokenizerSpec):
         return tokens
 
     def text_to_ids(self, text):
+        if self.include_special_tokens:
+            return self.tokenizer(text).input_ids
         tokens = self.text_to_tokens(text)
         ids = self.tokens_to_ids(tokens)
         return ids

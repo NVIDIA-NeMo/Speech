@@ -155,7 +155,6 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
                     decoding_cfg.preserve_alignments = True
                 self.change_decoding_strategy(decoding_cfg, decoder_type=self.cur_decoder, verbose=False)
             else:
-                return_hypotheses = False
                 with open_dict(decoding_cfg):
                     decoding_cfg.compute_timestamps = False
                     decoding_cfg.preserve_alignments = False

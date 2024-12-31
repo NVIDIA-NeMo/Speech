@@ -26,11 +26,49 @@ except Exception:
 
 
 def Normalize(in_channels, num_groups=32, act=""):
+    """Creates a group normalization layer with specified activation.
+
+    Args:
+        in_channels (int): Number of channels in the input.
+        num_groups (int, optional): Number of groups for GroupNorm. Defaults to 32.
+        act (str, optional): Activation function name. Defaults to "".
+
+    Returns:
+        GroupNorm: A normalization layer with optional activation.
+    """
     return GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True, act=act)
 
 
+def nonlinearity(x):
+    """Nonlinearity function used in temporal embedding projection.
+
+    Currently implemented as a SiLU (Swish) function.
+
+    Args:
+        x (Tensor): Input tensor.
+
+    Returns:
+        Tensor: Output after applying SiLU activation.
+    """
+    return x * torch.sigmoid(x)
+
+
 class ResnetBlock(nn.Module):
+    """A ResNet-style block that can optionally apply a temporal embedding and shortcut projections.
+
+    This block consists of two convolutional layers, normalization, and optional temporal embedding.
+    It can adjust channel dimensions between input and output via shortcuts.
+    """
+
     def __init__(self, in_channels, out_channels=None, conv_shortcut=False, dropout=0.0, temb_channels=0):
+        """
+        Args:
+            in_channels (int): Number of input channels.
+            out_channels (int, optional): Number of output channels. Defaults to in_channels.
+            conv_shortcut (bool, optional): Whether to use a convolutional shortcut. Defaults to False.
+            dropout (float, optional): Dropout probability. Defaults to 0.0.
+            temb_channels (int, optional): Number of channels in temporal embedding. Defaults to 0.
+        """
         super().__init__()
         self.in_channels = in_channels
         out_channels = in_channels if out_channels is None else out_channels
@@ -51,6 +89,15 @@ class ResnetBlock(nn.Module):
                 self.nin_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x, temb):
+        """Forward pass of the ResnetBlock.
+
+        Args:
+            x (Tensor): Input feature map of shape (B, C, H, W).
+            temb (Tensor): Temporal embedding tensor of shape (B, temb_channels).
+
+        Returns:
+            Tensor: Output feature map of shape (B, out_channels, H, W).
+        """
         h = x
         h = self.norm1(h)
         h = self.conv1(h)
@@ -72,16 +119,32 @@ class ResnetBlock(nn.Module):
 
 
 class Upsample(nn.Module):
+    """Upsampling block that increases spatial resolution by a factor of 2.
+
+    Can optionally include a convolution after upsampling.
+    """
+
     def __init__(self, in_channels, with_conv):
+        """
+        Args:
+            in_channels (int): Number of input channels.
+            with_conv (bool): If True, apply a convolution after upsampling.
+        """
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
             self.conv = torch.nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
+        """Forward pass of the Upsample block.
+
+        Args:
+            x (Tensor): Input feature map (B, C, H, W).
+
+        Returns:
+            Tensor: Upsampled feature map (B, C, 2H, 2W).
+        """
         # Cast to float32 to as 'upsample_nearest2d_out_frame' op does not support bfloat16
-        # TODO(yuya): Remove this cast once the issue is fixed in PyTorch
-        # https://github.com/pytorch/pytorch/issues/86679
         dtype = x.dtype
         if dtype == torch.bfloat16:
             x = x.to(torch.float32)
@@ -94,7 +157,17 @@ class Upsample(nn.Module):
 
 
 class Downsample(nn.Module):
+    """Downsampling block that reduces spatial resolution by a factor of 2.
+
+    Can optionally include a convolution before downsampling.
+    """
+
     def __init__(self, in_channels, with_conv):
+        """
+        Args:
+            in_channels (int): Number of input channels.
+            with_conv (bool): If True, apply a convolution before downsampling.
+        """
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
@@ -102,6 +175,14 @@ class Downsample(nn.Module):
             self.conv = torch.nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=0)
 
     def forward(self, x):
+        """Forward pass of the Downsample block.
+
+        Args:
+            x (Tensor): Input feature map (B, C, H, W).
+
+        Returns:
+            Tensor: Downsampled feature map (B, C, H/2, W/2).
+        """
         if self.with_conv:
             pad = (0, 1, 0, 1)
             x = torch.nn.functional.pad(x, pad, mode="constant", value=0)
@@ -112,7 +193,16 @@ class Downsample(nn.Module):
 
 
 class AttnBlock(nn.Module):
+    """Self-attention block that applies scaled dot-product attention to feature maps.
+
+    Normalizes input, computes queries, keys, and values, then applies attention and a projection.
+    """
+
     def __init__(self, in_channels: int):
+        """
+        Args:
+            in_channels (int): Number of input/output channels.
+        """
         super().__init__()
         self.in_channels = in_channels
 
@@ -124,6 +214,14 @@ class AttnBlock(nn.Module):
         self.proj_out = nn.Conv2d(in_channels, in_channels, kernel_size=1)
 
     def attention(self, h_: Tensor) -> Tensor:
+        """Compute the attention over the input feature maps.
+
+        Args:
+            h_ (Tensor): Normalized input feature map (B, C, H, W).
+
+        Returns:
+            Tensor: Output after applying scaled dot-product attention (B, C, H, W).
+        """
         h_ = self.norm(h_)
         q = self.q(h_)
         k = self.k(h_)
@@ -138,11 +236,30 @@ class AttnBlock(nn.Module):
         return rearrange(h_, "b 1 (h w) c -> b c h w", h=h, w=w, c=c, b=b)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass of the AttnBlock.
+
+        Args:
+            x (Tensor): Input feature map (B, C, H, W).
+
+        Returns:
+            Tensor: Output feature map after self-attention (B, C, H, W).
+        """
         return x + self.proj_out(self.attention(x))
 
 
 class LinearAttention(nn.Module):
+    """Linear Attention block for efficient attention computations.
+
+    Uses linear attention mechanisms to reduce complexity and memory usage.
+    """
+
     def __init__(self, dim, heads=4, dim_head=32):
+        """
+        Args:
+            dim (int): Input channel dimension.
+            heads (int, optional): Number of attention heads. Defaults to 4.
+            dim_head (int, optional): Dimension per attention head. Defaults to 32.
+        """
         super().__init__()
         self.heads = heads
         hidden_dim = dim_head * heads
@@ -150,6 +267,14 @@ class LinearAttention(nn.Module):
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
 
     def forward(self, x):
+        """Forward pass of the LinearAttention block.
+
+        Args:
+            x (Tensor): Input feature map (B, C, H, W).
+
+        Returns:
+            Tensor: Output feature map after linear attention (B, C, H, W).
+        """
         b, c, h, w = x.shape
         qkv = self.to_qkv(x)
         q, k, v = rearrange(qkv, 'b (qkv heads c) h w -> qkv b heads c (h w)', heads=self.heads, qkv=3)
@@ -161,15 +286,27 @@ class LinearAttention(nn.Module):
 
 
 class LinAttnBlock(LinearAttention):
-    """
-    to match AttnBlock usage
-    """
+    """Wrapper class to provide a linear attention block in a form compatible with other attention blocks."""
 
     def __init__(self, in_channels):
+        """
+        Args:
+            in_channels (int): Number of input/output channels.
+        """
         super().__init__(dim=in_channels, heads=1, dim_head=in_channels)
 
 
 def make_attn(in_channels, attn_type="vanilla"):
+    """Factory function to create an attention block.
+
+    Args:
+        in_channels (int): Number of input/output channels.
+        attn_type (str, optional): Type of attention block to create. Options: "vanilla", "linear", "none".
+                                   Defaults to "vanilla".
+
+    Returns:
+        nn.Module: An instance of the requested attention block.
+    """
     assert attn_type in ["vanilla", "linear", "none"], f'attn_type {attn_type} unknown'
     print(f"making attention of type '{attn_type}' with {in_channels} in_channels")
     if attn_type == "vanilla":

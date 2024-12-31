@@ -190,7 +190,7 @@ model:
       reduce_on_plateau: false
 
 quantization:
-  decoder_type: ${export.decoder_type} # gptnext, gpt2, llama
+  decoder_type: ${export.decoder_type} # gpt, llama
   algorithm: int4 # null, int8_sq, fp8, int4_awq, int4
   num_calib_size: 512 # number of samples used for calibration
   awq_block_size: 128 # block size for scaling factors (only used in AWQ algorithms)
@@ -198,7 +198,7 @@ quantization:
   enable_kv_cache: false # Enable FP8 KV cache quantization. Set to null for automatic selection.
 
 export:
-  decoder_type: llama # gptnext, gpt2, llama
+  decoder_type: llama # gpt, llama
   inference_tensor_parallel: 1 # Default using 1 TP for inference
   inference_pipeline_parallel: 1 # Default using 1 PP for inference
   dtype: ${trainer.precision} # Default precision data type

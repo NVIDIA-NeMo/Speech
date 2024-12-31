@@ -32,7 +32,7 @@ model:
   activations_checkpoint_method: null # 'uniform', 'block', not used with 'selective'
 
 quantization:
-  decoder_type: ${export.decoder_type} # gptnext, gpt2, llama
+  decoder_type: ${export.decoder_type} # gpt, llama
   algorithm: fp8 # null, int8_sq, fp8, int4_awq
   calib_dataset: cnn_dailymail # wikitext, cnn_dailymail, or a local dataset
   num_calib_size: 512 # number of samples used for calibration
@@ -41,7 +41,7 @@ quantization:
   enable_kv_cache: null # Enable FP8 KV cache quantization. Set to null for automatic selection.
 
 export:
-  decoder_type: llama # gptnext, gpt2, llama
+  decoder_type: llama # gpt, llama
   inference_tensor_parallel: 1 # Default using 1 TP for inference
   inference_pipeline_parallel: 1 # Default using 1 PP for inference
   dtype: 16 # Default precision data type for non-quantized layers: 16 or bf16

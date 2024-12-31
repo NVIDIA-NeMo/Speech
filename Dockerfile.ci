@@ -53,7 +53,7 @@ RUN pip install nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@${NEMO_RUN_T
 
 # Install NeMo requirements
 ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
-ARG MODELOPT_VERSION=0.19.0
+ARG MODELOPT_VERSION=0.21.0
 ARG MCORE_TAG=bd677bfb13ac2f19deaa927adc6da6f9201d66aa
 
 ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c

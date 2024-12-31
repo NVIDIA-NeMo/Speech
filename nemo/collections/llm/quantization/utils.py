@@ -33,10 +33,10 @@ def get_modelopt_decoder_type(model: llm.GPTModel) -> str:
         (llm.LlamaModel, "llama"),
         (llm.MistralModel, "llama"),
         (llm.MixtralModel, "llama"),
-        (llm.NemotronModel, "gptnext"),
+        (llm.NemotronModel, "gpt"),
         (llm.Qwen2Model, "qwen"),
-        (llm.StarcoderModel, "gptnext"),
-        (llm.Starcoder2Model, "gptnext"),
+        (llm.StarcoderModel, "gpt"),
+        (llm.Starcoder2Model, "gpt"),
         (llm.Phi3Model, "phi3"),
     ]
 

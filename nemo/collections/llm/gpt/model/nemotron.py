@@ -51,6 +51,7 @@ class NemotronConfig(GPTConfig):
     bias_dropout_add_fusion: bool = False
     layernorm_zero_centered_gamma: bool = True
     cross_entropy_loss_fusion: bool = True
+    apply_rope_fusion: bool = True
 
     # Nemotron3Config4B as default configs
     num_layers: int = 32

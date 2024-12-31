@@ -176,6 +176,7 @@ class GPTConfig(TransformerConfig, io.IOMixin):
     gradient_accumulation_fusion: bool = _grad_accum_fusion_available
     deallocate_pipeline_outputs: bool = True
     scatter_embedding_sequence_parallel: bool = True
+    tp_only_amax_red: bool = False
 
     use_transformer_engine_full_layer_spec: bool = False
     transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = default_layer_spec

@@ -1178,7 +1178,7 @@ class TensorRTLLM(ITritonDeployable):
             if "output_generation_logits" in inputs:
                 infer_input["output_generation_logits"] = inputs.pop("output_generation_logits")[0][0]
 
-            if infer_input["output_generation_logits"]:
+            if "output_generation_logits" in inputs:
                 output_texts, generation_logits = self.forward(**infer_input)
                 output_dict["generation_logits"] = np.array(generation_logits.cpu().numpy())
             else:

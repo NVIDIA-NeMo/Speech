@@ -80,6 +80,14 @@ python scripts/nlp_language_modeling/preprocess_data_for_megatron.py \
     --chunk_size=64 \
     --workers=64 
 ```
+
+This script supports multiple tokenizer libraries for data preprocessing.
+
+Example1: Preprocess data using any tokenizer hosted on HuggingFace:
+          --tokenizer-library=sentencepiece --tokenizer-type=HF-URL
+Example2: Preprocess data using SentencePiece tokenizer with tokenizer.model:
+          --tokenizer-library=sentencepiece --tokenizer-model=tokenizer.model
+Refer to get_nmt_tokenizer in nemo/collections/nlp/modules/common/tokenizer_util.py for complete usage.
 """
 
 import argparse

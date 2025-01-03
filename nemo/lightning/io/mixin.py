@@ -715,7 +715,7 @@ def drop_unexpected_params(config: fdl.Config) -> bool:
                     for param in to_drop:
                         del config.__arguments__[param]
             else:
-                logging.info(f"Skip analyzing {prefix} as it accepts arbitrary keyword arguments.")
+                logging.debug(f"Skip analyzing {prefix} as it accepts arbitrary keyword arguments.")
 
             # Proceed recursively for all arguments
             for key, value in config.__arguments__.items():
@@ -790,6 +790,8 @@ def load(path: Path, output_type: Type[CkptType] = Any, subpath: Optional[str] =
 
     config = serialization.Deserialization(json_config).result
     _artifact_transform_load(config, path)
+
+    drop_unexpected_params(config)
 
     if not build:
         return config

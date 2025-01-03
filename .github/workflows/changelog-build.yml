@@ -2,26 +2,25 @@ name: 'Changelog Build (Release)'
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - '*'
+    inputs:
+      last-release-tag:
+        description: Last Git tag to start from (exclusive) (e.g. `v2.0.0`)
+        type: string
+        required: true
+      release-branch:
+        description: Release branch to build changelog on (e.g. `r2.1.0`)
+        type: string
+        required: true
     
 jobs:
   changelog:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout branch
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required due to the way Git works, without it this action won't be able to find any or the correct tags
-
-      - name: Get Previous tag
-        id: previous_tag
-        # git for-each-ref --sort=-creatordate --format '%(refname)' refs/tags ==> refs/tags/vX.Y.Z in descending order of date
-        # awk 'FNR == 2 {print substr($1, 11, length($1))}') ==> Selects the 2nd tag from the list, then strips the /refs/tags/ part of the tag
-        # set-output name=tag_name:: ==> Takes the clean tag vX.Y.Z and sets it to steps.previous_tag.outputs.tag_name
-        run: |
-          echo "::set-output name=tag_name::$(git for-each-ref --sort=-creatordate --format '%(refname)' refs/tags | awk 'FNR == 2 {print substr($1, 11, length($1))}')"
-          echo ${{ steps.previous_tag.outputs.tag_name }}
+          ref: ko3n1g/ci/fix-changelog-generator
+          fetch-depth: 0
 
       - name: Build Changelog
         id: github_tag
@@ -38,10 +37,37 @@ jobs:
           repo: "NeMo"
           ignorePreReleases: "false"
           failOnError: "false"
-          fromTag: ${{ steps.previous_tag.outputs.tag_name }}
-          toTag: ${{ github.ref_name || github.sha }}
+          fromTag: ${{ inputs.last-release-tag }}
+          toTag: ${{ inputs.release-branch }}
 
-      - name: Print Changelog
+      - name: Update changelog file
+        env: 
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+          CHANGELOG: ${{ steps.github_tag.outputs.changelog }}
+        shell: bash -x -e -u -o pipefail {0}
         run: |
-          echo "${{steps.github_tag.outputs.changelog}}"
-          echo "--- DONE ---"
+          RELEASE_VERSION=${RELEASE_BRANCH#r}
+          CHANGELOG=$(echo "$CHANGELOG" | sed '/^[[:blank:]]*#/s/#/###/')
+
+          RELEASE_NOTES="## NVIDIA Neural Modules $RELEASE_VERSION
+
+          ### Detailed Changelogs:
+
+          $CHANGELOG"
+
+          printf "%s\n" "$RELEASE_NOTES" | sed '/<!-- Next changelog -->/r /dev/stdin' CHANGELOG.md > CHANGELOG.tmp.md
+
+          mv CHANGELOG.tmp.md CHANGELOG.md
+
+      - name: Inspect new changelog file
+        run: cat CHANGELOG.md
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "beep boop: Update changelog"
+          title: "Update changelog for `${{ inputs.release-branch }}`"
+          signoff: true
+          sign-commits: true
+          base: main
+          branch: bot/chore/update-changelog-into-${{ inputs.release-branch }}

@@ -43,6 +43,7 @@ def apply_transforms(
     target: TargetModuleT,
     mapping: Dict[str, str],
     transforms: Optional[List[Callable[[TransformCTX], TransformCTX]]] = [],
+    state_dict_ignored_entries: List = [],
 ) -> TargetModuleT:
     """
     Applies a series of transformations to adapt the state dictionary of a source module to
@@ -60,6 +61,11 @@ def apply_transforms(
         transforms (Optional[List[Callable[[TransformCTX], TransformCTX]]]): A list of functions
             that modify the `TransformCTX` object. If None, no transformations beyond key renaming
             are applied. Defaults to None.
+        state_dict_ignored_entries: List of entries to ignore in _target.state_dict(). There are cases
+            where multiple entries in model's state_dict point to one entry in model's named_parameter.
+            E.g., model has multiple pointers pointing to one shared parameters (`encoder.embed_tokens.weight`,
+            `decoder.embed_tokens.weight` and `shared.weight` all points to `shared.weight
+            in T5 Huggingface implementation.). In these cases, ignore redundant entries.
 
     Returns
     -------
@@ -166,6 +172,7 @@ def apply_transforms(
         _module.register_buffer(_key, val)
 
     keys = list(filter(lambda x: x is not None and not x.endswith("_extra_state"), target_state.keys()))
+    keys = [key for key in keys if key not in state_dict_ignored_entries]
     if len(keys) != 0:
         raise RuntimeError(f"Additional keys: {keys} in checkpoint but not in model.")
 

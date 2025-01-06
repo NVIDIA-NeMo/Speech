@@ -264,6 +264,7 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
         lm_labels: Tensor = None,
         loss_mask: Tensor = None,
         inference_params=None,
+        hidden_states_only=False,
     ):
         """Forward function of BERT model
 
@@ -280,7 +281,7 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
         hidden_states = super().forward(input_ids, attention_mask, tokentype_ids, lm_labels, inference_params)
         self.post_process = original_post_process
 
-        if not self.post_process:
+        if not self.post_process or hidden_states_only:
             return hidden_states
 
         if self.return_embeddings:

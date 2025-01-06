@@ -18,9 +18,12 @@ from nemo.utils.import_utils import safe_import
 safe_import("transformer_engine")
 
 from nemo.collections.llm import peft
-from nemo.collections.llm.bert.data import BERTMockDataModule, BERTPreTrainingDataModule
+from nemo.collections.llm.bert.data import BERTMockDataModule, BERTPreTrainingDataModule, SpecterDataModule
 from nemo.collections.llm.bert.model import (
     BertConfig,
+    BertEmbeddingLargeConfig,
+    BertEmbeddingMiniConfig,
+    BertEmbeddingModel,
     BertModel,
     HuggingFaceBertBaseConfig,
     HuggingFaceBertConfig,
@@ -157,7 +160,10 @@ __all__ = [
     "T5Config3B",
     "T5Config11B",
     "BertConfig",
+    "BertEmbeddingModel",
     "BertModel",
+    "BertEmbeddingLargeConfig",
+    "BertEmbeddingMiniConfig",
     "t5_data_step",
     "t5_forward_step",
     "MaskedTokenLossReduction",
@@ -247,6 +253,7 @@ __all__ = [
     "MegatronBertLargeConfig",
     "BERTMockDataModule",
     "BERTPreTrainingDataModule",
+    "SpecterDataModule",
     "DollyDataModule",
     "tokenizer",
     "mock",

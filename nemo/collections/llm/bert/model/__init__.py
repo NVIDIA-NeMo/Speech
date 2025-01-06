@@ -8,10 +8,18 @@ from nemo.collections.llm.bert.model.bert import (
     MegatronBertConfig,
     MegatronBertLargeConfig,
 )
+from nemo.collections.llm.bert.model.embedding import (
+    BertEmbeddingLargeConfig,
+    BertEmbeddingMiniConfig,
+    BertEmbeddingModel,
+)
 
 __all__ = [
     "BertConfig",
+    "BertEmbeddingModel",
     "BertModel",
+    "BertEmbeddingLargeConfig",
+    "BertEmbeddingMiniConfig",
     "HuggingFaceBertBaseConfig",
     "HuggingFaceBertLargeConfig",
     "HuggingFaceBertConfig",

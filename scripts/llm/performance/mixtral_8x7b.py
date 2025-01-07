@@ -18,24 +18,25 @@ import nemo_run as run
 from nemo_run.config import NEMORUN_HOME
 from utils import get_comm_overlap_callback_idx, hf_tokenizer, parse_cli_args, slurm_executor
 
-from nemo.collections.llm.recipes.llama3_8b import pretrain_recipe
+from nemo.collections.llm.recipes.mixtral_8x7b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 from nemo.utils import logging
 
-NUM_NODES = 1
+NUM_NODES = 8
 NUM_GPUS_PER_NODE = 8
 MICRO_BATCH_SIZE = 1
-GLOBAL_BATCH_SIZE = 128
+GLOBAL_BATCH_SIZE = 256
 TP_SIZE = 1
-PP_SIZE = 1
-CP_SIZE = 2
-VP_SIZE = None
+PP_SIZE = 4
+CP_SIZE = 1
+VP_SIZE = 8
+EP_SIZE = 8
 MAX_STEPS = 100
 
 
-def llama3_8b_performance_recipe(
+def mixtral_8x7b_performance_recipe(
     compute_dtype: str,
     num_nodes: int,
     num_gpus_per_node: int,
@@ -45,10 +46,11 @@ def llama3_8b_performance_recipe(
     pp_size: int,
     cp_size: int,
     vp_size: Optional[int],
+    ep_size: int,
     max_steps: int,
 ):
     """
-    llama3 8b pre-train recipe aimed at achieving best possible performance.
+    mixtral 8x7b pre-train recipe aimed at achieving best possible performance.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
@@ -58,7 +60,7 @@ def llama3_8b_performance_recipe(
     recipe.data.micro_batch_size = mbs
     recipe.data.global_batch_size = gbs
     recipe.data.num_train_samples = max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-    recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-8B")
+    recipe.data.tokenizer = hf_tokenizer("mistralai/Mixtral-8x7B-v0.1")
 
     recipe.trainer.max_steps = max_steps
     recipe.trainer.num_nodes = num_nodes
@@ -69,6 +71,7 @@ def llama3_8b_performance_recipe(
     recipe.trainer.strategy.pipeline_model_parallel_size = pp_size
     recipe.trainer.strategy.context_parallel_size = cp_size
     recipe.trainer.strategy.virtual_pipeline_model_parallel_size = vp_size
+    recipe.trainer.strategy.expert_model_parallel_size = ep_size
     if tp_size > 1:
         recipe.trainer.strategy.sequence_parallel = True
     else:
@@ -116,7 +119,7 @@ if __name__ == "__main__":
 
     exp_name = "_".join(
         [
-            f"llama3_8b",
+            f"mixtral_8x7b",
             args.compute_dtype,
             f"{NUM_NODES}nodes",
             f"tp{TP_SIZE}_pp{PP_SIZE}_cp{CP_SIZE}_vp{VP_SIZE}",
@@ -137,7 +140,7 @@ if __name__ == "__main__":
         retries=0,
     )
 
-    recipe = llama3_8b_performance_recipe(
+    recipe = mixtral_8x7b_performance_recipe(
         args.compute_dtype,
         NUM_NODES,
         NUM_GPUS_PER_NODE,
@@ -147,6 +150,7 @@ if __name__ == "__main__":
         PP_SIZE,
         CP_SIZE,
         VP_SIZE,
+        EP_SIZE,
         MAX_STEPS,
     )
 
@@ -158,7 +162,7 @@ if __name__ == "__main__":
         # following line ensures file is at- `<log_dir>/lightning_logs/tb_logs/default/<tfevents_file>`
         recipe.log.log_dir = "/nemo_run/lightning_logs"
 
-    plugins = [PerfEnvPlugin(enable_vboost=True)]
+    plugins = [PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152)]
     if args.enable_profiling:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
 

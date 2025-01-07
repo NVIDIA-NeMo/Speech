@@ -132,9 +132,12 @@ class LinearAdapter(nn.Linear):
         obj.dropout_position = dropout_position
 
     @staticmethod
-    def _forward(obj, x):
+    def _forward(obj, x, fwd=None):
         # pylint: disable=C0115,C0116
-        res = F.linear(x, obj.weight, obj.bias)
+        if fwd is not None:
+            res = fwd(x)
+        else:
+            res = F.linear(x, obj.weight, obj.bias)
         if obj.dropout_position == 'pre':
             x = obj.dropout(x)
         lora_res = x @ obj.lora_a
@@ -187,7 +190,11 @@ def patch_linear_module(
     assert isinstance(orig_linear, nn.Linear)
 
     LinearAdapter._init_adapter(orig_linear, dim, alpha, dropout, dropout_position, lora_A_init_method, lora_dtype)
-    orig_linear.forward = lambda x: LinearAdapter._forward(orig_linear, x)
+    fwd = None
+    # If the model uses quantized weights, we want to use orig_linear's forward
+    if orig_linear.weight.dtype == torch.uint8:
+        fwd = orig_linear.forward
+    orig_linear.forward = lambda x: LinearAdapter._forward(orig_linear, x, fwd)
     return orig_linear
 
 
@@ -264,7 +271,7 @@ class LoRA(PEFT):
         full_name = f"{prefix}.{name}" if prefix else name
         if name in self.target_modules or any(wildcard_match(pattern, full_name) for pattern in self.target_modules):
             if isinstance(m, nn.Linear):
-                if self._is_fsdp_v1:
+                if self._is_fsdp_v1 or m.weight.data.dtype == torch.uint8:
                     lora_cls = patch_linear_module
                 else:
                     lora_cls = LinearAdapter

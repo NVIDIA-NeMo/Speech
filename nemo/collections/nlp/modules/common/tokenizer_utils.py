@@ -169,6 +169,11 @@ def get_nmt_tokenizer(
             It has empirically been shown to improve inference time BLEU scores.
         r2l: Whether to return subword IDs from right to left
     """
+    import omegaconf
+    from omegaconf import OmegaConf
+
+    if isinstance(special_tokens, omegaconf.listconfig.ListConfig):
+        special_tokens = OmegaConf.to_container(special_tokens)
     if special_tokens is None:
         special_tokens_dict = {}
     else:
@@ -195,8 +200,10 @@ def get_nmt_tokenizer(
         from nemo.collections.common.tokenizers.sentencepiece_tokenizer import SentencePieceTokenizer
 
         logging.info(f'Getting SentencePiece with model: {tokenizer_model}')
+
         return SentencePieceTokenizer(
             model_path=tokenizer_model,
+            special_tokens=special_tokens,
             legacy=legacy,
             chat_template=chat_template,
         )

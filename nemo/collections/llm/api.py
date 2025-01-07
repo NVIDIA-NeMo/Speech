@@ -329,7 +329,6 @@ def deploy(
     triton_http_port: int = 8000,
     triton_grpc_port: int = 8001,
     triton_http_address: str = "0.0.0.0",
-    triton_request_timeout: int = 60,
     triton_model_repository: Path = None,
     num_gpus: int = 1,
     tensor_parallelism_size: int = 1,
@@ -353,7 +352,6 @@ def deploy(
         triton_http_port (int): HTTP port for the PyTriton server. Default: 8000.
         triton_grpc_port (int): gRPC Port for the PyTriton server. Default: 8001.
         triton_http_address (str): HTTP address for the PyTriton server. Default:  "0.0.0.0".
-        triton_request_timeout (int): Timeout in seconds for Triton server. Default: 60.
         triton_model_repository (Path): Folder for the trt-llm conversion, trt-llm engine gets saved in this specified
         path. If None, saves it in /tmp dir. Default: None.
         num_gpus (int): Number of GPUs for export to trtllm and deploy. Default: 1.
@@ -420,6 +418,7 @@ def deploy(
 def evaluate(
     nemo_checkpoint_path: Path,
     url: str = "grpc://0.0.0.0:8001",
+    triton_http_port: int = 8000,
     model_name: str = "triton_model",
     eval_task: str = "gsm8k",
     num_fewshot: Optional[int] = None,
@@ -440,6 +439,8 @@ def evaluate(
         nemo_checkpoint_path (Path): Path for nemo 2.0 checkpoint. This is used to get the tokenizer from the ckpt
         which is required to tokenize the evaluation input and output prompts.
         url (str): grpc service url that were used in the deploy method above in the format: grpc://{grpc_service_ip}:{grpc_port}.
+        triton_http_port (int): HTTP port that was used for the PyTriton server in the deploy method. Default: 8000.
+        Please pass the triton_http_port if using a custom port in the deploy method.
         model_name (str): Name of the model that is deployed on PyTriton server. It should be the same as
         triton_model_name passed to the deploy method above to be able to launch evaluation. Deafult: "triton_model".
         eval_task (str): task to be evaluated on. For ex: "gsm8k", "gsm8k_cot", "mmlu", "lambada". Default: "gsm8k".
@@ -476,6 +477,8 @@ def evaluate(
 
     # Get tokenizer from nemo ckpt. This works only with NeMo 2.0 ckpt.
     tokenizer = io.load_context(nemo_checkpoint_path + "/context", subpath="model.tokenizer")
+    # Wait for server to be ready before starting evaluation
+    evaluation.wait_for_server_ready(url=url, triton_http_port=triton_http_port, model_name=model_name)
     # Create an object of the NeMoFWLM which is passed as a model to evaluator.simple_evaluate
     model = evaluation.NeMoFWLMEval(
         model_name, url, tokenizer, max_tokens_to_generate, temperature, top_p, top_k, add_bos

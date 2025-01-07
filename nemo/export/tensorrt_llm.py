@@ -1149,6 +1149,7 @@ class TensorRTLLM(ITritonDeployable):
     def triton_infer_fn(self, **inputs: np.ndarray):
         """Triton infer function for streaming"""
         output_dict = {}
+        generation_logits_available = False
         try:
             infer_input = {"input_texts": str_ndarray2list(inputs.pop("prompts"))}
             if "max_output_len" in inputs:
@@ -1176,9 +1177,10 @@ class TensorRTLLM(ITritonDeployable):
                 lora_uids = np.char.decode(inputs.pop("lora_uids").astype("bytes"), encoding="utf-8")
                 infer_input["lora_uids"] = lora_uids[0].tolist()
             if "output_generation_logits" in inputs:
+                generation_logits_available = inputs["output_generation_logits"]
                 infer_input["output_generation_logits"] = inputs.pop("output_generation_logits")[0][0]
 
-            if "output_generation_logits" in inputs:
+            if generation_logits_available:
                 output_texts, generation_logits = self.forward(**infer_input)
                 output_dict["generation_logits"] = np.array(generation_logits.cpu().numpy())
             else:

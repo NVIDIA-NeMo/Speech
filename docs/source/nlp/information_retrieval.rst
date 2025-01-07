@@ -70,9 +70,7 @@ Then you can fine-tune the sentence-BERT model using the following script:
     VALIDATION_DATASET_PATH= # Path to validation dataset 
     SAVE_DIR= # where the checkpoint and logs are saved
     mkdir -p $SAVE_DIR
-    export NVTE_FLASH_ATTN=0
     export NVTE_ALLOW_NONDETERMINISTIC_ALGO=0
-    export NVTE_FUSED_ATTN=0
     
     python NeMo/examples/nlp/information_retrieval/megatron_bert_embedding_finetuning.py \
     --config-path=${CONFIG_PATH} \
@@ -87,6 +85,7 @@ Then you can fine-tune the sentence-BERT model using the following script:
     model.post_process=False \
     model.global_batch_size=8 \ # should be NUM_DEVICES * model.micro_batch_size
     model.micro_batch_size=8 \
+    model.attention_backend="unfused" \ 
     model.optim.lr=0.000005 \
     model.optim.sched.min_lr=0.00000001 \
     model.optim.sched.warmup_steps=100 \

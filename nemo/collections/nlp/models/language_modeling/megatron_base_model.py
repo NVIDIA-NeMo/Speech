@@ -50,6 +50,7 @@ from nemo.utils.get_rank import is_global_rank_zero
 try:
     from megatron.core import ModelParallelConfig, parallel_state
     from megatron.core.distributed import DistributedDataParallel as McoreDDP
+    from megatron.core.transformer.enums import AttnBackend
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_config import TransformerConfig
     from megatron.core.utils import init_method_normal, scaled_init_method_normal
@@ -537,6 +538,9 @@ class MegatronBaseModel(NLPModel):
 
         tp_only_amax_red = self.cfg.get('tp_only_amax_red', False)
 
+        attention_backend = self.cfg.get('attention_backend', "auto")
+        attention_backend = AttnBackend[attention_backend]
+
         # any configs that are not in the nemo model config will be added here
         config_mapping = {
             'apply_query_key_layer_scaling': apply_query_key_layer_scaling,
@@ -561,6 +565,7 @@ class MegatronBaseModel(NLPModel):
             'rotary_interleaved': rotary_interleaved,
             'deallocate_pipeline_outputs': True,
             'tp_only_amax_red': tp_only_amax_red,
+            'attention_backend': attention_backend,
         }
 
         # populate the transformer config dict

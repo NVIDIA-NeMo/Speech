@@ -20,7 +20,6 @@
 export WANDB_PROJECT=xxx
 export WANDB_RUN_ID=xxx
 export WANDB_RESUME=allow
-export NVTE_FUSED_ATTN=0 
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

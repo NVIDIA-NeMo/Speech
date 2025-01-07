@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Annotated, Callable, Optional
 
 import torch
 from megatron.core import parallel_state
+from megatron.core.transformer.enums import AttnBackend
 from torch import nn
 
 from nemo.collections.llm.fn.activation import openai_gelu
@@ -53,6 +54,8 @@ class GemmaConfig(GPTConfig):
     # Legacy NeMo does not set layernorm_zero_centered_gamma and instead adds 1 in the HF -> NeMo conversion script
     # The present implementation is more in line with the official implementation
     layernorm_zero_centered_gamma: bool = True
+    # Disable cuDNN attention since TE 1.8 does not support head dim > 128
+    attention_backend: AttnBackend = AttnBackend.flash
 
 
 @dataclass

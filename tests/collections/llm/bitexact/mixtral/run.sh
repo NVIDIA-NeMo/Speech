@@ -8,7 +8,7 @@ MCORE_OUTPUT_PATH="/tmp/bex_mixtral_mcore_output/"
 NEMO_OUTPUT_PATH="/tmp/bex_mixtral_nemo_output/"
 
 # Run Mcore
-CUDA_DEVICE_MAX_CONNECTIONS=1 CUDA_LAUNCH_BLOCKING=1 TORCH_COMPILE_DISABLE=1 NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 \
+CUDA_DEVICE_MAX_CONNECTIONS=1 CUDA_LAUNCH_BLOCKING=1 TORCH_COMPILE_DISABLE=1 \
 torchrun --nproc-per-node 1 --nnodes 1 /workspace/Megatron-LM/pretrain_gpt.py \
     --apply-layernorm-1p --rotary-percent 1.0 --rotary-base 1000000 \
     --no-position-embedding --position-embedding-type rope \
@@ -30,7 +30,7 @@ torchrun --nproc-per-node 1 --nnodes 1 /workspace/Megatron-LM/pretrain_gpt.py \
     --split 99,1,0 --log-interval 10 --save-interval 20000 --eval-interval 1000 --eval-iters 32 \
     --save "$MCORE_OUTPUT_PATH" \
     --log-num-zeros-in-grad --distributed-timeout-minutes 6000 --moe-router-topk 1 --num-experts 2 \
-    --moe-router-pre-softmax --expert-model-parallel-size 1 --eval-iters=0
+    --moe-router-pre-softmax --expert-model-parallel-size 1 --eval-iters=0 --attention-backend unfused
 
 # Run NeMo
 CUDA_LAUNCH_BLOCKING=1 TORCH_COMPILE_DISABLE=1 NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=0 \

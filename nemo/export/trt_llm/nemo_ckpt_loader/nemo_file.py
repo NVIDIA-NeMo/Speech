@@ -93,6 +93,9 @@ def preprocess_scaling_factors_for_local_export(state_dict: Dict[str, Any]) -> D
     scales = {}
 
     for key, value in scales_dict.items():
+        if value is None:
+            continue
+
         value.seek(0)
         extra_state = torch.load(value)
         if extra_state is not None and 'scale_fwd' in extra_state:

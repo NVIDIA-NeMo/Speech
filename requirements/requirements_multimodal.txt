@@ -1,5 +1,5 @@
 addict
-bitsandbytes==0.45.0
+bitsandbytes==0.45.0 ; platform_machine == 'x86_64'
 clip
 decord; sys_platform == 'linux'
 diffusers>=0.19.3

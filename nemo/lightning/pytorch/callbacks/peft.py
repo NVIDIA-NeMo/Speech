@@ -448,7 +448,7 @@ class WrappedAdapterIO(_WrappingCheckpointIO, AsyncCompatibleCheckpointIO):
         if getattr(path, "base_model_path", None):
             ## PEFT Resume, FIRST TIME
             self.adapter_ckpt_path = Path(str(path))
-            adapter_ckpt = self.checkpoint_io.load_checkpoint(path, sharded_state_dict={})  # Loads only metadata
+            adapter_ckpt = self.checkpoint_io.load_checkpoint(path)  # Loads only metadata
             # path is adapter path to restore the training metadata, but switch to loading base model here.
             path = self.model_ckpt_path = path.base_model_path
         elif adapter_meta_path.exists():

@@ -84,8 +84,6 @@ def convert(args):
     nemo_config.model = adjust_nemo_config(nemo_config.model, hf_model.config.to_dict(), mcore_bert=args.mcore)
 
     nemo_config.trainer["precision"] = args.precision
-    # Bert doesn't support FLASH_ATTN
-    nemo_config.model["attention_backend"] = "fused"
     trainer = MegatronTrainerBuilder(nemo_config).create_trainer()
     model = MegatronBertModel(nemo_config.model, trainer)
 
@@ -290,5 +288,6 @@ def convert(args):
 
 
 if __name__ == '__main__':
+    os.environ['NVTE_FLASH_ATTN'] = '0'  # Bert doesn't support FLASH_ATTN
     args = get_args()
     convert(args)

@@ -1,3 +1,5 @@
+# This is a copy of requirements_deploy.txt for a seamless rename 'infer' -> 'deploy'.
+# TODO: Remove this file once it is not used in container build anywhere.
 fastapi
 nvidia-pytriton
 pydantic-settings

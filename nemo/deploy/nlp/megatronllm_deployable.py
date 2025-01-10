@@ -15,14 +15,15 @@
 import logging
 from enum import IntEnum, auto
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
 import torch.distributed
 import wrapt
+from lightning.pytorch.trainer.trainer import Trainer
 from megatron.core.inference.common_inference_params import CommonInferenceParams
-from pytorch_lightning.trainer.trainer import Trainer
+from megatron.core.inference.inference_request import InferenceRequest
 
 import nemo.lightning as nl
 from nemo.collections.llm import inference
@@ -94,7 +95,7 @@ def GetNumpyDtype(pyvalue):
 
 
 class ServerSync(IntEnum):
-    """Enum for synchronization messages using torch.distributed"""
+    """Enum for synchronization messages using torch.distributed."""
 
     WAIT = auto()
     SIGNAL = auto()
@@ -104,17 +105,35 @@ class ServerSync(IntEnum):
 
 
 class MegatronLLMDeploy:
+    """
+    A factory class for creating deployable instances of Megatron LLM models.
+    This class provides a method to get the appropriate deployable instance
+    based on the version of the NeMo checkpoint model used.
+    """
 
     @staticmethod
     def get_deployable(
-        nemo_checkpoint_filepath: str = None,
+        nemo_checkpoint_filepath: str,
         num_devices: int = 1,
         num_nodes: int = 1,
         tensor_model_parallel_size: int = 1,
         pipeline_model_parallel_size: int = 1,
         context_parallel_size: int = 1,
     ):
+        """
+        Returns the appropriate deployable instance for the given NeMo checkpoint.
 
+        Args:
+            nemo_checkpoint_filepath (str): Path to the .nemo checkpoint file.
+            num_devices (int): Number of devices to use for deployment.
+            num_nodes (int): Number of nodes to use for deployment.
+            tensor_model_parallel_size (int): Size of the tensor model parallelism.
+            pipeline_model_parallel_size (int): Size of the pipeline model parallelism.
+            context_parallel_size (int): Size of the context parallelism.
+
+        Returns:
+            ITritonDeployable: An instance of a deployable class compatible with Triton inference server.
+        """
         if nemo_checkpoint_version(nemo_checkpoint_filepath) == NEMO2:
             return MegatronLLMDeployableNemo2(
                 nemo_checkpoint_filepath=nemo_checkpoint_filepath,
@@ -178,6 +197,39 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
         )
 
+    def generate(
+        self,
+        prompts: List[str],
+        max_batch_size: int = 4,
+        inference_params: Optional[CommonInferenceParams] = None,
+        random_seed: Optional[int] = None,
+    ) -> List[InferenceRequest]:
+        """
+        Generates text based on the provided input prompts.
+
+        Args:
+            prompts (List[str]): A list of input strings.
+            max_batch_size (int): The maximum batch size used for inference.
+            inference_params (Optional[CommonInferenceParams]): Parameters for controlling the inference process.
+            random_seed (Optional[int]): A random seed for reproducibility.
+
+        Returns:
+            List[InferenceRequest]: A list containing the generated results.
+        """
+        # TODO: This function doesn't account for parallelism settings currently
+
+        inference_params = inference_params or CommonInferenceParams()
+
+        results = inference.generate(
+            model=self.inference_wrapped_model,
+            tokenizer=self.mcore_tokenizer,
+            prompts=prompts,
+            max_batch_size=max_batch_size,
+            random_seed=random_seed,
+            inference_params=inference_params,
+        )
+        return list(results)
+
     @property
     def get_triton_input(self):
         inputs = (
@@ -222,14 +274,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
                 return_log_probs=log_probs,
             )
 
-            results = inference.generate(
-                model=self.inference_wrapped_model,
-                tokenizer=self.mcore_tokenizer,
-                prompts=prompts,
-                max_batch_size=max_batch_size,
-                random_seed=random_seed,
-                inference_params=inference_params,
-            )
+            results = self.generate(prompts, max_batch_size, inference_params, random_seed)
 
             output_texts = [r.generated_text if text_only else r for r in results]
             output_infer = {"sentences": cast_output(output_texts, np.bytes_)}
@@ -263,11 +308,14 @@ class MegatronLLMDeployable(ITritonDeployable):
             raise IMPORT_ERROR
         if nemo_checkpoint_filepath is None and existing_model is None:
             raise ValueError(
-                "MegatronLLMDeployable requires either a .nemo checkpoint filepath or an existing MegatronGPTModel, but both provided were None"
+                "MegatronLLMDeployable requires either a .nemo checkpoint filepath "
+                "or an existing MegatronGPTModel, but both provided were None."
             )
         if num_devices > 1:
             LOGGER.warning(
-                "Creating a MegatronLLMDeployable with num_devices>1 will assume running with a PyTorch Lightning DDP-variant strategy, which will run the main script once per device. Make sure any user code is compatible with multiple executions!"
+                "Creating a MegatronLLMDeployable with num_devices > 1 will assume running with "
+                "a PyTorch Lightning DDP-variant strategy, which will run the main script once per device. "
+                "Make sure any user code is compatible with multiple executions!"
             )
 
         # if both existing_model and nemo_checkpoint_filepath are provided, existing_model will take precedence
@@ -292,14 +340,16 @@ class MegatronLLMDeployable(ITritonDeployable):
             # transformer_engine should always be true according to EricH, but GPT-2B model will fail if it is enabled
             if not custom_config.transformer_engine:
                 LOGGER.warning(
-                    "MegatronLLMDeployable expects model config transformer_engine=True, but this model has it =False. "
-                    "Overriding it to =True, but this may break certain checkpoints converted on older Nemo versions. "
+                    "MegatronLLMDeployable expects model config transformer_engine=True, but this model uses False. "
+                    "Overriding it to True, but this may break certain checkpoints converted on older Nemo versions. "
                     "If your model breaks, please try re-converting the checkpoint on the current Nemo version."
                 )
             custom_config.transformer_engine = True
-            # using multi-gpu for tensor parallelism directly for now, could do pipeline parallel instead or a combination
+            # using multi-gpu for tensor parallelism directly for now,
+            # could do pipeline parallel instead or a combination
             custom_config.tensor_model_parallel_size = num_devices
-            # had to override these to make Nemotron3-22B work, see sample_sequence_batch() in text_generation_utils.py
+            # had to override these to make Nemotron3-22B work,
+            # see sample_sequence_batch() in text_generation_utils.py
             custom_config.activations_checkpoint_granularity = None
             custom_config.activations_checkpoint_method = None
             # Models trained with TE < 1.10 and loaded with TE >= 1.10 require
@@ -398,7 +448,8 @@ class MegatronLLMDeployable(ITritonDeployable):
             distributed_rank = torch.distributed.get_rank()
             if distributed_rank != 0:
                 raise ValueError(
-                    f"Triton inference function should not be called on a thread with torch.distributed rank != 0, but this thread is rank {distributed_rank}"
+                    "Triton inference function should not be called on a thread with "
+                    f"torch.distributed rank != 0, but this thread is rank {distributed_rank}."
                 )
             signal_value = ServerSync.SIGNAL.to_long_tensor()
             torch.distributed.broadcast(signal_value, 0)

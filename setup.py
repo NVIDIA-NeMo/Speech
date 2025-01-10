@@ -77,6 +77,7 @@ extras_require = {
     'slu': req_file("requirements_slu.txt"),
     'multimodal': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
+    'deploy': req_file("requirements_deploy.txt"),
 }
 
 
@@ -257,7 +258,7 @@ setuptools.setup(
     extras_require=extras_require,
     # Add in any packaged data.
     include_package_data=True,
-    exclude=['tools', 'tests', 'nemo.deploy', 'nemo.export'],
+    exclude=['tools', 'tests'],
     package_data={'': ['*.tsv', '*.txt', '*.far', '*.fst', '*.cpp', 'Makefile']},
     zip_safe=False,
     # PyPI package information.

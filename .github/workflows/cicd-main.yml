@@ -4871,6 +4871,35 @@ jobs:
         rm -rf /tmp/nemo2_ckpt
         rm -rf /tmp/nemo2_ptq_engine
 
+  L2_NeMo_2_Export_In_Framework:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_Export_In_Framework') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python tests/collections/llm/test_hf_import.py \
+          --hf_model /home/TestData/nlp/megatron_llama/llama-ci-hf \
+          --output_path /tmp/nemo2_ckpt
+
+        python tests/setup/data/create_sample_lambada.py \
+          --output_file /tmp/lambada.json
+
+        python tests/export/nemo_export.py \
+          --model_name test \
+          --model_type llama \
+          --checkpoint_dir /tmp/nemo2_ckpt \
+          --min_tps 1 \
+          --in_framework True \
+          --test_deployment True \
+          --run_accuracy True \
+          --test_data_path /tmp/lambada.json \
+          --accuracy_threshold 0.0 \
+          --debug
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/nemo2_ckpt /tmp/lambada.json
+
   L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING:
     needs: [cicd-test-container-setup]
     uses: ./.github/workflows/_test_template.yml
@@ -5068,6 +5097,7 @@ jobs:
       - L2_Megatron_GPT_Reranker
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
       - L2_NeMo_2_PTQ_Llama2_FP8
+      - L2_NeMo_2_Export_In_Framework
       - L2_NeMo_2_jit_callback
       - L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING
       - L2_HF_Transformer_SFT_FSDP2_2gpu

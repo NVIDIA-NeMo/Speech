@@ -40,12 +40,17 @@ except Exception as e:
 
 in_framework_supported = True
 try:
+    from megatron.core.inference.common_inference_params import CommonInferenceParams
     from nemo.deploy.nlp import NemoQueryLLMPyTorch
-    from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployable
+    from nemo.deploy.nlp.megatronllm_deployable import (
+        MegatronLLMDeploy,
+        MegatronLLMDeployable,
+        MegatronLLMDeployableNemo2,
+    )
 except Exception as e:
     LOGGER.warning(
-        "Cannot import MegatronLLMDeployable or NemoQueryLLMPyTorch,"
-        f" in-framework inference will not be available. {type(e).__name__}: {e}"
+        "Cannot import MegatronLLMDeploy* classes, or NemoQueryLLMPyTorch, or CommonInferenceParams, "
+        f"in-framework inference will not be available. Reason: {type(e).__name__}: {e}"
     )
     in_framework_supported = False
 
@@ -124,6 +129,18 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                     )
                     # MegatronLLMDeployable returns prompt + generated output, so need to slice off prompt
                     model_output = model_output["sentences"][0][len(prompt) :].strip().lower()
+                elif in_framework_supported and isinstance(model, MegatronLLMDeployableNemo2):
+                    model_output = model.generate(
+                        prompts=[prompt],
+                        inference_params=CommonInferenceParams(
+                            temperature=0.1,
+                            top_k=1,
+                            top_p=0,
+                            num_tokens_to_generate=1,
+                            return_log_probs=False,
+                        ),
+                    )
+                    model_output = model_output[0].generated_text  # Index [0] as a single prompt is used
                 else:
                     model_output = model.forward(
                         input_texts=[prompt],
@@ -158,8 +175,17 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         top_p=0,
                         temperature=0.1,
                     )
-                    # MegatronLLMDeployable returns prompt + generated output, so need to slice off prompt
-                    deployed_output = deployed_output["sentences"][0][0][len(prompt) :].decode().strip().lower()
+                    # MegatronLLMDeployable for NeMo 1.0 returns prompt + generated output, so need to slice off prompt.
+                    # On the other hand, MegatronLLMDeployableNeMo2 in the case of NeMo 2.0 returns only generated text.
+                    # TODO: Unify this somewhere else
+                    if isinstance(model, MegatronLLMDeployableNemo2):
+                        prefix_len = 0
+                    else:
+                        prefix_len = len(prompt)
+
+                    # Accessing [0][0] of "text" is to get a raw string entry from a NumPy array
+                    # for a single prompt (batch size = 1) and stripping prefix if needed:
+                    deployed_output = deployed_output["choices"][0]["text"][0][0][prefix_len:].strip().lower()
                 else:
                     deployed_output = nq.query_llm(
                         prompts=[prompt],
@@ -574,7 +600,7 @@ def run_in_framework_inference(
 
             print("Path: {0} and model: {1} will be tested".format(checkpoint_path, model_name))
 
-        deployed_model = MegatronLLMDeployable(checkpoint_path, num_gpus)
+        deployed_model = MegatronLLMDeploy.get_deployable(checkpoint_path, num_gpus)
 
         nm = DeployPyTriton(
             model=deployed_model,
@@ -588,10 +614,12 @@ def run_in_framework_inference(
         output_deployed = nq.query_llm(
             prompts=prompts, top_k=top_k, top_p=top_p, temperature=temperature, max_length=max_output_len
         )
-        output_deployed = output_deployed["sentences"]
-        # MegatronLLMDeployable will return the prompt + generated output, so cut off the prompt
-        for i, output in enumerate(output_deployed):
-            output_deployed[i, :] = output[0][len(prompts[i]) :]
+        output_deployed = output_deployed["choices"][0]["text"]
+        # MegatronLLMDeployable will return the prompt + generated output, so cut off the prompt.
+        # On the other hand, MegatronLLMDeployableNeMo2 returns only generated text.
+        if isinstance(deployed_model, MegatronLLMDeployable):
+            for i, output in enumerate(output_deployed):
+                output_deployed[i, :] = output[0][len(prompts[i]) :]
 
         # Unwrap the generator if needed
         output_deployed = list(output_deployed)
@@ -716,6 +744,11 @@ def get_args():
         "--run_accuracy",
         type=str,
         default="False",
+    )
+    parser.add_argument(
+        "--accuracy_threshold",
+        type=float,
+        default=0.5,
     )
     parser.add_argument("--streaming", default=False, action="store_true")
     parser.add_argument(
@@ -980,8 +1013,8 @@ def run_inference_tests(args):
             print(f"Deployed Model Accuracy:         {accuracy_result.deployed_accuracy:.4f}")
             print(f"Deployed Relaxed Model Accuracy: {accuracy_result.deployed_accuracy_relaxed:.4f}")
             print(f"Evaluation Time [s]:             {accuracy_result.evaluation_time:.2f}")
-            if (deployed_tests_only and accuracy_result.deployed_accuracy_relaxed < 0.5) or (
-                not deployed_tests_only and accuracy_result.accuracy_relaxed < 0.5
+            if (deployed_tests_only and accuracy_result.deployed_accuracy_relaxed < args.accuracy_threshold) or (
+                not deployed_tests_only and accuracy_result.accuracy_relaxed < args.accuracy_threshold
             ):
                 accuracy_test_result = "FAIL"
 
@@ -995,7 +1028,7 @@ def run_inference_tests(args):
         raise Exception("Functional test failed")
 
     if accuracy_test_result == "FAIL":
-        raise Exception("Model accuracy is below 0.5")
+        raise Exception(f"Model accuracy is below {args.accuracy_threshold}")
 
 
 if __name__ == '__main__':

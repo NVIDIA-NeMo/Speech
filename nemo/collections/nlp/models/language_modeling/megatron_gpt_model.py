@@ -1489,6 +1489,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                 and isinstance(model.module, MCoreGPTModel)
             ):
                 attention_mask = None
+
             output_tensor = model(tokens, position_ids, attention_mask, **extra_arg)
 
             # Advance inference sequence offset.

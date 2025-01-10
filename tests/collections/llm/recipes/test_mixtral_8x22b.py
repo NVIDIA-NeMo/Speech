@@ -73,7 +73,11 @@ class TestMixtral8x22B:
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == MockDataModule
-        assert recipe.data.seq_length == 4096
+        assert isinstance(recipe.model.config, run.Config)
+        if recipe.model.config.__fn_or_cls__ == MixtralConfig8x22B:
+            assert recipe.data.seq_length == 65536
+        else:
+            assert recipe.data.seq_length == 4096
         assert recipe.data.global_batch_size == 512
         assert recipe.data.micro_batch_size == 1
 
@@ -118,8 +122,12 @@ class TestMixtral8x22B:
     def test_model_config_parameters(self, recipe_module):
         model_config = recipe_module.model()
         mixtral_config = model_config.config
+        assert isinstance(mixtral_config, run.Config)
         assert mixtral_config.num_layers == 56
         assert mixtral_config.hidden_size == 6144
         assert mixtral_config.num_attention_heads == 48
-        assert mixtral_config.seq_length == 4096
+        if mixtral_config.__fn_or_cls__ == MixtralConfig8x22B:
+            assert mixtral_config.seq_length == 65536
+        else:
+            assert mixtral_config.seq_length == 4096
         assert mixtral_config.num_moe_experts == 8

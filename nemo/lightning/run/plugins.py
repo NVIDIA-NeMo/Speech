@@ -155,6 +155,7 @@ class NsysPlugin(run.Plugin):
     end_step: int
     ranks: Optional[list[int]] = None
     nsys_trace: Optional[list[str]] = None
+    gen_shape: bool = False
 
     def setup(self, task: run.Partial | run.Script, executor: run.Executor):
         if isinstance(task, run.Partial):
@@ -163,6 +164,7 @@ class NsysPlugin(run.Plugin):
                 start_step=self.start_step,
                 end_step=self.end_step,
                 ranks=self.ranks or [0],
+                gen_shape=self.gen_shape,
             )
             callbacks: list[run.Config[Callback]] = [nsys_callback]  # type: ignore
             _merge_callbacks(task, callbacks=callbacks)

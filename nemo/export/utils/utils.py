@@ -12,6 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.export.utils.utils import is_nemo2_checkpoint
+from pathlib import Path
 
-__all__ = ["is_nemo2_checkpoint"]
+
+def is_nemo2_checkpoint(checkpoint_path: str) -> bool:
+    """
+    Checks if the checkpoint is in NeMo 2.0 format.
+    Args:
+        checkpoint_path (str): Path to a checkpoint.
+    Returns:
+        bool: True if the path points to a NeMo 2.0 checkpoint; otherwise false.
+    """
+
+    ckpt_path = Path(checkpoint_path)
+    return (ckpt_path / 'context').is_dir()

@@ -4915,6 +4915,36 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /tmp/nemo2_llava_next_results
 
+  L2_NeMo_2_VLLM_EXPORT:
+    needs: [cicd-test-container-setup]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L2_NeMo_2_VLLM_EXPORT') || needs.cicd-test-container-setup.outputs.all == 'true'
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |
+        python tests/setup/models/create_hf_model.py \
+          --model_name_or_path /home/TestData/nlp/megatron_llama/llama-ci-hf \
+          --output_dir /tmp/llama_head64 \
+          --config_updates "{\"hidden_size\": 512, \"num_attention_heads\": 4, \"numx_hidden_layers\": 2, \"num_key_value_heads\": 4, \"intermediate_size\": 1024, \"head_dim\": 128, \"num_hidden_layers\": 2, \"torch_dtype\": \"float16\" }"
+
+        python tests/collections/llm/test_hf_import.py --hf_model /tmp/llama_head64 --output_path /tmp/nemo2_ckpt
+
+        /opt/venv/bin/python tests/export/nemo_export.py \
+          --min_tps 1 \
+          --max_tps 1 \
+          --use_vllm True \
+          --model_type llama \
+          --max_output_len 128 \
+          --test_deployment True \
+          --model_name nemo2_ckpt \
+          --model_dir /tmp/vllm_from_nemo2 \
+          --checkpoint_dir /tmp/nemo2_ckpt
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/llama_head64
+        rm -rf /tmp/nemo2_ckpt
+        rm -rf /tmp/vllm_from_nemo2
+
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -5102,6 +5132,7 @@ jobs:
       - L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING
       - L2_HF_Transformer_SFT_FSDP2_2gpu
       - L2_HF_Transformer_SFT_2gpu_nemorun_fsdp2
+      - L2_NeMo_2_VLLM_EXPORT
     if: always()
     runs-on: ubuntu-latest
     steps:

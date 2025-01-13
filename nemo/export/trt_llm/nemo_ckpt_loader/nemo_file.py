@@ -26,7 +26,6 @@ import tensorstore  # This is important even though not used. Otherwise zarr rai
 import torch
 import yaml
 import zarr
-from tensorrt_llm._utils import np_bfloat16, str_dtype_to_torch
 from torch.distributed.checkpoint import FileSystemReader
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, TensorStorageMetadata
 from torch.distributed.checkpoint.state_dict_loader import load_state_dict
@@ -186,6 +185,8 @@ def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch
     if not torch_tensor:
         for k, v in state_dict.items():
             if v.dtype == torch.bfloat16:
+                from tensorrt_llm._utils import np_bfloat16
+
                 state_dict[k] = v.view(torch.int16).numpy().view(np_bfloat16)
             else:
                 state_dict[k] = v.numpy()
@@ -225,6 +226,8 @@ def load_sharded_metadata_zarr(checkpoint_dir: Union[Path, TarPath], torch_tenso
                 if arr.dtype.name == "bfloat16":
                     sharded_state_dict[key] = torch.from_numpy(arr[:].view(np.int16)).view(torch.bfloat16)
                 else:
+                    from tensorrt_llm._utils import str_dtype_to_torch
+
                     sharded_state_dict[key] = torch.from_numpy(arr[:]).view(str_dtype_to_torch(arr.dtype.name))
             else:
                 sharded_state_dict[key] = arr[:]

@@ -126,15 +126,14 @@ class BaseMegatronBatchSampler:
             When `rampup_batch_size` is enabled, the return value can be not exactly precise.
 
         """
-        num_available_samples: int = self.total_samples - self.consumed_samples
+        num_available_samples: int = self.total_samples - self.consumed_samples % self.total_samples
         if self.drop_last:
             return num_available_samples // self.global_batch_size
         else:
             return (num_available_samples + self.global_batch_size - 1) // self.global_batch_size
 
     @abc.abstractmethod
-    def __iter__(self):
-        ...
+    def __iter__(self): ...
 
 
 class MegatronPretrainingBatchSampler(BaseMegatronBatchSampler):
@@ -151,7 +150,12 @@ class MegatronPretrainingBatchSampler(BaseMegatronBatchSampler):
             if len(batch) == self._global_batch_size:
                 # start_idx, end_idx = self.get_start_end_idx()
                 indices = [
-                    batch[i] for i in range(self.data_parallel_rank, self._global_batch_size, self.data_parallel_size,)
+                    batch[i]
+                    for i in range(
+                        self.data_parallel_rank,
+                        self._global_batch_size,
+                        self.data_parallel_size,
+                    )
                 ]
                 assert len(indices) == self._global_batch_size_on_this_data_parallel_rank
                 yield indices

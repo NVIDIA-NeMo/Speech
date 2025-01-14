@@ -110,7 +110,7 @@ def _mask_targets(
         header_len (int): the system prompt length
         s_ids (List[Tensor]): array of tokenized ids of each turns
         tokenizer (TokenizerSpec): tokenizer object
-        mask_role (str): the speaker id to be masked from loss computation
+        mask_role (str): the speaker id to be masked from loss computation. If there is more than 1 masked role, `mask_role` is a comma-separated string of the roles
         gtype (str): either 'TEXT_TO_VALUE' or 'VALUE_TO_TEXT'
         name_end_token_ids (int): end of name token ids
         special_tokens (dict): special tokens used for the chat prompt. It has the keys: system_turn_start, turn_start, label_start, end_of_turn
@@ -164,13 +164,13 @@ def _mask_targets(
         if i == 0 and (gtype == 'VALUE_TO_TEXT' or gtype is None):
             # mask the first turn completely to provide at least one turn as context for the rest
             target[cur_idx : cur_idx + tokenized_len] = IGNORE_INDEX
-        elif speaker == mask_role and i == 1 and gtype == 'TEXT_TO_VALUE':
+        elif speaker in mask_role and i == 1 and gtype == 'TEXT_TO_VALUE':
             # leave the first turn start tag unmasked, servers severs as the end of turn signal
             target[cur_idx + num_turn_start_tokens : cur_idx + tokenized_len] = IGNORE_INDEX
-        elif speaker == mask_role and (i > 1):
+        elif speaker in mask_role and (i > 1):
             # leave the first turn start tag unmasked, which severs as the end of turn signal
             target[cur_idx + num_turn_start_tokens : cur_idx + tokenized_len] = IGNORE_INDEX
-        elif speaker == mask_role and (i <= 1):
+        elif speaker in mask_role and (i <= 1):
             # mask out everything in the second turn
             target[cur_idx : cur_idx + tokenized_len] = IGNORE_INDEX
         else:
@@ -238,7 +238,7 @@ def _add_speaker_and_signal(header, source, mask_role, gtype, special_tokens):
             )
         conversation += sentence["value"]
         # if the last turn is not masked, add next token start token to the end, which will be included for loss calculation
-        if sentence_from != mask_role and i == len(source) - 1:
+        if sentence_from not in mask_role and i == len(source) - 1:
             conversation += TURN_TOKEN
     return conversation
 
@@ -276,7 +276,11 @@ def preprocess(
         ids.append(torch.tensor(tokenized_sentence))
         tokenized_lens.append(len(tokenized_sentence))
     speakers = [sentence["from"] for sentence in source['conversations']]
-    assert mask_role in speakers, "mask role not in the conversation"
+    # assert mask_role in speakers, "mask role not in the conversation"
+    split_mask = mask_role.split(',')
+    for s in split_mask:
+        assert s in speakers, "mask role not in the conversation"
+
     target = torch.LongTensor(target)
     # not going to train on the header
     target[:header_len] = IGNORE_INDEX

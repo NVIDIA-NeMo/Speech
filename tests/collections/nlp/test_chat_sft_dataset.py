@@ -76,6 +76,36 @@ def create_data_points(mask_user, turn_num, records, temp_file, t2v, label=True)
     return data_points
 
 
+def create_custom_data_points(mask_list, turn_num, records, temp_file):
+    data_points = []
+    with open(temp_file, 'w', encoding='utf-8') as f:
+        for r in range(records):
+            record = {}
+            record['system'] = 'a chat'
+            record['mask'] = ''
+            for i, s in enumerate(mask_list):
+                record['mask'] += s
+                if i != len(mask_list) - 1:
+                    record['mask'] += ','
+            turns = []
+            record['conversations'] = turns
+            for i in range(turn_num):
+                turn = {}
+                if i % 4 == 0:
+                    turn['from'] = 'User'
+                elif i % 4 == 1:
+                    turn['from'] = 'Assistant'
+                elif i % 4 == 2:
+                    turn['from'] = 'Function'
+                else:
+                    turn['from'] = 'Assistant'
+                turn['value'] = get_random_sentence()
+                turns.append(turn)
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            data_points.append(record)
+    return data_points
+
+
 @pytest.mark.skipif(not os.path.exists('/home/TestData'), reason='Not a Jenkins machine')
 class TestGPTSFTChatDataset:
     @classmethod
@@ -114,6 +144,41 @@ class TestGPTSFTChatDataset:
                 expected_text = ''
                 for j in range(1, turn_num, 2):
                     expected_text += data_points[i]['conversations'][j]['value'] + self.suffix
+                assert text == expected_text
+        finally:
+            os.remove(temp_file)
+
+    def _mask_user_func_test(self, tokenizer, ids_to_text):
+        random.seed(5)
+        temp_file = '/tmp/test_file.jsonl'
+        turn_num = 10
+        records = 2
+        mask_list = ["User", "Function"]
+        try:
+            # create custom data for Agent SFT case
+            data_points = create_custom_data_points(mask_list, turn_num, records, temp_file)
+            print(data_points)
+            d = GPTSFTChatDataset(
+                temp_file,
+                tokenizer,
+                4096,
+                1,
+                index_mapping_dir='/tmp/',
+                hf_dataset=True,
+                special_tokens=self.special_tokens,
+            )
+            for i in range(len(d)):
+                result = d[i]
+                input_ids = result['input_ids']
+                mask = result['mask']
+                text = ids_to_text(input_ids[mask].tolist())
+                print("【text】", i)
+                print(text)
+                expected_text = ''
+                for j in range(1, turn_num, 2):
+                    expected_text += data_points[i]['conversations'][j]['value'] + self.suffix
+                print("【expected text】", i)
+                print(expected_text)
                 assert text == expected_text
         finally:
             os.remove(temp_file)
@@ -320,6 +385,14 @@ class TestGPTSFTChatDataset:
     def test_43B_tokenizer_mask_assistant_nolabel(self):
         tokenizer = get_nmt_tokenizer(library='sentencepiece', tokenizer_model=TOKENIZER_FILE_43B)
         self._mask_assistant_nolabel_test(tokenizer, tokenizer.ids_to_text)
+
+    @pytest.mark.unit
+    def test_mpt_tokenizer_mask_user_func(self):
+        tokenizer = get_nmt_tokenizer(
+            library='huggingface', model_name='gpt2', merges_file=MERGE_FILE, vocab_file=VOCAB_FILE, use_fast=True
+        )
+        tokenizer.add_special_tokens({'additional_special_tokens': ['<extra_id_0>', '<extra_id_1>', '<extra_id_2>']})
+        self._mask_user_func_test(tokenizer, partial(ids_to_text, tokenizer))
 
     @pytest.mark.unit
     def test_mpt_tokenizer_mask_user(self):

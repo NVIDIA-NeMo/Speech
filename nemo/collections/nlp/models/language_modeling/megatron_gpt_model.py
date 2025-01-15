@@ -593,6 +593,7 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
             ddp_config = DistributedDataParallelConfig(
                 grad_reduce_in_fp32=(self.cfg.optim.get('grad_sync_dtype', 'fp32') == 'fp32'),
                 overlap_grad_reduce=self.cfg.optim.get('overlap_grad_sync', False),
+                num_distributed_optimizer_instances=self.cfg.optim.get('num_distributed_optimizer_instances', 1),
                 use_distributed_optimizer=True,
                 check_for_nan_in_grad=self.cfg.optim.get('check_for_nan_in_grad', False),
                 # mcore bucket_size is based on num of parameters, therefore not

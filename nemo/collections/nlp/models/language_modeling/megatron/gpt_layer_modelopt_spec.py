@@ -17,13 +17,11 @@ from typing import Optional
 try:
     from megatron.core.extensions.transformer_engine import TEDotProductAttention, TENorm
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
+    from megatron.core.models.gpt.gpt_layer_specs import _get_mlp_module_spec
     from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
     from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
     from megatron.core.transformer.enums import AttnMaskType
     from megatron.core.transformer.identity_op import IdentityOp
-    from megatron.core.transformer.mlp import MLP, MLPSubmodules
-    from megatron.core.transformer.moe.moe_layer import MoELayer, MoESubmodules
-    from megatron.core.transformer.moe.shared_experts import SharedExpertMLP
     from megatron.core.transformer.spec_utils import ModuleSpec
     from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 
@@ -57,7 +55,8 @@ def get_gpt_layer_modelopt_spec(num_experts: Optional[int] = None) -> ModuleSpec
     if not HAVE_MEGATRON_CORE:
         raise IMPORT_ERROR
 
-    mlp = _get_mlp_module_spec(num_experts=num_experts)
+    mlp = _get_mlp_module_spec(use_te=False, num_experts=num_experts, moe_grouped_gemm=False)
+
     return ModuleSpec(
         module=TransformerLayer,
         submodules=TransformerLayerSubmodules(
@@ -84,35 +83,3 @@ def get_gpt_layer_modelopt_spec(num_experts: Optional[int] = None) -> ModuleSpec
             },
         ),
     )
-
-
-# Helper function to get module spec for MLP/MoE
-def _get_mlp_module_spec(num_experts: Optional[int] = None) -> ModuleSpec:
-    if num_experts is None:
-        # Dense MLP w/ or w/o TE modules.
-        return ModuleSpec(
-            module=MLP,
-            submodules=MLPSubmodules(
-                linear_fc1=ColumnParallelLinear,
-                linear_fc2=RowParallelLinear,
-            ),
-        )
-    else:
-        # Mixture of experts with modules in megatron core.
-        return ModuleSpec(
-            module=MoELayer,
-            submodules=MoESubmodules(
-                experts=MLPSubmodules(
-                    linear_fc1=ColumnParallelLinear,
-                    linear_fc2=RowParallelLinear,
-                ),
-                shared_experts=ModuleSpec(
-                    module=SharedExpertMLP,
-                    params={"gate": False},
-                    submodules=MLPSubmodules(
-                        linear_fc1=ColumnParallelLinear,
-                        linear_fc2=RowParallelLinear,
-                    ),
-                ),
-            ),
-        )

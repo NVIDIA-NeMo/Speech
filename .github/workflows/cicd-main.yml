@@ -2938,7 +2938,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-2-h100
       SCRIPT: |
-        CUDA_DEVICE_MAX_CONNECTIONS=1 NVTE_FLASH_ATTN=0 NVTE_FUSED_ATTN=1 python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
+        CUDA_DEVICE_MAX_CONNECTIONS=1 python examples/nlp/language_modeling/tuning/megatron_gpt_finetuning.py \
         trainer.devices=2 \
         trainer.log_every_n_steps=1 \
         trainer.max_epochs=9999 \
@@ -2966,6 +2966,7 @@ jobs:
         +model.tp_comm_overlap_ag=False \
         +model.tp_comm_overlap_rs=False \
         +model.tp_comm_overlap_disable_qkv=True \
+        +model.attention_backend="unfused" \
         model.peft.peft_scheme="lora" \
         model.peft.lora_tuning.adapter_dim=16 \
         model.peft.lora_tuning.alpha=32 \
@@ -4368,7 +4369,7 @@ jobs:
       with:
         RUNNER: self-hosted-azure
         SCRIPT: |
-          NVTE_FUSED_ATTN=0 NVTE_FLASH_ATTN=0 python3 tests/collections/llm/megatron_mixtral_pretraining.py \
+          python3 tests/collections/llm/megatron_mixtral_pretraining.py \
           --experiment-dir=/tmp/mixtral_pretrain_results \
           --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document
 

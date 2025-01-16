@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import logging
+import os
 import os.path
 import shutil
 import tarfile
@@ -120,6 +121,19 @@ def cleanup_local_folder():
 @pytest.fixture(autouse=True)
 def reset_singletons():
     Singleton._Singleton__instances = {}
+
+
+@pytest.fixture(autouse=True)
+def reset_env_vars():
+    # Store the original environment variables before the test
+    original_env = dict(os.environ)
+
+    # Run the test
+    yield
+
+    # After the test, restore the original environment
+    os.environ.clear()
+    os.environ.update(original_env)
 
 
 @pytest.fixture(scope="session")

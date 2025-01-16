@@ -8,7 +8,6 @@ gdown
 h5py
 ijson
 jieba
-mamba-ssm==2.2.2; sys_platform == 'linux'
 markdown2
 matplotlib>=3.3.2
 #megatron_core>0.6.0 # add back once mcore on pypi is compatible again

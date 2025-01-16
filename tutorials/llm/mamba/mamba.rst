@@ -103,9 +103,6 @@ Run Fine-Tuning
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
 
-    export NVTE_FUSED_ATTN=1
-    export NVTE_FLASH_ATTN=0
-
     torchrun --nproc_per_node=${NUM_DEVICES} \
             /opt/NeMo/examples/nlp/language_modeling/tuning/megatron_mamba_finetuning.py \
             --config-path=${CONFIG_PATH} \
@@ -129,6 +126,7 @@ Run Fine-Tuning
             model.peft.peft_scheme='none' \
             model.megatron_amp_O2=True \
             model.encoder_seq_length=${SEQ_LEN} \
+            model.attention_backend='fused' \
             model.data.validation_ds.pad_to_max_length=True \
             model.data.train_ds.pad_to_max_length=True \
             model.optim.name="distributed_fused_adam" \
@@ -162,10 +160,6 @@ Evaluating the Fine-Tuned Model
     CONFIG_NAME="megatron_mamba_finetuning_config"
     SAVE_DIR=<path to the saving directory>
 
-    export NVTE_FUSED_ATTN=1
-    export NVTE_FLASH_ATTN=0
-
-
     CONFIG_PATH="/opt/NeMo/examples/nlp/language_modeling/tuning/conf/"
     CONFIG_NAME="megatron_mamba_generate_config"
 
@@ -185,6 +179,7 @@ Evaluating the Fine-Tuned Model
             exp_manager.exp_dir=${SAVE_DIR} \
             exp_manager.resume_if_exists=False \
             exp_manager.create_wandb_logger=False \
+            model.attention_backend='fused' \
             model.megatron_amp_O2=True \
             model.peft.restore_from_path=False \
             +model.peft.restore_from_ckpt.checkpoint_dir=False \

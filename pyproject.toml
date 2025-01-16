@@ -60,9 +60,6 @@ classifiers = [
     "Topic :: Utilities",
 ]
 
-[tool.setuptools.dynamic]
-dependencies = { file = ["requirements/requirements.txt"] }
-
 [tool.setuptools]
 py-modules = ["nemo"]
 

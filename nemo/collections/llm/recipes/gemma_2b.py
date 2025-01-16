@@ -51,8 +51,6 @@ def model() -> run.Config[pl.LightningModule]:
             >>> model_config = model()
             >>> print(model_config)
     """
-    # Disable cuDNN attention since TE 1.8 does not support head dim > 128
-    os.environ['NVTE_FUSED_ATTN'] = "0"
     return run.Config(GemmaModel, config=run.Config(GemmaConfig2B))
 
 

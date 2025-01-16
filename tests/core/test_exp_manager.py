@@ -280,7 +280,7 @@ class TestExpManager:
         assert Path(tmp_path).exists()
         assert Path(tmp_path / "test_no_name" / "default" / "957").exists()
 
-        monkeypatch.delenv(NEMO_ENV_VARNAME_VERSION)
+        monkeypatch.delenv(NEMO_ENV_VARNAME_VERSION, raising=False)
         # Checks that use_datetime_version False toggle works
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
         log_dir = exp_manager(test_trainer, {"exp_dir": str(tmp_path / "test_no_name"), "use_datetime_version": False})
@@ -288,7 +288,7 @@ class TestExpManager:
         assert Path(tmp_path).exists()
         assert Path(tmp_path / "test_no_name" / "default" / "version_0").exists()
 
-        monkeypatch.delenv(NEMO_ENV_VARNAME_VERSION)
+        monkeypatch.delenv(NEMO_ENV_VARNAME_VERSION, raising=False)
         # Checks that use_datetime_version False toggle works and version increments
         test_trainer = pl.Trainer(accelerator='cpu', enable_checkpointing=False, logger=False)
         log_dir = exp_manager(test_trainer, {"exp_dir": str(tmp_path / "test_no_name"), "use_datetime_version": False})

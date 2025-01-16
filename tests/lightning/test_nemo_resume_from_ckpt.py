@@ -12,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+from typing import List, Optional
 
 import pytest
 
 
 def set_env():
-    os.environ['NVTE_FLASH_ATTN'] = '0'
-    os.environ['NVTE_FUSED_ATTN'] = '0'
     os.environ['NVTE_APPLY_QK_LAYER_SCALING'] = '0'
 
 
@@ -28,6 +27,7 @@ from pathlib import Path
 import pytest
 import torch
 from megatron.core.optimizer import OptimizerConfig
+from megatron.core.transformer.enums import AttnBackend
 
 import nemo.lightning as nl
 from nemo.collections import llm
@@ -68,7 +68,8 @@ def load_dcp(ckpt_dir, torch_tensor=True):
     return state_dict
 
 
-def compare_ckpts(a, b, path=[]):
+def compare_ckpts(a, b, path: Optional[List[str]] = None):
+    path = path if path is not None else []
     if isinstance(a, dict):
         assert isinstance(b, dict)
         assert set(a.keys()) == set(b.keys())
@@ -125,6 +126,7 @@ def setup_model_optim(log_dir, n_steps, tokenizer, gbs=2, mbs=1):
         make_vocab_size_divisible_by=128,
         normalization='RMSNorm',
         masked_softmax_fusion=False,
+        attention_backend=AttnBackend.local,
     )
 
     model = llm.GPTModel(gpt_config, tokenizer=tokenizer)
@@ -269,8 +271,6 @@ class TestCkptStateRestoration:
                 trainer._teardown()
 
         set_env()
-        assert os.environ['NVTE_FLASH_ATTN'] == '0'
-        assert os.environ['NVTE_FUSED_ATTN'] == '0'
         assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '0'
 
         # Train for 40 steps

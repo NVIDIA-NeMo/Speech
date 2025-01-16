@@ -1,73 +1,52 @@
 name: CI-Import-Check
 
 on:
-  push:
   pull_request:
     paths:
       - "**"
 
 # Check https://hub.docker.com/r/pytorch/pytorch/tags for latest tags
 jobs:
-
-  test-asr-imports:
-    runs-on: ubuntu-latest
-    container:
-      image: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-runtime
+  test-imports:
+    name: test-${{ matrix.collection }}-import-${{ matrix.os }}-py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        collection: 
+          - asr
+          # - nlp # Currently broken
+          - tts
+        python: ['3.10', '3.11', '3.12']
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2
-    - name: Update base dependencies
-      run: |
-        apt-get update && apt-get install -y build-essential
-        apt-get install -y libsndfile1 make
-    - name: Install nemo dependencies
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '${{ matrix.python }}' 
+    - name: Build wheel
       id: nemo-wheel
       run:  |
-        pip install Cython
-        # install test requirements
-        pip install -r requirements/requirements_test.txt
         # Build nemo as a wheel
         pip install build
-        python -m build --no-isolation --wheel
+        python -m build --wheel
+        
         # Preserve wheel location
         DIST_FILE=$(find ./dist -name "*.whl" | head -n 1)
-        echo "::set-output name=DIST_FILE::${DIST_FILE}"
-    - name: Test ASR Domain Imports
+        echo "DIST_FILE=${DIST_FILE}" | tee -a "$GITHUB_OUTPUT"
+    
+    - name: Install NeMo + test dependencies
       run: |
-        # Install NeMo Domain
-        pip install "${{ steps.nemo-wheel.outputs.DIST_FILE }}[asr]"
-        # Run import checks
-        python tests/core_ptl/check_imports.py --domain "asr"
-        # Uninstall NeMo
-        pip uninstall -y nemo_toolkit
-  test-tts-imports:
-    runs-on: ubuntu-latest
-    container:
-      image: pytorch/pytorch:2.4.0-cuda11.8-cudnn9-runtime
-    steps:
-    - name: Checkout repo
-      uses: actions/checkout@v2
-    - name: Update base dependencies
-      run: |
-        apt-get update && apt-get install -y build-essential
-        apt-get install -y libsndfile1 make
-    - name: Install nemo dependencies
-      id: nemo-wheel
-      run:  |
-        pip install Cython
         # install test requirements
         pip install -r requirements/requirements_test.txt
-        # Build nemo as a wheel
-        pip install build
-        python -m build --no-isolation --wheel
-        # Preserve wheel location
-        DIST_FILE=$(find ./dist -name "*.whl" | head -n 1)
-        echo "::set-output name=DIST_FILE::${DIST_FILE}"
-    - name: Test TTS Domain Imports
-      run: |
+        
         # Install NeMo Domain
-        pip install "${{ steps.nemo-wheel.outputs.DIST_FILE }}[tts]"
+        pip install "${{ steps.nemo-wheel.outputs.DIST_FILE }}[test,${{ matrix.collection }}]"
+    
+    - name: Run ${{ matrix.collection }} checks
+      run: |
         # Run import checks
-        python tests/core_ptl/check_imports.py --domain "tts"
-        # Uninstall NeMo
-        pip uninstall -y nemo_toolkit
+        python tests/core_ptl/check_imports.py --domain "${{ matrix.collection }}"
+  
+  

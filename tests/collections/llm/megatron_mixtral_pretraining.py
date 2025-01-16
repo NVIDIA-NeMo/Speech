@@ -18,6 +18,7 @@ from pathlib import Path
 
 import torch
 from megatron.core.distributed import DistributedDataParallelConfig as McoreDDPConfig
+from megatron.core.transformer.enums import AttnBackend
 
 from nemo.collections.llm import MixtralConfig8x3B, MixtralModel, PreTrainingDataModule
 from nemo.collections.llm.api import train
@@ -117,6 +118,7 @@ def main(args):
         bf16=True,
         params_dtype=torch.bfloat16,
         pipeline_dtype=torch.bfloat16,
+        attention_backend=AttnBackend.unfused,
     )
     mixtral_config.overlap_param_gather_with_optimizer_step = True
 

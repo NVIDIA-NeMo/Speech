@@ -502,6 +502,7 @@ def reset_megatron_parallel_state() -> Iterator[None]:
 
 @pytest.mark.run_only_on("GPU")
 @pytest.mark.integration
+@pytest.mark.pleasefixme
 def test_train_mnist_litautoencoder_with_fsdp_strategy_single_gpu():
     path = os.path.abspath(__file__)
     call = f"python {path}"

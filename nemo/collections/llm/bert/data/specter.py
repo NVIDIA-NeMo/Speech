@@ -43,6 +43,7 @@ class SpecterDataModule(FineTuningDataModule, IOMixin):
 
     def __init__(
         self,
+        dataset_root: str = None,
         seq_length: int = 512,
         tokenizer: Optional["TokenizerSpec"] = None,
         micro_batch_size: int = 4,
@@ -61,7 +62,7 @@ class SpecterDataModule(FineTuningDataModule, IOMixin):
         self.delete_raw = delete_raw
 
         super().__init__(
-            dataset_root=get_dataset_root("specter"),
+            dataset_root=get_dataset_root("specter") if dataset_root is None else dataset_root,
             seq_length=seq_length,
             tokenizer=tokenizer,
             micro_batch_size=micro_batch_size,

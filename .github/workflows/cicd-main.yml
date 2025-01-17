@@ -128,15 +128,14 @@ jobs:
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/common -m "not pleasefixme" --with_downloads
 
-  OPTIONAL_L0_Unit_Tests_GPU_LLM:
+  L0_Unit_Tests_GPU_LLM:
      needs: [cicd-test-container-setup]
      uses: ./.github/workflows/_test_template.yml
-     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_LLM') || needs.cicd-test-container-setup.outputs.all == 'true'
+     if: contains(fromJSON(needs.cicd-test-container-setup.outputs.test_to_run), 'L0_Unit_Tests_GPU_LLM') || needs.cicd-test-container-setup.outputs.all == 'true'
      with:
        RUNNER: self-hosted-azure
        SCRIPT: |
          NEMO_NUMBA_MINVER=0.53 pytest tests/collections/llm -m "not pleasefixme" --with_downloads
-       IS_OPTIONAL: true
 
   L0_Unit_Tests_GPU_Multimodal:
      needs: [cicd-test-container-setup]
@@ -4968,7 +4967,7 @@ jobs:
       - L0_Unit_Tests_GPU_ASR
       - L0_Unit_Tests_GPU_Audio
       - L0_Unit_Tests_GPU_Common
-      #- OPTIONAL_L0_Unit_Tests_GPU_LLM
+      - L0_Unit_Tests_GPU_LLM
       - L0_Unit_Tests_GPU_Multimodal
       - L0_Unit_Tests_GPU_NLP
       - L0_Unit_Tests_GPU_TTS

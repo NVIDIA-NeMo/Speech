@@ -959,6 +959,7 @@ class TensorRTLLM(ITritonDeployable):
         prompt_embeddings_checkpoint_path: str = None,
         streaming: bool = False,
         output_log_probs: bool = False,
+        output_context_logits: bool = False,
         output_generation_logits: bool = False,
         **sampling_kwargs,
     ):
@@ -1049,6 +1050,7 @@ class TensorRTLLM(ITritonDeployable):
                     no_repeat_ngram_size=no_repeat_ngram_size,
                     output_log_probs=output_log_probs,
                     multiprocessed_env=multiprocessed_env,
+                    output_context_logits=output_context_logits,
                     output_generation_logits=output_generation_logits,
                     **sampling_kwargs,
                 )
@@ -1133,6 +1135,7 @@ class TensorRTLLM(ITritonDeployable):
             Tensor(name="no_repeat_ngram_size", shape=(-1,), dtype=np.single, optional=True),
             Tensor(name="task_id", shape=(-1,), dtype=bytes, optional=True),
             Tensor(name="lora_uids", shape=(-1,), dtype=bytes, optional=True),
+            Tensor(name="output_context_logits", shape=(-1,), dtype=np.bool_, optional=False),
             Tensor(name="output_generation_logits", shape=(-1,), dtype=np.bool_, optional=False),
         )
         return inputs
@@ -1142,6 +1145,7 @@ class TensorRTLLM(ITritonDeployable):
         outputs = (
             Tensor(name="outputs", shape=(-1,), dtype=bytes),
             Tensor(name="generation_logits", shape=(-1,), dtype=np.single),
+            Tensor(name="context_logits", shape=(-1,), dtype=np.single),
         )
         return outputs
 
@@ -1149,6 +1153,7 @@ class TensorRTLLM(ITritonDeployable):
     def triton_infer_fn(self, **inputs: np.ndarray):
         """Triton infer function for streaming"""
         output_dict = {}
+        context_logits_available = False
         generation_logits_available = False
         try:
             infer_input = {"input_texts": str_ndarray2list(inputs.pop("prompts"))}
@@ -1179,10 +1184,21 @@ class TensorRTLLM(ITritonDeployable):
             if "output_generation_logits" in inputs:
                 generation_logits_available = inputs["output_generation_logits"][0][0]
                 infer_input["output_generation_logits"] = inputs.pop("output_generation_logits")[0][0]
+            if "output_context_logits" in inputs:
+                context_logits_available = inputs["output_context_logits"][0][0]
+                infer_input["output_context_logits"] = inputs.pop("output_context_logits")[0][0]
 
             if generation_logits_available:
                 output_texts, generation_logits = self.forward(**infer_input)
-                output_dict["generation_logits"] = np.array(generation_logits.cpu().numpy())
+                # generation_logits is a 4d tensor of dim [1,1,#generated_tokens, vocab_size], return just the 3d tensor
+                # in output dict.
+                output_dict["generation_logits"] = np.array(generation_logits[0].cpu().numpy())
+            elif context_logits_available:
+                output_texts, context_logits = self.forward(**infer_input)
+                # convert context logits to 3d tensor from list since its avaiable as a list of tensor shaped
+                # [#tokens, vocab_size]
+                context_logits = context_logits[0].unsqueeze(0)
+                output_dict["context_logits"] = np.array(context_logits.cpu().numpy())
             else:
                 output_texts = self.forward(**infer_input)
             output_dict["outputs"] = cast_output(output_texts, np.bytes_)

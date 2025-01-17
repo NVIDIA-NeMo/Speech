@@ -63,6 +63,7 @@ def get_trtllm_deployable(
     max_output_len,
     max_batch_size,
     dtype,
+    output_context_logits,
     output_generation_logits,
 ):
     """
@@ -109,6 +110,7 @@ def get_trtllm_deployable(
                 max_output_len=max_output_len,
                 max_batch_size=max_batch_size,
                 dtype=dtype,
+                gather_context_logits=output_context_logits,
                 gather_generation_logits=output_generation_logits,
             )
         except Exception as error:

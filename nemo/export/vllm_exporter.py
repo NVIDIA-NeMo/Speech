@@ -403,6 +403,7 @@ class vLLMExporter(ITritonDeployable):
             Tensor(name="temperature", shape=(-1,), dtype=numpy.single, optional=True),
             Tensor(name="lora_uids", shape=(-1,), dtype=bytes, optional=True),
             Tensor(name="output_generation_logits", shape=(-1,), dtype=numpy.bool_, optional=True),
+            Tensor(name="output_context_logits", shape=(-1,), dtype=numpy.bool_, optional=True),
         )
         return inputs
 
@@ -456,6 +457,7 @@ class vLLMExporter(ITritonDeployable):
         streaming: bool = False,
         output_log_probs: bool = False,
         output_generation_logits: bool = False,
+        output_context_logits: bool = False,
     ) -> Union[List[List[str]], Iterable[List[List[str]]]]:
         """
         The forward function performs LLM evaluation on the provided array of prompts with other parameters shared,
@@ -487,6 +489,9 @@ class vLLMExporter(ITritonDeployable):
 
         if output_generation_logits:
             raise NotImplementedError("output_generation_logits is not supported")
+
+        if output_context_logits:
+            raise NotImplementedError("output_context_logits is not supported")
 
         request_ids = []
         for index in range(len(input_texts)):

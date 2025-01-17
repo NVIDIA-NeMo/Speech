@@ -647,6 +647,7 @@ def generate(
     streaming: bool = False,
     output_log_probs=False,
     multiprocessed_env=False,
+    output_context_logits=False,
     output_generation_logits=False,
     **sampling_kwargs,
 ) -> Optional[List[List[str]]]:
@@ -709,6 +710,8 @@ def generate(
 
     if output_generation_logits:
         return output_lines_list, outputs['generation_logits']
+    elif output_context_logits:
+        return output_lines_list, outputs['context_logits']
     return output_lines_list
 
 

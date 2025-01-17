@@ -337,6 +337,7 @@ def deploy(
     max_input_len: int = 256,
     max_output_len: int = 256,
     max_batch_size: int = 8,
+    output_context_logits: bool = True,
     output_generation_logits: bool = True,
 ):
     """
@@ -364,8 +365,11 @@ def deploy(
         Needs to be True to be able to run evaluation. Default: True.
         openai_format_response (bool): Return the response from PyTriton server in OpenAI compatible format. Needs to
         be True while running evaluation. Default: True.
+        output_context_logits (bool): If True builds trtllm engine with gather_context_logits set to True. Default: True.
+        context_logits are used to compute the logProb of the output token in case of multi token prediction benchmarks.
         output_generation_logits (bool): If True builds trtllm engine with gather_generation_logits set to True.
-        generation_logits are used to compute the logProb of the output token. Default: True.
+        generation_logits are used to compute the logProb of the output token in case of single token prediction
+        benchmarks (like MMLU, lambada). Default: True.
     """
     from nemo.collections.llm.deploy.base import get_trtllm_deployable, unset_environment_variables
     from nemo.deploy import DeployPyTriton
@@ -383,6 +387,7 @@ def deploy(
         max_output_len,
         max_batch_size,
         dtype,
+        output_context_logits,
         output_generation_logits,
     )
 
@@ -425,7 +430,6 @@ def evaluate(
     limit: Optional[Union[int, float]] = None,
     bootstrap_iters: int = 100000,
     # inference params
-    max_tokens_to_generate: Optional[int] = 256,
     temperature: Optional[float] = 0.000000001,
     top_p: Optional[float] = 0.0,
     top_k: Optional[int] = 1,
@@ -454,7 +458,6 @@ def evaluate(
         bootstrap_iters (int): Number of iterations for bootstrap statistics, used when calculating stderrs. Set to 0
         for no stderr calculations to be performed. Default: 100000.
         # inference params
-        max_tokens_to_generate (int): max tokens to generate. Default: 256.
         temperature: Optional[float]: float value between 0 and 1. temp of 0 indicates greedy decoding, where the token
         with highest prob is chosen. Temperature can't be set to 0.0 currently, due to a bug with TRTLLM
         (# TODO to be investigated). Hence using a very samll value as the default. Default: 0.000000001.
@@ -480,9 +483,7 @@ def evaluate(
     # Wait for server to be ready before starting evaluation
     evaluation.wait_for_server_ready(url=url, triton_http_port=triton_http_port, model_name=model_name)
     # Create an object of the NeMoFWLM which is passed as a model to evaluator.simple_evaluate
-    model = evaluation.NeMoFWLMEval(
-        model_name, url, tokenizer, max_tokens_to_generate, temperature, top_p, top_k, add_bos
-    )
+    model = evaluation.NeMoFWLMEval(model_name, url, tokenizer, temperature, top_p, top_k, add_bos)
     results = evaluator.simple_evaluate(
         model=model,
         tasks=eval_task,

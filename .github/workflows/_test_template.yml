@@ -47,7 +47,7 @@ jobs:
     steps:
         - name: Docker system cleanup
           run: |
-            docker system prune -a --filter "until=24h" --force || true
+            docker system prune -af --filter "until=24h" --force || true
 
         - name: Docker pull image
           run: |

@@ -10,10 +10,10 @@ jobs:
     uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_bump_dockerfile.yml@v0.11.0
     with:
       source-repository: NVIDIA/Megatron-LM
-      source-ref: main
+      source-ref: weekly-bump-2025-03
       build-arg: MCORE_TAG
       dockerfile: Dockerfile.ci
-      base-branch: main
+      base-branch: weekly-bump-2025-03
       cicd-label: Run CICD
       pr-reviewers: 'pablo-garay'
     secrets:

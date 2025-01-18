@@ -111,6 +111,8 @@ class TestNsysCallback:
         callback = NsysCallback(start_step=10, end_step=20, ranks=[0])
 
         mock_trainer.strategy.current_epoch_step = 20
+        assert callback._has_nsys_enabled == False
+        callback._has_nsys_enabled = True
         callback.on_train_batch_end(mock_trainer, mock_pl_module, None, None, 20)
 
         mock_cudart().cudaProfilerStop.assert_called_once()

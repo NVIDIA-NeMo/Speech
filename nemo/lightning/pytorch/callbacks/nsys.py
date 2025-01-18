@@ -78,6 +78,7 @@ class NsysCallback(Callback):
             f'Nsys profiling setup with start_step: {self._nsys_profile_start_step},'
             f'and end_step: {self._nsys_profile_end_step}'
         )
+        self._has_nsys_enabled = False
 
     def _rank_is_active(self, trainer):
         # TODO(@akoumparouli): is this function cache-able?
@@ -98,7 +99,8 @@ class NsysCallback(Callback):
             return
 
         current_step = get_current_epoch_step(trainer)
-        if current_step == self._nsys_profile_start_step:
+        if current_step == self._nsys_profile_start_step and not self._has_nsys_enabled:
+            self._has_nsys_enabled = True
             torch.cuda.cudart().cudaProfilerStart()
             if self._nsys_profile_gen_shape:
                 torch.autograd.profiler.emit_nvtx(record_shapes=True).__enter__()
@@ -114,6 +116,7 @@ class NsysCallback(Callback):
             return
 
         current_step = get_current_epoch_step(trainer)
-        if current_step == self._nsys_profile_end_step:
+        if current_step == self._nsys_profile_end_step and self._has_nsys_enabled:
             torch.cuda.cudart().cudaProfilerStop()
             torch.autograd.profiler.emit_nvtx().__exit__(None, None, None)
+            self._has_nsys_enabled = False

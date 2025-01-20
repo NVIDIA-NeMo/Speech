@@ -52,7 +52,7 @@ class LinearAdapter(nn.Linear):
         orig_linear (nn.Module): the linear module to augment.
         dim (int): lora's dim in_features -> dim -> out_features.
         alpha (int): lora's scaling alpha.
-        dropout (float): dropout prob (default: 0.1).
+        dropout (float): dropout prob (default: 0.0).
         dropout_position (str): where to apply dropout rel. to lora (choices= ['pre', 'post'], default=post)
         lora_A_init_method (str): init method for lora_A (choices= ['xavier', 'uniform'])
         lora_dtype (torch.dtype): weight's dtype, by default will use orig_linear's but if they
@@ -64,7 +64,7 @@ class LinearAdapter(nn.Linear):
         orig_linear,
         dim=8,
         alpha=32,
-        dropout=0.1,
+        dropout=0.0,
         dropout_position='post',
         lora_A_init_method='xavier',
         lora_dtype=None,
@@ -82,14 +82,22 @@ class LinearAdapter(nn.Linear):
         if orig_linear.bias is not None:
             self.bias.data.copy_(orig_linear.bias.data)
         # initialize the adapte
-        LinearAdapter._init_adapter(self)
+        LinearAdapter._init_adapter(
+            self,
+            dim=dim,
+            alpha=alpha,
+            dropout=dropout,
+            dropout_position=dropout_position,
+            lora_A_init_method=lora_A_init_method,
+            lora_dtype=lora_dtype,
+        )
 
     @staticmethod
     def _init_adapter(
         obj,
         dim=8,
         alpha=32,
-        dropout=0.1,
+        dropout=0.0,
         dropout_position='post',
         lora_A_init_method='xavier',
         lora_dtype=None,
@@ -101,7 +109,7 @@ class LinearAdapter(nn.Linear):
             obj (LinearAdapter | nn.Module): input module to adapt.
             dim (int): lora's dim in_features -> dim -> out_features.
             alpha (int): lora's scaling alpha.
-            dropout (float): dropout prob (default: 0.1).
+            dropout (float): dropout prob (default: 0.0).
             dropout_position (str): where to apply dropout rel. to lora (choices= ['pre', 'post'], default=post)
             lora_A_init_method (str): init method for lora_A (choices= ['xavier', 'uniform'])
             lora_dtype (torch.dtype): weight's dtype, by default will use orig_linear's but if they
@@ -155,7 +163,7 @@ def patch_linear_module(
     orig_linear,
     dim=8,
     alpha=32,
-    dropout=0.1,
+    dropout=0.0,
     dropout_position='post',
     lora_A_init_method='xavier',
     lora_dtype=None,
@@ -175,7 +183,7 @@ def patch_linear_module(
         orig_linear (nn.Linear): the module we add adapter to.
         dim (int, optional): Lora dim. Defaults to 8.
         alpha (int, optional): Lora alpha scale. Defaults to 32.
-        dropout (float, optional): dropout prob. Defaults to 0.1.
+        dropout (float, optional): dropout prob. Defaults to 0.0.
         dropout_position (str, optional): location to apply dropout wrt lora.
             Defaults to 'post' (choices: 'pre', 'post').
         lora_A_init_method (str, optional): lora_a init method. Defaults to 'xavier'.

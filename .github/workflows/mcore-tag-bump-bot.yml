@@ -13,7 +13,7 @@ jobs:
       source-ref: main
       build-arg: MCORE_TAG
       dockerfile: Dockerfile.ci
-      base-branch: weekly-bump-2025-03
+      base-branch: weekly-bump
       cicd-label: Run CICD
       pr-reviewers: 'pablo-garay'
     secrets:

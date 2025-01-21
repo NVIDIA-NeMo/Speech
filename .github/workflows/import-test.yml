@@ -5,6 +5,10 @@ on:
     paths:
       - "**"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+  
 # Check https://hub.docker.com/r/pytorch/pytorch/tags for latest tags
 jobs:
   test-imports:
@@ -42,7 +46,7 @@ jobs:
         pip install -r requirements/requirements_test.txt
         
         # Install NeMo Domain
-        pip install "${{ steps.nemo-wheel.outputs.DIST_FILE }}[test,${{ matrix.collection }}]"
+        pip install --no-cache-dir "${{ steps.nemo-wheel.outputs.DIST_FILE }}[test,${{ matrix.collection }}]"
     
     - name: Run ${{ matrix.collection }} checks
       run: |

@@ -1,4 +1,4 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ except Exception:
     OPT_GROUP_NORM = False
 
 
+# pylint: disable=C0116
 def Normalize(in_channels, num_groups=32, act=""):
     """Creates a group normalization layer with specified activation.
 
@@ -315,3 +316,6 @@ def make_attn(in_channels, attn_type="vanilla"):
         return nn.Identity(in_channels)
     else:
         return LinAttnBlock(in_channels)
+
+
+# pylint: disable=C0116

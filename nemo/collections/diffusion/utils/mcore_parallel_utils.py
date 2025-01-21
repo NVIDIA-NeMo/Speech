@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import megatron.core.parallel_state as ps
 import torch
 
 
+# pylint: disable=C0116
 class Utils:
     world_size = torch.cuda.device_count()
     # rank = int(os.environ["LOCAL_RANK"])
@@ -78,3 +79,6 @@ class Utils:
             pipeline_model_parallel_split_rank,
             **kwargs,
         )
+
+
+# pylint: disable=C0116

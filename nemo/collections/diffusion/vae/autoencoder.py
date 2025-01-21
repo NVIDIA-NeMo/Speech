@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,42 +21,9 @@ from torch import Tensor, nn
 from nemo.collections.diffusion.vae.blocks import Downsample, Normalize, ResnetBlock, Upsample, make_attn
 
 
+# pylint: disable=C0116
 @dataclass
-class AutoEncoderParams:
-    """Dataclass for storing autoencoder hyperparameters.
-
-    Attributes
-    ----------
-    ch_mult : list[int]
-        Channel multipliers at each resolution level.
-    attn_resolutions : list[int]
-        List of resolutions at which attention layers are applied.
-    resolution : int, optional
-        Input image resolution. Default is 256.
-    in_channels : int, optional
-        Number of input channels. Default is 3.
-    ch : int, optional
-        Base channel dimension. Default is 128.
-    out_ch : int, optional
-        Number of output channels. Default is 3.
-    num_res_blocks : int, optional
-        Number of residual blocks at each resolution. Default is 2.
-    z_channels : int, optional
-        Number of latent channels in the compressed representation. Default is 16.
-    scale_factor : float, optional
-        Scaling factor for latent representations. Default is 0.3611.
-    shift_factor : float, optional
-        Shift factor for latent representations. Default is 0.1159.
-    attn_type : str, optional
-        Type of attention to use ('vanilla', 'linear'). Default is 'vanilla'.
-    double_z : bool, optional
-        If True, produce both mean and log-variance for latent space. Default is True.
-    dropout : float, optional
-        Dropout rate. Default is 0.0.
-    ckpt : str or None, optional
-        Path to checkpoint file for loading pretrained weights. Default is None.
-    """
-
+class AutoEncoderConfig:
     ch_mult: list[int]
     attn_resolutions: list[int]
     resolution: int = 256
@@ -73,55 +40,12 @@ class AutoEncoderParams:
     ckpt: str = None
 
 
-def nonlinearity(x: Tensor) -> Tensor:
-    """Applies the SiLU (Swish) nonlinearity.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor.
-
-    Returns
-    -------
-    torch.Tensor
-        Transformed tensor after applying SiLU activation.
-    """
+def nonlinearity(x):
+    # swish
     return torch.nn.functional.silu(x)
 
 
 class Encoder(nn.Module):
-    """Encoder module that downsamples and encodes input images into a latent representation.
-
-    Parameters
-    ----------
-    ch : int
-        Base channel dimension.
-    out_ch : int
-        Number of output channels.
-    ch_mult : list[int]
-        Channel multipliers at each resolution level.
-    num_res_blocks : int
-        Number of residual blocks at each resolution level.
-    attn_resolutions : list[int]
-        List of resolutions at which attention layers are applied.
-    in_channels : int
-        Number of input image channels.
-    resolution : int
-        Input image resolution.
-    z_channels : int
-        Number of latent channels.
-    dropout : float, optional
-        Dropout rate. Default is 0.0.
-    resamp_with_conv : bool, optional
-        Whether to use convolutional resampling. Default is True.
-    double_z : bool, optional
-        If True, produce mean and log-variance channels for latent space. Default is True.
-    use_linear_attn : bool, optional
-        If True, use linear attention. Default is False.
-    attn_type : str, optional
-        Type of attention to use ('vanilla', 'linear'). Default is 'vanilla'.
-    """
-
     def __init__(
         self,
         *,
@@ -194,19 +118,7 @@ class Encoder(nn.Module):
             block_in, 2 * z_channels if double_z else z_channels, kernel_size=3, stride=1, padding=1
         )
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Forward pass of the Encoder.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input image tensor of shape (B, C, H, W).
-
-        Returns
-        -------
-        torch.Tensor
-            Latent representation before sampling, with shape (B, 2*z_channels, H', W') if double_z=True.
-        """
+    def forward(self, x):
         # timestep embedding
         temb = None
 
@@ -235,40 +147,6 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """Decoder module that upscales and decodes latent representations back into images.
-
-    Parameters
-    ----------
-    ch : int
-        Base channel dimension.
-    out_ch : int
-        Number of output channels (e.g. 3 for RGB).
-    ch_mult : list[int]
-        Channel multipliers at each resolution level.
-    num_res_blocks : int
-        Number of residual blocks at each resolution level.
-    attn_resolutions : list[int]
-        List of resolutions at which attention layers are applied.
-    in_channels : int
-        Number of input image channels.
-    resolution : int
-        Input image resolution.
-    z_channels : int
-        Number of latent channels.
-    dropout : float, optional
-        Dropout rate. Default is 0.0.
-    resamp_with_conv : bool, optional
-        Whether to use convolutional resampling. Default is True.
-    give_pre_end : bool, optional
-        If True, returns the tensor before the final normalization and convolution. Default is False.
-    tanh_out : bool, optional
-        If True, applies a tanh activation to the output. Default is False.
-    use_linear_attn : bool, optional
-        If True, use linear attention. Default is False.
-    attn_type : str, optional
-        Type of attention to use ('vanilla', 'linear'). Default is 'vanilla'.
-    """
-
     def __init__(
         self,
         *,
@@ -347,19 +225,8 @@ class Decoder(nn.Module):
         self.norm_out = Normalize(block_in)
         self.conv_out = torch.nn.Conv2d(block_in, out_ch, kernel_size=3, stride=1, padding=1)
 
-    def forward(self, z: Tensor) -> Tensor:
-        """Forward pass of the Decoder.
-
-        Parameters
-        ----------
-        z : torch.Tensor
-            Latent representation of shape (B, z_channels, H', W').
-
-        Returns
-        -------
-        torch.Tensor
-            Decoded image of shape (B, out_ch, H, W).
-        """
+    def forward(self, z):
+        # assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape
 
         # timestep embedding
@@ -395,35 +262,12 @@ class Decoder(nn.Module):
 
 
 class DiagonalGaussian(nn.Module):
-    """Module that splits an input tensor into mean and log-variance and optionally samples from the Gaussian.
-
-    Parameters
-    ----------
-    sample : bool, optional
-        If True, return a sample from the Gaussian. Otherwise, return the mean. Default is True.
-    chunk_dim : int, optional
-        Dimension along which to chunk the tensor into mean and log-variance. Default is 1.
-    """
-
     def __init__(self, sample: bool = True, chunk_dim: int = 1):
         super().__init__()
         self.sample = sample
         self.chunk_dim = chunk_dim
 
     def forward(self, z: Tensor) -> Tensor:
-        """Forward pass of the DiagonalGaussian module.
-
-        Parameters
-        ----------
-        z : torch.Tensor
-            Input tensor of shape (..., 2*z_channels, ...).
-
-        Returns
-        -------
-        torch.Tensor
-            If sample=True, returns a sampled tensor from N(mean, var).
-            If sample=False, returns the mean.
-        """
         mean, logvar = torch.chunk(z, 2, dim=self.chunk_dim)
         if self.sample:
             std = torch.exp(0.5 * logvar)
@@ -433,15 +277,7 @@ class DiagonalGaussian(nn.Module):
 
 
 class AutoEncoder(nn.Module):
-    """Full AutoEncoder model combining an Encoder, Decoder, and latent Gaussian sampling.
-
-    Parameters
-    ----------
-    params : AutoEncoderParams
-        Configuration parameters for the AutoEncoder model.
-    """
-
-    def __init__(self, params: AutoEncoderParams):
+    def __init__(self, params: AutoEncoderConfig):
         super().__init__()
         self.encoder = Encoder(
             resolution=params.resolution,
@@ -479,65 +315,24 @@ class AutoEncoder(nn.Module):
             self.load_from_checkpoint(params.ckpt)
 
     def encode(self, x: Tensor) -> Tensor:
-        """Encode an input image to its latent representation.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input image of shape (B, C, H, W).
-
-        Returns
-        -------
-        torch.Tensor
-            Latent representation of the input image.
-        """
         z = self.reg(self.encoder(x))
         z = self.scale_factor * (z - self.shift_factor)
         return z
 
     def decode(self, z: Tensor) -> Tensor:
-        """Decode a latent representation back into an image.
-
-        Parameters
-        ----------
-        z : torch.Tensor
-            Latent representation of shape (B, z_channels, H', W').
-
-        Returns
-        -------
-        torch.Tensor
-            Reconstructed image of shape (B, out_ch, H, W).
-        """
         z = z / self.scale_factor + self.shift_factor
         return self.decoder(z)
 
     def forward(self, x: Tensor) -> Tensor:
-        """Forward pass that encodes and decodes the input image.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input image tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Reconstructed image.
-        """
         return self.decode(self.encode(x))
 
-    def load_from_checkpoint(self, ckpt_path: str):
-        """Load the autoencoder weights from a checkpoint file.
-
-        Parameters
-        ----------
-        ckpt_path : str
-            Path to the checkpoint file.
-        """
+    def load_from_checkpoint(self, ckpt_path):
         from safetensors.torch import load_file as load_sft
 
         state_dict = load_sft(ckpt_path)
         missing, unexpected = self.load_state_dict(state_dict)
         if len(missing) > 0:
-            # If logger is not defined, you may replace this with print or similar.
-            print(f"Warning: Following keys are missing from checkpoint loaded: {missing}")
+            logger.warning(f"Following keys are missing from checkpoint loaded: {missing}")
+
+
+# pylint: disable=C0116

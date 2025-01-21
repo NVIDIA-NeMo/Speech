@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import os
 
 import torch
@@ -79,7 +78,7 @@ def _import_qkv(transformer_config, q, k, v):
     return qkv_weights
 
 
-key_mapping = {
+flux_key_mapping = {
     'double_blocks': {
         'norm1.linear.weight': 'adaln.adaLN_modulation.1.weight',
         'norm1.linear.bias': 'adaln.adaLN_modulation.1.bias',
@@ -105,10 +104,10 @@ key_mapping = {
     'single_blocks': {
         'norm.linear.weight': 'adaln.adaLN_modulation.1.weight',
         'norm.linear.bias': 'adaln.adaLN_modulation.1.bias',
-        'proj_mlp.weight': 'proj_in.weight',
-        'proj_mlp.bias': 'proj_in.bias',
-        'proj_out.weight': 'proj_out.weight',
-        'proj_out.bias': 'proj_out.bias',
+        'proj_mlp.weight': 'mlp.linear_fc1.weight',
+        'proj_mlp.bias': 'mlp.linear_fc1.bias',
+        # 'proj_out.weight': 'proj_out.weight',
+        # 'proj_out.bias': 'proj_out.bias',
         'attn.norm_q.weight': 'self_attention.q_layernorm.weight',
         'attn.norm_k.weight': 'self_attention.k_layernorm.weight',
     },
@@ -132,10 +131,13 @@ key_mapping = {
     'time_text_embed.text_embedder.linear_1.weight': 'vector_embedding.in_layer.weight',
     'time_text_embed.text_embedder.linear_2.bias': 'vector_embedding.out_layer.bias',
     'time_text_embed.text_embedder.linear_2.weight': 'vector_embedding.out_layer.weight',
+    'controlnet_x_embedder.weight': 'controlnet_x_embedder.weight',
+    'controlnet_x_embedder.bias': 'controlnet_x_embedder.bias',
 }
 
 
 def flux_transformer_converter(ckpt_path=None, transformer_config=None):
+    # pylint: disable=C0116
     diffuser_state_dict = {}
     if os.path.isdir(ckpt_path):
         files = os.listdir(ckpt_path)
@@ -148,8 +150,8 @@ def flux_transformer_converter(ckpt_path=None, transformer_config=None):
     else:
         raise FileNotFoundError("Please provide a valid ckpt path.")
     new_state_dict = {}
-    num_single_blocks = 0
-    num_double_blocks = 0
+    num_single_blocks = -1
+    num_double_blocks = -1
     for key, value in diffuser_state_dict.items():
         if 'attn.to_q' in key or 'attn.to_k' in key or 'attn.to_v' in key:
             continue
@@ -159,16 +161,19 @@ def flux_transformer_converter(ckpt_path=None, transformer_config=None):
             temp = key.split('.')
             idx, k = temp[1], '.'.join(temp[2:])
             num_double_blocks = max(int(idx), num_double_blocks)
-            new_key = '.'.join(['double_blocks', idx, key_mapping['double_blocks'][k]])
+            new_key = '.'.join(['double_blocks', idx, flux_key_mapping['double_blocks'][k]])
         elif key.startswith('single_transformer_blocks'):
+            if 'proj_out' in key:
+                continue
             temp = key.split('.')
             idx, k = temp[1], '.'.join(temp[2:])
             num_single_blocks = max(int(idx), num_single_blocks)
-            new_key = '.'.join(['single_blocks', idx, key_mapping['single_blocks'][k]])
+            new_key = '.'.join(['single_blocks', idx, flux_key_mapping['single_blocks'][k]])
+        elif key.startswith('controlnet_blocks'):
+            new_key = 'controlnet_double_blocks.' + '.'.join(key.split('.')[1:])
         else:
-            new_key = key_mapping[key]
+            new_key = flux_key_mapping[key]
         new_state_dict[new_key] = value
-
     for i in range(num_double_blocks + 1):
         new_key = f'double_blocks.{str(i)}.self_attention.linear_qkv.weight'
         qk, kk, vk = [f'transformer_blocks.{str(i)}.attn.to_{n}.weight' for n in ('q', 'k', 'v')]
@@ -201,6 +206,21 @@ def flux_transformer_converter(ckpt_path=None, transformer_config=None):
         qk, kk, vk = [f'single_transformer_blocks.{str(i)}.attn.to_{n}.bias' for n in ('q', 'k', 'v')]
         new_state_dict[new_key] = _import_qkv_bias(
             transformer_config, diffuser_state_dict[qk], diffuser_state_dict[kk], diffuser_state_dict[vk]
+        )
+
+        (
+            new_state_dict[f'single_blocks.{str(i)}.mlp.linear_fc2.weight'],
+            new_state_dict[f'single_blocks.{str(i)}.self_attention.linear_proj.weight'],
+        ) = (
+            diffuser_state_dict[f'single_transformer_blocks.{str(i)}.proj_out.weight'].detach()[:, 3072:].clone(),
+            diffuser_state_dict[f'single_transformer_blocks.{str(i)}.proj_out.weight'].detach()[:, :3072].clone(),
+        )
+
+        new_state_dict[f'single_blocks.{str(i)}.mlp.linear_fc2.bias'] = (
+            diffuser_state_dict[f'single_transformer_blocks.{str(i)}.proj_out.bias'].detach().clone()
+        )
+        new_state_dict[f'single_blocks.{str(i)}.self_attention.linear_proj.bias'] = (
+            diffuser_state_dict[f'single_transformer_blocks.{str(i)}.proj_out.bias'].detach().clone()
         )
 
     return new_state_dict

@@ -1,4 +1,4 @@
-# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,38 +17,28 @@ from dataclasses import dataclass
 import torch
 from megatron.core.transformer.utils import openai_gelu
 
-from nemo.collections.diffusion.models.flux.model import FluxParams
-from nemo.collections.diffusion.vae.autoencoder import AutoEncoderParams
-
-
-@dataclass
-class FluxModelParams:
-    flux_params: FluxParams
-    vae_params: AutoEncoderParams
-    clip_params: dict | None
-    t5_params: dict | None
-    scheduler_params: dict | None
-    device: str | torch.device
-
+from nemo.collections.diffusion.models.flux.model import ClipConfig, FluxConfig, FluxModelParams, T5Config
+from nemo.collections.diffusion.vae.autoencoder import AutoEncoderConfig
 
 configs = {
     "dev": FluxModelParams(
-        flux_params=FluxParams(
+        flux_config=FluxConfig(
             num_joint_layers=19,
             num_single_layers=38,
             hidden_size=3072,
             num_attention_heads=24,
             activation_func=openai_gelu,
             add_qkv_bias=True,
-            ffn_hidden_size=16384,
             in_channels=64,
             context_dim=4096,
             model_channels=256,
             patch_size=1,
             guidance_embed=True,
             vec_in_dim=768,
+            ckpt_path=None,
+            convert_from_hf=None,
         ),
-        vae_params=AutoEncoderParams(
+        vae_config=AutoEncoderConfig(
             ch_mult=[1, 2, 4, 4],
             attn_resolutions=[],
             resolution=256,
@@ -61,16 +51,14 @@ configs = {
             shift_factor=0.1159,
             ckpt=None,
         ),
-        clip_params={
-            'max_length': 77,
-            'always_return_pooled': True,
-        },
-        t5_params={
-            'max_length': 512,
-        },
-        scheduler_params={
-            'num_train_timesteps': 1000,
-        },
+        clip_params=ClipConfig(
+            max_length=77,
+            always_return_pooled=True,
+        ),
+        t5_params=T5Config(
+            max_length=512,
+        ),
+        scheduler_steps=1000,
         device='cpu',
     )
 }

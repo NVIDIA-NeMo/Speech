@@ -4,7 +4,7 @@ from typing import Union
 
 import torch
 from megatron.core.models.common.embeddings.rotary_pos_embedding import apply_rotary_pos_emb
-from megatron.core.transformer.attention import Attention, SelfAttention
+from megatron.core.transformer.attention import Attention, SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.custom_layers.transformer_engine import SplitAlongDim
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
@@ -23,6 +23,7 @@ class JointSelfAttentionSubmodules:
     added_k_layernorm: Union[ModuleSpec, type] = None
 
 
+# pylint: disable=C0116
 class JointSelfAttention(Attention):
     """Joint Self-attention layer class
 
@@ -219,11 +220,9 @@ class JointSelfAttention(Attention):
         additional_hidden_states=None,
     ):
         # hidden_states: [sq, b, h]
-
         # For self attention we just duplicate the rotary_pos_emb if it isn't already
         if rotary_pos_emb is not None and not isinstance(rotary_pos_emb, tuple):
             rotary_pos_emb = (rotary_pos_emb,) * 2
-
         # =====================
         # Query, Key, and Value
         # =====================
@@ -240,8 +239,8 @@ class JointSelfAttention(Attention):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, key, value, rotary_pos_emb
+        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+            inference_params, query, key, value, rotary_pos_emb
         )
 
         if packed_seq_params is not None:
@@ -329,6 +328,34 @@ class FluxSingleAttention(SelfAttention):
     and returns output of the same size.
     """
 
+    def __init__(
+        self,
+        config: TransformerConfig,
+        submodules: SelfAttentionSubmodules,
+        layer_number: int,
+        attn_mask_type=AttnMaskType.padding,
+        cp_comm_type: str = None,
+    ):
+        super().__init__(
+            config=config,
+            submodules=submodules,
+            layer_number=layer_number,
+            attn_mask_type=attn_mask_type,
+            cp_comm_type=cp_comm_type,
+        )
+        self.linear_proj = build_module(
+            submodules.linear_proj,
+            self.query_projection_size,
+            self.config.hidden_size,
+            config=self.config,
+            init_method=self.config.output_layer_init_method,
+            bias=False,
+            input_is_parallel=True,
+            skip_bias_add=True,
+            is_expert=False,
+            tp_comm_buffer_name='proj',
+        )
+
     def forward(
         self,
         hidden_states,
@@ -357,8 +384,8 @@ class FluxSingleAttention(SelfAttention):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
-            inference_params, key, value, rotary_pos_emb
+        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+            inference_params, query, key, value, rotary_pos_emb
         )
 
         if packed_seq_params is not None:
@@ -425,4 +452,8 @@ class FluxSingleAttention(SelfAttention):
             # note that batch is a dummy dimension in the packed case
             core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
 
-        return core_attn_out
+        output, _ = self.linear_proj(core_attn_out)
+        return output
+
+
+# pylint: disable=C0116

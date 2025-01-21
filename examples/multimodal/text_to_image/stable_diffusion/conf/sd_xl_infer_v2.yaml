@@ -70,7 +70,7 @@ model:
   scale_factor: 0.13025
   disable_first_stage_autocast: True
   is_legacy: False
-  restore_from_path: ""
+  restore_from_path: null
 
   fsdp: False
   fsdp_set_buffer_dtype: null

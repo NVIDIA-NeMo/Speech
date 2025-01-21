@@ -26,8 +26,9 @@ from nemo.collections.multimodal.parts.utils import setup_trainer_and_model_for_
 from nemo.core.config import hydra_runner
 
 
-@hydra_runner(config_path='conf/stable_diffusion/conf', config_name='sd_xl_fid_images')
+@hydra_runner(config_path='conf', config_name='sd_xl_fid_images')
 def main(cfg):
+    # pylint: disable=C0116
     # Read configuration parameters
     nnodes_per_cfg = cfg.fid.nnodes_per_cfg
     ntasks_per_node = cfg.fid.ntasks_per_node

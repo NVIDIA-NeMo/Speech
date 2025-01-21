@@ -132,6 +132,11 @@ def neva_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
             if value is not None:
                 setattr(packed_seq_params, attr, value.cuda(non_blocking=True))
     _batch["packed_seq_params"] = packed_seq_params
+    if ps.get_context_parallel_world_size() > 1:
+        num_valid_tokens_in_ub = None
+        if "loss_mask" in _batch and _batch["loss_mask"] is not None:
+            num_valid_tokens_in_ub = _batch["loss_mask"].sum()
+        _batch["num_valid_tokens_in_ub"] = num_valid_tokens_in_ub
 
     return _batch
 
@@ -381,6 +386,59 @@ class CLIPViTModel(MCoreCLIPViTModel):
         return super().forward(x, attention_mask)
 
 
+class _get_data_on_this_cp_rank(torch.autograd.Function):
+    """Performs sharding for Context Parallelism in THD format
+
+    In the forward pass, indices are selected for each CP rank and remaining tokens are dropped.
+    In the backward pass, this class takes care of managing gradients for dropped tokens on each
+    CP rank.
+    """
+
+    @staticmethod
+    # def forward(ctx, decoder_embeddings, labels, loss_mask, packed_seq_params):
+    def forward(ctx, batch, packed_seq_params):
+        cp_size = ps.get_context_parallel_world_size()
+        if cp_size > 1:
+            try:
+                import transformer_engine_torch as tex
+            except ModuleNotFoundError as e:
+                logging.error(
+                    "Please update Transformer Engine to >= 1.10 to use \
+                        Context Parallel with THD format data"
+                )
+                raise e
+            cp_rank = ps.get_context_parallel_rank()
+            for key, data in batch.items():
+                index = tex.thd_get_partitioned_indices(
+                    packed_seq_params.cu_seqlens_q_padded, data.size(1), cp_size, cp_rank
+                )
+                if key == "combined_embeddings":
+                    ctx.decoder_emb_index = index
+                    ctx.decoder_emb_seqlen = data.size(1)
+                batch[key] = data.index_select(1, index)
+
+        return batch
+
+    @staticmethod
+    def backward(ctx, grad_out, grad_label, grad_loss):
+        seqlen = ctx.decoder_emb_seqlen
+        index = ctx.decoder_emb_index
+        assert grad_out.size(1) == index.size(
+            0
+        ), f"Shape mismatch in incoming gradient {grad_out.shape} and \
+                index from THD CP sharding {index.shape}"
+        grad_in = torch.zeros(
+            grad_out.size(0),
+            seqlen,
+            *grad_out.size()[2:],
+            dtype=grad_out.dtype,
+            device=grad_out.device,
+        )
+        grad_in[:, ctx.decoder_emb_index, :] = grad_out
+
+        return (grad_in, None, None, None)
+
+
 class MCoreNevaModel(MCoreLLaVAModel):
     def __init__(
         self,
@@ -603,6 +661,13 @@ class MCoreNevaModel(MCoreLLaVAModel):
             attention_mask,
             packed_seq_params,
         )  # [combined_seq_len, b, h_language], [b, combined_seq_len], [b, combined_seq_len]
+
+        if self.context_parallel_lm > 1 or self.sequence_parallel_lm:
+            combined_embeddings, final_labels, final_loss_mask, packed_seq_params = (
+                self._process_embedding_token_parallel(
+                    combined_embeddings, final_labels, final_loss_mask, packed_seq_params
+                )
+            )
 
         output = self.language_model(
             input_ids=None,
@@ -850,7 +915,9 @@ class MCoreNevaModel(MCoreLLaVAModel):
             final_loss_mask = final_loss_mask[:, : self._language_max_sequence_length]
 
         if final_embedding is not None:
-            final_embedding = final_embedding.transpose(1, 0).contiguous()
+            if self.context_parallel_lm == 1:
+                # Transpose to [s,b,h] if not using CP or not using packed_sequence/THD format
+                final_embedding = final_embedding.transpose(1, 0).contiguous()
             # Truncate if exceeding the language model's max sequence length.
             if final_embedding.shape[0] > self._language_max_sequence_length:
                 final_embedding = final_embedding[: self._language_max_sequence_length]
@@ -864,33 +931,72 @@ class MCoreNevaModel(MCoreLLaVAModel):
                         packed_seq_params.cu_seqlens_q[-1] >= packed_seq_params.cu_seqlens_q[-2]
                     ), "with packed sequence, the truncation can only truncate on the last sequence."
 
-            if self.sequence_parallel_lm and not packed_sequence:
-                # Create an attention mask. This ensures correct computation.
-                # This is done even when no padding was done as we set mask_type to
-                # 'padding' or 'padding_causal' when using SP.
-                if attention_mask is None:
-                    # Create base attention mask with original seq len to indicate valid tokens
-                    attention_mask = (
-                        torch.ones(
-                            (
-                                final_embedding.shape[1],
-                                final_embedding.shape[0] - sp_padding_needed,
-                            ),
-                            device=final_embedding.device,
-                        )
-                        .unsqueeze(1)
-                        .unsqueeze(1)
-                    )  # [b, 1, 1, final seq len - sp_padding_needed]
-                if sp_padding_needed > 0:
-                    # Add the padding portion of the mask
-                    attention_mask = torch.nn.functional.pad(attention_mask, (0, sp_padding_needed))
-
-                # Attention mask True/False meaning flipped in 1.7.0
-                attention_mask = attention_mask < 0.5
-            if self.sequence_parallel_lm:
-                final_embedding = tensor_parallel.scatter_to_sequence_parallel_region(final_embedding)
-
         return final_embedding, final_labels, final_loss_mask, attention_mask
+
+    def _process_embedding_token_parallel(self, combined_embeddings, new_labels, new_loss_mask, packed_seq_params):
+        """Processes the input data for model parallelism support."""
+
+        # No pre or post processing needed with PP middle chunks.
+        if not self.pre_process and not self.post_process:
+            return combined_embeddings, new_labels, new_loss_mask, packed_seq_params
+
+        if self.pre_process:
+            if self.context_parallel_lm > 1 and self.sequence_parallel_lm:
+                shard_factor = self.tensor_model_parallel_size_lm * self.context_parallel_lm * 2
+                seq_dim = 1
+            elif self.context_parallel_lm > 1:
+                shard_factor = self.context_parallel_lm * 2
+                seq_dim = 1
+            elif self.sequence_parallel_lm:
+                shard_factor = self.tensor_model_parallel_size_lm
+                seq_dim = 0
+
+            assert (
+                combined_embeddings.shape[seq_dim] % shard_factor == 0
+            ), f"Sequence length should be divisible by {shard_factor} for \
+                Sequence/Context parallelism"
+            if self.sequence_parallel_lm and self.tp_comm_overlap_lm:
+                assert (
+                    combined_embeddings.shape[seq_dim] == self._language_max_sequence_length
+                ), f"TP Comm overlap either requires Vision+Text token length \
+                == language_max_sequence_length"
+
+        if self.context_parallel_lm > 1:
+            batch = dict()
+            if self.pre_process:
+                batch.update(
+                    {
+                        "combined_embeddings": combined_embeddings,
+                    }
+                )
+            if self.post_process:
+                batch.update(
+                    {
+                        "new_labels": new_labels,
+                        "new_loss_mask": new_loss_mask,
+                    }
+                )
+            # Distribute sequence across CP ranks
+            if packed_seq_params is None or packed_seq_params.qkv_format == 'sbhd':
+                from megatron.training.utils import get_batch_on_this_cp_rank
+
+                batch = get_batch_on_this_cp_rank(batch)
+            else:
+                batch = _get_data_on_this_cp_rank.apply(batch, packed_seq_params)
+
+            if self.pre_process:
+                combined_embeddings = batch["combined_embeddings"]  # [B, S/CP, H]
+                combined_embeddings = combined_embeddings.transpose(1, 0).contiguous()  # [B,S/CP,H] -> [S/CP,B,H]
+            if self.post_process:
+                new_labels = batch["new_labels"]
+                new_loss_mask = batch["new_loss_mask"]
+
+        if self.sequence_parallel_lm and self.pre_process:
+            combined_embeddings = tensor_parallel.scatter_to_sequence_parallel_region(
+                combined_embeddings
+            )  # [S/(CP*TP),B,H]
+
+        return combined_embeddings, new_labels, new_loss_mask, packed_seq_params
 
 
 class NevaModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):

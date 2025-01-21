@@ -33,52 +33,19 @@ EOF
 
 WORKDIR /workspace
 
-# Install Mamba Dependancy
-ARG CAUSAL_CONV_TAG=v1.2.2.post1 
-ARG MAMBA_TAG=v2.2.0
-
-RUN <<"EOF" bash -ex
-# Mamba dependancy installation
-MAMBA_FORCE_BUILD=TRUE CAUSAL_CONV1D_FORCE_BUILD=TRUE pip3 install --no-cache-dir -v git+https://github.com/Dao-AILab/causal-conv1d.git@${CAUSAL_CONV_TAG} git+https://github.com/state-spaces/mamba.git@${MAMBA_TAG}
-EOF
-
-RUN pip install hatchling   # needed to install nemo-run
-ARG NEMO_RUN_TAG=34259bd3e752fef94045a9a019e4aaf62bd11ce2
-RUN pip install nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@${NEMO_RUN_TAG}
-
-# Install NeMo requirements
-ARG TE_TAG=7d576ed25266a17a7b651f2c12e8498f67e0baea
-ARG MODELOPT_VERSION=0.21.0
-ARG APEX_TAG=810ffae374a2b9cb4b5c5e28eaeca7d7998fca0c
 RUN \
   --mount=type=bind,source=requirements,target=requirements \
   --mount=type=bind,source=tools,target=tools \
+  --mount=type=bind,source=reinstall.sh,target=reinstall.sh \
   --mount=type=bind,source=setup.py,target=setup.py \
   --mount=type=bind,source=nemo/package_info.py,target=nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=nemo/__init__.py <<"EOF" bash -ex
-pip install --no-cache-dir --no-build-isolation --extra-index-url https://pypi.nvidia.com \
-"transformer-engine @ git+https://github.com/NVIDIA/TransformerEngine.git@${TE_TAG}" \
-"nvidia-modelopt[torch]~=${MODELOPT_VERSION}" \
-"apex @ git+https://github.com/NVIDIA/apex.git@${APEX_TAG}" \
-"unstructured==0.14.9" \
-"llama-index==0.10.43" \
-"onnxscript @ git+https://github.com/microsoft/onnxscript" \
--r tools/ctc_segmentation/requirements.txt \
-".[all]"
-EOF
 
-ARG MCORE_TAG=4dc8977167d71f86bdec47a60a98e85c4cfa0031
-RUN <<"EOF" bash -ex
-# Megatron-LM installation
-git clone https://github.com/NVIDIA/Megatron-LM.git
-pushd Megatron-LM
-git checkout ${MCORE_TAG} 
-pip install -e .
-export PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
+  HEAVY_DEPS=TRUE bash reinstall.sh "dev"
 
-# Install nvidia-resiliency-ext
-pip install --no-cache-dir "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
-
+  # Megatron Core installation
+  cp -r /opt/Megatron-LM /workspace
+  export PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
 EOF
 
 # Copy over NeMo code
@@ -89,12 +56,5 @@ pip install --no-cache-dir --no-build-isolation ".[all]"
 # set permission
 chmod 777 -R /workspace
 EOF
-
-# Install vLLM in virtualenv
-RUN pip install --no-cache-dir --no-build-isolation virtualenv && \
-  virtualenv /opt/venv && \
-  /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
-      -r /workspace/requirements/requirements_vllm.txt \
-      -r /workspace/requirements/requirements_infer.txt
 
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"

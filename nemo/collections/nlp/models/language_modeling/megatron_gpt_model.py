@@ -102,6 +102,7 @@ try:
         drain_embedding_wgrad_compute,
         get_model_config,
         init_method_normal,
+        is_te_min_version,
         scaled_init_method_normal,
     )
 
@@ -1366,7 +1367,17 @@ class MegatronGPTModel(MegatronBaseModel, TextGeneration):
                             'attention_mask': None if self.get_attention_mask_from_fusion else batch['attention_mask'],
                             'labels': batch['labels'] if 'labels' in batch else None,
                         }
+                    else:
+                        from packaging.version import Version as PkgVersion
 
+                        if (
+                            self.transformer_config.num_query_groups != self.transformer_config.num_attention_heads
+                            and not is_te_min_version("1.13", check_equality=False)
+                            and PkgVersion(os.getenv("CUDNN_VERSION", "9.5")) < PkgVersion("9.6")
+                        ):
+                            # cu_seqlens_unpadded != cu_seqlens when CP=1 is not supported in TE 1.13 or earlier
+                            # and im CUDNN 9.5 or earlier when using GQA.
+                            cu_seqlens_unpadded = cu_seqlens
                     forward_args['packed_seq_params'] = PackedSeqParams(
                         cu_seqlens_q=cu_seqlens_unpadded,
                         cu_seqlens_kv=cu_seqlens_unpadded,

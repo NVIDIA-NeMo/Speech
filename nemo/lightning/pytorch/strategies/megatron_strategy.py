@@ -47,6 +47,7 @@ from lightning.pytorch.overrides.distributed import _sync_module_states
 from lightning.pytorch.strategies.ddp import DDPStrategy
 from lightning.pytorch.trainer.states import RunningStage, TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
+from megatron.core import Timers
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 from torch import nn
@@ -170,6 +171,12 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             that prints the metrics to stdout. Suitable for non-interactive settings.
         progress_interval (int): How frequently to print progress to stdout. Only used when
             replace_progress_bar is True.
+        megatron_log_level (int): Granularity level to measure and report timing.
+            0: report only iteration time and make sure timing does not introduce extra overhead.
+            1: report timing for operations that are executed very limited times (basically once) during
+               each iteration (such as gradient all-reduce)
+            2: report timing for operations that migh be executed numerous times during each iteration.
+            Note that setting the level to 1 or 2 might cause increase in iteration time.
         **kwargs: Additional keyword arguments.
 
     Note:
@@ -218,6 +225,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         replace_progress_bar: bool = True,
         progress_interval: int = 1,
         restore_config: Optional[RestoreConfig] = None,
+        megatron_log_level: int = 0,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -270,6 +278,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.progress_interval = progress_interval
 
         self.restore_config = restore_config
+        self.timers = Timers(megatron_log_level, "minmax")  ## could also set this for optimizer if we want
 
         self._ddp = ddp
         if ddp == "megatron":
@@ -316,6 +325,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             from nemo.lightning.pytorch.plugins.mixed_precision import update_config_with_dtype_overrides
 
             model.config = update_config_with_dtype_overrides(dtype_config, model.config)
+
+        ## add megatron timer to config
+        if hasattr(model, "config"):
+            model.config.timers = self.timers
 
         has_optim = getattr(model, "optim", None)
         if has_optim and self._setup_optimizers:

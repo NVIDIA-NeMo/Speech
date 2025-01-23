@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, List, Optional
+from typing import List
 
+import lightning.pytorch as pl
 import numpy as np
+import torch
 from lightning.pytorch.callbacks import Callback
 
-from nemo.collections.common.parts.perf_metrics_utils import read_tb_log
+from nemo.lightning.pytorch.callbacks import PEFT
 from nemo.utils import flops_formulas, logging
 
 __all__ = ["FLOPsMeasurementCallback"]
@@ -25,59 +27,41 @@ __all__ = ["FLOPsMeasurementCallback"]
 
 class FLOPsMeasurementCallback(Callback):
     """
-    Calculate FLOPs per second after last train step for a given job run.
+    Calculate and log FLOPs per second after every ``trainer.log_every_n_steps`` steps.
 
     Args:
-        model_config (Dict[str, Any]): params for running the experiment/job.
-        Expects a nested dictionary with parent keys
-            1. run- for assessing model name (Eg. 'gpt3', 'llama2', etc.) from sub-key 'name'.
-                'name' usually has value like- train_gpt3_5b_*, which is matched to model name 'gpt3'.
-            2. exp_manager- for accessing 'explicit_log_dir'. tensorboard log file is stored here,
-                used for accessing step time needed for calculating TFLOPs per sec per GPU
-            3. trainer- for accessing 'num_nodes' and 'devices' needed for calculating
-                TFLOPs per sec per GPU
-            4. model- Hyperparams for the model. Specifically- global batch size, sequence length,
-                hidden size,  ffn hidden size, num_layers, num_attention_heads, num_query_groups,
-                moe_router_topk. (list might increase with new models as required)
-        log_dir (Optional[str]): Directory with tenbsorboard log file. If present, will overrride
-            'explicit_log_dir' in model_config. Defaults to None.
-        model_name (Optional[str]): If present, will override 'name' under 'run' in model_config.
-            Defaults to None.
+        model_config (GPTConfig): Model parameters.
+        data_config (pl.LightningDataModule): Data module being used in the experiment.
+        model_name (str): Name of the model being run. The following models are supported:
+            gpt3, llama2, llama3, nemotron, mixtral, bert.
+
+
     """
 
     higher_is_better = True
 
     def __init__(
         self,
-        model_config: Dict[str, Any],
-        log_dir: Optional[str] = None,
-        model_name: Optional[str] = None,
+        model_config: "GPTConfig",
+        data_config: pl.LightningDataModule,
+        model_name: str,
     ):
-        self.cfg = model_config
-
-        self.run_cfg = self.cfg.get('run', {})
-        # exp_manager = None is valid and indicates no exp_manager should be initialized
-        self.exp_cfg = self.cfg.get('exp_manager', {}) or {}
-        self.train_cfg = self.cfg.get('trainer', {})
-        self.model_cfg = self.cfg.get('model', {})
+        self.model_cfg = model_config
+        self.data_cfg = data_config
 
         # use config params only when NOT provided explicitly
-        self.model = self.run_cfg.get('name', "") if model_name is None else model_name
-        self.log_dir = self.exp_cfg.get('explicit_log_dir', None) if log_dir is None else log_dir
+        self.model = model_name
 
-        self.num_nodes = self.train_cfg.get('num_nodes', None)
-        self.num_gpus_per_node = self.train_cfg.get('devices', None)
-
-        gbs = self.model_cfg.get('global_batch_size', None)
-        enc_seq_len = self.model_cfg.get('encoder_seq_length', None)
-        hs = self.model_cfg.get('hidden_size', None)
-        layers = self.model_cfg.get('num_layers', None)
-        ffn_hs = self.model_cfg.get('ffn_hidden_size', None)
-        attention_heads = self.model_cfg.get('num_attention_heads', None)
-        moe_router_topk = self.model_cfg.get('moe_router_topk', None)
+        gbs = self.data_cfg.global_batch_size
+        enc_seq_len = self.model_cfg.seq_length
+        hs = self.model_cfg.hidden_size
+        layers = self.model_cfg.num_layers
+        ffn_hs = self.model_cfg.ffn_hidden_size
+        attention_heads = self.model_cfg.num_attention_heads
+        moe_router_topk = self.model_cfg.moe_router_topk
 
         # this handles both- 1. key is present, value is None; 2. key is absent
-        query_groups = self.model_cfg.get('num_query_groups', None)
+        query_groups = self.model_cfg.num_query_groups
         if query_groups is None:
             query_groups = attention_heads
 
@@ -94,24 +78,43 @@ class FLOPsMeasurementCallback(Callback):
 
         self.model = self.model.lower() if self.model is not None else self.model
 
-    def on_train_end(self, trainer, pl_module):
+        self.avg_train_step_time = 0
+
+    def on_train_start(self, trainer, pl_module):
+        """
+        PyTorch Lightning callback hook. Ensures that user is not using PEFT
+        as FLOPS callback does not support it.
+        """
+        for callback in trainer.callbacks:
+            if isinstance(callback, PEFT):
+                raise NotImplementedError("FLOPs measurement not supported for finetuning jobs")
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx: int):
         """
         PyTorch Lightning callback hook to calculate TFLOPs per sec per GPU after training
         """
-        tflops_per_sec_per_gpu = -1
-
         try:
-            if "peft" in self.cfg["model"]:
-                raise NotImplementedError("FLOPs measurement not supported for finetuning jobs")
+            self.avg_train_step_time += trainer.progress_bar_metrics['train_step_timing in s']
+        except KeyError:
+            print("'train_step_timing in s' not found. Make sure to use TimingCallback with FLOPsMeasurementCallback.")
 
-            step_time_list = read_tb_log(self.log_dir, "train_step_timing in s")
-            tflops_per_sec_per_gpu = self.eval_tflops_per_sec_per_gpu(step_time_list)
-        except Exception as exc:
-            logging.error(f"Failed to calculate TFLOPs per sec per GPU.\n{exc}")
-
-        logging.info(f"TFLOPs per sec per GPU={tflops_per_sec_per_gpu:.2f}")
-        if pl_module.logger:
-            pl_module.logger.experiment.add_scalar("tflops_per_sec_per_gpu", tflops_per_sec_per_gpu)
+        n = trainer.strategy.current_epoch_step
+        if n % trainer.log_every_n_steps == 0:
+            ## skip calculation if we haven't accumulated any timing data
+            if self.avg_train_step_time == 0:
+                return
+            tflops_per_sec_per_gpu = self.eval_tflops_per_sec_per_gpu(
+                self.avg_train_step_time / trainer.log_every_n_steps
+            )
+            self.avg_train_step_time = 0
+            pl_module.log(
+                "tflops_per_sec_per_gpu",
+                tflops_per_sec_per_gpu,
+                on_step=True,
+                on_epoch=False,
+                batch_size=1,
+                prog_bar=True,
+            )
 
     def eval_tflops_per_sec_per_gpu(self, train_step_time: List | float | int) -> float:
         """
@@ -155,6 +158,7 @@ class FLOPsMeasurementCallback(Callback):
             raise KeyError(f"Failed to extract valid model name from or missing FLOPs calculations for {self.model}")
 
         total_flops = model_flops_map[self.model](self.flops_config)
-        flops_per_gpu = total_flops / (self.num_nodes * self.num_gpus_per_node)
+        num_devices = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        flops_per_gpu = total_flops / num_devices
 
         return total_flops, flops_per_gpu

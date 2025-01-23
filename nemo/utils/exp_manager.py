@@ -47,10 +47,16 @@ from nemo.utils.callbacks import NeMoModelCheckpoint, PreemptionCallback
 from nemo.utils.env_var_parsing import get_envbool
 from nemo.utils.exceptions import NeMoBaseException
 from nemo.utils.get_rank import is_global_rank_zero
+from nemo.utils.import_utils import safe_import_from
 from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
 from nemo.utils.loggers import ClearMLLogger, ClearMLParams, DLLogger, DLLoggerParams, MLFlowParams
 from nemo.utils.mcore_logger import add_handlers_to_mcore_logger
 from nemo.utils.model_utils import uninject_model_parallel_rank
+
+get_current_global_batch_size, HAVE_MCORE_MBATCH_CALCULATOR = safe_import_from(
+    "megatron.core.num_microbatches_calculator", "get_current_global_batch_size"
+)
+
 
 try:
     # `ptl_resiliency` is included in `gwe_resiliency_pkg` package
@@ -242,7 +248,8 @@ class TimingCallback(Callback):
     Logs execution time of train/val/test steps
     """
 
-    def __init__(self, timer_kwargs={}):
+    def __init__(self, log_tokens_per_sec: bool = False, timer_kwargs={}):
+        self.log_tokens_per_sec = log_tokens_per_sec
         self.timer = timers.NamedTimer(**timer_kwargs)
 
     def _on_batch_start(self, name):
@@ -276,6 +283,18 @@ class TimingCallback(Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         self._on_batch_end("train_step_timing", pl_module)
+        if self.log_tokens_per_sec:
+            tokens_per_gpu = (
+                get_current_global_batch_size() * batch["tokens"].shape[1] / torch.distributed.get_world_size()
+            )
+            pl_module.log(
+                "tokens_per_sec_per_gpu",
+                tokens_per_gpu / (torch.as_tensor(self.timer["train_step_timing"])),
+                on_step=True,
+                on_epoch=False,
+                batch_size=1,
+                prog_bar=True,
+            )
 
     def on_validation_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
         self._on_batch_start("validation_step_timing")

@@ -13,6 +13,9 @@
 # limitations under the License.
 
 from pathlib import Path
+from typing import Union
+
+import torch
 
 
 def is_nemo2_checkpoint(checkpoint_path: str) -> bool:
@@ -26,3 +29,28 @@ def is_nemo2_checkpoint(checkpoint_path: str) -> bool:
 
     ckpt_path = Path(checkpoint_path)
     return (ckpt_path / 'context').is_dir()
+
+
+# Copied from nemo.collections.nlp.parts.utils_funcs to avoid introducing extra NeMo dependencies:
+def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: bool = True) -> torch.dtype:
+    """
+    Mapping from PyTorch Lighthing (PTL) precision types to corresponding PyTorch parameter data type.
+
+    Args:
+        precision (Union[int, str]): The PTL precision type used.
+        megatron_amp_O2 (bool): A flag indicating if Megatron AMP O2 is enabled.
+
+    Returns:
+        torch.dtype: The corresponding PyTorch data type based on the provided precision.
+    """
+    if not megatron_amp_O2:
+        return torch.float32
+
+    if precision in ['bf16', 'bf16-mixed']:
+        return torch.bfloat16
+    elif precision in [16, '16', '16-mixed']:
+        return torch.float16
+    elif precision in [32, '32', '32-true']:
+        return torch.float32
+    else:
+        raise ValueError(f"Could not parse the precision of '{precision}' to a valid torch.dtype")

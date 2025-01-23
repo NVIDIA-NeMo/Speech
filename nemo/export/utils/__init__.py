@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.export.utils.utils import is_nemo2_checkpoint
+from nemo.export.utils.utils import is_nemo2_checkpoint, torch_dtype_from_precision
 
-__all__ = ["is_nemo2_checkpoint"]
+__all__ = [
+    "is_nemo2_checkpoint",
+    "torch_dtype_from_precision",
+]

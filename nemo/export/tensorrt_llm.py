@@ -33,16 +33,13 @@ from tensorrt_llm._utils import numpy_to_torch
 from nemo.deploy import ITritonDeployable
 from nemo.export.tarutils import TarPath, unpack_tarball
 from nemo.export.trt_llm.converter.model_converter import determine_quantization_settings, model_to_trtllm_ckpt
-from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import (
-    dist_model_to_trt_llm_ckpt,
-    get_layer_prefix,
-    torch_dtype_from_precision,
-)
+from nemo.export.trt_llm.converter.model_to_trt_llm_ckpt import dist_model_to_trt_llm_ckpt, get_layer_prefix
 from nemo.export.trt_llm.converter.utils import init_model_parallel_from_nemo
 from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import (
     build_tokenizer,
     get_model_type,
     get_tokenizer,
+    get_weights_dtype,
     is_nemo_file,
     load_nemo_model,
 )
@@ -59,6 +56,7 @@ from nemo.export.trt_llm.tensorrt_llm_run import (
     unload_engine,
 )
 from nemo.export.trt_llm.utils import is_rank
+from nemo.export.utils import torch_dtype_from_precision
 
 use_deploy = True
 try:
@@ -170,7 +168,7 @@ class TensorRTLLM(ITritonDeployable):
         paged_kv_cache: bool = True,
         remove_input_padding: bool = True,
         paged_context_fmha: bool = False,
-        dtype: str = "bfloat16",
+        dtype: Optional[str] = None,
         load_model: bool = True,
         use_lora_plugin: str = None,
         lora_target_modules: List[str] = None,
@@ -208,7 +206,8 @@ class TensorRTLLM(ITritonDeployable):
             paged_kv_cache (bool): if True, uses kv cache feature of the TensorRT-LLM.
             paged_context_fmha (bool): whether to use paged context fmha feature of TRT-LLM or not
             remove_input_padding (bool): enables removing input padding or not.
-            dtype (str): Floating point type for model weights (Supports BFloat16/Float16).
+            dtype (Optional[str]): Floating point type for model weights (supports 'bfloat16', 'float16' or 'float32').
+                If None, try to autodetect the type from model config.
             load_model (bool): load TensorRT-LLM model after the export.
             use_lora_plugin (str): use dynamic lora or not.
             lora_target_modules (List[str]): list of the target lora modules.
@@ -316,12 +315,24 @@ class TensorRTLLM(ITritonDeployable):
                     model_type = get_model_type(nemo_checkpoint_path)
 
                 if model_type is None:
-                    raise Exception("model_type needs to be specified, got None.")
+                    raise ValueError(
+                        "Parameter model_type needs to be provided and cannot be inferred from the checkpoint. "
+                        "Please specify it explicitely."
+                    )
 
                 if model_type not in self.get_supported_models_list:
-                    raise Exception(
-                        "Model {0} is not currently a supported model type. "
-                        "Supported model types are: {1}.".format(model_type, self.get_supported_models_list)
+                    raise ValueError(
+                        f"Model {model_type} is not currently a supported model type. "
+                        f"Supported model types are: {self.get_supported_models_list}."
+                    )
+
+                if dtype is None:
+                    dtype = get_weights_dtype(nemo_checkpoint_path)
+
+                if dtype is None:
+                    raise ValueError(
+                        "Parameter dtype needs to be provided and cannot be inferred from the checkpoint. "
+                        "Please specify it explicitely."
                     )
 
                 model, model_config, self.tokenizer = load_nemo_model(

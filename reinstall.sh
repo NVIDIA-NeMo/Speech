@@ -65,6 +65,7 @@ if [[ "$HEAVY_DEPS" == "TRUE" ]]; then
     "unstructured==0.14.9"
     "git+https://github.com/Dao-AILab/causal-conv1d.git@${CAUSAL_CONV_TAG}"
     "git+https://github.com/state-spaces/mamba.git@${MAMBA_TAG}"
+    "triton==3.1.0"
   )
 
   pip install --no-cache-dir -r tools/ctc_segmentation/requirements.txt

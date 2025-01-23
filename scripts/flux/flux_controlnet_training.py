@@ -14,12 +14,12 @@
 
 import os
 
+import lightning.pytorch as pl
 import nemo_run as run
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch.loggers import WandbLogger
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -30,6 +30,7 @@ from nemo.collections.diffusion.models.flux.model import ClipConfig, FluxConfig,
 from nemo.collections.diffusion.models.flux_controlnet.model import FluxControlNetConfig, MegatronFluxControlNetModel
 from nemo.collections.diffusion.vae.autoencoder import AutoEncoderConfig
 from nemo.lightning.pytorch.callbacks.nsys import NsysCallback
+from nemo.lightning.pytorch.optim import WarmupHoldPolicyScheduler
 from nemo.utils.exp_manager import TimingCallback
 
 
@@ -103,7 +104,7 @@ def flux_controlnet_training() -> run.Partial:
             num_sanity_val_steps=0,
             limit_val_batches=1,
             val_check_interval=1000,
-            max_epochs=10000,
+            max_steps=50000,
             log_every_n_steps=1,
             callbacks=[
                 run.Config(
@@ -127,6 +128,11 @@ def flux_controlnet_training() -> run.Partial:
                 adam_beta2=0.999,
                 use_distributed_optimizer=True,
                 bf16=True,
+            ),
+            lr_scheduler=run.Config(
+                WarmupHoldPolicyScheduler,
+                warmup_steps=500,
+                hold_steps=1000000000000,
             ),
         ),
         tokenizer=None,
@@ -157,6 +163,33 @@ def convergence_test() -> run.Partial:
     recipe.trainer.devices = 8
     recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
     recipe.model.flux_controlnet_config.num_single_layers = 10
+    recipe.model.flux_controlnet_config.num_joint_layers = 4
+    return recipe
+
+
+@run.cli.factory(target=llm.train)
+def convergence_tp2() -> run.Partial:
+    '''
+    A convergence recipe with real data loader.
+    Image and text embedding calculated on the fly.
+    '''
+    recipe = flux_controlnet_training()
+    recipe.model.flux_params.t5_params = run.Config(T5Config, version='/ckpts/text_encoder_2')
+    recipe.model.flux_params.clip_params = run.Config(ClipConfig, version='/ckpts/text_encoder')
+    recipe.model.flux_params.vae_config = run.Config(
+        AutoEncoderConfig, ckpt='/ckpts/ae.safetensors', ch_mult=[1, 2, 4, 4], attn_resolutions=[]
+    )
+    recipe.model.flux_params.device = 'cuda'
+    recipe.model.flux_params.flux_config = run.Config(
+        FluxConfig, ckpt_path='/ckpts/nemo_dist_ckpt/weights/', load_dist_ckpt=True
+    )
+    recipe.trainer.devices = 2
+    recipe.trainer.max_steps = 50000
+    recipe.trainer.val_check_interval = 1000
+    recipe.trainer.strategy.tensor_model_parallel_size = 2
+    recipe.data = flux_datamodule('/mingyuanm/dataset/fill50k/fill50k_tarfiles/')
+    recipe.data.global_batch_size = 2
+    recipe.model.flux_controlnet_config.num_single_layers = 0
     recipe.model.flux_controlnet_config.num_joint_layers = 4
     return recipe
 
@@ -205,6 +238,7 @@ def unit_test() -> run.Partial:
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,
     )
+    recipe.trainer.max_steps = 10
 
     return recipe
 

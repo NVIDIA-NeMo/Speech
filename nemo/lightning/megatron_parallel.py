@@ -674,19 +674,19 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
     def enable_forward_pre_hook(self):
         for model in self:
             model_chunk = model.module
-            assert isinstance(model_chunk, DDP)
+            assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
             model_chunk.enable_forward_pre_hook()
 
     def disable_forward_pre_hook(self):
         for model in self:
             model_chunk = model.module
-            assert isinstance(model_chunk, DDP)
+            assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
             model_chunk.disable_forward_pre_hook()
 
     def force_param_sync(self):
         for model in self:
             model_chunk = model.module
-            assert isinstance(model_chunk, DDP)
+            assert isinstance(model_chunk, DDP) or isinstance(model_chunk, FullyShardedDataParallel)
             model_chunk.start_param_sync(force_sync=True)
 
     @property

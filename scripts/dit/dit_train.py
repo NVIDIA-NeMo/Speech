@@ -14,13 +14,13 @@
 
 import os
 
+import lightning.pytorch as pl
 import nemo_run as run
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch.loggers import WandbLogger
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.enums import AttnMaskType
-from pytorch_lightning.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -38,7 +38,7 @@ from nemo.collections.diffusion.models.model import (
     DiTXLConfig,
     ECDiTLlama1BConfig,
 )
-from nemo.collections.multimodal.data.energon.base import SimpleMultiModalDataModule
+from nemo.collections.multimodal.data.energon.base import EnergonMultiModalDataModule
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint, PreemptionCallback
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.callbacks.model_transform import ModelTransform
@@ -64,7 +64,7 @@ def multimodal_datamodule() -> pl.LightningDataModule:
 @run.autoconvert
 def simple_datamodule() -> pl.LightningDataModule:
     """Simple Datamodule Initialization"""
-    data_module = SimpleMultiModalDataModule(
+    data_module = EnergonMultiModalDataModule(
         seq_length=2048,
         micro_batch_size=1,
         global_batch_size=32,
@@ -221,7 +221,7 @@ def train_mock() -> run.Partial:
 
 @run.cli.factory(target=llm.train)
 def mock_ditllama5b_8k() -> run.Partial:
-    # pylint: disable=C0116
+    """DiT-5B mock Recipe"""
     recipe = pretrain()
     recipe.model.config = run.Config(DiTLlama5BConfig, max_frames=1)
     recipe.data = multimodal_fake_datamodule()
@@ -257,7 +257,7 @@ def mock_ditllama5b_8k() -> run.Partial:
 
 @run.cli.factory(target=llm.train)
 def mock_dit7b_8k() -> run.Partial:
-    # pylint: disable=C0116
+    """DiT-7B mock Recipe"""
     recipe = mock_ditllama5b_8k()
     recipe.model.config = run.Config(DiT7BConfig, max_frames=1)
     recipe.data.model_config = recipe.model.config

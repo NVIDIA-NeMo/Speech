@@ -16,15 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+import lightning.pytorch as L
 import numpy as np
-import pytorch_lightning as L
 import torch
 from diffusers import FluxTransformer2DModel
+from megatron.core.dist_checkpointing.mapping import ShardedStateDict
+from megatron.core.dist_checkpointing.utils import replace_prefix_for_sharding
 from megatron.core.models.common.vision_module.vision_module import VisionModule
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.enums import ModelType
 from megatron.core.transformer.transformer_config import TransformerConfig
-from megatron.core.transformer.utils import openai_gelu
+from megatron.core.transformer.utils import openai_gelu, sharded_state_dict_default
 from safetensors.torch import load_file as load_safetensors
 from safetensors.torch import save_file as save_safetensors
 from torch import nn
@@ -51,15 +53,6 @@ from nemo.utils import logging
 
 # pylint: disable=C0116
 def flux_data_step(dataloader_iter):
-    # latents = torch.randn(4096, b, 64)
-    # prompt_embeds = torch.randn(256, b, 4096)
-    # pooled_prompt_embeds = torch.randn(b, 768)
-    # timestep = torch.randn(b)
-    # latent_image_ids = torch.randn(b, 4096, 3)
-    # text_ids = torch.randn(b, 256, 3)
-    # guidance = torch.randn(b)
-    #
-    # return latents, prompt_embeds, pooled_prompt_embeds, timestep, latent_image_ids, text_ids, guidance
     batch = next(dataloader_iter)
     if isinstance(batch, tuple) and len(batch) == 3:
         _batch = batch[0]
@@ -96,7 +89,8 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     data_step_fn: Callable = flux_data_step
     ckpt_path: Optional[str] = None
     load_dist_ckpt: bool = False
-    convert_from_hf: bool = False
+    do_convert_from_hf: bool = False
+    save_converted_model_to = None
 
     def configure_model(self):
         model = Flux(config=self)
@@ -213,8 +207,9 @@ class Flux(VisionModule):
         if self.config.ckpt_path is not None:
             self.load_from_pretrained(
                 self.config.ckpt_path,
-                do_convert_from_hf=self.config.convert_from_hf,
+                do_convert_from_hf=self.config.do_convert_from_hf,
                 load_dist_ckpt=self.config.load_dist_ckpt,
+                save_converted_model_to=self.config.save_converted_model_to,
             )
 
     def forward(
@@ -323,6 +318,7 @@ class Flux(VisionModule):
             if do_convert_from_hf:
                 ckpt = flux_transformer_converter(ckpt_path, self.transformer.config)
                 if save_converted_model_to is not None:
+                    os.makedirs(save_converted_model_to, exist_ok=True)
                     save_path = os.path.join(save_converted_model_to, 'nemo_flux_transformer.safetensors')
                     save_safetensors(ckpt, save_path)
                     logging.info(f'saving converted transformer checkpoint to {save_path}')
@@ -338,6 +334,43 @@ class Flux(VisionModule):
             )
             logging.info(f"Found unexepected keys: \n {unexpected}")
         logging.info(f"Restored flux model weights from {ckpt_path}")
+
+    def sharded_state_dict(self, prefix='', sharded_offsets: tuple = (), metadata: dict = None) -> ShardedStateDict:
+        sharded_state_dict = {}
+        layer_prefix = f'{prefix}double_blocks.'
+        for layer in self.double_blocks:
+            offset = layer._get_layer_offset(self.config)
+
+            global_layer_offset = layer.layer_number
+            state_dict_prefix = f'{layer_prefix}{global_layer_offset - offset}.'
+            sharded_prefix = f'{layer_prefix}{global_layer_offset}.'
+            sharded_pp_offset = []
+
+            layer_sharded_state_dict = layer.sharded_state_dict(state_dict_prefix, sharded_pp_offset, metadata)
+            replace_prefix_for_sharding(layer_sharded_state_dict, state_dict_prefix, sharded_prefix)
+
+            sharded_state_dict.update(layer_sharded_state_dict)
+
+        layer_prefix = f'{prefix}single_blocks.'
+        for layer in self.single_blocks:
+            offset = layer._get_layer_offset(self.config)
+
+            global_layer_offset = layer.layer_number
+            state_dict_prefix = f'{layer_prefix}{global_layer_offset - offset}.'
+            sharded_prefix = f'{layer_prefix}{global_layer_offset}.'
+            sharded_pp_offset = []
+
+            layer_sharded_state_dict = layer.sharded_state_dict(state_dict_prefix, sharded_pp_offset, metadata)
+            replace_prefix_for_sharding(layer_sharded_state_dict, state_dict_prefix, sharded_prefix)
+
+            sharded_state_dict.update(layer_sharded_state_dict)
+
+        for name, module in self.named_children():
+            if not (module is self.single_blocks or module is self.double_blocks):
+                sharded_state_dict.update(
+                    sharded_state_dict_default(module, f'{prefix}{name}.', sharded_offsets, metadata)
+                )
+        return sharded_state_dict
 
 
 class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):

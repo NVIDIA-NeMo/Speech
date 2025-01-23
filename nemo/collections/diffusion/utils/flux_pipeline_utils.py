@@ -36,7 +36,7 @@ configs = {
             guidance_embed=True,
             vec_in_dim=768,
             ckpt_path=None,
-            convert_from_hf=None,
+            do_convert_from_hf=False,
         ),
         vae_config=AutoEncoderConfig(
             ch_mult=[1, 2, 4, 4],

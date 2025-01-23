@@ -14,9 +14,9 @@
 
 from typing import List, Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
-from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
+from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.utils.data import DataLoader, Dataset
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler

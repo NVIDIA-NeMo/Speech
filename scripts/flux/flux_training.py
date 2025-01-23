@@ -14,12 +14,12 @@
 
 import os
 
+import lightning.pytorch as pl
 import nemo_run as run
-import pytorch_lightning as pl
 import torch
+from lightning.pytorch.loggers import WandbLogger
 from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
-from pytorch_lightning.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -199,6 +199,7 @@ def unit_test() -> run.Partial:
         check_for_nan_in_grad=True,
         grad_reduce_in_fp32=True,
     )
+    recipe.trainer.max_steps = 10
     return recipe
 
 

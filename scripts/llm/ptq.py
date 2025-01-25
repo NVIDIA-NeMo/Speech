@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import argparse
+
 from nemo.collections.llm import quantization
 
 
@@ -63,6 +64,7 @@ def get_args():
     parser.add_argument(
         '--generate_sample', help='Generate sample model output after performing PTQ', action='store_true'
     )
+    parser.add_argument('--ckpt_load_strictness', type=str, help='Defines handling of checkpoint load mismatch')
     parser.set_defaults(generate_sample=False)
 
     args = parser.parse_args()
@@ -97,7 +99,12 @@ def main():
     )
 
     quantizer = quantization.Quantizer(quantization_config, export_config)
-    model = quantization.load_with_modelopt_layer_spec(args.nemo_checkpoint, args.calibration_tp, args.calibration_pp)
+    model = quantization.load_with_modelopt_layer_spec(
+        args.nemo_checkpoint,
+        args.calibration_tp,
+        args.calibration_pp,
+        ckpt_load_strictness=args.ckpt_load_strictness,
+    )
     model = quantizer.quantize(model)
     quantizer.export(model, args.nemo_checkpoint)
 

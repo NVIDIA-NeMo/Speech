@@ -280,8 +280,8 @@ def save_scaling_factor(scaling_factors: dict, key: str, val: torch.Tensor, conf
     if not is_scaling_factor(key):
         return scaling_factors
 
-    activation_factor = torch_to_numpy(1 / val[0].view(1))
-    weights_factor = torch_to_numpy(1 / val[1].view(1))
+    activation_factor = 1 / val[0].view(1)
+    weights_factor = 1 / val[1].view(1)
 
     (weights_key, activation_key), gate_keys = get_scaling_factor_keys(key)
     scaling_factors[activation_key] = activation_factor
@@ -523,7 +523,7 @@ def split_and_save_weight(
 
         if use_fp8_kv_cache:
             base_key = trt_llm_key.replace('.qkv.weight', '')
-            scaling_factor = np.array([1.0], dtype=np.float32)
+            scaling_factor = torch.FloatTensor([1.0])
             save_val(scaling_factor, dir, base_key + '.kv_cache_scaling_factor')
 
     elif any_word_in_key(key, attention_not_mapped_keys):

@@ -271,12 +271,14 @@ def ptq(
     calibration_tp: int = 1,
     calibration_pp: int = 1,
     quantization_config: Annotated[Optional[QuantizationConfig], run.Config[QuantizationConfig]] = None,
+    ckpt_load_strictness: Optional[str] = None,
 ) -> Path:
     """
     Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
     calibration for a small dataset to collect scaling factors low-precision GEMMs used by desired quantization method.
     This function produces TensorRT-LLM checkpoint ready for deployment using nemo.export and nemo.deploy modules
     or direcly using TensorRT-LLM library.
+
     The function can be used through the NeMo CLI in the following way:
     ```bash
     # Run calibration using tensor parallel set to 8 and export quantized checkpoint with tensor parallel equal 2
@@ -284,17 +286,21 @@ def ptq(
         export_config.path=/models/Llama-3-70B-FP8 \
         calibration_tp=8 \
         export_config.inference_tp=2
+
     # Choose different quantization method, for example, INT8 SmoothQuant
     nemo llm ptq nemo_checkpoint=/models/Llama-3-8B \
         export_config.path=/models/Llama-3-8B-INT8_SQ \
         quantization_config.algorithm=int8_sq
     ```
+
     Args:
         nemo_checkpoint (str): The path to model to be quantized.
         calibration_tp (int): Calibration tensor parallelism.
         calibration_pp (int): Calibration pipeline parallelism.
         quantization_config (QuantizationConfig): Configuration for quantization algorithm.
         export_config (ExportConfig): Export configuration for TensorRT-LLM checkpoint.
+        ckpt_load_strictness (Optional[str]): Defines handling of checkpoint load mismatch.
+
     Returns:
         Path: The path where the quantized checkpoint has been saved after calibration.
     """
@@ -308,7 +314,12 @@ def ptq(
 
     quantizer = quantization.Quantizer(quantization_config, export_config)
 
-    model = quantization.load_with_modelopt_layer_spec(nemo_checkpoint, calibration_tp, calibration_pp)
+    model = quantization.load_with_modelopt_layer_spec(
+        nemo_checkpoint,
+        calibration_tp,
+        calibration_pp,
+        ckpt_load_strictness=ckpt_load_strictness,
+    )
 
     model = quantizer.quantize(model)
 

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -97,7 +98,7 @@ def preprocess_scaling_factors_for_local_export(state_dict: Dict[str, Any]) -> D
             continue
 
         value.seek(0)
-        extra_state = torch.load(value)
+        extra_state = torch.load(value, weights_only=True)
         if extra_state is not None and 'scale_fwd' in extra_state:
             scales[key + '.scale_fwd'] = extra_state['scale_fwd'].cpu()
 
@@ -200,7 +201,7 @@ def load_sharded_pickle_extra_state_scale(dir: Union[Path, TarPath]):
     for file in pt_files:
         shard_name = file.name.split('.')[0]
         with file.open('rb') as opened_file:
-            extra_states[dir.name + '/' + shard_name] = torch.load(opened_file)
+            extra_states[dir.name + '/' + shard_name] = torch.load(opened_file, weights_only=True)
 
     return rename_extra_states(extra_states)
 
@@ -210,6 +211,7 @@ def contains_extra_states(subdir: Union[Path, TarPath]):
 
 
 def load_sharded_metadata_zarr(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
+    torch.serialization.add_safe_globals([BytesIO])  # For possible extra states
     sharded_state_dict = {}
     for subdir in checkpoint_dir.iterdir():
         if not subdir.is_dir():

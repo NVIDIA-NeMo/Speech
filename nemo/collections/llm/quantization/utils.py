@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from pathlib import Path
+from typing import Optional
 
 import torch
 
@@ -73,8 +74,21 @@ def load_with_modelopt_layer_spec(
     tensor_model_parallel_size: int = 1,
     pipeline_model_parallel_size: int = 1,
     inference_only: bool = True,
-):
-    """Loads a model from a NeMo 2.0 checkpoint using modelopt layer spec."""
+    ckpt_load_strictness: Optional[str] = None,
+) -> llm.GPTModel:
+    """
+    Loads a model from a NeMo 2.0 checkpoint using modelopt layer spec.
+
+    Args:
+        nemo_checkpoint_path (str): Path to the NeMo checkpoint.
+        tensor_model_parallel_size (int): Size of the tensor model parallelism.
+        pipeline_model_parallel_size (int): Size of the pipeline model parallelism.
+        inference_only (bool): If True, loads the model for inference only w/o initializing the optimizer.
+        ckpt_load_strictness (Optional[str]): Handling of checkpoint loading mismatch for tensor keys.
+
+    Returns:
+        llm.GPTModel: The loaded model with the specified configuration.
+    """
     # TODO: setting ddp="pytorch" and deleting model.optim is a hackish way to disable DDP initialization.
     # Needs a systematic solution.
     if inference_only:
@@ -84,6 +98,7 @@ def load_with_modelopt_layer_spec(
             pipeline_dtype=torch.bfloat16,
             ckpt_load_optimizer=False,
             ckpt_parallel_save_optim=False,
+            ckpt_load_strictness=ckpt_load_strictness,
             setup_optimizers=False,
             lazy_init=True,
             ddp="pytorch",
@@ -93,6 +108,7 @@ def load_with_modelopt_layer_spec(
             tensor_model_parallel_size=tensor_model_parallel_size,
             pipeline_model_parallel_size=pipeline_model_parallel_size,
             pipeline_dtype=torch.bfloat16,
+            ckpt_load_strictness=ckpt_load_strictness,
         )
 
     trainer = nl.Trainer(

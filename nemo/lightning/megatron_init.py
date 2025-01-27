@@ -91,6 +91,7 @@ def initialize_model_parallel_for_nemo(
     local_rank,
     tensor_model_parallel_size=1,
     expert_model_parallel_size=1,
+    expert_tensor_parallel_size=None,
     pipeline_model_parallel_size=1,
     virtual_pipeline_model_parallel_size=None,
     pipeline_model_parallel_split_rank=None,
@@ -126,6 +127,7 @@ def initialize_model_parallel_for_nemo(
     app_state.encoder_pipeline_model_parallel_size = encoder_pipeline_model_parallel_size
     app_state.use_fp8 = use_fp8
     app_state.init_mpi_proc_group = init_mpi_proc_group
+    app_state.expert_tensor_parallel_size = expert_tensor_parallel_size
     (
         app_state.tensor_model_parallel_rank,
         app_state.pipeline_model_parallel_rank,
@@ -144,6 +146,7 @@ def initialize_model_parallel_for_nemo(
         pipeline_model_parallel_split_rank_=pipeline_model_parallel_split_rank,
         context_parallel_size_=context_parallel_size,
         expert_model_parallel_size_=expert_model_parallel_size,
+        expert_tensor_parallel_size_=expert_tensor_parallel_size,
         encoder_tensor_model_parallel_size_=encoder_tensor_model_parallel_size,
         encoder_pipeline_model_parallel_size_=encoder_pipeline_model_parallel_size,
         use_tp_pp_dp_mapping=use_tp_pp_dp_mapping,

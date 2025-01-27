@@ -30,9 +30,9 @@ except (ImportError, ModuleNotFoundError):
 
 try:
     from megatron.core.parallel_state import (
-        get_data_modulo_expert_parallel_group,
         get_data_parallel_group,
         get_data_parallel_world_size,
+        get_expert_data_parallel_group,
     )
     from megatron.core.tensor_parallel import copy_tensor_model_parallel_attributes
 
@@ -74,7 +74,7 @@ def _multi_tensor_copy_this_to_that(this, that, overflow_buf):
 
 def _get_grad_data_group(is_expert_group):
     if is_expert_group:
-        data_group = get_data_modulo_expert_parallel_group()
+        data_group = get_expert_data_parallel_group()
     else:
         data_group = get_data_parallel_group(with_context_parallel=True)
     return data_group

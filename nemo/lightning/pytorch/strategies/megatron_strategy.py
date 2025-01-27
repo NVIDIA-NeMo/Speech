@@ -127,6 +127,7 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             parallelizing layer norms and dropout sequentially. Defaults to False.
         expert_model_parallel_size (int): Distributes MoE Experts across sub data parallel dimension.
             Defaults to 1.
+        expert_tensor_parallel_size (Optional[int]): Sets MoE Experts tensor parallelism size. Defaults to None.
         moe_extended_tp (bool): Alternative parallelization strategy for expert parallelism. Defaults to False.
         data_sampler (Optional['DataSampler']): Custom data sampler for distributed training. Defaults to None.
         parallel_devices (Optional[List[torch.device]]): List of devices to use for parallelism. Defaults to None.

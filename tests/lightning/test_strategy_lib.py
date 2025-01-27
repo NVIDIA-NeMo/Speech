@@ -78,6 +78,7 @@ def test_init_parallel_ranks() -> None:
     mock_parallel_config.virtual_pipeline_model_parallel_size = 4
     mock_parallel_config.context_parallel_size = 2
     mock_parallel_config.expert_model_parallel_size = 2
+    mock_parallel_config.expert_tensor_parallel_size = None
     mock_parallel_config.encoder_tensor_model_parallel_size = 0
     mock_parallel_config.encoder_pipeline_model_parallel_size = 0
     mock_parallel_config.tp_comm_overlap = False

@@ -35,7 +35,7 @@ WORKDIR /workspace
 
 RUN \
   --mount=type=bind,source=requirements,target=requirements \
-  --mount=type=bind,source=tools,target=tools \
+  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,source=reinstall.sh,target=reinstall.sh \
   --mount=type=bind,source=setup.py,target=setup.py \
   --mount=type=bind,source=nemo/package_info.py,target=nemo/package_info.py \
@@ -45,7 +45,6 @@ RUN \
 
   # Megatron Core installation
   cp -r /opt/Megatron-LM /workspace
-  export PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
 EOF
 
 # Copy over NeMo code

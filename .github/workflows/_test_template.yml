@@ -26,6 +26,11 @@ on:
         description: Failure will cancel all other tests if set to true
         required: false
         default: false
+      SAVE_COVERAGE_REPORT:
+        type: boolean
+        description: Upload .coverage file
+        required: false
+        default: false
     outputs:
       conclusion:
         description: Conclusion of main test step
@@ -36,6 +41,9 @@ on:
       potential_infra_failure:
         description: Boolean flag when infra-related keyword spotted in logs.
         value: ${{ jobs.main.outputs.potential_infra_failure }}
+      coverage_report:
+        description: Key of coverage_report artifact
+        value: ${{ jobs.main.outputs.coverage_report }}
 jobs:
   
   main:
@@ -44,6 +52,7 @@ jobs:
       conclusion: ${{ steps.main.conclusion }}
       log: ${{ steps.main.outputs.log }}
       potential_infra_failure: ${{ steps.main.outputs.potential_infra_failure }}
+      coverage_report: ${{ steps.main.outputs.coverage_report }}
     steps:
         - name: Docker system cleanup
           run: |
@@ -77,6 +86,7 @@ jobs:
           run: |
             mkdir -p ${{ github.run_id }}
             cd ${{ github.run_id }}/
+            rm .coverage || true
             set +e 
             (  
               set -e
@@ -85,13 +95,30 @@ jobs:
             ) 2> >(tee err.log)
 
             EXIT_CODE=$?
-            
-            echo "log=$(tail -c 2000 err.log |  base64 -w 0)" >> "$GITHUB_OUTPUT"
+
+            set -x
+
+            log=$(tail -c 2000 err.log |  base64 -w 0)
+            echo "log=$log" >> "$GITHUB_OUTPUT"
             
             potential_infra_failure=$(cat err.log | grep -Eqiw "device" && echo true || echo false)
             echo "potential_infra_failure=$potential_infra_failure" >> "$GITHUB_OUTPUT"
 
+            coverage_report=coverage-${{ github.run_id }}-$(uuidgen)
+            echo "coverage_report=$coverage_report" >> "$GITHUB_OUTPUT"
+
+            docker exec nemo_container_${{ github.run_id }} bash -c 'ls -al'
+            docker cp nemo_container_${{ github.run_id }}:/workspace/.coverage .coverage 
+
             exit $EXIT_CODE
+        
+        - name: Upload artifacts
+          uses: actions/upload-artifact@v4
+          if: inputs.SAVE_COVERAGE_REPORT == true
+          with:
+            name: ${{ steps.main.outputs.coverage_report }}
+            path: ${{ github.run_id }}/.coverage
+            include-hidden-files: true
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
           if: failure() && inputs.IS_OPTIONAL == false && !contains(github.event.pull_request.labels.*.name, 'no-fail-fast')

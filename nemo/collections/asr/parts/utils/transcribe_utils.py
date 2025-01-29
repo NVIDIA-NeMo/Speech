@@ -61,7 +61,10 @@ def get_buffered_pred_feat_rnnt(
         with open(manifest, "r", encoding='utf_8') as mfst_f:
             print("Parsing manifest files...")
             for l in mfst_f:
-                row = json.loads(l.strip())
+                l = l.strip()
+                if not l:
+                    continue
+                row = json.loads(l)
                 audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
                 filepaths.append(audio_file)
                 if 'text' in row:
@@ -151,7 +154,10 @@ def get_buffered_pred_feat(
         with open(manifest, "r", encoding='utf_8') as mfst_f:
             for l in tqdm(mfst_f, desc="Sample:"):
                 asr.reset()
-                row = json.loads(l.strip())
+                l = l.strip()
+                if not l:
+                    continue
+                row = json.loads(l)
                 if 'text' in row:
                     refs.append(row['text'])
                 audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
@@ -221,7 +227,10 @@ def get_buffered_pred_feat_multitaskAED(
             lines = list(fin.readlines())
             for line in tqdm(lines, desc="Transcribing:", total=len(lines), ncols=80):
                 asr.reset()
-                sample = json.loads(line.strip())
+                line = line.strip()
+                if not line:
+                    continue
+                sample = json.loads(line)
                 if 'text' in sample:
                     refs.append(sample['text'])
                 audio_file = get_full_path(audio_file=sample['audio_filepath'], manifest_file=manifest)
@@ -309,6 +318,9 @@ def prepare_audio_data(cfg: DictConfig) -> Tuple[List[str], bool]:
 
         with open(cfg.dataset_manifest, "rt") as fh:
             for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
                 item = json.loads(line)
                 item[audio_key] = get_full_path(item[audio_key], cfg.dataset_manifest)
                 if item.get("duration") is None and cfg.presort_manifest:
@@ -338,7 +350,7 @@ def read_and_maybe_sort_manifest(path: str, try_sort: bool = False) -> List[dict
 
 def restore_transcription_order(manifest_path: str, transcriptions: list) -> list:
     with open(manifest_path) as f:
-        items = [(idx, json.loads(l)) for idx, l in enumerate(f)]
+        items = [(idx, json.loads(l)) for idx, l in enumerate(f) if l.strip() != ""]
     if not all("duration" in item[1] and item[1]["duration"] is not None for item in items):
         return transcriptions
     new2old = [item[0] for item in sorted(items, reverse=True, key=lambda it: it[1]["duration"])]
@@ -458,6 +470,9 @@ def write_transcription(
         else:
             with open(cfg.dataset_manifest, 'r', encoding='utf-8') as fr:
                 for idx, line in enumerate(fr):
+                    line = line.strip()
+                    if not line:
+                        continue
                     item = json.loads(line)
                     if not return_hypotheses:  # transcription is str
                         item[pred_text_attr_name] = best_hyps[idx]
@@ -539,7 +554,7 @@ def compute_metrics_per_sample(
 
     with open(manifest_path, 'r') as manifest:
         lines = manifest.readlines()
-        samples = [json.loads(line) for line in lines]
+        samples = [json.loads(line) for line in lines if line.strip() != ""]
         samples_with_metrics = []
 
         logging.info(f"Computing {', '.join(metrics)} per sample")

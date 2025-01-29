@@ -27,6 +27,7 @@ import numpy as np
 import safetensors
 import tensorrt_llm
 import torch
+import torch.nn.functional as F
 import wrapt
 from tensorrt_llm._utils import numpy_to_torch
 
@@ -1117,6 +1118,19 @@ class TensorRTLLM(ITritonDeployable):
                     return
             self._prep_ptuning_table()
 
+    def _pad_logits(self, logits_tensor):
+        """
+        Pads the logits tensor with 0's on the right
+        """
+        padding_len = max([logit_tensor.shape[0] for logit_tensor in logits_tensor])
+        for i, tensor in enumerate(logits_tensor):
+            tensor_len = tensor.shape[0]
+            if tensor_len < padding_len:
+                padding_diff = padding_len - tensor_len
+                # padding_diff num of rows of zeros are added at the bottom
+                logits_tensor[i] = F.pad(tensor, (0, 0, 0, padding_diff), mode='constant', value=0)
+        return logits_tensor
+
     @property
     def get_supported_models_list(self):
         """Supported model list"""
@@ -1200,16 +1214,24 @@ class TensorRTLLM(ITritonDeployable):
                 infer_input["output_context_logits"] = inputs.pop("output_context_logits")[0][0]
 
             if generation_logits_available:
+                # generation_logits is a 4d torch tensor of dim [BS,1,#generated_tokens,vocab_size]
                 output_texts, generation_logits = self.forward(**infer_input)
-                # generation_logits is a 4d tensor of dim [1,1,#generated_tokens, vocab_size], return just the 3d tensor
-                # in output dict.
-                output_dict["generation_logits"] = np.array(generation_logits[0].cpu().numpy())
+                # convert generation_logits to numpy array. Note: from my understanding since generation_logits is
+                # returned as a torch tensor it won't have varying number of tokens across multiple sequences,
+                # likely due to TRTLLM taking care of padding hence no addtnl padding is needed.
+                output_dict["generation_logits"] = np.array(
+                    [generation_logit.cpu().numpy() for generation_logit in generation_logits]
+                )
+
             elif context_logits_available:
                 output_texts, context_logits = self.forward(**infer_input)
-                # convert context logits to 3d tensor from list since its avaiable as a list of tensor shaped
-                # [#tokens, vocab_size]
-                context_logits = context_logits[0].unsqueeze(0)
-                output_dict["context_logits"] = np.array(context_logits.cpu().numpy())
+                # context_logits is a list of tensors shaped [#tokens, vocab_size] and the len of the list  is BS
+                # In case of batched inputs (i.e multiple prompts sent as a list) context_logits returned can have
+                # different seq_len. Following code pads them as it can otherwise error while converting to numpy array
+                context_logits = self._pad_logits(context_logits)
+                # Convert context_Logits to numpy array of shape [bS, 1, padding_len, vocab_size],.
+                context_logits = np.array([logit_tensor.unsqueeze(0).cpu().numpy() for logit_tensor in context_logits])
+                output_dict["context_logits"] = context_logits
             else:
                 output_texts = self.forward(**infer_input)
             output_dict["outputs"] = cast_output(output_texts, np.bytes_)

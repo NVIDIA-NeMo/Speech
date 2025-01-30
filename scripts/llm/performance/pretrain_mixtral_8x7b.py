@@ -20,7 +20,6 @@ from utils import get_comm_overlap_callback_idx, hf_tokenizer, parse_cli_args, s
 
 from nemo.collections.llm.recipes.mixtral_8x7b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 NUM_NODES = 8
@@ -78,19 +77,8 @@ def mixtral_8x7b_performance_recipe(
     # compute dtype configs
     if compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
-    recipe.trainer.plugins.grad_reduce_in_fp32 = False  # bf16 grad dtype
 
     # callback configs
-    garbage_collection_callback = run.Config(
-        GarbageCollectionCallback,
-        gc_interval_train=100,
-        gc_interval_val=100,
-    )
-    recipe.trainer.callbacks.extend(
-        [
-            garbage_collection_callback,
-        ]
-    )
     dp_size = (num_nodes * num_gpus_per_node) / (tp_size * pp_size * cp_size)
     if comm_overlap_callback_idx is not None:
         recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = bool(

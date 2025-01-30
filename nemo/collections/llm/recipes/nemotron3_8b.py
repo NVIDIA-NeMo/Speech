@@ -26,6 +26,7 @@ from nemo.collections.llm.recipes.finetune_default import default_finetune_recip
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.nemotron import nemotron_model, nemotron_trainer
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
+from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.utils.exp_manager import TimingCallback
 
@@ -200,12 +201,27 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
         It may not be suitable for all hardware configurations or use cases.
     """
 
-    recipe.trainer.callbacks.append(
-        run.Config(
-            MegatronCommOverlapCallback,
-            tp_comm_overlap=True,
-        )
+    if not recipe.trainer.callbacks:
+        recipe.trainer.callbacks = []
+
+    garbage_collection_callback = run.Config(
+        GarbageCollectionCallback,
+        gc_interval_train=100,
+        gc_interval_val=100,
     )
+    mcomm_overlap_callback = run.Config(
+        MegatronCommOverlapCallback,
+        tp_comm_overlap=True,
+    )
+    recipe.trainer.callbacks.extend(
+        [
+            garbage_collection_callback,
+            mcomm_overlap_callback,
+        ]
+    )
+
+    recipe.trainer.plugins.grad_reduce_in_fp32 = False
+
     return recipe
 
 

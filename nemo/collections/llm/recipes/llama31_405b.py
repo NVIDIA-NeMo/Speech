@@ -222,23 +222,31 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
         It may not be suitable for all hardware configurations or use cases.
     """
 
-    # 'overlap_param_gather_with_optimizer_step' and 'align_param_gather' params are set automatically
-    # by MegatronCommOverlapCallback. They are added here for user's knowledge.
-    # overlap_param_gather_with_optimizer_step- Overlap param all-gather of first bucket with optimizer step.
-    # align_param_gather- If true, all PP stages launch param all-gathers simultaneously, else
-    # each PP stage launches independently as needed.
+    if not recipe.trainer.callbacks:
+        recipe.trainer.callbacks = []
 
-    recipe.trainer.callbacks.append(
-        run.Config(
-            MegatronCommOverlapCallback,
-            tp_comm_overlap=True,
-            tp_comm_overlap_cfg=userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192,
-            defer_embedding_wgrad_compute=True,
-            wgrad_deferral_limit=50,
-            overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to an issue with checkpointing
-            align_param_gather=True,
-        )
+    garbage_collection_callback = run.Config(
+        GarbageCollectionCallback,
+        gc_interval_train=100,
+        gc_interval_val=100,
     )
+    mcomm_overlap_callback = run.Config(
+        MegatronCommOverlapCallback,
+        tp_comm_overlap=True,
+        tp_comm_overlap_cfg=userbuffers_bf16_h100_h16384_tp8_cp2_mbs1_seqlen8192,
+        defer_embedding_wgrad_compute=True,
+        wgrad_deferral_limit=50,
+        # 'overlap_param_gather_with_optimizer_step' is set automatically. Added here for user's knowledge
+        overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to an issue with checkpointing
+    )
+    recipe.trainer.callbacks.extend(
+        [
+            garbage_collection_callback,
+            mcomm_overlap_callback,
+        ]
+    )
+
+    recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     return recipe
 
@@ -360,7 +368,7 @@ def finetune_performance_optimizations(
         It may not be suitable for all hardware configurations or use cases.
     """
 
-    if not hasattr(recipe.trainer, "callbacks"):
+    if not recipe.trainer.callbacks:
         recipe.trainer.callbacks = []
 
     if peft_scheme is None or peft_scheme.lower() == 'none':

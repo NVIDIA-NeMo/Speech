@@ -218,12 +218,27 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
         Use this method with caution and only when you need maximum performance.
         It may not be suitable for all hardware configurations or use cases.
     """
-    recipe.trainer.callbacks.append(
-        run.Config(
-            MegatronCommOverlapCallback,
-            tp_comm_overlap=False,
-        )
+    if not recipe.trainer.callbacks:
+        recipe.trainer.callbacks = []
+
+    garbage_collection_callback = run.Config(
+        GarbageCollectionCallback,
+        gc_interval_train=100,
+        gc_interval_val=100,
     )
+    mcomm_overlap_callback = run.Config(
+        MegatronCommOverlapCallback,
+        tp_comm_overlap=False,
+    )
+    recipe.trainer.callbacks.extend(
+        [
+            garbage_collection_callback,
+            mcomm_overlap_callback,
+        ]
+    )
+
+    recipe.trainer.plugins.grad_reduce_in_fp32 = False
+
     return recipe
 
 
@@ -338,7 +353,7 @@ def finetune_performance_optimizations(
     """
     recipe.trainer.strategy.tensor_model_parallel_size = 1
 
-    if not hasattr(recipe.trainer, "callbacks"):
+    if not recipe.trainer.callbacks:
         recipe.trainer.callbacks = []
 
     if peft_scheme is None or peft_scheme.lower() == 'none':
@@ -351,15 +366,15 @@ def finetune_performance_optimizations(
             overlap_param_gather=True,
             average_in_collective=True,
         )
-        recipe.trainer.callbacks.append(
-            run.Config(
-                MegatronCommOverlapCallback,
-                tp_comm_overlap=False,
-            )
-        )
     else:
         recipe.peft.target_modules = ['linear_qkv']
 
+    recipe.trainer.callbacks.append(
+        run.Config(
+            MegatronCommOverlapCallback,
+            tp_comm_overlap=False,
+        )
+    )
     recipe.trainer.callbacks.append(run.Config(TimingCallback))
     recipe.trainer.callbacks.append(
         run.Config(

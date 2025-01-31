@@ -28,6 +28,7 @@ from lightning.pytorch.utilities import rank_zero_info
 
 from nemo.lightning.ckpt_utils import ckpt_to_dir
 from nemo.lightning.io.pl import TrainerContext
+from nemo.lightning.pytorch.utils import get_huggingface_model_from_trainer
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 
@@ -433,6 +434,11 @@ class ModelCheckpoint(PTLModelCheckpoint):
         super()._link_checkpoint(trainer, filepath, linkpath)
 
     def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:
+        # if it's an HF model -> use HF's save_pretrained function.
+        if (mod := get_huggingface_model_from_trainer(trainer)) is not None:
+            mod.save_pretrained(filepath)
+            return
+
         from nemo.utils.get_rank import is_global_rank_zero
 
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.

@@ -99,6 +99,89 @@ class BERTLossReduction(MegatronLossReduction):
         return torch.tensor(0.0, device=torch.cuda.current_device())
 
 
+class HardNegativeRankingLoss(MegatronLossReduction):
+    """
+    This loss uses hard-negative samples.
+    The difference of this loss to the default MultipleNegativesRankingLoss
+    from Sentence Transformers is that the latter shares the hard negatives
+    as negatives for all examples, whereas this loss uses hard negatives
+    exclusively for the example they are associated.
+    """
+
+    def __init__(
+        self,
+        validation_step: bool = False,
+        val_drop_last: bool = True,
+        num_hard_negatives: int = 1,
+        scale: float = 50,
+        label_smoothing: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.validation_step = validation_step
+        self.val_drop_last = val_drop_last
+        self.num_hard_negatives = num_hard_negatives
+        self.scale = scale
+        self.cross_entropy_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    def forward(
+        self, batch: Dict[str, torch.Tensor], forward_out: torch.Tensor
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        from megatron.core import parallel_state
+
+        cp_size = parallel_state.get_context_parallel_world_size()
+        if cp_size != 1:
+            raise NotImplementedError(f'CP is not supported for {self.__class__} yet.')
+
+        num_tensors_per_example = 2 + self.num_hard_negatives  # 1 query, 1 pos, num_hard_negatives negs
+        current_train_n_passages = 1 + self.num_hard_negatives
+        batch_size = forward_out.shape[0] // num_tensors_per_example
+        # Get Query, Key (Positives, Negatives)
+        # forward_out was chunked [(q1, k1), (q2, k2), ...]
+        chunks = forward_out.chunk(batch_size)
+        query = torch.stack([item[0] for item in chunks])
+        key = torch.cat([item[1:] for item in chunks])
+
+        assert key.shape[0] % query.shape[0] == 0, '{} % {} > 0'.format(key.shape[0], query.shape[0])
+        assert key.shape[0] / query.shape[0] == current_train_n_passages, '{} / {} != {}'.format(
+            key.shape[0], query.shape[0], current_train_n_passages
+        )
+        query_shape = query.shape
+        repeated_query = query.repeat(1, 1, current_train_n_passages).reshape(
+            query_shape[0] * current_train_n_passages, query_shape[1]
+        )
+        scores = torch.sum(repeated_query * key, dim=-1).reshape(query_shape[0], current_train_n_passages)
+        labels = torch.zeros(query_shape[0], dtype=torch.long, device=query.device)
+        scores *= self.scale
+        ce_loss = self.cross_entropy_loss(scores, labels)
+        reduced_loss = average_losses_across_data_parallel_group([ce_loss])
+        return ce_loss, {"avg": reduced_loss}
+
+    def reduce(self, losses_reduced_per_micro_batch) -> torch.Tensor:
+        """Taken from: https://github.com/NVIDIA/NeMo/blob/main
+        /nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""
+        if losses_reduced_per_micro_batch:
+            if "avg" in losses_reduced_per_micro_batch[0]:
+                loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]
+                loss_tensor = torch.concat(loss_tensors_list)
+
+                return loss_tensor.mean()
+
+            # Get the total loss since micro batches sizes are not uniform
+            loss_sum_tensors_list: List[torch.Tensor] = [
+                loss_sum["loss_sum_and_ub_size"]
+                for loss_sum in losses_reduced_per_micro_batch
+                if loss_sum["loss_sum_and_ub_size"][1] > 0
+            ]
+            loss_sum = (
+                torch.vstack(loss_sum_tensors_list).sum(dim=0)
+                if len(loss_sum_tensors_list) > 0
+                else torch.tensor([0.0, 0.0], device=torch.cuda.current_device())
+            )
+            return loss_sum
+
+        return torch.tensor(0.0, device=torch.cuda.current_device())
+
+
 class BERTInBatchExclusiveHardNegativesRankingLoss(MegatronLossReduction):
     """
     This loss uses in-batch negative samples + hard-negative samples.

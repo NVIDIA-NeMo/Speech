@@ -38,6 +38,7 @@ from nemo.collections.llm.recipes import (
     llama31_405b,
     llama32_1b,
     llama32_3b,
+    llama_embedding_1b,
     mamba2_1_3b,
     mamba2_2_7b,
     mamba2_8b,

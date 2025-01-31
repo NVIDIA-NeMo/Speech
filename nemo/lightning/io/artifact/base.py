@@ -26,7 +26,7 @@ class Artifact(ABC, Generic[ValueT]):
         self.skip = skip
 
     @abstractmethod
-    def dump(self, value: ValueT, absolute_dir: Path, relative_dir: Path) -> ValueT:
+    def dump(self, instance, value: ValueT, absolute_dir: Path, relative_dir: Path) -> ValueT:
         pass
 
     @abstractmethod

@@ -38,6 +38,7 @@ from nemo.lightning.io.artifact.base import Artifact
 from nemo.lightning.io.capture import IOProtocol
 from nemo.lightning.io.connector import ModelConnector
 from nemo.lightning.io.fdl_torch import enable as _enable_ext
+from nemo.lightning.io.to_config import to_config
 from nemo.utils import logging
 
 ConnT = TypeVar("ConnT", bound=ModelConnector)
@@ -233,8 +234,7 @@ class IOMixin:
 
         config_path = output_path / "io.json"
         with open(config_path, "w") as f:
-            io = deepcopy(self.__io__)
-            _artifact_transform_save(io, output_path, local_artifacts_dir)
+            io = _artifact_transform_save(self, deepcopy(self.__io__), output_path, local_artifacts_dir)
             json = serialization.dump_json(io)
             f.write(json)
 
@@ -632,8 +632,10 @@ def _io_path_elements_fn(x):
     return x.__io__.__path_elements__()
 
 
-def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: Path = "."):
-    for artifact in getattr(cfg.__fn_or_cls__, "__io_artifacts__", []):
+def _artifact_transform_save(instance, cfg: fdl.Config, output_path: Path, relative_dir: Path = Path(".")):
+    artifacts = getattr(cfg.__fn_or_cls__, "__io_artifacts__", [])
+
+    for artifact in artifacts:
         # Allow optional artifacts
         if artifact.skip or (not hasattr(cfg, artifact.attr) and not artifact.required):
             continue
@@ -647,15 +649,28 @@ def _artifact_transform_save(cfg: fdl.Config, output_path: Path, relative_dir: P
                 raise ValueError(f"Artifact '{artifact.attr}' is required but not provided")
             continue
         ## dump artifact and return the relative path
-        new_val = artifact.dump(current_val, output_path, relative_dir)
+        new_val = artifact.dump(instance, current_val, output_path, relative_dir)
         setattr(cfg, artifact.attr, new_val)
 
     for attr in dir(cfg):
+        child = to_config(getattr(cfg, attr))
+
         try:
-            if isinstance(getattr(cfg, attr), fdl.Config):
-                _artifact_transform_save(getattr(cfg, attr), output_path=output_path, relative_dir=relative_dir)
+            if isinstance(child, (fdl.Config, fdl.Partial)):
+                setattr(
+                    cfg,
+                    attr,
+                    _artifact_transform_save(
+                        getattr(instance, attr, None),
+                        child,
+                        output_path=output_path,
+                        relative_dir=relative_dir,
+                    ),
+                )
         except ValueError:
             pass
+
+    return cfg
 
 
 def _artifact_transform_load(cfg: fdl.Config, path: Path):

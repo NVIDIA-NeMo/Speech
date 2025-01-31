@@ -21,7 +21,7 @@ from nemo.lightning.io.artifact.base import Artifact
 
 
 class PickleArtifact(Artifact[Any]):
-    def dump(self, absolute_dir: Path, relative_dir: Path) -> Path:
+    def dump(self, instance, absolute_dir: Path, relative_dir: Path) -> Path:
         relative_file = self.file_path(relative_dir)
         with open(Path(absolute_dir) / relative_file, "wb") as f:
             dump(value, f)

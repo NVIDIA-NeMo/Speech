@@ -26,6 +26,7 @@ from torch.distributed import all_gather_object
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
+from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget
 from nemo.collections.llm.quantization import ExportConfig, QuantizationConfig
 from nemo.lightning import (
     AutoResume,
@@ -432,56 +433,21 @@ def deploy(
 
 
 def evaluate(
-    nemo_checkpoint_path: AnyPath,
-    url: str = "grpc://0.0.0.0:8001",
-    triton_http_port: int = 8000,
-    model_name: str = "triton_model",
-    eval_task: str = "gsm8k",
-    num_fewshot: Optional[int] = None,
-    limit: Optional[Union[int, float]] = None,
-    bootstrap_iters: int = 100000,
-    # inference params
-    batch_size: Optional[int] = 1,
-    max_tokens_to_generate: Optional[int] = 256,
-    temperature: Optional[float] = 0.000000001,
-    top_p: Optional[float] = 0.0,
-    top_k: Optional[int] = 1,
-    add_bos: Optional[bool] = False,
+    target_cfg: EvaluationTarget,
+    eval_cfg: EvaluationConfig = EvaluationConfig(type="gsm8k"),
 ):
     """
     Evaluates nemo model deployed on PyTriton server (via trtllm) using lm-evaluation-harness
     (https://github.com/EleutherAI/lm-evaluation-harness/tree/main).
 
     Args:
-        nemo_checkpoint_path (Path): Path for nemo 2.0 checkpoint. This is used to get the tokenizer from the ckpt
-        which is required to tokenize the evaluation input and output prompts.
-        url (str): grpc service url that were used in the deploy method above
-            in the format: grpc://{grpc_service_ip}:{grpc_port}.
-        triton_http_port (int): HTTP port that was used for the PyTriton server in the deploy method. Default: 8000.
-        Please pass the triton_http_port if using a custom port in the deploy method.
-        model_name (str): Name of the model that is deployed on PyTriton server. It should be the same as
-        triton_model_name passed to the deploy method above to be able to launch evaluation. Deafult: "triton_model".
-        eval_task (str): task to be evaluated on. For ex: "gsm8k", "gsm8k_cot", "mmlu", "lambada". Default: "gsm8k".
-        These are the tasks that are supported currently. Any other task of type generate_until or loglikelihood from
-        lm-evaluation-harness can be run, but only the above mentioned ones are tested. Tasks of type
-        loglikelihood_rolling are not supported yet.
-        num_fewshot (int): number of examples in few-shot context. Default: None.
-        limit (Union[int, float]): Limit the number of examples per task. If <1 (i.e float val between 0 and 1), limit
-        is a percentage of the total number of examples. If int say x, then run evaluation only on x number of samples
-        from the eval dataset. Default: None, which means eval is run the entire dataset.
-        bootstrap_iters (int): Number of iterations for bootstrap statistics, used when calculating stderrs. Set to 0
-        for no stderr calculations to be performed. Default: 100000.
-        # inference params
-        temperature: Optional[float]: float value between 0 and 1. temp of 0 indicates greedy decoding, where the token
-        with highest prob is chosen. Temperature can't be set to 0.0 currently, due to a bug with TRTLLM
-        (# TODO to be investigated). Hence using a very samll value as the default. Default: 0.000000001.
-        top_p: Optional[float]: float value between 0 and 1. limits to the top tokens within a certain probability.
-        top_p=0 means the model will only consider the single most likely token for the next prediction. Default: 0.0.
-        top_k: Optional[int]: limits to a certain number (K) of the top tokens to consider. top_k=1 means the model
-        will only consider the single most likely token for the next prediction. Default: 1
-        add_bos: Optional[bool]: whether a special token representing the beginning of a sequence should be added when
-        encoding a string. Default: False since typically for CausalLM its set to False. If needed set add_bos to True.
+        target_cfg (EvaluationTarget): target of the evaluation. Providing nemo_checkpoint_path, model_id and url in EvaluationTarget.api_endpoint is required to run evaluations.
+        eval_cfg (EvaluationConfig): configuration for evaluations. Default type (task): gsm8k.
     """
+
+    if target_cfg.api_endpoint.nemo_checkpoint_path is None:
+        raise ValueError("Please provide nemo_checkpoint_path in your target_cfg.")
+
     try:
         # lm-evaluation-harness import
         from lm_eval import evaluator
@@ -490,22 +456,37 @@ def evaluate(
             "Please ensure that lm-evaluation-harness is installed in your env as it is required " "to run evaluations"
         )
 
-    from nemo.collections.llm import evaluation
+    from nemo.collections.llm.evaluation.base import NeMoFWLMEval, wait_for_server_ready
 
     # Get tokenizer from nemo ckpt. This works only with NeMo 2.0 ckpt.
-    tokenizer = io.load_context(nemo_checkpoint_path + "/context", subpath="model.tokenizer")
+    endpoint = target_cfg.api_endpoint
+    tokenizer = io.load_context(endpoint.nemo_checkpoint_path + "/context", subpath="model.tokenizer")
+
     # Wait for server to be ready before starting evaluation
-    evaluation.wait_for_server_ready(url=url, triton_http_port=triton_http_port, model_name=model_name)
-    # Create an object of the NeMoFWLM which is passed as a model to evaluator.simple_evaluate
-    model = evaluation.NeMoFWLMEval(
-        model_name, url, tokenizer, batch_size, max_tokens_to_generate, temperature, top_p, top_k, add_bos
+    wait_for_server_ready(
+        url=endpoint.url, triton_http_port=endpoint.nemo_triton_http_port, model_name=endpoint.model_id
     )
+    # Create an object of the NeMoFWLM which is passed as a model to evaluator.simple_evaluate
+    params = eval_cfg.params
+    model = NeMoFWLMEval(
+        model_name=endpoint.model_id,
+        api_url=endpoint.url,
+        tokenizer=tokenizer,
+        batch_size=params.batch_size,
+        max_tokens_to_generate=params.max_new_tokens,
+        temperature=params.temperature,
+        top_p=params.top_p,
+        top_k=params.top_k,
+        add_bos=params.add_bos,
+    )
+
+    eval_task = eval_cfg.type
     results = evaluator.simple_evaluate(
         model=model,
         tasks=eval_task,
-        limit=limit,
-        num_fewshot=num_fewshot,
-        bootstrap_iters=bootstrap_iters,
+        limit=params.limit_samples,
+        num_fewshot=params.num_fewshot,
+        bootstrap_iters=params.bootstrap_iters,
     )
 
     print("score", results["results"][eval_task])

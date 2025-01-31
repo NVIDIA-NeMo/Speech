@@ -148,6 +148,7 @@ class BertConfig(TransformerConfig, io.IOMixin):
     bert_binary_head: bool = True
     add_lm_head: bool = True
     num_tokentypes: float = None
+    mask_vocab_padding_tokens: bool = False
 
     def configure_model(self, tokenizer) -> "MCoreBertModelWrapperWithPostLNSupport":
         """Configure the BERT Model.
@@ -169,7 +170,6 @@ class BertConfig(TransformerConfig, io.IOMixin):
         if self.num_tokentypes is None:
             self.num_tokentypes = 2 if self.bert_binary_head else 0
 
-        print(self.num_tokentypes)
         return MCoreBertModelWrapperWithPostLNSupport(
             bert_type=self.bert_type,
             add_pooler=self.add_pooler,
@@ -177,6 +177,7 @@ class BertConfig(TransformerConfig, io.IOMixin):
             num_tokentypes=self.num_tokentypes,
             transformer_layer_spec=transformer_layer_spec,
             vocab_size=get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by),
+            tokenizer=tokenizer if self.mask_vocab_padding_tokens else None,
             max_sequence_length=self.seq_length,
             pre_process=parallel_state.is_pipeline_first_stage(),
             post_process=parallel_state.is_pipeline_last_stage(),
@@ -199,11 +200,14 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
     when bert_type is set to 'huggingface', it will initialize post layer norm BERT model.
     """
 
-    def __init__(self, bert_type='megatron', add_pooler=True, *args, **kwargs):
+    def __init__(
+        self, bert_type='megatron', add_pooler=True, tokenizer: Optional["TokenizerSpec"] = None, *args, **kwargs
+    ):
 
         super(MCoreBertModelWrapperWithPostLNSupport, self).__init__(*args, **kwargs)
         self.add_pooler = add_pooler
         self.bert_type = bert_type
+        self.tokenizer = tokenizer
 
         assert (
             self.bert_type == 'megatron' or self.bert_type == 'huggingface'
@@ -317,6 +321,22 @@ class MCoreBertModelWrapperWithPostLNSupport(MCoreBert):
                 'binary_logits': binary_logits,
                 'loss_mask': loss_mask,
             }
+
+        # mask vocab padding tokens from sum term of softmax
+        if self.tokenizer:
+            from megatron.core.tensor_parallel.utils import VocabUtility
+
+            unpadded_vocab_size = self.tokenizer.vocab_size
+
+            get_vocab_range = VocabUtility.vocab_range_from_per_partition_vocab_size
+            padded_vocab_size = logits.size()[-1]
+            rank = parallel_state.get_tensor_model_parallel_rank()
+            world_size = parallel_state.get_tensor_model_parallel_world_size()
+            vocab_start_index, _ = get_vocab_range(padded_vocab_size, rank, world_size)  # gets range on this tp rank
+
+            # mask tokens past unpadded_vocab_size. must be offset by where each tp rank's vocab range starts
+            mask_start = max(unpadded_vocab_size - vocab_start_index, 0)
+            logits[:, :, mask_start:] = float('-inf')
 
         loss = self.compute_language_model_loss(lm_labels, logits)
 

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
 from functools import partial
 
 import fiddle as fdl
@@ -40,7 +41,7 @@ class SquadDataModuleWithPthDataloader(llm.SquadDataModule):
         )
 
 
-def squad(tokenizer) -> pl.LightningDataModule:
+def squad(tokenizer, mbs=1, gbs=2) -> pl.LightningDataModule:
     """Instantiates a SquadDataModuleWithPthDataloader and return it
 
     Args:
@@ -52,8 +53,8 @@ def squad(tokenizer) -> pl.LightningDataModule:
     return SquadDataModuleWithPthDataloader(
         tokenizer=tokenizer,
         seq_length=512,
-        micro_batch_size=2,
-        global_batch_size=128,  # assert gbs == mbs * accumulate_grad_batches
+        micro_batch_size=mbs,
+        global_batch_size=gbs,
         num_workers=0,
         dataset_kwargs={
             "sanity_check_dist_workers": False,
@@ -76,7 +77,7 @@ def main():
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument("--fp8-autocast", action='store_true')
     parser.add_argument('--wandb-project', type=str, default=None)
-    parser.add_argument('--model-save-path', type=str, default=None)
+    parser.add_argument('--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name)
     parser.add_argument('--use-torch-jit', action='store_true')
     args = parser.parse_args()
 
@@ -99,12 +100,19 @@ def main():
         jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': False}, use_thunder=False)
         callbacks = [JitTransform(jit_config)]
 
+    callbacks.append(
+        nl.ModelCheckpoint(
+            every_n_train_steps=args.max_steps // 2,
+            dirpath=args.ckpt_folder,
+        )
+    )
+
     if args.strategy == 'fsdp2':
         args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices, tensor_parallel_size=1)
 
     llm.api.finetune(
         model=llm.HFAutoModelForCausalLM(model_name=args.model, model_accelerator=model_accelerator),
-        data=squad(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
+        data=squad(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model), gbs=args.devices),
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,
@@ -113,7 +121,7 @@ def main():
             log_every_n_steps=1,
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
-            accumulate_grad_batches=10,
+            accumulate_grad_batches=1,
             gradient_clip_val=args.grad_clip,
             use_distributed_sampler=False,
             logger=wandb,
@@ -123,9 +131,6 @@ def main():
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
         log=None,
     )
-
-    if args.model_save_path is not None:
-        model.save_pretrained(args.model_save_path)
 
 
 if __name__ == '__main__':

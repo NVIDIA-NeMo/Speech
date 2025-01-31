@@ -98,6 +98,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             self.model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype='auto',
+                device_map="cpu",
                 trust_remote_code=self.trust_remote_code,
                 load_in_4bit=self.load_in_4bit,
                 attn_implementation=self.attn_implementation,
@@ -116,10 +117,9 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         # Apply FSDP2 and TP to the model
         if self.device_mesh is not None:
-            if self.parallelize_fn is not None:
-                self.parallelize_fn(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
-            else:
-                fsdp2_strategy_parallelize(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
+            if self.parallelize_fn is None:
+                self.parallelize_fn = fsdp2_strategy_parallelize
+            self.parallelize_fn(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
 
         if self.model_accelerator is not None:
             self.model_accelerator(self.model)
@@ -174,11 +174,32 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
     def save_pretrained(self, path):
         assert self.model is not None, "Model has to be created first."
-        self.model.save_pretrained(path)
-        if self._tokenizer is not None:
-            self._tokenizer.save_pretrained(path)
-        else:
-            logging.warning("A tokenizer wasn't created before to save.")
+        import os
+
+        import torch.distributed as dist
+        from torch import Tensor
+        from torch.distributed.tensor import DTensor
+
+        is_dist = dist.is_initialized()
+        is_rank0 = not is_dist or (is_dist and dist.get_rank() == 0)
+        if is_rank0 or type(self.model).__name__.startswith('FSDP'):
+
+            def to_cpu(v):
+                if isinstance(v, DTensor):
+                    return v.full_tensor().cpu()
+                elif isinstance(v, Tensor):
+                    return v.cpu()
+                else:
+                    return v
+
+            cpu_state_dict = {k: to_cpu(v) for k, v in self.model.state_dict().items()}
+
+        if is_rank0:
+            self.model.save_pretrained(path, state_dict=cpu_state_dict)
+            if self._tokenizer is not None:
+                self._tokenizer.save_pretrained(path)
+            else:
+                logging.warning("A tokenizer wasn't created before to save.")
 
     def _remove_extra_batch_keys(self, batch, reserved_keys=['labels', 'loss_mask']):
         """Remove extra keys from batch that are not kwargs in model's forward

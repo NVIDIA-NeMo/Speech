@@ -32,17 +32,11 @@ on:
 
 jobs: 
   release:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_release_library.yml@v0.18.3
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_release_library.yml@v0.20.1
     with:
       release-ref: ${{ inputs.release-ref }}
-      image-name: nemo_container
-      dockerfile: Dockerfile.ci
-      image-label: nemo-core
-      build-args: |
-        IMAGE_LABEL=nemo-core
-      prune-filter-timerange: 24h
       python-package: nemo
-      container-workdir: /workspace
+      python-version: '3.10'
       library-name: Neural Modules
       dry-run: ${{ inputs.dry-run }}
       version-bump-branch: ${{ inputs.version-bump-branch }}

@@ -26,17 +26,11 @@ defaults:
 
 jobs:
   build-test-publish-wheel:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.7.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.20.0
     with:
-      image-name: nemo_container
-      dockerfile: Dockerfile.ci
-      image-label: nemo-core
-      build-args: |
-        IMAGE_LABEL=nemo-core
-      prune-filter-timerange: 24h
       dry-run: true
       python-package: nemo
-      container-workdir: /workspace
+      python-version: '3.10'
       environment: public
     secrets:
       TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}

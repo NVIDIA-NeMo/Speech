@@ -4,10 +4,11 @@ on:
   schedule:
     - cron: 0/15 * * * *
   workflow_dispatch:
-  
+
 jobs:
   pre-flight:
     runs-on: ubuntu-latest
+    if: github.repository_owner == 'NVIDIA'
     outputs:
       list-of-vms: ${{ steps.main.outputs.main }}
     environment: main
@@ -25,13 +26,13 @@ jobs:
 
           MATRIX=$(echo $RUNNERS \
             | jq -c '[
-                .runners[] 
+                .runners[]
                 | select(.status == "online")
                 | select(.name | contains("cpu") | not)
                 | {
-                  "vm": .name, 
+                  "vm": .name,
                   "n_gpus": [
-                    .labels[] 
+                    .labels[]
                     | select(.name | endswith("gpu")) | .name
                   ][0][:1]
                 }

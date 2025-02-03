@@ -58,7 +58,7 @@ if [[ "$HEAVY_DEPS" == "TRUE" ]]; then
     virtualenv /opt/venv &&
     /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
       -r /workspace/requirements/requirements_vllm.txt \
-      -r /workspace/requirements/requirements_infer.txt
+      -r /workspace/requirements/requirements_deploy.txt
 
   DEPS+=(
     "llama-index==0.10.43"

@@ -108,7 +108,8 @@ jobs:
             echo "coverage_report=$coverage_report" >> "$GITHUB_OUTPUT"
 
             docker exec nemo_container_${{ github.run_id }} bash -c 'ls -al'
-            docker cp nemo_container_${{ github.run_id }}:/workspace/.coverage .coverage 
+            docker cp nemo_container_${{ github.run_id }}:/workspace/coverage.xml coverage.xml
+            docker cp nemo_container_${{ github.run_id }}:/workspace/.coverage .coverage
 
             exit $EXIT_CODE
         
@@ -117,7 +118,9 @@ jobs:
           if: inputs.SAVE_COVERAGE_REPORT == true
           with:
             name: ${{ steps.main.outputs.coverage_report }}
-            path: ${{ github.run_id }}/.coverage
+            path: |
+              ${{ github.run_id }}/coverage.xml
+              ${{ github.run_id }}/.coverage
             include-hidden-files: true
             
         - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"

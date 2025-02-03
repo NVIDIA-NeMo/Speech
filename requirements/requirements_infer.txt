@@ -5,4 +5,4 @@ nvidia-pytriton
 pydantic-settings
 tensorstore
 uvicorn
-zarr
+zarr>=2.18.2,<3.0.0

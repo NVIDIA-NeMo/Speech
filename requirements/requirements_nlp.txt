@@ -22,4 +22,4 @@ sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsup
 sentence_transformers
 tensorstore
 tiktoken==0.7.0
-zarr
+zarr>=2.18.2,<3.0.0

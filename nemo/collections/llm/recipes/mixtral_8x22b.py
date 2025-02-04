@@ -217,19 +217,16 @@ def pretrain_performance_optimizations(recipe: run.Partial) -> run.Partial:
     if not recipe.trainer.callbacks:
         recipe.trainer.callbacks = []
 
-    garbage_collection_callback = (
-        run.Config(
-            GarbageCollectionCallback,
-            gc_interval_train=100,
-            gc_interval_val=100,
-        ),
+    garbage_collection_callback = run.Config(
+        GarbageCollectionCallback,
+        gc_interval_train=100,
+        gc_interval_val=100,
     )
-    mcomm_overlap_callback = (
-        run.Config(
-            MegatronCommOverlapCallback,
-            # 'overlap_param_gather_with_optimizer_step' is set automatically. Added here for user's knowledge
-            overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to issue with checkpointing
-        ),
+
+    mcomm_overlap_callback = run.Config(
+        MegatronCommOverlapCallback,
+        # 'overlap_param_gather_with_optimizer_step' is set automatically. Added here for user's knowledge
+        overlap_param_gather_with_optimizer_step=False,  # Currently disabled due to issue with checkpointing
     )
     recipe.trainer.callbacks.extend(
         [

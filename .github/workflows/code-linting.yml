@@ -55,6 +55,7 @@ jobs:
         id: pylint
         env:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+          SKIP_DOCS: ${{ contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
         run: |
           if [[ -z "$CHANGED_FILES" ]]; then
             echo Nothing to lint.
@@ -62,9 +63,15 @@ jobs:
             exit 0
           fi
 
+          if [[ $SKIP_DOCS == true ]]; then
+            ADDITIONAL_PYLINT_ARGS="--disable=C0115,C0116"
+          else
+            ADDITIONAL_PYLINT_ARGS=""
+          fi
+
           pip install pylint
           set +e
-          pylint --output "pylintrc.$DOMAIN.txt" --rcfile ".pylintrc.$DOMAIN" ${CHANGED_FILES[@]}
+          pylint $ADDITIONAL_PYLINT_ARGS --output "pylintrc.$DOMAIN.txt" --rcfile ".pylintrc.$DOMAIN" ${CHANGED_FILES[@]}
           echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
 
       - name: Run flake8

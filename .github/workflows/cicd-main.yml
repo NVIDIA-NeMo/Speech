@@ -184,17 +184,16 @@ jobs:
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 pytest tests/collections/tts -m "not pleasefixme" --with_downloads --cov-report=term  --cov-branch --cov-report=xml --cov=nemo
 
-  OPTIONAL_L0_Unit_Tests_GPU_Core:
+  L0_Unit_Tests_GPU_Core:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'OPTIONAL_L0_Unit_Tests_GPU_Core')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Core')
     with:
       RUNNER: self-hosted-azure-gpus-1
       TIMEOUT: 20
       SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 pytest tests/core -m "not pleasefixme" --with_downloads --cov-report=term  --cov-branch --cov-report=xml --cov=nemo
-      IS_OPTIONAL: true
 
   L0_Unit_Tests_GPU_Hydra:
     needs: [pre-flight, cicd-test-container-build]
@@ -1490,9 +1489,7 @@ jobs:
             model.optim.weight_decay=0.01 \
             model.optim.sched.warmup_ratio=0.01 \
             exp_manager.exp_dir=PretrainingBERTFromPreprocessed \
-            exp_manager.create_checkpoint_callback=False  \
-
-            #rm -rf examples/nlp/language_modeling/PretrainingBERTFromPreprocessed
+            exp_manager.create_checkpoint_callback=False
 
 
   # TODO: remove +model.optim.capturable=True when Pytorch fix: https://github.com/pytorch/pytorch/pull/81858
@@ -2684,10 +2681,10 @@ jobs:
         rm -rf examples/nlp/language_modeling/gpt_pretrain_results
         rm -rf examples/nlp/language_modeling/gpt_index_mappings
 
-  OPTIONAL_L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2:
+  L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'OPTIONAL_L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2')
     with:
       RUNNER: self-hosted-azure-gpus-2-h100
       SCRIPT: |
@@ -2794,7 +2791,6 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf examples/nlp/language_modeling/gpt_pretrain_results
         rm -rf examples/nlp/language_modeling/gpt_index_mappings
-      IS_OPTIONAL: true
 
   L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]
@@ -4945,10 +4941,10 @@ jobs:
         --model mixtral \
         --dist-opt
 
-  OPTIONAL_L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1:
+  L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'OPTIONAL_L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1')
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -4959,7 +4955,6 @@ jobs:
         --mbs 1 \
         --model mixtral \
         --dist-opt
-      IS_OPTIONAL: true
 
   L2_NeMo_2_Mistral_LoRA_TP1PP1_MBS1:
     needs: [pre-flight, cicd-test-container-build]
@@ -5142,7 +5137,7 @@ jobs:
       - L0_Unit_Tests_GPU_Multimodal
       - L0_Unit_Tests_GPU_NLP
       - L0_Unit_Tests_GPU_TTS
-      #- OPTIONAL_L0_Unit_Tests_GPU_Core
+      - L0_Unit_Tests_GPU_Core
       - L0_Unit_Tests_GPU_Hydra
       - L0_Unit_Tests_GPU_Lightning
       - L0_Unit_Tests_GPU_Others
@@ -5214,7 +5209,7 @@ jobs:
       - L2_Megatron_GPT_with_Drop_Optimizer_States_TP2
       - L2_Megatron_GPT_with_ALiBi_Pretraining_and_Resume_Training_TP2
       - L2_Megatron_GPT_with_KERPLE_Pretraining_and_Resume_Training_TP2
-      #- OPTIONAL_L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2
+      - L2_Megatron_GPT_Pretraining_and_Resume_Training_PP2
       - L2_Megatron_GPT_Auto_Configurator_TP1_PP1_MBS124
       - L2_Megatron_GPT_Finetuning_PP2
       - L2_Megatron_GPT_Finetuning_StarCoder_PP1
@@ -5292,7 +5287,7 @@ jobs:
       - L2_NeMo_2_GPT_CLoRA_TP1PP1_MBS1_PACKED
       - L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2
       - L2_NeMo_2_Mixtral_LoRA_TP1PP1_MBS1
-      #- OPTIONAL_L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1
+      - L2_NeMo_2_Mixtral_LoRA_TP2PP1_MBS1
       - L2_NeMo_2_Mistral_LoRA_TP1PP1_MBS1
       - L2_NeMo_2_Mistral_LoRA_TP2PP1_MBS1
       - L2_NEMO_2_LoRA_MERGE

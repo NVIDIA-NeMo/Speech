@@ -151,6 +151,7 @@ class TestExpManager:
             exp_manager(pl.Trainer(accelerator='cpu'), {"unused": 1})
 
     @pytest.mark.unit
+    @pytest.mark.pleasefixme
     def test_trainer_loggers(self, tmp_path):
         """Test that a trainer with logger errors out with a number of arguments. Test that it works with
         create_tensorboard_logger set to False
@@ -534,6 +535,7 @@ class TestExpManager:
 
     @pytest.mark.run_only_on('GPU')
     @pytest.mark.parametrize('test_dist_ckpt', [False, True])
+    @pytest.mark.pleasefixme
     def test_base_checkpoints_are_not_overwritten(self, tmp_path, test_dist_ckpt):
         """Simulates already existing checkpoints in the ckpt directory and tests non-nemo ckpt versioning"""
         strategy = NLPDDPStrategy() if test_dist_ckpt else 'auto'

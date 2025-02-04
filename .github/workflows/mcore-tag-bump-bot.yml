@@ -1,5 +1,5 @@
 # Regularly updates the CI container
-name: MCore Tag Bump Bot
+name: Megatron Tag Bump Bot
 on:
   workflow_dispatch:
   schedule:
@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v2
         with:
           ref: main
-          
+
       - name: Set Git config
         run: |
             git config --local user.email "actions@github.com"

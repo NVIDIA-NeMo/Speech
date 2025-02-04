@@ -14,7 +14,6 @@
 
 import os
 import shutil
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
 
@@ -47,23 +46,20 @@ from nemo.lightning.pytorch.strategies.utils import (
 
 
 class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
-    """Megatron plugin for Pytorch Lightning.
+    """Megatron plugin for Pytorch Lightning implementing FSDP 2.
 
-    This strategy implements FSDP 2 using PyTorch's native FSDP 2 methods. Comparing with
-    MegatronStrategy, FSDP2Strategy is designed to be more lightweight, with minimal
-    modifications over Lightning's ModelParallelStrategy which supports FSDP2 + TP
-    parallelization but preserves necessary features to be compatible with nemo and mcore.
-    By default, this strategy wraps FSDP2 per TransformerLayer.
+    This strategy utilizes PyTorch's native Fully Sharded Data Parallel (FSDP) version 2 methods.
+    Compared to `MegatronStrategy`, `FSDP2Strategy` is designed to be more lightweight while
+    maintaining compatibility with NeMo and MCore. By default, this strategy wraps FSDP2 per
+    Transformer layer.
 
-    Note:
-        This strategy is designed to work with NVIDIA's Megatron-LM framework and requires
-        specific model implementations that are compatible with Megatron's parallelism techniques.
-    Note:
-        Due to the different optimizer structure (FSDP2 only uses torch native optimizers),
-        MegatronStrategy cannot resume training from checkpoints saved by FSDP2Strategy, and vice
-        versa. However, the model weights structure is made compatible, so switching strategy is
-        possible if users only need the weights not the optimizer states. (E.g. run pretrain with
-        megatron 4D parallelism and run SFT with FSDP2.)
+    Notes:
+        - This strategy is designed for NVIDIA's Megatron-LM framework and requires models
+          compatible with Megatron's parallelism techniques.
+        - Due to different optimizer structures, training cannot be resumed from checkpoints
+          saved with `MegatronStrategy`. However, model weights remain compatible, allowing for
+          switching strategies when only weights are needed (e.g., pretraining with Megatron 4D
+          parallelism and fine-tuning with FSDP2).
     """
 
     def __init__(
@@ -75,6 +71,16 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         data_sampler=None,
         **kwargs,
     ):
+        """Initializes the FSDP2Strategy with specified parallelization settings.
+
+        Args:
+            data_parallel_size (Union[Literal["auto"], int]): Number of data-parallel replicas.
+            tensor_parallel_size (Union[Literal["auto"], int]): Number of tensor-parallel groups.
+            ckpt_load_optimizer (bool): Whether to load optimizer state from checkpoints.
+            ckpt_save_optimizer (bool): Whether to save optimizer state in checkpoints.
+            data_sampler (optional): Custom data sampler to process dataloaders.
+            **kwargs: Additional arguments for base class initialization.
+        """
         super().__init__(data_parallel_size=data_parallel_size, tensor_parallel_size=tensor_parallel_size, **kwargs)
 
         self.data_sampler = data_sampler
@@ -83,24 +89,48 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def setup_environment(self) -> None:
+        """Sets up the parallel environment and initializes model parallelism."""
         setup_parallel_ranks(self)
         super().setup_environment()
         init_model_parallel(self.model)
 
     @override
     def setup(self, trainer: pl.Trainer) -> None:
+        """Configures the strategy within the PyTorch Lightning trainer.
+
+        Args:
+            trainer (pl.Trainer): The PyTorch Lightning trainer instance.
+        """
         self.trainer = trainer
         setup_data_sampler(self.trainer)
         fix_progress_bar(trainer)
         super().setup(trainer)
 
     def _get_loss_reduction(self, step_type: str):
+        """Retrieves the loss reduction method for a given step type.
+
+        Args:
+            step_type (str): The type of step (e.g., "training", "validation").
+
+        Returns:
+            Callable: The loss reduction function, if defined; otherwise, None.
+        """
         for fn_name in [f"{step_type}_loss_reduction", "loss_reduction"]:
             if hasattr(self.lightning_module, fn_name):
                 return getattr(self.lightning_module, fn_name)
         return None
 
     def _step_proxy(self, step_type, batch, batch_idx=None):
+        """Executes a training, validation, or test step and applies loss reduction if available.
+
+        Args:
+            step_type (str): The step type ("training", "validation", "test", "predict").
+            batch: The input batch.
+            batch_idx (optional): Index of the batch.
+
+        Returns:
+            Tuple: The computed loss and a dictionary with reduced loss metrics.
+        """
         method_name = f"{step_type}_step"
         if self.model != self.lightning_module:
             loss = self._forward_redirection(self.model, self.lightning_module, method_name, batch, batch_idx)
@@ -114,11 +144,19 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def training_step(self, batch, batch_idx=None) -> STEP_OUTPUT:
+        """Defines the training step, logging relevant metrics.
+
+        Args:
+            batch: The input batch.
+            batch_idx (optional): The index of the batch.
+
+        Returns:
+            STEP_OUTPUT: The loss for backpropagation.
+        """
         assert self.lightning_module is not None
         assert self.model is not None
         with self.precision_plugin.train_step_context():
             loss, reduced = self._step_proxy("training", batch, batch_idx)
-
             self.lightning_module.log(
                 'global_step',
                 self.trainer.global_step,
@@ -140,6 +178,15 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def validation_step(self, batch, batch_idx=None) -> Any:
+        """Defines the validation step, logging validation loss.
+
+        Args:
+            batch: The input batch.
+            batch_idx (optional): The index of the batch.
+
+        Returns:
+            Any: The validation loss.
+        """
         assert self.lightning_module is not None
         assert self.model is not None
         with self.precision_plugin.val_step_context():
@@ -149,6 +196,15 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def test_step(self, batch, batch_idx=None) -> STEP_OUTPUT:
+        """Defines the test step, logging test loss.
+
+        Args:
+            batch: The input batch.
+            batch_idx (optional): The index of the batch.
+
+        Returns:
+            Any: The test loss.
+        """
         assert self.lightning_module is not None
         assert self.model is not None
         with self.precision_plugin.test_step_context():
@@ -159,6 +215,15 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def predict_step(self, batch, batch_idx=None) -> STEP_OUTPUT:
+        """Runs one predict step.
+
+        Args:
+            batch (dict): the batch to use for pred.
+            batch_idx (int, optional): the batch index. Defaults to None.
+
+        Returns:
+            STEP_OUTPUT: the reduced loss.
+        """
         assert self.lightning_module is not None
         assert self.model is not None
         with self.precision_plugin.predict_step_context():
@@ -167,6 +232,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def process_dataloader(self, dataloader: DataLoader) -> DataLoader:
+        """Applies data-samples to dataloader"""
         if self.data_sampler:
             return self.data_sampler.transform_dataloader(dataloader)
 
@@ -175,6 +241,11 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
     @property
     @override
     def checkpoint_io(self) -> CheckpointIO:
+        """CheckpointIO getter
+
+        Returns:
+            CheckpointIO: _description_
+        """
         if not self._checkpoint_io:
             self._checkpoint_io = create_checkpoint_io()
 
@@ -182,12 +253,19 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @checkpoint_io.setter
     def checkpoint_io(self, io: CheckpointIO) -> None:
+        """CheckpointIO setter
+
+        Args:
+            io (CheckpointIO): the checkpointio to use.
+        """
         self._checkpoint_io = io
 
     @property
     def current_epoch_step(self) -> int:
-        """
-        Get the value of step within an epoch.
+        """Gets the current step within an epoch.
+
+        Returns:
+            int: The step index within the epoch.
         """
         return max(
             self.trainer.fit_loop.epoch_loop.automatic_optimization.optim_progress.optimizer.step.current.completed,
@@ -196,12 +274,16 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def remove_checkpoint(self, filepath: Union[str, Path]) -> None:
-        # Taken from MegatronStrategy
+        """Removes a checkpoint from the filesystem.
+
+        Args:
+            filepath (Union[str, Path]): Path to the checkpoint to be removed.
+        """
         ckpt = ckpt_to_dir(filepath)
         if self.is_global_zero:
             if os.path.islink(ckpt):
                 os.unlink(ckpt)
-            else:
+            elif os.path.exists(ckpt):
                 shutil.rmtree(ckpt)
 
     @override
@@ -209,19 +291,22 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self, checkpoint: Dict[str, Any], filepath: Union[str, Path], storage_options: Optional[Any] = None
     ) -> None:
         """Converts PyT checkpoints to MCore format and save using MCore dist ckpt library."""
-        checkpoint["sharded_state_dict"] = pyt_to_mcore_state_dict(
-            checkpoint.pop("state_dict"), device_mesh=self.device_mesh
-        )
-        checkpoint["state_dict"] = OrderedDict([])
+
+        from nemo.lightning.pytorch.strategies.utils import to_cpu
+
+        module_names = list(checkpoint["state_dict"].keys())
+        for name in module_names:
+            param = checkpoint["state_dict"].pop(name)
+            checkpoint["state_dict"][name] = to_cpu(param)
 
         if "optimizer_states" in checkpoint and self.trainer.state.fn == TrainerFn.FITTING:
             # Clear the optimizer states. This handles the case where ckpt_save_optimizer=False
             # Ideally, the optimizer state dicts should not be generated in this case
             checkpoint["optimizer_states"] = {}
 
-            ## replace unsharded optimizer_states with sharded dict.
-            ## note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
-            ## the checkpoint will contain only model weights. Optimizer states will be omitted.
+            # replace unsharded optimizer_states with sharded dict.
+            # note that if trainer.save_checkpoint(path, save_weights_only=True) is called,
+            # the checkpoint will contain only model weights. Optimizer states will be omitted.
             if self.ckpt_save_optimizer:
                 checkpoint['optimizer'] = get_optimizer_state_dict(self.model, self.optimizers)
                 pyt_to_mcore_state_dict(

@@ -19,7 +19,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Literal, Optional, Union
 
-import lightning.pytorch
+import lightning
+import lightning.pytorch as pl
 import torch
 from _weakref import proxy
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
@@ -28,7 +29,7 @@ from lightning.pytorch.utilities import rank_zero_info
 
 from nemo.lightning.ckpt_utils import ckpt_to_dir
 from nemo.lightning.io.pl import TrainerContext
-from nemo.lightning.pytorch.utils import get_huggingface_model_from_trainer
+from nemo.lightning.pytorch.utils import get_automodel_from_trainer
 from nemo.utils import logging
 from nemo.utils.app_state import AppState
 
@@ -36,6 +37,7 @@ from nemo.utils.app_state import AppState
 class ModelCheckpoint(PTLModelCheckpoint):
     """Light wrapper around Lightning's ModelCheckpoint to force a saved checkpoint on train_end.
     Adds support for asyncronous checkpointing and provides some additional logic to clean up invalid checkpoints
+
     Args:
         monitor: Metric to monitor when saving top-k checkpoints.
         verbose: Verbosity mode.
@@ -56,6 +58,17 @@ class ModelCheckpoint(PTLModelCheckpoint):
         save_context_on_train_end: Whether to dump the artifacts on_train_end regardless of whether
             ``always_save_context`` is ``True``.
         async_save: Whether to enable asynchronous checkpointing.
+
+    Attributes:
+        UNFINISHED_CHECKPOINT_SUFFIX (str): Suffix for unfinished checkpoint files.
+        deferred_ckpts_to_remove (List[List[str]]): List of deferred checkpoints
+            to remove once async save is completed.
+        ckpts_to_link (Dict[str, str]): Dictionary of checkpoint paths that need to be symlinked.
+        future_last_model_path (str): Path to the future 'last' checkpoint, used for symbolic linking.
+        best_k_models (dict): Dictionary of best-k checkpoints based on the monitored metric.
+        best_model_score (float): Score of the best checkpoint.
+        best_model_path (str): Path to the best checkpoint.
+        kth_best_model_path (str): Path to the kth best checkpoint.
     """
 
     UNFINISHED_CHECKPOINT_SUFFIX = "-unfinished"
@@ -66,12 +79,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
         verbose: bool = True,
         save_last: Optional[Union[bool, Literal["link"]]] = True,
         save_top_k: int = 3,
-        save_weights_only: bool = False,  ## TODO: check support
+        save_weights_only: bool = False,  # TODO: check support
         mode: str = "min",
         every_n_epochs: int = None,
         every_n_train_steps: Optional[int] = None,
         train_time_interval: Optional[timedelta] = None,
-        save_on_train_epoch_end: Optional[bool] = False,  # Save after training, not after validation
+        # Save after training, not after validation
+        save_on_train_epoch_end: Optional[bool] = False,
         save_optim_on_train_end: Optional[bool] = False,
         always_save_context: bool = True,
         save_context_on_train_end: bool = True,
@@ -81,9 +95,9 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self.save_context_on_train_end = save_context_on_train_end
         self.save_optim_on_train_end = save_optim_on_train_end
 
-        ## stores the next -last checkpoint to be saved, used only when save_last = 'link'
-        ## this is needed because when using symlinks, we need to update the non-last checkpoint's
-        ## last_model_path to point to the corresponding -last version
+        # stores the next -last checkpoint to be saved, used only when save_last = 'link'
+        # this is needed because when using symlinks, we need to update the non-last checkpoint's
+        # last_model_path to point to the corresponding -last version
         self.future_last_model_path = ""
 
         # Checkpoints which removal is deferred until async save is done.
@@ -109,6 +123,20 @@ class ModelCheckpoint(PTLModelCheckpoint):
         )
 
     def on_train_start(self, trainer, pl_module):
+        """
+        Initializes checkpointing by handling previous runs,
+        setting up file logging, and managing files to move or copy.
+
+        This method handles:
+        - Moving old files to new folders
+        - Copying relevant files to the log directory
+        - Creating command argument and git information logs
+        - Setting up logging for errors and Lightning logs
+
+        Args:
+            trainer (pl.Trainer): The PyTorch Lightning trainer object.
+            pl_module (pl.LightningModule): The Lightning model to be trained.
+        """
         from nemo.utils.exp_manager import get_git_diff, get_git_hash
         from nemo.utils.get_rank import is_global_rank_zero
         from nemo.utils.lightning_logger_patch import add_filehandlers_to_pl_logger
@@ -172,6 +200,17 @@ class ModelCheckpoint(PTLModelCheckpoint):
         super().on_train_start(trainer, pl_module)
 
     def nemo_topk_check_previous_run(self):
+        """
+        Verifies and cleans up the top-k checkpoint state from previous training runs.
+
+        This method ensures that:
+        - The top-k models are correctly loaded and ordered.
+        - Any outdated or invalid checkpoints are removed.
+        - The best model is determined based on the monitored metric.
+
+        Raises:
+            AttributeError: If the expected attributes for the top-k model are not found.
+        """
         try:
             self.best_k_models
             self.kth_best_model_path
@@ -191,11 +230,13 @@ class ModelCheckpoint(PTLModelCheckpoint):
             checkpoint = str(checkpoint)
             if checkpoint[-10:] == '-last.ckpt' or checkpoint[-5:] == '-last':
                 continue
-            index = checkpoint.find(self.monitor) + len(self.monitor) + 1  # Find monitor in str + 1 for '='
+            # Find monitor in str + 1 for '='
+            index = checkpoint.find(self.monitor) + len(self.monitor) + 1
             if index != len(self.monitor):
                 match = re.search('[A-z]', checkpoint[index:])
                 if match:
-                    value = checkpoint[index : index + match.start() - 1]  # -1 due to separator hyphen
+                    # -1 due to separator hyphen
+                    value = checkpoint[index : index + match.start() - 1]
                 else:
                     value = checkpoint[index:]
                 self.best_k_models[checkpoint] = float(value)
@@ -228,6 +269,23 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self.best_model_score = self.best_k_models[self.best_model_path]
 
     def _remove_invalid_entries_from_topk(self):
+        """
+        Removes invalid (incomplete or non-existing) checkpoints from the list of top-k checkpoints.
+
+        This function is necessary when checkpointing might have been abruptly interrupted, leaving behind
+        incomplete or corrupted checkpoints. The invalid checkpoints are identified by checking if their
+        corresponding directory exists and if the checkpoint is not unfinished.
+
+        After removing invalid entries, the method updates the best-k models based on the existing, valid checkpoints.
+
+        Attributes Updated:
+            - `best_k_models`: A dictionary of valid checkpoints from top-k models.
+            - `best_model_path`: Path to the best model based on the current sorting order.
+            - `best_model_score`: The score associated with the best model.
+            - `kth_best_model_path`: Path to the kth best model.
+            - `kth_value`: The score associated with the kth best model.
+        """
+
         # Removes invalid (incomplete or not existing) checkpoints from topk checkpoints.
         # This might be needed if the checkpointing was abruptly terminated.
         def __is_ckpt_ok(ckpt_path: str) -> bool:
@@ -249,17 +307,48 @@ class ModelCheckpoint(PTLModelCheckpoint):
             self.best_model_score = None
 
     def state_dict(self):
+        """
+        Returns the state dictionary of the model.
+
+        This function adds additional logic to handle the case when using symlinks. If the model is configured
+        to save the last checkpoint as a symlink, the path to the last checkpoint is updated in the returned
+        state dictionary to avoid off-by-one errors in the checkpointing system.
+
+        Returns:
+            Dict[str, Any]: The state dictionary of the model, including any necessary modifications for symlinks.
+        """
         state = super().state_dict()
-        ## if using symlinks, overwrite last_model_path to avoid off-by-one issues
+        # if using symlinks, overwrite last_model_path to avoid off-by-one issues
         if self.save_last == "link":
             state["last_model_path"] = self.future_last_model_path
         return state
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        """
+        Loads the state dictionary into the model and removes invalid entries from the top-k checkpoints.
+
+        This method ensures that after loading the model state, any invalid (incomplete or missing) checkpoints
+        are removed from the top-k models list.
+
+        Args:
+            state_dict (Dict[str, Any]): The state dictionary to load into the model.
+        """
         super().load_state_dict(state_dict)
         self._remove_invalid_entries_from_topk()
 
     def setup(self, trainer, *args, **kwargs) -> None:
+        """
+        Initializes the model and removes any unfinished checkpoints before training.
+
+        This method is responsible for ensuring that unfinished checkpoints are removed prior to starting the training.
+        It also synchronizes all ranks in a distributed setting to ensure that unfinished checkpoints are removed
+        across all ranks.
+
+        Args:
+            trainer: The trainer instance used for training.
+            *args: Additional arguments passed to the parent setup method.
+            **kwargs: Additional keyword arguments passed to the parent setup method.
+        """
         from nemo.utils.get_rank import is_global_rank_zero
 
         if is_global_rank_zero():
@@ -273,6 +362,16 @@ class ModelCheckpoint(PTLModelCheckpoint):
         super().setup(trainer, *args, **kwargs)
 
     def on_train_end(self, trainer, pl_module):
+        """
+        Handles actions to be performed when training ends, such as saving the last checkpoint.
+
+        This method ensures that the last checkpoint is saved if needed, particularly when validation steps
+        aren't always run based on the interval. It also manages saving the training context to disk, if configured.
+
+        Args:
+            trainer: The trainer instance used for training.
+            pl_module: The model being trained.
+        """
         from nemo.utils.get_rank import is_global_rank_zero
 
         if trainer.fast_dev_run:
@@ -299,6 +398,16 @@ class ModelCheckpoint(PTLModelCheckpoint):
         super().on_train_end(trainer, pl_module)
 
     def _del_model_without_trainer(self, filepath: str) -> None:
+        """
+        Deletes the checkpoint model directory from distributed storage without requiring the trainer.
+
+        This method ensures that distributed checkpoints are properly removed when necessary, especially
+        if the model file is no longer needed or is incomplete. The removal only happens on the rank-zero process.
+
+        Args:
+            filepath (str): The path to the checkpoint model file to be deleted.
+        """
+
         from nemo.utils.get_rank import is_global_rank_zero
 
         filepath = Path(filepath)
@@ -314,6 +423,19 @@ class ModelCheckpoint(PTLModelCheckpoint):
             torch.distributed.barrier()
 
     def _ema_callback(self, trainer: 'lightning.pytorch.Trainer'):
+        """
+        Retrieves the Exponential Moving Average (EMA) callback from the list of trainer callbacks.
+
+        This method scans through the list of callbacks attached to the trainer and returns the EMA callback
+        instance if present. The EMA callback is often used to track the exponential moving average of model parameters
+        during training.
+
+        Args:
+            trainer ('lightning.pytorch.Trainer'): The trainer instance.
+
+        Returns:
+            EMA: The EMA callback instance if found, or None if not present.
+        """
         from nemo.collections.common.callbacks import EMA
 
         ema_callback = None
@@ -415,16 +537,16 @@ class ModelCheckpoint(PTLModelCheckpoint):
         return monitor_candidates
 
     def _link_checkpoint(self, trainer: "pl.Trainer", filepath: str, linkpath: str, override_async=False) -> None:
-
-        ## check to see whether this step has already been saved as top_k
-        ## in which case we can create a symlink
-        ## otherwise, we have to save the checkpoint
+        """Check to see whether this step has already been saved as top_k
+        in which case we can create a symlink
+        otherwise, we have to save the checkpoint
+        """
         saved_current_step = str(ckpt_to_dir(linkpath)).replace("-last", "") == str(ckpt_to_dir(filepath))
         if not saved_current_step:
             self._save_checkpoint(trainer, linkpath)
             return
 
-        ## linking will happen as part of the finalize fn
+        # linking will happen as part of the finalize fn
         if self.async_save and not override_async:
             self.ckpts_to_link[str(filepath)] = str(linkpath)
             return
@@ -434,8 +556,18 @@ class ModelCheckpoint(PTLModelCheckpoint):
         super()._link_checkpoint(trainer, filepath, linkpath)
 
     def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:
+        """Saves the checkpoint to the given filepath
+
+        Args:
+            trainer (lightning.pytorch.Trainer): the trainer obj
+            filepath (str): path to save checkpoint to.
+
+        Raises:
+            ValueError: (mcore) async_save with EMA not supported
+            ValueError: (mcore) Async save requires async compatible CheckpointIO
+        """
         # if it's an HF model -> use HF's save_pretrained function.
-        if (mod := get_huggingface_model_from_trainer(trainer)) is not None:
+        if (mod := get_automodel_from_trainer(trainer)) is not None:
             mod.save_pretrained(filepath)
             return
 
@@ -448,8 +580,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
         self._last_global_step_saved = trainer.global_step
 
-        ## manually update last_model_path so symlink is up-to-date
-        ## should only be done when using a symlink
+        # manually update last_model_path so symlink is up-to-date
+        # should only be done when using a symlink
         if self.save_last == "link":
             self.future_last_model_path = str(ckpt_to_dir(filepath))
             if not str(ckpt_to_dir(filepath)).endswith("last"):
@@ -470,11 +602,11 @@ class ModelCheckpoint(PTLModelCheckpoint):
                 super()._save_checkpoint(trainer, filepath)
             self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
         else:
-            ## Determine whether to include optimizer states in the checkpoint
-            ## optimizer states are included when
-            ## 1. save_weights_only is False and
-            ## 2. either save_optim_on_train_end is True, or save_optim_on_train_end is False but the checkpoint
-            ##    is an intermediate checkpoint.
+            # Determine whether to include optimizer states in the checkpoint
+            # optimizer states are included when
+            # 1. save_weights_only is False and
+            # 2. either save_optim_on_train_end is True, or save_optim_on_train_end is False but the checkpoint
+            #    is an intermediate checkpoint.
             save_weights_only = self.save_weights_only or (
                 not self.save_optim_on_train_end and trainer.global_step == trainer.max_steps
             )
@@ -566,16 +698,50 @@ class ModelCheckpoint(PTLModelCheckpoint):
         self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)
 
     def _ema_format_filepath(self, filepath: str) -> str:
+        """Formats given path for EMA checkpoint
+
+        Args:
+            filepath (str): filepath
+
+        Returns:
+            str: EMA-formatted filepath
+        """
         return filepath.replace(self.FILE_EXTENSION, f'-EMA{self.FILE_EXTENSION}')
 
     def _has_ema_ckpts(self, checkpoints: Iterable[Path]) -> bool:
+        """Checkes whether filepaths are EMA-formatted
+
+        Args:
+            checkpoints (Iterable[Path]): paths to check
+
+        Returns:
+            bool: True indicates path is EMA-formatted.
+        """
         return any(self._is_ema_filepath(checkpoint_path) for checkpoint_path in checkpoints)
 
     def _is_ema_filepath(self, filepath: Union[Path, str]) -> bool:
+        """Checkes whether filepaths are EMA-formatted
+
+        Args:
+            filepath (Union[Path, str]): path to check
+
+        Returns:
+            bool: True indicates path is EMA-formatted.
+        """
         return str(filepath).endswith(f'-EMA{self.FILE_EXTENSION}')
 
     @property
     def _saved_checkpoint_paths(self) -> Iterable[Path]:
+        """
+        Retrieves a list of saved checkpoint paths while filtering out unfinished checkpoints.
+
+        - If distributed checkpoints (directories) exist, return only those.
+        - Otherwise, return individual checkpoint files with a .ckpt extension.
+        - Filters out any checkpoints that are marked as unfinished.
+
+        Returns:
+            Iterable[Path]: An iterable containing valid checkpoint paths.
+        """
         # distributed checkpoints are directories so we check for them here
         # we filter out unfinished checkpoints, these should be deleted during next cleanup
         dist_checkpoints = [d for d in Path(self.dirpath).glob("*") if d.is_dir()]
@@ -587,6 +753,20 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
     @staticmethod
     def _remove_unfinished_checkpoints(checkpoint_dir: Union[Path, str]) -> None:
+        """
+        Removes all unfinished checkpoints and their associated marker files from the filesystem.
+
+        - Ensures this function runs only on rank 0.
+        - Deletes individual unfinished checkpoint files.
+        - Removes directories corresponding to unfinished distributed checkpoints.
+        - Deletes the marker files indicating unfinished checkpoints.
+
+        Args:
+            checkpoint_dir (Union[Path, str]): Path to the directory containing checkpoints.
+
+        Raises:
+            AssertionError: If the function is called from a non-rank 0 process.
+        """
         from nemo.utils.get_rank import is_global_rank_zero
 
         # Delete unfinished checkpoints from the filesystems.
@@ -637,7 +817,8 @@ class ModelCheckpoint(PTLModelCheckpoint):
 
         if resume_path is not None and previous == resume_path:
             if str(current).endswith("-last.ckpt") and resume_path.name.endswith("-last.ckpt"):
-                # delete the previous `-last.ckpt` checkpoint when current saved checkpoint is also `-last.ckpt`, if they're in the same directory
+                # delete the previous `-last.ckpt` checkpoint when current saved checkpoint
+                # is also `-last.ckpt`, if they're in the same directory
                 pass
             else:
                 return False

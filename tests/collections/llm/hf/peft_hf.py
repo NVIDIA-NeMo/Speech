@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
+
 import fiddle as fdl
 from lightning.pytorch.loggers import WandbLogger
+
 from nemo import lightning as nl
 from nemo.collections import llm
+from nemo.lightning import NeMoLogger
 
 DATA_PATH = '/home/TestData/lite/hf_cache/squad/'
 
@@ -61,12 +65,14 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', default='meta-llama/Llama-3.2-1B')
-    parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp'])
-    parser.add_argument('--devices', default=1)
+    parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp', 'fsdp2'])
+    parser.add_argument('--devices', default=1, type=int)
+    parser.add_argument('--num-nodes', default=1, type=int)
     parser.add_argument('--accelerator', default='gpu', choices=['gpu'])
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
     parser.add_argument('--disable-ckpt', action='store_false')
+    parser.add_argument('--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name)
     args = parser.parse_args()
 
     wandb = None
@@ -80,29 +86,35 @@ if __name__ == '__main__':
     if args.strategy == 'fsdp':
         # See: https://github.com/Lightning-AI/pytorch-lightning/blob/8ad3e29816a63d8ce5c00ac104b14729a4176f4f/src/lightning/pytorch/plugins/precision/fsdp.py#L81
         grad_clip = None
+    if args.strategy == 'fsdp2':
+        args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices * args.num_nodes, tensor_parallel_size=1)
+
     use_dist_samp = False
     tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)
+    callbacks = []
 
     llm.api.finetune(
         model=llm.HFAutoModelForCausalLM(args.model),
         data=make_squad_hf_dataset(DATA_PATH, tokenizer),
         trainer=nl.Trainer(
             devices=args.devices,
+            num_nodes=args.num_nodes,
             max_steps=args.max_steps,
             accelerator=args.accelerator,
             strategy=args.strategy,
             log_every_n_steps=1,
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
-            accumulate_grad_batches=10,
+            accumulate_grad_batches=1,
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
             logger=wandb,
             enable_checkpointing=args.disable_ckpt,
             precision='bf16',
+            callbacks=callbacks,
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
-        log=None,
+        log=NeMoLogger(log_dir=args.ckpt_folder, use_datetime_version=False),
         peft=llm.peft.LoRA(
             target_modules=['*_proj'],
             dim=32,

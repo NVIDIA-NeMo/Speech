@@ -71,6 +71,7 @@ def main():
     parser.add_argument('--model', type=str, default='meta-llama/Llama-3.2-1B')
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp2'])
     parser.add_argument('--devices', type=int, default=1)
+    parser.add_argument('--num-nodes', type=int, default=1)
     parser.add_argument('--accelerator', type=str, default='gpu', choices=['gpu'])
     parser.add_argument('--grad-clip', type=float, default=1.0)
     parser.add_argument('--model-accelerator', type=str, default=None, choices=['te'])
@@ -108,13 +109,14 @@ def main():
     )
 
     if args.strategy == 'fsdp2':
-        args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices, tensor_parallel_size=1)
+        args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices * args.num_nodes, tensor_parallel_size=1)
 
     llm.api.finetune(
         model=llm.HFAutoModelForCausalLM(model_name=args.model, model_accelerator=model_accelerator),
         data=squad(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model), gbs=args.devices),
         trainer=nl.Trainer(
             devices=args.devices,
+            num_nodes=args.num_nodes,
             max_steps=args.max_steps,
             accelerator=args.accelerator,
             strategy=args.strategy,

@@ -26,6 +26,21 @@ from nemo.utils import logging
 
 
 def masked_cross_entropy(logits, targets, mask=None):
+    """
+    Compute the masked cross-entropy loss between logits and targets.
+
+    If a mask is provided, the loss is computed per element, multiplied by the mask,
+    and then averaged. If no mask is provided, the standard cross-entropy loss is used.
+
+    Args:
+        logits (torch.Tensor): The predicted logits with shape (N, C) where C is the number of classes.
+        targets (torch.Tensor): The ground truth class indices with shape (N,).
+        mask (torch.Tensor, optional): A tensor that masks the loss computation. Must be broadcastable
+            to the shape of the loss. Defaults to None.
+
+    Returns:
+        torch.Tensor: The computed loss as a scalar tensor.
+    """
     if mask is not None:
         loss = F.cross_entropy(logits, targets, reduction='none')
         return torch.mean(loss * mask.view(-1))
@@ -34,6 +49,28 @@ def masked_cross_entropy(logits, targets, mask=None):
 
 
 class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
+    """
+    A LightningModule wrapper for AutoModelForCausalLm.
+
+    This module wraps around a LightningModule around a AutoModelForCausalLm (e.g., GPT-2).
+    It provides functionalities for training, validation, and saving, and it supports model parallelization
+    techniques including FSDP2 and tensor parallelism.
+
+    Attributes:
+        model_name (str): The name or path of the pretrained model.
+        load_pretrained_weights (bool): Whether to load pretrained weights.
+        loss_fn (callable): The loss function to use during training and validation.
+        is_hf_model (bool): Flag indicating that the underlying model is from Hugging Face.
+        model_transform (callable, optional): A function to transform the model after creation.
+        model_accelerator (callable, optional): A function to apply additional accelerations or modifications.
+        trust_remote_code (bool): Whether to trust remote code for model loading.
+        default_dtype (torch.dtype): The default data type for model weights.
+        load_in_4bit (bool): Whether to load the model in 4-bit precision.
+        attn_implementation (str): The attention implementation to use.
+        mp_policy (MixedPrecisionPolicy): Mixed precision policy for distributed training.
+        parallelize_fn (callable, optional): Function for parallelizing the model.
+    """
+
     def __init__(
         self,
         model_name='gpt2',
@@ -52,6 +89,30 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         cast_forward_inputs=True,
         parallelize_fn=None,
     ):
+        """
+        Initialize the HFAutoModelForCausalLM.
+
+        Args:
+            model_name (str, optional): The model name or path. Defaults to 'gpt2'.
+            load_pretrained_weights (bool, optional): Whether to load pretrained weights. Defaults to True.
+            tokenizer (AutoTokenizer, optional): A pre-configured tokenizer. Defaults to None.
+            loss_fn (callable, optional): Loss function to use. Defaults to masked_cross_entropy.
+            model_transform (callable, optional): Function to transform the model after creation. Defaults to None.
+            model_accelerator (callable, optional): Function to accelerate or optimize the model. Defaults to None.
+            trust_remote_code (bool, optional): Whether to trust remote code during model/tokenizer loading.
+                Defaults to False.
+            default_dtype (torch.dtype, optional): Default data type for the model. Defaults to torch.bfloat16.
+            load_in_4bit (bool, optional): Whether to load the model in 4-bit precision. Defaults to False.
+            attn_implementation (str, optional): Attention implementation to use. Defaults to "sdpa".
+            param_dtype (torch.dtype, optional): Data type for model parameters in mixed precision.
+                Defaults to torch.bfloat16.
+            reduce_dtype (torch.dtype, optional): Data type for reduction operations in mixed precision.
+                Defaults to torch.float32.
+            output_dtype (torch.dtype, optional): Data type for model outputs in mixed precision.
+                Defaults to None.
+            cast_forward_inputs (bool, optional): Whether to cast forward inputs. Defaults to True.
+            parallelize_fn (callable, optional): Function for parallelizing the model. Defaults to None.
+        """
         super().__init__()
         self.save_hyperparameters()
         self.model_name = model_name
@@ -76,23 +137,61 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
     @property
     def tokenizer(self):
+        """
+        Get the tokenizer for the model.
+
+        If the tokenizer is not already initialized, it will be created using the
+        `configure_tokenizer` static method.
+
+        Returns:
+            AutoTokenizer: The tokenizer associated with the model.
+        """
         if self._tokenizer is None:
             self._tokenizer = HFAutoModelForCausalLM.configure_tokenizer(self.model_name, self.trust_remote_code)
         return self._tokenizer
 
     @tokenizer.setter
     def tokenizer(self, value):
+        """
+        Set the tokenizer for the model.
+
+        Args:
+            value (AutoTokenizer): The tokenizer to be used.
+        """
         assert self._tokenizer is None
         self._tokenizer = value
 
     @staticmethod
     def configure_tokenizer(model_name, use_fast=True, trust_remote_code=False):
+        """
+        Configure and return a Hugging Face AutoTokenizer for the given model.
+
+        Args:
+            model_name (str): The name or path of the model.
+            use_fast (bool, optional): Whether to use the fast tokenizer implementation. Defaults to True.
+            trust_remote_code (bool, optional): Whether to trust remote code when loading the tokenizer.
+                Defaults to False.
+
+        Returns:
+            AutoTokenizer: The instantiated tokenizer.
+        """
         try:
             return AutoTokenizer(model_name, use_fast=use_fast, trust_remote_code=trust_remote_code)
         except:
             return AutoTokenizer(model_name, use_fast=not use_fast, trust_remote_code=trust_remote_code)
 
     def configure_model(self):
+        """
+        Configure and initialize the Hugging Face model.
+
+        Depending on the `load_pretrained_weights` flag, this method either loads
+        a pretrained model or creates a model from configuration. It also applies FSDP2 and
+        tensor parallelization if a device mesh is provided, and applies any additional
+        accelerator function if specified.
+
+        Raises:
+            Exception: If model configuration fails.
+        """
         # create all your layers here
         if self.load_pretrained_weights:
             self.model = AutoModelForCausalLM.from_pretrained(
@@ -127,9 +226,32 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.model.train()
 
     def forward(self, batch):
+        """
+        Perform a forward pass of the model.
+
+        Args:
+            batch (dict): A dictionary of inputs that the model expects.
+
+        Returns:
+            ModelOutput: The output of the underlying Hugging Face model.
+        """
         return self.model(**batch)
 
     def training_step(self, batch, batch_idx=None):
+        """
+        Execute a single training step.
+
+        This method prepares the input batch by ensuring the required keys are present,
+        performs a forward pass, reshapes the logits and labels appropriately, computes the loss
+        using the defined loss function, and logs the training loss.
+
+        Args:
+            batch (dict): A dictionary containing the batch data, including 'labels' and optionally 'loss_mask'.
+            batch_idx (int, optional): The index of the batch. Defaults to None.
+
+        Returns:
+            torch.Tensor: The computed loss for the batch.
+        """
         labels = batch.pop('labels').to(self.model.device)
         loss_mask = batch.pop('loss_mask', None)
 
@@ -153,6 +275,17 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
     @torch.no_grad
     def validation_step(self, batch, batch_idx):
+        """
+        Execute a single validation step.
+
+        This method is similar to `training_step` but without gradient computations.
+        It processes the input batch, performs a forward pass, computes the loss,
+        and logs the validation loss.
+
+        Args:
+            batch (dict): A dictionary containing the batch data, including 'labels' and optionally 'loss_mask'.
+            batch_idx (int): The index of the batch.
+        """
         labels = batch.pop('labels').to(self.model.device)
         loss_mask = batch.pop('loss_mask', None)
 
@@ -173,25 +306,28 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
 
     def save_pretrained(self, path):
-        assert self.model is not None, "Model has to be created first."
-        import os
+        """
+        Save the pretrained model and tokenizer to a specified path.
 
+        This method ensures that the model state is gathered (especially in distributed settings)
+        and then saves the state dict and tokenizer. Only rank 0 or the appropriate FSDP module saves
+        the files to avoid race conditions.
+
+        Args:
+            path (str): The directory path where the model and tokenizer should be saved.
+
+        Raises:
+            AssertionError: If the model has not been created prior to saving.
+        """
+        assert self.model is not None, "Model has to be created first."
         import torch.distributed as dist
-        from torch import Tensor
-        from torch.distributed.tensor import DTensor
+        from nemo.lightning.pytorch.strategies.utils import to_cpu
 
         is_dist = dist.is_initialized()
-        is_rank0 = not is_dist or (is_dist and dist.get_rank() == 0)
+        rank = dist.get_rank() if is_dist else 0
+        is_rank0 = not is_dist or (is_dist and rank == 0)
+
         if is_rank0 or type(self.model).__name__.startswith('FSDP'):
-
-            def to_cpu(v):
-                if isinstance(v, DTensor):
-                    return v.full_tensor().cpu()
-                elif isinstance(v, Tensor):
-                    return v.cpu()
-                else:
-                    return v
-
             cpu_state_dict = {k: to_cpu(v) for k, v in self.model.state_dict().items()}
 
         if is_rank0:

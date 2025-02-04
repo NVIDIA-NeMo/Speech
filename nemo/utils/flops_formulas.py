@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from dataclasses import dataclass
+from typing import Optional
+
 from nemo.collections.common.parts.perf_metrics_utils import LLM_VOCAB_SIZE_MAP
 
 
@@ -21,13 +23,21 @@ class FLOPSConfig:
     """Contains the model hparams needed for FLOPS computations"""
 
     gbs: int
-    enc_seq_len: int
-    hs: int
-    layers: int
-    ffn_hs: int
-    attention_heads: int
-    moe_router_topk: int
-    query_groups: int
+    enc_seq_len: Optional[int] = None
+    hs: Optional[int] = None
+    layers: Optional[int] = None
+    ffn_hs: Optional[int] = None
+    attention_heads: Optional[int] = None
+    moe_router_topk: Optional[int] = None
+    query_groups: Optional[int] = None
+    img_seq_len: Optional[int] = None
+    img_h: Optional[int] = None
+    img_w: Optional[int] = None
+    in_channels: Optional[int] = None
+    patch_dim: Optional[int] = None
+    class_token_len: Optional[int] = None
+    projector_type: Optional[str] = None
+    inp_s: Optional[int] = None
 
 
 def gpt3(config: FLOPSConfig):
@@ -134,3 +144,29 @@ def bert(config: FLOPSConfig):
         * config.hs
         * (1 + (config.enc_seq_len / (6 * config.hs)) + (vocab_size / (12 * config.hs * config.layers)))
     )
+
+
+def clip_vit_l(config: FLOPSConfig):
+    """Model FLOPs for CLIP ViT"""
+
+    if config.img_seq_len is None:
+        config.img_seq_len = (config.img_h * config.img_w) / (
+            config.patch_dim * config.patch_dim
+        ) + config.class_token_len
+    return config.gbs * config.layers * config.hs * config.hs * config.img_seq_len * (
+        24 + (4 * config.img_seq_len / config.hs)
+    ) + (2 * config.gbs * config.hs * config.in_channels * config.img_h * config.img_w)
+
+
+def neva_projection(config: FLOPSConfig):
+    """Model FLOPs for NeVA Projection"""
+
+    if "mlp" in config.projector_type:
+        return 6 * config.gbs * config.img_seq_len * config.ffn_hs * (config.inp_s + config.hs)
+    elif config.projector_type == "affine":
+        return 6 * config.gbs * config.img_seq_len * config.inp_s * config.hs
+    else:
+        raise ValueError(
+            f"NeVA Projections FLOPs calculator only supports 'mlp', 'mcore_mlp'"
+            f" or 'affine' projector_type but found {config.projector_type}"
+        )

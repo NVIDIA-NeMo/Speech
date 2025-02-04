@@ -19,10 +19,20 @@ import numpy as np
 import torch
 from lightning.pytorch.callbacks import Callback
 
+from nemo.collections.llm.gpt.model.base import GPTConfig
 from nemo.lightning.pytorch.callbacks import PEFT
 from nemo.utils import flops_formulas, logging
 
-__all__ = ["FLOPsMeasurementCallback"]
+__all__ = ["FLOPsMeasurementCallback", "MM_FLOPsMeasurementCallback"]
+
+_model_flops_map = {
+    "gpt3": flops_formulas.gpt3,
+    "llama2": flops_formulas.llama2,
+    "llama3": flops_formulas.llama3,
+    "nemotron": flops_formulas.nemotron,
+    "mixtral": flops_formulas.mixtral,
+    "bert": flops_formulas.bert,
+}
 
 
 class FLOPsMeasurementCallback(Callback):
@@ -42,7 +52,7 @@ class FLOPsMeasurementCallback(Callback):
 
     def __init__(
         self,
-        model_config: "GPTConfig",
+        model_config: GPTConfig,
         data_config: pl.LightningDataModule,
         model_name: str,
     ):
@@ -100,7 +110,7 @@ class FLOPsMeasurementCallback(Callback):
 
         n = trainer.strategy.current_epoch_step
         if n % trainer.log_every_n_steps == 0:
-            ## skip calculation if we haven't accumulated any timing data
+            # skip calculation if we haven't accumulated any timing data
             if self.avg_train_step_time == 0:
                 return
             tflops_per_sec_per_gpu = self.eval_tflops_per_sec_per_gpu(
@@ -141,23 +151,100 @@ class FLOPsMeasurementCallback(Callback):
         Calculate model FLOPs for a given model
         """
 
-        model_flops_map = {
-            "gpt3": flops_formulas.gpt3,
-            "llama2": flops_formulas.llama2,
-            "llama3": flops_formulas.llama3,
-            "nemotron": flops_formulas.nemotron,
-            "mixtral": flops_formulas.mixtral,
-            "bert": flops_formulas.bert,
-        }
-
         if self.model is not None:
-            model_matches = [model for model in model_flops_map if model in self.model]
+            model_matches = [model for model in _model_flops_map if model in self.model]
             self.model = model_matches[0] if len(model_matches) > 0 else self.model
-        if self.model not in model_flops_map:
-            logging.info(f"FLOPs measurement supported for {list(model_flops_map.keys())}")
+        if self.model not in _model_flops_map:
+            logging.info(f"FLOPs measurement supported for {list(_model_flops_map.keys())}")
             raise KeyError(f"Failed to extract valid model name from or missing FLOPs calculations for {self.model}")
 
-        total_flops = model_flops_map[self.model](self.flops_config)
+        total_flops = _model_flops_map[self.model](self.flops_config)
+        num_devices = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        flops_per_gpu = total_flops / num_devices
+
+        return total_flops, flops_per_gpu
+
+
+class MM_FLOPsMeasurementCallback(FLOPsMeasurementCallback):
+    """
+    Calculate and log FLOPs per second after every ``trainer.log_every_n_steps`` steps for multi-modal models.
+    The following models are supported:
+            hf_clip_vit_l, neva_projection, gpt3, llama2, llama3, nemotron, mixtral, bert.
+
+    Args:
+        model_name_config_dict (dict):
+            Dictionary containing all the individual model configs that make up the multi-modal model.
+        data_config (pl.LightningDataModule): Data module being used in the experiment.
+    """
+
+    higher_is_better = True
+
+    def __init__(
+        self,
+        model_name_config_dict: dict,
+        data_config: pl.LightningDataModule,
+    ):
+        self.data_cfg = data_config
+        self.flops_config_dict = dict()
+
+        for model_name, model_cfg in model_name_config_dict.items():
+            kwargs = dict()
+            kwargs["gbs"] = self.data_cfg.global_batch_size
+            kwargs["hs"] = model_cfg.hidden_size
+            if model_name in ["hf_clip_vit_l"]:
+                kwargs["layers"] = model_cfg.num_hidden_layers
+                kwargs["img_seq_len"] = model_cfg.num_image_embeddings_per_tile
+                kwargs["img_h"] = model_cfg.image_size
+                kwargs["img_w"] = model_cfg.image_size
+                kwargs["patch_dim"] = model_cfg.patch_size
+                kwargs["in_channels"] = model_cfg.num_channels
+                kwargs["class_token_len"] = 1  # TODO: Add directly to HFCLIPVisionConfig
+            elif model_name in ["neva_projection"]:
+                kwargs["projector_type"] = model_cfg.projector_type
+                kwargs["ffn_hs"] = model_cfg.ffn_hidden_size
+                kwargs["inp_s"] = model_cfg.input_size
+                # TODO: Add img_seq_len directly to MultimodalProjectorConfig
+                kwargs["img_seq_len"] = model_name_config_dict["hf_clip_vit_l"].num_image_embeddings_per_tile
+            else:
+                kwargs["enc_seq_len"] = model_cfg.seq_length
+                kwargs["layers"] = model_cfg.num_layers
+                kwargs["ffn_hs"] = model_cfg.ffn_hidden_size
+                kwargs["attention_heads"] = model_cfg.num_attention_heads
+                kwargs["moe_router_topk"] = model_cfg.moe_router_topk
+
+            try:
+                query_groups = model_cfg.num_query_groups
+                if query_groups is None:
+                    query_groups = model_cfg.num_attention_heads
+                kwargs["query_groups"] = query_groups
+            except:
+                # Multi-modal models use HF model configs which may/may not define num_query_groups
+                pass
+
+            self.flops_config_dict[model_name] = flops_formulas.FLOPSConfig(**kwargs)
+
+        self.avg_train_step_time = 0
+
+    def eval_model_flops(self):
+        """
+        Calculate model FLOPs for a given model recursively when model has multiple sub-models
+        """
+
+        # Add Multimodal models supported only by MM_FLOPsMeasurementCallback
+        mm_model_flops_map = {
+            **_model_flops_map,
+            "hf_clip_vit_l": flops_formulas.clip_vit_l,
+            "neva_projection": flops_formulas.neva_projection,
+        }
+
+        total_flops = flops_per_gpu = 0
+        for model_name, flops_cfg in self.flops_config_dict.items():
+            if model_name not in mm_model_flops_map:
+                logging.info(f"FLOPs measurement supported for {list(mm_model_flops_map.keys())}")
+                raise KeyError(
+                    f"Failed to extract valid model name from or missing FLOPs calculations for {model_name}"
+                )
+            total_flops += mm_model_flops_map[model_name](flops_cfg)
         num_devices = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
         flops_per_gpu = total_flops / num_devices
 

@@ -2,15 +2,15 @@ name: PyLint and flake8 linting
 
 on:
   pull_request:
-    types: [ opened, synchronize, reopened, labeled, unlabeled ]
-  
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
 jobs:
   linting:
     name: 'Domain: ${{ matrix.domain }}'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: 
+      matrix:
         domain: [speech, other]
     env:
       DOMAIN: ${{ matrix.domain }}
@@ -32,7 +32,7 @@ jobs:
 
           else
             FILTER=$(jq -crn '[
-              "nemo/**",
+              "nemo/**/*.py",
               "!nemo/collections/asr/**/*.py",
               "!nemo/collections/tts/**/*.py",
               "!nemo/collections/audio/**/*.py",
@@ -40,7 +40,7 @@ jobs:
               "!nemo/collections/speechlm/**/*.py"
             ] | join(",")')
           fi
-          
+
           echo "main=$FILTER" | tee -a "$GITHUB_OUTPUT"
 
       - name: Get changed files
@@ -48,9 +48,9 @@ jobs:
         uses: tj-actions/changed-files@v44
         with:
           files: ${{ steps.filter.outputs.main }}
-          files_separator: ","
-          separator: " "
-    
+          files_separator: ','
+          separator: ' '
+
       - name: Run PyLint
         id: pylint
         env:
@@ -95,7 +95,7 @@ jobs:
           PYLINT: ${{ steps.pylint.outputs.exit-code == 0 }}
           FLAKE8: ${{ steps.flake8.outputs.exit-code == 0 }}
         run: |
-          
+
           if [[ "$PYLINT" != "true" ]]; then
             echo "Pylint output:" | tee -a $GITHUB_STEP_SUMMARY
 

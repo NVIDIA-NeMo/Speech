@@ -22,6 +22,7 @@ from typing import List
 
 import torch
 from omegaconf import DictConfig, OmegaConf, open_dict
+from torch import Tensor
 
 import nemo.collections.asr.models as asr_models
 from nemo.collections.asr.parts.mixins.asr_adapter_mixins import ASRAdapterModelMixin
@@ -590,14 +591,14 @@ class ASRModuleMixin(ASRAdapterModelMixin):
 
     def conformer_stream_step(
         self,
-        processed_signal: torch.Tensor,
-        processed_signal_length: torch.Tensor = None,
-        cache_last_channel: torch.Tensor = None,
-        cache_last_time: torch.Tensor = None,
-        cache_last_channel_len: torch.Tensor = None,
+        processed_signal: Tensor,
+        processed_signal_length: Tensor = None,
+        cache_last_channel: Tensor = None,
+        cache_last_time: Tensor = None,
+        cache_last_channel_len: Tensor = None,
         keep_all_outputs: bool = True,
         previous_hypotheses: List[Hypothesis] = None,
-        previous_pred_out: torch.Tensor = None,
+        previous_pred_out: Tensor = None,
         drop_extra_pre_encoded: int = None,
         return_transcription: bool = True,
         return_log_probs: bool = False,
@@ -632,7 +633,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             raise NotImplementedError(f"stream_step does not support {type(self)}!")
 
         if not isinstance(self.encoder, StreamingEncoder):
-            raise NotImplementedError(f"Encoder of this model does not support streaming!")
+            raise NotImplementedError("Encoder of this model does not support streaming!")
 
         if isinstance(self, asr_models.EncDecRNNTModel) and return_transcription is False:
             logging.info(
@@ -760,7 +761,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             raise NotImplementedError(f"simulate streaming does not support {type(self)}!")
 
         if not isinstance(self.encoder, StreamingEncoder):
-            raise NotImplementedError(f"Encoder of this model does not support streaming!")
+            raise NotImplementedError("Encoder of this model does not support streaming!")
 
         data_loader = self._setup_streaming_transcribe_dataloader(paths2audio_files, batch_size, online_normalization)
 

@@ -16,7 +16,7 @@ import random
 import warnings
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -141,7 +141,8 @@ class LhotseDataLoadingConfig:
     # 4. Optional Lhotse data augmentation.
     #   a. On-the-fly noise/audio mixing.
     noise_path: Any | None = (
-        None  # str | dict where dict can have any of keys: manifest_filepath, tarred_audio_filepaths, cuts_path, shar_path
+        None  # str | dict where dict can have any of keys:
+        # manifest_filepath, tarred_audio_filepaths, cuts_path, shar_path
     )
     noise_snr: tuple[float, float] = (10.0, 20.0)
     noise_mix_prob: float = 0.5
@@ -157,7 +158,8 @@ class LhotseDataLoadingConfig:
     #       I) truncate: select one chunk of a fixed duration for each cut
     truncate_duration: Optional[float] = None  # set this to enable
     truncate_offset_type: str = "random"  # "random" | "start" (fixed) | "end" (fixed, counted back)
-    #       II) cut_into_windows: convert each cut to smaller cut using a sliding window (define hop for overlapping windows)
+    #       II) cut_into_windows: convert each cut to smaller cut using a sliding window
+    #           (define hop for overlapping windows)
     cut_into_windows_duration: Optional[float] = None  # set this to enable
     cut_into_windows_hop: Optional[float] = None
     #       III) common options
@@ -165,7 +167,8 @@ class LhotseDataLoadingConfig:
         True  # when a cut is truncated in the middle of a supervision, should we keep them.
     )
     #   e. RIR augmentation (synthetic RIR if rir_path is None)
-    #   at the moment supports only Lhotse recording manifests, e.g. https://github.com/lhotse-speech/lhotse/blob/master/lhotse/recipes/rir_noise.py
+    #   at the moment supports only Lhotse recording manifests:
+    #   e.g. https://github.com/lhotse-speech/lhotse/blob/master/lhotse/recipes/rir_noise.py
     rir_enabled: bool = False
     rir_path: str | None = None  # str, must point to a lhotse RecordingSet manifest
     rir_prob: float = 0.5
@@ -187,8 +190,9 @@ class LhotseDataLoadingConfig:
     # The following two options may be used to override auto-detection of appropriate PyTorch dataset flavor
     #   for your data types. PyTorch DataLoader uses two objects to yield data: dataset and sampler.
     # *Map-dataset flavor.* There is one sampler per GPU that lives in the training loop process;
-    #   it selects the examples to be prepared by map-dataset class. Each batch selection determined by the sampler
-    #   is then passed by the dataloader to one of its worker processes to be processed by the dataset class.
+    #   it selects the examples to be prepared by map-dataset class.
+    #   Each batch selection determined by the sampler is then passed by the dataloader
+    #   to one of its worker processes to be processed by the dataset class.
     # *Iterable-dataset flavor.* Each dataloading worker has its own sampler replica instead;
     #   the sampler must have the logic for either data deduplication or unique order shuffling to avoid
     #   duplicated data across workers and GPUs. Lhotse relies on unique order shuffling.
@@ -201,6 +205,7 @@ class LhotseDataLoadingConfig:
 
 
 def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfig) -> bool:
+    """Determine whether to use iterable dataset for a given configuration."""
     assert not (
         config.force_map_dataset and config.force_iterable_dataset
     ), "Conflicting options: force_map_dataset=True and force_iterable_dataset=True"
@@ -209,7 +214,7 @@ def determine_use_iterable_dataset(use_iterable_dataset: bool, config: DictConfi
 
 
 def get_lhotse_dataloader_from_config(
-    config: dict | DictConfig,
+    config: Union[dict, DictConfig],
     global_rank: int,
     world_size: int,
     dataset: torch.utils.data.Dataset,
@@ -332,12 +337,14 @@ def get_lhotse_dataloader_from_multi_config(
     """
     Set up a Lhotse training dataloder.
 
-    It works similarly to :func:`get_lhotse_dataloader_from_config`, except that you can provide multiple configs
-    to set up different sampling, batching, and augmentation settings for every dataset and decide how to merge them.
+    It works similarly to :func:`get_lhotse_dataloader_from_config`, except that
+    you can provide multiple configs to set up different sampling, batching, and
+    augmentation settings for every dataset and decide how to merge them.
 
     The expected format is that the ``configs`` is a dict of group name -> actual config.
 
-    The first config is treated as a "main" config that determines the RNG, CUDA allocator, and sampler fusion settings.
+    The first config is treated as a "main" config that determines the RNG, CUDA allocator,
+    and sampler fusion settings.
     """
 
     def gather_shared_opts():
@@ -345,9 +352,11 @@ def get_lhotse_dataloader_from_multi_config(
         In multi-config setting, the top-level config defines several attributes that overwrite
         the ones present in sub-configs.
         """
-        assert all(
-            k in top_level_config for k in ["seed", "shard_seed", "shuffle"]
-        ), "In a multi-config setting (multi_config=True), the top-level namespace (typically train_ds) must define at least 'seed', 'shard_seed', and 'shuffle' keys that will be shared by all sub-configs."
+        assert all(k in top_level_config for k in ["seed", "shard_seed", "shuffle"]), (
+            "In a multi-config setting (multi_config=True), the top-level namespace (typically train_ds)"
+            "must define at least 'seed', 'shard_seed', and 'shuffle' keys that will be "
+            "shared by all sub-configs."
+        )
         overwriting_opts = [
             "seed",
             "shard_seed",
@@ -384,7 +393,8 @@ def get_lhotse_dataloader_from_multi_config(
             )
         except IncompleteConfigError as e:
             raise IncompleteConfigError(
-                f"Cannot create a sampler for one of the sub-configs in a multi_config setup. The problematic config is under key={name} and has the following contents: {config}"
+                "Cannot create a sampler for one of the sub-configs in a multi_config setup."
+                f"The problematic config is under key={name} and has the following contents: {config}"
             ) from e
         source_samplers[name] = s
         source_use_iterable_dataset.append(t)
@@ -442,6 +452,7 @@ def get_lhotse_dataloader_from_multi_config(
 
 
 def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=None) -> tuple[CutSampler, bool]:
+    """Create a CutSampler from a dataloader config."""
     # 1. Load a manifest as a Lhotse CutSet.
     cuts, use_iterable_dataset = read_cutset_from_config(config)
     use_iterable_dataset = determine_use_iterable_dataset(use_iterable_dataset, config)
@@ -459,16 +470,17 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
 
     if config.use_multimodal_sampling:
         assert tokenizer is not None, (
-            "You must pass a tokenizer to `get_lhotse_dataloader_from_config` in order to read text-only datasets "
-            "(enabled via use_multimodal_dataloading)"
+            "You must pass a tokenizer to `get_lhotse_dataloader_from_config` in order to"
+            "read text-only datasets (enabled via use_multimodal_dataloading)"
         )
 
     if tokenizer is not None and config.pretokenize:
         if not use_iterable_dataset:
             logging.warning(
-                "You are using a non-tarred dataset and requested tokenization during data sampling (pretokenize=True). "
-                "This will cause the tokenization to happen in the main (GPU) process, possibly impacting the training speed "
-                "if your tokenizer is very large. If the impact is noticable, set pretokenize=False in dataloader config. "
+                "You are using a non-tarred dataset and requested tokenization during data sampling "
+                "(pretokenize=True). This will cause the tokenization to happen in the main (GPU) process,"
+                "possibly impacting the training speed if your tokenizer is very large."
+                "If the impact is noticable, set pretokenize=False in dataloader config."
                 "(note: that will disable token-per-second filtering and 2D bucketing features)"
             )
 
@@ -699,7 +711,7 @@ def determine_bucket_duration_bins(config):
         return None
 
 
-def make_structured_with_schema_warnings(config: DictConfig | dict) -> DictConfig:
+def make_structured_with_schema_warnings(config: Union[DictConfig, dict]) -> DictConfig:
     """
     Checks the schema and fills missing default option values.
     Warns the user if any of the fields are not supported by the current schema
@@ -730,14 +742,16 @@ def make_structured_with_schema_warnings(config: DictConfig | dict) -> DictConfi
     if config.skip_missing_manifest_entries:
         logging.warning(
             "Note: skip_missing_manifest_entries is set to True. "
-            "If any of your manifests and tar files are mismatched, the entire tar file will be skipped without warning. "
-            "It's your responsibility to ensure data integrity with this setting."
+            "If any of your manifests and tar files are mismatched, the entire "
+            "tar file will be skipped without warning. It's your responsibility "
+            "to ensure data integrity with this setting."
         )
 
     return config
 
 
 def tokenize(example, tokenizer):
+    """Return the text in the example according to the provided tokenizer."""
     if isinstance(example, Cut):
         for s in example.supervisions:
             if s.text is not None:
@@ -750,6 +764,7 @@ def tokenize(example, tokenizer):
 
 
 def tokenize_with_prompt(example, tokenizer, prompt_format: str | PromptFormatter):
+    """Tokenize the example with the provided tokenizer and prompt format."""
     if isinstance(prompt_format, str):
         prompt_format = PromptFormatter.resolve(prompt_format)(tokenizer)
     encoded = apply_prompt_format_fn(example, prompt_format)
@@ -796,7 +811,7 @@ def maybe_set_cuda_expandable_segments(enabled: bool):
     and makes GPU more robust towards OOM.
 
     See here for more details:
-    https://pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf
+    pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf
     """
     if enabled and torch.cuda.is_available():
         if (
@@ -805,14 +820,17 @@ def maybe_set_cuda_expandable_segments(enabled: bool):
             and "expandable_segments:True" not in value
         ):
             warnings.warn(
-                "You have set PYTORCH_CUDA_ALLOC_CONF without expandable_segments:True option. We're setting that option anyway. To disable it, set cuda_expandable_segments=False in NeMo dataloader configuration."
+                "You have set PYTORCH_CUDA_ALLOC_CONF without expandable_segments:True option. "
+                "We're setting that option anyway. To disable it, set cuda_expandable_segments=False "
+                "in NeMo dataloader configuration."
             )
 
         try:
             torch.cuda.memory._set_allocator_settings("expandable_segments:True")
         except RuntimeError:
             logging.info(
-                "Failed to set expandable_segments:True for PyTorch CUDA allocator. You may get training speed improvements if you enable this"
+                "Failed to set expandable_segments:True for PyTorch CUDA allocator. "
+                "You may get training speed improvements if you enable this "
             )
 
 

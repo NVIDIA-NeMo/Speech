@@ -3,7 +3,75 @@ Models
 
 This section gives a brief overview of the supported speaker diarization models in NeMo's ASR collection.
 
-Currently speaker diarization pipeline in NeMo involves `MarbleNet <../speech_classification/models.html#marblenet-vad>`__ model for Voice Activity Detection (VAD) and `TitaNet <../speaker_recognition/models.html#titanet>`__ models for speaker embedding extraction and `Multi-scale Diarizerion Decoder` for neural diarizer,  which will be explained in this page.
+Currently NeMo Speech AI supports two types of speaker diarization systems:
+
+1. **End-to-end Speaker Diarization:** Sortformer Diarizer 
+Sortformer is a Transformer encoder-based end-to-end speaker diarization model that generates predicted speaker labels directly from input audio clips.
+
+2. **Cascaded (Pipelined) Speaker Diarization:** Clustering diarizer with Multi-Scale Diarization Decoder (MSDD)
+The speaker diarization pipeline in NeMo Speech AI involves the use of the :doc:`MarbleNet <../speech_classification/models.html>` model for Voice Activity Detection (VAD), the :doc:`TitaNet <../speaker_recognition/models.html>` model for speaker embedding extraction, and the Multi-Scale Diarization Decoder for neural diarization, all of which are explained on this page.
+
+.. _Sortformer Diarizer:
+
+Sortformer Diarizer
+-------------------
+Speaker diarization is all about figuring out who’s speaking when in an audio recording. In the world of automatic speech recognition (ASR), this becomes even more important for handling conversations with multiple speakers. Multispeaker ASR (also known as speaker-attributed or multitalker ASR) uses this process to not just transcribe what’s being said, but also to label each part of the transcript with the right speaker.
+
+As ASR technology continues to advance, speaker diarization is increasingly becoming part of the ASR workflow itself. Some systems now handle speaker labeling and transcription at the same time during decoding. This means you not only get accurate text—you're also getting insights into who said what, making it more useful for conversational analysis.
+
+However, despite significant advancements, integrating speaker diarization and ASR into a unified, seamless system remains a considerable challenge. A key obstacle lies in the need for extensive high-quality, annotated audio data featuring multiple speakers. Acquiring such data is far more complex than collecting monaural-speaker datasets. This challenge is particularly pronounced for low-resource languages and domains like healthcare, where strict privacy regulations further constrain data availability.
+
+On top of that, many real-world use cases need these models to handle really long audio files—sometimes hours of conversation at a time. Training on such lengthy data is even more complicated because it’s hard to find or annotate. This creates a big gap between what’s needed and what’s available, making multispeaker ASR one of the toughest nuts to crack in the field of speech technology.
+
+.. image:: images/intro_comparison.png
+        :align: center
+        :width: 800px
+        :alt: Intro Comparison
+
+To tackle the complexities of multispeaker automatic speech recognition (ASR), we introduce `Sortformer <https://arxiv.org/abs/2409.06656>`__, a new approach that incorporates *Sort Loss* and techniques to align timestamps with text tokens. Traditional approaches like permutation-invariant loss (PIL) face challenges when applied in batchable and differentiable computational graphs, especially since token-based objectives struggle to incorporate speaker-specific attributes into PIL-based loss functions.
+
+To address this, we propose an arrival time sorting (ATS) approach. In this method, speaker tokens from ASR outputs and speaker timestamps from diarization outputs are sorted by their arrival times to resolve permutations. This approach allows the multispeaker ASR system to be trained or fine-tuned using token-based cross-entropy loss, eliminating the need for timestamp-based or frame-level objectives with PIL.
+
+.. image:: images/ats.png
+        :align: center
+        :width: 600px
+        :alt: Arrival Time Sort
+
+The ATS-based multispeaker ASR system is powered by an end-to-end neural diarizer model, Sortformer, which generates speaker-label timestamps in arrival time order (ATO). To train the neural diarizer to produce sorted outputs, we introduce Sort Loss, a method that creates gradients enabling the Transformer model to learn the ATS mechanism.
+
+.. image:: images/main_dataflow.png
+        :align: center
+        :width: 500px
+        :alt: Main Dataflow
+
+
+Additionally, as shown in the above figure, our diarization system integrates directly with the ASR encoder. By embedding speaker supervision data as speaker kernels into the ASR encoder states, the system seamlessly combines speaker and transcription information. This unified approach improves performance and simplifies the overall architecture.
+
+As a result, our end-to-end multispeaker ASR system is fully or partially trainable with token objectives, allowing both the ASR and speaker diarization modules to be trained or fine-tuned using these objectives. Additionally, during the multispeaker ASR training phase, no specialized loss calculation functions are needed when using Sortformer, as frameworks for standard single-speaker ASR models can be employed. These compatibilities greatly simplify and accelerate the training and fine-tuning process of multispeaker ASR systems. 
+
+On top of all these benefits, *Sortformer* can be used as a stand-alone end-to-end speaker diarization model. By training a Sortformer diarizer model especially on high-quality simulated data with accurate time-stamps, you can boost the performance of multi-speaker ASR systems, just by integrating the *Sortformer* model as *Speaker Supervision* model in a computation graph.
+
+In this tutorial, we will walk you through the process of training a Sortformer diarizer model with toy dataset. Before starting, we will introduce the concepts of Sort-Loss calculation and the Hybrid loss technique.
+
+.. image:: images/sortformer.png
+        :align: center
+        :width: 500px
+        :alt: Sortformer Model with Hybrid Loss
+
+.. image:: images/loss_types.png
+        :align: center
+        :width: 1000px
+        :alt: PIL model VS SortLoss model
+
+*Sort Loss* is designed to compare the predicted outputs with the true labels, typically sorted in arrival-time order or another relevant metric. The key distinction that *Sortformer* introduces compared to previous end-to-end diarization systems such as `EEND-SA <https://arxiv.org/pdf/1909.06247>`__, `EEND-EDA <https://arxiv.org/abs/2106.10654>`__ lies in the organization of class presence $\mathbf{\hat{Y}}$.
+
+The figure below illustrates the difference between *Sort Loss* and permutation-invariant loss (PIL) or permutation-free loss.
+
+- PIL is calculated by finding the permutation of the target that minimizes the loss value between the prediction and the target.
+
+- *Sort Loss* simply compares the arrival-time-sorted version of speaker activity outputs for both the prediction and the target. Note that sometimes the same ground-truth labels lead to different target matrices for *Sort Loss* and PIL.
+
+For example, the figure below shows two identical source target matrices (the two matrices at the top), but the resulting target matrices for *Sort Loss* and PIL are different.
 
 .. _Multi_Scale_Diarization_Decoder:
 
@@ -79,26 +147,6 @@ In NeMo toolkit, MSDD implementation has multiple options for the context vector
 
 - ``elem_prod``: The scale weights are directly applied to speaker embedding vectors then a weighted speaker embedding vector is calculated for both cluster-average embedding vectors and input embedding vectors. Finally, elementwise product between the cluster-average weighted speaker embedding vector and input multi-scale embedding vector are calculated and fed to LSTMs as a context vector for each step.   
 
-
-MSDD is designed with the following aspects in mind:
-
-* **Flexible number of speakers**: MSDD employs pairwise inference to diarize conversation with arbitrary numbers of speakers. For example, if there are 4 speakers, 6 pairs will be extracted, and inference results from MSDD are averaged to obtain results for each of the 4 speakers.
-
-
-* **Overlap-aware diarization**: MSDD independently estimates the probability of two speaker labels of two speakers at each step. This enables overlap detection where two speakers are speaking at the same time.
-
-
-* **Pretrained speaker embedding model**: MSDD is based on the pretrained embedding extractor (TitaNet) model. By using a pretrained speaker model, we can leverage the neural network weights learned from a relatively large amount of single-speaker speech data. In addition, MSDD is designed to be optimized with a pretrained speaker to fine-tune the entire speaker diarization system on a domain-specific diarization dataset. 
-
-
-* **End-to-end training of diarization model**: Since all the arithmetic operations in MSDD support gradient calculation, a speaker embedding model can be attached to the computational graph of an MSDD model and can be jointly trained from the loss calculated from speaker label outputs. 
-
-
-* **Superior temporal resolution for uniform segmentation approach**: While single-scale clustering diarizer shows the best performance at 1.5-second segment length where unit decision length is 0.75 second (half-overlap), the multi-scale approach has unit decision length of 0.25 second. The temporal resolution can be even more enhanced by using shorter shift length which requires more steps and resources. Note that merely applying 0.5-second segment length to a single-scale diarizer significantly drops the diarization performance due to the degraded fidelity of speaker features. 
-
-
-* **Performance improvement from clustering diarizer**: Diarization Error Rate (DER) is calculated by comparing hypothesis timestamps and ground-truth timestamps. MSDD can reduce the diarization error rate up to 60% on two speaker datasets when compared to the single-scale clustering diarizer.  
- 
 References
 -----------
 

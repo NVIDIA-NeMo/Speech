@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Union
+from typing import Union
 
 import torch.utils.data
 from lhotse.cut import Cut, CutSet
@@ -23,7 +23,6 @@ from nemo.collections.common.data.lhotse.text_adapters import NeMoSFTExample, So
 from nemo.collections.multimodal.speech_llm.parts.utils.data_utils import (
     PromptFormatterTextProcessing,
     build_loss_mask,
-    ceil_to_nearest,
 )
 
 
@@ -81,7 +80,7 @@ class LhotseAudioQuestionAnswerDataset(torch.utils.data.Dataset):
         self.context_key = context_key
         self.default_context_key = default_context_key
 
-    def __getitem__(self, all_cuts: CutSet) -> dict[str, torch.Tensor | list[str] | dict]:
+    def __getitem__(self, all_cuts: CutSet) -> dict[str, Union[torch.Tensor, list[str], dict]]:
         ans = {}
 
         # convert audio cuts to mini-batch

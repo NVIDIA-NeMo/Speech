@@ -60,6 +60,7 @@ autodoc_mock_imports = [
     'IPython',
     'ipadic',
     'psutil',
+    'pytorch_lightning',
     'regex',
     'PIL',
     'boto3',

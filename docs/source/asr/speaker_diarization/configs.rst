@@ -1,18 +1,260 @@
-NeMo Speaker Diarization Configuration Files
-============================================
+End-to-End Speaker Diarization Configuration Files
+==================================================
 
-Both training and inference of speaker diarization is configured by ``.yaml`` files. The diarizer section will generally require information about the dataset(s) being used, models used in this pipeline, as well as inference related parameters such as post processing of each models. The sections on this page cover each of these in more detail.
+Hydra Configurations for Sortformer Diarizer Training 
+-----------------------------------------------------
+
+Sortformer Diarizer is an end-to-end speaker diarization model that is solely based on Transformer-encoder type of architecture.
+Model name convention for Sortformer Diarizer: sortformer_diarizer_<loss_type>_<speaker count limit>-<version>.yaml
+
+
+* Example `<NeMo_root>/examples/speaker_tasks/diarization/neural_diarizer/conf/sortformer_diarizer_hybrid_loss_4spk-v1.yaml`.
+
+.. code-block:: yaml
+
+  name: "SortFormerDiarizer"
+  num_workers: 18
+  batch_size: 8
+
+  model: 
+    sample_rate: 16000
+    pil_weight: 0.5 # Weight for Permutation Invariant Loss (PIL) used in training the Sortformer diarizer model
+    ats_weight: 0.5 # Weight for Arrival Time Sort (ATS) loss in training the Sortformer diarizer model
+    max_num_of_spks: 4 # Maximum number of speakers per model; currently set to 4
+
+    model_defaults:
+      fc_d_model: 512 # Hidden dimension size of the Fast-conformer Encoder
+      tf_d_model: 192 # Hidden dimension size of the Transformer Encoder
+
+    train_ds:
+      manifest_filepath: ???
+      sample_rate: ${model.sample_rate}
+      num_spks: ${model.max_num_of_spks}
+      session_len_sec: 90 # Maximum session length in seconds
+      soft_label_thres: 0.5 # Threshold for binarizing target values; higher values make the model more conservative in predicting speaker activity.
+      soft_targets: False # If True, use continuous values as target values when calculating cross-entropy loss
+      labels: null
+      batch_size: ${batch_size}
+      shuffle: True
+      num_workers: ${num_workers}
+      validation_mode: False
+      # lhotse config
+      use_lhotse: False
+      use_bucketing: True
+      num_buckets: 10
+      bucket_duration_bins: [10, 20, 30, 40, 50, 60, 70, 80, 90]
+      pin_memory: True
+      min_duration: 10
+      max_duration: 90
+      batch_duration: 400
+      quadratic_duration: 1200
+      bucket_buffer_size: 20000
+      shuffle_buffer_size: 10000
+      window_stride: ${model.preprocessor.window_stride}
+      subsampling_factor: ${model.encoder.subsampling_factor}
+
+    validation_ds:
+      manifest_filepath: ???
+      is_tarred: False
+      tarred_audio_filepaths: null
+      sample_rate: ${model.sample_rate}
+      num_spks: ${model.max_num_of_spks}
+      session_len_sec: 90 # Maximum session length in seconds
+      soft_label_thres: 0.5 # A threshold value for setting up the binarized labels. The higher the more conservative the model becomes. 
+      soft_targets: False
+      labels: null
+      batch_size: ${batch_size}
+      shuffle: False
+      num_workers: ${num_workers}
+      validation_mode: True
+      # lhotse config
+      use_lhotse: False
+      use_bucketing: False
+      drop_last: False
+      pin_memory: True
+      window_stride: ${model.preprocessor.window_stride}
+      subsampling_factor: ${model.encoder.subsampling_factor}
+    
+    test_ds:
+      manifest_filepath: null
+      is_tarred: False
+      tarred_audio_filepaths: null
+      sample_rate: 16000
+      num_spks: ${model.max_num_of_spks}
+      session_len_sec: 90 # Maximum session length in seconds
+      soft_label_thres: 0.5
+      soft_targets: False
+      labels: null
+      batch_size: ${batch_size}
+      shuffle: False
+      seq_eval_mode: True
+      num_workers: ${num_workers}
+      validation_mode: True
+      # lhotse config
+      use_lhotse: False
+      use_bucketing: False
+      drop_last: False
+      pin_memory: True
+      window_stride: ${model.preprocessor.window_stride}
+      subsampling_factor: ${model.encoder.subsampling_factor}
+
+    preprocessor:
+      _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+      normalize: "per_feature"
+      window_size: 0.025
+      sample_rate: ${model.sample_rate}
+      window_stride: 0.01
+      window: "hann"
+      features: 80
+      n_fft: 512
+      frame_splicing: 1
+      dither: 0.00001
+
+    sortformer_modules:
+      _target_: nemo.collections.asr.modules.sortformer_modules.SortformerModules
+      num_spks: ${model.max_num_of_spks} # Number of speakers per model. This is currently fixed at 4.
+      dropout_rate: 0.5 # Dropout rate
+      fc_d_model: ${model.model_defaults.fc_d_model}
+      tf_d_model: ${model.model_defaults.tf_d_model} # Hidden layer size for linear layers in Sortformer Diarizer module
+
+    encoder:
+      _target_: nemo.collections.asr.modules.ConformerEncoder
+      feat_in: ${model.preprocessor.features}
+      feat_out: -1
+      n_layers: 18
+      d_model: ${model.model_defaults.fc_d_model}
+
+      # Sub-sampling parameters
+      subsampling: dw_striding # vggnet, striding, stacking or stacking_norm, dw_striding
+      subsampling_factor: 8 # must be power of 2 for striding and vggnet
+      subsampling_conv_channels: 256 # set to -1 to make it equal to the d_model
+      causal_downsampling: false
+      # Feed forward module's params
+      ff_expansion_factor: 4
+      # Multi-headed Attention Module's params
+      self_attention_model: rel_pos # rel_pos or abs_pos
+      n_heads: 8 # may need to be lower for smaller d_models
+      # [left, right] specifies the number of steps to be seen from left and right of each step in self-attention
+      att_context_size: [-1, -1] # -1 means unlimited context
+      att_context_style: regular # regular or chunked_limited
+      xscaling: true # scales up the input embeddings by sqrt(d_model)
+      untie_biases: true # unties the biases of the TransformerXL layers
+      pos_emb_max_len: 5000
+      # Convolution module's params
+      conv_kernel_size: 9
+      conv_norm_type: 'batch_norm' # batch_norm or layer_norm or groupnormN (N specifies the number of groups)
+      conv_context_size: null
+      # Regularization
+      dropout: 0.1 # The dropout used in most of the Conformer Modules
+      dropout_pre_encoder: 0.1 # The dropout used before the encoder
+      dropout_emb: 0.0 # The dropout used for embeddings
+      dropout_att: 0.1 # The dropout for multi-headed attention modules
+      # Set to non-zero to enable stochastic depth
+      stochastic_depth_drop_prob: 0.0
+      stochastic_depth_mode: linear  # linear or uniform
+      stochastic_depth_start_layer: 1
+    
+    transformer_encoder:
+      _target_: nemo.collections.asr.modules.transformer.transformer_encoders.TransformerEncoder
+      num_layers: 18
+      hidden_size: ${model.model_defaults.tf_d_model} # Needs to be multiple of num_attention_heads
+      inner_size: 768
+      num_attention_heads: 8
+      attn_score_dropout: 0.5
+      attn_layer_dropout: 0.5
+      ffn_dropout: 0.5
+      hidden_act: relu
+      pre_ln: False
+      pre_ln_final_layer_norm: True
+    
+    loss: 
+      _target_: nemo.collections.asr.losses.bce_loss.BCELoss
+      weight: null # Weight for binary cross-entropy loss. Either `null` or list type input. (e.g. [0.5,0.5])
+      reduction: mean
+
+    lr: 0.0001
+    optim:
+      name: adamw
+      lr: ${model.lr}
+      # optimizer arguments
+      betas: [0.9, 0.98]
+      weight_decay: 1e-3
+
+      sched:
+        name: InverseSquareRootAnnealing
+        warmup_steps: 2500
+        warmup_ratio: null
+        min_lr: 1e-06
+
+  trainer:
+    devices: 1 # number of gpus (devices)
+    accelerator: gpu 
+    max_epochs: 800
+    max_steps: -1 # computed at runtime if not set
+    num_nodes: 1
+    strategy: ddp_find_unused_parameters_true # Could be "ddp"
+    accumulate_grad_batches: 1
+    deterministic: True
+    enable_checkpointing: False
+    logger: False
+    log_every_n_steps: 1  # Interval of logging.
+    val_check_interval: 1.0  # Set to 0.25 to check 4 times per epoch, or an int for number of iterations
+
+  exp_manager:
+    use_datetime_version: False
+    exp_dir: null
+    name: ${name}
+    resume_if_exists: True
+    resume_from_checkpoint: null # The path to a checkpoint file to continue the training, restores the whole state including the epoch, step, LR schedulers, apex, etc.
+    resume_ignore_no_checkpoint: True
+    create_tensorboard_logger: True
+    create_checkpoint_callback: True
+    create_wandb_logger: False
+    checkpoint_callback_params:
+      monitor: "val_f1_acc"
+      mode: "max"
+      save_top_k: 9
+      every_n_epochs: 1
+    wandb_logger_kwargs:
+      resume: True
+      name: null
+      project: null
+
+Hydra Configurations for Sortformer Diarization Post-processing 
+---------------------------------------------------------------
+
+Post-processing converts the floating point number based Tensor output to time stamp output. While generating the speaker-homogeneous segments, onset and offset threshold, 
+paddings can be considered to render the time stamps that can lead to the lowest diarization error rate (DER).  
+
+
+By default, post-processing is bypassed, and only binarization is performed. If you want to reproduce DER scores reported on NeMo model cards, you need to apply post-processing steps. Use batch_size = 1 to have the longest inference window and the highest possible accuracy.
+
+.. code-block:: yaml
+
+  parameters: 
+    onset: 0.64  # Onset threshold for detecting the beginning of a speech segment
+    offset: 0.74  # Offset threshold for detecting the end of a speech segment
+    pad_onset: 0.06  # Adds the specified duration at the beginning of each speech segment
+    pad_offset: 0.0  # Adds the specified duration at the end of each speech segment
+    min_duration_on: 0.1  # Removes short silences if the duration is less than the specified minimum duration
+    min_duration_off: 0.15  # Removes short speech segments if the duration is less than the specified minimum duration
+
+
+Cascaded Speaker Diarization Configuration Files
+================================================
+
+Both training and inference of cascaded speaker diarization is configured by ``.yaml`` files. The diarizer section will generally require information about the dataset(s) being used, models used in this pipeline, as well as inference related parameters such as post processing of each models. The sections on this page cover each of these in more detail.
 
 .. note::
   For model details and deep understanding about configs, training, fine-tuning and evaluations,
-  please refer to ``<NeMo_git_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb`` and ``<NeMo_git_root>/tutorials/speaker_tasks/Speaker_Diarization_Training.ipynb``;
-  for other applications such as possible integration with ASR, have a look at ``<NeMo_git_root>/tutorials/speaker_tasks/ASR_with_SpeakerDiarization.ipynb``.
+  please refer to ``<NeMo_root>/tutorials/speaker_tasks/Speaker_Diarization_Inference.ipynb`` and ``<NeMo_root>/tutorials/speaker_tasks/Speaker_Diarization_Training.ipynb``;
+  for other applications such as possible integration with ASR, have a look at ``<NeMo_root>/tutorials/speaker_tasks/ASR_with_SpeakerDiarization.ipynb``.
 
 
 Hydra Configurations for Diarization Training 
-=============================================
+---------------------------------------------
 
-Currently, NeMo supports Multi-scale diarization decoder (MSDD) as a neural diarizer model. MSDD is a speaker diarization model based on initializing clustering and multi-scale segmentation input. Example configuration files for MSDD model training can be found in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/neural_diarizer/``.
+Currently, NeMo supports Multi-scale diarization decoder (MSDD) as a neural diarizer model. MSDD is a speaker diarization model based on initializing clustering and multi-scale segmentation input. Example configuration files for MSDD model training can be found in ``<NeMo_root>/examples/speaker_tasks/diarization/conf/neural_diarizer/``.
 
 * Model name convention for MSDD: msdd_<number of scales>scl_<longest scale in decimal second (ds)>_<shortest scale in decimal second (ds)>_<overlap percentage of window shifting>Povl_<hidden layer size>x<number of LSTM layers>x<number of CNN output channels>x<repetition count of conv layer>
 * Example: ``msdd_5scl_15_05_50Povl_256x3x32x2.yaml`` has 5 scales, the longest scale is 1.5 sec, the shortest scale is 0.5 sec, with 50 percent overlap, hidden layer size is 256, 3 LSTM layers, 32 CNN channels, 2 repeated Conv layers
@@ -21,7 +263,7 @@ MSDD model checkpoint (.ckpt) and NeMo file (.nemo) contain speaker embedding mo
 
 
 General Diarizer Configuration
-------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The items (OmegaConfig keys) directly under ``model`` determines segmentation and clustering related parameters. Multi-scale parameters (``window_length_in_sec``, ``shift_length_in_sec`` and ``multiscale_weights``) are specified. ``max_num_of_spks``, ``scale_n``, ``soft_label_thres`` and ``emb_batch_size`` are set here and then assigned to dataset configurations.
 
@@ -46,7 +288,7 @@ The items (OmegaConfig keys) directly under ``model`` determines segmentation an
   emb_batch_size: 0 # If this value is bigger than 0, corresponding number of embedding vectors are attached to torch graph and trained.
 
 Dataset Configuration
----------------------
+^^^^^^^^^^^^^^^^^^^^^
 
 Training, validation, and test parameters are specified using the ``train_ds``, ``validation_ds``, and
 ``test_ds`` sections in the configuration YAML file, respectively. The items such as ``num_spks``, ``soft_label_thres`` and ``emb_batch_size`` follow the settings in ``model`` key. You may also leave fields such as the ``manifest_filepath`` or ``emb_dir`` blank, and then specify it via command-line interface. Note that ``test_ds`` is not used during training and only used for speaker diarization inference.
@@ -88,7 +330,7 @@ Training, validation, and test parameters are specified using the ``train_ds``, 
 
 
 Pre-processor Configuration
----------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In the MSDD configuration, pre-processor configuration follows the pre-processor of the embedding extractor model.
 
@@ -108,7 +350,7 @@ In the MSDD configuration, pre-processor configuration follows the pre-processor
 
 
 Model Architecture Configurations
----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The hyper-parameters for MSDD models are under the ``msdd_module`` key. The model architecture can be changed by setting up the ``weighting_scheme`` and ``context_vector_type``. The detailed explanation for architecture can be found in the :doc:`Models <./models>` page.
 
@@ -128,7 +370,7 @@ The hyper-parameters for MSDD models are under the ``msdd_module`` key. The mode
     context_vector_type: 'cos_sim' # Type of context vector: options. Options: ('cos_sim', 'elem_prod')
 
 Loss Configurations
--------------------
+^^^^^^^^^^^^^^^^^^^
 
 Neural diarizer uses a binary cross entropy (BCE) loss. A set of weights for negative (absence of the speaker's speech) and positive (presence of the speaker's speech) can be provided to the loss function.
 
@@ -142,7 +384,7 @@ Neural diarizer uses a binary cross entropy (BCE) loss. A set of weights for neg
 Hydra Configurations for Diarization Inference
 ==============================================
 
-Example configuration files for speaker diarization inference can be found in ``<NeMo_git_root>/examples/speaker_tasks/diarization/conf/inference/``. Choose a yaml file that fits your targeted domain. For example, if you want to diarize audio recordings of telephonic speech, choose ``diar_infer_telephonic.yaml``.
+Example configuration files for speaker diarization inference can be found in ``<NeMo_root>/examples/speaker_tasks/diarization/conf/inference/``. Choose a yaml file that fits your targeted domain. For example, if you want to diarize audio recordings of telephonic speech, choose ``diar_infer_telephonic.yaml``.
 
 The configurations for all the components of diarization inference are included in a single file named ``diar_infer_<domain>.yaml``. Each ``.yaml`` file has a few different sections for the following modules: VAD, Speaker Embedding, Clustering and ASR.
 
@@ -165,7 +407,7 @@ An example ``diarizer``  Hydra configuration could look like:
 Under ``diarizer`` key, there are ``vad``, ``speaker_embeddings``, ``clustering`` and ``asr`` keys containing configurations for the inference of the corresponding modules.
 
 Configurations for Voice Activity Detector
-------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Parameters for VAD model are provided as in the following Hydra config example.
 
@@ -189,7 +431,7 @@ Parameters for VAD model are provided as in the following Hydra config example.
       filter_speech_first: True 
 
 Configurations for Speaker Embedding in Diarization
----------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Parameters for speaker embedding model are provided in the following Hydra config example. Note that multiscale parameters either accept list or single floating point number.
 
@@ -204,7 +446,7 @@ Parameters for speaker embedding model are provided in the following Hydra confi
       save_embeddings: False # Save embeddings as pickle file for each audio input.
 
 Configurations for Clustering in Diarization
---------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Parameters for clustering algorithm are provided in the following Hydra config example.
 
@@ -219,7 +461,7 @@ Parameters for clustering algorithm are provided in the following Hydra config e
       sparse_search_volume: 30 # The higher the number, the more values will be examined with more time. 
 
 Configurations for Diarization with ASR
----------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The following configuration needs to be appended under ``diarizer`` to run ASR with diarization to get a transcription with speaker labels. 
 

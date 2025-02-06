@@ -116,7 +116,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         super().__init__()
         self.save_hyperparameters()
         self.model_name = model_name
-        self._tokenizer = None
+        self._tokenizer = tokenizer
         self.model = None
         self.loss_fn = loss_fn
         self.load_pretrained_weights = load_pretrained_weights
@@ -180,6 +180,30 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         except:
             return AutoTokenizer(model_name, use_fast=not use_fast, trust_remote_code=trust_remote_code)
 
+    def _configure_model(self, attn_implementation):
+        """helper method; see also configure_model."""
+        # create all your layers here
+        if self.load_pretrained_weights:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                torch_dtype='auto',
+                device_map="cpu",
+                trust_remote_code=self.trust_remote_code,
+                load_in_4bit=self.load_in_4bit,
+                attn_implementation=attn_implementation,
+            )
+        else:
+            from transformers import AutoConfig
+
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
+            dtype = getattr(config, 'torch_dtype', self.default_dtype)
+            self.model = AutoModelForCausalLM.from_config(
+                config,
+                torch_dtype=dtype,
+                trust_remote_code=self.trust_remote_code,
+                attn_implementation=attn_implementation,
+            )
+
     def configure_model(self):
         """
         Configure and initialize the Hugging Face model.
@@ -192,27 +216,14 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         Raises:
             Exception: If model configuration fails.
         """
-        # create all your layers here
-        if self.load_pretrained_weights:
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype='auto',
-                device_map="cpu",
-                trust_remote_code=self.trust_remote_code,
-                load_in_4bit=self.load_in_4bit,
-                attn_implementation=self.attn_implementation,
-            )
-        else:
-            from transformers import AutoConfig
-
-            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
-            dtype = getattr(config, 'torch_dtype', self.default_dtype)
-            self.model = AutoModelForCausalLM.from_config(
-                config,
-                torch_dtype=dtype,
-                trust_remote_code=self.trust_remote_code,
-                attn_implementation=self.attn_implementation,
-            )
+        try:
+            self._configure_model(attn_implementation=self.attn_implementation)
+        except ValueError as e:
+            if (
+                'does not support an attention implementation through torch.nn.functional.scaled_dot_product_attention'
+                in str(e)
+            ):
+                self._configure_model(attn_implementation="eager")
 
         # Apply FSDP2 and TP to the model
         if self.device_mesh is not None:

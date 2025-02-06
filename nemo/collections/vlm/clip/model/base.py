@@ -21,7 +21,20 @@ import torch
 import torch.distributed
 import torch.nn.functional as F
 from megatron.core.enums import ModelType
-from megatron.core.extensions.transformer_engine import TENorm
+
+try:
+    from megatron.core.extensions.transformer_engine import TENorm
+except ImportError:
+    from nemo.utils import logging
+
+    # These Defaults are needed to make sure the code compiles
+    TENorm = None
+    logging.warning(
+        "Failed to import Transformer Engine dependencies. "
+        "`from megatron.core.extensions.transformer_engine import TENorm`"
+        "If using NeMo Run, this is expected. Otherwise, please verify the Transformer Engine installation."
+    )
+
 from megatron.core.models.gpt import GPTModel as MCoreGPTModel
 from megatron.core.models.vision.clip_vit_model import CLIPViTModel as MCoreCLIPViTModel
 from megatron.core.optimizer import OptimizerConfig
@@ -266,7 +279,7 @@ class CLIPTextModel(MCoreGPTModel):
 
 
 @dataclass
-class ClipConfig(TransformerConfig, io.IOMixin):
+class CLIPConfig(TransformerConfig, io.IOMixin):
     """Clip model config"""
 
     text_transformer_config: Optional[CLIPTextModelConfig] = None
@@ -279,6 +292,9 @@ class ClipConfig(TransformerConfig, io.IOMixin):
     num_layers: int = 1  # Placeholder, NOT used!
     num_attention_heads: int = 8  # Placeholder, NOT used!
     hidden_size: int = 768  # Placeholder, NOT used!
+
+    # seq_length is needed for Nemo CI. It is not used anywhere
+    seq_length: int = 80
 
     def configure_model(self, tokenizer, pre_process=True, post_process=True):
         # pylint: disable=C0116
@@ -294,7 +310,7 @@ class ClipConfig(TransformerConfig, io.IOMixin):
 class MCoreClipModel(MegatronModule):
     """Clip model"""
 
-    def __init__(self, config: ClipConfig, tokenizer, pre_process=True, post_process=True) -> None:
+    def __init__(self, config: CLIPConfig, tokenizer, pre_process=True, post_process=True) -> None:
         # pylint: disable=C0116
         super().__init__(config=config)
         self.pre_process = pre_process
@@ -344,7 +360,7 @@ class CLIPModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
 
     def __init__(
         self,
-        config: ClipConfig,
+        config: CLIPConfig,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         imagenet_val: Optional[str] = None,

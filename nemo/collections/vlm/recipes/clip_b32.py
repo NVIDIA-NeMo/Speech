@@ -45,7 +45,7 @@ def model() -> run.Config[pl.LightningModule]:
             >>> model_config = model()
             >>> print(model_config)
     """
-    return run.Config(vlm.CLIPModel, config=run.Config(vlm.ClipConfigB32))
+    return run.Config(vlm.CLIPModel, config=run.Config(vlm.CLIPConfigB32))
 
 
 @run.cli.factory(target=llm.pretrain, name=NAME)

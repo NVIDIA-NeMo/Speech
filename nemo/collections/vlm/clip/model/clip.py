@@ -19,7 +19,7 @@ import torch.distributed
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
 from nemo.collections.nlp.modules.common.megatron.utils import ApproxGELUActivation
-from nemo.collections.vlm.clip.model import ClipConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
+from nemo.collections.vlm.clip.model import CLIPConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
 from nemo.lightning import io, teardown
 
 
@@ -134,7 +134,7 @@ class CLIPTextModelL_14_224_Config(CLIPTextModelConfig):
 
 
 @dataclass
-class ClipConfigL14(ClipConfig):
+class CLIPConfigL14(CLIPConfig):
     """Main Clip config for Large model"""
 
     text_transformer_config: CLIPTextModelConfig = field(default_factory=lambda: CLIPTextModelL_14_224_Config())
@@ -142,7 +142,7 @@ class ClipConfigL14(ClipConfig):
 
 
 @dataclass
-class ClipConfigB32(ClipConfig):
+class CLIPConfigB32(CLIPConfig):
     """Main Clip config for Base model"""
 
     text_transformer_config: CLIPTextModelConfig = field(default_factory=lambda: CLIPTextModelB_32_224_Config())
@@ -247,7 +247,7 @@ class HFClipImporter(io.ModelConnector["CLIPModel", CLIPModel]):
         return AutoTokenizer(str(self))
 
     @property
-    def config(self) -> ClipConfig:
+    def config(self) -> CLIPConfig:
         # pylint: disable=C0116
         from transformers import CLIPConfig as HFCLIPConfig
 
@@ -302,7 +302,7 @@ class HFClipImporter(io.ModelConnector["CLIPModel", CLIPModel]):
             class_token_len=1,
         )
 
-        output = ClipConfig(
+        output = CLIPConfig(
             text_transformer_config=language_transformer_config, vision_transformer_config=vision_transformer_config
         )
 

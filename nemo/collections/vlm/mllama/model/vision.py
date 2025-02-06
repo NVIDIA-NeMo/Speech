@@ -25,11 +25,26 @@ from megatron.core import InferenceParams, parallel_state, tensor_parallel
 from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TEColumnParallelLinear,
-    TEDotProductAttention,
-    TERowParallelLinear,
-)
+
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TEColumnParallelLinear,
+        TEDotProductAttention,
+        TERowParallelLinear,
+    )
+except ImportError:
+    from nemo.utils import logging
+
+    # These Defaults are needed to make sure the code compiles
+    TEColumnParallelLinear = None
+    TENorm = None
+    TERowParallelLinear = None
+    logging.warning(
+        "Failed to import Transformer Engine dependencies. "
+        "`from megatron.core.transformer.custom_layers.transformer_engine import *`"
+        "If using NeMo Run, this is expected. Otherwise, please verify the Transformer Engine installation."
+    )
+
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules

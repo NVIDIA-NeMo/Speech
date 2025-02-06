@@ -39,7 +39,7 @@ class ImageDataConfig(DataConfig):
 @dataclass
 class VideoDataConfig(DataConfig):
     media_type: str = "video"
-    media_token: MultiModalToken = VideoToken()
+    media_token: MultiModalToken = field(default_factory=lambda: VideoToken())
     splice_single_frame: Optional[str] = None
     # 'first', 'middle', 'last' will represent video as first / middle / last frame only, all other frames discarded.
     num_frames: int = 8  # Selects the number of frames to use from the video

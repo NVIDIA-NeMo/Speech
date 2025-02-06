@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from nemo.collections.vlm.clip.data import ClipMockDataModule
-from nemo.collections.vlm.clip.model import ClipConfigB32, ClipConfigL14, CLIPModel
+from nemo.collections.vlm.clip.model import CLIPConfigB32, CLIPConfigL14, CLIPModel
 from nemo.collections.vlm.hf.data.hf_dataset import HFDatasetDataModule
 from nemo.collections.vlm.hf.model.hf_auto_model_for_image_text_to_text import HFAutoModelForImageTextToText
 from nemo.collections.vlm.llava_next.data import LlavaNextMockDataModule, LlavaNextTaskEncoder
@@ -98,7 +98,7 @@ __all__ = [
     "LlavaNextTaskEncoder",
     "CLIPModel",
     "LoRA",
-    "ClipConfigL14",
-    "ClipConfigB32",
+    "CLIPConfigL14",
+    "CLIPConfigB32",
     "ClipMockDataModule",
 ]

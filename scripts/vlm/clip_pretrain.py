@@ -32,7 +32,7 @@ from nemo import lightning as nl
 from nemo.collections import llm, vlm
 from nemo.collections.multimodal.data.energon.base import EnergonMultiModalDataModule
 from nemo.collections.vlm.clip.data.clip_data_module import ClipTaskEncoder
-from nemo.collections.vlm.clip.model import ClipConfigB32, CLIPModel
+from nemo.collections.vlm.clip.model import CLIPConfigB32, CLIPModel
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.exp_manager import TimingCallback
@@ -71,7 +71,7 @@ def main(args):
         raise ValueError(f"Data type {args.data_type} not supported")
 
     model = CLIPModel(
-        ClipConfigB32(),
+        CLIPConfigB32(),
         tokenizer=train_task_encoder.tokenizer,
         imagenet_val=args.imagenet_val,
         mbs=args.mbs,

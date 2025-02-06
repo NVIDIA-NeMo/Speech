@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.vlm.clip.model.base import ClipConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
+from nemo.collections.vlm.clip.model.base import CLIPConfig, CLIPModel, CLIPTextModelConfig, CLIPViTConfig
 from nemo.collections.vlm.clip.model.clip import (
-    ClipConfigB32,
-    ClipConfigL14,
+    CLIPConfigB32,
+    CLIPConfigL14,
     CLIPTextModelL_14_224_Config,
     CLIPViTL_14_224_Config,
 )
@@ -23,10 +23,10 @@ from nemo.collections.vlm.clip.model.clip import (
 __all__ = [
     "CLIPViTConfig",
     "CLIPTextModelConfig",
-    "ClipConfig",
+    "CLIPConfig",
     "CLIPViTL_14_224_Config",
     "CLIPTextModelL_14_224_Config",
-    "ClipConfigL14",
-    "ClipConfigB32",
+    "CLIPConfigL14",
+    "CLIPConfigB32",
     "CLIPModel",
 ]

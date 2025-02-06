@@ -31,11 +31,27 @@ from megatron.core.models.vision.multimodal_projector import MultimodalProjector
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
-from megatron.core.transformer.custom_layers.transformer_engine import (
-    TEColumnParallelLinear,
-    TENorm,
-    TERowParallelLinear,
-)
+
+HAVE_TE = True
+try:
+    from megatron.core.transformer.custom_layers.transformer_engine import (
+        TEColumnParallelLinear,
+        TENorm,
+        TERowParallelLinear,
+    )
+except ImportError:
+    from nemo.utils import logging
+
+    # These Defaults are needed to make sure the code compiles
+    TEColumnParallelLinear = None
+    TENorm = None
+    TERowParallelLinear = None
+    logging.warning(
+        "Failed to import Transformer Engine dependencies. "
+        "`from megatron.core.transformer.custom_layers.transformer_engine import *`"
+        "If using NeMo Run, this is expected. Otherwise, please verify the Transformer Engine installation."
+    )
+
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -45,7 +61,6 @@ from transformers import CLIPVisionConfig, CLIPVisionModel
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model import transformer_engine_layer_spec
-from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank, get_packed_seq_params
 from nemo.collections.vlm.neva.data.multimodal_tokens import IGNORE_INDEX, IMAGE_TOKEN_INDEX
 from nemo.lightning import io
 from nemo.lightning.io.pl import ckpt_to_weights_subdir
@@ -536,10 +551,12 @@ class MCoreNevaModel(MCoreLLaVAModel):
         """Forward function of the LLaVA model.
 
         Args:
-            images (torch.Tensor): input image of shape [num_tiles, img_h, img_w]. num_tiles means the number of image tiles in this batch.
+            images (torch.Tensor): input image of shape [num_tiles, img_h, img_w]. num_tiles means the number of
+            image tiles in this batch.
             input_ids (torch.Tensor): input text ids [batch, text_seq_len].
             position_ids (torch.Tensor): input text position ids [batch, text_seq_len].
-            attention_mask (torch.Tensor): Attention mask for the language model [batch, 1, combined_seq_len, combined_seq_len].
+            attention_mask (torch.Tensor): Attention mask for the language model [batch, 1, combined_seq_len,
+            combined_seq_len].
             labels (torch.Tensor): Optional target text labels [batch, combined_seq_len].
             loss_mask (torch.Tensor): Text loss mask [batch, text_seq_len].
             inference_params (InferenceParams): Inference-time parameters including KV cache.
@@ -564,7 +581,8 @@ class MCoreNevaModel(MCoreLLaVAModel):
         )
         has_images = images is not None and images.shape[0] > 0
 
-        # If running inference, we can skip images token computation if they were computed already earlier for this sample.
+        # If running inference, we can skip images token computation if they were computed already earlier
+        # for this sample.
         if use_inference_kv_cache:
             image_embeddings = None
         elif self.add_encoder and not has_images:
@@ -810,7 +828,7 @@ class MCoreNevaModel(MCoreLLaVAModel):
                     # Pad to multiple of tp size for sequence parallelism
                     tp_world_size = ps.get_tensor_model_parallel_world_size()
                     padded_seq_len = int((max_seq_len + (tp_world_size - 1)) // tp_world_size * tp_world_size)
-                sp_padding_needed = padded_seq_len - max_seq_len
+
                 max_seq_len = padded_seq_len
             batch_indices, non_image_indices = torch.where(input_ids != image_token_index)
 
@@ -958,7 +976,7 @@ class MCoreNevaModel(MCoreLLaVAModel):
             if self.sequence_parallel_lm and self.tp_comm_overlap_lm:
                 assert (
                     combined_embeddings.shape[seq_dim] == self._language_max_sequence_length
-                ), f"TP Comm overlap either requires Vision+Text token length \
+                ), "TP Comm overlap either requires Vision+Text token length \
                 == language_max_sequence_length"
 
         if self.context_parallel_lm > 1:

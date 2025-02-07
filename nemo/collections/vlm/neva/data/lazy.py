@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0115,C0116
 
 import json
 import logging
@@ -355,7 +356,20 @@ class LazySupervisedDataset(Dataset):
                 return_tensors="pt",
             )[0]
             answer_start, answer_end = find_pattern_indices(tokens, answer_tokens, search_start_index)
-            assert answer_start > 0, "Not found valid answer in conversation."
+            if answer_start < 0:
+                logging.warning(
+                    "Unable to find a valid answer in the conversation. "
+                    "Details: "
+                    "\n- Messages: %s"
+                    "\n- Tokens: %s"
+                    "\n- Answer Tokens: %s"
+                    "\n- Search Start Index: %d",
+                    self.conv.messages,
+                    tokens,
+                    answer_tokens,
+                    search_start_index,
+                )
+                break
             labels[answer_start:answer_end] = tokens[answer_start:answer_end]
             search_start_index = answer_end
         tokens = tokens[:-1]
@@ -527,7 +541,7 @@ class NevaLazyDataModule(pl.LightningDataModule):
         self.init_global_step = 0
 
         if tokenizer is None or image_processor is None:
-            logging.warning(f"Processor and tokenizer are not provided! Fall back to `llava-hf/llava-1.5-7b-hf`.")
+            logging.warning("Processor and tokenizer are not provided! Fall back to `llava-hf/llava-1.5-7b-hf`.")
             from transformers import AutoProcessor
             from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 

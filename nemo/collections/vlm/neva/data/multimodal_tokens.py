@@ -31,6 +31,8 @@ class MultiModalToken:
 
 @dataclass
 class ImageToken(MultiModalToken):
+    """Image Token class"""
+
     token_str: str = "<image>"
     token_index: int = -200
     media_type: str = "image"
@@ -39,6 +41,8 @@ class ImageToken(MultiModalToken):
 
 @dataclass
 class VideoToken(MultiModalToken):
+    """Video Token class"""
+
     token_str: str = "<video>"
     token_index: int = -300
     media_type: str = "video"
@@ -49,4 +53,6 @@ class VideoToken(MultiModalToken):
 IGNORE_INDEX = -100
 IMAGE_TOKEN_INDEX = ImageToken.token_index
 VIDEO_TOKEN_INDEX = VideoToken.token_index
-SPECIAL_TOKEN_MAP = [(ImageToken.token_str, ImageToken.token_index), (VideoToken.token_str, VideoToken.token_index)]
+SPECIAL_TOKEN_MAP = [
+    (ImageToken.token_str, ImageToken.token_index),
+]

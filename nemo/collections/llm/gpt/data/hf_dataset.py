@@ -78,14 +78,14 @@ def make_dataset_splits(dataset, split, split_aliases):
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = split
     elif isinstance(split, list):
-        logging.info(f"Loaded HF dataset will use " + str(split) + " splits.")
+        logging.info(f"Loaded HF dataset will use {str(split)} splits.")
         assert isinstance(dataset, list)
         for i, alias_split_name in enumerate(map(clean_split, split)):
             split_name = alias_to_split[alias_split_name]
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = dataset[i]
     elif isinstance(split, str):
-        logging.info(f"Loaded HF dataset has a single split.")
+        logging.info("Loaded HF dataset has a single split.")
         assert not isinstance(dataset, list)
         alias_split_name = split
         if '+' in alias_split_name:
@@ -276,10 +276,10 @@ class SquadHFDataModule(HFDatasetDataModule):
             f" {example['answers']['text'][0].strip()}",
         ]
         context_ids, answer_ids = list(map(self.tokenizer.text_to_ids, formatted_text))
-        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id:
-            context_ids.insert(0, tokenizer.bos_id)
-        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id:
-            answer_ids.append(tokenizer.eos_id)
+        if len(context_ids) > 0 and context_ids[0] != self.tokenizer.bos_id:
+            context_ids.insert(0, self.tokenizer.bos_id)
+        if len(answer_ids) > 0 and answer_ids[-1] != self.tokenizer.eos_id:
+            answer_ids.append(self.tokenizer.eos_id)
 
         return dict(
             labels=(context_ids + answer_ids)[1:],

@@ -1,0 +1,64 @@
+comment: false
+coverage:
+  status:
+    patch: false
+    project:
+      default: false
+      asr:
+        paths:
+          - tests/collections/asr
+          - nemo
+      audio:
+        paths:
+          - tests/collections/audio
+          - nemo
+      common:
+        paths:
+          - tests/collections/common
+          - nemo
+      llm:
+        paths:
+          - tests/collections/llm
+          - nemo
+      multimodal:
+        paths:
+          - tests/collections/multimodal
+          - nemo
+      nlp:
+        paths:
+          - tests/collections/nlp
+          - nemo
+      tts:
+        paths:
+          - tests/collections/tts
+          - nemo
+      core:
+        paths:
+          - tests/core
+          - nemo
+      hydra:
+        paths:
+          - tests/hydra
+          - nemo
+      lightning:
+        paths:
+          - tests/lightning
+          - nemo
+      others:
+        paths:
+          - tests
+          - nemo
+          - "!tests/collections/asr"
+          - "!tests/collections/audio"
+          - "!tests/collections/common"
+          - "!tests/collections/llm"
+          - "!tests/collections/multimodal"
+          - "!tests/collections/nlp"
+          - "!tests/collections/tts"
+          - "!tests/core"
+          - "!tests/core_ptl"
+          - "!tests/hydra"
+          - "!tests/lightning"
+          - "!tests/utils"
+fixes:
+  - "/workspace/::"

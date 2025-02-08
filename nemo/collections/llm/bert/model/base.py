@@ -43,10 +43,10 @@ from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModul
 
 HAVE_TE = True
 try:
-    import transformer_engine  # pylint: disable=W0611
+    import transformer_engine  # noqa: F401 pylint: disable=W0611
     from megatron.core.models.bert import bert_layer_specs
     from megatron.core.models.bert.bert_model import BertModel as MCoreBert
-except (ImportError, ModuleNotFoundError) as e:
+except (ImportError, ModuleNotFoundError):
     HAVE_TE = False
     MCoreBert = TransformerLayer  # Place holder for import checking. BERT requires TE installed.
 
@@ -362,14 +362,14 @@ class TransformerLayerWithPostLNSupport(TransformerLayer):
 
     def __init__(self, *args, **kwargs):
         super(TransformerLayerWithPostLNSupport, self).__init__(*args, **kwargs)
-        ## [Module add: Post attention LN]
+        # [Module add: Post attention LN]
         self.post_att_layernorm = build_module(
             self.submodules_config.post_att_layernorm,
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
         )
-        ## [Module add: Post MLP LN]
+        # [Module add: Post MLP LN]
         self.post_mlp_layernorm = build_module(
             self.submodules_config.post_mlp_layernorm,
             config=self.config,
@@ -386,6 +386,7 @@ class TransformerLayerWithPostLNSupport(TransformerLayer):
         rotary_pos_emb=None,
         inference_params=None,
         packed_seq_params=None,
+        **kwargs,
     ):
         """
         Perform a forward pass through the transformer layer.

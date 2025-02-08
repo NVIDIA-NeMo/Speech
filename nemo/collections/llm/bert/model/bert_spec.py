@@ -13,6 +13,8 @@
 # limitations under the License.
 from dataclasses import dataclass
 
+from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
 try:
     from megatron.core.fusions.fused_bias_dropout import get_bias_dropout_add
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
@@ -28,7 +30,7 @@ try:
 
     HAVE_MEGATRON_CORE = True
 
-except (ImportError, ModuleNotFoundError) as e:
+except (ImportError, ModuleNotFoundError):
     TransformerConfig = ApexGuardDefaults
     HAVE_MEGATRON_CORE = False
 
@@ -41,7 +43,7 @@ try:
     )
 
     HAVE_TE = True
-except (ImportError, ModuleNotFoundError) as e:
+except (ImportError, ModuleNotFoundError):
     HAVE_TE = False
 
 
@@ -60,14 +62,14 @@ class TransformerLayerWithPostLNSupport(TransformerLayer):
 
     def __init__(self, *args, **kwargs):
         super(TransformerLayerWithPostLNSupport, self).__init__(*args, **kwargs)
-        ## [Module add: Post attention LN]
+        # [Module add: Post attention LN]
         self.post_att_layernorm = build_module(
             self.submodules_config.post_att_layernorm,
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
         )
-        ## [Module add: Post MLP LN]
+        # [Module add: Post MLP LN]
         self.post_mlp_layernorm = build_module(
             self.submodules_config.post_mlp_layernorm,
             config=self.config,
@@ -87,6 +89,7 @@ class TransformerLayerWithPostLNSupport(TransformerLayer):
         attention_bias=None,
         inference_params=None,
         packed_seq_params=None,
+        **kwargs,
     ):
         """Copy from megatron/core/transformer/transformer_layer.py with modification of applying
         extra post layer norm if needed."""

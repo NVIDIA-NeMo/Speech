@@ -26,7 +26,7 @@ jobs:
           git push
 
   mcore:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.21.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.21.1
     needs: [update-weekly-branch]
     with:
       source-repository: NVIDIA/Megatron-LM

@@ -127,7 +127,21 @@ nemo() {
       -r requirements/requirements_vllm.txt \
       -r requirements/requirements_deploy.txt
 
-  pip install --no-cache-dir --no-build-isolation .[all] "llama-index==0.10.43" "unstructured==0.14.9" "triton==3.1.0"
+  DEPS=(
+    "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
+    "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@34259bd3e752fef94045a9a019e4aaf62bd11ce2"
+    "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
+    "onnxscript @ git+https://github.com/microsoft/onnxscript"
+    "llama-index==0.10.43"
+    "unstructured==0.14.9"
+    "triton==3.1.0"
+  )
+
+  echo 'Installing dependencies of nemo'
+  ${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
+
+  echo 'Installing nemo itself'
+  pip install --no-cache-dir --no-build-isolation .[all]
 }
 
 echo 'Uninstalling stuff'
@@ -146,16 +160,6 @@ else
     conda install -y -c conda-forge numba==${NUMBA_VERSION}
   fi
 fi
-
-DEPS=(
-  "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
-  "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@34259bd3e752fef94045a9a019e4aaf62bd11ce2"
-  "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
-  "onnxscript @ git+https://github.com/microsoft/onnxscript"
-)
-
-echo 'Installing dependencies of nemo'
-${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
 
 echo 'Installing nemo'
 cd $CURR

@@ -75,21 +75,26 @@ RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
 
 WORKDIR /workspace
 RUN \
-  --mount=type=bind,source=requirements,target=requirements \
-  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=tools/ctc_segmentation/requirements.txt \
-  --mount=type=bind,source=reinstall.sh,target=reinstall.sh \
-  --mount=type=bind,source=setup.py,target=setup.py \
-  --mount=type=bind,source=nemo/package_info.py,target=nemo/package_info.py \
-  --mount=type=bind,source=nemo/__init__.py,target=nemo/__init__.py <<"EOF" bash -ex
+  --mount=type=bind,source=requirements,target=/opt/NeMo/requirements \
+  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/opt/NeMo/tools/ctc_segmentation/requirements.txt \
+  --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+  --mount=type=bind,source=setup.py,target=/opt/NeMo/setup.py \
+  --mount=type=bind,source=README.md,target=/opt/NeMo/README.md \
+  --mount=type=bind,source=nemo/package_info.py,target=/opt/NeMo/nemo/package_info.py \
+  --mount=type=bind,source=nemo/__init__.py,target=/opt/NeMo/nemo/__init__.py <<"EOF" bash -ex
+    cd /opt/NeMo/
     ls -al /tmp/wheels
     ls -al /tmp/wheels/apex
     bash reinstall.sh --library apex --mode install
     bash reinstall.sh --library te --mode install
     bash reinstall.sh --library mcore --mode install
+    bash reinstall.sh --library nemo --mode install
 EOF
 
 # Copy over NeMo code
 COPY --from=nemo-bump /opt/NeMo /opt/NeMo/
+ARG NEMO_REPO
+ARG NEMO_TAG
 RUN <<"EOF" 
 bash -ex
 bash /opt/NeMo/reinstall.sh --library nemo --mode install

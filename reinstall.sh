@@ -109,23 +109,25 @@ apex() {
 
 nemo() {
   local mode="$1"
-  NEMO_DIR="/opt/NeMo"
+  NEMO_DIR=${NEMO_DIR:-"/opt/NeMo"}
 
-  if [ ! -d "$NEMO_DIR/.git" ]; then
-    rm -rf "$NEMO_DIR" &&
-      cd $(dirname "$NEMO_DIR") &&
-      git clone ${NEMO_REPO}
-  fi &&
-    pushd $NEMO_DIR &&
-    git fetch origin '+refs/pull/*/merge:refs/remotes/pull/*/merge' &&
-    git fetch origin $NEMO_TAG &&
-    git checkout -f $NEMO_TAG
+  if [[ -n "$NEMO_TAG" ]]; then
+    if [ ! -d "$NEMO_DIR/.git" ]; then
+      rm -rf "$NEMO_DIR" &&
+        cd $(dirname "$NEMO_DIR") &&
+        git clone ${NEMO_REPO}
+    fi &&
+      pushd $NEMO_DIR &&
+      git fetch origin '+refs/pull/*/merge:refs/remotes/pull/*/merge' &&
+      git fetch origin $NEMO_TAG &&
+      git checkout -f $NEMO_TAG
+  fi
 
   ${PIP} install --no-cache-dir virtualenv &&
     virtualenv /opt/venv &&
     /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
-      -r requirements/requirements_vllm.txt \
-      -r requirements/requirements_deploy.txt
+      -r $NEMO_DIR/requirements/requirements_vllm.txt \
+      -r $NEMO_DIR/requirements/requirements_deploy.txt
 
   DEPS=(
     "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
@@ -141,7 +143,7 @@ nemo() {
   ${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
 
   echo 'Installing nemo itself'
-  pip install --no-cache-dir --no-build-isolation .[all]
+  pip install --no-cache-dir --no-build-isolation $NEMO_DIR/.[all]
 }
 
 echo 'Uninstalling stuff'

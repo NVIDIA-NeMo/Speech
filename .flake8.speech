@@ -1,4 +1,5 @@
 [flake8]
+max-line-length = 119
 select = 
     F541, # f-string without any placeholders
     F841, # local variable 'x' is assigned to but never used

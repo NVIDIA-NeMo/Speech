@@ -21,7 +21,8 @@ from megatron.core.tensor_parallel import gather_from_tensor_model_parallel_regi
 from megatron.core.utils import make_sharded_tensor_for_checkpoint, make_tp_sharded_tensor_for_checkpoint
 from torch import nn
 
-from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear, wildcard_match
+from nemo.collections.llm.peft.module_matcher import ModuleMatcher
+from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear
 from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import ParallelLinearAdapter
 from nemo.lightning.pytorch.callbacks.peft import PEFT, AdapterWrapper
 from nemo.utils import logging
@@ -124,7 +125,7 @@ class DoRALinear(AdapterWrapper):
 
 
 @dataclass
-class DoRA(PEFT):
+class DoRA(PEFT, ModuleMatcher):
     """
     Implements the DoRA (Weight-Decomposed LowRank Adaptation) module for parameter-efficient fine-tuning.
 
@@ -178,8 +179,8 @@ class DoRA(PEFT):
         Returns:
             nn.Module: The modified module with DoRA applied, or the original module if not a target.
         """
-        full_name = f"{prefix}.{name}" if prefix else name
-        if name in self.target_modules or any(wildcard_match(pattern, full_name) for pattern in self.target_modules):
+        if (ans := self.match(m, name, prefix)) is not None:
+            (match, full_name) = ans
             input_is_parallel, in_features, out_features = get_adapter_attributes_from_linear(m)
             logging.info(f"Adding DoRA to: {full_name}")
             adapter = ParallelLinearDoRAAdapter(

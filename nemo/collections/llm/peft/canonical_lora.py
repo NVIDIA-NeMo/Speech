@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Set, Tuple
+from typing import List, Literal, Optional, Tuple
 
 import torch
 from megatron.core.dist_checkpointing.mapping import ShardedStateDict
 from torch import nn
 
 from nemo.collections.llm.peft.lora import LinearAdapter, LoRALinear
-from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear, is_expert_linear, wildcard_match
+from nemo.collections.llm.peft.module_matcher import ModuleMatcher
+from nemo.collections.llm.peft.utils import get_adapter_attributes_from_linear, is_expert_linear
 from nemo.lightning.pytorch.callbacks.peft import PEFT, AdapterWrapper
 from nemo.utils import logging
 
@@ -103,7 +103,7 @@ class LoRALinearSplitFC1UpGate(AdapterWrapper):
 
 
 @dataclass
-class CanonicalLoRA(PEFT):
+class CanonicalLoRA(PEFT, ModuleMatcher):
     """
     Implements the LoRA (Low-Rank Adaptation) module for parameter-efficient fine-tuning.
     Canonical LoRA applies LoRA on Q, K, V projection matrices separately, as well as Up and Gate projection
@@ -123,6 +123,9 @@ class CanonicalLoRA(PEFT):
             Target modules can also contain wildcards. For example, you can specify
                 target_modules=['*.layers.0.*.linear_q', '*.layers.1.*.linear_q'] to add LoRA to only linear_q
                 on the first two layers.
+        exclude_modules (List[str], optional): A list of module names not to apply LoRa to. It will
+            match all nn.Linear & nn.Linear-adjacent modules whose name does not match any string in
+            exclude_modules. If used, will require target_modules to be empty list or None.
         dim (int): Dimension of the low-rank projection space. Defaults to 32.
         alpha (int): Weighting factor for the low-rank projection. Defaults to 32.
         dropout (float): Dropout rate for the low-rank projection. Defaults to 0.0.
@@ -183,7 +186,6 @@ class CanonicalLoRA(PEFT):
         }
 
         """
-        self.canonical_mapping: Dict[str, Set] = defaultdict(set)
         for target in self.target_modules:
             assert not target.endswith("linear_qkv"), (
                 "Canonical LoRA does not support target 'linear_qkv'. Either use 'linear_qkv' with LoRA() or "
@@ -221,21 +223,8 @@ class CanonicalLoRA(PEFT):
         """
         from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import ParallelLinearAdapter
 
-        full_name = f"{prefix}.{name}" if prefix else name
-
-        """
-        Find the element in canonical_mapping which 
-        1) matches the current `name` exactly, OR
-        2) matches the current `full_name` with regex
-        match is None if current module name doesn't match the specified targets.
-        """
-        match = None
-        for pattern in self.canonical_mapping:
-            if name == pattern or wildcard_match(pattern, full_name):
-                match = pattern
-                break
-
-        if match is not None:
+        if (ans := self.match(m, name, prefix)) is not None:
+            (match, full_name) = ans
             if isinstance(m, nn.Linear):
                 return LinearAdapter(
                     m, dim=self.dim, alpha=self.alpha, dropout=self.dropout, lora_A_init_method=self.lora_A_init_method

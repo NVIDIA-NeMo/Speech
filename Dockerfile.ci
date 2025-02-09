@@ -15,15 +15,6 @@
 # limitations under the License.
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
-ARG NEMO_REPO
-ARG NEMO_TAG
-ARG MLM_REPO
-ARG MLM_TAG
-ARG TE_REPO
-ARG TE_TAG
-ARG APEX_REPO
-ARG APEX_TAG
-ARG IMAGE_LABEL
 
 FROM ${BASE_IMAGE} as nemo-bump
 ARG NEMO_TAG
@@ -57,55 +48,49 @@ EOF
 ARG MAX_JOBS
 ARG TE_TAG
 ARG TE_REPO
-RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
   bash /opt/NeMo/reinstall.sh --library te --mode build && \
   ls -al /opt/TransformerEngine || true
 
 ARG APEX_REPO
 ARG APEX_TAG
-RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
   bash /opt/NeMo/reinstall.sh --library apex --mode build && \
   ls -al /opt/Apex || true
 
 ARG MLM_REPO
 ARG MLM_TAG
-RUN --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
+RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/opt/NeMo/reinstall.sh \
   bash /opt/NeMo/reinstall.sh --library mcore --mode build && \
   ls -al /opt/Megatron-LM || true
 
 WORKDIR /workspace
 RUN \
-  --mount=type=bind,source=requirements,target=/opt/NeMo/requirements \
-  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/opt/NeMo/tools/ctc_segmentation/requirements.txt \
-  --mount=type=bind,source=reinstall.sh,target=/opt/NeMo/reinstall.sh \
-  --mount=type=bind,source=setup.py,target=/opt/NeMo/setup.py \
-  --mount=type=bind,source=README.md,target=/opt/NeMo/README.md \
-  --mount=type=bind,source=nemo/package_info.py,target=/opt/NeMo/nemo/package_info.py \
-  --mount=type=bind,source=nemo/__init__.py,target=/opt/NeMo/nemo/__init__.py <<"EOF" bash -ex
-    cd /opt/NeMo/
-    ls -al /tmp/wheels
-    ls -al /tmp/wheels/apex
-    bash reinstall.sh --library apex --mode install
-    bash reinstall.sh --library te --mode install
-    bash reinstall.sh --library mcore --mode install
-    bash reinstall.sh --library nemo --mode install
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/requirements,target=/tmp/NeMo/requirements \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/setup.py,target=/tmp/NeMo/setup.py \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/README.md,target=/tmp/NeMo/README.md \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
+    export NEMO_DIR=/tmp/NeMo 
+    bash /tmp/NeMo/reinstall.sh --library all --mode install
+    rm -rf $NEMO_DIR || true
 EOF
 
 # Copy over NeMo code
-COPY --from=nemo-bump /opt/NeMo /opt/NeMo/
 ARG NEMO_REPO
 ARG NEMO_TAG
-RUN <<"EOF" 
-bash -ex
-bash /opt/NeMo/reinstall.sh --library nemo --mode install
+RUN \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/reinstall.sh <<"EOF" bash -ex
+    bash /tmp/reinstall.sh --library all --mode install
 
-cp -a /opt/NeMo/. /workspace/
-# Megatron Core installation
+    # Copy into workspace
+    cp -a /opt/NeMo/. /workspace/
+    cp -r /opt/Megatron-LM/ /workspace/
 
-cp -r /opt/Megatron-LM/ /workspace/
-
-# set permission
-chmod 777 -R /workspace
+    # set permission
+    chmod 777 -R /workspace
 EOF
 
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"

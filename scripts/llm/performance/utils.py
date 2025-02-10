@@ -12,14 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import os
 import sys
-from typing import Dict, List
+from pathlib import Path
+from typing import Dict, List, Optional
 
 import nemo_run as run
+import pandas as pd
 from lightning.pytorch.callbacks.callback import Callback
 from nemo_run.config import NEMORUN_HOME
+from numpy import nan
 
 from nemo.collections.common.tokenizers.huggingface import AutoTokenizer
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
@@ -70,7 +72,7 @@ def slurm_executor(
     mounts = []
     srun_args = ["--mpi=pmix"]
 
-    if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
+    if nemo_home != DEFAULT_NEMO_CACHE_HOME:  # DO NOT change this to 'DEFAULT_NEMO_HOME'/'NEMO_HOME'
         env_vars.update({"NEMO_HOME": nemo_home})
         mounts.extend([f"{nemo_home}:{nemo_home}"])
     if hf_token is not None:
@@ -126,6 +128,118 @@ def hf_tokenizer(model_name: str) -> run.Config[AutoTokenizer]:
     )
 
 
+def get_user_configs(gpu: str, task: str, model_name: str, model_size: str, args) -> List[int]:
+    """
+    Choose recommended configs tuned for performance from a csv file if available.
+    User (command line) provided args override the recommended configs.
+
+    NOTE: pre-train and PEFT recommended configs available for H100 and B200.
+
+    Args:
+        gpu (str): target GPU machine for experiment. Options- ['h100', 'b200']
+        task (str): experiment task. Options- ['pre_train', 'sft', 'lora']
+        model_name (str): target model for experiment. E.g.: 'llama3', 'mixtral'
+        model_size (str): size of target model. E.g.: '8b' (for llama3)
+    """
+    script_dir = str(Path(__file__).parent.absolute())
+    recommended_configs_csv = os.path.join(script_dir, "recommended_model_configs", f"model_configs_{gpu}.csv")
+    logging.info(f"Using {recommended_configs_csv} for loading default recommended model configs")
+
+    config_df = pd.DataFrame()
+    if os.path.isfile(recommended_configs_csv):
+        df = pd.read_csv(recommended_configs_csv)
+        config_df = df[
+            (df["task"] == task)
+            & (df["model"] == model_name)
+            & (df["size"] == model_size)
+            & (df["dtype"] == args.compute_dtype)
+        ]
+        config_df = config_df.replace({nan: None})
+        if len(config_df) == 0:
+            logging.warning(f"Missing performance configs for {task}-{model_name}-{model_size}-{args.compute_dtype}")
+            logging.warning("Make sure you provide all necessary arguments in the command line")
+
+    config = config_df.to_dict(orient='records')[0] if len(config_df) > 0 else {}
+
+    num_gpus = config.get("num_gpus") if args.num_gpus is None else args.num_gpus
+    num_nodes = -(num_gpus // -args.gpus_per_node)  # ceil division
+    mbs = config.get("mbs") if args.micro_batch_size is None else args.micro_batch_size
+    gbs = config.get("gbs") if args.global_batch_size is None else args.global_batch_size
+    tp_size = config.get("tp_size") if args.tensor_parallel_size is None else args.tensor_parallel_size
+    pp_size = config.get("pp_size") if args.pipeline_parallel_size is None else args.pipeline_parallel_size
+    cp_size = config.get("cp_size") if args.context_parallel_size is None else args.context_parallel_size
+    ep_size = config.get("ep_size") if args.expert_parallel_size is None else args.expert_parallel_size
+    vp_size = args.virtual_pipeline_parallel_size
+    vp_size = config.get("vp_size") if vp_size is None else vp_size
+    etp_size = args.expert_tensor_parallel_size
+    etp_size = config.get("etp_size") if etp_size is None else etp_size
+
+    kwargs = num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size
+    kwargs = [int(arg) if arg is not None else arg for arg in kwargs]
+
+    return kwargs
+
+
+def set_primary_perf_configs(
+    recipe,
+    enable_tb: bool,
+    num_nodes: int,
+    num_gpus_per_node: int,
+    mbs: int,
+    gbs: int,
+    max_steps: int,
+    tp_size: int,
+    pp_size: int,
+    cp_size: int,
+    vp_size: int,
+    ep_size: int,
+    etp_size: Optional[int] = None,
+):
+    """Set experiment configs we usually tune for performance of all models."""
+    # nemo.lightning.Trainer configs
+    recipe.trainer.num_nodes = num_nodes
+    recipe.trainer.devices = num_gpus_per_node
+    recipe.trainer.max_steps = max_steps
+
+    # lightning.pytorch.LightningDataModule configs
+    recipe.data.micro_batch_size = mbs
+    recipe.data.global_batch_size = gbs
+
+    # parallelism configs
+    recipe.trainer.strategy.tensor_model_parallel_size = tp_size
+    recipe.trainer.strategy.pipeline_model_parallel_size = pp_size
+    recipe.trainer.strategy.context_parallel_size = cp_size
+    recipe.trainer.strategy.virtual_pipeline_model_parallel_size = None if vp_size == 1 else vp_size
+    recipe.trainer.strategy.expert_model_parallel_size = ep_size
+    recipe.trainer.strategy.expert_tensor_parallel_size = etp_size
+
+    recipe.trainer.strategy.sequence_parallel = bool(tp_size > 1)
+
+    # callback configs
+    comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
+    dp_size = (num_nodes * num_gpus_per_node) / (tp_size * pp_size * cp_size)
+    if comm_overlap_callback_idx is not None:
+        # WARNING: If True, checkpointing (if enabled) might not work
+        recipe.trainer.callbacks[comm_overlap_callback_idx].overlap_param_gather_with_optimizer_step = bool(
+            dp_size > 1 and pp_size > 1 and vp_size and vp_size > 1
+        )
+
+    if not enable_tb:  # tensorboard adds performance overhead.
+        recipe.log.tensorboard = None
+        recipe.trainer.logger = False
+    else:
+        # default path is NOT intuitive- `<log_dir>/code/nemo_experiments/tb_logs/default/<tfevents_file>`
+        recipe.log.log_dir = "/nemo_run/lightning_logs"  # saves file at- `<log_dir>/lightning_logs/tb_logs
+
+    # Misc. for overall faster experiment runtime
+    recipe.log.ckpt = None
+    recipe.trainer.enable_checkpointing = False
+    recipe.trainer.val_check_interval = max_steps
+    recipe.trainer.log_every_n_steps = 1
+
+    return recipe
+
+
 def import_ckpt_experiment(executor: run.SlurmExecutor, model: run.Config[GPTModel], source: str):
     """
     Downloads/Acceses checkpoint to be used for fine-tuning. `import_ckpt` first tries find the nemo checkpoint in
@@ -172,108 +286,3 @@ def get_comm_overlap_callback_idx(callbacks: List[Callback]) -> int | None:
             if callback.__fn_or_cls__ == MegatronCommOverlapCallback:
                 return idx
     return None
-
-
-def parse_cli_args():
-    """
-    Command line arguments correspong to Slurm cluster and NeMo2.0 for running pre-training and
-    fine-tuning experiments.
-    """
-    parser = argparse.ArgumentParser(description="NeMo2.0 Performance Pretraining and Fine-Tuning")
-
-    parser.add_argument(
-        "-a",
-        "--account",
-        type=str,
-        help="Slurm account to use for experiment",
-        required=True,
-    )
-    parser.add_argument(
-        "-p",
-        "--partition",
-        type=str,
-        help="Slurm partition to use for experiment",
-        required=True,
-    )
-    parser.add_argument(
-        "-l",
-        "--log_dir",
-        type=str,
-        help=f"Directory for logging experiment results. Defaults to {NEMORUN_HOME}",
-        required=False,
-        default=NEMORUN_HOME,
-    )
-    parser.add_argument(
-        "-t",
-        "--time_limit",
-        type=str,
-        help="Maximum time limit to run experiment for. Defaults to 30 minutes (format- 'HH:MM:SS')",
-        required=False,
-        default="00:30:00",
-    )
-    container_img_msg = [
-        "NeMo container to use for experiment. Defaults to latest dev container- 'nvcr.io/nvidia/nemo:dev'",
-        "Make sure your NGC credentials are accessible in your environment.",
-    ]
-    parser.add_argument(
-        "-i",
-        "--container_image",
-        type=str,
-        help=" ".join(container_img_msg),
-        required=False,
-        default="nvcr.io/nvidia/nemo:dev",
-    )
-    parser.add_argument(
-        "-c",
-        "--compute_dtype",
-        type=str,
-        help="Compute precision. Options- bf16 or fp8. Defaults to bf16",
-        required=False,
-        default="bf16",
-    )
-    parser.add_argument(
-        "-ep",
-        "--enable_profiling",
-        help="Enable Nsys profiling. Diabled by default",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-tb",
-        "--tensorboard",
-        help="Enable tensorboard logging. Disabled by default",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-f",
-        "--finetuning",
-        help="Finetuning scheme to use. Options- 'sft', 'lora'. Defaults is 'lora'",
-        default='lora',
-    )
-    parser.add_argument(
-        "-hf",
-        "--hf_token",
-        type=str,
-        help="HuggingFace token. Defaults to None. Required for accessing tokenizers and checkpoints.",
-        default=None,
-    )
-    nemo_home_msg = [
-        "Sets env var `NEMO_HOME` (on compute node using sbatch script)- directory where NeMo searches",
-        "for models and checkpoints. This saves a lot of time (especially for bigger models) if checkpoints already",
-        f"exist here. Missing files will be downloaded here from HuggingFace. Defaults to {DEFAULT_NEMO_HOME}",
-    ]
-    parser.add_argument(
-        "-nh",
-        "--nemo_home",
-        type=str,
-        help=" ".join(nemo_home_msg),
-        default=DEFAULT_NEMO_HOME,
-    )
-    parser.add_argument(
-        "-d",
-        "--dryrun",
-        help="If true, prints sbatch script to terminal without launching experiment.",
-        required=False,
-        action="store_true",
-    )
-
-    return parser

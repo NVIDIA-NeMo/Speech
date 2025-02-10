@@ -366,7 +366,7 @@ def finetune_performance_optimizations(
         It may not be suitable for all hardware configurations or use cases.
     """
 
-    if not recipe.trainer.callbacks:
+    if not hasattr(recipe.trainer, "callbacks") or recipe.trainer.callbacks is None:
         recipe.trainer.callbacks = []
 
     if peft_scheme is None or peft_scheme.lower() == 'none':

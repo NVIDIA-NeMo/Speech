@@ -72,10 +72,10 @@ class MixtralConfig(GPTConfig):
     params_dtype: torch.dtype = torch.bfloat16
 
     # fusions
-    apply_rope_fusion = True
-    bias_activation_fusion = True
-    bias_dropout_fusion = True
-    masked_softmax_fusion = False
+    apply_rope_fusion: bool = True
+    bias_activation_fusion: bool = True
+    bias_dropout_fusion: bool = True
+    masked_softmax_fusion: bool = False
 
 
 @dataclass
@@ -361,8 +361,8 @@ class HFMixtralExporter(io.ModelConnector[MixtralModel, "MixtralForCausalLM"]):
             # transformer config
             num_attention_heads=source.num_attention_heads,
             num_key_value_heads=source.num_query_groups,
-            num_local_experts=config.num_moe_experts,
-            num_experts_per_tok=config.moe_router_topk,
+            num_local_experts=source.num_moe_experts,
+            num_experts_per_tok=source.moe_router_topk,
             # norm
             rms_norm_eps=source.layernorm_epsilon,
             # init

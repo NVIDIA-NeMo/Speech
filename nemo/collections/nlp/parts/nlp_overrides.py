@@ -15,7 +15,6 @@
 import functools
 import itertools
 import os
-import re
 import shutil
 import tempfile
 from collections import OrderedDict, defaultdict
@@ -104,7 +103,6 @@ try:
         make_sharded_optimizer_tensor,
         optim_state_to_sharding_state,
     )
-    from megatron.core.dist_checkpointing.strategies import tensorstore
     from megatron.core.tensor_parallel.layers import param_is_not_tensor_parallel_duplicate
     from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
     from megatron.core.transformer.transformer_layer import TransformerLayer as MCoreTransformerLayer
@@ -168,7 +166,7 @@ def init_model_parallel(
                 nccl_communicator_config_path=nccl_communicator_config_path,
                 use_sharp=sharp,
                 expert_model_parallel_size=app_state.expert_model_parallel_size,
-                order='tp-pp-dp' if app_state.use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+                order='tp-cp-ep-pp-dp' if app_state.use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
                 num_distributed_optimizer_instances=app_state.num_distributed_optimizer_instances,
                 distributed_timeout_minutes=distributed_timeout_minutes,
             )
@@ -184,6 +182,8 @@ def init_model_parallel(
             app_state.pipeline_model_parallel_group = parallel_state.get_pipeline_model_parallel_group()
 
             if app_state.init_mpi_proc_group:
+                from importlib.metadata import version
+
                 import packaging
 
                 te_version = packaging.version.Version(version('transformer_engine'))
@@ -216,12 +216,14 @@ class NLPDDPStrategy(DDPStrategy):
     ) -> None:
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super().__init__(
             parallel_devices=parallel_devices,
@@ -237,8 +239,9 @@ class NLPDDPStrategy(DDPStrategy):
 
     def setup(self, trainer: "pl.Trainer") -> None:
         """
-        Override setup() of DDPStrategy to avoid _sync_module_states(self.model) during eval as it can cause PP > 1 to hang
-        due to assumption in DDPStrategy class that the same model is replicated across GPUs
+        Override setup() of DDPStrategy to avoid _sync_module_states(self.model) during eval
+        as it can cause PP > 1 to hang due to assumption in DDPStrategy class that the same
+        model is replicated across GPUs
         """
         trainer_fn = trainer.state.fn
         if trainer_fn == TrainerFn.FITTING:
@@ -284,7 +287,7 @@ class NLPDDPStrategy(DDPStrategy):
 
             if app_state.model_parallel_size is not None:
 
-                logging.info(f"Configuring DDP for model parallelism.")
+                logging.info("Configuring DDP for model parallelism.")
 
                 # With model parallelism, multiple GPUs form a large "logical GPU"
                 # this means that data parallel groups span multiple GPUs
@@ -372,7 +375,7 @@ class NLPDDPStrategy(DDPStrategy):
 
         optimizer_state_dict['fp32_from_fp16_params'] = [
             [
-                make_sharded_optimizer_tensor(get_safe(param_id), fp32_param, prefix=f'optimizer.state.fp32_param')
+                make_sharded_optimizer_tensor(get_safe(param_id), fp32_param, prefix='optimizer.state.fp32_param')
                 for param_id, fp32_param in zip(state_group['params'], fp32_group)
             ]
             for fp32_group, state_group in zip(
@@ -428,7 +431,8 @@ class NLPDDPStrategy(DDPStrategy):
             if self.is_global_zero or app_state.data_parallel_rank == 0:
                 self.checkpoint_io.save_checkpoint(checkpoint, filepath, storage_options=storage_options)
 
-    # PTL 2.2 supports non strict loading of the ckpt with the strict arg (https://github.com/Lightning-AI/pytorch-lightning/pull/19404)
+    # PTL 2.2 supports non strict loading of the ckpt with the strict arg
+    # (https://github.com/Lightning-AI/pytorch-lightning/pull/19404)
     def load_model_state_dict(self, checkpoint: Mapping[str, Any], strict: bool = True) -> None:
         # if using distributed checkpointing, the state dict logic is at the model level
         if self.use_distributed_checkpointing:
@@ -514,7 +518,8 @@ class NLPDDPStrategy(DDPStrategy):
         expert_index = None
         if checkpoint_has_expert_param and not model_has_expert_param:
             logging.warning(
-                'Currently training the model without expert parallelism while restored checkpoint has EP params. Ignoring the EP params for restoring.'
+                'Currently training the model without expert parallelism while restored checkpoint has '
+                'EP params. Ignoring the EP params for restoring.'
             )
             expert_index = next(
                 (index for index, entry in enumerate(checkpoint_param_groups) if entry.get('is_expert', False)),
@@ -738,12 +743,14 @@ class NLPFSDPStrategy(FSDPStrategy):
     ) -> None:
         if not HAVE_APEX:
             raise ImportError(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "Apex was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
 
         # Set the mixed precision recipe
@@ -1009,15 +1016,18 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
     def __init__(self) -> None:
         if not HAVE_APEX:
             logging.warning(
-                "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/apex\n"
-                "Megatron-based models require Apex to function correctly."
+                "Apex was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/apex\nMegatron-based models require Apex to function "
+                "correctly."
             )
             # raise ImportError(
-            #    "Apex was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+            #    "Apex was not found. Please see the NeMo README for installation instructions: "
+            #    "https://github.com/NVIDIA/NeMo#megatron-gpt."
             # )
         if not HAVE_MEGATRON_CORE:
             logging.warning(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         super().__init__()
 
@@ -1074,8 +1084,8 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                     else:
                         mp_model_weights = os.path.join(
                             dir_name,
-                            f'tp_rank_{app_state.tensor_model_parallel_rank:02d}_pp_rank_{app_state.pipeline_model_parallel_rank:03d}_'
-                            + self.model_weights_ckpt,
+                            f'tp_rank_{app_state.tensor_model_parallel_rank:02d}_pp_rank_'
+                            f'{app_state.pipeline_model_parallel_rank:03d}_' + self.model_weights_ckpt,
                         )
 
                     self._save_state_dict_to_disk(model.state_dict(), mp_model_weights)
@@ -1201,7 +1211,8 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
         if 'model.model.diffusion_model.input_blocks.1.0.in_layers.2.weight' in loaded_keys:
             new_state_dict = {}
 
-            # GroupNormOpt fuses activation function to one layer, thus the indexing of weights are shifted for following
+            # GroupNormOpt fuses activation function to one layer, thus the indexing of weights are
+            # shifted for following
             def should_process(key):
                 base_str = "model.model.diffusion_model."
                 blocks = ["input_blocks", "middle_block", "output_blocks"]
@@ -1241,13 +1252,13 @@ class NLPSaveRestoreConnector(SaveRestoreConnector):
                 if 'extra_state' in key:
                     continue
 
-                ### LayerNormLinear
+                # LayerNormLinear
                 # norm_to_q.layer_norm_{weight|bias} -> norm.{weight|bias}
                 # norm_to_q.weight -> to_q.weight
                 new_key = key.replace('norm_to_q.layer_norm_', 'norm.')
                 new_key = new_key.replace('norm_to_q.weight', 'to_q.weight')
 
-                ### LayerNormMLP
+                # LayerNormMLP
                 # ff.net.layer_norm_{weight|bias} -> ff.net.0.{weight|bias}
                 # ff.net.fc1_{weight|bias} -> ff.net.1.proj.{weight|bias}
                 # ff.net.fc2_{weight|bias} -> ff.net.3.{weight|bias}
@@ -1448,7 +1459,7 @@ class FSDPMixedPrecisionPlugin(FSDPPrecision):
     def __init__(
         self,
         precision: Literal['16-mixed', 'bf16-mixed', '16', 'bf16', 16],
-        scaler: Optional['ShardedGradScaler'] = None,
+        scaler: Optional['GradScaler'] = None,
     ) -> None:
         if precision in ['16-mixed', '16', 16]:
             plugin_precision = '16-mixed'
@@ -1783,8 +1794,9 @@ class CustomProgressBar(TQDMProgressBar):
         return self.bar
 
     def on_train_epoch_start(self, trainer, *_):
-        # Use trainer.max_steps as the num_training_batches since len(dataloader) aka num_training_batches is returned as the total num of micro batches
-        # instead of total num of global batches with this PR: https://github.com/NVIDIA/NeMo/pull/8426
+        # Use trainer.max_steps as the num_training_batches since len(dataloader) aka num_training_batches
+        # is returned as the total num of micro batches instead of total num of global batches with this PR:
+        # https://github.com/NVIDIA/NeMo/pull/8426
         num_training_batches = trainer.max_steps
         self.train_progress_bar.reset(num_training_batches)
         self.train_progress_bar.initial = 0

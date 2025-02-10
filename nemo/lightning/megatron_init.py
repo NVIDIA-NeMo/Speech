@@ -267,9 +267,11 @@ def fake_initialize_model_parallel(
     use_tp_pp_dp_mapping=False,
 ):
     """
-    Fake initialize model data parallel groups so that we can instantiate model parallel models before DDP is initialized.
-    This is needed because PTL execution flow is init model, init trainer -> call trainer.fit(model). DDP is initialized during .fit.
-    This function is taken from megatron.core.parallel_state and modified so that the distributed groups are not created.
+    Fake initialize model data parallel groups so that we can instantiate model parallel
+    models before DDP is initialized. This is needed because PTL execution flow is init
+    model, init trainer -> call trainer.fit(model). DDP is initialized during .fit.
+    This function is taken from megatron.core.parallel_state and modified so that the
+    distributed groups are not created.
     We only need the tensor parallel and pipeline parallel ranks to instantiate the model.
 
     Arguments:
@@ -348,7 +350,7 @@ def fake_initialize_model_parallel(
             dp=data_parallel_size,
             pp=encoder_pipeline_model_parallel_size,
             cp=context_parallel_size,
-            order='tp-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+            order='tp-cp-ep-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
             rank_offset=0,
         )
     else:
@@ -360,7 +362,7 @@ def fake_initialize_model_parallel(
         dp=data_parallel_size,
         pp=pipeline_model_parallel_size,
         cp=context_parallel_size,
-        order='tp-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+        order='tp-cp-ep-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
         rank_offset=encoder_world_size,
     )
     # Build expert rank generator
@@ -372,7 +374,8 @@ def fake_initialize_model_parallel(
     expert_data_parallel_size = decoder_world_size // expert_tensor_model_pipeline_parallel_size
     if decoder_world_size % expert_tensor_model_pipeline_parallel_size != 0:
         raise RuntimeError(
-            f"decoder world_size ({decoder_world_size}) is not divisible by expert_tensor_model_pipeline_parallel size ({expert_tensor_model_pipeline_parallel_size})"
+            f"decoder world_size ({decoder_world_size}) is not divisible by "
+            f"expert_tensor_model_pipeline_parallel size ({expert_tensor_model_pipeline_parallel_size})"
         )
 
     expert_decoder_rank_generator = RankGenerator(
@@ -381,9 +384,15 @@ def fake_initialize_model_parallel(
         dp=expert_data_parallel_size,
         pp=pipeline_model_parallel_size,
         cp=1,
-        order='tp-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
+        order='tp-cp-ep-pp-dp' if use_tp_pp_dp_mapping else 'tp-cp-ep-dp-pp',
         rank_offset=encoder_world_size,
     )
+
+    assert (
+        not use_tp_pp_dp_mapping
+        or pipeline_model_parallel_size == 1
+        or expert_data_parallel_size == data_parallel_size
+    ), "When not using pp-last rank ordering, the data parallel size of the attention and moe layers must be the same"
 
     assert decoder_rank_generator.get_ranks("pp") == expert_decoder_rank_generator.get_ranks(
         "pp"

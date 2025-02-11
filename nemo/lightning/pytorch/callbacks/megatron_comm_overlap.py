@@ -296,6 +296,10 @@ class MegatronCommOverlapCallback(Callback):
         else:
             # ub_cfgs is a dataclass, however TE needs a dict, so convert here
             self.tp_comm_overlap_cfg = asdict(self.tp_comm_overlap_cfg)
+            # remove keys with None values from dictionary to match TE's expectations
+            self.tp_comm_overlap_cfg = {
+                key: value for key, value in self.tp_comm_overlap_cfg.items() if value is not None
+            }
 
         micro_batch_size = get_micro_batch_size()
         hidden_size = model_parallel_cfg.hidden_size

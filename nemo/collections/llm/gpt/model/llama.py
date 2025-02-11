@@ -33,7 +33,7 @@ from nemo.utils import logging
 
 if TYPE_CHECKING:
     from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
-    from peft import PeftConfig
+    from peft import AutoPeftModelForCausalLM, PeftConfig
     from transformers import LlamaConfig as HFLlamaConfig
     from transformers import LlamaForCausalLM
 
@@ -252,6 +252,37 @@ class LlamaModel(GPTModel):
         super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
 
 
+class MLPerfLoRALlamaModel(LlamaModel):
+    """
+    This class wraps LlamaModel and adds context managers around configure_model to reduce memory consumption.
+
+    Changes made here are experimental, proceed with caution.
+    """
+
+    def __init__(
+        self,
+        config: Annotated[Optional[LlamaConfig], Config[LlamaConfig]] = None,
+        optim: Optional[OptimizerModule] = None,
+        tokenizer: Optional["TokenizerSpec"] = None,
+        model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
+    ):
+        super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
+
+        from nemo.utils.import_utils import safe_import
+
+        _, HAVE_TE = safe_import("transformer_engine")
+        assert HAVE_TE, "TransformerEngine is required for MLPerfLoRALlamaModel."
+
+    def configure_model(self):
+        # Apply context managers to reduce memory by (1) avoiding unnecessary gradients
+        # and (2) requesting that TE initialize params as FP8. See:
+        # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/api/pytorch.html#transformer_engine.pytorch.fp8_model_init
+        import transformer_engine.pytorch as te
+
+        with torch.no_grad(), te.fp8_model_init():
+            super().configure_model()
+
+
 @io.model_importer(LlamaModel, "hf")
 class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
     def init(self) -> LlamaModel:
@@ -434,13 +465,21 @@ class HFLlamaPEFTExporter(HFLlamaExporter):
         pn = "decoder.layers."
         ph = "base_model.model.model.layers."
 
+        # linear_proj and linear_fc2 prefixes
+        p_proj = "self_attention.linear_proj.adapter"
+        p_fc2 = "mlp.linear_fc2.adapter"
+
+        # linear_qkv and linear_fc1 prefixes
+        p_qkv = "self_attention.linear_qkv.adapter"
+        p_fc1 = "mlp.linear_fc1.adapter"
+
         mapping = {
             # linear_proj for both canonical and performant lora
-            f"{pn}*.self_attention.linear_proj.adapter.linear_in.weight": f"{ph}*.self_attn.o_proj.lora_A.default.weight",
-            f"{pn}*.self_attention.linear_proj.adapter.linear_out.weight": f"{ph}*.self_attn.o_proj.lora_B.default.weight",
+            f"{pn}*.{p_proj}.linear_in.weight": f"{ph}*.self_attn.o_proj.lora_A.default.weight",
+            f"{pn}*.{p_proj}.linear_out.weight": f"{ph}*.self_attn.o_proj.lora_B.default.weight",
             # linear_fc2 for both canonical and performant lora
-            f"{pn}*.mlp.linear_fc2.adapter.linear_in.weight": f"{ph}*.mlp.down_proj.lora_A.default.weight",
-            f"{pn}*.mlp.linear_fc2.adapter.linear_out.weight": f"{ph}*.mlp.down_proj.lora_B.default.weight",
+            f"{pn}*.{p_fc2}.linear_in.weight": f"{ph}*.mlp.down_proj.lora_A.default.weight",
+            f"{pn}*.{p_fc2}.linear_out.weight": f"{ph}*.mlp.down_proj.lora_B.default.weight",
         }
         transforms = []
 
@@ -448,17 +487,17 @@ class HFLlamaPEFTExporter(HFLlamaExporter):
             mapping.update(
                 {
                     # linear_qkv for canonical lora
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_q.linear_in.weight": f"{ph}*.self_attn.q_proj.lora_A.default.weight",
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_q.linear_out.weight": f"{ph}*.self_attn.q_proj.lora_B.default.weight",
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_k.linear_in.weight": f"{ph}*.self_attn.k_proj.lora_A.default.weight",
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_k.linear_out.weight": f"{ph}*.self_attn.k_proj.lora_B.default.weight",
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_v.linear_in.weight": f"{ph}*.self_attn.v_proj.lora_A.default.weight",
-                    f"{pn}*.self_attention.linear_qkv.adapter.adapter_v.linear_out.weight": f"{ph}*.self_attn.v_proj.lora_B.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_q.linear_in.weight": f"{ph}*.self_attn.q_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_q.linear_out.weight": f"{ph}*.self_attn.q_proj.lora_B.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_k.linear_in.weight": f"{ph}*.self_attn.k_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_k.linear_out.weight": f"{ph}*.self_attn.k_proj.lora_B.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_v.linear_in.weight": f"{ph}*.self_attn.v_proj.lora_A.default.weight",
+                    f"{pn}*.{p_qkv}.adapter_v.linear_out.weight": f"{ph}*.self_attn.v_proj.lora_B.default.weight",
                     # linear_fc1 for canonical lora
-                    f"{pn}*.mlp.linear_fc1.adapter.adapter_up.linear_in.weight": f"{ph}*.mlp.up_proj.lora_A.default.weight",
-                    f"{pn}*.mlp.linear_fc1.adapter.adapter_up.linear_out.weight": f"{ph}*.mlp.up_proj.lora_B.default.weight",
-                    f"{pn}*.mlp.linear_fc1.adapter.adapter_gate.linear_in.weight": f"{ph}*.mlp.gate_proj.lora_A.default.weight",
-                    f"{pn}*.mlp.linear_fc1.adapter.adapter_gate.linear_out.weight": f"{ph}*.mlp.gate_proj.lora_B.default.weight",
+                    f"{pn}*.{p_fc1}.adapter_up.linear_in.weight": f"{ph}*.mlp.up_proj.lora_A.default.weight",
+                    f"{pn}*.{p_fc1}.adapter_up.linear_out.weight": f"{ph}*.mlp.up_proj.lora_B.default.weight",
+                    f"{pn}*.{p_fc1}.adapter_gate.linear_in.weight": f"{ph}*.mlp.gate_proj.lora_A.default.weight",
+                    f"{pn}*.{p_fc1}.adapter_gate.linear_out.weight": f"{ph}*.mlp.gate_proj.lora_B.default.weight",
                 }
             )
         else:
@@ -669,7 +708,8 @@ def apply_rope_scaling(
     old_context_len: int = 8192,
 ):
     logging.info(
-        f"Apply rope scaling with factor={factor}, low_freq_factor={low_freq_factor}, high_freq_factor={high_freq_factor}, old_context_len={old_context_len}."
+        f"Apply rope scaling with factor={factor}, low_freq_factor={low_freq_factor}, "
+        f"high_freq_factor={high_freq_factor}, old_context_len={old_context_len}."
     )
 
     low_freq_wavelen = old_context_len / low_freq_factor
@@ -705,4 +745,5 @@ __all__ = [
     "CodeLlamaConfig34B",
     "CodeLlamaConfig70B",
     "LlamaModel",
+    "MLPerfLoRALlamaModel",
 ]

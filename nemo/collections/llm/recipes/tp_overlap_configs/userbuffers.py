@@ -31,6 +31,7 @@ class PipelineOverlapCfg(TPOverlapCfg):
     num_splits: int
     set_sm_margin: bool
     fp8_buf: bool = (False,)
+    atomic_gemm: bool = False
     method: str = 'pipeline'
 
 
@@ -41,7 +42,10 @@ class RingExchangeOverlapCfg(TPOverlapCfg):
     aggregate: bool = False
     method: str = 'ring_exchange'
     num_sm: int = 1
+    cga_size: int = 1
     set_sm_margin: bool = False
+    fp8_buf: bool = False
+    atomic_gemm: bool = False
 
 
 @dataclass

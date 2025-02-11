@@ -256,21 +256,24 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
             emb_seq = self.sortformer_modules.encoder_proj(emb_seq)
         return emb_seq, emb_seq_length
 
-    def forward_infer(self, emb_seq):
+    def forward_infer(self, emb_seq, emb_seq_length):
         """
         The main forward pass for diarization for offline diarization inference.
 
         Args:
             emb_seq (torch.Tensor): tensor containing FastConformer encoder states (embedding vectors).
                 Dimension: (batch_size, diar_frame_count, emb_dim)
+            emb_seq_length (torch.Tensor): tensor containing lengths of FastConformer encoder states.
+                Dimension: (batch_size,)
 
         Returns:
             preds (torch.Tensor): Sorted tensor containing Sigmoid values for predicted speaker labels.
                 Dimension: (batch_size, diar_frame_count, num_speakers)
         """
-        encoder_mask = self.sortformer_modules.length_to_mask(emb_seq)
+        encoder_mask = self.sortformer_modules.length_to_mask(emb_seq_length, emb_seq.shape[1])
         trans_emb_seq = self.transformer_encoder(encoder_states=emb_seq, encoder_mask=encoder_mask)
-        preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        _preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
+        preds = _preds * encoder_mask.unsqueeze(-1)
         return preds
 
     def _diarize_forward(self, batch: Any):
@@ -407,6 +410,8 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         processed_signal, processed_signal_length = self.preprocessor(
             input_signal=audio_signal, length=audio_signal_length
         )
+        if not self.training:
+            torch.cuda.empty_cache()
         return processed_signal, processed_signal_length
 
     def forward(
@@ -434,10 +439,10 @@ class SortformerEncLabelModel(ModelPT, ExportableEncDecModel, SpkDiarizationMixi
         if self._cfg.get("streaming_mode", False):
             raise NotImplementedError("Streaming mode is not implemented yet.")
         else:
-            emb_seq, _ = self.frontend_encoder(
+            emb_seq, emb_seq_length = self.frontend_encoder(
                 processed_signal=processed_signal, processed_signal_length=processed_signal_length
             )
-            preds = self.forward_infer(emb_seq)
+            preds = self.forward_infer(emb_seq, emb_seq_length)
         return preds
 
     def _get_aux_train_evaluations(self, preds, targets, target_lens) -> dict:

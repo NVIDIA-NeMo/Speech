@@ -76,7 +76,7 @@ class LhotseAudioToSpeechE2ESpkDiarDataset(torch.utils.data.Dataset):
             target_fr_len = get_hidden_length_from_sample_length(
                 audio_len, self.num_sample_per_mel_frame, self.num_mel_frame_per_target_frame
             )
-            target_lens_list.append([target_fr_len])
+            target_lens_list.append(target_fr_len)
         target_lens = torch.tensor(target_lens_list)
 
         return audio, audio_lens, targets, target_lens

@@ -17,14 +17,16 @@ import json
 import logging
 import os.path
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy
 import safetensors.torch
-import tensorstore  # needed to register 'bfloat16' dtype with numpy for zarr compatibility
+
+# needed to register 'bfloat16' dtype with numpy for zarr compatibility
+import tensorstore  # noqa: F401 pylint: disable=unused-import
 import torch
 import zarr
-from vllm.config import CacheConfig, DeviceConfig, LoRAConfig, ModelConfig, ParallelConfig, SchedulerConfig
+from vllm.config import ModelConfig
 from vllm.model_executor.model_loader.loader import BaseModelLoader, _initialize_model
 from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 
@@ -81,29 +83,26 @@ class NemoModelLoader(BaseModelLoader):
 
         return sharded_state_dict
 
-    def download_model(self, model_config: ModelConfig) -> None:
+    def download_model(self, model_config: ModelConfig) -> None:  # pylint: disable=missing-function-docstring
         raise NotImplementedError
 
     def load_model(
         self,
         *,
-        model_config: NemoModelConfig,
-        device_config: DeviceConfig,
-        lora_config: Optional[LoRAConfig],
-        parallel_config: ParallelConfig,
-        scheduler_config: SchedulerConfig,
-        cache_config: CacheConfig,
+        vllm_config: NemoModelConfig,
     ) -> torch.nn.Module:
         """
         Overrides the load_model function from BaseModelLoader to convert Nemo weights at load time.
         """
+        model_config = vllm_config.model_config
+        device_config = vllm_config.device_config
 
         assert isinstance(model_config, NemoModelConfig)
         state_dict = NemoModelLoader._load_nemo_checkpoint_state(model_config.nemo_checkpoint)
 
         with set_default_torch_dtype(model_config.dtype):
             with torch.device(device_config.device):
-                model = _initialize_model(model_config, self.load_config, lora_config, cache_config)
+                model = _initialize_model(vllm_config)
 
             config = model_config.nemo_model_config
             if 'config' in config:

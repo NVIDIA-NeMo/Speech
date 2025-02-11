@@ -20,7 +20,16 @@ from typing import Iterable, List, Optional, Union
 import numpy
 import wrapt
 from vllm import RequestOutput, SamplingParams
-from vllm.config import CacheConfig, DeviceConfig, LoadConfig, LoadFormat, LoRAConfig, ParallelConfig, SchedulerConfig
+from vllm.config import (
+    CacheConfig,
+    DeviceConfig,
+    LoadConfig,
+    LoadFormat,
+    LoRAConfig,
+    ParallelConfig,
+    SchedulerConfig,
+    VllmConfig,
+)
 from vllm.executor.ray_utils import initialize_ray_cluster
 from vllm.lora.request import LoRARequest
 
@@ -36,12 +45,15 @@ LOGGER = logging.getLogger("NeMo")
 
 @wrapt.decorator
 def noop_decorator(func):
+    """Used as batch if pytriton is not supported"""
+
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
 
     return wrapper
 
 
+batch = noop_decorator
 use_pytriton = True
 try:
     from pytriton.decorators import batch
@@ -239,42 +251,39 @@ class vLLMExporter(ITritonDeployable):
         )
 
         # Initialize the cluster and specify the executor class.
-        if device_config.device_type == "neuron":
-            from vllm.executor.neuron_executor import NeuronExecutor
-
-            executor_class = NeuronExecutor
-        elif device_config.device_type == "cpu":
-            from vllm.executor.cpu_executor import CPUExecutor
-
-            executor_class = CPUExecutor
-        elif parallel_config.distributed_executor_backend == "ray":
+        if parallel_config.distributed_executor_backend == "ray":
             initialize_ray_cluster(parallel_config)
-            from vllm.executor.ray_gpu_executor import RayGPUExecutor
+            from vllm.executor.ray_distributed_executor import RayDistributedExecutor
 
-            executor_class = RayGPUExecutor
+            executor_class = RayDistributedExecutor
+
         elif parallel_config.distributed_executor_backend == "mp":
-            from vllm.executor.multiproc_gpu_executor import MultiprocessingGPUExecutor
+            from vllm.executor.mp_distributed_executor import MultiprocessingDistributedExecutor
 
-            executor_class = MultiprocessingGPUExecutor
+            executor_class = MultiprocessingDistributedExecutor
+
         else:
-            assert parallel_config.world_size == 1, "Ray is required if parallel_config.world_size > 1."
-            from vllm.executor.gpu_executor import GPUExecutor
+            assert parallel_config.distributed_executor_backend == "uni" or parallel_config.world_size == 1
 
-            executor_class = GPUExecutor
+            from vllm.executor.uniproc_executor import UniProcExecutor
+
+            executor_class = UniProcExecutor
 
         # Initialize the engine
         self.engine = NemoLLMEngine(
-            model_config=model_config,
-            cache_config=cache_config,
-            parallel_config=parallel_config,
-            scheduler_config=scheduler_config,
-            device_config=device_config,
-            load_config=load_config,
-            lora_config=lora_config,
-            speculative_config=None,
-            decoding_config=None,
-            observability_config=None,
-            prompt_adapter_config=None,
+            vllm_config=VllmConfig(
+                model_config=model_config,
+                cache_config=cache_config,
+                parallel_config=parallel_config,
+                scheduler_config=scheduler_config,
+                device_config=device_config,
+                load_config=load_config,
+                lora_config=lora_config,
+                speculative_config=None,
+                decoding_config=None,
+                observability_config=None,
+                prompt_adapter_config=None,
+            ),
             executor_class=executor_class,
             log_stats=log_stats,
         )
@@ -414,6 +423,9 @@ class vLLMExporter(ITritonDeployable):
 
     @batch
     def triton_infer_fn(self, **inputs: numpy.ndarray):
+        """
+        This function is used to perform inference on a batch of prompts.
+        """
         request_ids = []
         num_requests = len(inputs["prompts"])
         for index in range(num_requests):
@@ -428,6 +440,9 @@ class vLLMExporter(ITritonDeployable):
 
     @batch
     def triton_infer_fn_streaming(self, **inputs: numpy.ndarray):
+        """
+        This function is used to perform streaming inference.
+        """
         request_ids = []
         num_requests = len(inputs["prompts"])
         for index in range(num_requests):

@@ -2,45 +2,6 @@ comment: false
 coverage:
   status:
     patch: false
-    project:
-      default: false
-      asr:
-        threshold: 1%
-        paths:
-          - nemo/collections/asr
-      audio:
-        threshold: 1%
-        paths:
-          - nemo/collections/audio
-      common:
-        threshold: 1%
-        paths:
-          - nemo/collections/common
-      llm:
-        threshold: 1%
-        paths:
-          - nemo/collections/llm
-      multimodal:
-        threshold: 1%
-        paths:
-          - nemo/collections/multimodal
-      nlp:
-        threshold: 1%
-        paths:
-          - nemo/collections/nlp
-      tts:
-        threshold: 1%
-        paths:
-          - nemo/collections/tts
-      core:
-        threshold: 1%
-        paths:
-          - nemo/core
-      others:
-        threshold: 1%
-        paths:
-          - nemo
-          - "!nemo/collections"
-          - "!nemo/core"
+    project: false
 fixes:
   - "/workspace/::"

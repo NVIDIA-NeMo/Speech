@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Callable
@@ -337,7 +337,7 @@ class InternViTConfig(CLIPViTConfig):
     normalization: str = 'RMSNorm'
     layernorm_epsilon: float = 1e-6
     apply_rope_fusion: bool = False
-    transformer_layer_spec: ModuleSpec = get_internvit_layer_spec(use_te=True)
+    transformer_layer_spec: ModuleSpec = field(default_factory=lambda: get_internvit_layer_spec(use_te=True))
 
 
 @dataclass
@@ -363,10 +363,12 @@ class InternViT_300M_448px_Config(InternViTConfig):
     attention_dropout: float = 0.0
     ffn_hidden_size: int = 4096
     normalization: str = 'LayerNorm'
-    transformer_layer_spec: ModuleSpec = get_internvit_layer_spec(
-        use_te=True,
-        add_qk_norm=False,
-        norm_type='LayerNorm',
+    transformer_layer_spec: ModuleSpec = field(
+        default_factory=lambda: get_internvit_layer_spec(
+            use_te=True,
+            add_qk_norm=False,
+            norm_type='LayerNorm',
+        )
     )
 
 

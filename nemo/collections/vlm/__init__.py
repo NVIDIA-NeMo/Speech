@@ -26,7 +26,7 @@ from nemo.collections.vlm.llava_next.model.base import LlavaNextConfig
 from nemo.collections.vlm.llava_next.model.llava_next import LlavaNextConfig7B, LlavaNextConfig13B, LlavaNextModel
 
 # MLLAMA
-from nemo.collections.vlm.mllama.data import MLlamaLazyDataModule, MLlamaMockDataModule
+from nemo.collections.vlm.mllama.data import MLlamaMockDataModule, MLlamaPreloadedDataModule
 from nemo.collections.vlm.mllama.model.base import (
     CrossAttentionTextConfig,
     CrossAttentionVisionConfig,
@@ -46,8 +46,8 @@ from nemo.collections.vlm.neva.data import (
     ImageDataConfig,
     ImageToken,
     MultiModalToken,
-    NevaLazyDataModule,
     NevaMockDataModule,
+    NevaPreloadedDataModule,
     VideoDataConfig,
     VideoToken,
 )
@@ -77,9 +77,9 @@ __all__ = [
     "HFDatasetDataModule",
     "HFAutoModelForImageTextToText",
     "NevaMockDataModule",
-    "NevaLazyDataModule",
+    "NevaPreloadedDataModule",
     "MLlamaMockDataModule",
-    "MLlamaLazyDataModule",
+    "MLlamaPreloadedDataModule",
     "DataConfig",
     "ImageDataConfig",
     "VideoDataConfig",

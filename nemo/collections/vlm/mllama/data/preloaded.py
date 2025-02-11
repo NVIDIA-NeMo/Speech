@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0115,C0116
 
 import json
 import logging
@@ -28,7 +29,7 @@ from torch.utils.data import DataLoader, default_collate
 from nemo.collections.nlp.modules.common.megatron.utils import get_ltor_masks_and_position_ids
 from nemo.collections.vlm.mllama.model.utils import create_vision_mask_tensor
 from nemo.collections.vlm.neva.data.config import DataConfig, ImageDataConfig
-from nemo.collections.vlm.neva.data.lazy import IGNORE_INDEX, LazySupervisedDataset
+from nemo.collections.vlm.neva.data.preloaded import IGNORE_INDEX, LazySupervisedDataset
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 
 
@@ -170,7 +171,7 @@ class MLlamaDataset(LazySupervisedDataset):
         return batch
 
 
-class MLlamaLazyDataModule(pl.LightningDataModule):
+class MLlamaPreloadedDataModule(pl.LightningDataModule):
     def __init__(
         self,
         paths: str | List[str],
@@ -223,7 +224,7 @@ class MLlamaLazyDataModule(pl.LightningDataModule):
 
         if tokenizer is None or image_processor is None:
             logging.warning(
-                f"Processor and tokenizer are not provided! Fall back to `meta-llama/Llama-3.2-11B-Vision-Instruct`."
+                "Processor and tokenizer are not provided! Fall back to `meta-llama/Llama-3.2-11B-Vision-Instruct`."
             )
             from transformers import AutoProcessor
 
@@ -246,7 +247,8 @@ class MLlamaLazyDataModule(pl.LightningDataModule):
         else:
             # TODO:
             # rng = torch.Generator().manual_seed(self.seed)
-            # train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size], generator=rng)
+            # train_dataset, val_dataset, test_dataset =
+            # random_split(dataset, [train_size, val_size, test_size], generator=rng)
             self._train_ds = MLlamaDataset(
                 self.paths[0], self.data_config, self.tokenizer, self.image_processor, self.seq_length
             )

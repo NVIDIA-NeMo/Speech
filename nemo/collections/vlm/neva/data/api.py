@@ -14,16 +14,18 @@
 
 import lightning.pytorch as pl
 
-from nemo.collections.vlm.neva.data.lazy import NevaLazyDataModule
 from nemo.collections.vlm.neva.data.mock import MockDataModule
+from nemo.collections.vlm.neva.data.preloaded import NevaPreloadedDataModule
 
 
 def mock() -> pl.LightningDataModule:
+    """Mock Neva Data Module"""
     return MockDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
 
 
-def lazy() -> pl.LightningDataModule:
-    return NevaLazyDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
+def preloaded() -> pl.LightningDataModule:
+    """Preloaded Llava-like Data Module"""
+    return NevaPreloadedDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
 
 
-__all__ = ["mock", "lazy"]
+__all__ = ["mock", "preloaded"]

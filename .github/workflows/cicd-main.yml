@@ -4859,7 +4859,7 @@ jobs:
         --tp_size 1 \
         --pp_size 1 \
         --mbs 1 \
-        --chat_dataset_path /home/TestData/nemo2_data/chat
+        --dataset chat
 
         python tests/collections/llm/gpt_finetuning.py \
         --restore_path /home/TestData/nemo2_ckpt/llama_68M_v2 \
@@ -4870,7 +4870,7 @@ jobs:
         --tp_size 1 \
         --pp_size 1 \
         --mbs 1 \
-        --chat_dataset_path /home/TestData/nemo2_data/chat
+        --dataset chat
 
   L2_NeMo_2_Mixtral_LoRA_EP2PP1_MBS2_exclude:
     needs: [pre-flight, cicd-test-container-build]
@@ -4946,7 +4946,6 @@ jobs:
         --mbs 1 \
         --model mistral \
         --dist-opt
-
 
   L2_NeMo_2_Mistral_LoRA_TP1PP1_MBS1_exclude:
     needs: [pre-flight, cicd-test-container-build]

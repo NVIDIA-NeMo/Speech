@@ -483,7 +483,9 @@ def fsdp2_strategy_parallelize(
         # Find transformer layers and apply parallelisms
         parallelize_helper(model, dp_mesh, mp_policy)
 
-        model = fully_shard(model, mesh=dp_mesh, mp_policy=mp_policy)
+        # reshard_after_forward=True based on
+        # https://github.com/pytorch/torchtitan/blob/main/torchtitan/parallelisms/parallelize_llama.py#L359
+        model = fully_shard(model, mesh=dp_mesh, mp_policy=mp_policy, reshard_after_forward=True)
 
     return model
 

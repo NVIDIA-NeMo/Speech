@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.vlm.mllama.data.lazy import MLlamaLazyDataModule
 from nemo.collections.vlm.mllama.data.mock import MockDataModule as MLlamaMockDataModule
+from nemo.collections.vlm.mllama.data.preloaded import MLlamaPreloadedDataModule
 
 __all__ = [
     "MLlamaMockDataModule",
-    "MLlamaLazyDataModule",
+    "MLlamaPreloadedDataModule",
 ]

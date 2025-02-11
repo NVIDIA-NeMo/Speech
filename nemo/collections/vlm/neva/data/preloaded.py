@@ -489,7 +489,7 @@ class NevaDataset(LazySupervisedDataset):
         return batch
 
 
-class NevaLazyDataModule(pl.LightningDataModule):
+class NevaPreloadedDataModule(pl.LightningDataModule):
     def __init__(
         self,
         paths: str | List[str],

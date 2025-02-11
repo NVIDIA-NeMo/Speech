@@ -22,7 +22,7 @@ from transformers import AutoProcessor
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
 from nemo.collections.vlm import ImageDataConfig
-from nemo.collections.vlm.mllama.data.lazy import MLlamaLazyDataModule
+from nemo.collections.vlm.mllama.data.preloaded import MLlamaPreloadedDataModule
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 from nemo.utils.exp_manager import TimingCallback
@@ -71,7 +71,7 @@ def main(args):
         )
 
         # Data module setup
-        data = MLlamaLazyDataModule(
+        data = MLlamaPreloadedDataModule(
             paths=args.data_path,
             data_config=data_config,
             seq_length=seq_length,

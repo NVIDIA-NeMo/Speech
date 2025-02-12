@@ -193,7 +193,10 @@ class GPTConfig(TransformerConfig, io.IOMixin):
             )
 
         vp_size = self.virtual_pipeline_model_parallel_size
-        if vp_size:
+        is_pipeline_asymmetric = getattr(self, 'account_for_embedding_in_pipeline_split', False) or getattr(
+            self, 'account_for_loss_in_pipeline_split', False
+        )
+        if vp_size and not is_pipeline_asymmetric:
             p_size = self.pipeline_model_parallel_size
             assert (
                 self.num_layers // p_size

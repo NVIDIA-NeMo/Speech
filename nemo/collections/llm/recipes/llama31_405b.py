@@ -64,11 +64,13 @@ def model() -> run.Config[pl.LightningModule]:
 
 def trainer(
     tensor_parallelism: int = 8,
-    pipeline_parallelism: int = 9,
+    pipeline_parallelism: int = 8,
     pipeline_parallelism_type: Optional[torch.dtype] = torch.bfloat16,
     virtual_pipeline_parallelism: Optional[int] = 2,
     context_parallelism: int = 4,
     sequence_parallelism: bool = True,
+    account_for_embedding_in_pipeline_split: bool = True,
+    account_for_loss_in_pipeline_split: bool = True,
     num_nodes: int = 72,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
@@ -113,6 +115,8 @@ def trainer(
         virtual_pipeline_model_parallel_size=virtual_pipeline_parallelism,
         context_parallel_size=context_parallelism,
         sequence_parallel=sequence_parallelism,
+        account_for_embedding_in_pipeline_split=account_for_embedding_in_pipeline_split,
+        account_for_loss_in_pipeline_split=account_for_loss_in_pipeline_split,
         gradient_as_bucket_view=True,
         ckpt_async_save=True,
         ckpt_parallel_load=True,

@@ -109,6 +109,8 @@ class ParallelismConfig:
     pipeline_dtype: torch.dtype
     encoder_tensor_model_parallel_size: int = 0
     encoder_pipeline_model_parallel_size: int = 0
+    account_for_embedding_in_pipeline_split: bool = False
+    account_for_loss_in_pipeline_split: bool = False
     use_te_rng_tracker: bool = False
     expert_tensor_parallel_size: int = None
     use_tp_pp_dp_mapping: bool = False
@@ -139,6 +141,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             Defaults to 1.
         expert_tensor_parallel_size (Optional[int]): Sets MoE Experts tensor parallelism size. Defaults to None.
         moe_extended_tp (bool): Alternative parallelization strategy for expert parallelism. Defaults to False.
+        account_for_embedding_in_pipeline_split (bool): If set, *input* embedding layer will be treated as a standard
+            transformer layer in the context of partition and placement for pipeline parallelism.
+        account_for_loss_in_pipeline_split (bool): If set, loss layer will be treated as a standard transformer
+            layer in the context of partition and placement for pipeline parallelism.
         data_sampler (Optional['DataSampler']): Custom data sampler for distributed training. Defaults to None.
         parallel_devices (Optional[List[torch.device]]): List of devices to use for parallelism. Defaults to None.
         cluster_environment: Cluster environment for distributed training. Defaults to None.
@@ -212,6 +218,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         expert_tensor_parallel_size: int = None,
         encoder_tensor_model_parallel_size: Optional[int] = 0,
         encoder_pipeline_model_parallel_size: Optional[int] = 0,
+        account_for_embedding_in_pipeline_split: bool = False,
+        account_for_loss_in_pipeline_split: bool = False,
         data_sampler: Optional["DataSampler"] = None,
         parallel_devices: Optional[List[torch.device]] = None,
         cluster_environment=None,  # TODO: Add type-hint
@@ -267,6 +275,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.sequence_parallel = sequence_parallel
         self.encoder_tensor_model_parallel_size = encoder_tensor_model_parallel_size
         self.encoder_pipeline_model_parallel_size = encoder_pipeline_model_parallel_size
+        self.account_for_embedding_in_pipeline_split = account_for_embedding_in_pipeline_split
+        self.account_for_loss_in_pipeline_split = account_for_loss_in_pipeline_split
         self.lazy_init = lazy_init
         self.ckpt_load_optimizer = ckpt_load_optimizer
         self.ckpt_save_optimizer = ckpt_save_optimizer
@@ -941,6 +951,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             moe_extended_tp=self.moe_extended_tp,
             encoder_tensor_model_parallel_size=self.encoder_tensor_model_parallel_size,
             encoder_pipeline_model_parallel_size=self.encoder_pipeline_model_parallel_size,
+            account_for_embedding_in_pipeline_split=self.account_for_embedding_in_pipeline_split,
+            account_for_loss_in_pipeline_split=self.account_for_loss_in_pipeline_split,
             pipeline_dtype=self.pipeline_dtype,
             use_te_rng_tracker=self.use_te_rng_tracker,
             use_tp_pp_dp_mapping=self.use_tp_pp_dp_mapping,

@@ -55,14 +55,14 @@ MEGATRON_CONFIG_MAP = {
     },
     "megatron-bert-345m-uncased": {
         "config": CONFIGS["345m"],
-        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/megatron_bert_345m/versions/v0.0/files/release/mp_rank_00/model_optim_rng.pt",
+        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/megatron_bert_345m/versions/v0.0/files/release/mp_rank_00/model_optim_rng.pt",  # pylint: disable=line-too-long
         "vocab": "https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-uncased-vocab.txt",
         "do_lower_case": True,
         "tokenizer_name": "bert-large-uncased",
     },
     "megatron-bert-345m-cased": {
         "config": CONFIGS["345m"],
-        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/megatron_bert_345m/versions/v0.1_cased/files/release/mp_rank_00/model_optim_rng.pt",
+        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/megatron_bert_345m/versions/v0.1_cased/files/release/mp_rank_00/model_optim_rng.pt",  # pylint: disable=line-too-long
         "vocab": "https://s3.amazonaws.com/models.huggingface.co/bert/bert-large-cased-vocab.txt",
         "do_lower_case": False,
         "tokenizer_name": "bert-large-cased",
@@ -83,14 +83,14 @@ MEGATRON_CONFIG_MAP = {
     },
     "biomegatron-bert-345m-uncased": {
         "config": CONFIGS["345m"],
-        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345muncased/versions/0/files/MegatronBERT.pt",
+        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345muncased/versions/0/files/MegatronBERT.pt",  # pylint: disable=line-too-long
         "vocab": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345muncased/versions/0/files/vocab.txt",
         "do_lower_case": True,
         "tokenizer_name": "bert-large-uncased",
     },
     "biomegatron-bert-345m-cased": {
         "config": CONFIGS["345m"],
-        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345mcased/versions/0/files/MegatronBERT.pt",
+        "checkpoint": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345mcased/versions/0/files/MegatronBERT.pt",  # pylint: disable=line-too-long
         "vocab": "https://api.ngc.nvidia.com/v2/models/nvidia/biomegatron345mcased/versions/0/files/vocab.txt",
         "do_lower_case": False,
         "tokenizer_name": "bert-large-cased",
@@ -98,11 +98,28 @@ MEGATRON_CONFIG_MAP = {
 }
 
 
-def compute_model_parallel_rank(local_rank, model_parallel_size):
+def compute_model_parallel_rank(local_rank: int, model_parallel_size: int) -> int:
+    """Calculates the model_parallel_rank from the local rank and the model parallel size
+
+    Args:
+        local_rank (int): The local rank of the process.
+        model_parallel_size (int): The number of ranks in the model parallel group.
+
+    Returns:
+        int: The model parallel rank corresponding to the given local rank.
+    """
     return local_rank % model_parallel_size
 
 
 def get_megatron_pretrained_bert_models() -> List[str]:
+    """Retrieves the names of all available pretrained Megatron-BERT models.
+
+    This function uses the NeMo MegatronBertModel class to list all available
+    pretrained model configurations, extracting each model's name.
+
+    Returns:
+        List[str]: A list of pretrained Megatron-BERT model names.
+    """
     from nemo.collections.nlp.models.language_modeling.megatron_bert_model import MegatronBertModel
 
     all_pretrained_megatron_bert_models = [
@@ -207,6 +224,8 @@ def _download(path: str, url: str):
         os.makedirs(MEGATRON_CACHE, exist_ok=True)
         logging.info(f"Downloading from {url} to {path}")
         downloaded_path = wget.download(url)
+        if not os.path.exists(downloaded_path):
+            raise FileNotFoundError(f"Downloaded file not found: {downloaded_path}")
         shutil.move(downloaded_path, path)
     # wait until the master process downloads the file and writes it to the cache dir
     if torch.distributed.is_initialized():
@@ -230,12 +249,12 @@ def is_lower_cased_megatron(pretrained_model_name):
 
 def get_megatron_tokenizer(pretrained_model_name: str):
     """
-    Takes a pretrained_model_name for megatron such as "megatron-bert-cased" and returns the according 
+    Takes a pretrained_model_name for megatron such as "megatron-bert-cased" and returns the according
     tokenizer name for tokenizer instantiating.
 
     Args:
         pretrained_model_name: pretrained_model_name for megatron such as "megatron-bert-cased"
-    Returns: 
+    Returns:
         tokenizer name for tokenizer instantiating
     """
     _check_megatron_name(pretrained_model_name)

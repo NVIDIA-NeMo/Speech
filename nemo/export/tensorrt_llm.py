@@ -776,7 +776,8 @@ class TensorRTLLM(ITritonDeployable):
         elif storage_dtype == torch.float16:
             return DataType.float16
 
-    def get_nemo_to_trtllm_conversion_dict(self, model_state_dict):
+    @staticmethod
+    def get_nemo_to_trtllm_conversion_dict(model_state_dict):
         """MCore export supports some default conversion dictionaries
         All Mcore conversion dicts start with "decoder.layers.4.blah.blah" , while nemo models sometimes start with "model.decoder.layers.4.blahblah". so we append model prefix. to the keys
         """
@@ -786,8 +787,8 @@ class TensorRTLLM(ITritonDeployable):
 
         nemo_model_conversion_dict = {}
         for key, value in DEFAULT_CONVERSION_DICT.items():
-            if 'layers' in key and model_prefix:
-                nemo_model_conversion_dict[f'{model_prefix}.{key}'] = value
+            if model_prefix:
+                nemo_model_conversion_dict[f'{model_prefix}{key}'] = value
             else:
                 nemo_model_conversion_dict[key] = value
         return nemo_model_conversion_dict

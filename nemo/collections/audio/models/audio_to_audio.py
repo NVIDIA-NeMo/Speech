@@ -33,6 +33,7 @@ from nemo.collections.audio.data.audio_to_audio_lhotse import LhotseAudioToTarge
 from nemo.collections.audio.metrics.audio import AudioMetricWrapper
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.core.classes import ModelPT
+from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
 
 __all__ = ['AudioToAudioModel']
@@ -180,6 +181,9 @@ class AudioToAudioModel(ModelPT, ABC):
         return self.multi_evaluation_epoch_end(outputs, dataloader_idx, 'test')
 
     def _setup_dataloader_from_config(self, config: Optional[Dict]):
+        # TODO: Consider moving `inject` from `audio_to_text_dataset` to a utility module?
+        # Automatically inject args from model config to dataloader config
+        inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
 
         if config.get("use_lhotse", False):
             return get_lhotse_dataloader_from_config(
@@ -189,10 +193,6 @@ class AudioToAudioModel(ModelPT, ABC):
         is_concat = config.get('is_concat', False)
         if is_concat:
             raise NotImplementedError('Concat not implemented')
-
-        # TODO: Consider moving `inject` from `audio_to_text_dataset` to a utility module?
-        # Automatically inject args from model config to dataloader config
-        inject_dataloader_value_from_model_config(self.cfg, config, key='sample_rate')
 
         # Instantiate tarred dataset loader or normal dataset loader
         if config.get('is_tarred', False):

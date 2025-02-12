@@ -156,7 +156,7 @@ class LlamaBidirectionalForSequenceClassification(LlamaForSequenceClassification
 
         loss = None
         if labels is not None:
-            labels = labels.to(logits.device)
+            labels = labels.to(pooled_logits.device)
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"

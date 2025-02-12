@@ -6,22 +6,22 @@ on:
       type_of_release:
         type: choice
         description: Type of release
-        options: 
-        - major
-        - minor
+        options:
+          - major
+          - minor
       freeze-commit:
         type: string
         description: Commit SHA to use for cut-off
         required: false
         default: main
       mcore_version:
-        description: 'Version of MCore to use (must be a valid git ref)'
+        description: "Version of MCore to use (must be a valid git ref)"
         required: true
         type: string
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.17.3
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.21.6
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
@@ -60,7 +60,7 @@ jobs:
           path: ${{ github.run_id }}
           base: ${{ needs.code-freeze.outputs.release-branch }}
           branch: ci/freeze-tags-${{ needs.code-freeze.outputs.release-branch }}
-          title: 'Freeze tags in in `${{ needs.code-freeze.outputs.release-branch }}`'
+          title: "Freeze tags in in `${{ needs.code-freeze.outputs.release-branch }}`"
           body: |
             🚀 PR to freeze tags in `${{ needs.code-freeze.outputs.release-branch }}`.
 

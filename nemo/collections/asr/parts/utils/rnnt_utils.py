@@ -47,7 +47,7 @@ class Hypothesis:
         `blank` tokens, and optionally merging word-pieces). Should be used as decoded string for
         Word Error Rate calculation.
 
-    timestep: (Optional) A list of integer indices representing at which index in the decoding
+    timestamp: (Optional) A list of integer indices representing at which index in the decoding
         process did the token appear. Should be of same length as the number of non-blank tokens.
 
     alignments: (Optional) Represents the CTC / RNNT token alignments as integer tokens along an axis of
@@ -94,7 +94,7 @@ class Hypothesis:
     text: Optional[str] = None
     dec_out: Optional[List[torch.Tensor]] = None
     dec_state: Optional[Union[List[List[torch.Tensor]], List[torch.Tensor]]] = None
-    timestep: Union[List[int], torch.Tensor] = field(default_factory=list)
+    timestamp: Union[List[int], torch.Tensor] = field(default_factory=list)
     alignments: Optional[Union[List[int], List[List[int]]]] = None
     frame_confidence: Optional[Union[List[float], List[List[float]]]] = None
     token_confidence: Optional[List[float]] = None
@@ -111,19 +111,19 @@ class Hypothesis:
 
     @property
     def non_blank_frame_confidence(self) -> List[float]:
-        """Get per-frame confidence for non-blank tokens according to self.timestep
+        """Get per-frame confidence for non-blank tokens according to self.timestamp
 
         Returns:
-            List with confidence scores. The length of the list is the same as `timestep`.
+            List with confidence scores. The length of the list is the same as `timestamp`.
         """
         non_blank_frame_confidence = []
-        # self.timestep can be a dict for RNNT
-        timestep = self.timestep['timestep'] if isinstance(self.timestep, dict) else self.timestep
-        if len(timestep) != 0 and self.frame_confidence is not None:
+        # self.timestamp can be a dict for RNNT
+        timestamp = self.timestamp['timestep'] if isinstance(self.timestamp, dict) else self.timestamp
+        if len(timestamp) != 0 and self.frame_confidence is not None:
             if any(isinstance(i, list) for i in self.frame_confidence):  # rnnt
                 t_prev = -1
                 offset = 0
-                for t in timestep:
+                for t in timestamp:
                     if t != t_prev:
                         t_prev = t
                         offset = 0
@@ -131,7 +131,7 @@ class Hypothesis:
                         offset += 1
                     non_blank_frame_confidence.append(self.frame_confidence[t][offset])
             else:  # ctc
-                non_blank_frame_confidence = [self.frame_confidence[t] for t in timestep]
+                non_blank_frame_confidence = [self.frame_confidence[t] for t in timestamp]
         return non_blank_frame_confidence
 
     @property
@@ -258,22 +258,22 @@ class BatchedHyps:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
         self._max_length = init_length
 
-        # batch of current lengths of hypotheses and correspoinding timesteps
+        # batch of current lengths of hypotheses and correspoinding timestamps
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
         # tensor for storing transcripts
         self.transcript = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
-        # tensor for storing timesteps corresponding to transcripts
-        self.timesteps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        # tensor for storing timestamps corresponding to transcripts
+        self.timestamps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # tensor for storing durations corresponding to transcripts tokens
         self.token_durations = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # accumulated scores for hypotheses
         self.scores = torch.zeros(batch_size, device=device, dtype=float_dtype)
 
-        # tracking last timestep of each hyp to avoid infinite looping (when max symbols per frame is restricted)
-        # last observed timestep (with label) for each hypothesis
-        self.last_timestep = torch.full((batch_size,), -1, device=device, dtype=torch.long)
-        # number of labels for the last timestep
-        self.last_timestep_lasts = torch.zeros(batch_size, device=device, dtype=torch.long)
+        # tracking last timestamp of each hyp to avoid infinite looping (when max symbols per frame is restricted)
+        # last observed timestamp (with label) for each hypothesis
+        self.last_timestamp = torch.full((batch_size,), -1, device=device, dtype=torch.long)
+        # number of labels for the last timestamp
+        self.last_timestamp_lasts = torch.zeros(batch_size, device=device, dtype=torch.long)
         self._batch_indices = torch.arange(batch_size, device=device)
         self._ones_batch = torch.ones_like(self._batch_indices)
 
@@ -283,11 +283,11 @@ class BatchedHyps:
         """
         self.current_lengths.fill_(0)
         self.transcript.fill_(0)
-        self.timesteps.fill_(0)
+        self.timestamps.fill_(0)
         self.token_durations.fill_(0)
         self.scores.fill_(0.0)
-        self.last_timestep.fill_(-1)
-        self.last_timestep_lasts.fill_(0)
+        self.last_timestamp.fill_(-1)
+        self.last_timestamp_lasts.fill_(0)
 
     def _allocate_more(self):
         """
@@ -295,7 +295,7 @@ class BatchedHyps:
         to maintain O(1) insertion time complexity
         """
         self.transcript = torch.cat((self.transcript, torch.zeros_like(self.transcript)), dim=-1)
-        self.timesteps = torch.cat((self.timesteps, torch.zeros_like(self.timesteps)), dim=-1)
+        self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
         self.token_durations = torch.cat((self.token_durations, torch.zeros_like(self.token_durations)), dim=-1)
         self._max_length *= 2
 
@@ -353,17 +353,17 @@ class BatchedHyps:
         # accumulate scores
         self.scores[active_indices] += scores
 
-        # store transcript and timesteps
+        # store transcript and timestamps
         active_lengths = self.current_lengths[active_indices]
         self.transcript[active_indices, active_lengths] = labels
-        self.timesteps[active_indices, active_lengths] = time_indices
+        self.timestamps[active_indices, active_lengths] = time_indices
         if token_durations is not None:
             self.token_durations[active_indices, active_lengths] = token_durations
-        # store last observed timestep + number of observation for the current timestep
-        self.last_timestep_lasts[active_indices] = torch.where(
-            self.last_timestep[active_indices] == time_indices, self.last_timestep_lasts[active_indices] + 1, 1
+        # store last observed timestamp + number of observation for the current timestamp
+        self.last_timestamp_lasts[active_indices] = torch.where(
+            self.last_timestamp[active_indices] == time_indices, self.last_timestamp_lasts[active_indices] + 1, 1
         )
-        self.last_timestep[active_indices] = time_indices
+        self.last_timestamp[active_indices] = time_indices
         # increase lengths
         self.current_lengths[active_indices] += 1
 
@@ -417,27 +417,27 @@ class BatchedHyps:
         # same as self.scores[active_mask] += scores[active_mask], but non-blocking
         torch.where(active_mask, self.scores + scores, self.scores, out=self.scores)
 
-        # store transcript and timesteps
+        # store transcript and timestamps
         self.transcript[self._batch_indices, self.current_lengths] = labels
-        self.timesteps[self._batch_indices, self.current_lengths] = time_indices
+        self.timestamps[self._batch_indices, self.current_lengths] = time_indices
         if token_durations is not None:
             self.token_durations[self._batch_indices, self.current_lengths] = token_durations
-        # store last observed timestep + number of observation for the current timestep
-        # if last_timestep == time_indices, increase; else set to 1
+        # store last observed timestamp + number of observation for the current timestamp
+        # if last_timestamp == time_indices, increase; else set to 1
         torch.where(
-            torch.logical_and(active_mask, self.last_timestep == time_indices),
-            self.last_timestep_lasts + 1,
-            self.last_timestep_lasts,
-            out=self.last_timestep_lasts,
+            torch.logical_and(active_mask, self.last_timestamp == time_indices),
+            self.last_timestamp_lasts + 1,
+            self.last_timestamp_lasts,
+            out=self.last_timestamp_lasts,
         )
         torch.where(
-            torch.logical_and(active_mask, self.last_timestep != time_indices),
+            torch.logical_and(active_mask, self.last_timestamp != time_indices),
             self._ones_batch,
-            self.last_timestep_lasts,
-            out=self.last_timestep_lasts,
+            self.last_timestamp_lasts,
+            out=self.last_timestamp_lasts,
         )
-        # same as: self.last_timestep[active_mask] = time_indices[active_mask], but non-blocking
-        torch.where(active_mask, time_indices, self.last_timestep, out=self.last_timestep)
+        # same as: self.last_timestamp[active_mask] = time_indices[active_mask], but non-blocking
+        torch.where(active_mask, time_indices, self.last_timestamp, out=self.last_timestamp)
         # increase lengths
         self.current_lengths += active_mask
 
@@ -479,8 +479,8 @@ class BatchedAlignments:
         self.with_alignments = store_alignments
         self._max_length = init_length
 
-        # tensor to store observed timesteps (for alignments / confidence scores)
-        self.timesteps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
+        # tensor to store observed timestamps (for alignments / confidence scores)
+        self.timestamps = torch.zeros((batch_size, self._max_length), device=device, dtype=torch.long)
         # current lengths of the utterances (alignments)
         self.current_lengths = torch.zeros(batch_size, device=device, dtype=torch.long)
 
@@ -508,7 +508,7 @@ class BatchedAlignments:
         Clears batched hypotheses state.
         """
         self.current_lengths.fill_(0)
-        self.timesteps.fill_(0)
+        self.timestamps.fill_(0)
         self.logits.fill_(0.0)
         self.labels.fill_(0)
         self.frame_confidence.fill_(0)
@@ -518,7 +518,7 @@ class BatchedAlignments:
         Allocate 2x space for tensors, similar to common C++ std::vector implementations
         to maintain O(1) insertion time complexity
         """
-        self.timesteps = torch.cat((self.timesteps, torch.zeros_like(self.timesteps)), dim=-1)
+        self.timestamps = torch.cat((self.timestamps, torch.zeros_like(self.timestamps)), dim=-1)
         if self.with_alignments:
             self.logits = torch.cat((self.logits, torch.zeros_like(self.logits)), dim=1)
             self.labels = torch.cat((self.labels, torch.zeros_like(self.labels)), dim=-1)
@@ -553,8 +553,8 @@ class BatchedAlignments:
             self._allocate_more()
 
         active_lengths = self.current_lengths[active_indices]
-        # store timesteps - same for alignments / confidence
-        self.timesteps[active_indices, active_lengths] = time_indices
+        # store timestamps - same for alignments / confidence
+        self.timestamps[active_indices, active_lengths] = time_indices
 
         if self.with_alignments and logits is not None and labels is not None:
             self.logits[active_indices, active_lengths] = logits
@@ -609,11 +609,11 @@ class BatchedAlignments:
             labels: tensor with decoded labels (can contain blank)
             confidence: optional tensor with confidence for each item in batch
         """
-        # store timesteps - same for alignments / confidence
-        self.timesteps[self._batch_indices, self.current_lengths] = time_indices
+        # store timestamps - same for alignments / confidence
+        self.timestamps[self._batch_indices, self.current_lengths] = time_indices
 
         if self.with_alignments and logits is not None and labels is not None:
-            self.timesteps[self._batch_indices, self.current_lengths] = time_indices
+            self.timestamps[self._batch_indices, self.current_lengths] = time_indices
             self.logits[self._batch_indices, self.current_lengths] = logits
             self.labels[self._batch_indices, self.current_lengths] = labels
 
@@ -645,7 +645,7 @@ def batched_hyps_to_hypotheses(
         Hypothesis(
             score=batched_hyps.scores[i].item(),
             y_sequence=batched_hyps.transcript[i, : batched_hyps.current_lengths[i]],
-            timestep=batched_hyps.timesteps[i, : batched_hyps.current_lengths[i]],
+            timestamp=batched_hyps.timestamps[i, : batched_hyps.current_lengths[i]],
             token_duration=(
                 durations
                 if not torch.all(
@@ -673,17 +673,20 @@ def batched_hyps_to_hypotheses(
             if alignments.with_frame_confidence:
                 hypotheses[i].frame_confidence = []
             _, grouped_counts = torch.unique_consecutive(
-                alignments.timesteps[i, : alignment_lengths[i]], return_counts=True
+                alignments.timestamps[i, : alignment_lengths[i]], return_counts=True
             )
             start = 0
-            for timestep_cnt in grouped_counts.tolist():
+            for timestamp_cnt in grouped_counts.tolist():
                 if alignments.with_alignments:
                     hypotheses[i].alignments.append(
-                        [(alignment_logits[i, start + j], alignment_labels[i, start + j]) for j in range(timestep_cnt)]
+                        [
+                            (alignment_logits[i, start + j], alignment_labels[i, start + j])
+                            for j in range(timestamp_cnt)
+                        ]
                     )
                 if alignments.with_frame_confidence:
                     hypotheses[i].frame_confidence.append(
-                        [frame_confidence[i, start + j] for j in range(timestep_cnt)]
+                        [frame_confidence[i, start + j] for j in range(timestamp_cnt)]
                     )
-                start += timestep_cnt
+                start += timestamp_cnt
     return hypotheses

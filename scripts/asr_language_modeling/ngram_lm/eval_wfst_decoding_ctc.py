@@ -325,9 +325,9 @@ def main(cfg: EvalWFSTNGramConfig):
         preds_tensor = preds.to(device='cpu').unsqueeze(0)
         preds_lens = torch.tensor([preds_tensor.shape[1]], device='cpu')
         if isinstance(asr_model, EncDecHybridRNNTCTCModel):
-            pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor, preds_lens)[0][0]
+            pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor, preds_lens)[0]
         else:
-            pred_text = asr_model.decoding.ctc_decoder_predictions_tensor(preds_tensor, preds_lens)[0][0]
+            pred_text = asr_model.decoding.ctc_decoder_predictions_tensor(preds_tensor, preds_lens)[0]
 
         if cfg.text_processing.do_lowercase:
             pred_text = punctuation_capitalization.do_lowercase([pred_text])[0]

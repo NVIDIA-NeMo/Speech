@@ -349,7 +349,7 @@ class BeamTDTInfer(Typing):
 
         # Initialize hypothesis array with blank hypothesis.
         start_hyp = Hypothesis(
-            score=0.0, y_sequence=[self.blank], dec_state=decoder_state, timestep=[-1], length=0, last_frame=0
+            score=0.0, y_sequence=[self.blank], dec_state=decoder_state, timestamp=[-1], length=0, last_frame=0
         )
         kept_hyps = [start_hyp]
 
@@ -394,7 +394,7 @@ class BeamTDTInfer(Typing):
                         score=float(max_hyp.score + total_logp_topk),  # update score
                         y_sequence=max_hyp.y_sequence + [token_idx],  # update hypothesis sequence
                         dec_state=decoder_state,  # update decoder state
-                        timestep=max_hyp.timestep + [time_idx + duration],  # update timesteps
+                        timestamp=max_hyp.timestamp + [time_idx + duration],  # update timesteps
                         length=encoded_lengths,
                         last_frame=max_hyp.last_frame + duration,
                     )  # update frame idx where last token appeared
@@ -421,7 +421,7 @@ class BeamTDTInfer(Typing):
                         score=float(max_hyp.score + logp[self.blank] + durations_logp[duration_idx]),  # update score
                         y_sequence=max_hyp.y_sequence[:],  # no need to update sequence
                         dec_state=max_hyp.dec_state,  # no need to update decoder state
-                        timestep=max_hyp.timestep[:],  # no need to update timesteps
+                        timestamp=max_hyp.timestamp[:],  # no need to update timesteps
                         length=encoded_lengths,
                         last_frame=max_hyp.last_frame + duration,
                     )  # update frame idx where last token appeared
@@ -482,7 +482,7 @@ class BeamTDTInfer(Typing):
             y_sequence=[self.blank],
             score=0.0,
             dec_state=self.decoder.batch_select_state(beam_state, 0),
-            timestep=[-1],
+            timestamp=[-1],
             length=0,
             last_frame=0,
         )
@@ -501,7 +501,7 @@ class BeamTDTInfer(Typing):
             score=0.0,
             dec_state=state,
             dec_out=[beam_decoder_output[0]],
-            timestep=[-1],
+            timestamp=[-1],
             length=0,
             last_frame=0,
         )
@@ -580,7 +580,7 @@ class BeamTDTInfer(Typing):
                             y_sequence=hyp.y_sequence[:],
                             dec_out=hyp.dec_out[:],
                             dec_state=hyp.dec_state,
-                            timestep=hyp.timestep[:],
+                            timestamp=hyp.timestamp[:],
                             length=time_idx,
                             last_frame=hyp.last_frame + duration,
                         )
@@ -593,7 +593,7 @@ class BeamTDTInfer(Typing):
                             list_b.append(new_hyp)
                         else:
                             new_hyp.y_sequence.append(k)
-                            new_hyp.timestep.append(time_idx + duration)
+                            new_hyp.timestamp.append(time_idx + duration)
 
                             if self.ngram_lm:
                                 lm_score, new_hyp.ngram_lm_state = self.compute_ngram_score(hyp.ngram_lm_state, int(k))

@@ -323,19 +323,19 @@ class WER(Metric):
                 target = targets_cpu_tensor[ind][:tgt_len].numpy().tolist()
                 reference = self.decoding.decode_tokens_to_str(target)
                 references.append(reference)
-            hypotheses, _ = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
+            hypotheses = self.decode(predictions, predictions_lengths, predictions_mask, input_ids, targets)
 
         if self.log_prediction:
-            logging.info(f"\n")
+            logging.info("\n")
             logging.info(f"reference:{references[0]}")
-            logging.info(f"predicted:{hypotheses[0]}")
+            logging.info(f"predicted:{hypotheses[0].text}")
 
         for h, r in zip(hypotheses, references):
             if self.use_cer:
-                h_list = list(h)
+                h_list = list(h.text)
                 r_list = list(r)
             else:
-                h_list = h.split()
+                h_list = h.text.split()
                 r_list = r.split()
             words += len(r_list)
             # Compute Levenstein's distance

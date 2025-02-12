@@ -359,13 +359,13 @@ class RNNTGreedyDecodeCudaGraph:
         labels_packed = self.labels_cpu[valid_labels_mask]
 
         hypotheses = [
-            rnnt_utils.Hypothesis(score=0.0, y_sequence=[], timestep=[], dec_state=None) for _ in range(batch_size)
+            rnnt_utils.Hypothesis(score=0.0, y_sequence=[], timestamp=[], dec_state=None) for _ in range(batch_size)
         ]
 
         timestep_start = 0
         labels_start = 0
         for i in range(batch_size):
-            hypotheses[i].timestep = timesteps_packed[timestep_start : timestep_start + timestep_segments[i]].tolist()
+            hypotheses[i].timestamp = timesteps_packed[timestep_start : timestep_start + timestep_segments[i]].tolist()
             timestep_start += timestep_segments[i]
             hypotheses[i].score = float(total_scores[i])
             hypotheses[i].y_sequence = labels_packed[labels_start : labels_start + labels_segments[i]].tolist()

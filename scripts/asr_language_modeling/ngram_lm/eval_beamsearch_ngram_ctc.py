@@ -193,7 +193,7 @@ def beam_search_eval(
                     probs_batch[prob_index], device=packed_batch.device, dtype=packed_batch.dtype
                 )
 
-            _, beams_batch = decoding.ctc_decoder_predictions_tensor(
+            beams_batch = decoding.ctc_decoder_predictions_tensor(
                 packed_batch,
                 decoder_lengths=probs_lens,
                 return_hypotheses=True,
@@ -335,9 +335,9 @@ def main(cfg: EvalBeamSearchNGramConfig):
         preds = np.argmax(probs, axis=1)
         preds_tensor = torch.tensor(preds, device='cpu').unsqueeze(0)
         if isinstance(asr_model, EncDecHybridRNNTCTCModel):
-            pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor)[0][0]
+            pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
         else:
-            pred_text = asr_model._wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0][0]
+            pred_text = asr_model._wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
 
         if cfg.text_processing.do_lowercase:
             pred_text = punctuation_capitalization.do_lowercase([pred_text])[0]

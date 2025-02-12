@@ -27,6 +27,7 @@ from nemo.collections.asr.models.hybrid_rnnt_ctc_bpe_models import EncDecHybridR
 from nemo.collections.asr.parts.submodules import rnnt_beam_decoding as beam_decode
 from nemo.collections.asr.parts.submodules import rnnt_greedy_decoding as greedy_decode
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common import tokenizers
 from nemo.core.utils import numba_utils
 from nemo.core.utils.numba_utils import __NUMBA_MINIMUM_VERSION__
@@ -179,7 +180,7 @@ class TestEncDecHybridRNNTCTCBPEModel:
         assert len(outputs) == 1
         assert len(outputs[0]) == 2
         assert isinstance(outputs[0][0], MonoCut)
-        assert isinstance(outputs[0][1], str)
+        assert isinstance(outputs[0][1], Hypothesis)
 
     @pytest.mark.with_downloads()
     @pytest.mark.skipif(

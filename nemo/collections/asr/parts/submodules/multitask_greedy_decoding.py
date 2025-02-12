@@ -201,7 +201,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                 packed_result = []
                 for i in range(len(topk_hypotheses)):
                     # Pack results into Hypotheses
-                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.n_samples)]
+                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(self.n_samples)]
                     self.format_hypotheses(hypotheses, decoder_input_ids)
                     packed_result.append(
                         NBestHypotheses(
@@ -212,7 +212,7 @@ class TransformerAEDGreedyInfer(AEDGreedyInfer, Typing):
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.cpu()
                 hypotheses = [
-                    Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
+                    Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
                 # Pack results into Hypotheses
                 packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores, step_confidence)

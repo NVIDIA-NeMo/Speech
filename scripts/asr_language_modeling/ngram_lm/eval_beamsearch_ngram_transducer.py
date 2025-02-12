@@ -176,11 +176,12 @@ def decoding_step(
                 packed_batch[prob_index, :, : probs_lens[prob_index]] = torch.tensor(
                     probs_batch[prob_index].unsqueeze(0), device=packed_batch.device, dtype=packed_batch.dtype
                 )
-            best_hyp_batch, beams_batch = model.decoding.rnnt_decoder_predictions_tensor(
+            beams_batch = model.decoding.rnnt_decoder_predictions_tensor(
                 packed_batch,
                 probs_lens,
                 return_hypotheses=True,
             )
+            best_hyp_batch = [dec_hyp[0] for dec_hyp in beams_batch]
         if cfg.decoding_strategy == "greedy_batch":
             beams_batch = [[x] for x in best_hyp_batch]
 

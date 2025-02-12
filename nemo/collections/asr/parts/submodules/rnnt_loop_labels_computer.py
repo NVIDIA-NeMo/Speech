@@ -474,9 +474,9 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
                     torch.logical_and(
                         torch.logical_and(
                             labels != self._blank_index,
-                            batched_hyps.last_timestep_lasts >= self.max_symbols,
+                            batched_hyps.last_timestamp_lasts >= self.max_symbols,
                         ),
-                        batched_hyps.last_timestep == time_indices,
+                        batched_hyps.last_timestamp == time_indices,
                     ),
                 )
                 time_indices += force_blank_mask  # emit blank => advance time indices
@@ -878,9 +878,9 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
             torch.logical_and(
                 torch.logical_and(
                     self.state.labels != self._blank_index,
-                    self.state.batched_hyps.last_timestep_lasts >= self.max_symbols,
+                    self.state.batched_hyps.last_timestamp_lasts >= self.max_symbols,
                 ),
-                self.state.batched_hyps.last_timestep == self.state.time_indices,
+                self.state.batched_hyps.last_timestamp == self.state.time_indices,
             ),
         )
         self.state.time_indices.add_(force_blank_mask)  # emit blank => advance time indices

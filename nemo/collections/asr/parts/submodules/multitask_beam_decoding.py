@@ -195,7 +195,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 beam_scores = [x.detach().cpu() for x in beam_scores]  # each item is [beam,]
                 packed_result = []
                 for i in range(len(topk_hypotheses)):
-                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(self.beam_size)]
+                    hypotheses = [Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(self.beam_size)]
                     # Pack results into Hypotheses
                     hypotheses = pack_hypotheses(hypotheses, topk_hypotheses[i], beam_scores[i])
                     self.format_hypotheses(hypotheses, decoder_input_ids)
@@ -204,7 +204,7 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
                 beam_scores = [None for _ in range(len(best_hypo))]
                 best_hypo = best_hypo.detach().cpu()
                 hypotheses = [
-                    Hypothesis(score=0.0, y_sequence=[], timestep=[]) for _ in range(encoder_hidden_states.shape[0])
+                    Hypothesis(score=0.0, y_sequence=[], timestamp=[]) for _ in range(encoder_hidden_states.shape[0])
                 ]
                 # Pack results into Hypotheses
                 packed_result = pack_hypotheses(hypotheses, best_hypo, beam_scores)

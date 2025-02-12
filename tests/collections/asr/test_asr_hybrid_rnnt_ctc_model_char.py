@@ -179,7 +179,7 @@ class TestEncDecHybridRNNTCTCModel:
         assert len(outputs) == 1
         assert len(outputs[0]) == 2
         assert isinstance(outputs[0][0], MonoCut)
-        assert isinstance(outputs[0][1], str)
+        assert isinstance(outputs[0][1], rnnt_utils.Hypothesis)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -563,10 +563,10 @@ class TestEncDecHybridRNNTCTCModel:
                     assert torch.is_tensor(logp)
                     assert torch.is_tensor(label)
 
-    @pytest.mark.skipif(
-        not NUMBA_RNNT_LOSS_AVAILABLE,
-        reason='RNNTLoss has not been compiled with appropriate numba version.',
-    )
+    # @pytest.mark.skipif(
+    #     not NUMBA_RNNT_LOSS_AVAILABLE,
+    #     reason='RNNTLoss has not been compiled with appropriate numba version.',
+    # )
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "beam_config",

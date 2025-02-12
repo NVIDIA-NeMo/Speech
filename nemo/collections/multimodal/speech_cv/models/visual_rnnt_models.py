@@ -32,6 +32,7 @@ from nemo.collections.asr.modules.rnnt import RNNTDecoderJoint
 from nemo.collections.asr.parts.mixins import ASRModuleMixin
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecoding, RNNTDecodingConfig
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.multimodal.speech_cv.data import video_to_text_dataset
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
@@ -236,18 +237,18 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             return_hypotheses: (bool) Either return hypotheses or text
         With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
-            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset
+            of channels from multi-channel audio. If set to `'average'`, 
+            it performs averaging across channels. 
+            Disabled if set to `None`. Defaults to `None`. Uses zero-based indexing.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
         Returns:
-            Returns a tuple of 2 items -
-            * A list of greedy transcript texts / Hypothesis
-            * An optional list of beam search transcript texts / Hypothesis / NBestHypothesis.
+            Returns a list of greedy transcript Hypothesis or list of all Hypothesis
         """
         if paths2video_files is None or len(paths2video_files) == 0:
             return {}
         # We will store transcriptions here
         hypotheses = []
-        all_hypotheses = []
         # Model's mode and device
         mode = self.training
         device = next(self.parameters()).device
@@ -289,7 +290,7 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                     encoded, encoded_len = self.forward(
                         input_signal=test_batch[0].to(device), input_signal_length=test_batch[1].to(device)
                     )
-                    best_hyp, all_hyp = self.decoding.rnnt_decoder_predictions_tensor(
+                    best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
                         encoded,
                         encoded_len,
                         return_hypotheses=return_hypotheses,
@@ -297,10 +298,6 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                     )
 
                     hypotheses += best_hyp
-                    if all_hyp is not None:
-                        all_hypotheses += all_hyp
-                    else:
-                        all_hypotheses += best_hyp
 
                     del encoded
                     del test_batch
@@ -314,14 +311,14 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                 self.encoder.unfreeze()
                 self.decoder.unfreeze()
                 self.joint.unfreeze()
-        return hypotheses, all_hypotheses
+        return hypotheses
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
         Changes vocabulary used during RNNT decoding process. Use this method when fine-tuning a pre-trained model.
-        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
-        use it if you want to use pretrained encoder when fine-tuning on data in another language, or when you'd need
-        model to learn capitalization, punctuation and/or special characters.
+        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, 
+        you would use it if you want to use pretrained encoder when fine-tuning on data in another language, 
+        or when you'd need model to learn capitalization, punctuation and/or special characters.
 
         Args:
             new_vocabulary: list with new vocabulary. Must contain at least 2 elements. Typically, \
@@ -731,7 +728,7 @@ class VisualEncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         del signal
 
-        best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
+        best_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
             encoder_output=encoded, encoded_lengths=encoded_len, return_hypotheses=False
         )
 

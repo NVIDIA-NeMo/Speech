@@ -13,15 +13,11 @@
 # limitations under the License.
 
 import copy
-import json
-import os
-import tempfile
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Union
 
 import torch
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf, open_dict
-from tqdm.auto import tqdm
 
 from nemo.collections.asr.data.audio_to_text_dali import DALIOutputs
 from nemo.collections.asr.losses.ctc import CTCLoss
@@ -31,6 +27,7 @@ from nemo.collections.asr.parts.mixins import ASRBPEMixin, InterCTCMixin, Transc
 from nemo.collections.asr.parts.mixins.transcription import TranscriptionReturnType
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import process_timestamp_outputs
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.mixins import AccessMixin
@@ -200,7 +197,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
 
     def _transcribe_output_processing(
         self, outputs, trcfg: TranscribeConfig
-    ) -> Tuple[List['Hypothesis'], List['Hypothesis']]:
+    ) -> Union[List['Hypothesis'], List[List['Hypothesis']]]:
         if self.cur_decoder == "rnnt":
             return super()._transcribe_output_processing(outputs, trcfg)
 
@@ -208,7 +205,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         logits = outputs.pop('logits')
         encoded_len = outputs.pop('encoded_len')
 
-        best_hyp, all_hyp = self.ctc_decoding.ctc_decoder_predictions_tensor(
+        hypotheses = self.ctc_decoding.ctc_decoder_predictions_tensor(
             logits,
             encoded_len,
             return_hypotheses=trcfg.return_hypotheses,
@@ -218,9 +215,9 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         if trcfg.return_hypotheses:
             # dump log probs per file
             for idx in range(logits.shape[0]):
-                best_hyp[idx].y_sequence = logits[idx][: encoded_len[idx]]
-                if best_hyp[idx].alignments is None:
-                    best_hyp[idx].alignments = best_hyp[idx].y_sequence
+                hypotheses[idx].y_sequence = logits[idx][: encoded_len[idx]]
+                if hypotheses[idx].alignments is None:
+                    hypotheses[idx].alignments = hypotheses[idx].y_sequence
 
         # DEPRECATED?
         # if logprobs:
@@ -228,25 +225,13 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         #         logits_list.append(logit[:elen])
 
         if trcfg.timestamps:
-            best_hyp = process_timestamp_outputs(
-                best_hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
-            )
-            all_hyp = process_timestamp_outputs(
-                all_hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            hypotheses = process_timestamp_outputs(
+                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
 
         del logits, encoded_len
 
-        hypotheses = []
-        all_hypotheses = []
-
-        hypotheses += best_hyp
-        if all_hyp is not None:
-            all_hypotheses += all_hyp
-        else:
-            all_hypotheses += best_hyp
-
-        return (hypotheses, all_hypotheses)
+        return hypotheses
 
     def change_vocabulary(
         self,
@@ -515,7 +500,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
             encoded, encoded_len = self.forward(input_signal=signal, input_signal_length=signal_len)
         del signal
 
-        best_hyp_text, all_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
+        best_hyp_text = self.decoding.rnnt_decoder_predictions_tensor(
             encoder_output=encoded, encoded_lengths=encoded_len, return_hypotheses=False
         )
         if isinstance(sample_id, torch.Tensor):

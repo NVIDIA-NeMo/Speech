@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import math
 import os
 from dataclasses import dataclass, field
@@ -20,7 +22,7 @@ from typing import List, Optional, Tuple, Union
 import torch
 
 from nemo.collections.asr.parts.k2.classes import GraphIntersectDenseConfig
-from nemo.collections.asr.parts.submodules.wfst_decoder import RivaDecoderConfig
+from nemo.collections.asr.parts.submodules.wfst_decoder import RivaDecoderConfig, WfstNbestHypothesis
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Typing, typecheck
@@ -72,7 +74,7 @@ def pack_wfst_hypotheses(
                 y_sequence=[],
                 score=cand.score,
                 text=" ".join(cand.words),
-                timestep=list(cand.timesteps),
+                timestamp=list(cand.timesteps),
                 alignments=list(cand.alignment),
             )
             cand_hyp.y_sequence = y_sequence
@@ -240,7 +242,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
         self.compute_timestamps = compute_timestamps
 
         if self.compute_timestamps:
-            raise ValueError(f"Currently this flag is not supported for beam search algorithms.")
+            raise ValueError("Currently this flag is not supported for beam search algorithms.")
 
         self.vocab = None  # This must be set by specific method by user before calling forward() !
 
@@ -387,7 +389,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             hypotheses = []
             for candidate_idx, candidate in enumerate(beams):
                 hypothesis = rnnt_utils.Hypothesis(
-                    score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None
+                    score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=None
                 )
 
                 # For subword encoding, NeMo will double encode the subword (multiple tokens) into a
@@ -444,8 +446,8 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             import pyctcdecode
         except (ImportError, ModuleNotFoundError):
             raise ImportError(
-                f"Could not load `pyctcdecode` library. Please install it from pip using :\n"
-                f"pip install --upgrade pyctcdecode"
+                "Could not load `pyctcdecode` library. Please install it from pip using :\n"
+                "pip install --upgrade pyctcdecode"
             )
 
         if self.pyctcdecode_beam_scorer is None:
@@ -477,7 +479,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             for candidate_idx, candidate in enumerate(beams):
                 # Candidate = (text, last_lm_state, text_frames, logit_score, lm_score)
                 hypothesis = rnnt_utils.Hypothesis(
-                    score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None
+                    score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=None
                 )
 
                 # TODO: Requires token ids to be returned rather than text.
@@ -498,7 +500,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
                 hypothesis.score = candidate[4]  # score
 
                 # Inject word level timestamps
-                hypothesis.timestep = candidate[2]  # text_frames
+                hypothesis.timestamp = candidate[2]  # text_frames
 
                 if self.preserve_alignments:
                     hypothesis.alignments = torch.from_numpy(x[beams_idx][: out_len[beams_idx]])
@@ -535,7 +537,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             if self.kenlm_path is None or not os.path.exists(self.kenlm_path):
                 raise FileNotFoundError(
                     f"KenLM binary file not found at : {self.kenlm_path}. "
-                    f"Please set a valid path in the decoding config."
+                    "Please set a valid path in the decoding config."
                 )
 
             # perform token offset for subword models
@@ -575,7 +577,7 @@ class BeamCTCInfer(AbstractBeamCTCInfer):
             hypotheses = []
             for candidate_idx, candidate in enumerate(beams):
                 hypothesis = rnnt_utils.Hypothesis(
-                    score=0.0, y_sequence=[], dec_state=None, timestep=[], last_token=None
+                    score=0.0, y_sequence=[], dec_state=None, timestamp=[], last_token=None
                 )
 
                 # We preserve the token ids and the score for this hypothesis
@@ -730,7 +732,7 @@ class WfstCTCInfer(AbstractBeamCTCInfer):
 
         return (packed_result,)
 
-    def _prepare_decoding_lm_wfst(self) -> Union[str, 'kaldifst.StdFst', 'k2.Fsa']:
+    def _prepare_decoding_lm_wfst(self) -> Union[str, 'kaldifst.StdFst', 'k2.Fsa']:  # noqa: F821
         """TBD"""
         arpa_lm_path_exists = self.arpa_lm_path is not None and os.path.exists(self.arpa_lm_path)
         wfst_lm_path_exists = self.wfst_lm_path is not None and os.path.exists(self.wfst_lm_path)

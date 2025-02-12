@@ -174,7 +174,7 @@ def max_symbols_setup():
     setup["decoder"] = DummyRNNTDecoder(vocab_size=2, blank_idx=2, blank_as_pad=True)
     setup["decoder_masked"] = DummyRNNTDecoder(vocab_size=2, blank_idx=2, blank_as_pad=False)
     setup["joint"] = DummyRNNTJoint(num_outputs=3)
-    # expected timesteps for max_symbols_per_step=5 are [[0, 0, 0, 0, 0, 1, 1], [1, 1, 1, 1, 1]],
+    # expected timestamps for max_symbols_per_step=5 are [[0, 0, 0, 0, 0, 1, 1], [1, 1, 1, 1, 1]],
     # so we have both looped and regular iteration on the second frame
     setup["encoder_output"] = torch.tensor(
         [[[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[0, 0, 1], [2, 0, 0], [0, 0, 0]]], dtype=torch.float32
@@ -311,7 +311,7 @@ class TestEncDecRNNTModel:
         assert len(outputs) == 1
         assert len(outputs[0]) == 2
         assert isinstance(outputs[0][0], MonoCut)
-        assert isinstance(outputs[0][1], str)
+        assert isinstance(outputs[0][1], rnnt_utils.Hypothesis)
 
     @pytest.mark.skipif(
         not NUMBA_RNNT_LOSS_AVAILABLE,
@@ -836,16 +836,16 @@ class TestEncDecRNNTModel:
                 hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
                 assert hyp.alignments is not None
 
-                timestep_count = {
-                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestep), return_counts=True))
+                timestamp_count = {
+                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestamp), return_counts=True))
                 }
                 for t in range(len(hyp.alignments)):
 
-                    # check that the number of alignment elements is consistent with hyp.timestep
+                    # check that the number of alignment elements is consistent with hyp.timestamp
                     alignment_len = len(hyp.alignments[t])
                     assert alignment_len <= max_symbols_per_step
-                    if t in timestep_count:  # non-blank
-                        assert alignment_len == timestep_count[t] + (1 if alignment_len < max_symbols_per_step else 0)
+                    if t in timestamp_count:  # non-blank
+                        assert alignment_len == timestamp_count[t] + (1 if alignment_len < max_symbols_per_step else 0)
                     else:  # blank
                         assert alignment_len == 1
 
@@ -908,20 +908,20 @@ class TestEncDecRNNTModel:
                 hyp = greedy(encoder_output=enc_out, encoded_lengths=enc_len)[0][0]  # type: rnnt_utils.Hypothesis
                 assert hyp.frame_confidence is not None
 
-                timestep_count = {
-                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestep), return_counts=True))
+                timestamp_count = {
+                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestamp), return_counts=True))
                 }
                 for t in range(len(hyp.frame_confidence)):
 
-                    # check that the number of confidence elements is consistent with hyp.timestep
+                    # check that the number of confidence elements is consistent with hyp.timestamp
                     confidence_len = len(hyp.frame_confidence[t])
                     assert confidence_len <= max_symbols_per_step
-                    if t in timestep_count:  # non-blank
-                        # if timestep_count[t] less than max_symbols_per_step,
+                    if t in timestamp_count:  # non-blank
+                        # if timestamp_count[t] less than max_symbols_per_step,
                         # blank emission and corresponding confidence expected
-                        # if timestep_count[t] == max_symbols_per_step, "forced blank" is not added => no confidence
-                        assert confidence_len == timestep_count[t] + (
-                            1 if timestep_count[t] < max_symbols_per_step else 0
+                        # if timestamp_count[t] == max_symbols_per_step, "forced blank" is not added => no confidence
+                        assert confidence_len == timestamp_count[t] + (
+                            1 if timestamp_count[t] < max_symbols_per_step else 0
                         )
                     else:  # blank
                         assert confidence_len == 1
@@ -969,16 +969,16 @@ class TestEncDecRNNTModel:
                 hyp = greedy(encoder_output=encoder_output, encoded_lengths=encoded_lengths)[0][0]
                 assert hyp.alignments is not None
 
-                timestep_count = {
-                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestep), return_counts=True))
+                timestamp_count = {
+                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestamp), return_counts=True))
                 }
                 for t in range(len(hyp.alignments)):
 
-                    # check that the number of confidence elements is consistent with hyp.timestep
+                    # check that the number of confidence elements is consistent with hyp.timestamp
                     alignment_len = len(hyp.alignments[t])
                     assert alignment_len <= max_symbols_per_step
-                    if t in timestep_count:  # non-blank
-                        assert alignment_len == timestep_count[t] + (1 if alignment_len < max_symbols_per_step else 0)
+                    if t in timestamp_count:  # non-blank
+                        assert alignment_len == timestamp_count[t] + (1 if alignment_len < max_symbols_per_step else 0)
                     else:  # blank or max_symbols_per_step == 0
                         assert alignment_len <= 1
 
@@ -1056,16 +1056,16 @@ class TestEncDecRNNTModel:
                 hyp = greedy(encoder_output=encoder_output, encoded_lengths=encoded_lengths)[0][0]
                 assert hyp.frame_confidence is not None
 
-                timestep_count = {
-                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestep), return_counts=True))
+                timestamp_count = {
+                    u.item(): c.item() for u, c in zip(*torch.unique(torch.tensor(hyp.timestamp), return_counts=True))
                 }
                 for t in range(len(hyp.frame_confidence)):
 
-                    # check that the number of confidence elements is consistent with hyp.timestep
+                    # check that the number of confidence elements is consistent with hyp.timestamp
                     confidence_len = len(hyp.frame_confidence[t])
                     assert confidence_len <= max_symbols_per_step
-                    if t in timestep_count:  # non-blank
-                        assert confidence_len == timestep_count[t] + (
+                    if t in timestamp_count:  # non-blank
+                        assert confidence_len == timestamp_count[t] + (
                             1 if confidence_len < max_symbols_per_step else 0
                         )
                     else:  # blank or max_symbols_per_step == 0

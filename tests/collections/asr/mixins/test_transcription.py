@@ -334,7 +334,7 @@ class TestTranscriptionMixin:
         # Numpy array test
         outputs = fast_conformer_ctc_model.transcribe(audio, batch_size=1)
         assert len(outputs) == 1
-        assert isinstance(outputs[0], str)
+        assert isinstance(outputs[0], Hypothesis)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -347,8 +347,8 @@ class TestTranscriptionMixin:
         # Numpy array test
         outputs = fast_conformer_ctc_model.transcribe([audio, audio_2], batch_size=2)
         assert len(outputs) == 2
-        assert isinstance(outputs[0], str)
-        assert isinstance(outputs[1], str)
+        assert isinstance(outputs[0], Hypothesis)
+        assert isinstance(outputs[1], Hypothesis)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -363,8 +363,8 @@ class TestTranscriptionMixin:
         # DataLoader test
         outputs = fast_conformer_ctc_model.transcribe(dataloader, batch_size=1)
         assert len(outputs) == 2
-        assert isinstance(outputs[0], str)
-        assert isinstance(outputs[1], str)
+        assert isinstance(outputs[0], Hypothesis)
+        assert isinstance(outputs[1], Hypothesis)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -383,8 +383,8 @@ class TestTranscriptionMixin:
         assert output[1].text == 'start'
 
         # check timestamp
-        assert output[0].timestep['segment'][0]['start'] == pytest.approx(0.4)
-        assert output[0].timestep['segment'][0]['end'] == pytest.approx(0.48)
+        assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.4)
+        assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.48)
 
     @pytest.mark.with_downloads()
     @pytest.mark.unit
@@ -396,8 +396,6 @@ class TestTranscriptionMixin:
         # check len of output
         assert len(output) == 2
 
-        output = output[1]  # Transducer returns tuple
-
         # check hypothesis object
         assert isinstance(output[0], Hypothesis)
         # check transcript
@@ -405,5 +403,5 @@ class TestTranscriptionMixin:
         assert output[1].text == 'Start.'
 
         # check timestamp
-        assert output[0].timestep['segment'][0]['start'] == pytest.approx(0.48)
-        assert output[0].timestep['segment'][0]['end'] == pytest.approx(0.72)
+        assert output[0].timestamp['segment'][0]['start'] == pytest.approx(0.48)
+        assert output[0].timestamp['segment'][0]['end'] == pytest.approx(0.72)

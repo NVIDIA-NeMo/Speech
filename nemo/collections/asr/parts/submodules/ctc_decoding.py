@@ -16,7 +16,7 @@ import re
 import unicodedata
 from abc import abstractmethod
 from dataclasses import dataclass, field, is_dataclass
-from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Union
 
 import numpy as np
 import torch
@@ -360,7 +360,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         decoder_lengths: torch.Tensor = None,
         fold_consecutive: bool = True,
         return_hypotheses: bool = False,
-    ) -> Tuple[List[str], Optional[List[List[str]]], Optional[Union[Hypothesis, NBestHypotheses]]]:
+    ) -> Union[List[Hypothesis], List[List[Hypothesis]]]:
         """
         Decodes a sequence of labels to words
 
@@ -379,8 +379,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
                 transcribe())
 
         Returns:
-            Either a list of str which represent the CTC decoded strings per sample,
-            or a list of Hypothesis objects containing additional information.
+            A list of Hypothesis objects containing additional information.
         """
 
         if isinstance(decoder_outputs, torch.Tensor):
@@ -410,9 +409,7 @@ class AbstractCTCDecoding(ConfidenceMixin):
         if isinstance(hypotheses_list[0], NBestHypotheses):
             if self.cfg.strategy == 'wfst':
                 all_hypotheses = [hyp.n_best_hypotheses for hyp in hypotheses_list]
-                hypotheses = [hyp[0] for hyp in all_hypotheses]
             else:
-                hypotheses = []
                 all_hypotheses = []
 
                 for nbest_hyp in hypotheses_list:  # type: NBestHypotheses
@@ -427,16 +424,14 @@ class AbstractCTCDecoding(ConfidenceMixin):
                         for hyp_idx in range(len(decoded_hyps)):
                             decoded_hyps[hyp_idx] = self.compute_ctc_timestamps(decoded_hyps[hyp_idx], timestamp_type)
 
-                    hypotheses.append(decoded_hyps[0])  # best hypothesis
                     all_hypotheses.append(decoded_hyps)
 
             if return_hypotheses:
-                return hypotheses, all_hypotheses
+                return all_hypotheses  # type: list[list[Hypothesis]]
 
-            best_hyp_text = [h.text for h in hypotheses]
             # alaptev: The line below might contain a bug. Do we really want all_hyp_text to be flat?
-            all_hyp_text = [h.text for hh in all_hypotheses for h in hh]
-            return best_hyp_text, all_hyp_text
+            all_hyp = [[Hypothesis(h.score, h.y_sequence, h.text) for h in hh] for hh in all_hypotheses]
+            return all_hyp
 
         else:
             if self.cfg.strategy == 'wfst':
@@ -460,10 +455,9 @@ class AbstractCTCDecoding(ConfidenceMixin):
                         hypotheses[hyp_idx] = self.compute_ctc_timestamps(hypotheses[hyp_idx], timestamp_type)
 
             if return_hypotheses:
-                return hypotheses, None
+                return hypotheses
 
-            best_hyp_text = [h.text for h in hypotheses]
-            return best_hyp_text, None
+            return [Hypothesis(h.score, h.y_sequence, h.text) for h in hypotheses]
 
     def decode_hypothesis(
         self, hypotheses_list: List[Hypothesis], fold_consecutive: bool
@@ -686,25 +680,25 @@ class AbstractCTCDecoding(ConfidenceMixin):
             )
 
         # attach results
-        if len(hypothesis.timestep) > 0:
-            timestep_info = hypothesis.timestep
+        if len(hypothesis.timestamp) > 0:
+            timestep_info = hypothesis.timestamp
         else:
             timestep_info = []
 
         # Setup defaults
-        hypothesis.timestep = {"timestep": timestep_info}
+        hypothesis.timestamp = {"timestep": timestep_info}
 
         # Add char / subword time stamps
         if char_offsets is not None and timestamp_type in ['char', 'all']:
-            hypothesis.timestep['char'] = char_offsets
+            hypothesis.timestamp['char'] = char_offsets
 
         # Add word time stamps
         if word_offsets is not None and timestamp_type in ['word', 'all']:
-            hypothesis.timestep['word'] = word_offsets
+            hypothesis.timestamp['word'] = word_offsets
 
         # Add segment time stamps
         if segment_offsets is not None and timestamp_type in ['segment', 'all']:
-            hypothesis.timestep['segment'] = segment_offsets
+            hypothesis.timestamp['segment'] = segment_offsets
 
         # Convert the token indices to text
         hypothesis.text = self.decode_tokens_to_str(hypothesis.text)
@@ -731,8 +725,8 @@ class AbstractCTCDecoding(ConfidenceMixin):
 
         # If the exact timestep information is available, utilize the 1st non-ctc blank token timestep
         # as the start index.
-        if hypothesis.timestep is not None and len(hypothesis.timestep) > 0:
-            start_index = max(0, hypothesis.timestep[0] - 1)
+        if hypothesis.timestamp is not None and len(hypothesis.timestamp) > 0:
+            start_index = max(0, hypothesis.timestamp[0] - 1)
 
         # Construct the start and end indices brackets
         end_indices = np.asarray(token_lengths).cumsum()

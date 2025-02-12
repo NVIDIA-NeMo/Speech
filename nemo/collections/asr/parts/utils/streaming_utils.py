@@ -107,7 +107,7 @@ def longest_common_subsequence_merge(X, Y, filepath=None):
     # value initially in each cell
     m = len(X)
     n = len(Y)
-    LCSuff = [[0 for k in range(n + 1)] for l in range(m + 1)]
+    LCSuff = [[0 for _ in range(n + 1)] for _ in range(m + 1)]
 
     # To store the length of
     # longest common substring
@@ -1672,7 +1672,7 @@ class FrameBatchMultiTaskAED(FrameBatchASR):
         """
         self.infer_logits(keep_logits)
 
-        hypothesis = " ".join(self.all_preds)
+        hypothesis = " ".join([h.text for h in self.all_preds])
         if not keep_logits:
             return hypothesis
 

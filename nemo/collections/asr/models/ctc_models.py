@@ -34,6 +34,7 @@ from nemo.collections.asr.parts.mixins.transcription import GenericTranscription
 from nemo.collections.asr.parts.preprocessing.segment import ChannelSelectorType
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecoding, CTCDecodingConfig
 from nemo.collections.asr.parts.utils.asr_batching import get_semi_sorted_batch_sampler
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import process_timestamp_outputs
 from nemo.collections.common.data.lhotse import get_lhotse_dataloader_from_config
 from nemo.collections.common.parts.preprocessing.parsers import make_parser
@@ -41,7 +42,6 @@ from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.classes.mixins import AccessMixin
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, LogprobsType, NeuralType, SpectrogramType
 from nemo.utils import logging
-from nemo.utils.decorators import deprecated
 
 __all__ = ['EncDecCTCModel']
 
@@ -612,7 +612,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         else:
             log_probs, encoded_len, predictions = self.forward(input_signal=signal, input_signal_length=signal_len)
 
-        transcribed_texts, _ = self.wer.decoding.ctc_decoder_predictions_tensor(
+        transcribed_texts = self.wer.decoding.ctc_decoder_predictions_tensor(
             decoder_outputs=log_probs,
             decoder_lengths=encoded_len,
             return_hypotheses=False,
@@ -703,15 +703,11 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
         del greedy_predictions
         return output
 
-    @deprecated(
-        explanation='The return type of args will be updated in the upcoming release to ensure a consistent output \
-            format across all decoder types, such that a Hypothesis object is always returned.'
-    )
     def _transcribe_output_processing(self, outputs, trcfg: TranscribeConfig) -> GenericTranscriptionType:
         logits = outputs.pop('logits')
         logits_len = outputs.pop('logits_len')
 
-        current_hypotheses, all_hyp = self.decoding.ctc_decoder_predictions_tensor(
+        hypotheses = self.decoding.ctc_decoder_predictions_tensor(
             logits,
             decoder_lengths=logits_len,
             return_hypotheses=trcfg.return_hypotheses,
@@ -732,29 +728,23 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, InterCTCMi
                 # cudaMallocHost()-allocated tensor to be floating
                 # around. Were that to be the case, then the pinned
                 # memory cache would always miss.
-                current_hypotheses[idx].y_sequence = logits_cpu[idx, : logits_len[idx]].clone()
-                if current_hypotheses[idx].alignments is None:
-                    current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
+                hypotheses[idx].y_sequence = logits_cpu[idx, : logits_len[idx]].clone()
+                if hypotheses[idx].alignments is None:
+                    hypotheses[idx].alignments = hypotheses[idx].y_sequence
             del logits_cpu
 
         # cleanup memory
         del logits, logits_len
 
         if trcfg.timestamps:
-            current_hypotheses = process_timestamp_outputs(
-                current_hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
+            hypotheses = process_timestamp_outputs(
+                hypotheses, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
             )
-            all_hyp = process_timestamp_outputs(
-                all_hyp, self.encoder.subsampling_factor, self.cfg['preprocessor']['window_stride']
-            )
-
-        hypotheses = []
-        if all_hyp is None:
-            hypotheses += current_hypotheses
-        else:
-            hypotheses += all_hyp
 
         return hypotheses
+
+    def get_best_hyptheses(self, all_hypothesis: list[list[Hypothesis]]):
+        return [hyp[0] for hyp in all_hypothesis]
 
     def _setup_transcribe_dataloader(self, config: Dict) -> 'torch.utils.data.DataLoader':
         """

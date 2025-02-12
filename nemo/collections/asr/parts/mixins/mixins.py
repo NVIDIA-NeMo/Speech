@@ -699,10 +699,10 @@ class ASRModuleMixin(ASRAdapterModelMixin):
                         decoder_lengths=encoded_len[preds_idx : preds_idx + 1],
                         return_hypotheses=False,
                     )
-                    all_hyp_or_transcribed_texts.append(decoded_out[0][0])
+                    all_hyp_or_transcribed_texts.append(decoded_out[0])
             best_hyp = None
         else:
-            best_hyp, all_hyp_or_transcribed_texts = self.decoding.rnnt_decoder_predictions_tensor(
+            best_hyp = self.decoding.rnnt_decoder_predictions_tensor(
                 encoder_output=encoded,
                 encoded_lengths=encoded_len,
                 return_hypotheses=True,
@@ -710,8 +710,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             )
             greedy_predictions = [hyp.y_sequence for hyp in best_hyp]
 
-            if all_hyp_or_transcribed_texts is None:
-                all_hyp_or_transcribed_texts = best_hyp
+            all_hyp_or_transcribed_texts = best_hyp
 
         result = [
             greedy_predictions,

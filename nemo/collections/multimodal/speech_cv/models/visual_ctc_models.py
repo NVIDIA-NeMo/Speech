@@ -143,10 +143,13 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
             return_hypotheses: (bool) Either return hypotheses or text
                 With hypotheses can do some postprocessing like getting timestamp or rescoring
             num_workers: (int) number of workers for DataLoader
-            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels from multi-channel audio. If set to `'average'`, it performs averaging across channels. Disabled if set to `None`. Defaults to `None`.
+            channel_selector (int | Iterable[int] | str): select a single channel or a subset of channels
+            from multi-channel audio. If set to `'average'`, it performs averaging across channels.
+            Disabled if set to `None`. Defaults to `None`.
             augmentor: (DictConfig): Augment audio samples during transcription if augmentor is applied.
         Returns:
-            A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2video_files
+            A list of transcriptions (or raw log probabilities if logprobs is True)
+            in the same order as paths2video_files
         """
         if paths2video_files is None or len(paths2video_files) == 0:
             return {}
@@ -162,7 +165,6 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
 
         # We will store transcriptions here
         hypotheses = []
-        all_hypotheses = []
 
         # Model's mode and device
         mode = self.training
@@ -206,7 +208,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
                             lg = logits[idx][: logits_len[idx]]
                             hypotheses.append(lg.cpu().numpy())
                     else:
-                        current_hypotheses, all_hyp = self.decoding.ctc_decoder_predictions_tensor(
+                        current_hypotheses = self.decoding.ctc_decoder_predictions_tensor(
                             logits,
                             decoder_lengths=logits_len,
                             return_hypotheses=return_hypotheses,
@@ -219,10 +221,7 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
                                 if current_hypotheses[idx].alignments is None:
                                     current_hypotheses[idx].alignments = current_hypotheses[idx].y_sequence
 
-                        if all_hyp is None:
-                            hypotheses += current_hypotheses
-                        else:
-                            hypotheses += all_hyp
+                        hypotheses += current_hypotheses
 
                     del greedy_predictions
                     del logits
@@ -240,9 +239,12 @@ class VisualEncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin, Inte
 
     def change_vocabulary(self, new_vocabulary: List[str], decoding_cfg: Optional[DictConfig] = None):
         """
-        Changes vocabulary used during CTC decoding process. Use this method when fine-tuning on from pre-trained model.
-        This method changes only decoder and leaves encoder and pre-processing modules unchanged. For example, you would
-        use it if you want to use pretrained encoder when fine-tuning on a data in another language, or when you'd need
+        Changes vocabulary used during CTC decoding process. Use this method when 
+        fine-tuning on from pre-trained model.
+        This method changes only decoder and leaves encoder and pre-processing
+        modules unchanged. For example, you would
+        use it if you want to use pretrained encoder when fine-tuning on a data in another language,
+        or when you'd need
         model to learn capitalization, punctuation and/or special characters.
 
         If new_vocabulary == self.decoder.vocabulary then nothing will be changed.

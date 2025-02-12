@@ -75,7 +75,7 @@ def merge_alignment_with_ws_hyps(
                 if idx + 1 < len(tokens) and not tokens[idx + 1].startswith(bow):
                     tokens[idx + 1] = bow + tokens[idx + 1]
                     continue
-            alignment_tokens.append([candidate.timestep[idx].item(), token])
+            alignment_tokens.append([candidate.timestamp[idx].item(), token])
     else:
         raise ValueError(f"decoder_type {decoder_type} is not supported")
 
@@ -86,20 +86,26 @@ def merge_alignment_with_ws_hyps(
     # step 2: get word-level alignment [word, start_frame, end_frame]
     word_alignment = []
     word = ""
-    l, r, = None, None
+    (
+        L,
+        r,
+    ) = (
+        None,
+        None,
+    )
     for item in alignment_tokens:
         if not word:
             word = item[1][1:]
-            l = r = item[0]
+            L = r = item[0]
         else:
             if item[1].startswith(bow):
-                word_alignment.append((word, l, r))
+                word_alignment.append((word, L, r))
                 word = item[1][1:]
-                l = r = item[0]
+                L = r = item[0]
             else:
                 word += item[1]
                 r = item[0]
-    word_alignment.append((word, l, r))
+    word_alignment.append((word, L, r))
     initial_text_transcript = " ".join([item[0] for item in word_alignment])
     if print_stats:
         logging.info(f"Word alignment: {word_alignment}")

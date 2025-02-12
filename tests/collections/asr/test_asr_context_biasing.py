@@ -118,7 +118,7 @@ class TestContextBiasingUtils:
         preds = rnnt_utils.Hypothesis(
             y_sequence=torch.tensor([120, 29]),
             score=0.0,
-            timestep=torch.tensor([0, 1, 2, 3]),
+            timestamp=torch.tensor([0, 1, 2, 3]),
         )
         pred_text, raw_text = context_biasing.merge_alignment_with_ws_hyps(
             preds,
@@ -134,7 +134,7 @@ class TestContextBiasingUtils:
         preds = rnnt_utils.Hypothesis(
             y_sequence=[],
             score=0.0,
-            timestep=[],
+            timestamp=[],
         )
         pred_text, raw_text = context_biasing.merge_alignment_with_ws_hyps(
             preds,

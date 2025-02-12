@@ -83,7 +83,7 @@ def get_rnnt_alignments(
         num_workers=cfg.num_workers,
         return_hypotheses=True,
         channel_selector=cfg.channel_selector,
-    )[0]
+    )
 
     for transcription in transcriptions:
         for align_elem, frame_confidence in zip(transcription.alignments, transcription.frame_confidence):

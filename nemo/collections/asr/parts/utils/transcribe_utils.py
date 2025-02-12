@@ -60,11 +60,11 @@ def get_buffered_pred_feat_rnnt(
         filepaths = []
         with open(manifest, "r", encoding='utf_8') as mfst_f:
             print("Parsing manifest files...")
-            for l in mfst_f:
-                l = l.strip()
-                if not l:
+            for L in mfst_f:
+                L = L.strip()
+                if not L:
                     continue
-                row = json.loads(l)
+                row = json.loads(L)
                 audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
                 filepaths.append(audio_file)
                 if 'text' in row:
@@ -145,19 +145,19 @@ def get_buffered_pred_feat(
         raise ValueError("Either filepaths or manifest shoud not be None")
 
     if filepaths:
-        for l in tqdm(filepaths, desc="Sample:"):
+        for L in tqdm(filepaths, desc="Sample:"):
             asr.reset()
-            asr.read_audio_file(l, delay, model_stride_in_secs)
+            asr.read_audio_file(L, delay, model_stride_in_secs)
             hyp = asr.transcribe(tokens_per_chunk, delay)
             hyps.append(hyp)
     else:
         with open(manifest, "r", encoding='utf_8') as mfst_f:
-            for l in tqdm(mfst_f, desc="Sample:"):
+            for L in tqdm(mfst_f, desc="Sample:"):
                 asr.reset()
-                l = l.strip()
-                if not l:
+                L = L.strip()
+                if not L:
                     continue
-                row = json.loads(l)
+                row = json.loads(L)
                 if 'text' in row:
                     refs.append(row['text'])
                 audio_file = get_full_path(audio_file=row['audio_filepath'], manifest_file=manifest)
@@ -452,7 +452,7 @@ def write_transcription(
                     item = {'audio_filepath': filepaths[idx], pred_text_attr_name: transcription.text}
 
                     if timestamps:
-                        timestamps = transcription.timestep
+                        timestamps = transcription.timestamp
                         if timestamps is not None and isinstance(timestamps, dict):
                             timestamps.pop(
                                 'timestep', None
@@ -480,7 +480,7 @@ def write_transcription(
                         item[pred_text_attr_name] = best_hyps[idx].text
 
                         if timestamps:
-                            timestamps = best_hyps[idx].timestep
+                            timestamps = best_hyps[idx].timestamp
                             if timestamps is not None and isinstance(timestamps, dict):
                                 timestamps.pop(
                                     'timestep', None
@@ -631,19 +631,19 @@ def process_timestamp_outputs(outputs, subsampling_factor: int = 1, window_strid
         return timestamp
 
     for idx, hyp in enumerate(outputs):
-        if not hasattr(hyp, 'timestep'):
+        if not hasattr(hyp, 'timestamp'):
             raise ValueError(
-                f"Expected Hypothesis object to have 'timestep' attribute, when compute_timestamps is \
+                f"Expected Hypothesis object to have 'timestamp' attribute, when compute_timestamps is \
                     enabled but got {hyp}"
             )
-        timestep = hyp.timestep
-        if 'word' in timestep:
-            outputs[idx].timestep['word'] = process_timestamp(timestep['word'], subsampling_factor, window_stride)
-        if 'char' in timestep:
-            outputs[idx].timestep['char'] = process_timestamp(timestep['char'], subsampling_factor, window_stride)
-        if 'segment' in timestep:
-            outputs[idx].timestep['segment'] = process_timestamp(
-                timestep['segment'], subsampling_factor, window_stride
+        timestamp = hyp.timestamp
+        if 'word' in timestamp:
+            outputs[idx].timestamp['word'] = process_timestamp(timestamp['word'], subsampling_factor, window_stride)
+        if 'char' in timestamp:
+            outputs[idx].timestamp['char'] = process_timestamp(timestamp['char'], subsampling_factor, window_stride)
+        if 'segment' in timestamp:
+            outputs[idx].timestamp['segment'] = process_timestamp(
+                timestamp['segment'], subsampling_factor, window_stride
             )
     return outputs
 

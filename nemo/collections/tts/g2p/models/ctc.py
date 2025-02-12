@@ -27,7 +27,7 @@ from nemo.collections.tts.g2p.data.ctc import CTCG2PBPEDataset
 from nemo.collections.tts.models.base import G2PModel
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.core.classes.exportable import Exportable
-from nemo.core.neural_types import LengthsType, NeuralType, TokenIndex
+from nemo.core.neural_types import LengthsType, LossType, NeuralType, TokenIndex
 from nemo.utils import logging
 
 try:
@@ -38,7 +38,7 @@ try:
     from nemo.collections.asr.parts.submodules.ctc_decoding import CTCBPEDecoding, CTCBPEDecodingConfig
 
     ASR_AVAILABLE = True
-except (ModuleNotFoundError, ImportError) as e:
+except (ModuleNotFoundError, ImportError):
     ASR_AVAILABLE = False
 
 
@@ -356,9 +356,10 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
                     input_len=input_len.to(device),
                 )
 
-                preds_str, _ = self.decoding.ctc_decoder_predictions_tensor(
+                preds_hyps = self.decoding.ctc_decoder_predictions_tensor(
                     log_probs, decoder_lengths=encoded_len, return_hypotheses=False
                 )
+                preds_str = [hyp.text for hyp in preds_hyps]
                 all_preds.extend(preds_str)
 
                 del greedy_predictions
@@ -396,7 +397,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
     def setup_training_data(self, cfg: DictConfig):
         if not cfg or cfg.manifest_filepath is None:
             logging.info(
-                f"Dataloader config or file_path for the train is missing, so no data loader for train is created!"
+                "Dataloader config or file_path for the train is missing, so no data loader for train is created!"
             )
             self._train_dl = None
             return
@@ -417,7 +418,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
     def setup_validation_data(self, cfg: Optional[DictConfig]):
         if not cfg or cfg.manifest_filepath is None:
             logging.info(
-                f"Dataloader config or file_path for the validation is missing, so no data loader for validation is created!"
+                "Dataloader config or file_path for the validation is missing, so no data loader for validation is created!"
             )
             self._validation_dl = None
             return
@@ -426,7 +427,7 @@ class CTCG2PModel(G2PModel, ASRBPEMixin, Exportable):
     def setup_test_data(self, cfg: Optional[DictConfig]):
         if not cfg or cfg.manifest_filepath is None:
             logging.info(
-                f"Dataloader config or file_path for the test is missing, so no data loader for test is created!"
+                "Dataloader config or file_path for the test is missing, so no data loader for test is created!"
             )
             self._test_dl = None
             return

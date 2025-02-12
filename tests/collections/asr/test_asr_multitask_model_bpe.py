@@ -450,7 +450,7 @@ class TestEncDecMultiTaskModel:
         # Numpy array test
         outputs = asr_model.transcribe(audio_file, batch_size=1)
         assert len(outputs) == 1
-        assert isinstance(outputs[0], str)
+        assert isinstance(outputs[0].text, str)
 
     @pytest.mark.unit
     def test_transcribe_single_file_translation(self, asr_model, test_data_dir):
@@ -459,7 +459,7 @@ class TestEncDecMultiTaskModel:
         # Numpy array test
         outputs = asr_model.transcribe(audio_file, batch_size=1, task="ast", source_lang='en', target_lang='de')
         assert len(outputs) == 1
-        assert isinstance(outputs[0], str)
+        assert isinstance(outputs[0].text, str)
 
     @pytest.mark.unit
     def test_transcribe_return_hypothesis(self, asr_model, test_data_dir):
@@ -486,7 +486,7 @@ class TestEncDecMultiTaskModel:
         # Numpy array test
         outputs = asr_model.transcribe(audio, batch_size=1)
         assert len(outputs) == 1
-        assert isinstance(outputs[0], str)
+        assert isinstance(outputs[0].text, str)
 
     @pytest.mark.unit
     def test_build_tokenizer(self, asr_model, test_data_dir):
@@ -527,7 +527,7 @@ class TestEncDecMultiTaskModel:
         assert len(outputs) == 1
         assert len(outputs[0]) == 2
         assert isinstance(outputs[0][0], MonoCut)
-        assert isinstance(outputs[0][1], str)
+        assert isinstance(outputs[0][1].text, str)
 
     @pytest.mark.unit
     def test_FrameBatchMultiTaskAED(self, asr_model, test_data_dir):

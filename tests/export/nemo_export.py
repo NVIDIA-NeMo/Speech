@@ -37,12 +37,9 @@ except Exception as e:
 in_framework_supported = True
 try:
     from megatron.core.inference.common_inference_params import CommonInferenceParams
+
     from nemo.deploy.nlp import NemoQueryLLMPyTorch
-    from nemo.deploy.nlp.megatronllm_deployable import (
-        MegatronLLMDeploy,
-        MegatronLLMDeployable,
-        MegatronLLMDeployableNemo2,
-    )
+    from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeploy, MegatronLLMDeployableNemo2
 except Exception as e:
     LOGGER.warning(
         "Cannot import MegatronLLMDeploy* classes, or NemoQueryLLMPyTorch, or CommonInferenceParams, "
@@ -106,26 +103,7 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
             expected_output = record["last_word"].strip().lower()
             all_expected_outputs.append(expected_output)
             if model is not None:
-
-                if in_framework_supported and isinstance(model, MegatronLLMDeployable):
-                    model_output = model.generate(
-                        inputs=[prompt],
-                        length_params={"min_length": 1, "max_length": 1},
-                        sampling_params={
-                            "use_greedy": True,
-                            "temperature": 0.1,
-                            "top_k": 1,
-                            "top_p": 0,
-                            "repetition_penalty": 1.0,
-                            "add_BOS": True,
-                            "all_probs": False,
-                            "compute_logprob": False,
-                            "end_strings": ["<|endoftext|>", "<extra_id_1>"],
-                        },
-                    )
-                    # MegatronLLMDeployable returns prompt + generated output, so need to slice off prompt
-                    model_output = model_output["sentences"][0][len(prompt) :].strip().lower()
-                elif in_framework_supported and isinstance(model, MegatronLLMDeployableNemo2):
+                if in_framework_supported and isinstance(model, MegatronLLMDeployableNemo2):
                     model_output = model.generate(
                         prompts=[prompt],
                         inference_params=CommonInferenceParams(
@@ -171,17 +149,9 @@ def get_accuracy_with_lambada(model, nq, task_ids, lora_uids, test_data_path):
                         top_p=0,
                         temperature=0.1,
                     )
-                    # MegatronLLMDeployable for NeMo 1.0 returns prompt + generated output, so need to slice off prompt.
-                    # On the other hand, MegatronLLMDeployableNeMo2 in the case of NeMo 2.0 returns only generated text.
-                    # TODO: Unify this somewhere else
-                    if isinstance(model, MegatronLLMDeployableNemo2):
-                        prefix_len = 0
-                    else:
-                        prefix_len = len(prompt)
-
                     # Accessing [0][0] of "text" is to get a raw string entry from a NumPy array
                     # for a single prompt (batch size = 1) and stripping prefix if needed:
-                    deployed_output = deployed_output["choices"][0]["text"][0][0][prefix_len:].strip().lower()
+                    deployed_output = deployed_output["choices"][0]["text"][0][0][0:].strip().lower()
                 else:
                     deployed_output = nq.query_llm(
                         prompts=[prompt],
@@ -514,11 +484,6 @@ def run_in_framework_inference(
             prompts=prompts, top_k=top_k, top_p=top_p, temperature=temperature, max_length=max_output_len
         )
         output_deployed = output_deployed["choices"][0]["text"]
-        # MegatronLLMDeployable will return the prompt + generated output, so cut off the prompt.
-        # On the other hand, MegatronLLMDeployableNeMo2 returns only generated text.
-        if isinstance(deployed_model, MegatronLLMDeployable):
-            for i, output in enumerate(output_deployed):
-                output_deployed[i, :] = output[0][len(prompts[i]) :]
 
         # Unwrap the generator if needed
         output_deployed = list(output_deployed)

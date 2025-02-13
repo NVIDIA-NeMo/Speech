@@ -498,17 +498,34 @@ def load_distributed(engine_dir, model_parallel_rank, gpus_per_node):
 
     if not TRTLLM_SUPPORTS_DEVICE_DISABLE:
         raise RuntimeError(
-            "TensorRT-LLM does not support torch device disabling. Please upgrade TensorRT-LLM to make use of this feature."
+            "TensorRT-LLM does not support torch device disabling. "
+            "Please upgrade TensorRT-LLM to make use of this feature."
         )
     elif not DISABLE_TORCH_DEVICE_SET:
         raise RuntimeError(
-            "To use TensorRT-LLM's python ModelRunner API in load_distributed(...) you must set the env var DISABLE_TORCH_DEVICE_SET=1"
+            "To use TensorRT-LLM's python ModelRunner API in load_distributed(...) "
+            "you must set the env var DISABLE_TORCH_DEVICE_SET=1"
         )
+
+    default_kwargs = {
+        "max_output_len": None,
+        "lora_dir": None,
+        "debug_mode": False,
+        "lora_ckpt_source": "hf",
+        "medusa_choices": None,
+        "stream": None,
+        "gpu_weights_percent": 1.0,
+        "enable_context_fmha_fp32_acc": False,
+        "multi_block_mode": True,
+    }
+
     decoder = ModelRunner.from_engine(
         engine=engine,
-        # We want the engine to have the mp_rank, but the python runtime to not resassign the device of the current process
+        # We want the engine to have the mp_rank,
+        # but the python runtime to not resassign the device of the current process
         # So we will set it to the current device
         rank=torch.cuda.current_device(),
+        **default_kwargs,
     )
 
     tensorrt_llm_worker_context.decoder = decoder
@@ -517,6 +534,15 @@ def load_distributed(engine_dir, model_parallel_rank, gpus_per_node):
 
 
 def maybe_cast_to_trt_dtype(dtype):
+    """
+    Cast input dtype to TensorRT dtype if applicable.
+
+    Args:
+        dtype: Input dtype (torch.dtype or trt.DataType)
+
+    Returns:
+        trt.DataType: Corresponding TensorRT dtype
+    """
     if isinstance(dtype, trt.DataType):
         return dtype
     elif isinstance(dtype, torch.dtype):
@@ -526,6 +552,12 @@ def maybe_cast_to_trt_dtype(dtype):
 
 
 def refit(weights_dict: dict):
+    """
+    Refit TensorRT-LLM by hot-swapping its engine weights.
+
+    Args:
+        weights_dict: Dictionary containing new weights
+    """
     global tensorrt_llm_worker_context
     decoder = tensorrt_llm_worker_context.decoder
     if not isinstance(decoder, ModelRunner):
@@ -549,7 +581,12 @@ def refit(weights_dict: dict):
         trt_wt_location = trt.TensorLocation.DEVICE if weight.is_cuda else trt.TensorLocation.HOST
         assert (
             model_dtype == refitter.get_weights_prototype(trt_name).dtype == maybe_cast_to_trt_dtype(weight.dtype)
-        ), f"Expected all three of these dtypes to be the same {model_dtype=} {refitter.get_weights_prototype(trt_name).dtype=} weight.dtype={maybe_cast_to_trt_dtype(weight.dtype)}"
+        ), (
+            f"Expected all three of these dtypes to be the same:\n"
+            f"  {model_dtype=}\n"
+            f"  {refitter.get_weights_prototype(trt_name).dtype=}\n"
+            f"  weight.dtype={maybe_cast_to_trt_dtype(weight.dtype)}"
+        )
 
         refitter.set_named_weights(
             trt_name, trt_weight, trt_wt_location
@@ -590,6 +627,20 @@ def prepare_input_tensors(
     task_vtoken_counts: List[int] = None,
     task_ids: List[int] = None,
 ):
+    """
+    Prepare input tensors from text input.
+
+    Args:
+        input_texts: List of input text strings
+        host_context: Context containing tokenizer and configuration
+        prompt_table: a lookup table containing trained embeddings for vtoken used in p-tuning
+        task_vtoken_counts: Optional list of vtoken counts per task
+        task_ids: Optional list of task IDs
+
+    Returns:
+        dict: Prepared input tensors for model
+    """
+
     tokenizer = host_context.tokenizer
 
     if host_context.add_bos:
@@ -836,7 +887,7 @@ def to_word_list_format(
     flat_ids = []
     offsets = []
     # The encoding of a single word can't always be trusted. See
-    #   https://github.com/NVIDIA/NeMo/blob/bb575b72fd0be51ae10cc77d9f89ddb9e9d3b96d/nemo/collections/nlp/modules/common/text_generation_strategy.py#L229
+    #   https://github.com/NVIDIA/NeMo/blob/bb575b72fd0be51ae10cc77d9f89ddb9e9d3b96d/nemo/collections/nlp/modules/common/text_generation_strategy.py#L229  # pylint: disable=C0301
     ids_ref = tokenizer.encode(ref_str)
     for word_dict_item in word_dict:
         item_flat_ids = []

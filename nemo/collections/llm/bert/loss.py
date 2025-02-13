@@ -20,7 +20,6 @@ from torch import Tensor, nn
 from torch.distributed import all_gather as all_gather_no_backprop
 from torch.distributed.nn.functional import all_gather as all_gather_with_backprop
 
-from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction, MegatronLossReduction
 
 
@@ -53,8 +52,6 @@ class BERTLossReduction(MegatronLossReduction):
             return self.mlm.forward(batch, forward_out['lm_loss'])
 
         from megatron.core import parallel_state
-
-        from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 
         lm_loss_, sop_logits = forward_out['lm_loss'], forward_out['binary_logits']
         assert sop_logits is not None, (
@@ -324,3 +321,16 @@ def sentence_order_prediction_loss(tensor: Tensor, sentence_order: Tensor):
     loss = F.cross_entropy(losses, sentence_order, ignore_index=-1)
 
     return loss
+
+
+def average_losses_across_data_parallel_group(losses):
+    """Reduce a tensor of losses across all GPUs."""
+    from megatron.core import parallel_state
+
+    averaged_losses = torch.cat([loss.clone().detach().view(1) for loss in losses])
+    torch.distributed.all_reduce(averaged_losses, group=parallel_state.get_data_parallel_group())
+    averaged_losses = averaged_losses / torch.distributed.get_world_size(
+        group=parallel_state.get_data_parallel_group()
+    )
+
+    return averaged_losses

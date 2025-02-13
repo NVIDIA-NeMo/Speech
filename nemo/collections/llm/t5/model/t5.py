@@ -22,13 +22,11 @@ import torch
 import torch.distributed
 import torch.nn.functional as F
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
-
 from megatron.core.models.T5.t5_model import T5Model as MCoreT5Model
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch import nn
-
 from transformers import T5Config as HFT5Config
 from transformers import T5ForConditionalGeneration
 
@@ -36,14 +34,12 @@ from nemo.collections.llm import fn
 from nemo.lightning import get_vocab_size, io, teardown
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModule
+from nemo.utils.import_utils import safe_import
 
-HAVE_TE = True
-try:
-    import transformer_engine
-except (ImportError, ModuleNotFoundError):
-    HAVE_TE = False
+_, HAVE_TE = safe_import("transformer_engine")
 
 if TYPE_CHECKING:
+    from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
@@ -51,9 +47,6 @@ def t5_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     """Processing data for one step of T5 model"""
 
     from megatron.core import parallel_state
-
-    from nemo.collections.nlp.modules.common.megatron.token_level_encoder_decoder import AttnMaskType
-    from nemo.collections.nlp.modules.common.megatron.utils import build_attention_mask_3d
 
     batch = next(dataloader_iter)
 
@@ -392,14 +385,22 @@ class HFT5Importer(io.ModelConnector["T5ForConditionalGeneration", T5Model]):
         mapping = {
             "shared.weight": "embedding.word_embeddings.weight",
             "lm_head.weight": "lm_head.output_layer.weight",
-            "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight": "encoder_relative_pos_emb.relative_attention_bias.weight",
-            "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight": "decoder_relative_pos_emb.relative_attention_bias.weight",
-            "encoder.block.*.layer.0.layer_norm.weight": "encoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
+            "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight": (
+                "encoder_relative_pos_emb.relative_attention_bias.weight"
+            ),
+            "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight": (
+                "decoder_relative_pos_emb.relative_attention_bias.weight"
+            ),
+            "encoder.block.*.layer.0.layer_norm.weight": (
+                "encoder.layers.*.self_attention.linear_qkv.layer_norm_weight"
+            ),
             "encoder.block.*.layer.0.SelfAttention.o.weight": "encoder.layers.*.self_attention.linear_proj.weight",
             "encoder.block.*.layer.1.layer_norm.weight": "encoder.layers.*.mlp.linear_fc1.layer_norm_weight",
             "encoder.block.*.layer.1.DenseReluDense.wo.weight": "encoder.layers.*.mlp.linear_fc2.weight",
             "encoder.final_layer_norm.weight": "encoder.final_layernorm.weight",
-            "decoder.block.*.layer.0.layer_norm.weight": "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
+            "decoder.block.*.layer.0.layer_norm.weight": (
+                "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight"
+            ),
             "decoder.block.*.layer.0.SelfAttention.o.weight": "decoder.layers.*.self_attention.linear_proj.weight",
             "decoder.block.*.layer.1.layer_norm.weight": "decoder.layers.*.pre_cross_attn_layernorm.weight",
             "decoder.block.*.layer.1.EncDecAttention.q.weight": "decoder.layers.*.cross_attention.linear_q.weight",
@@ -428,7 +429,6 @@ class HFT5Importer(io.ModelConnector["T5ForConditionalGeneration", T5Model]):
     @property
     def tokenizer(self) -> "AutoTokenizer":
         """Retrieve Tokenizer from HF"""
-        from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
         # Set special tokens to match HF
         bos_token = "<pad>"
@@ -598,7 +598,6 @@ class HFT5Exporter(io.ModelConnector[T5Model, "T5ForConditionalGeneration"]):
     """Exporter Connector for converting NeMo T5 Model to HF"""
 
     def init(self) -> "T5ForConditionalGeneration":
-        from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
@@ -620,14 +619,22 @@ class HFT5Exporter(io.ModelConnector[T5Model, "T5ForConditionalGeneration"]):
         mapping = {
             "embedding.word_embeddings.weight": "shared.weight",
             "lm_head.output_layer.weight": "lm_head.weight",
-            "encoder_relative_pos_emb.relative_attention_bias.weight": "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
-            "decoder_relative_pos_emb.relative_attention_bias.weight": "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight",
-            "encoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "encoder.block.*.layer.0.layer_norm.weight",
+            "encoder_relative_pos_emb.relative_attention_bias.weight": (
+                "encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"
+            ),
+            "decoder_relative_pos_emb.relative_attention_bias.weight": (
+                "decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight"
+            ),
+            "encoder.layers.*.self_attention.linear_qkv.layer_norm_weight": (
+                "encoder.block.*.layer.0.layer_norm.weight"
+            ),
             "encoder.layers.*.self_attention.linear_proj.weight": "encoder.block.*.layer.0.SelfAttention.o.weight",
             "encoder.layers.*.mlp.linear_fc1.layer_norm_weight": "encoder.block.*.layer.1.layer_norm.weight",
             "encoder.layers.*.mlp.linear_fc2.weight": "encoder.block.*.layer.1.DenseReluDense.wo.weight",
             "encoder.final_layernorm.weight": "encoder.final_layer_norm.weight",
-            "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "decoder.block.*.layer.0.layer_norm.weight",
+            "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": (
+                "decoder.block.*.layer.0.layer_norm.weight"
+            ),
             "decoder.layers.*.self_attention.linear_proj.weight": "decoder.block.*.layer.0.SelfAttention.o.weight",
             "decoder.layers.*.pre_cross_attn_layernorm.weight": "decoder.block.*.layer.1.layer_norm.weight",
             "decoder.layers.*.cross_attention.linear_q.weight": "decoder.block.*.layer.1.EncDecAttention.q.weight",

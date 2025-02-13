@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from nemo.collections import llm
 from nemo.collections.llm.inference import MCoreTokenizerWrappper, generate
+from nemo.collections.llm.utils import torch_dtype_from_precision
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.megatron_parallel import MegatronParallel
 from nemo.utils import logging
@@ -107,7 +108,6 @@ class Quantizer:
 
     def __init__(self, quantization_config: QuantizationConfig, export_config: ExportConfig):
         """Initialize Quantizer with quantization and export configurations."""
-        from nemo.collections.nlp.parts.utils_funcs import torch_dtype_from_precision
 
         if not HAVE_MODELOPT:
             raise RuntimeError("nvidia-modelopt is needed to use Quantizer") from HAVE_MODELOPT_ERROR

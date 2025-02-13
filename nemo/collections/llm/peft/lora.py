@@ -286,7 +286,7 @@ class LoRA(PEFT, ModuleMatcher):
         Returns:
             nn.Module: The modified module with LoRA applied, or the original module if not a target.
         """
-        from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters import ParallelLinearAdapter
+        from nemo.collections.llm.peft.utils import ParallelLinearAdapter
 
         if (ans := self.match(m, name, prefix)) is not None:
             (match, full_name) = ans

@@ -166,6 +166,8 @@ class DistillationGPTModel(llm.GPTModel):
         self._teacher_ckpt_path = teacher_ckpt_path
         self._train_called = False
 
+        if not isinstance(student_config, llm.GPTConfig) or not isinstance(teacher_config, llm.GPTConfig):
+            raise ValueError("Student and Teacher must both be subclasses of `llm.GPTModel`")
         if self.config.virtual_pipeline_model_parallel_size is not None:
             raise ValueError("ModelOpt Distillation incompatible with interleaved pipeline schedule.")
 

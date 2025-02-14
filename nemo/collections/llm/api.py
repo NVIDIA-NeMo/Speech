@@ -26,7 +26,9 @@ from torch.distributed import all_gather_object
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
+from nemo.collections.llm.distillation import DistillationGPTModel
 from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget
+from nemo.collections.llm.gpt.model import GPTModel
 from nemo.collections.llm.quantization import ExportConfig, QuantizationConfig
 from nemo.lightning import (
     AutoResume,
@@ -265,6 +267,83 @@ def validate(
     return app_state.exp_dir
 
 
+@run.cli.entrypoint(name="distill", namespace="llm")
+def distill(
+    student_model_path: AnyPath,
+    teacher_model_path: AnyPath,
+    data: pl.LightningDataModule,
+    trainer: Trainer,
+    log: Annotated[Optional[NeMoLogger], run.Config[NeMoLogger]] = None,
+    resume: Annotated[Optional[AutoResume], run.Config[AutoResume]] = None,
+    optim: Optional[OptimizerModule] = None,
+    tokenizer: Optional[TokenizerType] = None,
+    model_transform: Optional[Union[PEFT, ModelTransform, Callable]] = None,
+) -> Path:
+    """
+    Distills a teacher model into a student model using special Knowledge-Distillation losses.
+
+    Note that this requires an existing NeMo 2.0 checkpoint of the student model as well, as
+    the model class is not known beforehand.
+    This script currently supports instances of ``nemo.collections.llm.GPTModel`` for now.
+
+    Args:
+        student_model_path (Path): Path to student model NeMo checkpoint to be trained.
+        teacher_model_path (Path): Path to teacher model NeMo checkpoint to distill from.
+        data (pl.LightningDataModule): The data module containing training data.
+        trainer (Trainer): The trainer instance configured with a MegatronStrategy.
+        log (NeMoLogger): A nemologger instance.
+        resume (Optional[Union[AutoResume, Resume]]): Resume training from a checkpoint.
+        optim (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
+            from the model will be used.
+        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model'
+            or an instance of TokenizerSpec.
+        export (Optional[str]): Filename to save the exported checkpoint after training.
+        model_transform (Optional[Union[Callable[[nn.Module], nn.Module], PEFT]]): A model transform to be applied.
+
+    Returns
+    -------
+        Path: The directory path where training artifacts are saved.
+
+    Examples
+    --------
+        >>> from nemo.collections import llm
+        >>> from nemo import lightning as nl
+        >>> student = "/path/to/student/nemo/ckpt"  # <-- change me
+        >>> teacher = "/path/to/teacher/nemo/ckpt"  # <-- change me
+        >>> data = llm.SquadDataModule(seq_length=4096, global_batch_size=16, micro_batch_size=2)
+        >>> precision = nl.MegatronMixedPrecision(precision="bf16-mixed")
+        >>> trainer = nl.Trainer(strategy=nl.MegatronStrategy(tensor_model_parallel_size=2), plugins=precision)
+        >>> llm.distill(student, teacher, data, trainer, tokenizer="model")
+        PosixPath('/path/to/log_dir')
+    """
+    _student_model = io.load_context(student_model_path, subpath="model")
+    _teacher_model = io.load_context(teacher_model_path, subpath="model")
+    assert isinstance(_student_model, GPTModel), "Only models based on `llm.GPTModel` are supported currently."
+    assert isinstance(_teacher_model, GPTModel), "Only models based on `llm.GPTModel` are supported currently."
+
+    if tokenizer is None:
+        tokenizer = getattr(_student_model, "tokenizer", None) or getattr(_teacher_model, "tokenizer", None)
+        assert tokenizer is not None, "Tokenizer neither provided nor found in models."
+
+    model = DistillationGPTModel(
+        _student_model.config,
+        _teacher_model.config,
+        teacher_ckpt_path=teacher_model_path,
+    )
+    model.__io__ = _student_model.__io__
+
+    return train(
+        model=model,
+        data=data,
+        optim=optim,
+        tokenizer=tokenizer,
+        trainer=trainer,
+        log=log,
+        resume=resume,
+        model_transform=model_transform,
+    )
+
+
 @run.cli.entrypoint(name="ptq", namespace="llm")
 def ptq(
     nemo_checkpoint: str,
@@ -377,8 +456,8 @@ def deploy(
         Needs to be True to be able to run evaluation. Default: True.
         openai_format_response (bool): Return the response from PyTriton server in OpenAI compatible format. Needs to
         be True while running evaluation. Default: True.
-        output_context_logits (bool): If True builds trtllm engine with gather_context_logits set to True. Default: True.
-        context_logits are used to compute the logProb of the output token in case of multi token prediction benchmarks.
+        output_context_logits (bool): If True builds trtllm engine with 'gather_context_logits=True'. Default: True.
+            context_logits are used to compute the logProb of the output token in multi-token prediction benchmarks.
         output_generation_logits (bool): If True builds trtllm engine with gather_generation_logits set to True.
         generation_logits are used to compute the logProb of the output token in case of single token prediction
         benchmarks (like MMLU, lambada). Default: True.
@@ -441,7 +520,8 @@ def evaluate(
     (https://github.com/EleutherAI/lm-evaluation-harness/tree/main).
 
     Args:
-        target_cfg (EvaluationTarget): target of the evaluation. Providing nemo_checkpoint_path, model_id and url in EvaluationTarget.api_endpoint is required to run evaluations.
+        target_cfg (EvaluationTarget): target of the evaluation. Providing nemo_checkpoint_path, model_id, and
+            url in EvaluationTarget.api_endpoint is required to run evaluations.
         eval_cfg (EvaluationConfig): configuration for evaluations. Default type (task): gsm8k.
     """
 
@@ -570,6 +650,7 @@ def import_ckpt(
 
 
 def load_connector_from_trainer_ckpt(path: AnyPath, target: str) -> io.ModelConnector:
+    # pylint: disable=C0116
     if not isinstance(path, Path):
         path = Path(path)
     return io.load_context(path, subpath="model").exporter(target, path)
@@ -875,7 +956,7 @@ def _validate_config(
     model_transform: Optional[Union[PEFT, ModelTransform, Callable]] = None,
 ) -> None:
 
-    ## Model validation
+    # Model validation
     if hasattr(model, "config"):
         assert getattr(model.config, "seq_length", 1) > 0
         assert getattr(model.config, "max_position_embeddings", 1) > 0
@@ -890,7 +971,7 @@ def _validate_config(
     else:
         assert not isinstance(trainer.strategy, nl.MegatronStrategy), "Expected model.config to exist"
 
-    ## Data validation
+    # Data validation
     assert data.micro_batch_size > 0
     assert data.global_batch_size > 0
     assert data.seq_length > 0
@@ -899,7 +980,7 @@ def _validate_config(
         data.global_batch_size % data.micro_batch_size == 0
     ), "Global batch size must be divisible by micro batch size in data module."
 
-    ## Trainer validation
+    # Trainer validation
 
     # MegatronStrategy validation
     if isinstance(trainer.strategy, nl.MegatronStrategy):

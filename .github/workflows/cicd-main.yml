@@ -5051,10 +5051,13 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-        python tests/collections/llm/gpt_distillation.py \
+        python tests/collections/llm/test_hf_import.py --hf_model /home/TestData/nlp/megatron_llama/llama-ci-hf --output_path /tmp/nemo2_ckpt
+
+        python scripts/llm/gpt_distillation.py \
           --name nemo2_llama_distill \
-          --teacher_path /home/TestData/nemo2_ckpt/llama_68M_v2 \
-          --student_path /home/TestData/nemo2_ckpt/llama_68M_v2 \
+          --teacher_path /tmp/nemo2_ckpt \
+          --student_path /tmp/nemo2_ckpt \
+          --tokenizer gpt2 \
           --tp_size 1 \
           --cp_size 1 \
           --pp_size 2 \
@@ -5072,6 +5075,7 @@ jobs:
           --limit_val_batches 2
 
       AFTER_SCRIPT: |
+        rm -rf /tmp/nemo2_ckpt
         rm -rf /tmp/distill_logs
 
   L2_NeMo_2_Export_In_Framework:

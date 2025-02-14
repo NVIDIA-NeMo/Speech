@@ -20,7 +20,7 @@ Example to run this conversion script:
      --input_path /path/to/nemo2/ckpt \
      --output_path /path/to/output \
      --tokenizer_type huggingface \
-     --tokenizer_name meta-llama/Meta-Llama-3.1-8B \
+     --tokenizer_name meta-llama/Llama-3.1-8B \
      --symbolic_link=True
 ```
 """

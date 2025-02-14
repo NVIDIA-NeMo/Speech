@@ -20,7 +20,7 @@ This tutorial demonstrates how to perform depth-pruning, width-pruning, teacher 
 
 For this demonstration, we will perform teacher correction by running a light fine-tuning procedure on the ``Meta LLama 3.1 8B`` teacher model to generate a fine-tuned teacher model, ``megatron_llama_ft.nemo``, needed for optimal distillation. This fine-tuned teacher model is then trimmed. There are two methods to prune a model: depth-pruning and width-pruning. We will explore both techniques, yielding ``4b_depth_pruned_model.nemo`` and ``4b_width_pruned_model.nemo``, respectively. These models will serve as starting points for distillation to create the final distilled 4B models.
 
-We are using models utilizing the ``meta-llama/Meta-Llama-3.1-8B`` tokenizer for this demonstration.
+We are using models utilizing the ``meta-llama/Llama-3.1-8B`` tokenizer for this demonstration.
 
 ``NOTE:`` A subset of functions is being demonstrated in the notebooks. Some features like Neural Architecture Search (NAS) are unavailable, but will be supported in future releases.
 

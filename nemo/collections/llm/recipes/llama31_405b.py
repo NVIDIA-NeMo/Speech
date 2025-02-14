@@ -71,7 +71,7 @@ def trainer(
     sequence_parallelism: bool = True,
     account_for_embedding_in_pipeline_split: bool = True,
     account_for_loss_in_pipeline_split: bool = True,
-    num_nodes: int = 72,
+    num_nodes: int = 64,
     num_gpus_per_node: int = 8,
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,

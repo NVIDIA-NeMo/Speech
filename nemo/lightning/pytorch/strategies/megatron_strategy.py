@@ -60,7 +60,7 @@ from typing_extensions import override
 
 from nemo.core.optim.mcore_optim import McoreDistributedOptimizer
 from nemo.lightning import _strategy_lib, io
-from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel, aggregate_moe_loss_stats
+from nemo.lightning.megatron_parallel import CallbackConnector, MegatronParallel
 from nemo.lightning.pytorch.callbacks import ModelTransform
 from nemo.lightning.pytorch.strategies.utils import (
     RestoreConfig,
@@ -628,9 +628,11 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
                     "reduced_train_loss", reduced_train_loss, prog_bar=True, batch_size=1, sync_dist=False
                 )
                 # Log any MoE losses.
+                # @akoumparouli: disabling this as it hangs with deepseek.
                 # TODO(@akoumparouli): loss_scale depends on the GBS.
-                for loss_name, loss_value in aggregate_moe_loss_stats(loss_scale=1.0).items():
-                    self.lightning_module.log(loss_name, loss_value, prog_bar=True, rank_zero_only=True, batch_size=1)
+            # for loss_name, loss_value in aggregate_moe_loss_stats(loss_scale=1.0).items():
+            #    self.lightning_module.log(
+            #    loss_name, loss_value, prog_bar=True, rank_zero_only=True, batch_size=1)
 
             return out
 

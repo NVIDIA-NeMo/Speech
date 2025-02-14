@@ -52,7 +52,7 @@ def override_recipe_configs(
     finetuning_scheme = "none" if args.finetuning == "sft" else args.finetuning
 
     gpu_type = args.gpu.lower()
-    if gpu_type == "b200":
+    if gpu_type in ["b200", "gb200"]:
         recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True, seq_length=16384)
     else:
         recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
@@ -82,7 +82,7 @@ def override_recipe_configs(
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
-    enable_cuda_graph = bool(gpu_type in ["b200"])
+    enable_cuda_graph = bool(gpu_type in ["b200", "gb200"])
     recipe.model.config.enable_cuda_graph = enable_cuda_graph
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
     recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graph

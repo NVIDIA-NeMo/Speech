@@ -50,7 +50,14 @@ def override_recipe_configs(
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
     finetuning_scheme = "none" if args.finetuning == "sft" else args.finetuning
-    recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
+    gpu_type = args.gpu.lower()
+    if gpu_type in ["gb200"] and finetuning_scheme == "lora":
+        # On GB200 for lora task, we need to enable Cuda Graph for optimal performance.
+        # However, Cuda Graph increases memory usage, so in order to avoid OOM, we need
+        # to reduce the sequence length.
+        recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True, seq_length=2048)
+    else:
+        recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
         args.tensorboard,
@@ -77,7 +84,7 @@ def override_recipe_configs(
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
-    enable_cuda_graph = bool(args.gpu.lower() in [] and finetuning_scheme != "lora")
+    enable_cuda_graph = bool(args.gpu.lower() in ["gb200"] and finetuning_scheme == "lora")
     recipe.model.config.enable_cuda_graph = enable_cuda_graph
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
     recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graph

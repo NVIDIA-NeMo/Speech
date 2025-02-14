@@ -77,7 +77,7 @@ def override_recipe_configs(
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
-    enable_cuda_graph = bool(args.gpu.lower() in [])
+    enable_cuda_graph = bool(args.gpu.lower() in ["gb200"])
     recipe.model.config.enable_cuda_graph = enable_cuda_graph
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
     recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graph

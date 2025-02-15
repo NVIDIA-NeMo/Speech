@@ -190,10 +190,10 @@ class TTSDataset(Dataset):
             self.phoneme_probability = getattr(self.text_tokenizer, "phoneme_probability", None)
         else:
             if text_tokenizer_pad_id is None:
-                raise ValueError(f"text_tokenizer_pad_id must be specified if text_tokenizer is not BaseTokenizer")
+                raise ValueError("text_tokenizer_pad_id must be specified if text_tokenizer is not BaseTokenizer")
 
             if tokens is None:
-                raise ValueError(f"tokens must be specified if text_tokenizer is not BaseTokenizer")
+                raise ValueError("tokens must be specified if text_tokenizer is not BaseTokenizer")
 
             self.text_tokenizer_pad_id = text_tokenizer_pad_id
         self.cache_text = True if self.phoneme_probability is None else False
@@ -496,7 +496,7 @@ class TTSDataset(Dataset):
                 speaker_to_index_map[d["speaker_id"]].add(i)
             # Random sample a reference audio from the same speaker
             self.get_reference_for_sample = lambda sample: self.data[
-                random.sample(speaker_to_index_map[sample["speaker_id"]], 1)[0]
+                random.choice(speaker_to_index_map[tuple(sample["speaker_id"])])
             ]
         elif reference_audio_type == "ground-truth":
             # Use ground truth audio as reference audio
@@ -679,7 +679,7 @@ class TTSDataset(Dataset):
                     sample_pitch_mean = pitch_stats["pitch_mean"]
                     sample_pitch_std = pitch_stats["pitch_std"]
                 else:
-                    raise ValueError(f"Missing statistics for pitch normalization.")
+                    raise ValueError("Missing statistics for pitch normalization.")
 
                 pitch -= sample_pitch_mean
                 pitch[pitch == -sample_pitch_mean] = 0.0  # Zero out values that were previously zero

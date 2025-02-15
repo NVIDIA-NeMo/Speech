@@ -703,6 +703,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
     @torch.inference_mode()
     def forward(self, input_signal, input_length=None):
         """Forward pass of the model to generate samples from the target distribution.
+        This is used for inference mode only, and it explicitly disables SSL masking to the input.
 
         Args:
             input_signal: Tensor that represents a batch of raw audio signals,
@@ -710,6 +711,51 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
                 `self.sample_rate` number of floating point values.
             input_signal_length: Vector of length B, that contains the individual lengths of the audio
                 sequences.
+
+        Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
+        """
+        return self.forward_internal(input_signal=input_signal, input_length=input_length, enable_ssl_masking=False)
+
+    @typecheck(
+        input_types={
+            "input_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "input_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        },
+        output_types={
+            "output_signal": NeuralType(('B', 'C', 'T'), AudioSignal()),
+            "output_length": NeuralType(tuple('B'), LengthsType(), optional=True),
+        },
+    )
+    @torch.inference_mode()
+    def forward_eval(self, input_signal, input_length=None):
+        """Forward pass of the model to generate samples from the target distribution.
+        This is used for eval mode only, and it enables SSL masking to the input.
+
+        Args:
+            input_signal: Tensor that represents a batch of raw audio signals,
+                of shape [B, T] or [B, T, C]. T here represents timesteps, with 1 second of audio represented as
+                `self.sample_rate` number of floating point values.
+            input_signal_length: Vector of length B, that contains the individual lengths of the audio
+                sequences.
+
+        Returns:
+            Output signal `output` in the time domain and the length of the output signal `output_length`.
+        """
+        return self.forward_internal(input_signal=input_signal, input_length=input_length, enable_ssl_masking=True)
+
+    @torch.inference_mode()
+    def forward_internal(self, input_signal, input_length=None, enable_ssl_masking=False):
+        """Internal forward pass of the model.
+
+        Args:
+            input_signal: Tensor that represents a batch of raw audio signals,
+                of shape [B, T] or [B, T, C]. T here represents timesteps, with 1 second of audio represented as
+                `self.sample_rate` number of floating point values.
+            input_signal_length: Vector of length B, that contains the individual lengths of the audio
+                sequences.
+            enable_ssl_masking: Whether to enable SSL masking of the input. If using SSL pretraining, masking
+                is applied to the input signal. If not using SSL pretraining, masking is not applied.
 
         Returns:
             Output signal `output` in the time domain and the length of the output signal `output_length`.
@@ -725,11 +771,15 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
         # Encoder
         encoded, encoded_length = self.encoder(input=input_signal, input_length=input_length)
 
+        # Conditional input
         if self.p_cond == 0:
+            # The model is trained without the conditional input
             encoded = torch.zeros_like(encoded)
-        elif self.ssl_pretrain_masking is not None:
+        elif enable_ssl_masking and self.ssl_pretrain_masking is not None:
+            # Masking for self-supervised pretraining
             encoded = self.ssl_pretrain_masking(input_spec=encoded, length=encoded_length)
 
+        # Initial process state
         init_state = torch.randn_like(encoded) * self.flow.sigma_start
 
         # Sampler
@@ -867,7 +917,7 @@ class FlowMatchingAudioToAudioModel(AudioToAudioModel):
 
         if update_metrics:
             # Generate output signal
-            output_signal, _ = self.forward(
+            output_signal, _ = self.forward_eval(
                 input_signal=input_signal[:num_examples, ...], input_length=input_length[:num_examples]
             )
 

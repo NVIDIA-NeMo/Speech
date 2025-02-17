@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Build, test, and publish a PyPi wheel (to testpypi)
+name: Build, test, and publish a PyPi wheel (to testpypi).
 
-on: 
+on:
   push:
     branches:
       - main
-      - 'r**'
+      - "r**"
+  pull_request:
 
 defaults:
   run:
@@ -26,14 +27,13 @@ defaults:
 
 jobs:
   build-test-publish-wheel:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.20.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_test_publish_wheel.yml@v0.22.3
     with:
       dry-run: true
       python-package: nemo
-      python-version: '3.10'
-      environment: public
+      python-version: "3.10"
     secrets:
       TWINE_USERNAME: ${{ secrets.TWINE_USERNAME }}
       TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
-      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

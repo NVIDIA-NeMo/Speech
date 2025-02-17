@@ -1,5 +1,5 @@
 fastapi
-nvidia-pytriton
+nvidia-pytriton ; platform_machine == 'x86_64'
 pydantic-settings
 tensorstore
 uvicorn

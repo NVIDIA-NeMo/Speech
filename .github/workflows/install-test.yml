@@ -1,0 +1,72 @@
+name: CI-Install-Check
+
+on:
+  pull_request:
+    paths:
+      - "**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-installs:
+    name: test-install-${{ matrix.os }}-py${{ matrix.python }}-${{ matrix.installer }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12"]
+        installer: ["pip", "reinstall.sh"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "${{ matrix.python }}"
+      - name: Install NeMo
+        env:
+          INSTALLER: ${{ matrix.installer }}
+          NEMO_TAG: ${{ github.sha }}
+          NEMO_REPO: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [[ "$INSTALLER" == "pip" ]]; then
+            pip install .
+          else
+            export NEMO_TAG
+            export NEMO_REPO
+            export INSTALL_DIR=$(pwd)
+            
+            bash reinstall.sh --library nemo --mode install
+          fi
+
+  test-installs-ngc:
+    name: test-install-ngc-${{ matrix.os }}-${{ matrix.installer }}
+    runs-on: ${{ matrix.os }}
+    container: "nvcr.io/nvidia/pytorch:25.01-py3"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        installer: ["pip", "reinstall.sh"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+      - name: Install NeMo
+        env:
+          INSTALLER: ${{ matrix.installer }}
+          NEMO_TAG: ${{ github.sha }}
+          NEMO_REPO: ${{ github.server_url }}/${{ github.repository }}
+        shell: bash
+        run: |
+          if [[ "$INSTALLER" == "pip" ]]; then
+            pip install .
+
+          else
+            export NEMO_TAG
+            export NEMO_REPO
+            export INSTALL_DIR=$(pwd)
+
+            bash reinstall.sh --library nemo --mode install
+          fi

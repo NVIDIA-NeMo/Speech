@@ -14,6 +14,7 @@ INSTALL_OPTION=${1:-dev}
 HEAVY_DEPS=${HEAVY_DEPS:-false}
 CURR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 WHEELS_DIR=${WHEELS_DIR:-'/tmp/wheels'}
+INSTALL_DIR=${INSTALL_DIR:-'/opt'}
 
 PIP=pip
 ${PIP} install -U ${PIP}
@@ -25,7 +26,7 @@ mcore() {
   export CAUSAL_CONV1D_FORCE_BUILD=TRUE
   export CAUSAL_CONV_TAG=v1.2.2.post1
 
-  CAUSAL_CONV1D_DIR="/opt/causal-conv1d" &&
+  CAUSAL_CONV1D_DIR="$INSTALL_DIR/causal-conv1d" &&
     if [ ! -d "$CAUSAL_CONV1D_DIR/.git" ]; then
       rm -rf "$CAUSAL_CONV1D_DIR" &&
         cd $(dirname "$CAUSAL_CONV1D_DIR") &&
@@ -35,17 +36,20 @@ mcore() {
     git checkout -f $CAUSAL_CONV_TAG &&
     popd
 
-  MAMBA_DIR="/opt/mamba" &&
+  MAMBA_DIR="$INSTALL_DIR/mamba" &&
     if [ ! -d "$MAMBA_DIR/.git" ]; then
       rm -rf "$MAMBA_DIR" &&
         cd $(dirname "$MAMBA_DIR") &&
-        git clone https://github.com/state-spaces/$(basename $MAMBA_DIR).git
+        git clone https://github.com/state-spaces/$(basename $MAMBA_DIR).git &&
+        pushd $(basename $MAMBA_DIR) &&
+        sed -i "/triton/d" setup.py &&
+        popd
     fi &&
     pushd $MAMBA_DIR &&
     git checkout -f $MAMBA_TAG &&
     popd
 
-  MLM_DIR="/opt/Megatron-LM" &&
+  MLM_DIR="$INSTALL_DIR/Megatron-LM" &&
     if [ ! -d "$MLM_DIR/.git" ]; then
       rm -rf "$MLM_DIR" &&
         cd $(dirname "$MLM_DIR") &&
@@ -60,14 +64,14 @@ mcore() {
     pip wheel --no-deps --wheel-dir $WHEELS_DIR/mcore/ $CAUSAL_CONV1D_DIR
     pip wheel --no-deps --wheel-dir $WHEELS_DIR/mcore/ $MLM_DIR
   else
-    pip install --no-cache-dir $WHEELS_DIR/mcore/*.whl
+    pip install --no-cache-dir $WHEELS_DIR/mcore/*.whl "nvidia-pytriton ; platform_machine == 'x86_64'"
     pip install --no-cache-dir -e $MLM_DIR
   fi
 }
 
 te() {
   local mode="$1"
-  TE_DIR="/opt/TransformerEngine"
+  TE_DIR="$INSTALL_DIR/TransformerEngine"
 
   if [ ! -d "$TE_DIR/.git" ]; then
     rm -rf "$TE_DIR" &&
@@ -88,7 +92,7 @@ te() {
 
 apex() {
   local mode="$1"
-  APEX_DIR="/opt/Apex"
+  APEX_DIR="$INSTALL_DIR/Apex"
 
   if [ ! -d "$APEX_DIR/.git" ]; then
     rm -rf "$APEX_DIR" &&
@@ -109,7 +113,7 @@ apex() {
 
 nemo() {
   local mode="$1"
-  NEMO_DIR=${NEMO_DIR:-"/opt/NeMo"}
+  NEMO_DIR=${NEMO_DIR:-"$INSTALL_DIR/NeMo"}
 
   if [[ -n "$NEMO_TAG" ]]; then
     if [ ! -d "$NEMO_DIR/.git" ]; then
@@ -123,21 +127,30 @@ nemo() {
       git checkout -f $NEMO_TAG
   fi
 
-  ${PIP} install --no-cache-dir virtualenv &&
-    virtualenv /opt/venv &&
-    /opt/venv/bin/pip install --no-cache-dir --no-build-isolation \
-      -r $NEMO_DIR/requirements/requirements_vllm.txt \
-      -r $NEMO_DIR/requirements/requirements_deploy.txt
+  PLATFORM_MACHINE=$(python -c "import platform; print(platform.machine())")
+  if [[ "$PLATFORM_MACHINE" == "x86_64" ]]; then
+    ${PIP} install --no-cache-dir virtualenv &&
+      virtualenv $INSTALL_DIR/venv &&
+      $INSTALL_DIR/venv/bin/pip install --no-cache-dir setuptools &&
+      $INSTALL_DIR/venv/bin/pip install --no-cache-dir --no-build-isolation \
+        -r $NEMO_DIR/requirements/requirements_vllm.txt \
+        -r $NEMO_DIR/requirements/requirements_deploy.txt
+  else
+    echo "Skipping VLLM install for non x86_64 machine."
+  fi
 
   DEPS=(
     "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
     "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@34259bd3e752fef94045a9a019e4aaf62bd11ce2"
-    "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e"
     "onnxscript @ git+https://github.com/microsoft/onnxscript"
     "llama-index==0.10.43"
     "unstructured==0.14.9"
-    "triton==3.1.0"
   )
+
+  if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
+    echo "Installing NVIDIA Resiliency in NVIDIA PyTorch container: ${NVIDIA_PYTORCH_VERSION}"
+    pip install --no-cache-dir "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@97aad77609d2e25ed38ac5c99f0c13f93c48464e ; platform_machine == 'x86_64'"
+  fi
 
   echo 'Installing dependencies of nemo'
   ${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
@@ -149,6 +162,8 @@ nemo() {
 echo 'Uninstalling stuff'
 # Some of these packages are uninstalled for legacy purposes
 ${PIP} uninstall -y nemo_toolkit sacrebleu nemo_asr nemo_nlp nemo_tts
+
+${PIP} install setuptools pybind11 wheel
 
 if [ -n "${NVIDIA_PYTORCH_VERSION}" ]; then
   echo "Installing NeMo in NVIDIA PyTorch container: ${NVIDIA_PYTORCH_VERSION}"

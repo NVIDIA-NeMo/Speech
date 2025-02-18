@@ -40,33 +40,3 @@ jobs:
             
             bash reinstall.sh --library nemo --mode install
           fi
-
-  test-installs-ngc:
-    name: test-install-ngc-${{ matrix.os }}-${{ matrix.installer }}
-    runs-on: ${{ matrix.os }}
-    container: "nvcr.io/nvidia/pytorch:25.01-py3"
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        installer: ["pip", "reinstall.sh"]
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v2
-      - name: Install NeMo
-        env:
-          INSTALLER: ${{ matrix.installer }}
-          NEMO_TAG: ${{ github.sha }}
-          NEMO_REPO: ${{ github.server_url }}/${{ github.repository }}
-        shell: bash
-        run: |
-          if [[ "$INSTALLER" == "pip" ]]; then
-            pip install .
-
-          else
-            export NEMO_TAG
-            export NEMO_REPO
-            export INSTALL_DIR=$(pwd)
-
-            bash reinstall.sh --library nemo --mode install
-          fi

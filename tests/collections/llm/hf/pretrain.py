@@ -90,10 +90,9 @@ if __name__ == '__main__':
 
     model_accelerator = None
     if args.model_accelerator == "te":
-        from functools import partial
-        from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
+        from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
 
-        model_accelerator = partial(te_accelerate, fp8_autocast=args.fp8_autocast)
+        model_accelerator = TEConfig(fp8_autocast=args.fp8_autocast)
 
     from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
 
@@ -113,7 +112,7 @@ if __name__ == '__main__':
             log_every_n_steps=1,
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
-            accumulate_grad_batches=10,
+            accumulate_grad_batches=1,
             gradient_clip_val=grad_clip,
             use_distributed_sampler=use_dist_samp,
             callbacks=[],

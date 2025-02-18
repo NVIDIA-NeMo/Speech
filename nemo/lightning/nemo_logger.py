@@ -72,7 +72,8 @@ class NeMoLogger(IOMixin):
     def __post_init__(self):
         if self.log_local_rank_0_only is True and self.log_global_rank_0_only is True:
             raise ValueError(
-                "Cannot set both log_local_rank_0_only and log_global_rank_0_only to True. Please set either one or neither."
+                "Cannot set both log_local_rank_0_only and log_global_rank_0_only"
+                " to True. Please set either one or neither."
             )
 
     def setup(self, trainer: Union[pl.Trainer, fl.Fabric], resume_if_exists: bool = False, task_config=None):
@@ -92,20 +93,32 @@ class NeMoLogger(IOMixin):
         self.global_rank = trainer.global_rank
         logging.rank = self.global_rank
 
-        if self.explicit_log_dir and isinstance(trainer, pl.Trainer):  # If explicit log_dir was passed, short circuit
+        # If explicit log_dir was passed, short circuit
+        if self.explicit_log_dir and isinstance(trainer, pl.Trainer):
             if trainer.logger is not None and not self.update_logger_directory:
                 logging.warning(
-                    f"nemo logger received explicit_log_dir: {self.explicit_log_dir} and the pytorch lightning trainer "
-                    f"that was passed to nemo_logger container a logger, but update_logger_directory is False. This means "
-                    f"that the trainer's logger directory may not match with the explicit_log_dir."
+                    (
+                        "nemo logger received explicit_log_dir: {} and the pytorch lightning trainer "
+                        "that was passed to nemo_logger container a logger, but "
+                        "update_logger_directory is False. This means that the trainer's logger "
+                        "directory may not match with the explicit_log_dir."
+                    ).format(
+                        self.explicit_log_dir,
+                    )
                 )
             if self.log_dir or self.version:
                 logging.error(
-                    f"nemo logger received explicit_log_dir: {self.explicit_log_dir} and at least one of dir: {self.log_dir}, "
-                    f"or version: {self.version}. Please note that dir, name, and version will be ignored."
+                    (
+                        "nemo logger received explicit_log_dir: {} and at least one of dir: {}"
+                        "or version: {}. Please note that dir, name, and version will be ignored."
+                    ).format(
+                        self.explicit_log_dir,
+                        self.log_dir,
+                        self.version,
+                    )
                 )
             if is_global_rank_zero() and Path(self.explicit_log_dir).exists():
-                logging.warning(f"NeMoLogger is logging to {self.explicit_log_dir}, but it already exists.")
+                logging.warning("NeMoLogger is logging to {}, but it already exists.".format(self.explicit_log_dir))
             log_dir, _dir, self.name, version = Path(self.explicit_log_dir), str(self.explicit_log_dir), "", ""
 
         else:
@@ -121,7 +134,7 @@ class NeMoLogger(IOMixin):
             if not version:
                 if resume_if_exists:
                     logging.warning(
-                        "No version folders would be created under the log folder as 'resume_if_exists' is enabled."
+                        "No version folders would be created under the log folder as " "'resume_if_exists' is enabled."
                     )
                     version = None
                 elif is_global_rank_zero():
@@ -141,8 +154,9 @@ class NeMoLogger(IOMixin):
         app_state.version = version
         app_state.cmd_args = sys.argv
 
-        os.makedirs(log_dir, exist_ok=True)  # Cannot limit creation to global zero as all ranks write to own log file
-        logging.info(f"Experiments will be logged at {log_dir}")
+        # Cannot limit creation to global zero as all ranks write to own log file
+        os.makedirs(log_dir, exist_ok=True)
+        logging.info("Experiments will be logged at {}".format(log_dir))
 
         if task_config and is_global_rank_zero():
             self._handle_task_config(task_config, log_dir)
@@ -171,14 +185,17 @@ class NeMoLogger(IOMixin):
                     logger._version = version or ""
                     logger._root_dir = Path(dir) / os.path.relpath(logger.save_dir)
                     logging.warning(
-                        f'"update_logger_directory" is True. Overwriting tensorboard logger "save_dir" to {logger._root_dir}'
+                        '"update_logger_directory" is True. Overwriting tensorboard'
+                        ' logger "save_dir" to {}'.format(logger._root_dir)
                     )
                 elif isinstance(logger, WandbLogger):
                     logger._id = version or ""
                     logger._save_dir = Path(dir) / logger.save_dir
                     logger._wandb_init["dir"] = Path(dir) / logger.save_dir
                     logging.warning(
-                        f'"update_logger_directory" is True. Overwriting wandb logger "save_dir" to {logger._save_dir}'
+                        '"update_logger_directory" is True. Overwriting wandb logger "save_dir" to {}'.format(
+                            logger._save_dir,
+                        )
                     )
 
     def _setup_trainer_model_checkpoint(self, trainer, log_dir, ckpt=None):
@@ -203,24 +220,42 @@ class NeMoLogger(IOMixin):
                     and trainer.max_epochs < trainer.check_val_every_n_epoch
                 ):
                     logging.error(
-                        "The checkpoint callback was told to monitor a validation value but trainer.max_epochs("
-                        f"{trainer.max_epochs}) was less than trainer.check_val_every_n_epoch({trainer.check_val_every_n_epoch}"
-                        f"). It is very likely this run will fail with ModelCheckpoint(monitor='{ckpt.monitor}') not found "
-                        "in the returned metrics. Please ensure that validation is run within trainer.max_epochs."
+                        (
+                            "The checkpoint callback was told to monitor a validation value but "
+                            "trainer.max_epochs({}) was less than trainer.check_val_every_n_epoch({})."
+                            "It is very likely this run will fail with ModelCheckpoint(monitor='{}') "
+                            "not found in the returned metrics. Please ensure that validation is "
+                            "run within trainer.max_epochs."
+                        ).format(
+                            trainer.max_epochs,
+                            trainer.check_val_every_n_epoch,
+                            ckpt.monitor,
+                        )
                     )
                 elif trainer.max_steps is not None and trainer.max_steps != -1:
                     logging.warning(
-                        "The checkpoint callback was told to monitor a validation value and trainer's max_steps was set to "
-                        f"{trainer.max_steps}. Please ensure that max_steps will run for at least "
-                        f"{trainer.check_val_every_n_epoch} epochs to ensure that checkpointing will not error out."
+                        (
+                            "The checkpoint callback was told to monitor a validation value and "
+                            "trainer's max_steps was set to {}. Please ensure that max_steps will run "
+                            "for at least {} epochs to ensure that checkpointing will not error out."
+                        ).format(
+                            trainer.max_steps,
+                            trainer.check_val_every_n_epoch,
+                        )
                     )
+
+        from nemo.lightning import MegatronStrategy
 
         for callback in trainer.callbacks:
             if isinstance(callback, PTLModelCheckpoint):
                 if callback.dirpath is None:
                     callback.dirpath = Path(log_dir / "checkpoints")
                 if callback.filename is None:
-                    callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}-{{consumed_samples}}"
+                    if isinstance(trainer.strategy, MegatronStrategy):
+                        callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}-{{consumed_samples}}"
+                    else:
+                        # For automodel we log global_step
+                        callback.filename = f"{self.name}--{{{callback.monitor}:.4f}}-{{epoch}}-{{step}}"
                 ModelCheckpoint.CHECKPOINT_NAME_LAST = callback.filename + "-last"
 
     def _handle_task_config(self, task_config, log_dir):
@@ -232,7 +267,7 @@ class NeMoLogger(IOMixin):
             with open(log_dir / "task.json", "w") as f:
                 f.write(task_json)
         except Exception as e:
-            logging.warning(f"Saving task config failed: {e}. Skipping saving")
+            logging.warning("Saving task config failed: {}. Skipping saving".format(e))
 
     def _setup_file_logging(self, log_dir):
         """Set up file logging based on rank settings."""

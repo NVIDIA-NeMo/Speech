@@ -205,13 +205,6 @@ def patch_linear_module(
     cls = orig_linear.__class__
     new_cls = type('PatchedLinearAdapter', (LinearAdapter, cls), {})
     orig_linear.__class__ = new_cls
-
-    if hasattr(orig_linear.weight.data, '_local_tensor'):
-        from torch.distributed._composable.fsdp.fully_shard import fully_shard
-
-        fully_shard(orig_linear.lora_a, reshard_after_forward=False)
-        fully_shard(orig_linear.lora_b, reshard_after_forward=False)
-
     return orig_linear
 
 

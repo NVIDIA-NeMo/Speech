@@ -175,14 +175,10 @@ def create_checkpoint_io(wrapping_ckpt_io=None, **kwargs):
     Returns:
         Checkpoint IO handler instance.
     """
-    model_library = "megatron"
-    if "model_library" in kwargs.keys():
-        model_library = kwargs["model_library"]
+    if kwargs.get("model_library", None) == "huggingface":
+        from nemo.lightning.io.hf import HFCheckpointIO
 
-    if model_library == "huggingface":
-        from nemo.lightning.io.pl import HuggingFaceCheckpointIO
-
-        checkpoint_io = HuggingFaceCheckpointIO(lora=kwargs["lora"])
+        checkpoint_io = HFCheckpointIO(adapter_only=kwargs.get("lora", False))
     else:
         from nemo.lightning.io.pl import MegatronCheckpointIO
 
@@ -453,9 +449,6 @@ def fsdp2_strategy_parallelize(
     because the model parallel strategy does not respect all settings of `Fabric(precision=...)` at the moment.
     """
 
-    dp_mesh = device_mesh["data_parallel"]
-    tp_mesh = device_mesh["tensor_parallel"]
-
     def parallelize_helper(module, mesh, mp_policy):
         if isinstance(module, nn.ModuleList):
             for layer_id, transformer_block in enumerate(module):
@@ -475,10 +468,10 @@ def fsdp2_strategy_parallelize(
             for name, sub_module in module.named_children():
                 parallelize_helper(sub_module, mesh, mp_policy)
 
-    assert tp_mesh.size() == 1, "Tensor parallelism is not supported yet in this model."
-
+    # assert tp_mesh.size() == 1, "Tensor parallelism is not supported yet in this model."
+    dp_mesh = device_mesh["data_parallel"]
     if dp_mesh.size() > 1:
-        assert dp_mesh.ndim == 1  # Hybrid-sharding not supported
+        assert dp_mesh.ndim == 1, "Hybrid-sharding not supported"
 
         # Find transformer layers and apply parallelisms
         parallelize_helper(model, dp_mesh, mp_policy)

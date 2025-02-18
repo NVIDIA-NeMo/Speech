@@ -22,6 +22,14 @@ from nemo.utils import logging
 
 
 def clean_split(name):
+    """removes split from name
+
+    Args:
+        name (str): partition name (e.g. "train[:100]")
+
+    Returns:
+        str: return partition name without any selector (e.g. "train").
+    """
     if '[' in name:
         return name.split('[')[0]
     return name
@@ -146,7 +154,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
         # self.dataset_splits will hold the actual dataset for each split.
         if isinstance(path_or_dataset, str):
-            logging.info(f"Loading HF dataset from {path_or_dataset}")
+            logging.info(f"Loading HF dataset from {path_or_dataset}, this may take a moment.")
             dataset = load_dataset(path_or_dataset, split=split, **kwargs)
         elif isinstance(path_or_dataset, Dataset) or isinstance(path_or_dataset, DatasetDict):
             logging.info(f"Using passed HF dataset {str(path_or_dataset)}")
@@ -176,11 +184,14 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
+        """wraps Dataset's from_dict method"""
         dataset = Dataset.from_dict(dataset_dict)
         return HFDatasetDataModule(path_or_dataset=dataset, split=split, **kwargs)
 
     @staticmethod
     def collate_fn(batch, pad_token_id=0):
+        """Default batch collator"""
+
         def batchify(tensor):
             if tensor.ndim == 1:
                 return tensor.unsqueeze_(0)
@@ -206,6 +217,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         }
 
     def setup(self, stage: str):
+        """setups sampler"""
         if not self.use_mcore_sampler:
             return
         self.data_sampler = MegatronDataSampler(
@@ -216,6 +228,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         )
 
     def _make_dataloader(self, dataset, collate_fn=None):
+        """Dataloader creator"""
         assert dataset is not None
 
         if collate_fn is None:
@@ -232,26 +245,33 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
     @property
     def train(self):
+        """Returns the training partition"""
         return self.dataset_splits['train']
 
     @property
     def val(self):
+        """Returns the validation partition"""
         return self.dataset_splits['val']
 
     @property
     def test(self):
+        """Returns the test partition"""
         return self.dataset_splits['test']
 
     def train_dataloader(self):
+        """Returns the train dataloader"""
         return self._make_dataloader(self.train, self._collate_fn)
 
     def val_dataloader(self):
+        """Returns the validation dataloader"""
         return self._make_dataloader(self.val, self._collate_fn)
 
     def test_dataloader(self):
+        """Returns the test dataloader"""
         return self._make_dataloader(self.test, self._collate_fn)
 
     def map(self, function=None, split_names=None, **kwargs):
+        """Maps a function to the dataset"""
         if isinstance(split_names, str):
             dataset_splits = {split_names: self.dataset_splits[split_names]}
         elif isinstance(split_names, list):
@@ -266,11 +286,48 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
 
 class SquadHFDataModule(HFDatasetDataModule):
+    """
+    A data module for handling the SQuAD dataset using HFDatasetDataModule.
+
+    This class is responsible for tokenizing and formatting the SQuAD dataset for training
+    language models. It extends `HFDatasetDataModule` and implements a prompt-based
+    formatting function suitable for causal language modeling.
+
+    Attributes:
+        tokenizer: A tokenizer instance used to convert text into token IDs.
+    """
+
     def __init__(self, tokenizer, **kwargs):
+        """
+        Initializes the SquadHFDataModule.
+
+        Args:
+            tokenizer: A tokenizer instance for processing text data.
+            **kwargs: Additional arguments passed to the parent class (`HFDatasetDataModule`).
+        """
         super().__init__(**kwargs)
         self.tokenizer = tokenizer
 
     def formatting_prompts_func(self, example):
+        """
+        Formats a given example into a structured prompt for training.
+
+        This method converts a dataset example (containing context, question, and answer)
+        into a structured format, tokenizes it, and prepares input IDs and labels for
+        training a language model.
+
+        Args:
+            example (dict): A dictionary containing the following keys:
+                - 'context': The passage from which the question is derived.
+                - 'question': The question about the passage.
+                - 'answers': A dictionary with a 'text' key containing the answer(s).
+
+        Returns:
+            dict: A dictionary containing:
+                - 'input_ids': Tokenized input sequence (excluding the last token).
+                - 'labels': Tokenized output sequence (excluding the first token).
+                - 'loss_mask': A mask indicating which tokens contribute to the loss.
+        """
         formatted_text = [
             f"Context: {example['context']} Question: {example['question']} Answer:",
             f" {example['answers']['text'][0].strip()}",
@@ -288,6 +345,12 @@ class SquadHFDataModule(HFDatasetDataModule):
         )
 
     def setup(self, stage):
+        """
+        Prepares the dataset for training and applies formatting.
+
+        Args:
+            stage (str): The stage of training.
+        """
         super().setup(stage)
 
         self.map(

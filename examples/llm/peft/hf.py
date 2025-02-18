@@ -15,6 +15,7 @@
 import tempfile
 
 import fiddle as fdl
+import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
 
 from nemo import lightning as nl
@@ -41,7 +42,7 @@ def make_squad_hf_dataset(tokenizer):
             loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
         )
 
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:100]", pad_token_id=tokenizer.eos_id)
+    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:10]", pad_token_id=tokenizer.eos_id)
     datamodule.map(
         formatting_prompts_func,
         batched=False,
@@ -49,6 +50,45 @@ def make_squad_hf_dataset(tokenizer):
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
     return datamodule
+
+
+def make_strategy(strategy, model, devices, num_nodes, adapter_only=False):
+    if strategy == 'auto':
+        return pl.strategies.SingleDeviceStrategy(
+            device='cuda:0',
+            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
+        )
+    elif strategy == 'ddp':
+        return pl.strategies.DDPStrategy(
+            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
+        )
+    elif strategy == 'fsdp2':
+        return nl.FSDP2Strategy(
+            data_parallel_size=devices * num_nodes,
+            tensor_parallel_size=1,
+            checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
+        )
+    else:
+        raise NotImplementedError("Encountered unknown strategy")
+
+
+def logger(ckpt_folder) -> nl.NeMoLogger:
+    ckpt = nl.ModelCheckpoint(
+        save_last=True,
+        every_n_train_steps=1,
+        monitor="reduced_train_loss",
+        save_top_k=1,
+        save_on_train_epoch_end=True,
+        save_optim_on_train_end=True,
+    )
+
+    return nl.NeMoLogger(
+        name="nemo2_peft",
+        log_dir=ckpt_folder,
+        use_datetime_version=False,  # must be false if using auto resume
+        ckpt=ckpt,
+        wandb=None,
+    )
 
 
 def main():
@@ -65,6 +105,7 @@ def main():
     parser.add_argument('--max-steps', type=int, default=100)
     parser.add_argument('--wandb-project', type=str, default=None)
     parser.add_argument('--use-torch-jit', action='store_true')
+    parser.add_argument('--auto-resume', action='store_true')
     parser.add_argument('--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name)
     args = parser.parse_args()
 
@@ -81,18 +122,27 @@ def main():
         jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': True}, use_thunder=False)
         callbacks = [JitTransform(jit_config)]
 
-    if args.strategy == 'fsdp2':
-        args.strategy = nl.FSDP2Strategy(data_parallel_size=args.devices * args.num_nodes, tensor_parallel_size=1)
+    model = llm.HFAutoModelForCausalLM(model_name=args.model)
+    strategy = make_strategy(args.strategy, model, args.devices, args.num_nodes, True)
+
+    resume = (
+        nl.AutoResume(
+            resume_if_exists=True,
+            resume_ignore_no_checkpoint=False,
+        )
+        if args.auto_resume
+        else None
+    )
 
     llm.api.finetune(
-        model=llm.HFAutoModelForCausalLM(model_name=args.model),
+        model=model,
         data=make_squad_hf_dataset(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
         trainer=nl.Trainer(
             devices=args.devices,
             num_nodes=args.num_nodes,
             max_steps=args.max_steps,
             accelerator=args.accelerator,
-            strategy=args.strategy,
+            strategy=strategy,
             log_every_n_steps=1,
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
@@ -104,11 +154,12 @@ def main():
             precision="bf16",
         ),
         optim=fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=1e-5)),
-        log=NeMoLogger(log_dir=args.ckpt_folder, use_datetime_version=False),
+        log=logger(args.ckpt_folder),
         peft=llm.peft.LoRA(
             target_modules=['*_proj'],
             dim=8,
         ),
+        resume=resume,
     )
 
 

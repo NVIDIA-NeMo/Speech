@@ -31,12 +31,14 @@ def _extract_model_params_for_optim(model, weight_decay=0, no_weight_decay_cond=
     params_with_wd, params_without_wd = [], []
     if no_weight_decay_cond is not None:
         for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
             if no_weight_decay_cond(name, param):
                 params_without_wd.append(param)
             else:
                 params_with_wd.append(param)
     else:
-        params_with_wd = model.parameters()
+        params_with_wd = list(filter(lambda x: x.requires_grad, model.parameters()))
 
     assert max(map(len, (params_with_wd, params_without_wd))) > 0, "Expected at least one optimizer with params"
 
@@ -95,6 +97,7 @@ class PytorchOptimizerModule(OptimizerModule):
         self.lr_mult = lr_mult
 
     def on_fit_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"):
+        """nooop"""
         # Noop
         pass
 
@@ -115,14 +118,13 @@ class PytorchOptimizerModule(OptimizerModule):
             raise ValueError("Model cannot be an instance of MegatronParallel")
 
         wd = self.optimizer_fn.keywords.get('weight_decay', 0)
-        return self.optimizer_fn(_extract_model_params_for_optim(model, wd, self.no_weight_decay_cond))
-
-    def finalize_model_grads(self, *args, **kwargs):
-        # Noop
-        pass
+        ans = self.optimizer_fn(_extract_model_params_for_optim(model, wd, self.no_weight_decay_cond))
+        if not isinstance(ans, list):
+            ans = [ans]
+        return ans
 
     def connect(self, model: L.LightningModule) -> None:
-        """Connects the optimizer module to the model and trainer.
+        """Connects the optimizer module to the model.
 
         Args:
             model (L.LightningModule): The model to which the optimizer module is being connected.

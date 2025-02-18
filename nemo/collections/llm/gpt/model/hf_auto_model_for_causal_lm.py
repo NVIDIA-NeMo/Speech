@@ -12,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import _io
 import lightning.pytorch as pl
 import torch
 import torch.nn.functional as F
-from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from transformers import AutoModelForCausalLM
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
-from nemo.lightning.pytorch.strategies.utils import fsdp2_strategy_parallelize
 from nemo.utils import logging
 
 
@@ -43,32 +42,18 @@ def masked_cross_entropy(logits, targets, mask=None):
     """
     if mask is not None:
         loss = F.cross_entropy(logits, targets, reduction='none')
-        return torch.mean(loss * mask.view(-1))
+        loss = torch.mean(loss * mask.view(-1))
     else:
-        return F.cross_entropy(logits, targets)
+        loss = F.cross_entropy(logits, targets)
+    return loss
 
 
 class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
     """
     A LightningModule wrapper for AutoModelForCausalLm.
 
-    This module wraps around a LightningModule around a AutoModelForCausalLm (e.g., GPT-2).
-    It provides functionalities for training, validation, and saving, and it supports model parallelization
-    techniques including FSDP2 and tensor parallelism.
-
-    Attributes:
-        model_name (str): The name or path of the pretrained model.
-        load_pretrained_weights (bool): Whether to load pretrained weights.
-        loss_fn (callable): The loss function to use during training and validation.
-        is_hf_model (bool): Flag indicating that the underlying model is from Hugging Face.
-        model_transform (callable, optional): A function to transform the model after creation.
-        model_accelerator (callable, optional): A function to apply additional accelerations or modifications.
-        trust_remote_code (bool): Whether to trust remote code for model loading.
-        default_dtype (torch.dtype): The default data type for model weights.
-        load_in_4bit (bool): Whether to load the model in 4-bit precision.
-        attn_implementation (str): The attention implementation to use.
-        mp_policy (MixedPrecisionPolicy): Mixed precision policy for distributed training.
-        parallelize_fn (callable, optional): Function for parallelizing the model.
+    This module wraps a LightningModule around a AutoModelForCausalLM.
+    It provides functionalities for training, validation, and checkpoint saving.
     """
 
     def __init__(
@@ -83,11 +68,6 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         default_dtype=torch.bfloat16,
         load_in_4bit=False,
         attn_implementation="sdpa",
-        param_dtype=torch.bfloat16,
-        reduce_dtype=torch.float32,
-        output_dtype=None,
-        cast_forward_inputs=True,
-        parallelize_fn=None,
     ):
         """
         Initialize the HFAutoModelForCausalLM.
@@ -104,14 +84,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             default_dtype (torch.dtype, optional): Default data type for the model. Defaults to torch.bfloat16.
             load_in_4bit (bool, optional): Whether to load the model in 4-bit precision. Defaults to False.
             attn_implementation (str, optional): Attention implementation to use. Defaults to "sdpa".
-            param_dtype (torch.dtype, optional): Data type for model parameters in mixed precision.
-                Defaults to torch.bfloat16.
-            reduce_dtype (torch.dtype, optional): Data type for reduction operations in mixed precision.
-                Defaults to torch.float32.
-            output_dtype (torch.dtype, optional): Data type for model outputs in mixed precision.
-                Defaults to None.
-            cast_forward_inputs (bool, optional): Whether to cast forward inputs. Defaults to True.
-            parallelize_fn (callable, optional): Function for parallelizing the model. Defaults to None.
+
         """
         super().__init__()
         self.save_hyperparameters()
@@ -127,13 +100,6 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.default_dtype = default_dtype
         self.load_in_4bit = load_in_4bit
         self.attn_implementation = attn_implementation
-        self.mp_policy = MixedPrecisionPolicy(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-            output_dtype=output_dtype,
-            cast_forward_inputs=cast_forward_inputs,
-        )
-        self.parallelize_fn = parallelize_fn
 
     @property
     def tokenizer(self):
@@ -184,9 +150,9 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         """helper method; see also configure_model."""
         # create all your layers here
         if self.load_pretrained_weights:
-            self.model = AutoModelForCausalLM.from_pretrained(
+            return AutoModelForCausalLM.from_pretrained(
                 self.model_name,
-                torch_dtype='auto',
+                torch_dtype=torch.bfloat16,
                 device_map="cpu",
                 trust_remote_code=self.trust_remote_code,
                 load_in_4bit=self.load_in_4bit,
@@ -197,7 +163,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
             config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)
             dtype = getattr(config, 'torch_dtype', self.default_dtype)
-            self.model = AutoModelForCausalLM.from_config(
+            return AutoModelForCausalLM.from_config(
                 config,
                 torch_dtype=dtype,
                 trust_remote_code=self.trust_remote_code,
@@ -217,22 +183,16 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             Exception: If model configuration fails.
         """
         try:
-            self._configure_model(attn_implementation=self.attn_implementation)
+            self.model = self._configure_model(attn_implementation=self.attn_implementation)
         except ValueError as e:
-            if (
-                'does not support an attention implementation through torch.nn.functional.scaled_dot_product_attention'
-                in str(e)
-            ):
-                self._configure_model(attn_implementation="eager")
-
-        # Apply FSDP2 and TP to the model
-        if self.device_mesh is not None:
-            if self.parallelize_fn is None:
-                self.parallelize_fn = fsdp2_strategy_parallelize
-            self.parallelize_fn(self.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
+            # 'does not support an attention implementation through torch.nn.functional.scaled_dot_product_attention'
+            if 'does not support an attention' in str(e):
+                self.model = self._configure_model(attn_implementation="eager")
 
         if self.model_accelerator is not None:
-            self.model_accelerator(self.model)
+            from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
+
+            te_accelerate(self.model, self.model_accelerator.fp8_autocast)
 
         self.model.train()
 
@@ -281,7 +241,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         assert logits.shape[-2] == labels.shape[-1], "Expected logits & labels to have the same length"
         loss = self.loss_fn(logits, labels, loss_mask)
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('reduced_train_loss', loss, prog_bar=True, rank_zero_only=True, batch_size=1, sync_dist=False)
         return loss
 
     @torch.no_grad
@@ -316,7 +276,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         loss = self.loss_fn(logits, labels, loss_mask)
         self.log('val_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
 
-    def save_pretrained(self, path):
+    def save_pretrained(self, path, state_dict):
         """
         Save the pretrained model and tokenizer to a specified path.
 
@@ -331,22 +291,87 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             AssertionError: If the model has not been created prior to saving.
         """
         assert self.model is not None, "Model has to be created first."
-        import torch.distributed as dist
-        from nemo.lightning.pytorch.strategies.utils import to_cpu
 
-        is_dist = dist.is_initialized()
-        rank = dist.get_rank() if is_dist else 0
-        is_rank0 = not is_dist or (is_dist and rank == 0)
+        def pop_fqn_prefix(fqn, expected_prefix='model'):
+            """pops prefix from FQN"""
+            parts = fqn.split('.')
+            assert parts[0] == expected_prefix
+            return '.'.join(parts[1:])
 
-        if is_rank0 or type(self.model).__name__.startswith('FSDP'):
-            cpu_state_dict = {k: to_cpu(v) for k, v in self.model.state_dict().items()}
-
-        if is_rank0:
-            self.model.save_pretrained(path, state_dict=cpu_state_dict)
-            if self._tokenizer is not None:
-                self._tokenizer.save_pretrained(path)
+        # Remove the "model." prefix from FQNs.
+        # Context: calling state_dict on an HFAutoModelForCausalLM, will prepend "model." in the
+        # state-dict keys. One solution would be to override HFAutoModelForCausalLM's state_dict
+        # and `return self.model.state_dict()`, however FSDP2 uses FQNs to acecss modules, therefore
+        # removing "model." at the state_dict function level will cause issues with FSDP2.
+        keys = list(state_dict.keys())
+        io_bytes_state = {}
+        for key, new_key in map(lambda x: (x, pop_fqn_prefix(x)), keys):
+            val = state_dict.pop(key)
+            if isinstance(val, _io.BytesIO):
+                io_bytes_state[new_key] = val
             else:
-                logging.warning("A tokenizer wasn't created before to save.")
+                state_dict[new_key] = val
+
+        if len(io_bytes_state) > 0:
+            logging.warning("State-dict contains _io.BytesIO, those will be saved separately to `io_bytes.pt`.")
+            torch.save(io_bytes_state, path / 'io_bytes.pt')
+
+        self.model.save_pretrained(path, state_dict=state_dict)
+        if self._tokenizer is not None:
+            self._tokenizer.save_pretrained(path)
+        else:
+            logging.warning("A tokenizer wasn't created before to save.")
+
+    def load_pretrained(self, path):
+        """
+        Used from HFcheckpointio to load a checkpoint
+        TODO(@akoumparouli): refactor
+        """
+        return AutoModelForCausalLM.from_pretrained(
+            path,
+            torch_dtype='auto',
+            device_map="cpu",
+            trust_remote_code=self.trust_remote_code,
+            load_in_4bit=self.load_in_4bit,
+            attn_implementation=self.attn_implementation,
+        ).state_dict()
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        """Loads the state-dict directly to self.model, therefore FQNs are expected
+        not to start with "model." -- referring to HFAutoModelForCausalLM's attribute.
+
+        Args:
+            state_dict (dict): a dict containing parameters and
+                persistent buffers.
+            strict (bool, optional): whether to strictly enforce that the keys
+                in :attr:`state_dict` match the keys returned by this module's
+                :meth:`~torch.nn.Module.state_dict` function. Default: ``True``
+            assign (bool, optional): When set to ``False``, the properties of the tensors
+                in the current module are preserved whereas setting it to ``True`` preserves
+                properties of the Tensors in the state dict. The only
+                exception is the ``requires_grad`` field of :class:`~torch.nn.Parameter`s
+                for which the value from the module is preserved.
+                Default: ``False``
+
+        Returns:
+            ``NamedTuple`` with ``missing_keys`` and ``unexpected_keys`` fields:
+                * **missing_keys** is a list of str containing any keys that are expected
+                    by this module but missing from the provided ``state_dict``.
+                * **unexpected_keys** is a list of str containing the keys that are not
+                    expected by this module but present in the provided ``state_dict``.
+        """
+        self.model.load_state_dict(state_dict, strict=strict, assign=assign)
+
+    def make_checkpoint_io(self, adapter_only=False):
+        """
+        Creates a checkpoint_io object for this model;
+        the main issue is passing self to the HFCheckpointIO, because it needs
+        to call save_pretrained within.
+        TODO(@akoumparouli): refactor ^
+        """
+        from nemo.lightning.io.hf import HFCheckpointIO
+
+        return HFCheckpointIO(model=self, adapter_only=adapter_only)
 
     def _remove_extra_batch_keys(self, batch, reserved_keys=['labels', 'loss_mask']):
         """Remove extra keys from batch that are not kwargs in model's forward

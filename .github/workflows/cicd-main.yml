@@ -61,16 +61,16 @@ jobs:
 
           # For correctly labeled PR, we replace `all` with the actual job names          
           elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
-              TESTS_TO_RUN=$(cat .github/workflows/cicd-main.yml | yq '.jobs | [to_entries[] | .key] | join(",")')
+            TESTS_TO_RUN=$(cat .github/workflows/cicd-main.yml | yq '.jobs | [to_entries[] | .key] | join(",")')
 
           # For incorrectly labeled PR, run no tests
           elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" != "true" ]]; then
             TESTS_TO_RUN=""
             
-          # For push events, run only unit tests. This is so that we can generate coverage
+          # For push events, run all tests. This is so that we can generate coverage
           # on branch `main`.
           elif [[ "$EVENT_NAME" == "push" ]]; then
-            TESTS_TO_RUN=$(cat .github/workflows/cicd-main.yml | yq '.jobs | [to_entries[]] | [.[] | select(.key == "L0_Unit*") | .key] | join(",")')
+            TESTS_TO_RUN=$(cat .github/workflows/cicd-main.yml | yq '.jobs | [to_entries[] | .key] | join(",")')
 
           else
             echo "Unsupported event_name $EVENT_NAME provided".
@@ -151,7 +151,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/audio -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -161,7 +160,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Common')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/common -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -171,7 +169,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_LLM')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/llm -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -181,7 +178,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Multimodal')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/multimodal -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -191,7 +187,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_NLP')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/nlp -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -201,7 +196,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_TTS')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/collections/tts -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -212,7 +206,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/core -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -222,7 +215,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Hydra')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest tests/hydra -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -232,7 +224,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Lightning')
     with:
       RUNNER: self-hosted-azure
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0,1 pytest tests/lightning -m "not pleasefixme" --with_downloads --cov-branch --cov-report=xml --cov=nemo
 
@@ -242,7 +233,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_GPU_Others')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         NEMO_NUMBA_MINVER=0.53 CUDA_VISIBLE_DEVICES=0 pytest -m "not pleasefixme" --with_downloads \
         --ignore=tests/collections/asr \
@@ -267,7 +257,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-cpu
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/asr -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -277,7 +266,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_Audio')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/audio -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -288,7 +276,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-cpu
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/common -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -298,7 +285,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_LLM')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/llm -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -308,7 +294,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_Multimodal')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/multimodal -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -319,7 +304,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-cpu
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/nlp -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -329,7 +313,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_TTS')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/collections/tts -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -340,7 +323,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-cpu
       TIMEOUT: 20
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/core tests/core_ptl -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -350,7 +332,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_Hydra')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/hydra -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -360,7 +341,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_Lightning')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest tests/lightning -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat --cov-branch --cov-report=xml --cov=nemo
 
@@ -370,7 +350,6 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_CPU_Others')
     with:
       RUNNER: self-hosted-azure-cpu
-      SAVE_COVERAGE_REPORT: true
       SCRIPT: |
         CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 pytest -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat \
         --ignore=tests/collections/asr \
@@ -386,55 +365,6 @@ jobs:
         --ignore=tests/lightning \
         --ignore=tests/utils \
         --cov-branch --cov-report=xml --cov=nemo
-
-  L0_Unit_Tests_Coverage:
-    runs-on: ubuntu-latest
-    needs:
-      - L0_Unit_Tests_GPU_ASR
-      - L0_Unit_Tests_GPU_Audio
-      - L0_Unit_Tests_GPU_Common
-      - L0_Unit_Tests_GPU_LLM
-      - L0_Unit_Tests_GPU_Multimodal
-      - L0_Unit_Tests_GPU_NLP
-      - L0_Unit_Tests_GPU_TTS
-      - L0_Unit_Tests_GPU_Core
-      - L0_Unit_Tests_GPU_Hydra
-      - L0_Unit_Tests_GPU_Lightning
-      - L0_Unit_Tests_GPU_Others
-      - L0_Unit_Tests_CPU_ASR
-      - L0_Unit_Tests_CPU_Audio
-      - L0_Unit_Tests_CPU_Common
-      - L0_Unit_Tests_CPU_LLM
-      - L0_Unit_Tests_CPU_Multimodal
-      - L0_Unit_Tests_CPU_NLP
-      - L0_Unit_Tests_CPU_TTS
-      - L0_Unit_Tests_CPU_Core
-      - L0_Unit_Tests_CPU_Hydra
-      - L0_Unit_Tests_CPU_Lightning
-      - L0_Unit_Tests_CPU_Others
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download coverage reports of current branch
-        uses: actions/download-artifact@v4
-
-      - name: Get total coverage of current branch
-        shell: bash -x -e -u -o pipefail {0}
-        if: always()
-        id: total-current-branch
-        run: |
-          pip install coverage
-
-          ls -al .
-          ls -al coverage-*/
-          coverage combine --keep $(ls coverage-*/.coverage)
-
-      - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          verbose: true
 
   L0_Setup_Test_Data_And_Models:
     needs: [pre-flight, cicd-test-container-build]
@@ -5585,3 +5515,38 @@ jobs:
       - name: "Pipeline not successful, set exit code to 1"
         if: ${{ always() && steps.pipeline-conclusion.outputs.SUCCESS == 'false' }}
         run: exit 1
+
+  Coverage:
+    runs-on: ubuntu-latest
+    needs: [Nemo_CICD_Test]
+    strategy:
+      matrix:
+        flag: [unit-test, e2e]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download coverage reports of current branch
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-${{ matrix.flag }}-*
+
+      - name: Get total coverage of current branch
+        shell: bash -x -e -u -o pipefail {0}
+        if: always()
+        run: |
+          pip install coverage
+
+          ls -al .
+          ls -al coverage-*/
+          coverage combine --keep $(ls coverage-*/.coverage)
+          coverage report
+          rm -rf coverage-*
+          ls -al
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          verbose: true
+          flags: ${{ matrix.flag }}

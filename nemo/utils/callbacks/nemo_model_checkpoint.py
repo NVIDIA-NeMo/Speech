@@ -17,9 +17,8 @@ import re
 import shutil
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
-import lightning.pytorch
 import torch
 from _weakref import proxy
 from lightning.fabric.utilities.cloud_io import get_filesystem
@@ -206,7 +205,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         # Load the best model and then re-save it
         app_state = AppState()
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
-            logging.warning(f'always_save_nemo will slow down training for model_parallel > 1.')
+            logging.warning('always_save_nemo will slow down training for model_parallel > 1.')
         # since we are creating tarfile artifacts we need to update .nemo path
         app_state.model_restore_path = self._format_nemo_checkpoint_name()
         if app_state.model_parallel_size is not None and app_state.model_parallel_size > 1:
@@ -224,7 +223,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
             self.previous_best_path = self.best_model_path
             old_state_dict = deepcopy(pl_module.state_dict())
-            checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu')
+            checkpoint = torch.load(maybe_injected_best_model_path, map_location='cpu', weights_only=False)
             if 'state_dict' in checkpoint:
                 checkpoint = checkpoint['state_dict']
             # get a new instanace of the model
@@ -356,7 +355,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
                 except:
                     logging.info(f"Tried to remove checkpoint: {filepath} but failed.")
 
-    def _ema_callback(self, trainer: 'lightning.pytorch.Trainer') -> Optional[EMA]:
+    def _ema_callback(self, trainer: 'lightning.pytorch.Trainer') -> Optional[EMA]:  # noqa: F821
         ema_callback = None
         for callback in trainer.callbacks:
             if isinstance(callback, EMA):
@@ -505,12 +504,14 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         except:
             return
 
-    def file_exists(self, filepath: str, trainer: "lightning.pytorch.Trainer", check_dist_ckpt: bool = True) -> bool:
+    def file_exists(
+        self, filepath: str, trainer: "lightning.pytorch.Trainer", check_dist_ckpt: bool = True  # noqa: F821
+    ) -> bool:
         """Checks if a file or a file without a suffix (distributed checkpoint) exists."""
         exists = self._fs.exists(filepath) or (check_dist_ckpt and self._fs.exists(ckpt_to_dir(filepath)))
         return trainer.strategy.broadcast(exists)
 
-    def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:
+    def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:  # noqa: F821
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.
         # if anything goes wrong during checkpointing, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
@@ -551,7 +552,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             self._drop_optimizer_states(trainer, filepath, storage_options)
 
     def _get_finalize_save_checkpoint_callback(
-        self, trainer: 'lightning.pytorch.Trainer', filepath: str, global_step: int
+        self, trainer: 'lightning.pytorch.Trainer', filepath: str, global_step: int  # noqa: F821
     ):
         """Creates a callback that can be used to finalize async (and sync) ckpt saves."""
 
@@ -584,7 +585,9 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         return _cb
 
-    def _remove_checkpoint(self, trainer: "lightning.pytorch.Trainer", filepath: str, override_async=False) -> None:
+    def _remove_checkpoint(
+        self, trainer: "lightning.pytorch.Trainer", filepath: str, override_async=False  # noqa: F821
+    ) -> None:
         """Performs checkpoint removal or deferred removal.
 
         With async save, `self._remove_checkpoint` is called before the checkpoint
@@ -664,7 +667,7 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         for marker_path in existing_marker_filepaths:
             os.remove(marker_path)
 
-    def _should_remove_checkpoint(self, trainer: "pl.Trainer", previous: str, current: str) -> bool:
+    def _should_remove_checkpoint(self, trainer: "pl.Trainer", previous: str, current: str) -> bool:  # noqa: F821
         """Checks if the previous checkpoint should be deleted.
         A checkpoint won't be deleted if any of the cases apply:
         - The previous checkpoint is the same as the current checkpoint (means the old was already overwritten by new)
@@ -681,7 +684,8 @@ class NeMoModelCheckpoint(ModelCheckpoint):
 
         if resume_path is not None and previous == resume_path:
             if str(current).endswith("-last.ckpt") and resume_path.name.endswith("-last.ckpt"):
-                # delete the previous `-last.ckpt` checkpoint when current saved checkpoint is also `-last.ckpt`, if they're in the same directory
+                # delete the previous `-last.ckpt` checkpoint when current saved checkpoint is also `-last.ckpt`,
+                # if they're in the same directory
                 pass
             else:
                 return False

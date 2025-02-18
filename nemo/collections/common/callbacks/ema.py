@@ -121,8 +121,6 @@ class EMA(Callback):
     ) -> None:
         checkpoint_callback = trainer.checkpoint_callback
 
-        # use the connector as NeMo calls the connector directly in the exp_manager when restoring.
-        connector = trainer._checkpoint_connector
         # Replace connector._ckpt_path with below to avoid calling into lightning's protected API
         ckpt_path = trainer.ckpt_path
 
@@ -137,7 +135,7 @@ class EMA(Callback):
                 return
             ema_path = ckpt_path.replace(ext, f'-EMA{ext}')
             if os.path.exists(ema_path):
-                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'))
+                ema_state_dict = torch.load(ema_path, map_location=torch.device('cpu'), weights_only=False)
 
                 checkpoint['optimizer_states'] = ema_state_dict['optimizer_states']
                 del ema_state_dict

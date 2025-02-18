@@ -402,7 +402,8 @@ class AdapterModuleMixin(ABC):
     def set_accepted_adapter_types(self, adapter_types: List[Union[type, str]]) -> None:
         """
         The module with this mixin can define a list of adapter names that it will accept.
-        This method should be called in the modules init method and set the adapter names the module will expect to be added.
+        This method should be called in the modules init method and set the adapter names
+        the module will expect to be added.
 
         Args:
             adapter_types: A list of str paths that correspond to classes. The class paths will be instantiated to
@@ -579,7 +580,7 @@ class AdapterModuleMixin(ABC):
         adapter_module: torch.nn.Module,
         *,
         adapter_name: str,
-        adapter_strategy: 'nemo.core.classes.mixins.adapter_mixin_strategies.AbstractAdapterStrategy',
+        adapter_strategy: 'nemo.core.classes.mixins.adapter_mixin_strategies.AbstractAdapterStrategy',  # noqa: F821
     ):
         """
         Perform the forward step of a single adapter module on some input data.
@@ -958,7 +959,7 @@ class AdapterModelPTMixin(AdapterModuleMixin):
                 map_location = 'cpu'
 
         # Load the state dict and extract the internal config
-        state_dict = torch.load(filepath, map_location=map_location)
+        state_dict = torch.load(filepath, map_location=map_location, weights_only=False)
         config = state_dict.pop('__cfg__')
 
         # Normalize the name to a list of names (exact match with the state dict)

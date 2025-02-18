@@ -56,6 +56,7 @@ jobs:
         env:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
           SKIP_DOCS: ${{ contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
+          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
         run: |
           if [[ -z "$CHANGED_FILES" ]]; then
             echo Nothing to lint.
@@ -69,6 +70,10 @@ jobs:
             ADDITIONAL_PYLINT_ARGS=""
           fi
 
+          if [[ $SKIP_LINTING == true ]]; then
+            ADDITIONAL_PYLINT_ARGS="--exit-zero"
+          fi
+
           pip install pylint
           set +e
           pylint $ADDITIONAL_PYLINT_ARGS --output "pylintrc.$DOMAIN.txt" --rcfile ".pylintrc.$DOMAIN" ${CHANGED_FILES[@]}
@@ -78,6 +83,7 @@ jobs:
         id: flake8
         env:
           CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
         run: |
           if [[ -z "$CHANGED_FILES" ]]; then
             echo Nothing to lint.
@@ -85,9 +91,15 @@ jobs:
             exit 0
           fi
 
+          if [[ $SKIP_LINTING == true ]]; then
+            ADDITIONAL_FLAKE8_ARGS="--exit-zero"
+          else
+            ADDITIONAL_FLAKE8_ARGS=""
+          fi
+
           pip install flake8
           set +e
-          flake8 --output "flake8.$DOMAIN.txt" --config ".flake8.$DOMAIN" ${CHANGED_FILES[@]}
+          flake8 $ADDITIONAL_FLAKE8_ARGS --output "flake8.$DOMAIN.txt" --config ".flake8.$DOMAIN" ${CHANGED_FILES[@]}
           echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
 
       - name: Summary

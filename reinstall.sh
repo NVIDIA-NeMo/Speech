@@ -21,9 +21,11 @@ ${PIP} install -U ${PIP}
 
 mcore() {
   local mode="$1"
-
+  export MAMBA_FORCE_BUILD=TRUE
+  export MAMBA_TAG=v2.2.0
   export CAUSAL_CONV1D_FORCE_BUILD=TRUE
   export CAUSAL_CONV_TAG=v1.2.2.post1
+
   CAUSAL_CONV1D_DIR="$INSTALL_DIR/causal-conv1d" &&
     if [ ! -d "$CAUSAL_CONV1D_DIR/.git" ]; then
       rm -rf "$CAUSAL_CONV1D_DIR" &&
@@ -34,8 +36,6 @@ mcore() {
     git checkout -f $CAUSAL_CONV_TAG &&
     popd
 
-  export MAMBA_FORCE_BUILD=TRUE
-  export MAMBA_TAG=v2.2.0
   MAMBA_DIR="$INSTALL_DIR/mamba" &&
     if [ ! -d "$MAMBA_DIR/.git" ]; then
       rm -rf "$MAMBA_DIR" &&
@@ -49,8 +49,6 @@ mcore() {
     git checkout -f $MAMBA_TAG &&
     popd
 
-  export MLM_REPO=${MLM_REPO:-"https://github.com/NVIDIA/Megatron-LM.git"}
-  export MLM_TAG=${MLM_TAG:-"main"}
   MLM_DIR="$INSTALL_DIR/Megatron-LM" &&
     if [ ! -d "$MLM_DIR/.git" ]; then
       rm -rf "$MLM_DIR" &&

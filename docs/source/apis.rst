@@ -2,6 +2,8 @@
 NeMo APIs
 =========
 
+**NOTE: This page is intended for NeMo 1.0 features only.**
+
 You can learn more about the underlying principles of the NeMo codebase in this section.
 
 The `NeMo Framework codebase <https://github.com/NVIDIA/NeMo>`__ is composed of a `core <https://github.com/NVIDIA/NeMo/tree/main/nemo/core>`__ section which contains the main building blocks of the framework, and various `collections <https://github.com/NVIDIA/NeMo/tree/main/nemo/collections>`__ which help you
@@ -30,20 +32,13 @@ You can learn more about aspects of the NeMo APIs by following the links below:
 
    core/api
    common/intro
-   nlp/api
-   multimodal/api
    asr/api
    tts/api
 
 
 Alternatively, you can jump straight to the documentation for the individual collections:
 
-* :doc:`Large Language Models (LLMs) <../nlp/nemo_megatron/intro>`
-
 * :doc:`Automatic Speech Recognition (ASR) <../asr/intro>`
-
-* :doc:`Multimodal Models (MMs) <../multimodal/mllm/intro>`
 
 * :doc:`Text-to-Speech (TTS) <../tts/intro>`
 
-* :doc:`Computer Vision (CV)  <../vision/intro>`

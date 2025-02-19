@@ -26,7 +26,7 @@ on:
 
 jobs:
   code-freeze:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.22.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_code_freeze.yml@v0.22.5
     with:
       library-name: NeMo-Toolkit
       python-package: nemo
@@ -34,7 +34,7 @@ jobs:
       freeze-commit: ${{ inputs.freeze-commit }}
       dry-run: ${{ inputs.dry-run }}
     secrets:
-      SLACK_RELEASE_ENDPOINT: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
+      SLACK_WEBHOOK: ${{ secrets.SLACK_RELEASE_ENDPOINT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}
 
   freeze-tags:

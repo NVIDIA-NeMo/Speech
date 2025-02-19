@@ -61,6 +61,7 @@ class MistralConfig7B(GPTConfig):
     layernorm_epsilon: float = 1e-5
     window_size: List[int] = field(default_factory=lambda: [4096, 0])
     cp_comm_type: str = "a2a"
+    params_dtype: torch.dtype = torch.bfloat16
 
 
 @dataclass
@@ -78,6 +79,7 @@ class MistralNeMoConfig12B(MistralConfig7B):
     cp_comm_type: str = None
     rotary_percent: float = 1.0
     rotary_base: float = 1000000.0
+    params_dtype: torch.dtype = torch.bfloat16
 
 
 @dataclass
@@ -97,6 +99,7 @@ class MistralNeMoConfig123B(MistralConfig7B):
     cp_comm_type: str = None
     rotary_percent: float = 1.0
     rotary_base: float = 1000000.0
+    params_dtype: torch.dtype = torch.bfloat16
 
 
 class MistralModel(GPTModel):

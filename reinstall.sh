@@ -155,7 +155,7 @@ nemo() {
   fi
 
   echo 'Installing dependencies of nemo'
-  ${PIP} install --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
+  ${PIP} install --upgrade --upgrade-strategy only-if-needed --no-cache-dir --extra-index-url https://pypi.nvidia.com "${DEPS[@]}"
 
   echo 'Installing nemo itself'
   pip install --no-cache-dir --no-build-isolation $NEMO_DIR/.[all]

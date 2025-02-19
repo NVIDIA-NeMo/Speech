@@ -13,28 +13,16 @@
 # limitations under the License.
 
 from os.path import basename, splitext
+from typing import Optional
 
-import fiddle as fdl
-import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
-from argument_parser import parse_cli_args
-from utils import (
-    get_comm_overlap_callback_idx,
-    get_user_configs,
-    hf_tokenizer,
-    set_primary_perf_configs,
-    slurm_executor,
-)
 
-from nemo.collections.llm.recipes.gpt3_175b import pretrain_recipe
+from nemo.collections.llm.recipes.mixtral_8x7b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
-    userbuffers_bf16_b200_h12288_tp4_mbs1_seqlen2048,
-    userbuffers_bf16_h100_h12288_tp4_mbs1_seqlen2048,
-    userbuffers_fp8_b200_h12288_tp4_mbs1_seqlen2048,
-    userbuffers_fp8_h100_h12288_tp4_mbs1_seqlen2048,
-)
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+
+from ..argument_parser import parse_cli_args
+from ..utils import get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
 
 
 def override_recipe_configs(
@@ -47,9 +35,10 @@ def override_recipe_configs(
     cp_size: int,
     vp_size: int,
     ep_size: int,
+    etp_size: Optional[int],
 ):
     """
-    gpt3 175b pre-train recipe aimed at achieving best possible performance.
+    mixtral 8x7b pre-train recipe aimed at achieving best possible performance.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
@@ -67,38 +56,21 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
+        etp_size,
     )
-    gpu_type = args.gpu.lower()
 
     # data module configs
     recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-    recipe.data.tokenizer = hf_tokenizer("nvidia/megatron-gpt2-345m")
+    recipe.data.tokenizer = hf_tokenizer("mistralai/Mixtral-8x7B-v0.1")
 
     # compute dtype configs
     if args.compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
-    ub_cfg = {
-        "h100": {
-            "bf16": userbuffers_bf16_h100_h12288_tp4_mbs1_seqlen2048,
-            "fp8": userbuffers_fp8_h100_h12288_tp4_mbs1_seqlen2048,
-        },
-        "b200": {
-            "bf16": userbuffers_bf16_b200_h12288_tp4_mbs1_seqlen2048,
-            "fp8": userbuffers_fp8_b200_h12288_tp4_mbs1_seqlen2048,
-        },
-    }
-
-    comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
-    assert comm_overlap_callback_idx is not None, "MegatronCommOverlapCallback missing. Required for performance."
-
-    tp_comm_overlap_cfg = ub_cfg[gpu_type][args.compute_dtype]
-    # needed as tp_overlap_configs.userbuffers are dataclass objects which are unserializable
-    tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
-    recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
-
-    recipe.model.config.tp_only_amax_red = True
+    enable_cuda_graph = bool(args.gpu.lower() in ["b200"])
+    recipe.model.config.enable_cuda_graph = enable_cuda_graph
+    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
 
     return recipe
 
@@ -106,12 +78,14 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
 
-    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "gpt3", "175b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
+    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "mixtral", "8x7b", args)
+    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size = kwargs
 
-    recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)
+    recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size)
 
-    exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
+    exp_config = (
+        f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_ep{ep_size}_etp{etp_size}_{mbs}mbs_{gbs}gbs"
+    )
     exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"
 
     executor = slurm_executor(

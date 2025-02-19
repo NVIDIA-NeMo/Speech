@@ -15,8 +15,14 @@
 from os.path import basename, splitext
 
 import nemo_run as run
-from argument_parser import parse_cli_args
-from utils import (
+
+from nemo.collections.llm.gpt.data.squad import SquadDataModule
+from nemo.collections.llm.recipes.llama31_405b import finetune_recipe, model
+from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
+from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+
+from ..argument_parser import parse_cli_args
+from ..utils import (
     get_user_configs,
     hf_tokenizer,
     import_ckpt_experiment,
@@ -25,12 +31,7 @@ from utils import (
     slurm_executor,
 )
 
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
-from nemo.collections.llm.recipes.llama3_8b import finetune_recipe, model
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
-
-HF_MODEL_URI = "meta-llama/Meta-Llama-3-8B"
+HF_MODEL_URI = "meta-llama/Llama-3.1-405B"
 
 
 def override_recipe_configs(
@@ -45,17 +46,12 @@ def override_recipe_configs(
     ep_size: int,
 ):
     """
-    llama3 8b pre-train recipe aimed at achieving best possible performance.
+    llama3.1 405b pre-train recipe aimed at achieving best possible performance.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
     finetuning_scheme = "none" if args.finetuning == "sft" else args.finetuning
-
-    gpu_type = args.gpu.lower()
-    if gpu_type in ["b200", "gb200"]:
-        recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True, seq_length=16384)
-    else:
-        recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
+    recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
         args.tensorboard,
@@ -82,7 +78,7 @@ def override_recipe_configs(
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
-    enable_cuda_graph = bool(gpu_type in ["b200", "gb200"])
+    enable_cuda_graph = bool(args.gpu.lower() in ["gb200"])
     recipe.model.config.enable_cuda_graph = enable_cuda_graph
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
     recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graph
@@ -93,7 +89,7 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
 
-    kwargs = get_user_configs(args.gpu.lower(), args.finetuning, "llama3", "8b", args)
+    kwargs = get_user_configs(args.gpu.lower(), args.finetuning, "llama31", "405b", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
 
     recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)

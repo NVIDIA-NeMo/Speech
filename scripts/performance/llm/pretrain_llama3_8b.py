@@ -15,22 +15,13 @@
 from os.path import basename, splitext
 
 import nemo_run as run
-from argument_parser import parse_cli_args
-from utils import (
-    get_user_configs,
-    hf_tokenizer,
-    import_ckpt_experiment,
-    isfile_train_pack_metadata,
-    set_primary_perf_configs,
-    slurm_executor,
-)
 
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
-from nemo.collections.llm.recipes.llama31_405b import finetune_recipe, model
+from nemo.collections.llm.recipes.llama3_8b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
-HF_MODEL_URI = "meta-llama/Llama-3.1-405B"
+from ..argument_parser import parse_cli_args
+from ..utils import get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
 
 
 def override_recipe_configs(
@@ -45,12 +36,12 @@ def override_recipe_configs(
     ep_size: int,
 ):
     """
-    llama3.1 405b pre-train recipe aimed at achieving best possible performance.
+    llama3 8b pre-train recipe aimed at achieving best possible performance and faster
+    overall runtime.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
-    finetuning_scheme = "none" if args.finetuning == "sft" else args.finetuning
-    recipe = finetune_recipe(peft_scheme=finetuning_scheme, performance_mode=True)
+    recipe = pretrain_recipe(performance_mode=True)
     recipe = set_primary_perf_configs(
         recipe,
         args.tensorboard,
@@ -67,10 +58,8 @@ def override_recipe_configs(
     )
 
     # data module configs
-    recipe.data.tokenizer = hf_tokenizer(HF_MODEL_URI)
-    if recipe.data.__fn_or_cls__ == SquadDataModule and not isfile_train_pack_metadata(HF_MODEL_URI, recipe.data):
-        # flag is valid only for SquadDataModule
-        recipe.data.force_redownload = True
+    recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
+    recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-8B")
 
     # compute dtype configs
     if args.compute_dtype.lower() == "fp8":
@@ -80,7 +69,6 @@ def override_recipe_configs(
     enable_cuda_graph = bool(args.gpu.lower() in ["gb200"])
     recipe.model.config.enable_cuda_graph = enable_cuda_graph
     recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
-    recipe.data.packed_sequence_specs.pad_cu_seqlens = enable_cuda_graph
 
     return recipe
 
@@ -88,13 +76,13 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
 
-    kwargs = get_user_configs(args.gpu.lower(), args.finetuning, "llama31", "405b", args)
+    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "llama3", "8b", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
 
     recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)
 
     exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
-    exp_name = f"{args.finetuning}_{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"
+    exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"
 
     executor = slurm_executor(
         args.account,
@@ -110,12 +98,13 @@ if __name__ == "__main__":
         nemo_home=args.nemo_home,
     )
 
-    plugins = [PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152 if pp_size > 1 else None)]
+    plugins = [
+        PerfEnvPlugin(enable_vboost=True, nccl_pp_comm_chunksize=2097152 if pp_size > 1 else None),
+    ]
     if args.enable_nsys:
         plugins.append(NsysPlugin(start_step=5, end_step=6))
 
     with run.Experiment(exp_name) as exp:
-        exp.add(*import_ckpt_experiment(executor, model(), source=f"hf://{HF_MODEL_URI}"))
         exp.add(
             recipe,
             executor=executor,

@@ -14,25 +14,15 @@
 
 from os.path import basename, splitext
 
-import fiddle as fdl
-import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
-from argument_parser import parse_cli_args
-from utils import (
-    get_comm_overlap_callback_idx,
-    get_user_configs,
-    hf_tokenizer,
-    set_primary_perf_configs,
-    slurm_executor,
-)
 
-from nemo.collections.llm.recipes.nemotron4_340b import pretrain_recipe
+from nemo.collections.llm.recipes.nemotron3_8b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
-from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
-    userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096,
-)
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
+
+from ..argument_parser import parse_cli_args
+from ..utils import get_user_configs, set_primary_perf_configs, slurm_executor
 
 
 def override_recipe_configs(
@@ -47,7 +37,7 @@ def override_recipe_configs(
     ep_size: int,
 ):
     """
-    nemotron4 340b pre-train recipe aimed at achieving best possible performance.
+    nemotron3 8b pre-train recipe aimed at achieving best possible performance.
 
     NOTE: Use fp8 precision training with caution. It might not give desirable results.
     """
@@ -66,35 +56,17 @@ def override_recipe_configs(
         vp_size,
         ep_size,
     )
-    gpu_type = args.gpu.lower()
 
     # data module configs
     recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-    if args.gpu.lower() == "b200":
-        recipe.data.tokenizer = run.Config(
-            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
-        )
-        recipe.model.tokenizer = recipe.data.tokenizer
-    else:
-        recipe.data.tokenizer = hf_tokenizer("nvidia/megatron-gpt2-345m")
+    recipe.data.tokenizer = run.Config(
+        get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
+    )
 
     # compute dtype configs
     if args.compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
-
-    comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
-    assert comm_overlap_callback_idx is not None, "MegatronCommOverlapCallback missing. Required for performance."
-
-    if gpu_type == "b200":
-        tp_comm_overlap_cfg = userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096
-        # needed as tp_overlap_configs.userbuffers are dataclass objects which are unserializable
-        tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
-        recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
-
-    enable_cuda_graph = bool(args.gpu.lower() in [])
-    recipe.model.config.enable_cuda_graph = enable_cuda_graph
-    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graph
 
     return recipe
 
@@ -102,7 +74,7 @@ def override_recipe_configs(
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
 
-    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "nemotron4", "340b", args)
+    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "nemotron3", "8b", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
 
     recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)

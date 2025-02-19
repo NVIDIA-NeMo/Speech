@@ -7,7 +7,7 @@
 
 The following line shows an example of how you can launch a pre-training experiment-
 
-`python3 scripts/llm/performance/llama3_8b.py --account <your_slurm_account> -partition <your_slurm_partition>`
+`python -m scripts.llm.performance.llama3_8b --account <your_slurm_account> -partition <your_slurm_partition>`
 
 ## Configuration Options
 
@@ -27,4 +27,4 @@ The following line shows an example of how you can launch a pre-training experim
   - -nh/--nemo_home:  Directory where NeMo searches for models and checkpoints. This saves a lot of time (especially for bigger models) if checkpoints already exist here. Missing files will be downloaded from HuggingFace. Defaults to environment variable DEFAULT_NEMO_CACHE_HOME = ~/.cache/nemo
   - -d/--dryrun: Using this argument will not launch the experiment. It will simply print the sbatch script to stdout. This can be helpful to verify you have set your experiment correctly as needed.
 - You don't need to set any value for `--enable_profiling`, `--tensorboard` and `--dryrun`. See the below example for reference-
-  `python3 scripts/llm/performance/llama3_8b.py --account <your_slurm_account> -p <your_slurm_partition> -ep --tensorboard -d`
+  `python -m scripts.llm.performance.llama3_8b --account <your_slurm_account> -p <your_slurm_partition> -ep --tensorboard -d`

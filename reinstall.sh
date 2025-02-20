@@ -140,7 +140,6 @@ nemo() {
   fi
 
   DEPS=(
-    "nvidia-modelopt[torch]~=0.21.0; sys_platform == 'linux'"
     "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@34259bd3e752fef94045a9a019e4aaf62bd11ce2"
     "onnxscript @ git+https://github.com/microsoft/onnxscript"
     "llama-index==0.10.43"

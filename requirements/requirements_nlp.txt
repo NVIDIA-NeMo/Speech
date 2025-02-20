@@ -13,6 +13,7 @@ matplotlib>=3.3.2
 #megatron_core>0.6.0 # add back once mcore on pypi is compatible again
 nltk>=3.6.5
 numpy<2  # tensorstore has an implicit compiled dependency on numpy<2
+nvidia-modelopt[torch]==0.23.2 ; platform_system != 'Darwin'
 opencc
 pangu
 prettytable

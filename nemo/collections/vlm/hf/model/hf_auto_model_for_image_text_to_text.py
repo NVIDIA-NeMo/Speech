@@ -14,23 +14,14 @@
 
 import lightning.pytorch as pl
 import torch
-import torch.nn.functional as F
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from transformers import AutoConfig, AutoModelForImageTextToText, AutoProcessor
 
 from nemo.collections.llm import fn
+from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import masked_cross_entropy
 from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import fsdp2_strategy_parallelize
 from nemo.utils import logging
-
-
-def masked_cross_entropy(logits, targets, mask=None):
-    """Cross entropy with optional mask"""
-    if mask is not None:
-        loss = F.cross_entropy(logits, targets, reduction='none')
-        return torch.mean(loss * mask)
-    else:
-        return F.cross_entropy(logits, targets)
 
 
 class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):

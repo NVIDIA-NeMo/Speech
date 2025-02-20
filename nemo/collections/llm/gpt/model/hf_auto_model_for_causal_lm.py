@@ -34,18 +34,18 @@ def masked_cross_entropy(logits, targets, mask=None):
     Args:
         logits (torch.Tensor): The predicted logits with shape (N, C) where C is the number of classes.
         targets (torch.Tensor): The ground truth class indices with shape (N,).
-        mask (torch.Tensor, optional): A tensor that masks the loss computation. Must be broadcastable
-            to the shape of the loss. Defaults to None.
+        mask (torch.Tensor, optional): A tensor that masks the loss computation. Items marked with
+            1 will be used to calculate loss, otherwise ignored. Must be broadcastable to the shape
+            of the loss. Defaults to None.
 
     Returns:
         torch.Tensor: The computed loss as a scalar tensor.
     """
     if mask is not None:
-        loss = F.cross_entropy(logits, targets, reduction='none')
-        loss = torch.mean(loss * mask.view(-1))
-    else:
-        loss = F.cross_entropy(logits, targets)
-    return loss
+        with torch.no_grad():
+            targets.masked_fill_(mask.view(-1) == 0, -100)
+            del mask
+    return F.cross_entropy(logits, targets)
 
 
 class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):

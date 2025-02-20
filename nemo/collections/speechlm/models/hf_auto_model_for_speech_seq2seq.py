@@ -14,23 +14,15 @@
 
 import lightning.pytorch as pl
 import torch
-import torch.nn.functional as F
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
+from nemo.collections.llm.gpt.model.hf_auto_model_for_causal_lm import masked_cross_entropy
 from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import fsdp2_strategy_parallelize
 from nemo.utils import logging
-
-
-def masked_cross_entropy(logits, targets, mask=None):
-    if mask is not None:
-        loss = F.cross_entropy(logits, targets, reduction='none')
-        return torch.mean(loss[mask == 1])
-    else:
-        return F.cross_entropy(logits, targets)
 
 
 class HFAutoModelForSpeechSeq2Seq(pl.LightningModule, io.IOMixin, fn.FNMixin):

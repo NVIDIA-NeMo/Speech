@@ -78,6 +78,7 @@ extras_require = {
     'multimodal': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
     'deploy': req_file("requirements_deploy.txt"),
+    'eval': req_file("requirements_eval.txt"),
 }
 
 

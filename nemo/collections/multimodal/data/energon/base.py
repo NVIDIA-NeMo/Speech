@@ -17,6 +17,7 @@ from typing import Any, Dict, Literal, Optional
 
 import fiddle as fdl
 import lightning.pytorch as pl
+import torch.distributed
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from megatron.core import parallel_state
 from megatron.energon import WorkerConfig, get_savable_loader, get_train_dataset
@@ -294,10 +295,21 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
 
         if self.trainer:
             dataloader_obj = self.trainer.train_dataloader
-            state = dataloader_obj.save_state_global(dst_rank=0)
+
+            state = []
+            if torch.distributed.get_rank() == parallel_state.get_model_parallel_src_rank():
+                # Save_state_global in energon assumes that we call it for only the first rank within each group that
+                # shares the same dataloader state. By making sure that current rank is the first rank in a model
+                # parallel group, we ensure this.
+                state = dataloader_obj.save_state_global(global_dst_rank=0)
+
             consumed_samples = self.data_sampler.compute_consumed_samples(
                 self.trainer.global_step - self.init_global_step
             )
+
+            if state is None:
+                state = []  # Megatron core requires all the states on all the ranks to have same python
+            # type. Energon sends the state as a list
             logging.info(f"Multimodal data loader saving dataloader state dict consumed samples {consumed_samples}")
             return {'dataloader_state': state, 'consumed_samples': consumed_samples}
 
@@ -324,7 +336,7 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
         state = state_dict['dataloader_state']
         try:
             if self.trainer:
-                self.trainer.datamodule.train_dataloader().restore_state(state, src_rank=0)
+                self.trainer.datamodule.train_dataloader().restore_state_global(state)
                 logging.info("Multimodal dataloader state restored")
             else:
                 logging.error(f"Cannot restore state from state_dict {state_dict}")

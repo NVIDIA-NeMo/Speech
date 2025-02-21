@@ -21,6 +21,6 @@ rapidfuzz
 rouge_score
 sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsupported in Python 3.11+
 sentence_transformers
-tensorstore
+tensorstore<0.1.72
 tiktoken==0.7.0
 zarr>=2.18.2,<3.0.0

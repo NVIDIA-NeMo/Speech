@@ -85,7 +85,8 @@ class MegatronBertModel(MegatronBaseModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         if not HAVE_MEGATRON_CORE:
             raise ImportError(
-                "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+                "megatron-core was not found. Please see the NeMo README for installation instructions: "
+                "https://github.com/NVIDIA/NeMo#megatron-gpt."
             )
         self.megatron_amp_O2 = cfg.get('megatron_amp_O2', False)
         self.cfg = cfg
@@ -124,7 +125,8 @@ class MegatronBertModel(MegatronBaseModel):
         if self.megatron_amp_O2:
 
             if not self.with_distributed_adam:
-                # Pre-allocate the model on GPU to have master parameters allocated on the same device with matching data type
+                # Pre-allocate the model on GPU
+                # to have master parameters allocated on the same device with matching data type
                 if isinstance(self.model, list):
                     for module in self.model:
                         module.cuda(torch.cuda.current_device())
@@ -146,6 +148,7 @@ class MegatronBertModel(MegatronBaseModel):
                 self._memory_profile_end_step *= grad_accum_steps
 
     def model_provider_func(self, pre_process, post_process):
+        """Initialize model."""
         cfg = self.cfg
         num_tokentypes = 2 if cfg.bert_binary_head else 0
         transformer_block_type = cfg.get('transformer_block_type', 'pre_ln')
@@ -217,10 +220,12 @@ class MegatronBertModel(MegatronBaseModel):
         """
         if self.trainer.accumulate_grad_batches > 1:
             raise ValueError(
-                f'Gradient accumulation is done within training_step. trainer.accumulate_grad_batches must equal 1'
+                'Gradient accumulation is done within training_step. trainer.accumulate_grad_batches must equal 1'
             )
 
     def get_forward_output_and_loss_func(self):
+        """Fetch data and run forward step."""
+
         def fwd_output_and_loss_func(dataloader_iter, model, checkpoint_activations_all_layers=None):
             if parallel_state.get_pipeline_model_parallel_world_size() == 1:
                 batch, batch_idx, dataloader_idx = next(dataloader_iter)
@@ -302,6 +307,7 @@ class MegatronBertModel(MegatronBaseModel):
         checkpoint_activations_all_layers=None,
         model=None,
     ):
+        """Run forward step."""
         if model is None:
             model = self.model
 
@@ -320,7 +326,8 @@ class MegatronBertModel(MegatronBaseModel):
                 checkpoint_activations_all_layers=checkpoint_activations_all_layers,
             )
         if parallel_state.is_pipeline_last_stage():
-            # Return the output tensor of encoder and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
+            # Return the output tensor of encoder
+            # and transpose from [seq_len, batch, hidden] to [batch, seq_len, hidden]
             if torch.is_tensor(output_tensor):
                 output_tensor = output_tensor.transpose(1, 0).contiguous()
             else:
@@ -334,6 +341,7 @@ class MegatronBertModel(MegatronBaseModel):
         return output_tensor
 
     def training_step(self, dataloader_iter):
+        """Run full training step."""
 
         self._optimizer.zero_grad()
 
@@ -472,6 +480,7 @@ class MegatronBertModel(MegatronBaseModel):
                 self.proxies = []
 
             def make_proxy(self):
+                """Make proxy"""
                 self.proxies.append(CachingIterator.Proxy())
                 return self.proxies[-1]
 
@@ -493,8 +502,9 @@ class MegatronBertModel(MegatronBaseModel):
         # return DataIteratorList(iters)
 
     def allreduce_first_last_embeddings(self):
+        """Sync grads across first and last stages."""
 
-        # Modified from megatron-lm: https://github.com/NVIDIA/Megatron-LM/blob/d41696840ed0a7edb7e0499eb82a48ae112d9bb3/megatron/training.py#L407
+        # Modified from megatron-lm: https://github.com/NVIDIA/Megatron-LM/blob/d41696840ed0a7edb7e0499eb82a48ae112d9bb3/megatron/training.py#L407  # pylint: disable=C0301
         # All-reduce word_embeddings' grad across first and last stages to ensure
         # that word_embeddings parameters stay in sync.
         # This should only run for models that support pipelined model parallelism
@@ -525,6 +535,7 @@ class MegatronBertModel(MegatronBaseModel):
                 torch.distributed.all_reduce(grad, group=parallel_state.get_embedding_group())
 
     def validation_step(self, dataloader_iter):
+        """Run validation step."""
         prefix = "test" if self.trainer.testing else "val"
         if self.cfg.data.dataloader_type == "LDDL":
             seq_length = dataloader_iter.iterator.get_seqlen()
@@ -555,6 +566,7 @@ class MegatronBertModel(MegatronBaseModel):
         return loss
 
     def on_validation_epoch_end(self):
+        """Run validation epoch end aggregation."""
         if parallel_state.is_pipeline_last_stage():
             averaged_loss = torch.stack(self.validation_step_outputs).mean()
         else:
@@ -566,20 +578,26 @@ class MegatronBertModel(MegatronBaseModel):
         self.validation_step_outputs.clear()  # free memory
 
     def test_step(self, dataloader_iter):
+        """Run test step."""
         return self.validation_step(dataloader_iter)
 
     def on_test_epoch_end(self):
+        """Run test epoch end aggregation."""
         averaged_loss = average_losses_across_data_parallel_group(self.test_step_outputs)
         logging.info(f'test_loss: {averaged_loss[0]}')
 
     def loss_func(self, loss_mask, sentence_order, output_tensor):
+        """Compute loss."""
         lm_loss_, sop_logits = output_tensor
 
         lm_loss_ = lm_loss_.float()
         loss_mask = loss_mask.float()
 
-        # Sometimes when the number of tokens is very small, none of the tokens get masked for prediction. In that case loss mask is all zeros
-        # i.e Happens when the entire batch is masked out (Practically when MBS=1 or 2, and the number of tokens in each batch is < 7 )
+        # Sometimes when the number of tokens is very small,
+        # none of the tokens get masked for prediction.
+        # In that case loss mask is all zeros
+        # i.e Happens when the entire batch is masked out
+        # (Practically when MBS=1 or 2, and the number of tokens in each batch is < 7 )
         if loss_mask.sum() == 0:
             lm_loss = torch.sum(lm_loss_.view(-1)) * 0.0
         else:
@@ -603,11 +621,13 @@ class MegatronBertModel(MegatronBaseModel):
             # return loss, {'lm loss': averaged_losses[0]}
 
     def build_LDDL_data(self, cfg):
+        """Build data loaders."""
         if not HAVE_LDDL:
             raise ImportError(
-                "LDDL was not found. Please see the LDDL README for installation instructions: https://github.com/NVIDIA/LDDL#installation."
+                "LDDL was not found. Please see the LDDL README for installation instructions: "
+                "https://github.com/NVIDIA/LDDL#installation."
             )
-        logging.info(f'Starting building LDDL Dataloaders')
+        logging.info('Starting building LDDL Dataloaders')
         self._train_ds = None
         self._validation_ds = None
         self._test_ds = None
@@ -640,7 +660,7 @@ class MegatronBertModel(MegatronBaseModel):
             samples_seen=samples_consumed_dploader,
             micro_batch_size=self.cfg.micro_batch_size,
         )
-        logging.info(f'Completed build train LDDL Dataloader')
+        logging.info('Completed build train LDDL Dataloader')
         if len(self.cfg.data.data_prefix) > 1:
             val_lddl_data_path = self.cfg.data.data_prefix[1]
             self._validation_dl = get_bert_pretrain_data_loader(
@@ -689,9 +709,10 @@ class MegatronBertModel(MegatronBaseModel):
                 ignore_index=-1,
                 micro_batch_size=self.cfg.micro_batch_size,
             )
-        logging.info(f'Finished building LDDL Dataloaders')
+        logging.info('Finished building LDDL Dataloaders')
 
     def build_train_valid_test_datasets(self):
+        """Build datasets."""
         logging.info('Building Bert datasets.')
         if self.trainer.limit_val_batches > 1.0 and isinstance(self.trainer.limit_val_batches, float):
             raise ValueError("limit_val_batches must be an integer or float less than or equal to 1.0.")
@@ -736,9 +757,10 @@ class MegatronBertModel(MegatronBaseModel):
             logging.info(f'Length of val dataset: {len(self._validation_ds)}')
         if self._test_ds is not None:
             logging.info(f'Length of test dataset: {len(self._test_ds)}')
-        logging.info(f'Finished building Bert datasets.')
+        logging.info('Finished building Bert datasets.')
 
-        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+        # Override limit_val_batches to be a multiple of num microbatches
+        # to prevent val_step from exiting in between a step
         self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_dl, 'val')
 
         return self._train_ds, self._validation_ds, self._test_ds
@@ -831,8 +853,8 @@ class MegatronBertModel(MegatronBaseModel):
         and only needs to be called when using Transformer Engine.
         """
         for module in self.get_bert_module_list():
-            """Set TP group
-            Copied from: https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/transformer.py#L398
+            """Set TP group. Copied from:
+            https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/pytorch/transformer.py#L398
             """
             # Deep iterate but skip self to avoid infinite recursion.
             for index, child in enumerate(module.modules()):
@@ -843,6 +865,7 @@ class MegatronBertModel(MegatronBaseModel):
                     child.set_tensor_parallel_group(tp_group)
 
     def get_bert_module_list(self):
+        """Get list of modules."""
         if isinstance(self.model, list):
             return [
                 model.module if isinstance(model, (Float16Module, MCoreFloat16Module)) else model
@@ -912,31 +935,38 @@ class MegatronBertModel(MegatronBaseModel):
         )
 
     def setup_training_data(self, cfg):
+        """Initialize training dataloader."""
         if hasattr(self, '_train_ds'):
             consumed_samples = self.compute_consumed_samples(0)
             logging.info(
-                f'Setting up train dataloader with len(len(self._train_ds)): {len(self._train_ds)} and consumed samples: {consumed_samples}'
+                f'Setting up train dataloader with len(len(self._train_ds)): {len(self._train_ds)} '
+                f'and consumed samples: {consumed_samples}'
             )
             self._train_dl = self.build_pretraining_data_loader(self._train_ds, consumed_samples)
 
     def setup_validation_data(self, cfg):
+        """Initialize validation dataloader."""
         if hasattr(self, '_validation_ds'):
             consumed_samples = 0
             logging.info(
-                f'Setting up validation dataloader with len(len(self._validation_ds)): {len(self._validation_ds)} and consumed samples: {consumed_samples}'
+                f'Setting up validation dataloader with len(len(self._validation_ds)): {len(self._validation_ds)} '
+                f'and consumed samples: {consumed_samples}'
             )
             self._validation_dl = self.build_pretraining_data_loader(self._validation_ds, consumed_samples)
 
     def setup_test_data(self, cfg):
+        """Initialize test dataloader."""
         if hasattr(self, '_test_ds'):
             consumed_samples = 0
             logging.info(
-                f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} and consumed samples: {consumed_samples}'
+                f'Setting up test dataloader with len(len(self._test_ds)): {len(self._test_ds)} '
+                f'and consumed samples: {consumed_samples}'
             )
             self._test_dl = self.build_pretraining_data_loader(self._test_ds, consumed_samples)
 
     def transfer_batch_to_device(self, batch: Any, device: torch.device, dataloader_idx: int) -> Any:
-        """PTL hook: https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
+        """PTL hook:
+        https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#transfer-batch-to-device
         When using pipeline parallelism, we need the global batch to remain on the CPU,
         since the memory overhead will be too high when using a large number of microbatches.
         Microbatches are transferred from CPU to GPU inside the pipeline.
@@ -944,6 +974,7 @@ class MegatronBertModel(MegatronBaseModel):
         return batch
 
     def parameters(self):
+        """Return list of parameters for the model."""
         if isinstance(self.model, list):
             return itertools.chain.from_iterable(module.parameters() for module in self.model)
         else:
@@ -961,6 +992,7 @@ class MegatronBertModel(MegatronBaseModel):
             result.append(
                 PretrainedModelInfo(
                     pretrained_model_name=f"megatron_bert_345m_{vocab}",
+                    # pylint: disable=C0301
                     location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/megatron_bert_345m_{vocab}/versions/1/files/megatron_bert_345m_{vocab}.nemo",
                     description=f"345M parameter BERT Megatron model with {vocab} vocab.",
                 )
@@ -970,7 +1002,9 @@ class MegatronBertModel(MegatronBaseModel):
                 result.append(
                     PretrainedModelInfo(
                         pretrained_model_name=f"biomegatron345m_biovocab_{vocab_size}_{vocab}",
+                        # pylint: disable=C0301
                         location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m_biovocab_{vocab_size}_{vocab}/versions/1/files/BioMegatron345m-biovocab-{vocab_size}-{vocab}.nemo",
+                        # pylint: disable=C0301
                         description="Megatron 345m parameters model with biomedical vocabulary ({vocab_size} size) {vocab}, pre-trained on PubMed biomedical text corpus.",
                     )
                 )
@@ -978,7 +1012,9 @@ class MegatronBertModel(MegatronBaseModel):
             result.append(
                 PretrainedModelInfo(
                     pretrained_model_name=f"biomegatron-bert-345m-{vocab}",
+                    # pylint: disable=C0301
                     location=f"https://api.ngc.nvidia.com/v2/models/nvidia/nemo/biomegatron345m{vocab}/versions/1/files/BioMegatron345m{vocab.capitalize()}.nemo",
+                    # pylint: disable=C0301
                     description=f"Megatron pretrained on {vocab} biomedical dataset PubMed with 345 million parameters.",
                 )
             )
@@ -989,6 +1025,7 @@ class MegatronBertModel(MegatronBaseModel):
         self._optimizer_param_groups = get_params_for_weight_decay_optimization(self.model)
 
     def configure_optimizers(self):
+        """Initialize optimizers for the model."""
 
         if self.with_distributed_adam:
 
@@ -1072,6 +1109,7 @@ class MegatronBertModel(MegatronBaseModel):
     # Required for ONNX export
     @property
     def input_types(self) -> Optional[Dict[str, NeuralType]]:
+        """Define input types for ONNX export."""
         return {
             "input_ids": NeuralType(('B', 'T'), ChannelType()),
             "attention_mask": NeuralType(('B', 'T'), MaskType(), optional=True),
@@ -1136,6 +1174,22 @@ class MegatronBertModel(MegatronBaseModel):
         """LightningModule hook:
         https://pytorch-lightning.readthedocs.io/en/stable/common/lightning_module.html#on-load-checkpoint
         """
+
+        def load_model_state_dict(module: torch.nn.Module, state_dict: Dict[str, Any]):
+            """Helper function to load state dict with fallback"""
+            try:
+                module.load_state_dict(state_dict, strict=True)
+            except RuntimeError:
+                # Fallback support for backward compatibility breaking changes in TransformerEngine
+                missing_keys, _ = module.load_state_dict(state_dict, strict=False)
+                if all(k.endswith('_extra_state') for k in missing_keys):
+                    logging.debug(
+                        'Loading checkpoint created with Transformer Engine version lower than 1.13. '
+                        f'Missing layers {missing_keys} will be ignored.'
+                    )
+                else:
+                    raise
+
         if self.mcore_bert:
             if 'state_dict' in checkpoint and checkpoint['state_dict']:
                 for index, module in enumerate(self.get_model_module_list()):
@@ -1148,14 +1202,14 @@ class MegatronBertModel(MegatronBaseModel):
                         key.replace('model.', ''): checkpoint_state_dict.pop(key)
                         for key in list(checkpoint_state_dict.keys())
                     }
-                    module.load_state_dict(checkpoint_state_dict, strict=True)
+                    load_model_state_dict(module, checkpoint_state_dict)
             else:
                 checkpoint['state_dict'] = {}
         else:
             if isinstance(self.model, list):
                 for i in range(len(self.model)):
                     parallel_state.set_virtual_pipeline_model_parallel_rank(i)
-                    self.model[i].module.load_state_dict(checkpoint[f'model{i}'], strict=True)
+                    load_model_state_dict(self.model[i].module, checkpoint[f'model{i}'])
                 parallel_state.set_virtual_pipeline_model_parallel_rank(0)
 
     def build_transformer_config(self) -> TransformerConfig:
@@ -1211,6 +1265,7 @@ class MegatronBertTextEmbeddingModel(MegatronBertModel):
     """
 
     def average_pool(self, last_hidden_states, attention_mask):
+        """Average pool over hidden states and mask."""
         last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
         return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
 

@@ -80,6 +80,9 @@ model:
   hidden_dropout: 0.0
   attention_dropout: 0.0
   ffn_dropout: 0.0
+
+  # Distributed checkpointing: Handle backward compatibility with extra states
+  dist_ckpt_load_strictness: log_all
   
   peft:
     peft_scheme: "none"  # can be either adapter,ia3, lora, or ptuning

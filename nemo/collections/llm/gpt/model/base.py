@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Dict, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, Literal, Optional, Union
 
 import lightning.pytorch as L
 import torch
@@ -149,10 +149,19 @@ def default_layer_spec(config: "GPTConfig") -> ModuleSpec:
         return local_layer_spec(config)
 
 
-def torch_dtype_from_mcore_config(config: TransformerConfig):
+def torch_dtype_from_mcore_config(config: TransformerConfig) -> torch.dtype:
     if config.fp16:
         return torch.float16
     elif config.bf16:
+        return torch.bfloat16
+    else:
+        return torch.float
+
+
+def torch_dtype_from_dict_config(config: Dict[str, Any]) -> torch.dtype:
+    if config['fp16']:
+        return torch.float16
+    elif config['bf16']:
         return torch.bfloat16
     else:
         return torch.float

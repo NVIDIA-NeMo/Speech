@@ -36,7 +36,8 @@ def load_context(path: Path, subpath: Optional[str] = None, build: bool = True):
 
     Args:
         path (Path): The path to the json-file or directory containing 'io.json'.
-        subpath (Optional[str]): Subpath to selectively load only specific objects inside the TrainerContext. Defaults to None.
+        subpath (Optional[str]): Subpath to selectively load only specific objects inside the TrainerContext.
+            Defaults to None.
         build (bool): Whether to build the TrainerContext. Defaults to True.
             Otherwise, the TrainerContext is returned as a Config[TrainerContext] object.
     Returns
@@ -169,6 +170,28 @@ def import_ckpt(
 
 
 def load_connector_from_trainer_ckpt(path: Path, target: str) -> ModelConnector:
+    """
+    Loads a ModelConnector from a trainer checkpoint for exporting the model to a different format.
+    This function first loads the model from the trainer checkpoint using the TrainerContext,
+    then retrieves the appropriate exporter based on the target format.
+
+    Args:
+        path (Path): Path to the trainer checkpoint directory or file.
+        target (str): The target format identifier for which to load the connector
+            (e.g., "hf" for HuggingFace format).
+
+    Returns:
+        ModelConnector: The loaded connector instance configured for the specified target format.
+
+    Raises:
+        ValueError: If the loaded model does not implement ConnectorMixin.
+
+    Example:
+        connector = load_connector_from_trainer_ckpt(
+            Path("/path/to/checkpoint"),
+            "hf"
+        )
+    """
     model: pl.LightningModule = load_context(path).model
 
     if not isinstance(model, ConnectorMixin):
@@ -183,6 +206,7 @@ def export_ckpt(
     output_path: Optional[Path] = None,
     overwrite: bool = False,
     load_connector: Callable[[Path, str], ModelConnector] = load_connector_from_trainer_ckpt,
+    **kwargs,
 ) -> Path:
     """
     Exports a checkpoint from a model using the model's associated exporter, typically for
@@ -226,4 +250,4 @@ def export_ckpt(
     exporter: ModelConnector = load_connector(path, target)
     _output_path = output_path or Path(path) / target
 
-    return exporter(overwrite=overwrite, output_path=_output_path)
+    return exporter(overwrite=overwrite, output_path=_output_path, **kwargs)

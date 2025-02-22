@@ -21,6 +21,7 @@ import torch
 import torch.distributed
 from megatron.core.transformer import TransformerConfig
 from torch import Tensor
+from transformers import AutoTokenizer
 
 from nemo.collections.vlm.mllama.model.base import (
     CrossAttentionTextConfig,
@@ -29,6 +30,7 @@ from nemo.collections.vlm.mllama.model.base import (
     MLlamaModelConfig,
 )
 from nemo.lightning import MegatronStrategy, Trainer, io, teardown
+from nemo.lightning.io.state import _ModelState
 from nemo.lightning.pytorch.utils import dtype_from_hf
 
 
@@ -84,15 +86,8 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
 
         source = MllamaForConditionalGeneration.from_pretrained(str(self), torch_dtype='auto')
 
-        class ModelState:
-            def __init__(self, state_dict):
-                self._state_dict = state_dict
-
-            def state_dict(self):
-                return self._state_dict
-
         state_dict = _rename_xattn_layer_nums_hf(source.state_dict())
-        source = ModelState(state_dict)
+        source = _ModelState(state_dict)
         target = self.init()
         dummy_trainer = Trainer(
             devices=1,
@@ -261,8 +256,6 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
-        from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
-
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property

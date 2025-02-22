@@ -30,6 +30,7 @@ from nemo.collections.llm.gpt.model.base import (
     transformer_engine_layer_spec,
 )
 from nemo.collections.llm.gpt.model.chatglm import ChatGLM2Config6B, ChatGLM3Config6B, ChatGLMConfig, ChatGLMModel
+from nemo.collections.llm.gpt.model.deepseek import DeepSeekModel, DeepSeekV2Config, DeepSeekV3Config
 from nemo.collections.llm.gpt.model.gemma import (
     CodeGemmaConfig2B,
     CodeGemmaConfig7B,
@@ -197,6 +198,9 @@ __all__ = [
     "BaseMambaConfig2_7B",
     "NVIDIAMambaConfig8B",
     "NVIDIAMambaHybridConfig8B",
+    "DeepSeekModel",
+    "DeepSeekV2Config",
+    "DeepSeekV3Config",
     "MaskedTokenLossReduction",
     "gpt_data_step",
     "gpt_forward_step",

@@ -49,6 +49,12 @@ def get_args():
         help="""Pipeline parallel size""",
     )
     parser.add_argument(
+        "--ep",
+        type=int,
+        default=1,
+        help="""Expert parallel size""",
+    )
+    parser.add_argument(
         "--devices",
         type=int,
         default=1,
@@ -99,6 +105,7 @@ if __name__ == "__main__":
     strategy = nl.MegatronStrategy(
         tensor_model_parallel_size=args.tp,
         pipeline_model_parallel_size=args.pp,
+        expert_model_parallel_size=args.ep,
         context_parallel_size=1,
         sequence_parallel=False,
         setup_optimizers=False,

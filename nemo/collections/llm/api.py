@@ -663,6 +663,7 @@ def export_ckpt(
     output_path: Optional[AnyPath] = None,
     overwrite: bool = False,
     load_connector: Callable[[Path, str], io.ModelConnector] = load_connector_from_trainer_ckpt,
+    **kwargs,
 ) -> Path:
     """
     Exports a checkpoint from a model using the model's associated exporter, typically for
@@ -716,7 +717,7 @@ def export_ckpt(
     if output_path and not isinstance(output_path, Path):
         output_path = Path(output_path)
 
-    output = io.export_ckpt(path, target, output_path, overwrite, load_connector)
+    output = io.export_ckpt(path, target, output_path, overwrite, load_connector, **kwargs)
 
     console = Console()
     console.print(f"[green]✓ Checkpoint exported to {output}[/green]")

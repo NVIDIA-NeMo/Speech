@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import os
 import shutil
 from pathlib import Path, PosixPath, WindowsPath
@@ -23,6 +22,7 @@ from filelock import FileLock, Timeout
 from lightning.pytorch.trainer.states import TrainerFn
 
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
+from nemo.utils import logging
 
 # Dynamically inherit from the correct Path subclass based on the operating system.
 if os.name == 'nt':
@@ -72,7 +72,7 @@ class Connector(BasePath, Generic[SourceT, TargetT]):
         """Should be implemented to initialize the target type from the source type."""
         raise NotImplementedError()
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, **kwargs) -> Path:
         """Should be implemented to apply the transformation and save the result at the output path."""
         raise NotImplementedError()
 
@@ -83,7 +83,7 @@ class Connector(BasePath, Generic[SourceT, TargetT]):
 
         return super().__new__(cls, *args, **kwargs)
 
-    def __call__(self, output_path: Optional[Path] = None, overwrite: bool = False) -> Path:
+    def __call__(self, output_path: Optional[Path] = None, overwrite: bool = False, **kwargs) -> Path:
         _output_path = output_path or self.local_path()
         lock_path = _output_path.with_suffix(_output_path.suffix + '.lock')
         lock = FileLock(lock_path)
@@ -98,7 +98,7 @@ class Connector(BasePath, Generic[SourceT, TargetT]):
                     shutil.rmtree(_output_path)
 
                 if not _output_path.exists():
-                    to_return = self.apply(_output_path)
+                    to_return = self.apply(_output_path, **kwargs)
                     _output_path = to_return or _output_path
 
         except Timeout:

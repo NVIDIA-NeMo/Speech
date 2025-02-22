@@ -18,6 +18,7 @@ from typing import Callable, Literal, Optional
 
 import torch
 
+from nemo.lightning.io.state import _ModelState
 from nemo.utils import logging
 
 try:
@@ -124,20 +125,7 @@ class PyTorchSSMImporter(io.ModelConnector["GPTModel", GPTModel]):
         if 'model' in source:
             source = source['model']
 
-        class ModelState:
-            def __init__(self, state_dict):
-                self._state_dict = state_dict
-
-            def state_dict(self):
-                return self._state_dict
-
-            def to(self, dtype):
-                for k, v in self._state_dict.items():
-                    if v.dtype != dtype:
-                        logging.warning(f"Converting {k} from {v.dtype} (source model) to {dtype} (target model)")
-                    self._state_dict[k] = v.to(dtype)
-
-        source = ModelState(source)
+        source = _ModelState(source)
         target = self.init()
         trainer = self.nemo_setup(target)
         source.to(self.config.params_dtype)

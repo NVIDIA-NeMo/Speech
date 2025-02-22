@@ -14,7 +14,7 @@
 
 from pathlib import Path
 from random import choices, sample
-from typing import Mapping, Optional
+from typing import Literal, Mapping, Optional
 
 import datasets
 import numpy as np
@@ -90,6 +90,7 @@ class BertEmbeddingDataset(Dataset):
         special_tokens: Optional[Mapping[str, str]] = None,  # special tokens, a dictory of {token_type: token}
         data_type: str = 'train',  # train, query or doc
         num_hard_negatives: int = 4,
+        negative_sample_strategy: Literal["random", "first"] = 'first',
     ):
         """
         file_path: Path to a JSONL dataset with (query,pos_doc,neg_doc) triplets in jsonl format.
@@ -114,6 +115,7 @@ class BertEmbeddingDataset(Dataset):
                         'end_of_turn': '\n',
                         'end_of_name": '\n'
                     }
+        negative_sample_strategy: Strategy for negative samples. Options: ['random', 'first']
         """
         # TODO: lot of copy-paste from GPTSFDDataset, should refactor both to use a common base class (@adithyare)
         self.tokenizer = tokenizer
@@ -127,6 +129,14 @@ class BertEmbeddingDataset(Dataset):
         self.index_mapping_dir = index_mapping_dir
         self.virtual_tokens = virtual_tokens
         self.truncation_method = truncation_method
+        self.pad_token_id = self.tokenizer.pad_id if self.tokenizer.pad_id else self.tokenizer.eos_id
+        self.negative_sample_strategy = negative_sample_strategy
+        assert (
+            truncation_method == 'left' or truncation_method == 'right'
+        ), 'truncation_method must be either "left" or "right"'
+        assert (
+            negative_sample_strategy == 'random' or negative_sample_strategy == 'first'
+        ), 'negative_sample_strategy must be either "random" or "first"'
         if special_tokens is None:
             self.special_tokens = {
                 "system_turn_start": "<extra_id_0>",
@@ -150,6 +160,13 @@ class BertEmbeddingDataset(Dataset):
         # Will be None after this call if `max_num_samples` is None
         self.samples_mapping = None
         self._build_samples_mapping()
+        logging.info(
+            f"Creating EmbeddingDataset with seed={self.seed},\n"
+            f"add_bos={self.add_bos}, add_eos={self.add_eos},\n"
+            f"max_seq_length={self.max_seq_length}, min_seq_length={self.min_seq_length},\n"
+            f"pad_token_id={self.pad_token_id}, negative_sample_strategy={self.negative_sample_strategy},\n"
+            f"num_hard_negatives={self.num_hard_negatives}."
+        )
 
     def _build_samples_mapping(self):
         if self.max_num_samples is not None:
@@ -221,8 +238,13 @@ class BertEmbeddingDataset(Dataset):
                 # sample rest with replacement
                 nd = nd + choices(example['neg_doc'], k=self.num_hard_negatives - len(example['neg_doc']))
             else:
-                # sample without replacement
-                nd = sample(example['neg_doc'], k=self.num_hard_negatives)
+                if self.negative_sample_strategy == 'random':
+                    # sample without replacement
+                    # Choose the first self.num_hard_negatives
+                    nd = sample(example['neg_doc'], k=self.num_hard_negatives)
+                else:
+                    # Choose the first self.num_hard_negatives samples
+                    nd = example['neg_doc'][: self.num_hard_negatives]
             assert len(nd) == self.num_hard_negatives, "Error in sampling required number of hard negatives"
             nd = [self.tokenizer.text_to_ids("passage: " + ex.strip()) for ex in nd]
 
@@ -280,27 +302,17 @@ class BertEmbeddingDataset(Dataset):
     def _ceil_to_nearest(self, n, m):
         return (n + m - 1) // m * m
 
-    def _collate_item(self, item, max_length, pad_id):
+    def _collate_item(self, item, max_length):
         item = self._maybe_cast_to_list(item)
-        # max_length = max([len(x) for x in item]) if item else 0
-        # here [0] should be tokenizer.pad_id
-        item = [x + [pad_id] * (max_length - len(x)) for x in item]
+        pad_id = self.pad_token_id
+        if self.truncation_method == 'left':
+            item = [[pad_id] * (max_length - len(x)) + x for x in item]
+        else:
+            item = [x + [pad_id] * (max_length - len(x)) for x in item]
         return item
 
     @torch.no_grad()
-    def _create_attention_mask(self, max_length):
-        """Create `attention_mask`.
-        Args:
-            input_ids: A 1D tensor that holds the indices of tokens.
-        """
-        # seq_length = len(input_ids)
-        # `attention_mask` has the shape of [1, seq_length, seq_length]
-        attention_mask = torch.tril(torch.ones((max_length, max_length))).unsqueeze(0)
-        attention_mask = attention_mask < 0.5
-        return attention_mask
-
-    @torch.no_grad()
-    def _create_attention_mask2(self, max_length, item_lengh):
+    def _create_attention_mask2(self, max_length, item_length):
         """Create `attention_mask`.
         Args:
             input_ids: A 1D tensor that holds the indices of tokens.
@@ -308,10 +320,20 @@ class BertEmbeddingDataset(Dataset):
         # seq_length = len(input_ids)
         # `attention_mask` has the shape of [1, seq_length, seq_length]
         attention_mask = torch.zeros(max_length)
-        attention_mask[:item_lengh] = 1
+        if self.truncation_method == 'left':
+            # input ids:      [pad] [pad] token token |
+            # attention mask: 0      0    1     1
+            attention_mask[max_length - item_length :] = 1
+        else:
+            # input ids:      token token [pad] [pad] |
+            # attention mask: 1     1     0      0
+            attention_mask[:item_length] = 1
         return attention_mask
 
-    def collate_fn(self, batch):
+    def _collate_fn(self, batch):
+        """
+        Collate query passage together
+        """
         input_ids = []
         metadata = []
         lengths = []
@@ -347,7 +369,7 @@ class BertEmbeddingDataset(Dataset):
         attention_mask = torch.stack(attention_mask)
         position_ids = [list(range(max_length)) for _ in batch]
         position_ids = torch.LongTensor(position_ids)
-        input_ids = torch.LongTensor(self._collate_item(input_ids, max_length=max_length, pad_id=0))
+        input_ids = torch.LongTensor(self._collate_item(input_ids, max_length=max_length))
         lengths = torch.LongTensor(lengths) - 1  # subtract 1 to account for the eos token
 
         processed_batch = {
@@ -355,6 +377,7 @@ class BertEmbeddingDataset(Dataset):
             'token_type_ids': torch.zeros_like(input_ids),
             'attention_mask': attention_mask,
             'metadata': metadata,
+            'position_ids': position_ids,
         }
 
         return processed_batch

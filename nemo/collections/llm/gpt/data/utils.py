@@ -18,7 +18,6 @@ import json
 import multiprocessing as mp
 import os
 import pickle
-import subprocess
 import time
 from functools import lru_cache, partial
 from typing import Any, Callable, List, Optional, Type
@@ -29,7 +28,6 @@ import torch
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Dataset
 from nemo.utils import AppState, logging
-from nemo.utils.get_rank import is_global_rank_zero
 
 PREFIX_STR = (
     "\x00"  # the prefix string used in the tokenizer to deal with the added empty token for some of the tokenizers
@@ -673,8 +671,6 @@ def _get_samples_mapping(
         logging.info(' > building samples index mapping for {} ...'.format(name))
         # First compile and then import.
         try:
-            if is_global_rank_zero():
-                _compile_helper()
             from megatron.core.datasets import helpers_cpp
         except ImportError:
             raise ImportError(
@@ -1073,24 +1069,7 @@ def _index_file_exists(idx_fn):
         return False
 
 
-def _compile_helper():
-    """Compile helper function ar runtime. Make sure this
-    is invoked on a single process."""
-
-    path = os.path.abspath(os.path.dirname(__file__))
-    ret = subprocess.run(['make', '-C', path])
-    if ret.returncode != 0:
-        logging.error("Making C++ dataset helpers module failed, exiting.")
-        import sys
-
-        sys.exit(1)
-
-
 def _deallocate_indexed_dataset_memory(indexed_dataset):
     """Deallocate memory of an IndexedDataset."""
-    if isinstance(indexed_dataset):
-        # for MMapIndexedDataset we cannot release any memory of sizes
-        indexed_dataset._index._doc_idx = None
-    else:
-        indexed_dataset.sizes = None
-        indexed_dataset.doc_idx = None
+    indexed_dataset.sizes = None
+    indexed_dataset.doc_idx = None

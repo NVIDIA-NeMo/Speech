@@ -22,6 +22,7 @@ import lightning.pytorch as pl
 import torch
 from lightning.fabric.plugins import CheckpointIO
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as PLModelParallelStrategy
+from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy
 from torch.utils.data import DataLoader
@@ -35,6 +36,7 @@ from nemo.lightning.pytorch.strategies.utils import (
     fsdp2_strategy_parallelize,
     setup_data_sampler,
 )
+from nemo.utils import logging
 
 try:
     from torch.distributed.tensor._api import distribute_tensor
@@ -168,15 +170,25 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self.trainer = trainer
         setup_data_sampler(self.trainer)
         fix_progress_bar(trainer)
-        super().setup(trainer)
+        # connect trainer to accelerator.
+        self.accelerator.setup(trainer)
+        # Parallelize model
+        if getattr(self, '_init_model_parallel', True):
+            self.parallelize()
+        # setup optim
+        if getattr(self, '_setup_optimizers', True) and trainer.state.fn == TrainerFn.FITTING:
+            super().setup_optimizers(trainer)
 
     def parallelize(self):
         """Applies fully_shard on model"""
         if self.parallelize_fn is not None:
             # TODO(@akoumparouli): self.lightning_module is an nn.Module child, use it directly?
             # Apply FSDP2 and TP to the model
-            self.parallelize_fn(self.lightning_module.model, device_mesh=self.device_mesh, mp_policy=self.mp_policy)
+            self.parallelize_fn(self.lightning_module.model, device_mesh=self._device_mesh, mp_policy=self.mp_policy)
+            # Apply this only once
             self.parallelize_fn = None
+        else:
+            logging.warning("Called parallelize more than once.")
 
     def _get_loss_reduction(self, step_type: str):
         """Retrieves the loss reduction method for a given step type.
@@ -215,6 +227,11 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         return loss, {'avg': loss}
 
     @override
+    def optimizer_state(self, optimizer):
+        """returns the sharded optim state"""
+        return optimizer.state_dict()
+
+    @override
     def training_step(self, batch, batch_idx=None) -> STEP_OUTPUT:
         """Defines the training step, logging relevant metrics.
 
@@ -225,7 +242,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         Returns:
             STEP_OUTPUT: The loss for backpropagation.
         """
-        self.parallelize()
 
         # See load_optimizer_state_dict to understand why we call this here.
         if self.checkpoint is not None:
@@ -233,23 +249,22 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
         assert self.lightning_module is not None
         assert self.model is not None
-        with self.precision_plugin.train_step_context():
-            loss, reduced = self._step_proxy("training", batch, batch_idx)
-            self.lightning_module.log(
-                'global_step',
-                self.trainer.global_step,
-                prog_bar=True,
-                rank_zero_only=True,
-                batch_size=1,
-            )
 
-            self.lightning_module.log(
-                'step',
-                self.trainer.global_step,
-            )
+        loss = self.lightning_module.training_step(batch, batch_idx)
+        self.lightning_module.log(
+            'global_step',
+            self.trainer.global_step,
+            prog_bar=True,
+            rank_zero_only=True,
+            batch_size=1,
+        )
 
-            # returns unreduced loss for backward
-            return loss
+        self.lightning_module.log(
+            'step',
+            self.trainer.global_step,
+        )
+
+        return loss
 
     @override
     def validation_step(self, batch, batch_idx=None) -> Any:

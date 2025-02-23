@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+
+os.environ['HF_HOME'] = '/tmp/hf_home'
 import re
 import sys
 from pathlib import Path
@@ -230,7 +232,9 @@ class ValidateCheckpointRestoreCallback(pl.Callback):
                     rank = os.environ.get('LOCAL_RANK', '0')
                     diff = (current_param - checkpoint_param).view(-1).float().abs().cpu().max()
                     raise ValueError(f"{rank}: Model parameter '{name}' does not match the checkpointed value {diff}.")
-
+            print("model weights match")
+        else:
+            print("Did not test model weights")
         # ------------------------------------------------------------------
         # 2) Check the optimizer states
         # ------------------------------------------------------------------
@@ -271,12 +275,15 @@ class ValidateCheckpointRestoreCallback(pl.Callback):
                                     f"Optimizer state for param_id={param_id}, "
                                     f"key='{state_key}' differs from checkpoint."
                                 )
+            print("optim weights match")
+        else:
+            print("did not test optim weights")
         # After the first batch, we don't need to check again
         # (Remove if you need ongoing checks)
         if not self.has_loaded_checkpoint:
             trainer.callbacks.remove(self)
         else:
-            print("Weights match")
+            print("All weights match")
             sys.exit(0)
 
 

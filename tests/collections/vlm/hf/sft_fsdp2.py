@@ -123,7 +123,7 @@ if __name__ == '__main__':
                 log_every_n_steps=1,
                 limit_val_batches=0.0,
                 num_sanity_val_steps=0,
-                accumulate_grad_batches=10,
+                accumulate_grad_batches=2,
                 gradient_clip_val=grad_clip,
                 use_distributed_sampler=use_dist_samp,
                 logger=wandb,

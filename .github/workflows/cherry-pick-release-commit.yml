@@ -1,13 +1,13 @@
 name: Create PR to main with cherry-pick from release
 
-on: 
+on:
   push:
     branches:
       - main
 
 jobs:
   cherry-pick:
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_cherry_pick.yml@v0.6.0
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_cherry_pick.yml@v0.22.7
     secrets:
       PAT: ${{ secrets.PAT }}
       SLACK_WEBHOOK_ADMIN: ${{ secrets.SLACK_WEBHOOK_ADMIN }}

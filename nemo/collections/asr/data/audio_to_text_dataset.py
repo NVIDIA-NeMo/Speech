@@ -19,6 +19,7 @@ from math import isclose
 from typing import Any, List, Optional, Union
 
 import torch
+from lightning.pytorch import LightningModule
 from lightning.pytorch.callbacks import BasePredictionWriter
 from omegaconf import DictConfig, OmegaConf, open_dict
 from omegaconf.listconfig import ListConfig
@@ -29,8 +30,9 @@ from nemo.collections.asr.data.huggingface.hf_audio_to_text_dataset import (
     get_hf_audio_to_text_bpe_dataset,
     get_hf_audio_to_text_char_dataset,
 )
-from nemo.collections.asr.parts.preprocessing.perturb import process_augmentations
+from nemo.collections.asr.parts.preprocessing.perturb import AudioAugmentor, process_augmentations
 from nemo.collections.common.data.dataset import CodeSwitchedDataset, ConcatDataset
+from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.utils import logging
 
 
@@ -94,7 +96,7 @@ def get_concat_char_dataset(
         An instance of ConcatDataset containing one or more instances of AudioToCharDataset.
     """
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
     manifest_filepaths = config['manifest_filepath']
     datasets = []
@@ -138,7 +140,7 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
         An instance of AudioToCharDataset.
     """
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
     dataset = audio_to_text.AudioToCharDataset(
         manifest_filepath=config['manifest_filepath'],
@@ -332,7 +334,7 @@ def get_tarred_dataset(
     if bucketing_weights:
         for idx, weight in enumerate(bucketing_weights):
             if not isinstance(weight, int) or weight <= 0:
-                raise ValueError(f"bucket weights must be positive integers")
+                raise ValueError("bucket weights must be positive integers")
 
     if len(manifest_filepaths) != len(tarred_audio_filepaths):
         raise ValueError(
@@ -340,10 +342,10 @@ def get_tarred_dataset(
         )
 
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
     if 'max_utts' in config:
-        raise ValueError('"max_utts" parameter is not supported for tarred datasets')
+        logging.warning('"max_utts" parameter is not supported for tarred datasets')
 
     for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
         zip(tarred_audio_filepaths, manifest_filepaths)

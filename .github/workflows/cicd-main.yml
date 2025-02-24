@@ -922,10 +922,10 @@ jobs:
         amp=true
 
   # L2: Speech Transcription
-  Optional_L2_Speech_Transcription_Canary_Transcribe_Full_Manifest:
+  L2_Speech_Transcription_Canary_Transcribe_Full_Manifest:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_Speech_Transcription_Canary_Transcribe_Full_Manifest')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Speech_Transcription_Canary_Transcribe_Full_Manifest')
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -940,12 +940,11 @@ jobs:
         matmul_precision=medium
       AFTER_SCRIPT: |
         rm -rf /tmp/preds.json transcribe.log
-      IS_OPTIONAL: true
 
-  Optional_L2_Speech_Transcription_Canary_Transcribe_With_Prompt:
+  L2_Speech_Transcription_Canary_Transcribe_With_Prompt:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_Speech_Transcription_Canary_Transcribe_With_Prompt')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Speech_Transcription_Canary_Transcribe_With_Prompt')
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -964,12 +963,11 @@ jobs:
         +prompt.pnc="no"
       AFTER_SCRIPT: |
         rm -rf preds.json transcribe.log
-      IS_OPTIONAL: true
 
-  Optional_L2_Speech_Transcription_Canary_Transcribe_Audio_Dir:
+  L2_Speech_Transcription_Canary_Transcribe_Audio_Dir:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_Speech_Transcription_Canary_Transcribe_Audio_Dir')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Speech_Transcription_Canary_Transcribe_Audio_Dir')
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
@@ -3113,9 +3111,9 @@ jobs:
       - L2_Speech_Estimate_Duration_Bins
       - L2_Speech_Batch_Size_OOMptimizer
       # - Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
-      # - Optional_L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
-      # - Optional_L2_Speech_Transcription_Canary_Transcribe_With_Prompt
-      # - Optional_L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
+      - L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
+      - L2_Speech_Transcription_Canary_Transcribe_With_Prompt
+      - L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
       - L2_NeMo_2_PTQ_Llama2_FP8
       - L2_NeMo_2_Distill_Llama3_TP1PP2

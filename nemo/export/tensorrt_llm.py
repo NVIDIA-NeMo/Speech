@@ -363,15 +363,6 @@ class TensorRTLLM(ITritonDeployable):
                     # MCore export supports some default conversion dictionaries
                     mcore_model_conversion_dict = DEFAULT_CONVERSION_DICT
 
-                    # TODO: remove after adding this mapping to mcore
-                    from megatron.core.export.trtllm.trtllm_layers import TRTLLMLayers
-
-                    mcore_model_conversion_dict |= {
-                        'decoder.layers.mlp.experts.experts.linear_fc1.weight': TRTLLMLayers.mlp_fc_weight_mixture_of_experts,
-                        'decoder.layers.mlp.experts.experts.linear_fc2.weight': TRTLLMLayers.mlp_projection_weight_mixture_of_experts,
-                        'decoder.layers.mlp.router.weight': TRTLLMLayers.mlp_router_weight,
-                    }
-
                     # All Mcore conversion dicts start with "decoder.layers.4.blah.blah" , while nemo models start with "model.decoder.layers.4.blahblah". so we append model. to the keys
                     nemo_model_conversion_dict = {
                         f'model.{key}': value for key, value in mcore_model_conversion_dict.items()

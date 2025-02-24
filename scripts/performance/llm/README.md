@@ -1,6 +1,6 @@
 # Performance Recipes
 
-- Scripts defined in `scripts/llm/performance` are recipes optimized for performance. These scripts can launch pre-training experiments on Slurm based clusters.
+- Scripts defined in `scripts/performance` are recipes optimized for performance. These scripts can launch pre-training experiments on Slurm based clusters.
 - You will need a virtual environemnt with NeMo and Nemo-Run related dependencies installed as the experiment configuration is resolved before launching it inside NeMo container.
 
 ## Example

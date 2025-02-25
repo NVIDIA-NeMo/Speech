@@ -110,10 +110,12 @@ def _mask_targets(
         header_len (int): the system prompt length
         s_ids (List[Tensor]): array of tokenized ids of each turns
         tokenizer (TokenizerSpec): tokenizer object
-        mask_role (str): the speaker id to be masked from loss computation. If there is more than 1 masked role, `mask_role` is a comma-separated string of the roles
+        mask_role (str): the speaker id to be masked from loss computation.
+            If there is more than 1 masked role, `mask_role` is a comma-separated string of the roles
         gtype (str): either 'TEXT_TO_VALUE' or 'VALUE_TO_TEXT'
         name_end_token_ids (int): end of name token ids
-        special_tokens (dict): special tokens used for the chat prompt. It has the keys: system_turn_start, turn_start, label_start, end_of_turn
+        special_tokens (dict): special tokens used for the chat prompt.
+            It has the keys: system_turn_start, turn_start, label_start, end_of_turn
         label_start_ids (list): list of label start token ids,
         num_turn_start_tokens (int): number of tokens of the turn_start str
     """
@@ -144,7 +146,8 @@ def _mask_targets(
                 # newline_loc = torch.where((s_id[skip_name_len:] == name_end_token_ids))[0]
                 newline_loc = identify_start_index_of_subsequence(name_end_token_ids, s_id[skip_name_len:])
                 if newline_loc < 0:
-                    # cannot find new line token, which means the the whole turn is just a partial label string. Mask the whole turn
+                    # cannot find new line token, which means the the whole turn is just a partial label string.
+                    # Mask the whole turn
                     target[cur_idx : cur_idx + tokenized_len] = IGNORE_INDEX
                     continue
                 # skip the label part and the new line token
@@ -153,7 +156,8 @@ def _mask_targets(
                 skip_name_len += more_skip_len
             elif gtype == 'TEXT_TO_VALUE':
                 # handles the case that condition on response to generate label
-                # skip the name part, response and the label start tokens part, the remainder is the label string without label start, e.g. 'quality:9,toxicity:8...'
+                # skip the name part, response and the label start tokens part, the remainder is
+                # the label string without label start, e.g. 'quality:9,toxicity:8...'
                 skip_name_len = location + len(label_start_ids)
         if cur_idx >= tgt_len:
             break
@@ -174,7 +178,8 @@ def _mask_targets(
             # mask out everything in the second turn
             target[cur_idx : cur_idx + tokenized_len] = IGNORE_INDEX
         else:
-            # mask up to name part, label part for VALUE_TO_TEXT, or name part, response and label start tokens for TEXT_TO_VALUE, or just the name part if gtype is None
+            # mask up to name part, label part for VALUE_TO_TEXT, or name part,
+            # response and label start tokens for TEXT_TO_VALUE, or just the name part if gtype is None
             target[cur_idx : cur_idx + skip_name_len] = IGNORE_INDEX
         cur_idx += tokenized_len
 
@@ -237,7 +242,8 @@ def _add_speaker_and_signal(header, source, mask_role, gtype, special_tokens):
                 f"source type {gtype} not supported, only 'VALUE_TO_TEXT' and 'TEXT_TO_VALUE' are supported"
             )
         conversation += sentence["value"]
-        # if the last turn is not masked, add next token start token to the end, which will be included for loss calculation
+        # if the last turn is not masked, add next token start token to the end,
+        # which will be included for loss calculation
         if sentence_from not in mask_role and i == len(source) - 1:
             conversation += TURN_TOKEN
     return conversation
@@ -373,7 +379,7 @@ class GPTSFTChatDataset(GPTSFTDataset):
         if self.pad_to_max_length:
             max_length = self.max_seq_length
         else:
-            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, 16))
+            max_length = min(self.max_seq_length, self._ceil_to_nearest(max_length, self.pad_seq_length_to_mult))
         assert max_length <= self.max_seq_length
 
         if not self.get_attention_mask_from_fusion:

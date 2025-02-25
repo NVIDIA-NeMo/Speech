@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=missing-class-docstring
+# pylint: disable=missing-function-docstring
+
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
-from typing import Any, Callable, Generator, List, Literal, Tuple, TypeVar, Union
+from typing import Generator, Literal, TypeVar, Union
 
 import torch
 from lightning.pytorch.plugins.precision import Precision
@@ -151,9 +154,10 @@ class MegatronMixedPrecision(Precision):
             config = get_model_config(module.module)
             config.fp16 = self.dtype_config.fp16
             config.bf16 = self.dtype_config.bf16
-            if hasattr(module, 'module'):
+            # Avoid rewrapping the module if it's already of type Float16Module
+            if hasattr(module, 'module') and not isinstance(module.module, Float16Module):
                 module.module = Float16Module(config, module.module)
-            else:
+            elif not isinstance(module, Float16Module):
                 module = Float16Module(config, module)
 
         return module

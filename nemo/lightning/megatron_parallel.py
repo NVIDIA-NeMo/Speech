@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=missing-class-docstring
+# pylint: disable=missing-function-docstring
+
 import abc
 import collections.abc
 import functools
@@ -632,6 +635,9 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             return
 
         from megatron.core import parallel_state
+        from megatron.core.transformer.module import Float16Module
+
+        from nemo.utils.model_utils import unwrap_model
 
         for model_chunk_idx, model_chunk in enumerate(self):
             module = model_chunk.module
@@ -649,7 +655,13 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
             disable_bucketing = (model_chunk_idx > 0) or overlap_param_gather_with_optimizer_step
 
             with init_ddp_context():
-                if HAVE_CUSTOM_FSDP and self.ddp_config.use_custom_fsdp:
+                # Avoid rewrapping the module if it's already wrapped with FSDP
+                unwrapped_module = unwrap_model(module, Float16Module)
+                if (
+                    HAVE_CUSTOM_FSDP
+                    and self.ddp_config.use_custom_fsdp
+                    and not isinstance(unwrapped_module, FullyShardedDataParallel)
+                ):
                     FSDP = FullyShardedDataParallel
                     dist_module = FSDP(
                         module.config,
@@ -657,7 +669,7 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         module,
                         disable_bucketing=disable_bucketing,
                     )
-                else:
+                elif not isinstance(unwrapped_module, DDP):
                     dist_module = DDP(
                         module.config,
                         self.ddp_config,
@@ -666,6 +678,8 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                         expert_data_parallel_group=parallel_state.get_data_modulo_expert_parallel_group(),
                         disable_bucketing=disable_bucketing,
                     )
+                else:
+                    dist_module = unwrapped_module
             model_chunk.module = dist_module
             model_chunk.buffers = (
                 dist_module.buffers

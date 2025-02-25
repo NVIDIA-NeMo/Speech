@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# pylint: disable=C0115
+# pylint: disable=C0116
 
 """BERT model."""
 
@@ -79,7 +81,8 @@ def bert_extended_attention_mask(attention_mask):
     extended_attention_mask = attention_mask_bss.unsqueeze(1)
 
     # HF Masking is equivalent to the one below
-    # extended_attention_mask = (attention_mask.unsqueeze(1) * torch.ones_like(attention_mask).unsqueeze(2)).unsqueeze(1)
+    # extended_attention_mask =
+    #              (attention_mask.unsqueeze(1) * torch.ones_like(attention_mask).unsqueeze(2)).unsqueeze(1)
 
     # Convert attention mask to binary:
     extended_attention_mask = extended_attention_mask < 0.5
@@ -184,14 +187,14 @@ class TransformerLayerSubmodulesWithPostLNSupport(TransformerLayerSubmodules):
 class TransformerLayerWithPostLNSupport(TransformerLayer):
     def __init__(self, *args, **kwargs):
         super(TransformerLayerWithPostLNSupport, self).__init__(*args, **kwargs)
-        ## [Module add: Post attention LN]
+        # [Module add: Post attention LN]
         self.post_att_layernorm = build_module(
             self.submodules_config.post_att_layernorm,
             config=self.config,
             hidden_size=self.config.hidden_size,
             eps=self.config.layernorm_epsilon,
         )
-        ## [Module add: Post MLP LN]
+        # [Module add: Post MLP LN]
         self.post_mlp_layernorm = build_module(
             self.submodules_config.post_mlp_layernorm,
             config=self.config,
@@ -211,6 +214,7 @@ class TransformerLayerWithPostLNSupport(TransformerLayer):
         attention_bias=None,
         inference_params=None,
         packed_seq_params=None,
+        **kwargs,
     ):
         # hidden_states: [s, b, h]
 

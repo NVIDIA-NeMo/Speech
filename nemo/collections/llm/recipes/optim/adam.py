@@ -140,7 +140,6 @@ def te_adam_with_cosine_annealing(
             betas=(0.9, 0.999),
             eps=1e-8,
             master_weights=True,
-            foreach=True,
         ),
         lr_scheduler=run.Config(
             CosineAnnealingScheduler,

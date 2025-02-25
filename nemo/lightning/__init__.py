@@ -28,7 +28,13 @@ from nemo.lightning.fabric.plugins import FabricMegatronMixedPrecision
 from nemo.lightning.fabric.strategies import FabricMegatronStrategy
 from nemo.lightning.nemo_logger import NeMoLogger
 from nemo.lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
-from nemo.lightning.pytorch.optim import LRSchedulerModule, MegatronOptimizerModule, OptimizerModule, lr_scheduler
+from nemo.lightning.pytorch.optim import (
+    LRSchedulerModule,
+    MegatronOptimizerModule,
+    OptimizerModule,
+    PytorchOptimizerModule,
+    lr_scheduler,
+)
 from nemo.lightning.pytorch.plugins import MegatronDataSampler, MegatronMixedPrecision
 from nemo.lightning.pytorch.plugins import data_sampler as _data_sampler
 from nemo.lightning.pytorch.strategies import FSDP2Strategy, FSDPStrategy, MegatronStrategy
@@ -59,6 +65,7 @@ __all__ = [
     "MegatronDataSampler",
     "MegatronMixedPrecision",
     "MegatronOptimizerModule",
+    "PytorchOptimizerModule",
     "FSDPStrategy",
     "FSDP2Strategy",
     "RestoreConfig",

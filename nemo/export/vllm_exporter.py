@@ -35,7 +35,7 @@ from vllm.lora.request import LoRARequest
 
 from nemo.deploy import ITritonDeployable
 from nemo.deploy.utils import cast_output
-from nemo.export.utils.lora_converter import convert_lora_nemo_to_canonical
+from nemo.export.utils import convert_lora_nemo_to_canonical, prepare_directory_for_export
 from nemo.export.vllm.engine import NemoLLMEngine
 from nemo.export.vllm.model_config import NemoModelConfig
 from nemo.export.vllm.model_loader import NemoModelLoader
@@ -99,7 +99,7 @@ class vLLMExporter(ITritonDeployable):
         device: str = 'auto',
         tensor_parallel_size: int = 1,
         pipeline_parallel_size: int = 1,
-        max_model_len: int = None,
+        max_model_len: Optional[int] = None,
         lora_checkpoints: Optional[List[str]] = None,
         dtype: str = 'auto',
         seed: int = 0,
@@ -107,6 +107,7 @@ class vLLMExporter(ITritonDeployable):
         weight_storage: str = 'auto',
         gpu_memory_utilization: float = 0.9,
         quantization: Optional[str] = None,
+        delete_existing_files: bool = True,
     ):
         """
         Exports the Nemo checkpoint to vLLM and initializes the engine.
@@ -140,7 +141,9 @@ class vLLMExporter(ITritonDeployable):
                 executor, which can range from 0 to 1.
             quantization (str): quantization method that is used to quantize the model weights.
                 Possible choices are None (weights not quantized, default) and "fp8".
+            delete_existing_files (bool): if True, deletes all the files in model_dir.
         """
+        prepare_directory_for_export(model_dir, delete_existing_files=delete_existing_files)
 
         # Pouplate the basic configuration structures
         device_config = DeviceConfig(device)

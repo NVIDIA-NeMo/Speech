@@ -12,27 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import gc
-import json
 import logging
 import os.path
-from pathlib import Path
 from typing import Any, Dict
 
-import numpy
 import safetensors.torch
-
-# needed to register 'bfloat16' dtype with numpy for zarr compatibility
-import tensorstore  # noqa: F401 pylint: disable=unused-import
 import torch
-import zarr
 from vllm.config import ModelConfig
 from vllm.model_executor.model_loader.loader import BaseModelLoader, _initialize_model
 from vllm.model_executor.model_loader.utils import set_default_torch_dtype
 
-from nemo.export.tarutils import TarPath, ZarrPathStore
-from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_sharded_metadata_torch_dist
-from nemo.export.utils import is_nemo2_checkpoint
+from nemo.export.utils import load_model_weights
 from nemo.export.vllm.model_config import NemoModelConfig
 
 LOGGER = logging.getLogger("NeMo")
@@ -48,40 +38,9 @@ class NemoModelLoader(BaseModelLoader):
     """
 
     @staticmethod
-    def _load_nemo_checkpoint_state(nemo_file: str):
+    def _load_nemo_checkpoint_state(nemo_file: str) -> Dict[str, Any]:
         LOGGER.info(f'Loading weights from {nemo_file}...')
-
-        if is_nemo2_checkpoint(nemo_file):
-            nemo2_weights_path = Path(nemo_file) / 'weights'
-            return load_sharded_metadata_torch_dist(nemo2_weights_path)
-
-        sharded_state_dict = {}
-        with (TarPath(nemo_file) / 'model_weights' / 'metadata.json').open(mode='r') as f:
-            config_dict = json.load(f)
-
-        if config_dict['sharded_backend'] == 'torch_dist':
-            return load_sharded_metadata_torch_dist(TarPath(nemo_file) / 'model_weights')
-
-        with TarPath(nemo_file) as archive:
-            for subdir in archive.iterdir():
-                if not subdir.is_dir() or not (subdir / '.zarray').exists():
-                    continue
-                key = subdir.name
-
-                zstore = ZarrPathStore(subdir)
-                arr = zarr.open(zstore, 'r')
-
-                if arr.dtype.name == "bfloat16":
-                    sharded_state_dict[key] = torch.from_numpy(arr[:].view(numpy.int16)).view(torch.bfloat16)
-                else:
-                    sharded_state_dict[key] = torch.from_numpy(arr[:])
-
-                arr = None
-                gc.collect()
-
-                LOGGER.debug(f'Loaded tensor "{key}": {sharded_state_dict[key].shape}')
-
-        return sharded_state_dict
+        return load_model_weights(nemo_file)
 
     def download_model(self, model_config: ModelConfig) -> None:  # pylint: disable=missing-function-docstring
         raise NotImplementedError

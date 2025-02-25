@@ -12,9 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.export.utils.utils import is_nemo2_checkpoint, torch_dtype_from_precision
+from nemo.export.utils.lora_converter import convert_lora_nemo_to_canonical
+from nemo.export.utils.model_loader import (
+    load_model_weights,
+    load_sharded_metadata_torch_dist,
+    load_sharded_metadata_zarr,
+    nemo_to_path,
+)
+from nemo.export.utils.utils import (
+    is_nemo2_checkpoint,
+    is_nemo_tarfile,
+    prepare_directory_for_export,
+    torch_dtype_from_precision,
+)
 
 __all__ = [
+    "convert_lora_nemo_to_canonical",
+    "load_model_weights",
+    "load_sharded_metadata_torch_dist",
+    "load_sharded_metadata_zarr",
+    "nemo_to_path",
     "is_nemo2_checkpoint",
+    "is_nemo_tarfile",
+    "prepare_directory_for_export",
     "torch_dtype_from_precision",
 ]

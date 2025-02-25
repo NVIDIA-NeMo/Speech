@@ -323,7 +323,7 @@ def run_inference(
                 tensor_parallelism_size=tp_size,
                 pipeline_parallelism_size=pp_size,
                 max_input_len=max_input_len,
-                max_output_len=max_output_len,
+                max_seq_len=(max_input_len + max_output_len),
                 max_batch_size=max_batch_size,
                 use_parallel_embedding=use_parallel_embedding,
                 max_prompt_embedding_table_size=max_prompt_embedding_table_size,

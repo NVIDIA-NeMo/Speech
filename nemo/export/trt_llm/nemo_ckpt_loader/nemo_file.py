@@ -24,21 +24,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
-
-# This is important even though not used. Otherwise zarr raises error.
-import tensorstore  # noqa: F401 pylint: disable=unused-import
 import torch
 import yaml
-import zarr
-from torch.distributed.checkpoint import FileSystemReader
-from torch.distributed.checkpoint.metadata import BytesStorageMetadata, TensorStorageMetadata
-from torch.distributed.checkpoint.state_dict_loader import load_state_dict
 from transformers import AutoTokenizer, GPT2Tokenizer, PreTrainedTokenizer
 
 from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
-from nemo.export.tarutils import TarPath, ZarrPathStore
+from nemo.export.tarutils import TarPath
 from nemo.export.tiktoken_tokenizer import TiktokenTokenizer
-from nemo.export.utils import torch_dtype_from_precision
+from nemo.export.utils import load_model_weights, nemo_to_path, torch_dtype_from_precision
 
 try:
     from nemo.lightning import io
@@ -48,38 +41,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_NEMO2 = False
 
 LOGGER = logging.getLogger("NeMo")
-
 EXTRA_STATE = "extra_state"
-
-
-def is_nemo_file(path):
-    """Checks if the path is NeMo tarfile."""
-    flag = False
-
-    if path is not None:
-        if len(path) > 5:
-            pc = Path(path)
-            if pc.exists():
-                if pc.is_file():
-                    if path[-5 : len(path)] == ".nemo":
-                        flag = True
-
-    return flag
-
-
-class TarFileSystemReader(FileSystemReader):
-    """Reader that accepts both Path and TarPath checkpoint directory.
-
-    The FileSystemReader works with TarPath, but expects a pure Path.
-    It's enough to skip the Path check in __init__.
-    """
-
-    def __init__(self, path: Union[Path, TarPath]) -> None:
-        """Makes sure that super().__init__ gets a pure path as expected."""
-        super_path = str(path) if isinstance(path, TarPath) else path
-        super().__init__(super_path)
-        if isinstance(path, TarPath):
-            self.path = path  # overwrites path set in super().__init__ call
 
 
 def load_extra_state_from_bytes(val: Optional[Union[torch.Tensor, BytesIO]]) -> Optional[dict]:
@@ -187,95 +149,24 @@ def rename_extra_states(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     return state_dict | mcore_extra_states
 
 
-def load_sharded_metadata_torch_dist(checkpoint_dir: Union[Path, TarPath], torch_tensor: bool = True):
-    """Loads model state dictionary from torch_dist checkpoint format."""
-    fs_reader = TarFileSystemReader(checkpoint_dir)
-    metadata = fs_reader.read_metadata()
+def torch_to_numpy_state_dict(state_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transforms model state dictionary with torch tensors to numpy arrays.
 
-    state_dict = {
-        k: torch.empty(tp.size, dtype=tp.properties.dtype)
-        for k, tp in metadata.state_dict_metadata.items()
-        if isinstance(tp, TensorStorageMetadata)
-    }
+    Args:
+        state_dict (dict): Model state dictionary.
+    Returns:
+        dict: State dictionary using numpy arrays.
+    """
+    for k, v in state_dict.items():
+        if v.dtype == torch.bfloat16:
+            from tensorrt_llm._utils import np_bfloat16
 
-    state_dict.update(
-        {k: [] for k, tp in metadata.state_dict_metadata.items() if isinstance(tp, BytesStorageMetadata)}
-    )
+            state_dict[k] = v.view(torch.int16).numpy().view(np_bfloat16)
+        else:
+            state_dict[k] = v.numpy()
 
-    load_state_dict(
-        state_dict,
-        storage_reader=fs_reader,
-        no_dist=True,
-    )
-    state_dict = rename_extra_states(state_dict)
-
-    if not torch_tensor:
-        for k, v in state_dict.items():
-            if v.dtype == torch.bfloat16:
-                from tensorrt_llm._utils import np_bfloat16
-
-                state_dict[k] = v.view(torch.int16).numpy().view(np_bfloat16)
-            else:
-                state_dict[k] = v.numpy()
     return state_dict
-
-
-def load_sharded_pickle_extra_state_scale(dir: Union[Path, TarPath]):
-    """Loads model state dictionary from pickle extra state scale."""
-    pt_files = list(dir.glob('shard_*_*.pt'))
-    extra_states = {}
-    for file in pt_files:
-        shard_name = file.name.split('.')[0]
-        with file.open('rb') as opened_file:
-            extra_states[dir.name + '/' + shard_name] = torch.load(opened_file, weights_only=True)
-
-    return rename_extra_states(extra_states)
-
-
-def contains_extra_states(subdir: Union[Path, TarPath]):
-    """Checks if the subdirectory contains extra states."""
-    return list(subdir.glob('shard_0_*.pt')) != []
-
-
-def load_sharded_metadata_zarr(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
-    """Loads model state dictionary from zarr checkpoint format."""
-    torch.serialization.add_safe_globals([BytesIO])  # For possible extra states
-    sharded_state_dict = {}
-    for subdir in checkpoint_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        if contains_extra_states(subdir):
-            sharded_state_dict.update(load_sharded_pickle_extra_state_scale(subdir))
-        elif (subdir / '.zarray').exists():
-            key = subdir.name
-            zstore = ZarrPathStore(subdir)
-            arr = zarr.open(zstore, 'r')
-
-            if torch_tensor:
-                # sharded_state_dict[key] = torch.from_numpy(arr[:].astype("float32")).to(dtype=torch.bfloat16)
-                if arr.dtype.name == "bfloat16":
-                    sharded_state_dict[key] = torch.from_numpy(arr[:].view(np.int16)).view(torch.bfloat16)
-                else:
-                    from tensorrt_llm._utils import str_dtype_to_torch
-
-                    sharded_state_dict[key] = torch.from_numpy(arr[:]).view(str_dtype_to_torch(arr.dtype.name))
-            else:
-                sharded_state_dict[key] = arr[:]
-
-    return sharded_state_dict
-
-
-def load_sharded_metadata(checkpoint_dir: Union[Path, TarPath], torch_tensor=True):
-    """Loads model state dictionary from all checkpoint formats."""
-    with (checkpoint_dir / 'metadata.json').open(mode='r') as f:
-        config_dict = json.load(f)
-    if config_dict['sharded_backend'] == 'zarr':
-        return load_sharded_metadata_zarr(checkpoint_dir, torch_tensor)
-    elif config_dict['sharded_backend'] == 'torch_dist':
-        return load_sharded_metadata_torch_dist(checkpoint_dir, torch_tensor)
-    else:
-        raise NotImplementedError(f'Distributed checkpoint backend {config_dict["sharded_backend"]} not supported')
 
 
 def update_tokenizer_paths(tokenizer_config: Dict, unpacked_checkpoints_dir):
@@ -547,25 +438,29 @@ def get_weights_dtype(nemo_ckpt: Union[str, Path]) -> Optional[str]:
 
 
 def load_distributed_model_weights(
-    weights_directory: Union[Path, TarPath], mcore_scales_format: bool
+    nemo_checkpoint: Union[str, Path], mcore_scales_format: bool, torch_tensor: bool = True
 ) -> Dict[str, Any]:
     """
-    Loads model weights in `torch_dist` format directly from weights directory.
+    Loads model weights in `torch_dist` format from the model path.
     Preprocesses the scaling factors for local export if mcore_scales_format is set to False.
 
     Args:
-        weights_directory (Path | TarPath): Path to the weights directory.
+        nemo_checkpoint (str | Path): Path to the nemo checkpoint.
         mcore_scales_format (bool): Flag for local vs megatron.core export.
-
+        torch_tensor (bool): If set to False, converts returns weights in numpy format.
     Returns:
-        dict: Model state dictionary
+        dict: Model state dictionary.
     """
-    model = load_sharded_metadata(weights_directory)
-    if not mcore_scales_format:
-        model.update({k: v[0] for k, v in model.items() if EXTRA_STATE in k and isinstance(v, list)})
-        model = preprocess_scaling_factors_for_local_export(model)
+    state_dict = load_model_weights(nemo_checkpoint, load_extra_states=True)
+    if not torch_tensor:
+        state_dict = torch_to_numpy_state_dict(state_dict)
 
-    return model
+    state_dict = rename_extra_states(state_dict)
+    if not mcore_scales_format:
+        state_dict.update({k: v[0] for k, v in state_dict.items() if EXTRA_STATE in k and isinstance(v, list)})
+        state_dict = preprocess_scaling_factors_for_local_export(state_dict)
+
+    return state_dict
 
 
 def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Path], mcore_scales_format: bool = True):
@@ -573,19 +468,14 @@ def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Pat
     if not os.path.exists(nemo_ckpt):
         raise TypeError("%s does not exist", nemo_ckpt)
 
-    if os.path.isdir(nemo_ckpt):
-        nemo_dir = Path(nemo_ckpt)
-    else:
-        nemo_dir = TarPath(nemo_ckpt)
+    nemo_dir = nemo_to_path(nemo_ckpt)
 
     tokenizer = None
     try:
         unpacked_checkpoint_dir = UnpackedNemoCheckpointDir(nemo_dir, load_checkpoints_to_cpu=True)
 
         if (nemo_dir / "model_weights").exists():
-            dist_ckpt_folder = nemo_dir / "model_weights"
-
-            model = load_distributed_model_weights(dist_ckpt_folder, mcore_scales_format)
+            model = load_distributed_model_weights(nemo_ckpt, mcore_scales_format)
 
             nemo_model_config = unpacked_checkpoint_dir.model_config
 
@@ -600,8 +490,7 @@ def load_nemo_model(nemo_ckpt: Union[str, Path], nemo_export_dir: Union[str, Pat
 
                 tokenizer = build_tokenizer(tokenizer_config)
         elif (nemo_dir / "weights").exists():
-            dist_ckpt_folder = nemo_dir / "weights"
-            model = load_distributed_model_weights(dist_ckpt_folder, mcore_scales_format)
+            model = load_distributed_model_weights(nemo_ckpt, mcore_scales_format)
             io_folder = nemo_dir / "context"
 
             if (io_folder / "model.yaml").exists():

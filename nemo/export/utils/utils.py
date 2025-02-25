@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import shutil
+
 from pathlib import Path
 from typing import Union
 
@@ -29,6 +31,42 @@ def is_nemo2_checkpoint(checkpoint_path: str) -> bool:
 
     ckpt_path = Path(checkpoint_path)
     return (ckpt_path / 'context').is_dir()
+
+
+def prepare_directory_for_export(model_dir: Union[str, Path], delete_existing_files: bool) -> None:
+    """
+    Prepares model_dir path for the TensorRTT-LLM / vLLM export.
+    Makes sure that the model_dir directory exists and is empty.
+
+    Args:
+        model_dir (str): Path to the target directory for the export.
+        delete_existing_files (bool): Attempt to delete existing files if they exist.
+
+    Returns:
+        None
+    """
+    model_path = Path(model_dir)
+
+    if model_path.exists():
+        if delete_existing_files:
+            shutil.rmtree(model_path)
+        elif any(model_path.iterdir()):
+            raise RuntimeError(f"There are files in {model_path} folder: try setting delete_existing_files=True.")
+
+    model_path.mkdir(parents=True, exist_ok=True)
+
+
+def is_nemo_tarfile(path: str) -> bool:
+    """
+    Checks if the path exists and points to packed NeMo 1 checkpoint.
+
+    Args:
+        path (str): Path to possible checkpoint.
+    Returns:
+        bool: NeMo 1 checkpoint exists and is in '.nemo' format.
+    """
+    checkpoint_path = Path(path)
+    return checkpoint_path.exists() and checkpoint_path.suffix == '.nemo'
 
 
 # Copied from nemo.collections.nlp.parts.utils_funcs to avoid introducing extra NeMo dependencies:

@@ -41,7 +41,6 @@ from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import (
     get_model_type,
     get_tokenizer,
     get_weights_dtype,
-    is_nemo_file,
     load_nemo_model,
 )
 from nemo.export.trt_llm.qnemo import qnemo_to_tensorrt_llm
@@ -57,7 +56,7 @@ from nemo.export.trt_llm.tensorrt_llm_run import (
     unload_engine,
 )
 from nemo.export.trt_llm.utils import is_rank
-from nemo.export.utils import torch_dtype_from_precision
+from nemo.export.utils import is_nemo_tarfile, prepare_directory_for_export, torch_dtype_from_precision
 
 use_deploy = True
 try:
@@ -161,7 +160,7 @@ class TensorRTLLM(ITritonDeployable):
         pipeline_parallelism_size: int = 1,
         gpus_per_node: Optional[int] = None,
         max_input_len: int = 256,
-        max_output_len: Optional[int] = 256,
+        max_output_len: Optional[int] = None,
         max_batch_size: int = 8,
         max_prompt_embedding_table_size: Optional[int] = None,
         use_parallel_embedding: bool = False,
@@ -176,7 +175,7 @@ class TensorRTLLM(ITritonDeployable):
         max_lora_rank: int = 64,
         max_num_tokens: Optional[int] = None,
         opt_num_tokens: Optional[int] = None,
-        max_seq_len: Optional[int] = None,
+        max_seq_len: Optional[int] = 512,
         multiple_profiles: bool = False,
         gpt_attention_plugin: str = "auto",
         gemm_plugin: str = "auto",
@@ -229,22 +228,7 @@ class TensorRTLLM(ITritonDeployable):
         """
 
         gpus_per_node = tensor_parallelism_size if gpus_per_node is None else gpus_per_node
-
-        if Path(self.model_dir).exists():
-            if delete_existing_files and len(os.listdir(self.model_dir)) > 0:
-                for files in os.listdir(self.model_dir):
-                    path = os.path.join(self.model_dir, files)
-                    try:
-                        shutil.rmtree(path)
-                    except OSError:
-                        os.remove(path)
-
-                if len(os.listdir(self.model_dir)) > 0:
-                    raise Exception("Couldn't delete all files.")
-            elif len(os.listdir(self.model_dir)) > 0:
-                raise Exception("There are files in this folder. Try setting delete_existing_files=True.")
-        else:
-            Path(self.model_dir).mkdir(parents=True, exist_ok=True)
+        prepare_directory_for_export(self.model_dir, delete_existing_files=delete_existing_files)
 
         if max_prompt_embedding_table_size is None:
             max_prompt_embedding_table_size = 0
@@ -253,12 +237,20 @@ class TensorRTLLM(ITritonDeployable):
 
         if max_output_len is not None:
             warnings.warn(
-                "Parameter max_output_len is deprecated and will be removed. Please use max_seq_len instead.",
-                DeprecationWarning,
-                stacklevel=2,
+                "Parameter max_output_len is deprecated and will be removed.", DeprecationWarning, stacklevel=2
             )
+            max_output_len = max_output_len if max_output_len is not None else 256
+
             if max_seq_len is None:
                 max_seq_len = max_input_len + max_output_len
+            else:
+                warnings.warn(
+                    f"Parameter max_output_len will be overwritten by max_seq_len={max_seq_len}.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+
+        max_seq_len = max_seq_len if max_seq_len is not None else 512
 
         if max_batch_size < 4:
             warnings.warn(
@@ -1389,7 +1381,7 @@ class TensorRTLLM(ITritonDeployable):
 
             prompt_embeddings_table = torch.from_numpy(prompt_embeddings_table)
         elif p_tuning == "use_checkpoint":
-            if not is_nemo_file(prompt_embeddings_checkpoint_path):
+            if not is_nemo_tarfile(prompt_embeddings_checkpoint_path):
                 raise TypeError(prompt_embeddings_checkpoint_path + " is not a nemo file.")
             prompt_embeddings_table = self._get_prompt_embedding_table_ckpt(prompt_embeddings_checkpoint_path)
 

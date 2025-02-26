@@ -664,8 +664,10 @@ def _artifact_transform_save(instance, cfg: fdl.Config, output_path: Path, relat
         setattr(cfg, artifact.attr, new_val)
 
     for attr in dir(cfg):
-        child = to_config(getattr(cfg, attr))
-
+        try:
+            child = to_config(getattr(cfg, attr))
+        except AttributeError:
+            continue
         try:
             if isinstance(child, (fdl.Config, fdl.Partial)):
                 setattr(

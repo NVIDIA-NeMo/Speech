@@ -84,7 +84,7 @@ python convert_hf_dataset_to_nemo.py \
 import json
 import os
 import traceback
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass, field, is_dataclass
 from typing import Optional
 
 import hydra
@@ -118,7 +118,7 @@ class HFDatasetConversionConfig:
     resolved_output_dir: str = ''
     split_output_dir: Optional[str] = None
 
-    hydra: HydraConf = HydraConf(run=RunDir(dir="."))
+    hydra: HydraConf = field(default_factory=lambda: HydraConf(run=RunDir(dir=".")))
 
 
 def prepare_output_dirs(cfg: HFDatasetConversionConfig):

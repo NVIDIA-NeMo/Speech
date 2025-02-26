@@ -14,7 +14,7 @@ After :ref:`installing NeMo<installation>`, you can transcribe an audio file as 
 
     import nemo.collections.asr as nemo_asr
     asr_model = nemo_asr.models.ASRModel.from_pretrained("stt_en_fastconformer_transducer_large")
-    transcript = asr_model.transcribe(["path/to/audio_file.wav"])
+    transcript = asr_model.transcribe(["path/to/audio_file.wav"])[0].text
 
 Obtain timestamps
 ^^^^^^^^^^^^^^^^^
@@ -39,9 +39,9 @@ With the `timestamps=True` flag, you can obtain timestamps for each character in
     hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], timestamps=True)
 
     # by default, timestamps are enabled for char, word and segment level
-    word_timestamps = hypotheses[0][0].timestep['word'] # word level timestamps for first sample
-    segment_timestamps = hypotheses[0][0].timestep['segment'] # segment level timestamps
-    char_timestamps = hypotheses[0][0].timestep['char'] # char level timestamps
+    word_timestamps = hypotheses[0].timestamp['word'] # word level timestamps for first sample
+    segment_timestamps = hypotheses[0].timestamp['segment'] # segment level timestamps
+    char_timestamps = hypotheses[0].timestamp['char'] # char level timestamps
 
     for stamp in segment_timestamps:
         print(f"{stamp['start']}s - {stamp['end']}s : {stamp['segment']}")
@@ -70,15 +70,11 @@ For more control over the timestamps, you can update the decoding config to ment
     # specify flag `return_hypotheses=True``
     hypotheses = asr_model.transcribe(["path/to/audio_file.wav"], return_hypotheses=True)
 
-    # if hypotheses form a tuple (from RNNT), extract just "best" hypotheses
-    if type(hypotheses) == tuple and len(hypotheses) == 2:
-        hypotheses = hypotheses[0]
-
-    timestamp_dict = hypotheses[0].timestep # extract timesteps from hypothesis of first (and only) audio file
-    print("Hypothesis contains following timestep information :", list(timestamp_dict.keys()))
+    timestamp_dict = hypotheses[0].timestamp # extract timestamps from hypothesis of first (and only) audio file
+    print("Hypothesis contains following timestamp information :", list(timestamp_dict.keys()))
 
     # For a FastConformer model, you can display the word timestamps as follows:
-    # 80ms is duration of a timestep at output of the Conformer
+    # 80ms is duration of a timestamp at output of the Conformer
     time_stride = 8 * asr_model.cfg.preprocessor.window_stride
 
     word_timestamps = timestamp_dict['word']

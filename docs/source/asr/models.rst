@@ -110,8 +110,8 @@ The main idea is to separate labels and blank score predictions, which allows to
 When external LM is available for inference, the internal LM can be subtracted from HAT model prediction in beamsearch decoding to improve external LM efficiency.
 It can be helpful in the case of text-only adaptation for new domains.
 
-The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJiont" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_
-class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJiont" class.
+The only difference from the standard Conformer-Transducer model (RNNT) is the use of `"HATJoint" <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39>`_
+class (instead of "RNNTJoint") for joint module. The all HAT logic is implemented in the "HATJoint" class.
 
     .. image:: images/hat.png
         :align: center

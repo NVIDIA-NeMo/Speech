@@ -114,7 +114,7 @@ In order to obtain alignments from CTC or RNNT models (previously called ``logpr
 .. code-block:: python
 
     hyps = model.transcribe(audio=[list of audio files], batch_size=BATCH_SIZE, return_hypotheses=True)
-    logprobs = hyps[0].alignments  # or hyps[0][0].alignments for RNNT
+    logprobs = hyps[0].alignments  
 
 -----
 
@@ -208,7 +208,7 @@ Multi-task models that use structured prompts require additionl task tokens as i
     predicted_text = canary_model.transcribe(
           "<path to input manifest file>",
           batch_size=16,  # batch size to run the inference with
-    )
+    )[0].text
 
 Here the manifest file should be a json file where each line has the following format:
 
@@ -235,7 +235,7 @@ Note that using manifest allows to specify the task configuration for each audio
             source_lang="en",  # language of the audio input, set `source_lang`==`target_lang` for ASR
             target_lang="en",  # language of the text output
             pnc=True,  # whether to have PnC output, choices=[True, False]
-    )
+    )[0].text
 
 Inference on Apple M-Series GPU
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

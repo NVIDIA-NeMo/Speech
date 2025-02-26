@@ -46,6 +46,7 @@ from typing import (
 
 import torch
 import torch.distributed
+from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities import move_data_to_device
 from megatron.core import parallel_state
 from megatron.core.distributed import DistributedDataParallel as McoreDDP
@@ -191,7 +192,6 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
         convert_module_fn: Optional[Callable[[ModelT], nn.Module]] = None,
     ) -> None:
         from megatron.core import parallel_state
-
         from nemo.utils.model_utils import unwrap_model
 
         _pipeline: List[nn.Module]
@@ -611,20 +611,23 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
 
                 msg = (
                     f" > number of parameters on (tensor, pipeline) model parallel rank "
-                    f"({parallel_state.get_tensor_model_parallel_rank()}, {parallel_state.get_pipeline_model_parallel_rank()}): "  # pylint: disable=line-too-long
+                    f"({parallel_state.get_tensor_model_parallel_rank()} ,"
+                    f"{parallel_state.get_pipeline_model_parallel_rank()}): "
                     f"{num_params}"
                 )
                 logging.info(msg)
 
                 if num_params != num_trainable_params:
                     logging.info(
-                        " > number of trainable parameters: "
-                        f"{num_trainable_params} ({num_trainable_params / num_params:.2%} of total)"
+                        f" > number of trainable parameters: {num_trainable_params} "
+                        f"({num_trainable_params / num_params:.2%} of total)"
                     )
         if self.convert_module_fn:
             self.apply_convert_module_fn()
 
-        self.init_ddp()
+        # Skip init_ddp for inference i.e testing as it can lead to OOM.
+        if not self.trainer.state.fn == TrainerFn.TESTING:
+            self.init_ddp()
 
     def apply_convert_module_fn(self):
         for i in range(len(self)):

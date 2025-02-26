@@ -163,7 +163,8 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
     peft: Optional[PEFT] = model.model_transform
     if isinstance(peft, PEFT):
         model = peft(model)
-        adapter_sharded_state_dict = {k: v for k, v in model.sharded_state_dict().items() if ".adapter." in k}
+        sharded_state_dict = MegatronModule.sharded_state_dict(model)
+        adapter_sharded_state_dict = {k: v for k, v in sharded_state_dict.items() if ".adapter." in k}
         adapter_state = trainer.strategy.checkpoint_io.load_checkpoint(
             ckpt_to_weights_subdir(path, is_saving=False), sharded_state_dict=adapter_sharded_state_dict
         )

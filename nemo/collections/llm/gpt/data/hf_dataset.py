@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import lightning.pytorch as pl
 import torch
+import torch.distributed as dist
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
@@ -112,18 +116,63 @@ def make_dataset_splits(dataset, split, split_aliases):
     return dataset_splits
 
 
+def has_dist_env_init_or_rank_env_var():
+    """returns whether it runs on a dist-environment"""
+    env_vars = ['LOCAL_RANK', 'GLOBAL_RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT']
+    return dist.is_initialized() or any(map(lambda x: x in os.environ, env_vars))
+
+
 class HFDatasetDataModule(pl.LightningDataModule):
-    """HFDatasetDataModule wraps HF's load_dataset (datasets library)
-    so that it can be used within NeMo.
-    Users can select whether to use an mcore-sampler via use_mcore_sampler arg.
+    """A PyTorch Lightning DataModule for loading and managing datasets from the `datasets` library.
 
-    Usage examples:
+    Args:
+        path_or_dataset (str | Dataset | DatasetDict): The dataset name from HF or a preloaded dataset.
+        split (str | list, optional): The dataset split(s) to load (e.g., "train" or ["train", "validation"]).
+            Defaults to None.
+        collate_fn (callable, optional): Custom function for batching data; defaults to a padding-based collation.
+            Defaults to None.
+        num_workers (int, optional): Number of workers for data loading. Defaults to 2.
+        pin_memory (bool, optional): Whether to use pinned memory for faster GPU transfers. Defaults to True.
+        persistent_workers (bool, optional): Whether to keep worker threads alive between epochs. Defaults to True.
+        seq_length (int, optional): Maximum sequence length for tokenized inputs. Defaults to 1024.
+        micro_batch_size (int, optional): Batch size per device. Defaults to 2.
+        global_batch_size (int, optional): Total batch size across all devices. Defaults to 2.
+        pad_token_id (int, optional): Token ID used for padding sequences. Defaults to 0.
+        use_mcore_sampler (bool, optional): Whether to use NVIDIA MCore sampler for efficient data loading.
+            Defaults to False.
+        use_dist_sampler (bool, optional): Whether to enable distributed sampling. Defaults to False.
+        mcore_dataloader_type (str, optional): Dataloader type when using MCore sampling. Defaults to 'cyclic'.
+        train_aliases (list, optional): Alternative names for the training split. Defaults to ["train", "training"].
+        test_aliases (list, optional): Alternative names for the test split. Defaults to ["test", "testing"].
+        val_aliases (list, optional): Alternative names for the validation split.
+            Defaults to ["val", "validation", "valid", "eval"].
+        **kwargs: Additional arguments passed to `datasets.load_dataset`.
 
-    - loading a single split (train) from a dataset
-    llm.HFDatasetDataModule("rajpurkar/squad", split="train")
+    Raises:
+        ValueError: If `path_or_dataset` is not a valid dataset type (str, Dataset, or DatasetDict).
 
-    - loading multiple splits (train, validation) from a dataset
-    llm.HFDatasetDataModule("rajpurkar/squad", split=["train", "validation"])
+    Examples:
+        Load a single split (train) from a dataset:
+        ```python
+        data_module = HFDatasetDataModule("rajpurkar/squad", split="train")
+        ```
+
+        Load multiple splits (train and validation):
+        ```python
+        data_module = HFDatasetDataModule("rajpurkar/squad", split=["train", "validation"])
+        ```
+
+        Use a preloaded dataset:
+        ```python
+        from datasets import load_dataset
+        dataset = load_dataset("imdb")
+        data_module = HFDatasetDataModule(dataset, split="train")
+        ```
+
+    Notes:
+        - If neither `use_dist_sampler` nor `use_mcore_sampler` are enabled, but a distributed
+        environment is detected, HFDatasetDataModule will use a distributed-sampler automatically.
+        - If no collation function is provided, a default function with padding using `pad_token_id` is applied.
     """
 
     def __init__(
@@ -139,6 +188,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         global_batch_size=2,
         pad_token_id=0,
         use_mcore_sampler=False,
+        use_dist_sampler=False,
         mcore_dataloader_type='cyclic',
         train_aliases=["train", "training"],
         test_aliases=["test", "testing"],
@@ -181,6 +231,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
         self.use_mcore_sampler = use_mcore_sampler
         self.mcore_dataloader_type = mcore_dataloader_type
+        self.use_dist_sampler = use_dist_sampler
 
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
@@ -218,14 +269,26 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str):
         """setups sampler"""
-        if not self.use_mcore_sampler:
-            return
-        self.data_sampler = MegatronDataSampler(
-            seq_len=self.seq_length,
-            micro_batch_size=self.micro_batch_size,
-            global_batch_size=self.global_batch_size,
-            dataloader_type=self.mcore_dataloader_type,
-        )
+        # Turn-on dist-sampler if the user is running inside a dist-env.
+        if not self.use_dist_sampler and not self.use_mcore_sampler and has_dist_env_init_or_rank_env_var():
+            self.use_dist_sampler = True
+            logging.info("Turning on distributed data sampler")
+        elif self.use_mcore_sampler:
+            self.mcore_data_sampler = MegatronDataSampler(
+                seq_len=self.seq_length,
+                micro_batch_size=self.micro_batch_size,
+                global_batch_size=self.global_batch_size,
+                dataloader_type=self.mcore_dataloader_type,
+            )
+
+    def get_data_sampler(self, dataset):
+        """returns the data sampler"""
+        if self.use_dist_sampler:
+            return DistributedSampler(dataset)
+        elif self.use_mcore_sampler:
+            return self.mcore_data_sampler
+        else:
+            return None
 
     def _make_dataloader(self, dataset, collate_fn=None):
         """Dataloader creator"""
@@ -241,6 +304,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
             persistent_workers=self.persistent_workers,
             collate_fn=collate_fn,
             batch_size=self.micro_batch_size,
+            sampler=self.get_data_sampler(dataset),
         )
 
     @property

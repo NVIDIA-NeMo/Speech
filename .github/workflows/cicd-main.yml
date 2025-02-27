@@ -491,6 +491,7 @@ jobs:
         +model.train_ds.hf_data_cfg.split="test.clean" \
         +model.train_ds.hf_data_cfg.streaming=true \
         +model.train_ds.hf_data_cfg.trust_remote_code=True \
+        ++model.train_ds.hf_data_cfg.cache_dir=/home/TestData/HF_HOME \
         ~model.validation_ds.hf_data_cfg \
         model.validation_ds.streaming=true \
         +model.validation_ds.hf_data_cfg.path="librispeech_asr" \
@@ -498,6 +499,7 @@ jobs:
         +model.validation_ds.hf_data_cfg.split="test.clean" \
         +model.validation_ds.hf_data_cfg.streaming=true \
         +model.validation_ds.hf_data_cfg.trust_remote_code=True \
+        ++model.validation_ds.hf_data_cfg.cache_dir=/home/TestData/HF_HOME \
         ~model.test_ds \
         init_from_nemo_model=/home/TestData/asr/stt_en_fastconformer_transducer_large.nemo \
         model.tokenizer.update_tokenizer=False \

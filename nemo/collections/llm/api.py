@@ -971,10 +971,6 @@ def _validate_config(
         assert model.config.hidden_size > 0
         assert model.config.num_attention_heads > 0
         assert model.config.ffn_hidden_size > 0
-
-        if hasattr(model.config, "seq_length"):
-            if getattr(model.config, "max_position_embeddings", None) is not None:
-                assert model.config.seq_length <= model.config.max_position_embeddings
     else:
         assert not isinstance(trainer.strategy, nl.MegatronStrategy), "Expected model.config to exist"
 

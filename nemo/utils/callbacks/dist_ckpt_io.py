@@ -19,6 +19,7 @@ from time import time
 from typing import Any, Dict, Optional, Union
 
 import lightning.pytorch as pl
+import torch
 from lightning.fabric.plugins import CheckpointIO
 from lightning.fabric.utilities.cloud_io import get_filesystem
 from lightning.fabric.utilities.types import _PATH
@@ -52,7 +53,8 @@ except (ImportError, ModuleNotFoundError) as e:
 
     HAVE_MEGATRON_CORE = False
     IMPORT_ERROR = (
-        "megatron-core was not found. Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        "megatron-core was not found. "
+        "Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
         f" Exact error: {e}"
     )
 
@@ -79,6 +81,7 @@ class AsyncCompatibleCheckpointIO(CheckpointIO, ABC):
     def save_checkpoint(
         self, checkpoint: Dict[str, Any], path: _PATH, storage_options: Optional[Any] = None
     ) -> 'AsyncRequest':
+        """Interface to implement save_checkpoint and return an AsyncRequest"""
         raise NotImplementedError
 
 
@@ -141,9 +144,15 @@ class AsyncFinalizableCheckpointIO(_WrappingCheckpointIO):
                 completed. Otherwise, finalizes only those async calls which are
                 already done on all ranks. Defaults to False.
         """
+        if self.async_calls_queue.get_num_unfinalized_calls() == 0:
+            return False
+
+        start_time = time()
         call_idx_finalized = self.async_calls_queue.maybe_finalize_async_calls(blocking)
         if call_idx_finalized:
             logging.debug(f'Finalized async calls: {[f"#{idx}" for idx in call_idx_finalized]}')
+        end_time = time()
+        logging.info(f"Async finalization time took {end_time - start_time:.3f} s")
         return len(call_idx_finalized) > 0
 
     def teardown(self) -> None:
@@ -162,12 +171,15 @@ class AsyncFinalizerCallback(Callback):
     """
 
     def on_train_batch_end(self, trainer: "pl.Trainer", *args, **kwargs) -> None:
+        """Override hook to finalize pending checkpoint(s) if they exist."""
         self._get_checkpoint_io(trainer).maybe_finalize_save_checkpoint(blocking=False)
 
     def on_train_epoch_end(self, trainer: "pl.Trainer", *args, **kwargs) -> None:
+        """Override hook to finalize pending checkpoint(s) if they exist."""
         self._get_checkpoint_io(trainer).maybe_finalize_save_checkpoint(blocking=False)
 
     def on_train_end(self, trainer: "pl.Trainer", *args, **kwargs) -> None:
+        """Override hook to finalize pending checkpoint(s) if they exist."""
         checkpoint_io = self._get_checkpoint_io(trainer)
         if checkpoint_io.async_calls_queue.get_num_unfinalized_calls() > 0:
             logging.info('Pending async checkpoint saves. Finalizing them synchronously now')
@@ -269,13 +281,36 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
 
         validate_sharding_integrity = not (self.validated_consistency and self.assume_constant_structure)
         self.validated_consistency = True
-        return dist_checkpointing.save(
+
+        rank = torch.distributed.get_rank()
+        iteration = _get_iteration_from_checkpoint(checkpoint)
+        start_time = time()
+        async_save_request = dist_checkpointing.save(
             sharded_state_dict=checkpoint,
             checkpoint_dir=path,
             sharded_strategy=self.save_sharded_strategy,
             validate_access_integrity=validate_sharding_integrity,
             async_sharded_save=self.async_save,
         )
+        end_time = time()
+        log_parts = (
+            "Global Checkpoint Save",
+            f"Rank: {rank}",
+            f"Iteration: {iteration}" if iteration is not None else None,
+            f"Start time: {start_time:.3f}s",
+            f"Save duration: {end_time - start_time:.3f}s",
+        )
+        log_message = " : ".join(part for part in log_parts if part is not None)
+        logging.info(log_message)
+
+        def iter_finalize_fn():
+            logging.info(f'Successfully saved checkpoint from iteration {int(iteration):7d} to {path}')
+
+        if self.async_save:
+            assert async_save_request is not None
+            async_save_request.add_finalize_fn(iter_finalize_fn)
+
+        return async_save_request
 
     @_debug_time('DistributedCheckpointIO.load_checkpoint')
     def load_checkpoint(
@@ -338,18 +373,28 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
 
         logging.debug(f'Dist ckpt load strictness: {strict}')
 
-        return dist_checkpointing.load(
+        start_time = time()
+        ret = dist_checkpointing.load(
             sharded_state_dict=sharded_state_dict,
             checkpoint_dir=path,
             sharded_strategy=sharded_strategy,
             validate_access_integrity=validate_access_integrity,
             strict=strict,
         )
+        end_time = time()
+        duration = end_time - start_time
+        logging.info(
+            "Global Checkpoint Load : "
+            f"Rank : {torch.distributed.get_rank()} : "
+            f"Start time : {start_time:.3f}s : "
+            f"Time spent in load_checkpoint: {duration:.3f}s"
+        )
+        return ret
 
     def adjust_non_strict_load(self, path: _PATH, sharded_state_dict: Dict[str, Any]):
+        """Remove unexpected keys from being loaded into the state dict."""
         ckpt_sharded_metadata = dist_checkpointing.load_tensors_metadata(path)
         loaded_keys = []
-        missing_keys = []
         unexpected_keys = []
 
         def should_remove_missing_sharded_base(x: Any):
@@ -380,6 +425,7 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
 
     @property
     def save_sharded_strategy(self) -> 'SaveShardedStrategy':
+        """Conditionally initialize and get the sharded strategy to use for saving."""
         if self._save_sharded_strategy is None:
             self._save_sharded_strategy = self._determine_dist_ckpt_save_strategy()
         return self._save_sharded_strategy
@@ -393,9 +439,9 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
         """
         if self.save_ckpt_format == 'zarr':
             logging.warning(
-                f'`zarr` distributed checkpoint backend is deprecated.'
-                f' Distributed optimizer checkpoint saving might be extremely slow.'
-                f' Please switch to PyTorch Distributed format (model.dist_ckpt_format=torch_dist).'
+                '`zarr` distributed checkpoint backend is deprecated.'
+                ' Distributed optimizer checkpoint saving might be extremely slow.'
+                ' Please switch to PyTorch Distributed format (model.dist_ckpt_format=torch_dist).'
             )
 
         if self.async_save and self.save_ckpt_format != 'torch_dist':
@@ -421,3 +467,13 @@ class DistributedCheckpointIO(AsyncCompatibleCheckpointIO):
 
         logging.info(f'Using {save_strategy} dist-ckpt save strategy.')
         return save_strategy
+
+
+def _get_iteration_from_checkpoint(checkpoint: Dict[str, Any]) -> Optional[int]:
+    return (
+        checkpoint.get("loops", {})
+        .get("fit_loop", {})
+        .get("epoch_loop.batch_progress", {})
+        .get("total", {})
+        .get("completed", None)
+    )

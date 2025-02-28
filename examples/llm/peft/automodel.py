@@ -24,16 +24,16 @@ from nemo.lightning import NeMoLogger
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 
 
-def make_squad_hf_dataset(tokenizer):
+def make_squad_hf_dataset(tokenizer, batch_size):
     def formatting_prompts_func(example):
         formatted_text = [
             f"Context: {example['context']} Question: {example['question']} Answer:",
             f" {example['answers']['text'][0].strip()}",
         ]
         context_ids, answer_ids = list(map(tokenizer.text_to_ids, formatted_text))
-        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id:
+        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id and tokenizer.bos_id is not None:
             context_ids.insert(0, tokenizer.bos_id)
-        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id:
+        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id and tokenizer.eos_id is not None:
             answer_ids.append(tokenizer.eos_id)
 
         return dict(
@@ -42,7 +42,9 @@ def make_squad_hf_dataset(tokenizer):
             loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
         )
 
-    datamodule = llm.HFDatasetDataModule("rajpurkar/squad", split="train[:10]", pad_token_id=tokenizer.eos_id)
+    datamodule = llm.HFDatasetDataModule(
+        "rajpurkar/squad", split="train", batch_size=batch_size, pad_token_id=tokenizer.eos_id or 0
+    )
     datamodule.map(
         formatting_prompts_func,
         batched=False,
@@ -72,10 +74,10 @@ def make_strategy(strategy, model, devices, num_nodes, adapter_only=False):
         raise NotImplementedError("Encountered unknown strategy")
 
 
-def logger(ckpt_folder) -> nl.NeMoLogger:
+def logger(ckpt_folder, save_every_n_train_steps) -> nl.NeMoLogger:
     ckpt = nl.ModelCheckpoint(
         save_last=True,
-        every_n_train_steps=1,
+        every_n_train_steps=save_every_n_train_steps,
         monitor="reduced_train_loss",
         save_top_k=1,
         save_on_train_epoch_end=True,
@@ -107,6 +109,7 @@ def main():
     parser.add_argument('--use-torch-jit', action='store_true')
     parser.add_argument('--auto-resume', action='store_true')
     parser.add_argument('--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name)
+    parser.add_argument('--batch-size', default=1, type=int)
     args = parser.parse_args()
 
     wandb = None
@@ -122,7 +125,7 @@ def main():
         jit_config = JitConfig(use_torch=True, torch_kwargs={'dynamic': True}, use_thunder=False)
         callbacks = [JitTransform(jit_config)]
 
-    model = llm.HFAutoModelForCausalLM(model_name=args.model)
+    model = llm.HFAutoModelForCausalLM(model_name=args.model, trust_remote_code=True)
     strategy = make_strategy(args.strategy, model, args.devices, args.num_nodes, True)
 
     resume = (
@@ -136,7 +139,7 @@ def main():
 
     llm.api.finetune(
         model=model,
-        data=make_squad_hf_dataset(llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)),
+        data=make_squad_hf_dataset(model.tokenizer, args.batch_size),
         trainer=nl.Trainer(
             devices=args.devices,
             num_nodes=args.num_nodes,
@@ -151,10 +154,10 @@ def main():
             use_distributed_sampler=False,
             logger=wandb,
             callbacks=callbacks,
-            precision="bf16",
+            precision="bf16-mixed",
         ),
         optim=fdl.build(llm.adam.te_adam_with_flat_lr(lr=1e-5)),
-        log=logger(args.ckpt_folder),
+        log=logger(args.ckpt_folder, args.max_steps // 2),
         peft=llm.peft.LoRA(
             target_modules=['*_proj'],
             dim=8,

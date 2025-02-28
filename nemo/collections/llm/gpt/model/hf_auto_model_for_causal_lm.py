@@ -120,7 +120,9 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             AutoTokenizer: The tokenizer associated with the model.
         """
         if self._tokenizer is None:
-            self._tokenizer = HFAutoModelForCausalLM.configure_tokenizer(self.model_name, self.trust_remote_code)
+            self._tokenizer = HFAutoModelForCausalLM.configure_tokenizer(
+                self.model_name, trust_remote_code=self.trust_remote_code
+            )
         return self._tokenizer
 
     @tokenizer.setter

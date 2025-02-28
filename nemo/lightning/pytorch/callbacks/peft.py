@@ -140,7 +140,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
 
         super().setup(trainer, pl_module, stage=stage)
 
-        self._is_fsdp_v1 = type(trainer.strategy).__name__ == 'FSDPStrategy'
+        self._is_fsdp_v1 = type(trainer.strategy).__name__ in ['FSDPStrategy', 'FSDP2Strategy']
         trainer.strategy.trainer = trainer
         wrapped_io = partial(WrappedAdapterIO, peft=self)
 

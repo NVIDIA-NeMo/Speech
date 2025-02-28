@@ -16,7 +16,6 @@ import json
 import os
 import pickle as pkl
 import shutil
-import tarfile
 import tempfile
 from copy import deepcopy
 from typing import Any, List, Optional, Union
@@ -47,6 +46,7 @@ from nemo.collections.asr.parts.utils.vad_utils import (
     prepare_manifest,
 )
 from nemo.core.classes import Model
+from nemo.core.connectors.save_restore_connector import SaveRestoreConnector
 from nemo.utils import logging, model_utils
 
 __all__ = ['ClusteringDiarizer']
@@ -378,7 +378,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
 
             prefix = get_uniqname_from_filepath(manifest_file)
             name = os.path.join(embedding_dir, prefix)
-            self._embeddings_file = name + f'_embeddings.pkl'
+            self._embeddings_file = name + '_embeddings.pkl'
             pkl.dump(self.embeddings, open(self._embeddings_file, 'wb'))
             logging.info("Saved embedding files to {}".format(embedding_dir))
 
@@ -460,11 +460,6 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
             verbose=self.verbose,
         )
 
-    @staticmethod
-    def __make_nemo_file_from_folder(filename, source_dir):
-        with tarfile.open(filename, "w:gz") as tar:
-            tar.add(source_dir, arcname="./")
-
     @rank_zero_only
     def save_to(self, save_path: str):
         """
@@ -490,16 +485,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
                 vad_model = os.path.join(tmpdir, _VAD_MODEL)
                 self._vad_model.save_to(vad_model)
             self._speaker_model.save_to(spkr_model)
-            self.__make_nemo_file_from_folder(filename=save_path, source_dir=tmpdir)
-
-    @staticmethod
-    def __unpack_nemo_file(path2file: str, out_folder: str) -> str:
-        if not os.path.exists(path2file):
-            raise FileNotFoundError(f"{path2file} does not exist")
-        tar = tarfile.open(path2file, "r:gz")
-        tar.extractall(path=out_folder)
-        tar.close()
-        return out_folder
+            SaveRestoreConnector._make_nemo_file_from_folder(filename=save_path, source_dir=tmpdir)
 
     @classmethod
     def restore_from(
@@ -507,7 +493,6 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
         restore_path: str,
         override_config_path: Optional[str] = None,
         map_location: Optional[torch.device] = None,
-        strict: bool = False,
     ):
         # Get path where the command is executed - the artifacts will be "retrieved" there
         # (original .nemo behavior)
@@ -515,7 +500,7 @@ class ClusteringDiarizer(torch.nn.Module, Model, DiarizationMixin):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
-                cls.__unpack_nemo_file(path2file=restore_path, out_folder=tmpdir)
+                SaveRestoreConnector._unpack_nemo_file(path2file=restore_path, out_folder=tmpdir)
                 os.chdir(tmpdir)
                 if override_config_path is None:
                     config_yaml = os.path.join(tmpdir, _MODEL_CONFIG_YAML)

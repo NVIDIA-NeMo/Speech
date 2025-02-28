@@ -90,7 +90,7 @@ def finetune_recipe(
     dir: Optional[str] = None,
     resume_path: str = "deepseek-ai/DeepSeek-V3-Base",
     name: str = "default",
-    num_nodes: int = 4,
+    num_nodes: int = 5,
     num_gpus_per_node: int = 8,
     peft_scheme: Optional[str] = 'lora',
     seq_length: Optional[int] = None,
@@ -120,7 +120,7 @@ def finetune_recipe(
     Examples:
         CLI usage:
             $ nemo llm finetune --factory deepseek_v3
-            $ nemo llm finetune --factory "deepseek_v3(num_nodes=6, name='my_deepseek_v3_finetune')"
+            $ nemo llm finetune --factory "deepseek_v3(num_nodes=5, name='my_deepseek_v3_finetune')"
 
         Python API usage:
             >>> recipe = finetune_recipe(name="deepseek_v3_finetune", num_nodes=6)

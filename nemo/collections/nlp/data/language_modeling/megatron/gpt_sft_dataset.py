@@ -600,7 +600,7 @@ class GPTSFTPackedDataset(GPTSFTDataset):
         if self.answer_only_loss:
             return np.concatenate(
                 [
-                    processed_example['loss_mask'][seq_boundaries[i] + 1 : seq_boundaries[i + 1]]
+                    processed_example['loss_mask'][seq_boundaries[i] : seq_boundaries[i + 1] - 1]
                     for i in range(len(seq_boundaries) - 1)
                 ]
             )

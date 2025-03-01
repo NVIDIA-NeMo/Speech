@@ -331,6 +331,8 @@ class WER(Metric):
             logging.info(f"predicted:{hypotheses[0].text}")
 
         for h, r in zip(hypotheses, references):
+            if isinstance(h, list):
+                h = h[0]
             if self.use_cer:
                 h_list = list(h.text)
                 r_list = list(r)

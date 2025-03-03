@@ -164,9 +164,10 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
     @property
     def config(self) -> MistralConfig7B:
         """ """
-        from transformers import MistralConfig
+        from transformers import GenerationConfig, MistralConfig
 
         source = MistralConfig.from_pretrained(str(self))
+        generation_config = GenerationConfig.from_pretrained(str(self))
 
         def make_vocab_size_divisible_by(mistral_vocab_size):
             base = 128
@@ -198,6 +199,7 @@ class HFMistralImporter(io.ModelConnector["MistralForCausalLM", MistralModel]):
             fp16=(dtype_from_hf(source) == torch.float16),
             bf16=(dtype_from_hf(source) == torch.bfloat16),
             params_dtype=dtype_from_hf(source),
+            generation_config=generation_config,
         )
 
         return output

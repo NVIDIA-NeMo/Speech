@@ -20,6 +20,7 @@ import modelopt.torch.distill as mtd
 import modelopt.torch.opt as mto
 import torch
 from megatron.core import parallel_state
+from megatron.core.dist_checkpointing.validation import StrictHandling, parse_strict_flag
 from torch import Tensor
 
 from nemo import lightning as nl
@@ -66,9 +67,20 @@ def teacher_provider(
     model = config.configure_model(tokenizer)
 
     sharded_state_dict = {"state_dict": model.sharded_state_dict(prefix="module.")}
-    checkpoint = trainer.strategy.checkpoint_io.load_checkpoint(ckpt_path, sharded_state_dict)
+    strict = trainer.strategy.ckpt_load_strictness
+    checkpoint = trainer.strategy.checkpoint_io.load_checkpoint(ckpt_path, sharded_state_dict, strict=strict)
     state_dict = {k.replace("module.", ""): v for k, v in checkpoint["state_dict"].items()}
-    model.load_state_dict(state_dict)
+
+    # convert from StrictHandling to bool for PTL
+    if strict is not None and not isinstance(strict, bool):
+        strict = parse_strict_flag(strict)
+        strict_options = [
+            StrictHandling.ASSUME_OK_UNEXPECTED,
+            StrictHandling.RAISE_UNEXPECTED,
+            StrictHandling.RAISE_ALL,
+        ]
+        strict = strict in strict_options
+    model.load_state_dict(state_dict, strict=strict)
 
     torch.cuda.empty_cache()
     logging.info("Distillation: ...teacher weights loaded.")
@@ -97,7 +109,6 @@ def adjust_distillation_model_for_mcore(
     model: mtd.DistillationModel, model_cfg: "TransformerConfig", distill_cfg: Dict[str, Any]
 ):
     """Extra modifcations to ``mtd.DistillationModel`` requried for Megatron-Core."""
-
     # Get rid of ModelOpt Distillation state
     # NOTE: If re-placed, above losses need modifcation as `TransformerConfig` has non-pickleable elements.
     mto.ModeloptStateManager(model)._state.pop()

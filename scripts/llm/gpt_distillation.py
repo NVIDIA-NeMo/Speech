@@ -16,6 +16,7 @@ import os
 from argparse import ArgumentParser
 
 from lightning.pytorch.loggers import TensorBoardLogger
+from megatron.core.dist_checkpointing.validation import StrictHandling
 from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
@@ -72,6 +73,7 @@ if __name__ == "__main__":
         pipeline_model_parallel_size=args.pp_size,
         context_parallel_size=args.cp_size,
         sequence_parallel=(args.tp_size > 1),
+        ckpt_load_strictness=StrictHandling.LOG_ALL if args.legacy_ckpt else None,
     )
     trainer = nl.Trainer(
         devices=args.devices,
@@ -150,10 +152,6 @@ if __name__ == "__main__":
         resume_ignore_no_checkpoint=True,
         restore_config=nl.RestoreConfig(path=args.student_path),
     )
-
-    # Load ckpt saved with TE < 1.14
-    if args.legacy_ckpt:
-        trainer.strategy.ckpt_load_strictness = False
 
     # Run
     llm.train(

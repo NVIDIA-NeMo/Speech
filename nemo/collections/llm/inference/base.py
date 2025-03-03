@@ -14,7 +14,7 @@
 import inspect
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import lightning.pytorch as pl
 import torch
@@ -108,7 +108,9 @@ class MCoreTokenizerWrappper:
 
 
 # TODO: Move to lightning Fabric API.
-def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.LightningModule):
+def _setup_trainer_and_restore_model(
+    path: Path, trainer: nl.Trainer, model: pl.LightningModule, tokenizer: Any = None
+):
     """
     Sets up the trainer and restores the model from the given checkpoint path.
 
@@ -122,7 +124,7 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
         path (Path): The path to the checkpoint file.
         trainer (nl.Trainer): The trainer object.
         model (pl.LightningModule): The model object.
-
+        tokenizer (Any): The tokenizer object to override the tokenizer in the model.
     Returns:
         None
     """
@@ -142,6 +144,9 @@ def _setup_trainer_and_restore_model(path: Path, trainer: nl.Trainer, model: pl.
             load_model_state=True,
             load_optim_state=False,
         )
+
+    if tokenizer is not None:
+        model.tokenizer = tokenizer
 
     trainer.strategy.restore_config = restore_config
     trainer.strategy._setup_optimizers = False

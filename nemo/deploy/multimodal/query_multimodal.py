@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from io import BytesIO
+
 import numpy as np
+import requests
 import soundfile as sf
 from PIL import Image
 
@@ -59,6 +62,7 @@ class NemoQueryMultimodal:
         self.model_type = model_type
 
     def setup_media(self, input_media):
+        """Setup input media"""
         if self.model_type == "video-neva":
             vr = VideoReader(input_media)
             frames = [f.asnumpy() for f in vr]
@@ -69,8 +73,12 @@ class NemoQueryMultimodal:
             subsample_len = self.frame_len(frames)
             sub_frames = self.get_subsampled_frames(frames, subsample_len)
             return np.array(sub_frames)
-        elif self.model_type == "neva" or self.model_type == "vila":
-            media = Image.open(input_media).convert('RGB')
+        elif self.model_type in ["neva", "vila", "mllama"]:
+            if input_media.startswith("http") or input_media.startswith("https"):
+                response = requests.get(input_media, timeout=5)
+                media = Image.open(BytesIO(response.content)).convert("RGB")
+            else:
+                media = Image.open(input_media).convert('RGB')
             return np.expand_dims(np.array(media), axis=0)
         elif self.model_type == "salm":
             waveform, sample_rate = sf.read(input_media, dtype=np.float32)
@@ -81,6 +89,7 @@ class NemoQueryMultimodal:
             raise RuntimeError(f"Invalid model type {self.model_type}")
 
     def frame_len(self, frames):
+        """Get frame len"""
         max_frames = 256
         if len(frames) <= max_frames:
             return len(frames)
@@ -89,6 +98,7 @@ class NemoQueryMultimodal:
             return int(np.round(float(len(frames)) / subsample))
 
     def get_subsampled_frames(self, frames, subsample_len):
+        """Get subsampled frames"""
         idx = np.round(np.linspace(0, len(frames) - 1, subsample_len)).astype(int)
         sub_frames = [frames[i] for i in idx]
         return sub_frames
@@ -107,6 +117,7 @@ class NemoQueryMultimodal:
         init_timeout=60.0,
         lora_uids=None,
     ):
+        """Run query"""
 
         prompts = str_list2numpy([input_text])
         inputs = {"input_text": prompts}

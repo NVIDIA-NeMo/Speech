@@ -25,13 +25,21 @@ import tensorrt as trt
 import torch
 import yaml
 from omegaconf import OmegaConf
-from tensorrt_llm.builder import Builder
-from transformers import AutoModel
+from PIL import Image
+from tensorrt_llm._common import check_max_num_tokens
+from tensorrt_llm.builder import BuildConfig, Builder
+from tensorrt_llm.commands.build import build as build_trtllm
+from tensorrt_llm.mapping import Mapping
+from tensorrt_llm.models import MLLaMAForCausalLM
+from tensorrt_llm.plugin import PluginConfig
+from transformers import AutoModel, AutoProcessor, MllamaForConditionalGeneration
 
 from nemo.collections.multimodal.speech_llm.modules.perception_modules import AudioPerceptionModule
 from nemo.core.classes.common import typecheck
 from nemo.export.tensorrt_llm import TensorRTLLM
 from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_nemo_model
+
+from .converter import convert_mllama_nemo_to_hf
 
 logger = trt.Logger(trt.Logger.INFO)
 
@@ -53,6 +61,7 @@ def build_trtllm_engine(
     max_lora_rank: int = 64,
     lora_ckpt_list: List[str] = None,
 ):
+    """Build TRTLLM engine by nemo export"""
     trt_llm_exporter = TensorRTLLM(model_dir=model_dir, lora_ckpt_list=lora_ckpt_list, load_model=False)
     trt_llm_exporter.export(
         nemo_checkpoint_path=visual_checkpoint_path if llm_checkpoint_path is None else llm_checkpoint_path,
@@ -70,9 +79,78 @@ def build_trtllm_engine(
     )
 
 
+def build_mllama_trtllm_engine(
+    model_dir: str,
+    hf_model_path: str,
+    tensor_parallelism_size: int = 1,
+    max_input_len: int = 256,
+    max_output_len: int = 256,
+    max_batch_size: int = 1,
+    max_multimodal_len: int = 1024,
+    dtype: str = "bfloat16",
+    use_lora_plugin: str = None,
+    lora_target_modules: List[str] = None,
+    max_lora_rank: int = 64,
+    lora_ckpt_list: List[str] = None,
+):
+    """Build mllama TRTLLM engine from HF"""
+    if max_batch_size < 4:
+        print(
+            "TensorRT LLM may hit a runtime issue with batch size is smaller than 4 on some models." " Force set to 4"
+        )
+        max_batch_size = 4
+
+    plugin_config = PluginConfig()
+    plugin_config.gpt_attention_plugin = "auto"
+    plugin_config.gemm_plugin = "auto"
+    plugin_config.enable_paged_kv_cache(tokens_per_block=128)
+    plugin_config.remove_input_padding = True
+    plugin_config.use_paged_context_fmha = True
+
+    max_seq_len = max_input_len + max_output_len
+    max_num_tokens, opt_num_tokens = check_max_num_tokens(
+        max_num_tokens=None,
+        opt_num_tokens=None,
+        max_seq_len=max_seq_len,
+        max_batch_size=max_batch_size,
+        max_input_len=max_input_len,
+        max_beam_width=1,
+        remove_input_padding=True,
+        enable_context_fmha=plugin_config.context_fmha,
+        tokens_per_block=128,
+        multiple_profiles=False,
+    )
+
+    build_dict = {
+        'max_input_len': max_input_len,
+        'max_output_len': max_output_len,
+        'max_encoder_input_len': max_multimodal_len,
+        'max_batch_size': max_batch_size,
+        'max_beam_width': 1,
+        'max_seq_len': max_seq_len,
+        'max_num_tokens': max_num_tokens,
+        'opt_num_tokens': opt_num_tokens,
+        'strongly_typed': True,
+        'builder_opt': None,
+    }
+    build_config = BuildConfig.from_dict(build_dict, plugin_config=plugin_config)
+
+    for rank in range(tensor_parallelism_size):
+        mapping = Mapping(world_size=tensor_parallelism_size, rank=rank, tp_size=tensor_parallelism_size)
+        model = MLLaMAForCausalLM.from_hugging_face(
+            hf_model_path,
+            dtype,
+            mapping=mapping,
+        )
+
+        engine = build_trtllm(model, build_config)
+        engine.save(model_dir)
+
+
 def export_visual_wrapper_onnx(
     visual_wrapper, input, output_dir, input_names=['input'], dynamic_axes={'input': {0: 'batch'}}
 ):
+    """Export visual wrapper to ONNX"""
     logger.log(trt.Logger.INFO, "Exporting onnx")
     os.makedirs(f'{output_dir}/onnx', exist_ok=True)
     torch.onnx.export(
@@ -99,6 +177,7 @@ def export_perception_wrapper_onnx(
         'encoded_length': {0: 'batch'},
     },
 ):
+    """Export perception wrapper to ONNX"""
     logger.log(trt.Logger.INFO, "Exporting onnx")
     os.makedirs(f'{output_dir}/onnx', exist_ok=True)
     torch.onnx.export(
@@ -123,6 +202,7 @@ def build_trt_engine(
     nemo_config=None,
     part_name='visual_encoder',
 ):
+    """Build TRT engine from onnx"""
     onnx_file = '%s/onnx/%s.onnx' % (output_dir, part_name)
     engine_file = '%s/%s.engine' % (output_dir, part_name)
     config_file = '%s/%s' % (output_dir, "config.json")
@@ -217,6 +297,7 @@ def build_neva_engine(
     visual_checkpoint_path: str,
     vision_max_batch_size: int = 1,
 ):
+    """Build neva visual engine"""
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
 
     if os.path.isdir(visual_checkpoint_path):
@@ -239,6 +320,7 @@ def build_neva_engine(
     vision_config = nemo_config["mm_cfg"]["vision_encoder"]
 
     class DownSampleBlock(torch.nn.Module):
+        # pylint: disable=C0115,C0116
         def forward(self, x):
             vit_embeds = x
             h = w = int(vit_embeds.shape[1] ** 0.5)
@@ -261,7 +343,7 @@ def build_neva_engine(
             return x
 
     class VisionEncoderWrapper(torch.nn.Module):
-
+        # pylint: disable=C0115,C0116
         def __init__(self, encoder, connector):
             super().__init__()
             self.encoder = encoder
@@ -361,6 +443,7 @@ def build_video_neva_engine(
     visual_checkpoint_path: str,
     vision_max_batch_size: int = 1,
 ):
+    """Build video neva visual engine"""
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
     # extract NeMo checkpoint
     with tarfile.open(visual_checkpoint_path) as tar:
@@ -375,7 +458,7 @@ def build_video_neva_engine(
     vision_config = nemo_config["mm_cfg"]["vision_encoder"]
 
     class VisionEncoderWrapper(torch.nn.Module):
-
+        # pylint: disable=C0115,C0116
         def __init__(self, encoder, connector):
             super().__init__()
             self.encoder = encoder
@@ -439,6 +522,7 @@ def build_perception_engine(
     model_type: str = "salm",
     max_batch_size: int = 1,
 ):
+    """Build perception engine"""
     assert model_type == "salm", f"Invalid model type {model_type}"
 
     def load_perception_model(perception_checkpoint_path):
@@ -467,6 +551,7 @@ def build_perception_engine(
     feature_extractor.export(dump_path, (input_signal, input_signal_length))
 
     class PerceptionWrapper(torch.nn.Module):
+        # pylint: disable=C0115,C0116
         def __init__(self, encoder, modality_adapter, proj):
             super().__init__()
             self.encoder = encoder
@@ -503,12 +588,55 @@ def build_perception_engine(
     )
 
 
+def build_mllama_visual_engine(
+    model_dir: str,
+    hf_model_path: str,
+    processor_name: str = "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    vision_max_batch_size: int = 1,
+):
+    """Build mllama visual engine"""
+    hf_model = MllamaForConditionalGeneration.from_pretrained(hf_model_path, torch_dtype="auto", device_map="auto")
+    model_dtype = hf_model.dtype
+
+    class MLLaMAVisionWrapper(torch.nn.Module):
+        # pylint: disable=C0115,C0116
+        def __init__(self, vision_model, output_proj):
+            super().__init__()
+            self.vision_model = vision_model
+            self.output_proj = output_proj
+
+        def forward(self, pixel_values, aspect_ratio_ids, aspect_ratio_mask):
+            out = self.vision_model(pixel_values, aspect_ratio_ids, aspect_ratio_mask).last_hidden_state
+            out = self.output_proj(out)
+            return out
+
+    wrapper = MLLaMAVisionWrapper(hf_model.vision_model, hf_model.multi_modal_projector)
+
+    processor = AutoProcessor.from_pretrained(processor_name)
+    image = Image.new('RGB', [2048, 2688])
+    inputs = processor(images=image, return_tensors="pt").to(model_dtype)
+
+    export_visual_wrapper_onnx(
+        wrapper,
+        tuple([value for _, value in inputs.items()]),
+        model_dir,
+        input_names=[key for key in inputs],
+        dynamic_axes={key: {0: "batch"} for key in inputs},
+    )
+    shapes = [{k: list(v.shape) for k, v in inputs.items()}] * 3
+    shapes[2] = shapes[0].copy()
+    for k, v in shapes[2].items():
+        shapes[2][k] = [vision_max_batch_size] + v[1:]
+    build_trt_engine("mllama", shapes, model_dir, vision_max_batch_size, model_dtype)
+
+
 def build_visual_engine(
     model_dir: str,
     visual_checkpoint_path: str,
     model_type: str = "neva",
     vision_max_batch_size: int = 1,
 ):
+    """Build visual engine"""
     model_list = ['neva', 'lita', 'vila', 'vita']
     if model_type in model_list:
         build_neva_engine(model_type, model_dir, visual_checkpoint_path, vision_max_batch_size)
@@ -522,6 +650,7 @@ def extract_lora_ckpt(
     lora_ckpt: str,
     output_dir: str,
 ):
+    """Extrace lora from checkpoint"""
     if os.path.exists(os.path.join(lora_ckpt, "model_weights.ckpt")):
         model_weight = torch.load(os.path.join(lora_ckpt, "model_weights.ckpt"))
     elif os.path.exists(os.path.join(lora_ckpt, "mp_rank_00", "model_weights.ckpt")):
@@ -550,3 +679,48 @@ def extract_lora_ckpt(
             tar.add(model_config, arcname="model_config.yaml")
 
     return llm_lora_path
+
+
+def build_mllama_engine(
+    model_dir: str,
+    checkpoint_path: str,
+    processor_name: str = "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    vision_max_batch_size: int = 1,
+    tensor_parallelism_size: int = 1,
+    max_input_len: int = 256,
+    max_output_len: int = 256,
+    max_batch_size: int = 1,
+    max_multimodal_len: int = 1024,
+    dtype: str = "bfloat16",
+    use_lora_plugin: str = None,
+    lora_target_modules: List[str] = None,
+    max_lora_rank: int = 64,
+    lora_ckpt_list: List[str] = None,
+):
+    """Build mllama engine"""
+    new_state_dict, config = convert_mllama_nemo_to_hf(checkpoint_path, processor_name)
+
+    hf_model = MllamaForConditionalGeneration(config)
+    hf_model = hf_model.to(torch.bfloat16)
+    hf_model.load_state_dict(new_state_dict)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        hf_model_path = os.path.join(tmp_dir, "hf_checkpoint")
+        hf_model.save_pretrained(hf_model_path)
+        del hf_model, new_state_dict
+
+        build_mllama_visual_engine(
+            os.path.join(model_dir, "visual_engine"),
+            hf_model_path,
+            vision_max_batch_size=vision_max_batch_size,
+        )
+        build_mllama_trtllm_engine(
+            os.path.join(model_dir, "llm_engine"),
+            hf_model_path,
+            tensor_parallelism_size,
+            max_input_len,
+            max_output_len,
+            max_batch_size,
+            max_multimodal_len,
+            dtype,
+        )

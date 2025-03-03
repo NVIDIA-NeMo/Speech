@@ -31,6 +31,14 @@ AnyT = TypeVar("AnyT")
 
 
 def get_optim_config(optimizer: Optimizer):
+    """Extract optimizer configurations from a Megatron optimizer.
+
+    Args:
+        optimizer: A torch.optim.Optimizer instance
+
+    Yields:
+        Optimizer configurations
+    """
     extract_config = lambda x: x.config
     try:
         from megatron.core.optimizer import ChainedOptimizer
@@ -46,6 +54,11 @@ def get_optim_config(optimizer: Optimizer):
 
 @dataclass
 class DtypeConfig:
+    """Configuration class for mixed precision training settings.
+
+    Contains settings for FP32/FP16/BF16 training, FP8 training.
+    """
+
     fp32: bool = False
     fp16: bool = False
     bf16: bool = False
@@ -72,6 +85,12 @@ class DtypeConfig:
 
 
 class MegatronMixedPrecision(Precision):
+    """Plugin for mixed precision training with Megatron models.
+
+    Handles conversion of model parameters and inputs/outputs between different precisions,
+    and manages mixed precision training settings.
+    """
+
     def __init__(
         self,
         precision: Literal["16-mixed", "bf16-mixed", "32"],
@@ -105,6 +124,10 @@ class MegatronMixedPrecision(Precision):
             assert HAVE_TE, "FP8 precision requires transformer engine."
             if fp8_params:
                 te_fp8.FP8GlobalStateManager.FP8_PARAMETERS = True
+                # Explicitly set the recipe to delayed scaling.
+                # Otherwise TE v2.0 will assume the default, which is mxfp8 recipe.
+                te_recipe, _ = safe_import("transformer_engine.common.recipe")
+                te_fp8.FP8GlobalStateManager.FP8_RECIPE = te_recipe.DelayedScaling()
                 fp8_param_gather = True
 
         dtype = torch.bfloat16 if precision in ['bf16', 'bf16-mixed'] else torch.float32
@@ -206,19 +229,50 @@ class MegatronMixedPrecision(Precision):
         clip_val: Union[int, float] = 0.0,
         gradient_clip_algorithm=None,
     ) -> None:
+        """Clip gradients. Raises error if clip_val > 0, otherwise it is a no-op.
+
+        Args:
+            optimizer: The optimizer to clip gradients for
+            clip_val: The value to clip gradients to
+            gradient_clip_algorithm: The algorithm to use for clipping
+
+        Raises:
+            ValueError: If clip_val > 0 since gradient clipping is handled by Mcore's optimizer
+        """
         if clip_val > 0.0:
             raise ValueError(
                 "Gradient clipping is handled in Mcore's optimizer. Use the clip_grad attribute in OptimizerConfig."
             )
 
     def clip_grad_by_value(self, optimizer: Optimizer, clip_val: Union[int, float]) -> None:
+        """Clip gradients by value - it is a no-op.
+
+        Args:
+            optimizer: The optimizer to clip gradients for
+            clip_val: The value to clip gradients to
+        """
         return
 
     def clip_grad_by_norm(self, optimizer: Optimizer, clip_val: Union[int, float]) -> None:
+        """Clip gradients by norm - it is a no-op.
+
+        Args:
+            optimizer: The optimizer to clip gradients for
+            clip_val: The value to clip gradients to
+        """
         return
 
 
 def update_config_with_dtype_overrides(dtype_config, config):
+    """Update a config object with dtype settings from dtype_config.
+
+    Args:
+        dtype_config: Source of dtype settings
+        config: Config object to update
+
+    Returns:
+        Updated config object
+    """
     if hasattr(config, "__io__"):
         config.__io__ = update_config_with_dtype_overrides(dtype_config, config.__io__)
     for field in fields(dtype_config):

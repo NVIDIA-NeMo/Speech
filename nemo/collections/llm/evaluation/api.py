@@ -59,7 +59,8 @@ class ConfigParams(BaseModel):
         description="Limit evaluation to `limit` samples. Default: use all samples", default=None
     )
     num_fewshot: Optional[int] = Field(
-        description="Number of examples in few-shot context. Default: None.", default=None
+        description="Number of examples in few-shot context. Default: None which means no few_shots are used.",
+        default=None,
     )
     max_new_tokens: Optional[int] = Field(description="max tokens to generate", default=256)
     batch_size: Optional[int] = Field(description="batch size to use for evaluation", default=1)

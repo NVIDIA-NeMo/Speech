@@ -1,5 +1,5 @@
 huggingface_hub>=0.24
-numba
+numba==0.61.0
 numpy>=1.22
 onnx>=1.7.0
 protobuf==3.20.3

@@ -460,10 +460,10 @@ jobs:
         +trainer.fast_dev_run=True \
         exp_manager.exp_dir=/tmp/speech_pre_training_results
 
-  ASR_dev_run_Speech_To_Text_Finetuning:
+  Optional_ASR_dev_run_Speech_To_Text_Finetuning:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'ASR_dev_run_Speech_To_Text_Finetuning')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_ASR_dev_run_Speech_To_Text_Finetuning')
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: |
@@ -477,11 +477,12 @@ jobs:
         trainer.accelerator="gpu" \
         +trainer.fast_dev_run=True \
         exp_manager.exp_dir=/tmp/speech_finetuning_results
+      IS_OPTIONAL: true
 
-  ASR_dev_run_Speech_To_Text_HF_Finetuning:
+  Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'ASR_dev_run_Speech_To_Text_HF_Finetuning')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning')
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: |-
@@ -515,6 +516,7 @@ jobs:
         trainer.accelerator="gpu" \
         +trainer.fast_dev_run=True \
         exp_manager.exp_dir=/tmp/speech_finetuning_results
+      IS_OPTIONAL: true
 
   ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
     needs: [pre-flight, cicd-test-container-build]
@@ -2113,7 +2115,7 @@ jobs:
     uses: ./.github/workflows/_test_template.yml
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Hyena_DDP_Pretraining_Test')
     with:
-      RUNNER: self-hosted-azure  # Assume runner has 2 GPUs
+      RUNNER: self-hosted-azure # Assume runner has 2 GPUs
       SCRIPT: |
         python tests/collections/llm/gpt/model/test_hyena.py \
         --mock-data \
@@ -2133,7 +2135,7 @@ jobs:
         --attention-dropout=0.01 \
         --devices=2 \
         --debug-ddp-parity-freq=1
-        
+
       AFTER_SCRIPT: |
         rm -rf tests/collections/llm/hyena_pretrain_results/${{ github.run_id }}
 
@@ -3095,8 +3097,8 @@ jobs:
       - ASR_dev_run_Speech_to_Text
       - ASR_dev_run_Speech_to_Text_WPE_-_CitriNet
       - ASR_dev_run_Speech_Pre-training_-_CitriNet
-      - ASR_dev_run_Speech_To_Text_Finetuning
-      - ASR_dev_run_Speech_To_Text_HF_Finetuning
+      - Optional_ASR_dev_run_Speech_To_Text_Finetuning
+      - Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning
       - ASR_dev_run_Speech_to_Text_WPE_-_Conformer
       - ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
       - L2_Speech_to_Text_EMA

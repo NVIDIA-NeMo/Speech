@@ -3,10 +3,11 @@ name: PyLint and flake8 linting
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_call:
 
 jobs:
   linting:
-    name: 'Domain: ${{ matrix.domain }}'
+    name: "Domain: ${{ matrix.domain }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -48,8 +49,8 @@ jobs:
         uses: tj-actions/changed-files@v44
         with:
           files: ${{ steps.filter.outputs.main }}
-          files_separator: ','
-          separator: ' '
+          files_separator: ","
+          separator: " "
 
       - name: Run PyLint
         id: pylint

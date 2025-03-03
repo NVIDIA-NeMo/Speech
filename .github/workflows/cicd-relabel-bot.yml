@@ -1,0 +1,37 @@
+# If the PR get's updated by a new commit, it prevents auto-merges
+# since there's no CI event attached to the commit anymore.
+# This workflow re-attaches the label after a push, if the PR
+# was already labeled prior to the push.
+name: CICD Relabel bot
+
+on:
+  pull_request: # So that this mechanism works on forks, we must remove this trigger later
+  pull_request_target:
+
+jobs:
+  relabel:
+    runs-on: ubuntu-latest
+    env:
+      PR_NUMBER: ${{ github.event.number }}
+      GH_TOKEN: ${{ secrets.NEMO_RELABEL_TOKEN }}
+      HOSTNAME: ${{ github.server_url }}
+    permissions: write-all
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Check if PR was already labeled with `Run CICD`
+        id: pre-flight
+        run: |
+          LABELS=$(gh pr view "$PR_NUMBER" --json labels)
+          HAS_LABEL=$(echo $LABELS \
+            | jq '[.labels[].name] | any(. == "Run CICD")'
+          )
+
+          echo "has-label=$HAS_LABEL" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Relabel PR
+        if: ${{ steps.pre-flight.outputs.has-label == 'true' }}
+        run: |
+          gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
+          gh pr edit "$PR_NUMBER" --add-label "Run CICD"

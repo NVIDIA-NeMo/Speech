@@ -31,7 +31,7 @@ on:
         description: Comma-separated list of tests to run. Use "all" to run the full test suite.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}
   cancel-in-progress: true
 
 jobs:
@@ -98,10 +98,15 @@ jobs:
           echo "$BUILD_ARGS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+  code-linting:
+    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
+    needs: [pre-flight]
+    uses: ./.github/workflows/code-linting.yml
+
   cicd-test-container-build:
-    if: ${{ needs.pre-flight.outputs.test_to_run != '' }}
+    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.14.0
-    needs: pre-flight
+    needs: [pre-flight, code-linting]
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
@@ -114,7 +119,7 @@ jobs:
       prune-filter-timerange: 24h
 
   cicd-import-tests:
-    if: ${{ needs.pre-flight.outputs.test_to_run != '' }}
+    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     needs: [cicd-test-container-build, pre-flight]
     runs-on: self-hosted-azure-gpus-1
     steps:
@@ -3182,18 +3187,29 @@ jobs:
 
     if: always() && github.event != 'push'
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - name: Evaluate conclusion
         if: ${{ always() }}
         id: pipeline-conclusion
         run: |
           # Slack notifications are send only on test failure (not cancelled):
-          FAILED=${{ contains(needs.*.outputs.conclusion, 'failure') }}
+          FAILED=${{ contains(needs.*.outputs.conclusion, 'failure') && github.event.label.name == 'Run CICD' }}
           echo "FAILED=$FAILED" >> $GITHUB_OUTPUT
 
           # Mark as successful if no job was cancelled:
           SUCCESS=${{ !contains(needs.*.outputs.conclusion, 'failure') && !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped') }}
           echo "SUCCESS=$SUCCESS" >> $GITHUB_OUTPUT
+
+      - name: Checkout for GH CLI
+        uses: actions/checkout@v4
+
+      - name: Remove label if not cancelled
+        if: ${{ !contains(needs.*.result, 'cancelled') && github.event.label.name == 'Run CICD' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: gh pr edit "$PR_NUMBER" --remove-label "Run CICD"
 
       # This should depend on all the tests so we block/unblock based on all tests passing
       - name: Pipeline successful, set exit code to 0

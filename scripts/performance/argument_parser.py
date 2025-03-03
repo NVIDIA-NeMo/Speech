@@ -90,6 +90,36 @@ def parse_cli_args():
         action="store_true",
     )
     parser.add_argument(
+        "-wd",
+        "--wandb",
+        help="Enable wandb logging. Disabled by default",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-wdk",
+        "--wandb_key",
+        type=str,
+        help="wandb key. Needed for wandb logger projetion to server",
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "-wdp",
+        "--wandb_prj_name",
+        type=str,
+        help="wandb project name",
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
+        "-wdj",
+        "--wandb_job_name",
+        type=str,
+        help="wandb job name",
+        required=False,
+        default=None,
+    )
+    parser.add_argument(
         "-f",
         "--finetuning",
         choices=["sft", "lora"],
@@ -218,6 +248,18 @@ def parse_cli_args():
         help="Number of train steps. Defaults to 100",
         required=False,
         default=100,
+    )
+
+    def list_of_strings(arg):
+        return arg.split(',')
+
+    parser.add_argument(
+        "-cm",
+        "--custom_mounts",
+        type=list_of_strings,
+        help="Comma separated string of mounts",
+        required=False,
+        default=[],
     )
 
     return parser

@@ -21,7 +21,7 @@ from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
-from ..utils import get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
+from ..utils import args_sanity_check, get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
 
 
 def override_recipe_configs(
@@ -45,6 +45,9 @@ def override_recipe_configs(
     recipe = set_primary_perf_configs(
         recipe,
         args.tensorboard,
+        args.wandb,
+        args.wandb_prj_name,
+        args.wandb_job_name,
         num_nodes,
         args.gpus_per_node,
         mbs,
@@ -55,6 +58,7 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
+        enable_wd=args.wandb,
     )
 
     # data module configs
@@ -75,6 +79,7 @@ def override_recipe_configs(
 
 if __name__ == "__main__":
     args = parse_cli_args().parse_args()
+    args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "llama3", "8b", args)
     num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
@@ -92,10 +97,11 @@ if __name__ == "__main__":
         args.gpus_per_node,
         args.time_limit,
         args.container_image,
-        custom_mounts=[],
+        custom_mounts=args.custom_mounts,
         custom_env_vars={},
         hf_token=args.hf_token,
         nemo_home=args.nemo_home,
+        wandb_key=args.wandb_key,
     )
 
     plugins = [

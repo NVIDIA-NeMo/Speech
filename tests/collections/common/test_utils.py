@@ -214,7 +214,7 @@ class TestPreprocessingUtils:
                 raise ValueError(f'Unexpected path {path}')
 
         with mock.patch(
-            'nemo.collections.common.parts.preprocessing.manifest.datastore_path_to_local_path',
+            'nemo.collections.common.parts.preprocessing.manifest.get_datastore_object',
             datastore_path_to_cache_path_in_tmpdir,
         ):
             # Test with relative paths and existing cached files.
@@ -235,6 +235,42 @@ class TestPreprocessingUtils:
                     get_full_path(audio_files_relative_path, manifest_file=ais_manifest_file) == audio_files_cache_path
                 )
                 assert get_full_path(audio_files_relative_path, data_dir=ais_data_dir) == audio_files_cache_path
+
+    @pytest.mark.unit
+    def test_get_full_path_ais_no_cache(self):
+        """Test with paths on AIStore."""
+        # Create a few files
+        num_files = 10
+
+        audio_files_relative_path = [f'file_{n}.test' for n in range(num_files)]
+
+        ais_data_dir = 'ais://test'
+        ais_manifest_file = os.path.join(ais_data_dir, 'manifest.json')
+
+        audio_files_absolute_path = [os.path.join(ais_data_dir, rel_path) for rel_path in audio_files_relative_path]
+
+        # Test with only relative paths.
+        # We expect to return the absolute path in the AIStore when force_cache is set to False.
+        # This is used in Lhotse Dataloaders.
+        for n in range(num_files):
+            assert (
+                get_full_path(audio_files_relative_path[n], manifest_file=ais_manifest_file, force_cache=False)
+                == audio_files_absolute_path[n]
+            )
+            assert (
+                get_full_path(audio_files_relative_path[n], data_dir=ais_data_dir, force_cache=False)
+                == audio_files_absolute_path[n]
+            )
+
+        # - all files in a list
+        assert (
+            get_full_path(audio_files_relative_path, manifest_file=ais_manifest_file, force_cache=False)
+            == audio_files_absolute_path
+        )
+        assert (
+            get_full_path(audio_files_relative_path, data_dir=ais_data_dir, force_cache=False)
+            == audio_files_absolute_path
+        )
 
     @pytest.mark.unit
     def test_get_full_path_audio_file_len_limit(self):

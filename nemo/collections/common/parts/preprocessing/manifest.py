@@ -20,7 +20,7 @@ from os.path import expanduser
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 from nemo.utils import logging
-from nemo.utils.data_utils import DataStoreObject, datastore_path_to_local_path, is_datastore_path
+from nemo.utils.data_utils import DataStoreObject, get_datastore_object, is_datastore_path
 from nemo.utils.nemo_logging import LogMode
 
 
@@ -219,6 +219,7 @@ def get_full_path(
     manifest_file: Optional[str] = None,
     data_dir: Optional[str] = None,
     audio_file_len_limit: int = 255,
+    force_cache: bool = True,
 ) -> Union[str, List[str]]:
     """Get full path to audio_file.
 
@@ -234,6 +235,7 @@ def get_full_path(
         manifest_file: path to a manifest file
         data_dir: path to a directory containing data, use only if a manifest file is not provided
         audio_file_len_limit: limit for length of audio_file when using relative paths
+        force_cache: cache and provide local cached path of the audio if audio_file is from a data object store
 
     Returns:
         Full path to audio_file or a list of paths.
@@ -246,6 +248,7 @@ def get_full_path(
                 manifest_file=manifest_file,
                 data_dir=data_dir,
                 audio_file_len_limit=audio_file_len_limit,
+                force_cache=force_cache,
             )
             for a_file in audio_file
         ]
@@ -265,7 +268,7 @@ def get_full_path(
             # If audio_file is not available and the path is not absolute, the full path is assumed
             # to be relative to the manifest file parent directory or data directory.
             if manifest_file is None and data_dir is None:
-                raise ValueError(f'Use either manifest_file or data_dir to specify the data directory.')
+                raise ValueError('Use either manifest_file or data_dir to specify the data directory.')
             elif manifest_file is not None and data_dir is not None:
                 raise ValueError(
                     f'Parameters manifest_file and data_dir cannot be used simultaneously. Currently manifest_file is {manifest_file} and data_dir is {data_dir}.'
@@ -279,8 +282,10 @@ def get_full_path(
             audio_file_path = os.path.join(data_dir, audio_file)
 
             if is_datastore_path(audio_file_path):
-                # If audio was originally on an object store, use locally-cached path
-                audio_file_path = datastore_path_to_local_path(audio_file_path)
+                # If audio was originally on an object store, use locally-cached path.
+                # If the file could not be found in the local cache, it will be downloaded.
+                audio_file_path = get_datastore_object(audio_file_path) if force_cache else audio_file_path
+                return audio_file_path
 
             if os.path.isfile(audio_file_path):
                 audio_file = os.path.abspath(audio_file_path)

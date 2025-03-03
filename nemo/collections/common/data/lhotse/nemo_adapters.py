@@ -32,6 +32,7 @@ from lhotse.utils import compute_num_samples, ifnone
 
 from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.utils import logging
+from nemo.utils.data_utils import is_datastore_path
 
 
 class LazyNeMoIterator:
@@ -91,6 +92,7 @@ class LazyNeMoIterator:
         self.shuffle_shards = shuffle_shards
         self.shard_seed = shard_seed
         paths = expand_sharded_filepaths(path)
+
         if len(paths) == 1:
             self.source = LazyJsonlIterator(paths[0])
         else:
@@ -108,7 +110,7 @@ class LazyNeMoIterator:
         # Propagate the random seed
         extra_fields = [ExtraField.from_dict({"seed": seed, **field_cfg}) for field_cfg in self.extra_fields or ()]
         for data in self.source:
-            audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path))
+            audio_path = get_full_path(str(data.pop("audio_filepath")), str(self.path), force_cache=False)
             duration = data.pop("duration")
             offset = data.pop("offset", None)
             cut = self._create_cut(
@@ -181,9 +183,11 @@ class LazyNeMoIterator:
     ) -> Recording:
         if sampling_rate is not None:
             # TODO(pzelasko): It will only work with single-channel audio in the current shape.
+
+            source_type = "url" if is_datastore_path(audio_path) else "file"
             return Recording(
                 id=audio_path,
-                sources=[AudioSource(type="file", channels=[0], source=audio_path)],
+                sources=[AudioSource(type=source_type, channels=[0], source=audio_path)],
                 sampling_rate=sampling_rate,
                 num_samples=compute_num_samples(duration, sampling_rate),
                 duration=duration,

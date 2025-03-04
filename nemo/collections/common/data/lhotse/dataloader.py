@@ -492,8 +492,6 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
             if not isinstance(tokenizer, TokenizerWrapper):
                 tokenizer = TokenizerWrapper(tokenizer)
             cuts = cuts.map(partial(tokenize, tokenizer=tokenizer), apply_fn=None)
-        cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
-        cuts = cuts.filter(TokenPerTokenFilter(config.min_tpt, config.max_tpt))
 
     # 2. Optional augmentations.
     # 2.a. Noise mixing.
@@ -541,6 +539,10 @@ def get_lhotse_sampler_from_config(config, global_rank, world_size, tokenizer=No
     cuts = cuts.filter(
         TokenCountFilter(config.min_tokens, config.max_tokens, measure_total_length=config.measure_total_length)
     )
+
+    if tokenizer is not None and config.pretokenize:
+        cuts = cuts.filter(TokenPerSecondFilter(config.min_tps, config.max_tps))
+        cuts = cuts.filter(TokenPerTokenFilter(config.min_tpt, config.max_tpt))
 
     # Select the strategy customizing Lhotse sampler behaviour.
     # Provides support for dynamic batch sizes, multimodal dataloading, 2D bucketing, etc.

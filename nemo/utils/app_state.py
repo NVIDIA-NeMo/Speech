@@ -14,7 +14,7 @@
 
 from dataclasses import dataclass
 from threading import Lock
-from typing import Dict, Optional
+from typing import Optional
 
 from nemo.utils.metaclasses import Singleton
 
@@ -92,6 +92,9 @@ class AppState(metaclass=Singleton):
         self._files_to_copy = []
         # command-ling arguments for run
         self._cmd_args = None
+
+        # Insert NVTX ranges to categorize execution
+        self._nvtx_ranges = False
 
     @property
     def device_id(self):

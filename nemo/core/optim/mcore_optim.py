@@ -14,6 +14,8 @@
 
 import torch
 
+from nemo.utils.nvtx import nvtx_range_pop, nvtx_range_push
+
 
 def _filter_empty_common_step(state_dict):
     """
@@ -41,6 +43,8 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
     Args:
         optim (MegatronOptimizer): The distributed optimizer from Megatron Core.
     """
+
+    NVTX_LABEL = "nemo.core.optim.mcore_optim"
 
     def __init__(self, optim):
         self.defaults = {}
@@ -121,10 +125,14 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         # Apply closure
         loss = None
         if closure is not None:
+            nvtx_range_push(f"{McoreDistributedOptimizer.NVTX_LABEL}.step.closure")
             loss = closure()
+            nvtx_range_pop(f"{McoreDistributedOptimizer.NVTX_LABEL}.step.closure")
 
         # return unused update_successful, grad_norm, num_zeros_in_grad
+        nvtx_range_push(f"{McoreDistributedOptimizer.NVTX_LABEL}.step.step")
         _, grad_norm, num_zeros_in_grad = self.mcore_optimizer.step()
+        nvtx_range_pop(f"{McoreDistributedOptimizer.NVTX_LABEL}.step.step")
 
         return loss, grad_norm, num_zeros_in_grad
 

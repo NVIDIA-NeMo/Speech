@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import shutil
-
+from collections import Counter
 from pathlib import Path
-from typing import Union
+from typing import Dict, Union
 
 import torch
 
@@ -92,3 +92,59 @@ def torch_dtype_from_precision(precision: Union[int, str], megatron_amp_O2: bool
         return torch.float32
     else:
         raise ValueError(f"Could not parse the precision of '{precision}' to a valid torch.dtype")
+
+
+def get_model_device_type(module: torch.nn.Module) -> str:
+    """Find the device type the model is assigned to and ensure consistency."""
+    # Collect device types of all parameters and buffers
+    param_device_types = {param.device.type for param in module.parameters()}
+    buffer_device_types = {buffer.device.type for buffer in module.buffers()}
+    all_device_types = param_device_types.union(buffer_device_types)
+
+    if len(all_device_types) > 1:
+        raise ValueError(
+            f"Model parameters and buffers are on multiple device types: {all_device_types}. "
+            "Ensure all parameters and buffers are on the same device type."
+        )
+
+    # Return the single device type, or default to 'cpu' if no parameters or buffers
+    return all_device_types.pop() if all_device_types else "cpu"
+
+
+def get_example_inputs(tokenizer) -> Dict[str, torch.Tensor]:
+    """Gets example data to feed to the model during ONNX export.
+
+    Returns:
+        Dictionary of tokenizer outputs.
+    """
+    example_inputs = dict(
+        tokenizer(
+            ["example query one", "example query two"],
+            ["example passage one", "example passage two"],
+            return_tensors="pt",
+        )
+    )
+
+    return example_inputs
+
+
+def validate_fp8_network(network) -> None:
+    """Checks the network to ensure it's compatible with fp8 precison.
+
+    Raises:
+        ValueError if netowrk doesn't container Q/DQ FP8 layers
+    """
+
+    import tensorrt as trt
+
+    quantize_dequantize_layers = []
+    for layer in network:
+        if layer.type in {trt.LayerType.QUANTIZE, trt.LayerType.DEQUANTIZE}:
+            quantize_dequantize_layers.append(layer)
+    if not quantize_dequantize_layers:
+        error_msg = "No Quantize/Dequantize layers found"
+        raise ValueError(error_msg)
+    quantize_dequantize_layer_dtypes = Counter(layer.precision for layer in quantize_dequantize_layers)
+    if trt.DataType.FP8 not in quantize_dequantize_layer_dtypes:
+        error_msg = "Found Quantize/Dequantize layers. But none with FP8 precision."
+        raise ValueError(error_msg)

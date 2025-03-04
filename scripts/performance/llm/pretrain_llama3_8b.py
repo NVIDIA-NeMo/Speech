@@ -58,7 +58,6 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
-        enable_wd=args.wandb,
     )
 
     # data module configs

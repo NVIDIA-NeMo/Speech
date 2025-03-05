@@ -17,19 +17,17 @@ import pytest
 import torch
 from megatron.core.distributed import DistributedDataParallelConfig
 
-from nemo.collections.llm.api import finetune, pretrain
+from nemo.collections.llm.api import pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
-from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.gpt.model.mixtral import MixtralConfig8x22B, MixtralModel
-from nemo.collections.llm.peft.lora import LoRA
-from nemo.collections.llm.recipes import mixtral_8x22b
-from nemo.lightning import AutoResume, Trainer
+from nemo.collections.llm.recipes import mixtral_8x22b_64k
+from nemo.lightning import Trainer
 
 
-class TestMixtral8x22B:
+class TestMixtral8x22B_64k:
     @pytest.fixture(scope="class")
     def recipe_module(self):
-        return mixtral_8x22b
+        return mixtral_8x22b_64k
 
     def test_model(self, recipe_module):
         model_config = recipe_module.model()
@@ -37,6 +35,8 @@ class TestMixtral8x22B:
         assert model_config.__fn_or_cls__ == MixtralModel
         assert isinstance(model_config.config, run.Config)
         assert model_config.config.__fn_or_cls__ == MixtralConfig8x22B
+        assert model_config.config.seq_length == 65536
+        assert model_config.config.max_position_embeddings == 4096
 
     def test_trainer(self, recipe_module):
         trainer_config = recipe_module.trainer()
@@ -74,27 +74,9 @@ class TestMixtral8x22B:
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == MockDataModule
         assert isinstance(recipe.model.config, run.Config)
-        assert recipe.data.seq_length == 4096
+        assert recipe.data.seq_length == 65536
         assert recipe.data.global_batch_size == 512
         assert recipe.data.micro_batch_size == 1
-
-    def test_finetune_recipe(self, recipe_module):
-        recipe = recipe_module.finetune_recipe()
-        assert isinstance(recipe, run.Partial)
-        assert recipe.__fn_or_cls__ == finetune
-        assert isinstance(recipe.model, run.Config)
-        assert recipe.model.__fn_or_cls__ == MixtralModel
-        assert isinstance(recipe.trainer, run.Config)
-        assert recipe.trainer.__fn_or_cls__ == Trainer
-        assert isinstance(recipe.data, run.Config)
-        assert recipe.data.__fn_or_cls__ == SquadDataModule
-        assert recipe.data.seq_length == 2048
-        assert recipe.data.global_batch_size == 128
-        assert recipe.data.micro_batch_size == 1
-        assert isinstance(recipe.peft, run.Config)
-        assert recipe.peft.__fn_or_cls__ == LoRA
-        assert recipe.peft.target_modules == ['linear_qkv', 'linear_proj']
-        assert recipe.peft.dim == 32
 
     @pytest.mark.parametrize("num_nodes,num_gpus_per_node", [(8, 8), (16, 4), (32, 2)])
     def test_pretrain_recipe_with_different_configurations(self, recipe_module, num_nodes, num_gpus_per_node):
@@ -102,19 +84,35 @@ class TestMixtral8x22B:
         assert recipe.trainer.num_nodes == num_nodes
         assert recipe.trainer.devices == num_gpus_per_node
 
-    def test_trainer_parallelism_options(self, recipe_module):
-        trainer_config = recipe_module.trainer(
-            tensor_parallelism=4,
-            pipeline_parallelism=4,
-            context_parallelism=2,
-            sequence_parallelism=False,
-            expert_parallelism=2,
+    def test_valid_trainer_parallelism(self, recipe_module):
+        trainer_config = recipe_module.trainer()
+
+        assert isinstance(trainer_config.strategy, run.Config)
+        assert trainer_config.strategy.__fn_or_cls__.__name__ == "MegatronStrategy"
+
+        assert (
+            trainer_config.strategy.tensor_model_parallel_size
+            * trainer_config.strategy.pipeline_model_parallel_size
+            * trainer_config.strategy.context_parallel_size
+            * trainer_config.strategy.expert_model_parallel_size
+            % trainer_config.devices
+            == 0
         )
-        assert trainer_config.strategy.tensor_model_parallel_size == 4
-        assert trainer_config.strategy.pipeline_model_parallel_size == 4
-        assert trainer_config.strategy.context_parallel_size == 2
-        assert trainer_config.strategy.sequence_parallel is False
-        assert trainer_config.strategy.expert_model_parallel_size == 2
+        assert (
+            trainer_config.strategy.tensor_model_parallel_size
+            * trainer_config.strategy.pipeline_model_parallel_size
+            * trainer_config.strategy.context_parallel_size
+            * trainer_config.strategy.expert_model_parallel_size
+            / trainer_config.devices
+            % trainer_config.num_nodes
+            == 0
+        )
+
+        if trainer_config.strategy.pipeline_model_parallel_size != 1:
+            assert trainer_config.strategy.pipeline_dtype is not None
+
+        if trainer_config.strategy.tensor_model_parallel_size == 1:
+            assert trainer_config.strategy.sequence_parallel is False
 
     def test_model_config_parameters(self, recipe_module):
         model_config = recipe_module.model()
@@ -123,5 +121,6 @@ class TestMixtral8x22B:
         assert mixtral_config.num_layers == 56
         assert mixtral_config.hidden_size == 6144
         assert mixtral_config.num_attention_heads == 48
-        assert mixtral_config.seq_length == 4096
+        assert mixtral_config.seq_length == 65536
+        assert mixtral_config.max_position_embeddings == 4096
         assert mixtral_config.num_moe_experts == 8

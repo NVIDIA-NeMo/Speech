@@ -23,41 +23,41 @@ from nemo.collections.llm.api import pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes import llama3_8b
 
-NAME = "llama3_8b_16k"
+NAME = "llama3_8b_128k"
 
 
 @run.cli.factory(name=NAME)
 def model() -> run.Config[pl.LightningModule]:
     """
-    Factory function to create a Llama3 8B model configuration with 16k sequence length.
+    Factory function to create a Llama3 8B model configuration with 64k sequence length.
 
     Returns:
-        run.Config[pl.LightningModule]: Configuration for the Llama3 8B model with 16k sequence length.
+        run.Config[pl.LightningModule]: Configuration for the Llama3 8B model with 64k sequence length.
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain model=llama3_8b_16k ...
+            $ nemo llm pretrain model=llama3_8b_128k ...
 
         Python API usage:
             >>> model_config = model()
             >>> print(model_config)
     """
     model_config = llama3_8b.model()
-    model_config.config.seq_length = 16384
+    model_config.config.seq_length = 131072
     return model_config
 
 
 def trainer(
-    num_nodes: int = 2,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
 ) -> run.Config:
     """
-    Configure the NeMo Lightning Trainer for Llama3 8B model with 16k sequence length.
+    Configure the NeMo Lightning Trainer for Llama3 8B model with 64k sequence length.
 
-    This function sets up the distributed training strategy optimized for longer sequences.
+    This function sets up the distributed training strategy optimized for long sequences.
 
     Args:
-        num_nodes (int, optional): Number of compute nodes to use. Defaults to 2.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 4.
         num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
@@ -65,21 +65,21 @@ def trainer(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain trainer=llama3_8b_16k ...
+            $ nemo llm pretrain trainer=llama3_8b_128k ...
 
         Python API usage:
-            >>> trainer_config = trainer(num_nodes=2, num_gpus_per_node=8)
+            >>> trainer_config = trainer(num_nodes=4, num_gpus_per_node=8)
             >>> print(trainer_config)
 
     Note:
-        This configuration uses increased parallelism to handle the longer sequence length efficiently.
+        This configuration uses significantly increased parallelism to handle the long sequence length efficiently.
     """
     return llama3_8b.trainer(
         tensor_parallelism=4,
         pipeline_parallelism=2,
         pipeline_parallelism_type=torch.bfloat16,
         virtual_pipeline_parallelism=None,
-        context_parallelism=2,
+        context_parallelism=8,
         sequence_parallelism=True,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
@@ -90,19 +90,19 @@ def trainer(
 def pretrain_recipe(
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 2,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
 ) -> run.Partial:
     """
-    Create a pre-training recipe for Llama3 8B model with 16k sequence length.
+    Create a pre-training recipe for Llama3 8B model with 64k sequence length.
 
     This function sets up a complete configuration for pre-training, including
-    model, trainer, and data settings optimized for 16k sequence length.
+    model, trainer, and data settings optimized for 64k sequence length.
 
     Args:
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the pre-training run.
-        num_nodes (int, optional): Number of compute nodes to use. Defaults to 2.
+        num_nodes (int, optional): Number of compute nodes to use. Defaults to 4.
         num_gpus_per_node (int, optional): Number of GPUs per node. Defaults to 8.
 
     Returns:
@@ -110,20 +110,21 @@ def pretrain_recipe(
 
     Examples:
         CLI usage:
-            $ nemo llm pretrain --factory llama3_8b_16k
-            $ nemo llm pretrain --factory "llama3_8b_16k(num_nodes=2, name='my_16k_pretrain')"
+            $ nemo llm pretrain --factory llama3_8b_128k
+            $ nemo llm pretrain --factory "llama3_8b_128k(num_nodes=4, name='my_64k_pretrain')"
 
         Python API usage:
-            >>> recipe = pretrain_recipe(name="llama3_8b_16k_pretrain", num_nodes=2)
+            >>> recipe = pretrain_recipe(name="llama3_8b_128k_pretrain", num_nodes=4)
             >>> print(recipe)
 
     Note:
-        This recipe is optimized for handling longer sequences (16k) compared to the standard 8k version.
+        This recipe is optimized for handling long sequences (64k) compared to the standard 8k version.
+        It requires significant computational resources due to the extended sequence length.
     """
     recipe = llama3_8b.pretrain_recipe(name=name, dir=dir, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)
 
     recipe.model = model()
     recipe.trainer = trainer(num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)
-    recipe.data = run.Config(MockDataModule, seq_length=16384, global_batch_size=512, micro_batch_size=1)
+    recipe.data = run.Config(MockDataModule, seq_length=131072, global_batch_size=512, micro_batch_size=1)
 
     return recipe

@@ -79,5 +79,5 @@ def test_mixtral_config_8x22b():
     assert config.hidden_size == 6144
     assert config.num_attention_heads == 48
     assert config.ffn_hidden_size == 16384
-    assert config.max_position_embeddings == 65536
-    assert config.seq_length == 65536
+    assert config.max_position_embeddings == 4096
+    assert config.seq_length == 4096

@@ -133,7 +133,10 @@ class AutoResume:
             trainer.strategy.restore_config = self.restore_config
             # Load artifacts
             if self.restore_config.load_artifacts:
-                context_path = new_path / "context"
+                if isinstance(new_path, AdapterPath):
+                    context_path = Path(new_path.base_model_path) / "context"
+                else:
+                    context_path = new_path / "context"
                 if not context_path.is_dir():
                     context_path = new_path
 
@@ -282,7 +285,17 @@ class AutoResume:
     def get_trainer_ckpt_path(self, model: Optional[io.ConnectorMixin] = None) -> Optional[Path]:
         if self.resume_from_path:
             maybe_weights_path = self.get_weights_path(self.resume_from_path)
-            return maybe_weights_path if maybe_weights_path.is_dir() else self.resume_from_path
+            if maybe_weights_path.is_dir():
+                adapter_meta_path = maybe_weights_path / ADAPTER_META_FILENAME
+                if adapter_meta_path.exists():
+                    # the resume_from_path is an adapter checkpoint
+                    base_model_path = self._resume_peft(adapter_meta_path, model)
+                    return AdapterPath(Path(self.resume_from_path), base_model_path=base_model_path)
+                else:
+                    # the resume_from_path is not PEFT checkpoint
+                    return maybe_weights_path
+            else:
+                return self.resume_from_path
 
         checkpoint = None
         app_state = AppState()

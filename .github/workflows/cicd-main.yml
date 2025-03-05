@@ -361,8 +361,6 @@ jobs:
       SCRIPT: |
         python -m tests.setup --save_dir /home/TestData/nlp
 
-  #     - name: L2: Multimodal Imagen Train
-
   # L2: Community llava multimodal Checkpoints tests
   L2_Community_vita_Checkpoints_tests_Llama3:
     needs: [pre-flight, cicd-test-container-build]
@@ -370,45 +368,7 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_Community_vita_Checkpoints_tests_Llama3')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: |
-        mkdir /tmp/${{ github.run_id }}
-        export PYTHONPATH=/home/TestData/multimodal/video_neva/LLaVA:$PYTHONPATH
-        CUDA_VISIBLE_DEVICES=0 python examples/multimodal/multimodal_llm/neva/convert_llava_to_neva.py \
-          --in-file /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/llm \
-          --mm-projector-ckpt-dir /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/mm_projector \
-          --mm-vision-tower /home/TestData/multimodal/video_neva/Llama-3-VILA1.5-8B/vision_tower \
-          --tokenizer-model /home/TestData/multimodal/video_neva/vita-tokenizer/ \
-          --config-file vita_config.yaml \
-          --out-file=/tmp/${{ github.run_id }}/llama3_ci.nemo \
-          --model-type VITA \
-          --conv-template llama_3
-
-  # this test is using a 7B model which is too large for GitHub CI
-  # replace the model in this test with a toy model or move the test
-  # to the nightly CI
-  # OPTIONAL_L2_Community_LLM_Checkpoints_tests_Baichuan2:
-  #   needs: [pre-flight, cicd-test-container-build]
-  #   runs-on: self-hosted-azure
-  #   container:
-  #     image: nemoci.azurecr.io/nemo_container:${{ github.run_id }}
-  #     options:
-  #       # --user 0:128
-  #       --device=/dev/nvidia0
-  #       --gpus all
-  #       --shm-size=8g
-  #       --env TRANSFORMERS_OFFLINE=0
-  #       --env HYDRA_FULL_ERROR=1
-  #       --volume /mnt/datadrive/TestData:/home/TestData
-  #   steps:
-  #       - name: Checkout repository
-  #         uses: actions/checkout@v4
-  #       - run: |
-  #           python scripts/checkpoint_converters/convert_baichuan2_hf_to_nemo.py \
-  #           --input_name_or_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base \
-  #           --output_path=/home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
-  #           rm -f /home/TestData/nlp/megatron_gpt/Baichuan2-7B-Base/ci.nemo
-  #       - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
-  #         if: "failure()"
+      SCRIPT: bash tests/functional_tests/L2_Community_vita_Checkpoints_tests_Llama3.sh
 
   # L2: ASR dev run
   ASR_dev_run_Speech_to_Text:
@@ -417,32 +377,15 @@ jobs:
     if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'ASR_dev_run_Speech_to_Text')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: |
-        python examples/asr/asr_ctc/speech_to_text_ctc.py \
-          model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-          model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-          trainer.devices=1 \
-          trainer.accelerator="gpu" \
-          +trainer.fast_dev_run=True \
-          exp_manager.exp_dir=/tmp/speech_to_text_results
+      SCRIPT: bash tests/functional_tests/ASR_dev_run_Speech_to_Text.sh
 
-  ASR_dev_run_Speech_to_Text_WPE_-_CitriNet:
+  ASR_dev_run_Speech_to_Text_WPE_CitriNet:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'ASR_dev_run_Speech_to_Text_WPE_-_CitriNet')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'ASR_dev_run_Speech_to_Text_WPE_CitriNet')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: |
-        python examples/asr/asr_ctc/speech_to_text_ctc_bpe.py \
-          --config-path="../conf/citrinet/" --config-name="config_bpe" \
-          model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-          model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-          model.tokenizer.dir="/home/TestData/asr_tokenizers/an4_wpe_128/" \
-          model.tokenizer.type="wpe" \
-          trainer.devices=1 \
-          trainer.accelerator="gpu" \
-          +trainer.fast_dev_run=True \
-          exp_manager.exp_dir=/tmp/speech_to_text_wpe_results
+      SCRIPT: bash tests/functional_tests/ASR_dev_run_Speech_to_Text_WPE_CitriNet.sh
 
   ASR_dev_run_Speech_Pre-training_-_CitriNet:
     needs: [pre-flight, cicd-test-container-build]
@@ -3107,7 +3050,7 @@ jobs:
       - L0_Unit_Tests_CPU_Others
 
       - ASR_dev_run_Speech_to_Text
-      - ASR_dev_run_Speech_to_Text_WPE_-_CitriNet
+      - ASR_dev_run_Speech_to_Text_WPE_CitriNet
       - ASR_dev_run_Speech_Pre-training_-_CitriNet
       - Optional_ASR_dev_run_Speech_To_Text_Finetuning
       - Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning

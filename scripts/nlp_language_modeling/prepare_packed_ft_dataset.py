@@ -205,7 +205,7 @@ def main(cfg: 'DictConfig') -> None:
     dataset, tokenizer = tokenize_dataset(cfg)
     sequences, histogram = create_hist(dataset, cfg.model.data.train_ds.max_seq_length)
     for pack_size in args.pack_sizes:
-        assignments = create_packing_strategy(histogram, pack_size, args.packing_algorithm)
+        assignments, _ = create_packing_strategy(histogram, pack_size, args.packing_algorithm)
         output_data = fill_packing_strategy(assignments, sequences, pack_size, tokenizer.eos_id)
 
         # save output data

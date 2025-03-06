@@ -316,6 +316,7 @@ class Hyena1bConfig(HyenaConfig):
 
     hybrid_override_pattern: str = "SDH*SDHSDH*SDHSDH*SDHSDH*"
     num_layers: int = 25
+    recompute_num_layers: int = 5  # needs to be a multiple of num_layers
     seq_length: int = 8192
     hidden_size: int = 1920
     num_groups_hyena: int = 1920

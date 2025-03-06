@@ -1145,7 +1145,7 @@ class BatchedFrameASRRNNT(FrameBatchASR):
                 new_prev_hypothesis.append(self.previous_hypotheses[old_pos])
             self.previous_hypotheses = new_prev_hypothesis
 
-        best_hyp, _ = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
+        best_hyp = self.asr_model.decoding.rnnt_decoder_predictions_tensor(
             encoded, encoded_len, return_hypotheses=True, partial_hypotheses=self.previous_hypotheses
         )
 
@@ -1168,13 +1168,13 @@ class BatchedFrameASRRNNT(FrameBatchASR):
             if not has_signal_ended:
                 self.all_preds[global_index_key].append(pred.cpu().numpy())
 
-        timestamps = [hyp.timestep for hyp in best_hyp]
-        for idx, timestep in enumerate(timestamps):
+        timestamps = [hyp.timestamp for hyp in best_hyp]
+        for idx, timestamp in enumerate(timestamps):
             global_index_key = new_batch_keys[idx]  # get index of this sample in the global batch
 
             has_signal_ended = self.frame_bufferer.signal_end[global_index_key]
             if not has_signal_ended:
-                self.all_timestamps[global_index_key].append(timestep)
+                self.all_timestamps[global_index_key].append(timestamp)
 
         if self.stateful_decoding:
             # State resetting is being done on sub-batch only, global index information is not being updated

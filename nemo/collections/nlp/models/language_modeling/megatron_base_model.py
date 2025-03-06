@@ -1324,6 +1324,10 @@ class MegatronBaseModel(NLPModel):
             for submodule in frozen_submodule_names:
                 logging.debug(f"Ignoring state {submodule} in FSDP.")
             self.trainer.strategy.kwargs['ignored_states'] = frozen_submodules
+
+            # Transformer Engine expects that module parameters are available, so FSDP should not replace them
+            self.trainer.strategy.kwargs['use_orig_params'] = True
+
             # FSDP requires uniform status of require_grads
             # Diffusion models like SD has frozen parts and needs to be added to 'ignored_states'
             # from sharding for FSDP to work

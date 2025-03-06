@@ -21,6 +21,8 @@ import torch.distributed
 from megatron.core.inference_params import InferenceParams
 from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer.transformer_config import TransformerConfig
+from transformers import CLIPVisionConfig
+from transformers import LlavaConfig as HFLlavaConfig
 from transformers import LlavaNextForConditionalGeneration
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -29,8 +31,9 @@ from nemo.collections.vlm.llava_next.model.base import LlavaNextConfig, MCoreLla
 from nemo.collections.vlm.neva.model.base import NevaModel
 from nemo.collections.vlm.neva.model.llava import HFLlavaImporter
 from nemo.collections.vlm.vision.base import HFCLIPVisionConfig, MultimodalProjectorConfig
-from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning import io, teardown
 from nemo.lightning.pytorch.optim import MegatronOptimizerModule, OptimizerModule
+from nemo.utils import logging
 
 
 @dataclass
@@ -261,6 +264,353 @@ class HFLlavaNextImporter(
         )
 
         return output
+
+
+@io.model_exporter(LlavaNextModel, "hf")
+class HFLlavaNextExporter(io.ModelConnector[LlavaNextModel, "LlavaNextForConditionalGeneration"]):
+    """
+    Exporter class for converting NeMo LLaVA Next model to HuggingFace format.
+
+    Inherits:
+        io.ModelConnector: Connector interface to handle setup, save, and load using the Lightning framework.
+
+    Methods:
+        init: Initializes a new HuggingFace LLaVA Next model instance.
+        apply: Converts the NeMo model to HuggingFace format and saves it.
+        convert_state: Maps and transforms the state dictionary from NeMo to HuggingFace format.
+        config: Generates and returns the HuggingFace LLaVA config for the model.
+    """
+
+    def init(self) -> "LlavaNextForConditionalGeneration":
+        """
+        Initializes a HuggingFace LlavaNextForConditionalGeneration model.
+
+        Args:
+            dtype: The data type to use for the model (default: torch.bfloat16)
+
+        Returns:
+            LlavaNextForConditionalGeneration: A HuggingFace LLaVA Next model initialized with the configuration.
+        """
+        from transformers.modeling_utils import no_init_weights
+
+        with no_init_weights(True):
+            return LlavaNextForConditionalGeneration(self.config)
+
+    def apply(self, output_path: Path) -> Path:
+        """
+        Converts the NeMo LLaVA Next model to HuggingFace format and saves it to the specified path.
+
+        Args:
+            output_path (Path): The path where the converted HuggingFace model will be saved.
+
+        Returns:
+            Path: The output path where the HuggingFace model was saved.
+        """
+        source, _ = self.nemo_load(str(self))
+        target = self.init()
+        target = self.convert_state(source, target)
+
+        target = target.cpu()
+        target.save_pretrained(output_path)
+        try:
+            self.tokenizer.tokenizer.save_pretrained(output_path)
+        except Exception:
+            logging.warning("Failed to save tokenizer")
+
+        return output_path
+
+    def convert_state(self, source, target):
+        # pylint: disable=C0115,C0116,line-too-long
+        """
+        Maps and transforms the state dictionary from NeMo to HuggingFace format.
+
+        Args:
+            source: The source NeMo model.
+            target: The target HuggingFace model.
+
+        Returns:
+            The target HuggingFace model with the converted state.
+        """
+        # Define the state mapping from NeMo to HuggingFace
+        mapping = {
+            "language_model.decoder.layers.*.self_attention.linear_proj.weight": "language_model.model.layers.*.self_attn.o_proj.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc2.weight": "language_model.model.layers.*.mlp.down_proj.weight",
+            "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "language_model.model.layers.*.input_layernorm.weight",
+            "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "language_model.model.layers.*.post_attention_layernorm.weight",
+            "language_model.decoder.final_layernorm.weight": "language_model.model.norm.weight",
+        }
+
+        # Map vision projection components
+        if "vision_projection.encoder.linear_fc1.weight" in source.module.state_dict().keys():
+            mapping.update(
+                {
+                    "vision_projection.encoder.linear_fc1.weight": "multi_modal_projector.linear_1.weight",
+                    "vision_projection.encoder.linear_fc1.bias": "multi_modal_projector.linear_1.bias",
+                    "vision_projection.encoder.linear_fc2.weight": "multi_modal_projector.linear_2.weight",
+                    "vision_projection.encoder.linear_fc2.bias": "multi_modal_projector.linear_2.bias",
+                }
+            )
+        elif "vision_projection.0.weight" in source.module.state_dict().keys():
+            mapping.update(
+                {
+                    "vision_projection.0.weight": "multi_modal_projector.linear_1.weight",
+                    "vision_projection.0.bias": "multi_modal_projector.linear_1.bias",
+                    "vision_projection.2.weight": "multi_modal_projector.linear_2.weight",
+                    "vision_projection.2.bias": "multi_modal_projector.linear_2.bias",
+                }
+            )
+
+        # Check for image_newline and add it to mapping if it exists
+        if "image_newline" in source.module.state_dict().keys():
+            mapping.update({"image_newline": "image_newline"})
+
+        # Map vision model components
+        if "vision_model.vision_model.embeddings.class_embedding" in source.module.state_dict().keys():
+            mapping.update(
+                {
+                    "vision_model.vision_model.**": "vision_tower.vision_model.**",
+                }
+            )
+        elif "vision_model.class_token" in source.module.state_dict().keys():
+            mapping.update(
+                {
+                    "vision_model.conv1.weight": "vision_tower.vision_model.embeddings.patch_embedding.weight",
+                    "vision_model.position_embeddings.weight": "vision_tower.vision_model.embeddings.position_embedding.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "vision_tower.vision_model.encoder.layers.*.layer_norm1.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_bias": "vision_tower.vision_model.encoder.layers.*.layer_norm1.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "vision_tower.vision_model.encoder.layers.*.layer_norm2.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.layer_norm_bias": "vision_tower.vision_model.encoder.layers.*.layer_norm2.bias",
+                    "vision_model.decoder.layers.*.self_attention.linear_proj.weight": "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.weight",
+                    "vision_model.decoder.layers.*.self_attention.linear_proj.bias": "vision_tower.vision_model.encoder.layers.*.self_attn.out_proj.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.weight": "vision_tower.vision_model.encoder.layers.*.mlp.fc1.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc1.bias": "vision_tower.vision_model.encoder.layers.*.mlp.fc1.bias",
+                    "vision_model.decoder.layers.*.mlp.linear_fc2.weight": "vision_tower.vision_model.encoder.layers.*.mlp.fc2.weight",
+                    "vision_model.decoder.layers.*.mlp.linear_fc2.bias": "vision_tower.vision_model.encoder.layers.*.mlp.fc2.bias",
+                    "vision_model.ln_pre.weight": "vision_tower.vision_model.pre_layrnorm.weight",
+                    "vision_model.ln_pre.bias": "vision_tower.vision_model.pre_layrnorm.bias",
+                }
+            )
+
+        # Add transformations for specialized tensor manipulations
+        transforms = [
+            _export_language_qkv,
+            _export_vision_qkv,
+            _export_vision_qkv_bias,
+            _export_language_linear_fc1,
+            _export_embedding,
+        ]
+
+        # If word embeddings are not shared, add the head export transform
+        if not source.config.language_transformer_config.share_embeddings_and_output_weights:
+            transforms.append(_export_language_head)
+
+        return io.apply_transforms(
+            source,
+            target,
+            mapping=mapping,
+            transforms=transforms,
+        )
+
+    @property
+    def tokenizer(self) -> "TokenizerSpec":
+        """
+        Gets the tokenizer from the loaded model context.
+
+        Returns:
+            The tokenizer specification.
+        """
+        return io.load_context(str(self), subpath="model").tokenizer
+
+    @property
+    def config(self) -> "HFLlavaConfig":
+        """
+        Generates the configuration for the HuggingFace LLaVA Next model based on the NeMo model.
+
+        Returns:
+            HFLlavaConfig: A configuration object for the HuggingFace LLaVA Next model.
+        """
+        from transformers import LlamaConfig as HFLlamaConfig
+
+        source = io.load_context(str(self), subpath="model.config")
+        language_config = source.language_transformer_config
+        vision_config = CLIPVisionConfig.from_pretrained("openai/clip-vit-large-patch14-336")
+
+        # Create text config for HuggingFace model
+        text_config = HFLlamaConfig(
+            num_hidden_layers=language_config.num_layers,
+            hidden_size=language_config.hidden_size,
+            intermediate_size=language_config.ffn_hidden_size,
+            num_attention_heads=language_config.num_attention_heads,
+            max_position_embeddings=language_config.seq_length,
+            initializer_range=language_config.init_method_std,
+            rms_norm_eps=language_config.layernorm_epsilon,
+            num_key_value_heads=language_config.num_query_groups,
+            rope_theta=language_config.rotary_base,
+            vocab_size=self.tokenizer.vocab_size,
+            tie_word_embeddings=language_config.share_embeddings_and_output_weights,
+        )
+        # Create the LlavaConfig for HuggingFace
+        return HFLlavaConfig(
+            text_config=text_config,
+            vision_config=vision_config,
+            vision_feature_layer=source.vision_feature_layer,
+            # Add any additional LlavaNext-specific configurations
+            model_type="llava_next",
+        )
+
+
+# Define transformation functions needed for the exporter
+
+
+@io.state_transform(
+    source_key="language_model.decoder.layers.*.self_attention.linear_qkv.weight",
+    target_key=(
+        "language_model.model.layers.*.self_attn.q_proj.weight",
+        "language_model.model.layers.*.self_attn.k_proj.weight",
+        "language_model.model.layers.*.self_attn.v_proj.weight",
+    ),
+)
+def _export_language_qkv(ctx: io.TransformCTX, linear_qkv):
+    """Transforms NeMo's fused QKV weights to separate Q, K, V weights for HuggingFace format."""
+    megatron_config = ctx.source.config.language_transformer_config
+
+    head_num = megatron_config.num_attention_heads
+    num_query_groups = megatron_config.num_query_groups
+    heads_per_group = head_num // num_query_groups
+    hidden_size = megatron_config.hidden_size
+    head_size = megatron_config.kv_channels
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
+    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
+    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
+
+    return q_proj, k_proj, v_proj
+
+
+@io.state_transform(
+    source_key="vision_model.decoder.layers.*.self_attention.linear_qkv.weight",
+    target_key=(
+        "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.weight",
+        "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.weight",
+        "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.weight",
+    ),
+)
+def _export_vision_qkv(ctx: io.TransformCTX, linear_qkv):
+    """Transforms NeMo's fused vision QKV weights to separate Q, K, V weights for HuggingFace format."""
+    megatron_config = ctx.source.config.vision_transformer_config
+
+    head_num = megatron_config.num_attention_heads
+    num_query_groups = megatron_config.num_query_groups
+    heads_per_group = head_num // num_query_groups
+    hidden_size = megatron_config.hidden_size
+    head_size = megatron_config.kv_channels
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
+    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
+    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
+
+    return q_proj, k_proj, v_proj
+
+
+@io.state_transform(
+    source_key="vision_model.decoder.layers.*.self_attention.linear_qkv.bias",
+    target_key=(
+        "vision_tower.vision_model.encoder.layers.*.self_attn.q_proj.bias",
+        "vision_tower.vision_model.encoder.layers.*.self_attn.k_proj.bias",
+        "vision_tower.vision_model.encoder.layers.*.self_attn.v_proj.bias",
+    ),
+)
+def _export_vision_qkv_bias(ctx: io.TransformCTX, linear_qkv_bias):
+    """Transforms NeMo's fused vision QKV biases to separate Q, K, V biases for HuggingFace format."""
+    megatron_config = ctx.source.config.vision_transformer_config
+
+    head_num = megatron_config.num_attention_heads
+    num_query_groups = megatron_config.num_query_groups
+    heads_per_group = head_num // num_query_groups
+    head_size = megatron_config.kv_channels
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    linear_qkv_bias = linear_qkv_bias.reshape([qkv_total_dim, head_size])
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_proj_bias = linear_qkv_bias[q_slice].reshape(-1).cpu()
+    k_proj_bias = linear_qkv_bias[k_slice].reshape(-1).cpu()
+    v_proj_bias = linear_qkv_bias[v_slice].reshape(-1).cpu()
+
+    return q_proj_bias, k_proj_bias, v_proj_bias
+
+
+@io.state_transform(
+    source_key="vision_model.class_token",
+    target_key="vision_tower.vision_model.embeddings.class_embedding",
+)
+def _export_cls_token(ctx: io.TransformCTX, class_token):
+    """Transforms the class token from NeMo to HuggingFace format."""
+    return class_token.reshape(-1)
+
+
+@io.state_transform(
+    source_key="language_model.decoder.layers.*.mlp.linear_fc1.weight",
+    target_key=(
+        "language_model.model.layers.*.mlp.gate_proj.weight",
+        "language_model.model.layers.*.mlp.up_proj.weight",
+    ),
+)
+def _export_language_linear_fc1(ctx: io.TransformCTX, linear_fc1):
+    """Splits NeMo's fused MLP linear_fc1 weight into gate_proj and up_proj for HuggingFace format."""
+    gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
+    return gate_proj, up_proj
+
+
+@io.state_transform(
+    source_key="language_model.embedding.word_embeddings.weight",
+    target_key="language_model.model.embed_tokens.weight",
+)
+def _export_embedding(ctx: io.TransformCTX, embedding):
+    """Transforms the word embeddings from NeMo to HuggingFace format."""
+    hf_config = ctx.target.config.text_config
+    # Prune any padding to match the HuggingFace vocab size
+    return embedding[: hf_config.vocab_size, :]
+
+
+@io.state_transform(
+    source_key="language_model.output_layer.weight",
+    target_key="language_model.lm_head.weight",
+)
+def _export_language_head(ctx: io.TransformCTX, output_weight):
+    """Transforms the output layer from NeMo to HuggingFace format."""
+    hf_config = ctx.target.config.text_config
+    # Prune any padding to match the HuggingFace vocab size
+    return output_weight[: hf_config.vocab_size, :]
 
 
 __all__ = [

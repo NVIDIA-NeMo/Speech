@@ -24,6 +24,7 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.losses import AggregatorLoss, CrossEntropyLoss
 from nemo.collections.common.metrics import GlobalAverageLossMetric
 from nemo.collections.nlp.data.token_classification.punctuation_capitalization_dataset import (
@@ -1070,6 +1071,8 @@ class PunctuationCapitalizationModel(NLPModel, Exportable):
         Returns:
             a query with restored punctuation and capitalization
         """
+        if isinstance(query, Hypothesis):
+            query = query.text
         query = query.strip().split()
         assert len(query) == len(
             punct_preds

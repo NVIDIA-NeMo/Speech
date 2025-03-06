@@ -22,6 +22,7 @@ from numpy import ndarray
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 
+from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.nlp.data import get_stats
 from nemo.core import Dataset
@@ -214,6 +215,8 @@ def _get_subtokens_and_subtokens_mask(query: str, tokenizer: TokenizerSpec) -> T
         subtokens: list of subtokens
         subtokens_mask: list of ints
     """
+    if isinstance(query, Hypothesis):
+        query = query.text
     words = query.strip().split()
     subtokens = []
     subtokens_mask = []
@@ -405,9 +408,7 @@ class BertPunctuationCapitalizationInferDataset(Dataset):
             torch.tensor(features_length, dtype=torch.long),
         )
 
-    def __getitem__(
-        self, idx: int
-    ) -> Union[
+    def __getitem__(self, idx: int) -> Union[
         Tuple[ndarray, ndarray, ndarray, ndarray, int, int, bool, bool],
         Tuple[ndarray, ndarray, ndarray, ndarray, int, int, bool, bool, ndarray, List[int]],
     ]:

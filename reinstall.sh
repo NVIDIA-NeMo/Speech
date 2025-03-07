@@ -176,8 +176,8 @@ nemo() {
   fi
 
   DEPS=(
-    "sox"                                                    # requires numpy to be there @URL: https://github.com/marl/pysox/issues/167
-    "ctc_segmentation==1.7.1 ; platform_machine == 'x86_64'" # requires numpy<2.0.0 to be installed before
+    "sox"                                                                                      # requires numpy to be there @URL: https://github.com/marl/pysox/issues/167
+    "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
     "nemo_run@git+https://github.com/NVIDIA/NeMo-Run.git@f07f44688e42e5500bf28ff83dd3e0f4bead0c8d"
   )
 

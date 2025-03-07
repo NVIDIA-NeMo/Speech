@@ -9,7 +9,6 @@ kornia
 megatron-energon==5.2.0
 nerfacc>=0.5.3
 open_clip_torch==2.24.0
-PyMCubes
 taming-transformers
 torchdiffeq
 torchsde

@@ -153,6 +153,8 @@ class PEFT(IOMixin, ABC, ModelTransform):
 
         # automodel_setup_optimizers is either None or holds a reference to trainer.strategy.setup_optimizers
         self.automodel_setup_optimizers = None
+        # automodel adds adapters in configure_model
+        self.transform_already_applied = False
         if get_automodel_from_trainer(trainer) is not None:
             ckpt_io_kwargs = {"model_library": "huggingface", "lora": True}
             # Due to the workaround used in peft restoration, it makes restoration non-PTL conforming,
@@ -160,6 +162,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
             trainer._checkpoint_connector.restore_training_state = lambda: True
             trainer._checkpoint_connector.restore_model = lambda: True
             self.automodel_setup_optimizers = trainer.strategy.setup_optimizers
+            self.transform_already_applied = True
             trainer.strategy.setup_optimizers = lambda x: True
         else:
             ckpt_io_kwarg_names = [
@@ -202,7 +205,9 @@ class PEFT(IOMixin, ABC, ModelTransform):
         3. Load weights and optimizer state dict
         4. Set up `finalize_model_grads` from mcore.
         """
-        super().apply_transform(trainer)
+        # automodel adds adapters in configure_model
+        if not getattr(self, 'transform_already_applied', False):
+            super().apply_transform(trainer)
         self.set_trainable_params(trainer)
         # @akoumparouli: only used with automodel + FSDP2Strategy.
         if callable(getattr(trainer.strategy, 'parallelize', None)):

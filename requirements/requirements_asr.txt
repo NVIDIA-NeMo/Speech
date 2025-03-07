@@ -6,7 +6,7 @@ jiwer
 kaldi-python-io
 kaldiio
 lhotse>=1.26.0
-librosa>=0.10.2
+librosa>=0.10.1
 marshmallow
 optuna
 packaging

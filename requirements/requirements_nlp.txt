@@ -15,7 +15,7 @@ megatron_core
 nltk>=3.6.5
 numpy<2  # tensorstore has an implicit compiled dependency on numpy<2
 nvidia-modelopt[torch]==0.23.2 ; platform_system != 'Darwin'
-nvidia-resiliency-ext; sys_platform != "darwin"
+nvidia-resiliency-ext; (platform_machine == 'x86_64' and platform_system != 'Darwin')
 opencc
 pangu
 prettytable
@@ -23,7 +23,7 @@ rapidfuzz
 rouge_score
 sacrebleu  # manually install sacrebleu[ja] for Japanese support; MeCab is unsupported in Python 3.11+
 sentence_transformers
-tensorstore<0.1.72
+tensorstore<0.1.72; platform_system != 'Darwin'
 tiktoken==0.7.0
 unstructured==0.14.9
 zarr>=2.18.2,<3.0.0

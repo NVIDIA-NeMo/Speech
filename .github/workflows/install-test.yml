@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
+        os: [macos-latest, macos-13]
         python: ["3.10", "3.11", "3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
@@ -44,7 +44,7 @@ jobs:
           fi
 
       - name: Run LLM example
-        if: ${{ matrix.installer == 'nemo-install' }}
+        if: ${{ matrix.installer == 'nemo-install' && matrix.os != 'macos-13' }}
         run: |
           # This is guarded since it requires nemo-run. We expect Nemo-run to be
           # available on PyPi with 25.04.
@@ -54,6 +54,7 @@ jobs:
           python examples/llm/pretrain/pretrain.py
 
       - name: Run import checks
+        if: ${{ matrix.os != 'macos-13' }}
         run: |
           # Run import checks
           for collection in "asr" "tts"; do
@@ -62,12 +63,12 @@ jobs:
 
   test-installs-linux:
     name: ${{ matrix.os }}-${{ matrix.image }}-${{ matrix.installer }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     container: ubuntu:${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-22.04, ubuntu-22.04-arm]
         image: ["22.04"]
         installer: ["pip-install", "nemo-install"]
     steps:

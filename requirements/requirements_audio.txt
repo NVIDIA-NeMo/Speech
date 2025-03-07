@@ -2,7 +2,7 @@ einops
 lhotse>=1.22.0
 librosa>=0.10.0
 matplotlib
-pesq
+pesq; (platform_machine != 'x86_64' or platform_system != 'Darwin')
 pystoi
 scipy>=0.14
 soundfile

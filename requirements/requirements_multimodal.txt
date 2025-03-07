@@ -1,7 +1,7 @@
 addict
-bitsandbytes==0.45.3 ; platform_machine == 'x86_64'
+bitsandbytes==0.45.3 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')
 clip
-decord; sys_platform == 'linux'
+decord; (sys_platform == 'linux' and platform_machine == 'x86_64')
 diffusers>=0.19.3
 einops_exts
 imageio

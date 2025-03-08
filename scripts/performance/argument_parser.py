@@ -249,6 +249,14 @@ def parse_cli_args():
         required=False,
         default=100,
     )
+    parser.add_argument(
+        "-cg",
+        "--cuda_graphs",
+        help="Enable CUDA graphs. Disabled by default",
+        action="store_true",
+        required=False,
+        default=None,  # NOTE: DO NOT SET DEFAULT TO FALSE, IT WILL BE OVERRIDDEN BY THE RECOMMENDED MODEL CONFIGS
+    )
 
     def list_of_strings(arg):
         return arg.split(',')

@@ -22,7 +22,7 @@ from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenize
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
-from ..utils import args_sanity_check, get_user_configs, hf_tokenizer, set_primary_perf_configs, slurm_executor
+from ..utils import args_sanity_check, get_user_configs, set_primary_perf_configs, slurm_executor
 
 
 def override_recipe_configs(
@@ -35,6 +35,7 @@ def override_recipe_configs(
     cp_size: int,
     vp_size: int,
     ep_size: int,
+    enable_cuda_graphs: bool,
 ):
     """
     nemotron3 22b pre-train recipe aimed at achieving best possible performance.
@@ -62,18 +63,19 @@ def override_recipe_configs(
 
     # data module configs
     recipe.data.num_train_samples = args.max_steps * gbs * mbs  # ensure only 1 epoch for whole run
-    if args.compute_dtype == "bf16" or args.gpu.lower() == "b200":
-        recipe.data.tokenizer = run.Config(
-            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
-        )
-        recipe.model.tokenizer = recipe.data.tokenizer
-    else:
-        recipe.data.tokenizer = hf_tokenizer("nvidia/megatron-gpt2-345m")
+
+    recipe.data.tokenizer = run.Config(
+        get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
+    )
+    recipe.model.tokenizer = recipe.data.tokenizer
 
     # compute dtype configs
     if args.compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
+
+    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
+    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
 
     return recipe
 
@@ -83,9 +85,11 @@ if __name__ == "__main__":
     args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "nemotron3", "22b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
+    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _, enable_cuda_graphs = kwargs
 
-    recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)
+    recipe = override_recipe_configs(
+        args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, enable_cuda_graphs
+    )
 
     exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
     exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"

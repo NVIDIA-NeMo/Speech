@@ -49,6 +49,7 @@ def override_recipe_configs(
     cp_size: int,
     vp_size: int,
     ep_size: int,
+    enable_cuda_graphs: bool,
 ):
     """
     gpt3 175b pre-train recipe aimed at achieving best possible performance.
@@ -105,6 +106,9 @@ def override_recipe_configs(
 
     recipe.model.config.tp_only_amax_red = True
 
+    recipe.model.config.enable_cuda_graph = enable_cuda_graphs
+    recipe.trainer.strategy.use_te_rng_tracker = enable_cuda_graphs
+
     return recipe
 
 
@@ -113,9 +117,11 @@ if __name__ == "__main__":
     args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "gpt3", "175b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _ = kwargs
+    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _, enable_cuda_graphs = kwargs
 
-    recipe = override_recipe_configs(args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size)
+    recipe = override_recipe_configs(
+        args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, enable_cuda_graphs
+    )
 
     exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
     exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"

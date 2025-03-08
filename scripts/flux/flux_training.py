@@ -95,6 +95,8 @@ def flux_training() -> run.Partial:
                 gradient_accumulation_fusion=True,
                 ddp=run.Config(
                     DistributedDataParallelConfig,
+                    use_custom_fsdp=True,
+                    data_parallel_sharding_strategy='optim_grads_params',
                     check_for_nan_in_grad=True,
                     grad_reduce_in_fp32=True,
                 ),
@@ -155,6 +157,7 @@ def convergence_test() -> run.Partial:
     recipe.model.flux_params.device = 'cuda'
     recipe.trainer.devices = 8
     recipe.data = flux_datamodule('/dataset/fill50k/fill50k_tarfiles/')
+    recipe.trainer.max_steps = 30000
     recipe.trainer.strategy.ddp = run.Config(
         DistributedDataParallelConfig,
         use_custom_fsdp=True,

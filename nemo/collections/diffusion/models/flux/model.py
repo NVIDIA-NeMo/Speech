@@ -88,6 +88,7 @@ class FluxConfig(TransformerConfig, io.IOMixin):
     guidance_embed: bool = False
     vec_in_dim: int = 768
     rotary_interleaved: bool = True
+    apply_rope_fusion: bool = False
     layernorm_epsilon: float = 1e-06
     hidden_dropout: float = 0
     attention_dropout: float = 0
@@ -112,8 +113,8 @@ class T5Config:
     T5 Config
     """
 
-    version: Optional[str] = "google/t5-v1_1-xxl"
-    max_length: Optional[int] = 512
+    version: Optional[str] = field(default_factory=lambda: "google/t5-v1_1-xxl")
+    max_length: Optional[int] = field(default_factory=lambda: 512)
 
 
 @dataclass
@@ -122,9 +123,9 @@ class ClipConfig:
     Clip Config
     """
 
-    version: Optional[str] = "openai/clip-vit-large-patch14"
-    max_length: Optional[int] = 77
-    always_return_pooled: Optional[bool] = True
+    version: Optional[str] = field(default_factory=lambda: "openai/clip-vit-large-patch14")
+    max_length: Optional[int] = field(default_factory=lambda: 77)
+    always_return_pooled: Optional[bool] = field(default_factory=lambda: True)
 
 
 @dataclass
@@ -133,12 +134,13 @@ class FluxModelParams:
     Flux Model Params
     """
 
-    flux_config: FluxConfig = field(default_factory=lambda: FluxConfig())
-    vae_config: Optional[AutoEncoderConfig] = field(
+    flux_config: FluxConfig = field(default_factory=FluxConfig)
+    vae_config: AutoEncoderConfig = field(
         default_factory=lambda: AutoEncoderConfig(ch_mult=[1, 2, 4, 4], attn_resolutions=[])
     )
-    clip_params: Optional[ClipConfig] = field(default_factory=lambda: ClipConfig())
-    t5_params: Optional[T5Config] = field(default_factory=lambda: T5Config())
+    clip_params: ClipConfig = field(default_factory=ClipConfig)
+    t5_params: T5Config = field(default_factory=T5Config)
+
     scheduler_steps: int = 1000
     device: str = 'cuda'
 
@@ -337,7 +339,7 @@ class Flux(VisionModule):
             ckpt = {k.removeprefix("module."): v for k, v in loaded_state_dict["state_dict"].items()}
         else:
             if do_convert_from_hf:
-                ckpt = flux_transformer_converter(ckpt_path, self.transformer.config)
+                ckpt = flux_transformer_converter(ckpt_path, self.config)
                 if save_converted_model_to is not None:
                     os.makedirs(save_converted_model_to, exist_ok=True)
                     save_path = os.path.join(save_converted_model_to, 'nemo_flux_transformer.safetensors')

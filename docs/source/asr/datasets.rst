@@ -567,6 +567,11 @@ Lhotse dataloading supports the following types of inputs:
 * NeMo tarred data
     Tarred NeMo JSON manifests + audio tar files; we also support combination of multiple NeMo
     tarred data sources (e.g., multiple buckets of NeMo data or multiple datasets) via dynamic multiplexing.
+
+    We support using a subset of Tarred NeMo JSON manifests along with audio tar files without disrupting the alignment between the tarred files and their corresponding manifests.
+    This feature is essential because large datasets often consist of numerous tar files and multiple versions of Tarred NeMo JSON manifest subsets, which may contain only a portion of the audio files due to filtering for various reasons.
+    To skip specific entries in the manifests without repeatedly copying and retarring audio files, the entries must include a ``_skipme`` key. This key should be set to ``True``, ``1``, or a reason for skipping (e.g., ``low character-rate``).
+
 * Lhotse CutSet manifests
     Regular Lhotse CutSet manifests (typically gzipped JSONL).
     See `Lhotse Cuts documentation`_ to learn more about Lhotse data formats.

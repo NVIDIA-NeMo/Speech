@@ -93,6 +93,13 @@ def predict_seq_len(instance_tokens: torch.Tensor, num_image_embeddings_per_tile
     return seqlen
 
 
+def predict_seq_len_with_padding(instance_tokens: torch.Tensor, pad_to_multiple_of: int = 64) -> int:
+    """Get seqlen with padding"""
+    seqlen = len(instance_tokens)
+    seqlen_padded = (seqlen + pad_to_multiple_of - 1) // pad_to_multiple_of * pad_to_multiple_of
+    return seqlen_padded
+
+
 def convert_to_packed(
     tokens: List[torch.Tensor],
     labels: List[torch.Tensor],

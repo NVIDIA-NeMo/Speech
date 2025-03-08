@@ -17,7 +17,6 @@ from typing import Any, Dict, Literal, Optional
 
 import fiddle as fdl
 import lightning.pytorch as pl
-import torch.distributed
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from megatron.core import parallel_state
 from megatron.energon import WorkerConfig, get_savable_loader, get_train_dataset
@@ -297,7 +296,13 @@ class EnergonMultiModalDataModule(pl.LightningDataModule, IOMixin):
             dataloader_obj = self.trainer.train_dataloader
 
             state = []
-            if torch.distributed.get_rank() == parallel_state.get_model_parallel_src_rank():
+            # All ranks should be zero except the dp rank.
+            if (
+                parallel_state.get_context_parallel_rank()
+                or parallel_state.get_pipeline_model_parallel_rank()
+                or parallel_state.get_tensor_model_parallel_rank()
+                or parallel_state.get_expert_model_parallel_rank()
+            ) == 0:
                 # Save_state_global in energon assumes that we call it for only the first rank within each group that
                 # shares the same dataloader state. By making sure that current rank is the first rank in a model
                 # parallel group, we ensure this.

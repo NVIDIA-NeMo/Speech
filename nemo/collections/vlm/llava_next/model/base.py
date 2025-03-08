@@ -20,10 +20,9 @@ import torch
 import torch.distributed
 from megatron.core import parallel_state as ps
 from megatron.core.inference_params import InferenceParams
-from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
+from megatron.core.packed_seq_params import PackedSeqParams
 
-from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank, get_packed_seq_params
-from nemo.collections.vlm.llava_next.model.utils import merge_input_ids_with_image_features, pack_image_features
+from nemo.collections.vlm.llava_next.model.utils import pack_image_features
 from nemo.collections.vlm.neva.data.multimodal_tokens import IMAGE_TOKEN_INDEX
 
 
@@ -68,14 +67,25 @@ def llava_next_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
     if parallel_state.is_pipeline_last_stage():
         required_keys.update(("labels", "loss_mask", "attention_mask"))
 
+    packed_seq_params = _batch.get("packed_seq_params", None)
     _batch = {
         key: val.cuda(non_blocking=True) if key in required_keys and val is not None else None
         for key, val in _batch.items()
     }
-    # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_context_parallel_rank(_batch)
+    if packed_seq_params is not None:
+        for attr in ["cu_seqlens_q", "cu_seqlens_kv", "cu_seqlens_q_padded", "cu_seqlens_kv_padded"]:
+            value = getattr(packed_seq_params, attr, None)
+            if value is not None:
+                setattr(packed_seq_params, attr, value.cuda(non_blocking=True))
+    _batch["packed_seq_params"] = packed_seq_params
 
-    return output
+    if ps.get_context_parallel_world_size() > 1:
+        num_valid_tokens_in_ub = None
+        if "loss_mask" in _batch and _batch["loss_mask"] is not None:
+            num_valid_tokens_in_ub = _batch["loss_mask"].sum()
+        _batch["num_valid_tokens_in_ub"] = num_valid_tokens_in_ub
+
+    return _batch
 
 
 def llava_next_forward_step(model, batch) -> torch.Tensor:
@@ -102,10 +112,9 @@ def llava_next_forward_step(model, batch) -> torch.Tensor:
         "labels": batch.get("labels", None),
         "image_sizes": batch.get("image_sizes", None),
         "num_media_tiles": batch.get("num_media_tiles", None),
+        "packed_seq_params": batch.get("packed_seq_params", None),
     }
 
-    if 'cu_seqlens' in batch:
-        forward_args['packed_seq_params'] = get_packed_seq_params(batch)
     return model(**forward_args)
 
 
@@ -139,6 +148,7 @@ class LlavaNextConfig(NevaConfig):
         self.vision_transformer_config.tensor_model_parallel_size = self.tensor_model_parallel_size
         self.vision_projection_config.tensor_model_parallel_size = self.tensor_model_parallel_size
         self.language_transformer_config.pipeline_model_parallel_size = self.pipeline_model_parallel_size
+        self.language_transformer_config.context_parallel_size = self.context_parallel_size
 
         if self.encoder_pipeline_model_parallel_size > 0:
             assert self.encoder_pipeline_model_parallel_size == 1, "ViT can only live on 1 pipeline stage."
@@ -223,6 +233,7 @@ class MCoreLlavaNextModel(MCoreNevaModel):
         num_media_tiles: Optional[List[int]] = None,
         media_token_index: Optional[int] = IMAGE_TOKEN_INDEX,
         runtime_gather_output: Optional[bool] = None,
+        packed_seq_params: Optional[PackedSeqParams] = None,
     ) -> torch.Tensor:
         """Forward function of the LLaVA Next model.
 
@@ -238,7 +249,8 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             inference_params (InferenceParams): Inference-time parameters including KV cache.
             num_media_tiles (list of int): Number of tiles per image. Default None assumes 1 tile per image.
             image_token_index (int): ID for input images.
-
+            packed_seq_params (PackedSeqParams): Dict with padded token information.
+                Required for using SP/CP with padding mask type.
         Returns:
             output (torch.Tensor): Loss ([b, s]) if labels are provided; logits ([b, s, vocab_size]) otherwise.
             loss_mask (torch.Tensor): Loss mask expanded to combined sequence length. Shape [b, s].
@@ -294,34 +306,11 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             input_ids_text = input_ids.clone()
             # MultiModal Token indices are assumed to be values
             input_ids_text[input_ids_text < 0] = 0
-            # Note: This adds absolute position embedding but not RoPE.
-            # Each image is counted as one position.
-            # RoPE is added in language_model forward. Each image embedding is one position.
-            if self.sequence_parallel_lm:
-                # Pad to nearest multiple of TP world size for embedding.
-                tp_world_size = ps.get_tensor_model_parallel_world_size()
-                padded_seq_len = (
-                    int((input_ids_text.shape[1] + tp_world_size - 1) // tp_world_size * tp_world_size)
-                    - input_ids_text.shape[1]
-                )
-                if padded_seq_len != 0:
-                    input_ids_text = torch.nn.functional.pad(input_ids_text, (0, padded_seq_len))
-                    if position_ids is not None:
-                        position_ids = torch.nn.functional.pad(position_ids, (0, padded_seq_len))
+
+            # Position Ids are ignored since we use RoPE
             language_embeddings = self.language_model.embedding(
                 input_ids=input_ids_text, position_ids=position_ids
             )  # [text_seq_len, b, h_language]
-            if self.sequence_parallel_lm:
-                # Gather the language embeddings back.
-                # We use the full embedding to insert image embeddings
-                # and then scatter to avoid load imbalance.
-                language_embeddings = gather_from_sequence_parallel_region(
-                    language_embeddings, tensor_parallel_output_grad=False
-                )
-                # Remove the padding done for SP as we'll need new padding calculation
-                # after image embeddings are inserted.
-                if padded_seq_len != 0:
-                    language_embeddings = language_embeddings[:-padded_seq_len]
             language_embeddings = language_embeddings.transpose(1, 0).contiguous()  # [b, text_seq_len, h_language]
 
         # Assume 1 tile per image if the number of tiles is not provided.
@@ -338,31 +327,46 @@ class MCoreLlavaNextModel(MCoreNevaModel):
             image_newline=self.image_newline,
         )
 
-        combined_embeddings, attention_mask, position_ids, final_labels, final_input_ids, final_loss_mask = (
-            merge_input_ids_with_image_features(
-                media_embeddings,
-                feature_lens,
-                language_embeddings,
-                input_ids,
-                attention_mask,
-                position_ids,
-                labels=labels,
-                image_token_index=media_token_index,
+        n_image_tokens = (input_ids == media_token_index).sum().item()
+        n_image_features = media_embeddings.shape[0]
+        if n_image_tokens != n_image_features:
+            raise ValueError(
+                f"Image features and image tokens do not match: tokens: {n_image_tokens}, features {n_image_features}"
             )
-        )
+        special_image_mask = (input_ids == media_token_index).unsqueeze(-1)
+        special_image_mask = special_image_mask.expand_as(language_embeddings).to(language_embeddings.device)
+        media_embeddings = media_embeddings.to(language_embeddings.device, language_embeddings.dtype)
+        combined_embeddings = language_embeddings.masked_scatter(special_image_mask, media_embeddings)
+
+        final_labels = labels
+        final_loss_mask = loss_mask
+
         combined_embeddings = combined_embeddings.permute(1, 0, 2)
+        # Convert combined_embeddings to SBHD (or T1HD) format
         combined_embeddings = combined_embeddings.contiguous()
+
+        if self.context_parallel_lm > 1 or self.sequence_parallel_lm:
+            if self.context_parallel_lm > 1:
+                combined_embeddings = combined_embeddings.transpose(1, 0)
+                # _process_embedding_token_parallel needs embeddings to be of shape B,S,H
+            combined_embeddings, final_labels, final_loss_mask, packed_seq_params = (
+                self._process_embedding_token_parallel(
+                    combined_embeddings, final_labels, final_loss_mask, packed_seq_params
+                )
+            )
+
         output = self.language_model(
             input_ids=None,
             position_ids=None,
-            attention_mask=attention_mask,
+            attention_mask=None,
             decoder_input=combined_embeddings,
             labels=final_labels,
             inference_params=inference_params,
             runtime_gather_output=runtime_gather_output,
+            packed_seq_params=packed_seq_params,
         )
 
-        if labels is None or loss_mask is None:
+        if labels is None or final_loss_mask is None:
             return output
 
         return output, final_loss_mask.contiguous()

@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # pylint: disable=C0116
-import bisect
-import logging
 import math
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -383,3 +381,17 @@ def _measure_tokens(cut: Cut) -> int:
 def _measure_tps(cut: Cut) -> float:
     num_tokens = _measure_tokens(cut)
     return num_tokens / cut.duration
+
+
+class PlaceholderFilter:
+    """
+    Callable, returns ``True`` if a cut's "_skipme" is set and ``False`` otherwise.
+    Acts as a pass-through for objects of other type than Cut.
+    """
+
+    def __call__(self, example) -> bool:
+        if not isinstance(example, Cut):
+            return True
+
+        custom = getattr(example, "custom", None)
+        return custom is None or not custom.pop("_skipme", False)

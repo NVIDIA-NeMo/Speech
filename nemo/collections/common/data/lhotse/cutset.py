@@ -30,6 +30,7 @@ from nemo.collections.common.data.lhotse.nemo_adapters import (
     LazyNeMoTarredIterator,
     expand_sharded_filepaths,
 )
+from nemo.collections.common.data.lhotse.sampling import PlaceholderFilter
 from nemo.collections.common.data.lhotse.text_adapters import (
     LhotseTextAdapter,
     LhotseTextPairAdapter,
@@ -58,6 +59,10 @@ def read_cutset_from_config(config: Union[DictConfig, dict]) -> Tuple[CutSet, bo
         cuts, is_tarred = read_nemo_manifest(config)
     else:
         cuts, is_tarred = read_lhotse_manifest(config)
+
+    # After reading cuts we filter cutsets to exclude cuts with valid "_skipme" values.
+    # This filtration is done before mixing cutsets as well. Here it is being done for non-mixed cutsets.
+    cuts = cuts.filter(PlaceholderFilter())
     return cuts, is_tarred
 
 
@@ -408,6 +413,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
                 logging.info(f"- {path=} {weight=}")
                 cutsets.append(cs)
                 weights.append(weight)
+
+            cutsets = [cutset.filter(PlaceholderFilter()) for cutset in cutsets]
             cuts = mux(
                 *cutsets,
                 weights=weights,
@@ -517,7 +524,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
         logging.info(
-            f"Initializing Lhotse CutSet from a single NeMo manifest (is_tarred={is_tarred}): '{config.manifest_filepath}'"
+            f"""Initializing Lhotse CutSet from a single NeMo manifest 
+            (is_tarred={is_tarred}): '{config.manifest_filepath}'"""
         )
         if is_tarred and not metadata_only:
             cuts = CutSet(
@@ -547,8 +555,9 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
         #   i.e., NeMo concatenated dataset
         #   Assume it's [path1, path2, ...] (while tarred_audio_filepaths in the same format).
         logging.info(
-            f"Initializing Lhotse CutSet from multiple NeMo manifest (is_tarred={is_tarred}) sources with a weighted multiplexer. "
-            f"We found the following sources and weights: "
+            f"""Initializing Lhotse CutSet from multiple NeMo manifest 
+            (is_tarred={is_tarred}) sources with a weighted multiplexer.
+            We found the following sources and weights: """
         )
         cutsets = []
         weights = []
@@ -600,6 +609,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 cutsets.append(CutSet(nemo_iter))
                 weights.append(weight)
         # Finally, we multiplex the dataset streams to mix the data.
+        # Before that we filter cutsets to exclude cuts with valid "_skipme" values to mix the data correctly.
+        cutsets = [cutset.filter(PlaceholderFilter()) for cutset in cutsets]
         cuts = mux(
             *cutsets,
             weights=weights,

@@ -122,6 +122,64 @@ def has_dist_env_init_or_rank_env_var():
     return dist.is_initialized() or any(map(lambda x: x in os.environ, env_vars))
 
 
+def batchify(tensor):
+    """Ensures that the input tensor has at least two dimensions by adding an extra batch dimension if necessary.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be batchified.
+
+    Returns
+    -------
+    torch.Tensor
+        The tensor with an extra dimension added if it was originally 1-dimensional.
+        Otherwise, the tensor is returned as-is.
+    """
+    if tensor.ndim == 1:
+        return tensor.unsqueeze_(0)
+    return tensor
+
+
+def extract_key_from_dicts(batch, key):
+    """Extracts the value of the given key from each dictionary in a list of dictionaries.
+
+    Parameters
+    ----------
+    batch : List[dict]
+        A list of dictionaries.
+    key : str
+        The key whose values are to be extracted from each dictionary.
+
+    Returns
+    -------
+    List
+        A list of values associated with the specified key, in the same order as
+        the dictionaries in the input batch.
+    """
+    return list(map(lambda x: x[key], batch))
+
+
+def pad_within_micro(batch, pad_token_id):
+    """Pads each list in a batch of lists to the same length with a specified token.
+
+    Parameters
+    ----------
+    batch : List[List[int]]
+        A batch of sequences (e.g., token IDs), where each sequence is a list of integers.
+    pad_token_id : int
+        The token ID to use for padding shorter sequences.
+
+    Returns
+    -------
+    List[List[int]]
+        A batch of sequences where each inner list has been padded with the pad token
+        to match the length of the longest sequence in the batch.
+    """
+    max_len = max(map(len, batch))
+    return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
+
+
 class HFDatasetDataModule(pl.LightningDataModule):
     """A PyTorch Lightning DataModule for loading and managing datasets from the `datasets` library.
 
@@ -242,19 +300,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
     @staticmethod
     def collate_fn(batch, pad_token_id=0):
         """Default batch collator"""
-
-        def batchify(tensor):
-            if tensor.ndim == 1:
-                return tensor.unsqueeze_(0)
-            return tensor
-
-        def extract_key_from_dicts(batch, key):
-            return list(map(lambda x: x[key], batch))
-
-        def pad_within_micro(batch, pad_token_id):
-            max_len = max(map(len, batch))
-            return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
-
         return {
             key: batchify(
                 torch.LongTensor(

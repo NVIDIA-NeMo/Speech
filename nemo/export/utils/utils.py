@@ -15,7 +15,7 @@
 import shutil
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 
 import torch
 
@@ -33,7 +33,9 @@ def is_nemo2_checkpoint(checkpoint_path: str) -> bool:
     return (ckpt_path / 'context').is_dir()
 
 
-def prepare_directory_for_export(model_dir: Union[str, Path], delete_existing_files: bool) -> None:
+def prepare_directory_for_export(
+    model_dir: Union[str, Path], delete_existing_files: bool, subdir: Optional[str] = None
+) -> None:
     """
     Prepares model_dir path for the TensorRTT-LLM / vLLM export.
     Makes sure that the model_dir directory exists and is empty.
@@ -41,6 +43,7 @@ def prepare_directory_for_export(model_dir: Union[str, Path], delete_existing_fi
     Args:
         model_dir (str): Path to the target directory for the export.
         delete_existing_files (bool): Attempt to delete existing files if they exist.
+        subdir (Optional[str]): Subdirectory to create inside the model_dir.
 
     Returns:
         None
@@ -53,6 +56,8 @@ def prepare_directory_for_export(model_dir: Union[str, Path], delete_existing_fi
         elif any(model_path.iterdir()):
             raise RuntimeError(f"There are files in {model_path} folder: try setting delete_existing_files=True.")
 
+    if subdir is not None:
+        model_path /= subdir
     model_path.mkdir(parents=True, exist_ok=True)
 
 

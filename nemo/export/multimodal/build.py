@@ -77,6 +77,7 @@ def build_trtllm_engine(
         use_lora_plugin=use_lora_plugin,
         lora_target_modules=lora_target_modules,
         max_lora_rank=max_lora_rank,
+        use_mcore_path=False,
     )
 
 

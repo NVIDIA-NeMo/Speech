@@ -20,8 +20,9 @@ import pickle
 import shutil
 import tempfile
 import warnings
+from glob import glob
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import safetensors
@@ -30,6 +31,7 @@ import torch
 import torch.nn.functional as F
 import wrapt
 from tensorrt_llm._utils import numpy_to_torch
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from nemo.deploy import ITritonDeployable
 from nemo.export.tarutils import TarPath, unpack_tarball
@@ -57,6 +59,7 @@ from nemo.export.trt_llm.tensorrt_llm_run import (
 )
 from nemo.export.trt_llm.utils import is_rank
 from nemo.export.utils import is_nemo_tarfile, prepare_directory_for_export, torch_dtype_from_precision
+from nemo.export.utils.constants import TRTLLM_ENGINE_DIR
 
 use_deploy = True
 try:
@@ -134,6 +137,7 @@ class TensorRTLLM(ITritonDeployable):
                 )
 
         self.model_dir = model_dir
+        self.engine_dir = os.path.join(model_dir, TRTLLM_ENGINE_DIR)
         self.lora_ckpt_list = lora_ckpt_list
         self.use_python_runtime = use_python_runtime
         self.enable_chunked_context = enable_chunked_context if enable_chunked_context is not None else False
@@ -235,7 +239,9 @@ class TensorRTLLM(ITritonDeployable):
             )
 
         gpus_per_node = tensor_parallelism_size if gpus_per_node is None else gpus_per_node
-        prepare_directory_for_export(self.model_dir, delete_existing_files=delete_existing_files)
+        prepare_directory_for_export(
+            self.model_dir, delete_existing_files=delete_existing_files, subdir=TRTLLM_ENGINE_DIR
+        )
 
         if max_prompt_embedding_table_size is None:
             max_prompt_embedding_table_size = 0
@@ -288,9 +294,11 @@ class TensorRTLLM(ITritonDeployable):
                 else:
                     self.tokenizer = get_tokenizer(nemo_checkpoint_path)
 
+                model_config = None
+
                 qnemo_to_tensorrt_llm(
                     nemo_checkpoint_path=nemo_checkpoint_path,
-                    engine_dir=self.model_dir,
+                    engine_dir=self.engine_dir,
                     max_input_len=max_input_len,
                     max_seq_len=max_seq_len,
                     max_batch_size=max_batch_size,
@@ -419,7 +427,7 @@ class TensorRTLLM(ITritonDeployable):
                             max_input_len=max_input_len,
                             max_output_len=max_output_len,
                             max_batch_size=max_batch_size,
-                            engine_dir=self.model_dir,
+                            engine_dir=self.engine_dir,
                             trtllm_model_weights=trtllm_model_weights,
                             trtllm_model_config=trtllm_model_config,
                             lora_ckpt_list=self.lora_ckpt_list,
@@ -447,7 +455,7 @@ class TensorRTLLM(ITritonDeployable):
                     if model_type == "mixtral":
                         model_type = "llama"
 
-                    weights_dicts, model_configs = model_to_trtllm_ckpt(
+                    trtllm_model_weights_list, trtllm_model_config_list = model_to_trtllm_ckpt(
                         model=model,
                         nemo_model_config=model_config,
                         nemo_export_dir=nemo_export_dir,
@@ -462,14 +470,16 @@ class TensorRTLLM(ITritonDeployable):
                         fp8_kvcache=fp8_kvcache,
                     )
 
-                    for weight_dict, model_config in zip(weights_dicts, model_configs):
+                    for trtllm_model_weights, trtllm_model_config in zip(
+                        trtllm_model_weights_list, trtllm_model_config_list
+                    ):
                         build_and_save_engine(
                             max_input_len=max_input_len,
                             max_output_len=max_output_len,
                             max_batch_size=max_batch_size,
-                            model_config=model_config,
-                            model_weights=weight_dict,
-                            model_dir=self.model_dir,
+                            model_config=trtllm_model_config,
+                            model_weights=trtllm_model_weights,
+                            model_dir=self.engine_dir,
                             model_type=model_type,
                             lora_ckpt_list=self.lora_ckpt_list,
                             use_lora_plugin=use_lora_plugin,
@@ -495,11 +505,16 @@ class TensorRTLLM(ITritonDeployable):
             if os.path.exists(tokenizer_path):
                 shutil.copy(tokenizer_path, self.model_dir)
             elif os.path.exists(tokenizer_path_nemo2):
-                shutil.copytree(tokenizer_path_nemo2, Path(self.model_dir) / "nemo_context")
+                # Copy HF tokenizer files to root model directory
+                for path in glob(os.path.join(tokenizer_path_nemo2, "nemo_tokenizer", "*.json")):
+                    shutil.copy(path, self.model_dir)
+                # Copy SentencePiece tokenizer.model
+                for path in glob(os.path.join(tokenizer_path_nemo2, "*.model")):
+                    shutil.copy(path, os.path.join(self.model_dir, "tokenizer.model"))
+            elif isinstance(self.tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
+                self.tokenizer.save_pretrained(os.path.join(self.model_dir))
             elif os.path.exists(vocab_path):
                 shutil.copy(vocab_path, os.path.join(self.model_dir, "vocab.json"))
-            else:
-                self.tokenizer.save_pretrained(os.path.join(self.model_dir, 'huggingface_tokenizer'))
 
             nemo_model_config = os.path.join(nemo_export_dir, "model_config.yaml")
             if os.path.exists(nemo_model_config):
@@ -507,11 +522,50 @@ class TensorRTLLM(ITritonDeployable):
 
             tmp_dir.cleanup()
 
+        if is_export_rank and model_config is not None:
+            self._export_to_nim_format(model_config, model_type)
+
         if tensorrt_llm.mpi_world_size() > 1:
             tensorrt_llm.mpi_barrier()
 
         if is_export_rank and load_model:
             self._load()
+
+    def _export_to_nim_format(self, model_config: Dict[str, Any], model_type: str):
+        """
+        Exports the model configuration to a specific format required by NIM.
+        This method performs the following steps:
+
+        1. Copies the generation_config.json (if present) from the nemo_context directory to the root model directory.
+        2. Creates a dummy Hugging Face configuration file based on the provided model configuration and type.
+
+        Args:
+            model_config (dict): A dictionary containing the model configuration parameters.
+            model_type (str): The type of the model (e.g., "llama").
+        """
+
+        generation_config_path = os.path.join(self.model_dir, "nemo_context", "artifacts", "generation_config.json")
+        if os.path.isfile(generation_config_path):
+            shutil.copy(generation_config_path, self.model_dir)
+
+        # Fields "architectures" and "model_type" are required by HF but not relevant for NIM
+        seq_len_interpolation_factor = model_config.get("seq_len_interpolation_factor")
+        hf_config = {
+            "max_position_embeddings": model_config.get("encoder_seq_length"),
+            "architectures": ["LLaMAForCausalLM"],
+            "rope_scaling": (
+                None
+                if seq_len_interpolation_factor is None
+                else {
+                    "factor": seq_len_interpolation_factor,
+                    "rope_type": "default",
+                }
+            ),
+            "model_type": model_type,
+        }
+        with open(os.path.join(self.model_dir, "config.json"), "w") as f:
+            json.dump(hf_config, f, indent=2)
+            f.write("\n")
 
     def get_transformer_config(self, nemo_model_config):
         """Given nemo model config get transformer config"""
@@ -610,7 +664,7 @@ class TensorRTLLM(ITritonDeployable):
             if os.path.exists(tokenizer_path):
                 shutil.copy(tokenizer_path, self.model_dir)
             else:
-                self.tokenizer.save_pretrained(os.path.join(self.model_dir, 'huggingface_tokenizer'))
+                self.tokenizer.save_pretrained(os.path.join(self.model_dir))
 
             nemo_model_config = os.path.join(nemo_export_dir, "model_config.yaml")
             if os.path.exists(nemo_model_config):
@@ -1407,13 +1461,12 @@ class TensorRTLLM(ITritonDeployable):
         return prompt_embeddings_table
 
     def _load_config_file(self):
-        engine_dir = Path(self.model_dir)
-        config_path = engine_dir / 'config.json'
+        config_path = Path(self.engine_dir) / 'config.json'
         if config_path.exists():
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
         else:
-            raise FileNotFoundError("file: {0} could not be found.".format(config_path))
+            raise FileNotFoundError(f"File: {config_path} could not be found.")
 
     def _load(self):
         self.model = None
@@ -1429,7 +1482,7 @@ class TensorRTLLM(ITritonDeployable):
                     self.tokenizer = get_tokenizer(self.model_dir)
                     self.model = load(
                         tokenizer=self.tokenizer,
-                        engine_dir=self.model_dir,
+                        engine_dir=self.engine_dir,
                         lora_ckpt_list=self.lora_ckpt_list,
                         use_python_runtime=self.use_python_runtime,
                         enable_chunked_context=self.enable_chunked_context,
@@ -1438,10 +1491,8 @@ class TensorRTLLM(ITritonDeployable):
                     )
                     self._load_prompt_tables()
                 except Exception as error:
-                    raise Exception(
-                        "Files in the TensorRT-LLM folder is corrupted and "
-                        "model needs to be exported again. "
-                        "Error message: " + repr(error)
+                    raise RuntimeError(
+                        "Files in the TensorRT-LLM folder are corrupted and " "the model needs to be exported again."
                     ) from error
 
     def unload_engine(self):

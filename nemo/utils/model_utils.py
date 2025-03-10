@@ -741,7 +741,7 @@ def save_artifacts(model, output_dir: str, use_abspath: bool = False) -> None:
     model_cfg = copy.deepcopy(model.cfg)
 
     if model_cfg.tokenizer.library == "huggingface":
-        model.tokenizer.save_pretrained(os.path.join(output_dir, "huggingface_tokenizer"))
+        model.tokenizer.save_pretrained(output_dir)
 
     if not hasattr(model, "artifacts"):
         if hasattr(model_cfg, "tokenizer"):

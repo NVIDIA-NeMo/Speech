@@ -85,10 +85,10 @@ class MultimodalModelRunner:
             self.init_vision_preprocessor(visual_engine_dir)
 
     def init_tokenizer(self, llm_engine_dir):
-        if os.path.exists(os.path.join(llm_engine_dir, 'huggingface_tokenizer')):
+        if os.path.exists(os.path.join(llm_engine_dir)):
             from transformers import AutoTokenizer
 
-            self.tokenizer = AutoTokenizer.from_pretrained(os.path.join(llm_engine_dir, 'huggingface_tokenizer'))
+            self.tokenizer = AutoTokenizer.from_pretrained(os.path.join(llm_engine_dir))
             self.tokenizer.pad_token = self.tokenizer.eos_token
             if self.model_type == 'vita':
                 self.tokenizer.im_start_id = self.tokenizer.convert_tokens_to_ids("<extra_id_4>")

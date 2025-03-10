@@ -273,14 +273,13 @@ def get_tokenizer(tokenizer_dir_or_path: Union[str, Path]) -> PreTrainedTokenize
     tokenizer_dir_or_path = Path(tokenizer_dir_or_path)
     if (tokenizer_dir_or_path / "nemo_context").exists():
         return get_tokenizer_from_nemo2_context(tokenizer_dir_or_path / "nemo_context")
+    elif (tokenizer_dir_or_path / "tokenizer_config.json").exists():
+        return AutoTokenizer.from_pretrained(tokenizer_dir_or_path)
     elif os.path.exists(os.path.join(tokenizer_dir_or_path, "vocab.json")):
         vocab_path = tokenizer_dir_or_path / "vocab.json" if tokenizer_dir_or_path.is_dir() else tokenizer_dir_or_path
         tokenizer_config = {"library": "tiktoken", "vocab_file": str(vocab_path)}
         return build_tokenizer(tokenizer_config)
     else:
-        if (tokenizer_dir_or_path / "huggingface_tokenizer").is_dir():
-            return AutoTokenizer.from_pretrained(tokenizer_dir_or_path / "huggingface_tokenizer")
-
         model_path = (
             tokenizer_dir_or_path / "tokenizer.model" if tokenizer_dir_or_path.is_dir() else tokenizer_dir_or_path
         )

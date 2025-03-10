@@ -24,7 +24,6 @@ import numpy
 # tenosrstore is needed to register 'bfloat16' dtype with numpy for zarr compatibility
 import tensorstore  # noqa: F401 pylint: disable=unused-import
 import torch
-import zarr
 from torch.distributed.checkpoint import FileSystemReader, load
 from torch.distributed.checkpoint.metadata import BytesStorageMetadata, TensorStorageMetadata
 
@@ -151,6 +150,9 @@ def load_sharded_metadata_zarr(
         elif (subdir / '.zarray').exists():
             key = subdir.name
             zstore = ZarrPathStore(subdir)
+
+            import zarr
+
             arr = zarr.open(zstore, 'r')
 
             if arr.dtype.name == "bfloat16":

@@ -1,3 +1,5 @@
 [MAIN]
 ignore-paths=tests
 max-line-length=119
+ignore-patterns=.*\.ipynb$
+recursive=y

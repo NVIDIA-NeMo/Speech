@@ -593,61 +593,6 @@ def compute_metrics_per_sample(
     return samples_with_metrics
 
 
-def process_timestamp_outputs(outputs, subsampling_factor: int = 1, window_stride: float = 0.01):
-    """
-    Process the timestamps from list of hypothesis to user friendly format.
-    Converts the start and end duration from frames to seconds.
-    Args:
-        outputs: List of Hypothesis objects.
-        subsampling_factor: int, Subsampling factor used in the model.
-        window_stride: float, Window stride used in the model. (sometimes referred to as hop length/shift)
-    Returns:
-        List of Hypothesis objects with processed timestamps
-
-    """
-
-    if outputs is None:
-        return outputs
-
-    if isinstance(outputs, rnnt_utils.Hypothesis):
-        outputs = [outputs]
-
-    if not isinstance(outputs[0], rnnt_utils.Hypothesis):
-        raise ValueError(f"Expected Hypothesis object, got {type(outputs[0])}")
-
-    def process_timestamp(timestamp, subsampling_factor, window_stride):
-        """
-        Process the timestamp for a single hypothesis.
-        return the start and end duration in seconds.
-        """
-        for idx, val in enumerate(timestamp):
-            start_offset = val['start_offset']
-            end_offset = val['end_offset']
-            start = start_offset * window_stride * subsampling_factor
-            end = end_offset * window_stride * subsampling_factor
-            val['start'] = start
-            val['end'] = end
-
-        return timestamp
-
-    for idx, hyp in enumerate(outputs):
-        if not hasattr(hyp, 'timestamp'):
-            raise ValueError(
-                f"Expected Hypothesis object to have 'timestamp' attribute, when compute_timestamps is \
-                    enabled but got {hyp}"
-            )
-        timestamp = hyp.timestamp
-        if 'word' in timestamp:
-            outputs[idx].timestamp['word'] = process_timestamp(timestamp['word'], subsampling_factor, window_stride)
-        if 'char' in timestamp:
-            outputs[idx].timestamp['char'] = process_timestamp(timestamp['char'], subsampling_factor, window_stride)
-        if 'segment' in timestamp:
-            outputs[idx].timestamp['segment'] = process_timestamp(
-                timestamp['segment'], subsampling_factor, window_stride
-            )
-    return outputs
-
-
 class PunctuationCapitalization:
     def __init__(self, punctuation_marks: str):
         """

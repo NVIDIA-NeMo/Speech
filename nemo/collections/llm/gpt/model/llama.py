@@ -582,7 +582,13 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         target = self.convert_state(source, target)
 
         target = target.cpu()
-        target.save_pretrained(output_path)
+        if self.config.tie_word_embeddings:
+            state_dict = target.state_dict()
+            state_dict.pop("lm_head.weight")
+            target.save_pretrained(output_path, state_dict=state_dict)
+        else:
+            target.save_pretrained(output_path)
+
         try:
             self.tokenizer.tokenizer.save_pretrained(output_path)
         except Exception:

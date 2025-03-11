@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import atexit
+import logging as _logging
 import os
 import shutil
 from contextlib import contextmanager
@@ -21,6 +23,8 @@ from typing import Any, Dict, Literal, Optional, Union
 import lightning.pytorch as pl
 import torch
 from lightning.fabric.plugins import CheckpointIO
+from lightning.fabric.utilities.rank_zero import rank_zero_info
+from lightning.fabric.utilities.seed import reset_seed
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as PLModelParallelStrategy
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
@@ -30,6 +34,7 @@ from typing_extensions import override
 
 from nemo.lightning import io
 from nemo.lightning.pytorch.strategies.utils import (
+    _destroy_dist_connection,
     ckpt_to_dir,
     create_checkpoint_io,
     fsdp2_strategy_parallelize,
@@ -43,6 +48,9 @@ try:
 except ImportError:
     from torch.distributed._tensor.api import distribute_tensor
     from torch.distributed._tensor.placement_types import Shard
+
+
+_logger = _logging.getLogger(__name__)
 
 
 class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
@@ -94,6 +102,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
                 cast_forward_inputs=True,
             )
         self.parallelize_fn = parallelize_fn or fsdp2_strategy_parallelize
+        self.store: Optional[torch.distributed.Store] = None
 
     @property
     @override
@@ -146,6 +155,8 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         """setup distributed environment and device mesh"""
         from torch.distributed.device_mesh import init_device_mesh
 
+        self.accelerator.setup_device(self.root_device)
+
         self._setup_distributed()
         if self._data_parallel_size == "auto":
             self._data_parallel_size = self.num_nodes
@@ -187,6 +198,41 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             self.parallelize_fn = None
         else:
             logging.warning("Called parallelize more than once.")
+
+    @override
+    def _setup_distributed(self) -> None:
+        """Initializes process group for communications."""
+
+        # Implementation from superclass copied below in order to pass the store to the process group init
+        reset_seed()
+        self.set_world_ranks()
+        self._process_group_backend = self._get_process_group_backend()
+        assert self.cluster_environment is not None
+        if not torch.distributed.is_available():
+            raise RuntimeError("torch.distributed is not available. Cannot initialize distributed process group")
+        if torch.distributed.is_initialized():
+            _logger.debug("torch.distributed is already initialized. Exiting early")
+            return
+
+        global_rank = self.cluster_environment.global_rank()
+        world_size = self.cluster_environment.world_size()
+        os.environ["MASTER_ADDR"] = self.cluster_environment.main_address
+        os.environ["MASTER_PORT"] = str(self.cluster_environment.main_port)
+        _logger.info(f"Initializing distributed: GLOBAL_RANK: {global_rank}, MEMBER: {global_rank + 1}/{world_size}")
+        torch.distributed.init_process_group(
+            self._process_group_backend, rank=global_rank, world_size=world_size, store=self.store
+        )
+
+        if self._process_group_backend == "nccl":
+            atexit.register(_destroy_dist_connection)
+
+        # On rank=0 let everyone know training is starting
+        rank_zero_info(
+            f"{'-' * 100}\n"
+            f"distributed_backend={self._process_group_backend}\n"
+            f"All distributed processes registered. Starting with {world_size} processes\n"
+            f"{'-' * 100}\n"
+        )
 
     def _get_loss_reduction(self, step_type: str):
         """Retrieves the loss reduction method for a given step type.

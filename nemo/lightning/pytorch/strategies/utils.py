@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import io
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
@@ -522,3 +523,12 @@ def to_cpu(v):
         return v.cpu()
     else:
         return v
+
+
+def _destroy_dist_connection() -> None:
+    """Destroy process group."""
+    # Don't allow Ctrl+C to interrupt this handler
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+    signal.signal(signal.SIGINT, signal.SIG_DFL)

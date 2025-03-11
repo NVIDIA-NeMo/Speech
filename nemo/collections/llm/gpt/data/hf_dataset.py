@@ -118,8 +118,7 @@ def make_dataset_splits(dataset, split, split_aliases):
 
 def has_dist_env_init_or_rank_env_var():
     """returns whether it runs on a dist-environment"""
-    env_vars = ['LOCAL_RANK', 'GLOBAL_RANK', 'WORLD_SIZE', 'MASTER_ADDR', 'MASTER_PORT']
-    return dist.is_initialized() or any(map(lambda x: x in os.environ, env_vars))
+    return dist.is_initialized() or int(os.environ.get('WORLD_SIZE', '0')) > 1
 
 
 def batchify(tensor):

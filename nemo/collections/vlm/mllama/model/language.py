@@ -184,8 +184,10 @@ class CrossAttentionTextModel(MCoreGPTModel):
                 packed_seq_params=None,
             )
             rotary_pos_emb = self.rotary_pos_emb(rotary_seq_len)
-
-        dtype = decoder_input.dtype
+        if decoder_input is not None:
+            dtype = decoder_input.dtype
+        else:
+            dtype = torch.bfloat16
         cross_attention_bias = cross_attention_masks.to(dtype) * torch.finfo(dtype).min
 
         # Run decoder.

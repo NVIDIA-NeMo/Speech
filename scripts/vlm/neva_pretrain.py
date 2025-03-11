@@ -33,6 +33,7 @@ from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm, vlm
+from nemo.collections.multimodal.data.energon.task_encoder import MultiModalTaskEncoder
 from nemo.collections.vlm import ImageDataConfig
 from nemo.lightning.pytorch.optim import CosineAnnealingScheduler
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
@@ -40,29 +41,17 @@ from nemo.utils.exp_manager import TimingCallback
 
 
 def main(args):
+    # pylint: disable=C0115,C0116
+
     # Global and micro batch sizes
-    gbs = 256
-    mbs = 2
+    gbs = args.gbs
+    mbs = args.mbs
+    max_steps = args.max_steps
+
     seq_length = 2048
+    if args.use_packed_sequence:
+        seq_length = 4096
 
-    # Data configuration
-    data_config = ImageDataConfig(
-        image_folder=args.image_folder,
-        conv_template="plain",
-    )
-
-    # Data module setup
-    data = vlm.NevaLazyDataModule(
-        paths=args.data_path,
-        data_config=data_config,
-        seq_length=seq_length,
-        decoder_seq_length=None,
-        global_batch_size=gbs,
-        micro_batch_size=mbs,
-        tokenizer=None,
-        image_processor=None,
-        num_workers=8,
-    )
     language_transformer_config = llm.Llama2Config7B(
         seq_length=seq_length,
     )
@@ -75,6 +64,8 @@ def main(args):
         hidden_size=language_transformer_config.hidden_size,
         ffn_hidden_size=language_transformer_config.hidden_size,
     )
+    if args.use_toy_model:
+        language_transformer_config.num_layers = 2
 
     # NEVA model configuration
     neva_config = vlm.NevaConfig(
@@ -85,16 +76,107 @@ def main(args):
         freeze_language_model=True,
         freeze_vision_model=True,
     )
+    num_image_embeddings_per_tile = vision_transformer_config.num_image_embeddings_per_tile
 
-    model = vlm.NevaModel(neva_config, tokenizer=data.tokenizer)
+    if args.data_type == "llava":
+        # Data configuration
+        data_config = ImageDataConfig(
+            image_folder=args.image_folder,
+            conv_template="plain",
+        )
+
+        # Data module setup
+        data = vlm.NevaPreloadedDataModule(
+            paths=args.data_path,
+            data_config=data_config,
+            seq_length=seq_length,
+            decoder_seq_length=None,
+            global_batch_size=gbs,
+            micro_batch_size=mbs,
+            tokenizer=None,
+            image_processor=None,
+            num_workers=4,
+            packed_sequence=args.use_packed_sequence,
+            num_image_embeddings_per_tile=num_image_embeddings_per_tile,
+        )
+    elif args.data_type == "energon":
+        from transformers import AutoProcessor
+        from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
+
+        from nemo.collections.multimodal.data.energon import (
+            EnergonMultiModalDataModule,
+            ImageToken,
+            LLaVATemplateConfig,
+            MultiModalSampleConfig,
+        )
+
+        processor = AutoProcessor.from_pretrained("llava-hf/llava-1.5-7b-hf")
+        image_processor = processor.image_processor
+        tokenizer = AutoTokenizer("llava-hf/llava-1.5-7b-hf")
+
+        # Configure multimodal samples
+        config = MultiModalSampleConfig(
+            image_token=ImageToken(token_str="<image>", token_id=-200),
+            ignore_place_holder=-100,
+            conversation_template_config=LLaVATemplateConfig(system="", chat_template=""),
+        )
+
+        # Initialize the data module
+        data = EnergonMultiModalDataModule(
+            path=args.data_path,
+            tokenizer=tokenizer,
+            image_processor=image_processor,
+            seq_length=seq_length,
+            micro_batch_size=mbs,
+            global_batch_size=gbs,
+            num_workers=0,
+            multimodal_sample_config=config,
+            task_encoder=MultiModalTaskEncoder(
+                tokenizer=tokenizer,
+                image_processor=image_processor,
+                multimodal_sample_config=config,
+                packed_sequence=args.use_packed_sequence,
+                # leave some space for perf padding, otherwise after packing and padding,
+                # it will go beyond max seq len, then it will need a truncation.
+                packed_sequence_size=int(seq_length * 0.9),
+                num_image_embeddings_per_tile=num_image_embeddings_per_tile,
+            ),
+            packing_buffer_size=200 if args.use_packed_sequence else None,
+        )
+    elif args.data_type == "mock":
+        data = vlm.NevaMockDataModule(
+            seq_length=seq_length,
+            global_batch_size=gbs,
+            micro_batch_size=mbs,
+            tokenizer=None,
+            image_processor=None,
+            num_workers=4,
+            packed_sequence=args.use_packed_sequence,
+        )
+    else:
+        raise ValueError(f"Data type {args.data_type} not supported")
+
+    from megatron.core.distributed import DistributedDataParallelConfig
 
     # Training strategy setup
     strategy = nl.MegatronStrategy(
         tensor_model_parallel_size=args.tp_size,
         pipeline_model_parallel_size=args.pp_size,
         encoder_pipeline_model_parallel_size=args.encoder_pp_size,
+        context_parallel_size=args.cp_size,
         pipeline_dtype=torch.bfloat16,
+        sequence_parallel=True,
+        ddp=DistributedDataParallelConfig(
+            check_for_nan_in_grad=True,
+            grad_reduce_in_fp32=True,
+            overlap_grad_reduce=False,
+            overlap_param_gather=False,
+            average_in_collective=True,
+        ),
+        ckpt_load_strictness="log_all",
     )
+
+    model = vlm.NevaModel(neva_config, tokenizer=data.tokenizer)
 
     # Checkpoint callback setup
     checkpoint_callback = nl.ModelCheckpoint(
@@ -107,8 +189,9 @@ def main(args):
 
     # Trainer setup
     trainer = nl.Trainer(
+        num_nodes=args.num_nodes,
         devices=args.devices,
-        max_steps=2170,
+        max_steps=max_steps,
         accelerator="gpu",
         strategy=strategy,
         plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
@@ -143,7 +226,7 @@ def main(args):
     # Optimizer and scheduler setup
     opt_config = OptimizerConfig(
         optimizer='adam',
-        lr=0.001,
+        lr=args.lr,
         adam_beta1=0.9,
         adam_beta2=0.95,
         use_distributed_optimizer=True,
@@ -166,19 +249,36 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NEVA Model Training Script")
 
     # Argument parsing
-    parser.add_argument("--data_path", type=str, required=True, help="Path to the dataset JSON file")
-    parser.add_argument("--image_folder", type=str, required=True, help="Path to the image folder")
-    parser.add_argument("--log_dir", type=str, required=True, help="Directory for logging and checkpoints")
+    parser.add_argument("--data_type", type=str, required=False, default="mock", help="mock | llava | energon")
+    parser.add_argument("--data_path", type=str, required=False, default=None, help="Path to the dataset JSON file")
+    parser.add_argument("--image_folder", type=str, required=False, default=None, help="Path to the image folder")
+    parser.add_argument(
+        "--log_dir", type=str, required=False, default="/results", help="Directory for logging and checkpoints"
+    )
     parser.add_argument(
         "--language_model_path", type=str, required=False, default=None, help="Path to the pretrained language model"
     )
     parser.add_argument("--devices", type=int, required=False, default=1)
+    parser.add_argument("--num_nodes", type=int, required=False, default=1)
+    parser.add_argument("--max_steps", type=int, required=False, default=5190)
     parser.add_argument("--tp_size", type=int, required=False, default=1)
     parser.add_argument("--pp_size", type=int, required=False, default=1)
+    parser.add_argument("--cp_size", type=int, required=False, default=1)
     parser.add_argument("--encoder_pp_size", type=int, required=False, default=0)
-    parser.add_argument("--projector_type", type=str, required=False, default="mlp2x_gelu")
+    parser.add_argument("--projector_type", type=str, required=False, default="mcore_mlp")
     parser.add_argument("--name", type=str, required=False, default="neva_pretrain")
     parser.add_argument("--wandb_project", type=str, required=False, default=None)
-
+    parser.add_argument("--gbs", type=int, required=False, default=128, help="Global batch size")
+    parser.add_argument("--mbs", type=int, required=False, default=2, help="Micro batch size")
+    parser.add_argument("--lr", type=float, required=False, default=0.001, help="Learning rate")
+    parser.add_argument(
+        "--use_packed_sequence",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--use_toy_model",
+        action="store_true",
+        help="Toy size model used for testing",
+    )
     args = parser.parse_args()
     main(args)

@@ -145,7 +145,11 @@ class McoreDistributedOptimizer(torch.optim.Optimizer):
         Returns:
             dict: The optimizer state dictionary.
         """
-        return self.mcore_optimizer.state if hasattr(self, 'mcore_optimizer') else []
+        return (
+            self.mcore_optimizer.state
+            if hasattr(self, 'mcore_optimizer') and hasattr(self.mcore_optimizer, 'state')
+            else {}
+        )
 
     def _set_state(self, value):
         """

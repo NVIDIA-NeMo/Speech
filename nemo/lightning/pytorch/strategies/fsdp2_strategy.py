@@ -89,8 +89,8 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         if self.mp_policy is None:
             self.mp_policy = MixedPrecisionPolicy(
                 param_dtype=torch.bfloat16,
-                reduce_dtype=torch.float32,
-                output_dtype=None,
+                reduce_dtype=torch.bfloat16,
+                output_dtype=torch.bfloat16,
                 cast_forward_inputs=True,
             )
         self.parallelize_fn = parallelize_fn or fsdp2_strategy_parallelize

@@ -15,6 +15,15 @@ For their corresponding usage, please refer to the example yaml config:
 - NEST: `examples/asr/conf/ssl/nest/nest_fast-conformer.yaml`
 
 
+The dataset format follows that of ASR models, but no groundtruth transcriptions are needed. For example, the jsonl file specified in `manifest_filepath` should look like:
+```
+{"audio_filepath": "path/to/audio1.wav", "duration": 10.0, "text": ""}
+{"audio_filepath": "path/to/audio2.wav", "duration": 5.0, "text": ""}
+```
+
+Please refer to the [ASR dataset documentation](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#preparing-custom-asr-data%60) for more details.
+
+
 For most efficient data loading, please refer to 
 - [lhotse dataloading](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#lhotse-dataloading) 
 - [pre-compute bucket durations](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/datasets.html#pre-computing-bucket-duration-bins)

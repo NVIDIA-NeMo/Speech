@@ -455,8 +455,11 @@ class FilterbankFeatures(nn.Module):
         if linear_spec:
             return x, seq_len
 
-        # dot with filterbank energies
-        x = torch.matmul(self.fb.to(x.dtype), x)
+        # disable autocast, otherwise it might be automatically casted to fp16
+        # on fp16 compatible GPUs and get NaN values for input value of 65520
+        with torch.amp.autocast(x.device.type, enabled=False):
+            # dot with filterbank energies
+            x = torch.matmul(self.fb.to(x.dtype), x)
         # log features if required
         if self.log:
             if self.log_zero_guard_type == "add":

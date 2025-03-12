@@ -370,6 +370,7 @@ following domain-specific commands:
 ```bash
 pip install nemo_toolkit['asr']
 pip install nemo_toolkit['nlp']
+pip install nemo_toolkit['llm']
 pip install nemo_toolkit['tts']
 pip install nemo_toolkit['vision']
 pip install nemo_toolkit['multimodal']

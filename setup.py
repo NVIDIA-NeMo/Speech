@@ -104,6 +104,7 @@ extras_require['nlp'] = list(
         extras_require['common'],
     )
 )
+extras_require['llm'] = extras_require['nlp']
 extras_require['tts'] = list(
     chain(
         extras_require['tts'],

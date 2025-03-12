@@ -63,41 +63,20 @@ Example usage to prune depth by dropping specific model layers (1-indexed):
 import argparse
 import os
 
-import modelopt.torch.prune as mtp
-import torch
-from megatron.core import dist_checkpointing
-from megatron.core.dist_checkpointing.validation import StrictHandling
-from megatron.core.inference.modelopt_support.gpt.model_specs import get_gpt_layer_modelopt_spec
+# Import modelopt first to avoid circular import causing pruning to fail
+# TODO: This can be removed in modelopt 0.27 once modelopt pruning imports nemo inside a function
+import modelopt.torch.prune  # noqa: F401
 
-from nemo import lightning as nl
 from nemo.collections import llm
-from nemo.collections.llm.inference.base import _setup_trainer_and_restore_model
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_tokenizer
-from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
-from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
+from nemo.collections.llm.modelopt.prune import PruningConfig
 from nemo.utils import logging
-from nemo.utils.get_rank import is_global_rank_zero
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-SUPPORTED_PRUNING_HPARAMS = {
-    # Width pruning
-    "ffn_hidden_size",
-    "hidden_size",
-    "num_attention_heads",
-    "num_query_groups",
-    # Depth pruning
-    "num_layers",
-}
 
-
-def get_data_module(args, tokenizer):
-    """Get data module for running validation loop on.
-
-    Also overwrites val dataloader to return train dataloader for importance estimation.
-    """
-    assert args.num_train_samples % args.gbs == 0, "num_train_samples must be divisible by gbs"
-    assert args.gbs % args.mbs == 0, "gbs must be divisible by mbs"
+def get_data_module(args):
+    """Get data module for running validation loop on."""
+    assert args.num_train_samples % args.mbs == 0, "num_train_samples must be divisible by mbs"
     assert args.seq_length, "Sequence length must be provided for pruning"
 
     data_module_kwargs = {}
@@ -112,115 +91,40 @@ def get_data_module(args, tokenizer):
         data_module_cls = llm.MockDataModule
     data_module = data_module_cls(
         seq_length=args.seq_length,
-        tokenizer=tokenizer,
         micro_batch_size=args.mbs,
-        global_batch_size=args.gbs,
+        global_batch_size=args.mbs,  # global_batch_size is not used as there is no backward pass
         **data_module_kwargs,
     )
 
     return data_module
 
 
-def load_model_with_modelopt_spec(
-    restore_path: str, trainer: nl.Trainer, tokenizer_path: str | None = None
-) -> llm.GPTModel:
-    """Load model from nemo checkpoint with modelopt spec."""
-    logging.info(f"Loading model from {restore_path}...")
-    model = nl.io.load_context(path=ckpt_to_context_subdir(restore_path), subpath="model")
-
-    tokenizer = None
-    if tokenizer_path:
-        logging.info(f"Overriding tokenizer to: {tokenizer_path}")
-        tokenizer = get_tokenizer(tokenizer_path)
-
-    model.config.transformer_layer_spec = get_gpt_layer_modelopt_spec(
-        num_experts=model.config.num_moe_experts, remap_te_layernorm=True
-    )
-    del model.optim
-    _setup_trainer_and_restore_model(restore_path, trainer, model, tokenizer)
-    trainer.strategy.setup_environment = lambda *args, **kwargs: None  # Dont setup env again
-    trainer.strategy.restore_config = None  # Dont restore model weights again
-    logging.info(f"Loaded model: {model}\n")
-    return model
-
-
-def save_pruned_model(model: llm.GPTModel, trainer: nl.Trainer, save_path: str):
-    """Save pruned model nemo checkpoint."""
-    logging.info(f"Saving pruned model to {save_path}...")
-    if hasattr(trainer.model, "__io__") and hasattr(trainer.model.tokenizer, "__io__"):
-        trainer.model.__io__.tokenizer = trainer.model.tokenizer.__io__
-        # Make sure pruned hparams are saved
-        for k in SUPPORTED_PRUNING_HPARAMS | {"kv_channels"}:
-            setattr(trainer.model.__io__.config, k, getattr(model.config, k))
-
-    weight_path = ckpt_to_weights_subdir(save_path, is_saving=True)
-    weight_path.mkdir(parents=True, exist_ok=True)
-    dist_checkpointing.save(trainer.strategy.megatron_parallel.sharded_state_dict(), weight_path)
-
-    if is_global_rank_zero():
-        TrainerContext.from_trainer(trainer).io_dump(ckpt_to_context_subdir(save_path), yaml_attrs=["model"])
-
-    logging.info(f"Pruned model saved to {save_path}\n")
-
-
 def main(args):
     """Main function for pruning Llama model."""
-    strategy = nl.MegatronStrategy(
-        tensor_model_parallel_size=args.tp_size,
-        pipeline_model_parallel_size=args.pp_size,
-        pipeline_dtype=torch.bfloat16,
-        sequence_parallel=False,
-        ckpt_load_optimizer=False,
-        ckpt_load_strictness=StrictHandling.LOG_ALL if args.legacy_ckpt else None,
-        ckpt_parallel_save_optim=False,
-        setup_optimizers=False,
-        ddp="pytorch",
-        replace_progress_bar=False,
+    pruning_config = PruningConfig(
+        target_ffn_hidden_size=args.prune_ffn_hidden_size,
+        target_hidden_size=args.prune_hidden_size,
+        target_num_attention_heads=args.prune_num_attention_heads,
+        target_num_query_groups=args.prune_num_query_groups,
+        target_num_layers=args.prune_num_layers,
+        drop_layers=args.drop_layers,
     )
 
-    trainer = nl.Trainer(
-        num_nodes=args.num_nodes,
+    data_module = get_data_module(args) if not args.drop_layers else None
+
+    llm.prune(
+        nemo_checkpoint=args.restore_path,
+        save_path=args.save_path,
+        pruning_config=pruning_config,
         devices=args.devices,
-        accelerator="gpu",
-        strategy=strategy,
-        plugins=nl.MegatronMixedPrecision(precision="bf16-mixed", params_dtype=torch.bfloat16, autocast_enabled=True),
-        max_steps=args.num_train_samples // args.gbs,
-        limit_val_batches=args.num_train_samples // (args.gbs if args.data_paths else args.mbs),
-        val_check_interval=args.num_train_samples // args.gbs,
+        num_nodes=args.num_nodes,
+        tp_size=args.tp_size,
+        pp_size=args.pp_size,
+        num_train_samples=args.num_train_samples,
+        data=data_module,
+        tokenizer_path=args.tokenizer,
+        legacy_ckpt=args.legacy_ckpt,
     )
-
-    model = load_model_with_modelopt_spec(args.restore_path, trainer, args.tokenizer)
-
-    export_config = {
-        k: getattr(args, f"prune_{k}") for k in SUPPORTED_PRUNING_HPARAMS if getattr(args, f"prune_{k}") is not None
-    }
-    if args.drop_layers:
-        assert not export_config, f"Cannot specify `--drop_layers` with other prune constraints. Recieved: {args}"
-
-        mtp.plugins.megatron.drop_mcore_gpt_layers(model, layers_to_drop=args.drop_layers)
-    else:
-        assert args.tp_size == 1, "Pruning currently only supports --tp_size=1"
-        assert export_config, "No pruning constraints provided"
-
-        data_module = get_data_module(args, model.tokenizer)
-
-        def forward_loop(model):
-            # Overwrite val dataloader to use train dataloader with llm.validate
-            data_module.val_dataloader = data_module.train_dataloader
-            llm.validate(model, data_module, trainer)
-
-        logging.info("Pruning model...")
-        mtp.prune(
-            model,
-            mode="mcore_gpt_minitron",
-            constraints={"export_config": export_config},
-            dummy_input=None,  # Not used
-            config={"forward_loop": forward_loop},
-        )
-
-    save_pruned_model(model, trainer, args.save_path)
-
-    logging.info("Done!")
 
 
 if __name__ == "__main__":
@@ -243,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--legacy_ckpt",
         action="store_true",
-        help="Load ckpt saved with TE < 1.14. Use for missing state dict keys ending with `_extra_state`",
+        help="Load ckpt saved with older TE versions. Use for missing state dict keys ending with `_extra_state`",
     )
     parser.add_argument("--save_path", type=str, required=True, help="Path to save pruned model checkpoint to")
     parser.add_argument(
@@ -273,7 +177,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--index_mapping_dir", type=str, help="Path to a directory to write index mapping files")
     parser.add_argument("--mbs", type=int, default=1, help="Micro batch size")
-    parser.add_argument("--gbs", type=int, default=32, help="Global batch size")
     parser.add_argument(
         "--num_train_samples",
         type=int,

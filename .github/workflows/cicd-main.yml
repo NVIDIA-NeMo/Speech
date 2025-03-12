@@ -2847,7 +2847,7 @@ jobs:
       SCRIPT: |
         python tests/collections/llm/test_hf_import.py --hf_model /home/TestData/nlp/megatron_llama/llama-ci-hf --output_path /tmp/nemo2_ckpt
 
-        python scripts/llm/ptq.py -nc /tmp/nemo2_ckpt -algo fp8 -out /tmp/nemo2_ptq_engine --ckpt_load_strictness log_all
+        python scripts/llm/ptq.py -nc /tmp/nemo2_ckpt -algo fp8 -out /tmp/nemo2_ptq_engine --export_format trtllm --legacy_ckpt
 
       AFTER_SCRIPT: |
         rm -rf /tmp/nemo2_ckpt
@@ -2862,7 +2862,7 @@ jobs:
       SCRIPT: |
         python tests/collections/llm/test_hf_import.py --hf_model /home/TestData/nlp/megatron_llama/llama-ci-hf --output_path /tmp/nemo2_ckpt
 
-        python scripts/llm/ptq.py -nc /tmp/nemo2_ckpt -algo fp8 -out /tmp/nemo2_ptq_ckpt --export_format nemo
+        python scripts/llm/ptq.py -nc /tmp/nemo2_ckpt -algo fp8 -out /tmp/nemo2_ptq_ckpt --export_format nemo --legacy_ckpt
 
       AFTER_SCRIPT: |
         rm -rf /tmp/nemo2_ckpt
@@ -2920,7 +2920,6 @@ jobs:
           --pp_size 2 \
           --devices 2 \
           --seq_length 128 \
-          --gbs 8 \
           --mbs 2 \
           --num_train_samples 32 \
           --data_paths 1.0 /home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \

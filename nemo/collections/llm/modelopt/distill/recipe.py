@@ -42,8 +42,7 @@ def trainer(
     max_steps: int = 1168251,
     callbacks: Optional[list[run.Config[Callback]]] = None,
 ) -> run.Config[nl.Trainer]:
-    """
-    Configure the NeMo Lightning Trainer (for no model in particular).
+    """Configure the NeMo Lightning Trainer (for no model in particular).
 
     This function sets up the distributed training strategy.
 
@@ -124,8 +123,7 @@ def distillation_recipe(
     num_gpus_per_node: int = 8,
 ) -> run.Partial:
     # pylint: disable=line-too-long
-    """
-    Create a generic distillation recipe.
+    """Create a generic distillation recipe.
 
     This function sets up a complete configuration for distillation, including
     trainer, data, logging, optimization, and resumption settings.

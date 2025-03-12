@@ -11,15 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Model optimization utilities for using TensorRT Model Optimizer."""
 
-from .quantizer import ExportConfig, QuantizationConfig, Quantizer, create_data_iterator_getter, get_calib_data_iter
-from .utils import load_with_modelopt_layer_spec
-
-__all__ = [
-    "Quantizer",
-    "QuantizationConfig",
-    "ExportConfig",
-    "get_calib_data_iter",
-    "load_with_modelopt_layer_spec",
-    "create_data_iterator_getter",
-]
+from .distill import *  # noqa: F401
+from .model_utils import *  # noqa: F401
+from .prune import *  # noqa: F401
+from .quantization import *  # noqa: F401

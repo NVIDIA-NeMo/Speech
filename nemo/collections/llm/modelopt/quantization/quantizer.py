@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
 
 import torch
-import torch.distributed as dist
 from datasets import load_dataset
+from megatron.core import parallel_state
 from tqdm import tqdm
 
 from nemo.collections import llm
@@ -32,8 +32,6 @@ from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
-
-from .utils import get_modelopt_decoder_type
 
 if TYPE_CHECKING:
     from nemo.lightning import Trainer
@@ -51,6 +49,7 @@ if HAVE_MODELOPT:
         "int4_awq": mtq.INT4_AWQ_CFG,
         "w4a8_awq": mtq.W4A8_AWQ_BETA_CFG,
         "int4": mtq.INT4_BLOCKWISE_WEIGHT_ONLY_CFG,
+        "nvfp4": mtq.NVFP4_DEFAULT_CFG,
     }
 
 SUPPORTED_DTYPE = [16, "16", "bf16"]  # Default precision for non-quantized layers
@@ -115,14 +114,13 @@ class Quantizer:
 
     def __init__(self, quantization_config: QuantizationConfig, export_config: ExportConfig):
         """Initialize Quantizer with quantization and export configurations."""
-
         if not HAVE_MODELOPT:
             raise RuntimeError("nvidia-modelopt is needed to use Quantizer")
         if not torch.cuda.is_available():
             raise EnvironmentError("GPU is required for the quantization.")
 
-        self.quantization_config: QuantizationConfig = quantization_config
-        self.export_config: ExportConfig = export_config
+        self.quantization_config = quantization_config
+        self.export_config = export_config
 
         algorithm = quantization_config.algorithm
         dtype = export_config.dtype
@@ -142,11 +140,8 @@ class Quantizer:
     def _get_decoder_type(self, model: "MegatronParallel"):
         if self.export_config.decoder_type is not None:
             return self.export_config.decoder_type
-        unwrapped_model = model
-        while not isinstance(unwrapped_model, llm.GPTModel):
-            unwrapped_model = unwrapped_model.module
 
-        return get_modelopt_decoder_type(unwrapped_model)
+        return get_modelopt_decoder_type(model)
 
     @staticmethod
     def _generate_sample(model: "MegatronParallel"):
@@ -160,10 +155,13 @@ class Quantizer:
         generated = [r.generated_text for r in generate(mcore_inference, mcore_tokenizer, prompts)]
         outputs = [prompt + generation for prompt, generation in zip(prompts, generated)]
 
-        logging.info(f'Sample generation after PTQ (with prompts): {outputs}')
+        logging.info(f"Sample generation after PTQ (with prompts): {outputs}")
 
     def quantize(self, model: "MegatronParallel", forward_loop=None):
-        """Quantize the model and calibrate using given forward loop."""
+        """Quantize the model and calibrate using given forward loop.
+
+        If forward_loop is not provided, a forward loop will be created using the calibration dataset.
+        """
         if forward_loop is None:
             get_dataloader = create_data_iterator_getter(
                 model,
@@ -191,7 +189,6 @@ class Quantizer:
         logging.info(f"Quantizing model to {algorithm}...")
 
         self._setup(model)
-        unwrapped_model = unwrap_model(model)
         decoder_type = self._get_decoder_type(model)
         quant_cfg = QUANT_CFG_CHOICES[algorithm]
         if "awq" in algorithm:
@@ -206,7 +203,7 @@ class Quantizer:
         enable_quant_kv_cache = self.quantization_config.enable_kv_cache
         if enable_quant_kv_cache is None:
             enable_quant_kv_cache = "int8" not in algorithm and decoder_type != "gpt"
-        logging.info(f'{"Enabled" if enable_quant_kv_cache else "Disabled"} KV cache quantization')
+        logging.info(f"{'Enabled' if enable_quant_kv_cache else 'Disabled'} KV cache quantization")
         quant_cfg["quant_cfg"]["*output_quantizer"] = {
             "num_bits": 8 if algorithm == "int8_sq" else (4, 3),
             "axis": None,
@@ -217,6 +214,7 @@ class Quantizer:
             logging.info(f"Using int8_sq alpha = {sq_alpha}")
             quant_cfg["algorithm"] = {"method": "smoothquant", "alpha": sq_alpha}
 
+        unwrapped_model = unwrap_model(model)
         unwrapped_model = mtq.quantize(unwrapped_model, quant_cfg, forward_loop)
 
         if decoder_type == "gpt":
@@ -234,7 +232,7 @@ class Quantizer:
                 unwrapped_model, "*input_quantizer", lambda amax: torch.clamp(amax, min=0.01 * maxbound)
             )
 
-        if dist.get_rank() == 0:
+        if parallel_state.get_tensor_model_parallel_rank() == 0:
             mtq.print_quant_summary(unwrapped_model)
 
         if self.export_config.generate_sample:
@@ -280,11 +278,10 @@ class Quantizer:
     @staticmethod
     def _validate_quantized_checkpoint(checkpoint_dir: Path, tensor_parallelism_size: int) -> bool:
         """Basic validation of the model structure."""
-
-        saved_config = (checkpoint_dir / 'config.json').exists()
+        saved_config = (checkpoint_dir / "config.json").exists()
         saved_weights = True
         for i in range(tensor_parallelism_size):
-            saved_weights &= (checkpoint_dir / f'rank{i}.safetensors').exists()
+            saved_weights &= (checkpoint_dir / f"rank{i}.safetensors").exists()
 
         export_successful = saved_config and saved_weights
         if not export_successful:
@@ -301,6 +298,7 @@ class Quantizer:
         if self.export_config.export_format == "nemo":
             assert trainer is not None, "Trainer required for NeMo export."
             trainer.save_checkpoint(export_dir)
+            torch.distributed.barrier()
             if is_global_rank_zero():
                 TrainerContext.from_trainer(trainer).io_dump(ckpt_to_context_subdir(export_dir), yaml_attrs=["model"])
                 assert (Path(ckpt_to_weights_subdir(export_dir, False)) / "modelopt_state").exists()
@@ -319,18 +317,19 @@ class Quantizer:
                 inference_pipeline_parallel=inference_pp,
                 use_nfs_workspace=use_nfs_workspace,
             )
-            dist.barrier()
+            torch.distributed.barrier()
 
             # Save the model context in order to restore its tokenizer later. The destination
             # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
-            if dist.get_rank() == 0:
+            if is_global_rank_zero():
                 assert self._validate_quantized_checkpoint(export_dir, inference_tp)
                 shutil.copytree(
                     ckpt_to_context_subdir(model_dir),
                     os.path.join(export_dir, "nemo_context"),
                     dirs_exist_ok=True,
                 )
-                logging.info(f"Export succeeded, model has been exported to {export_dir}.")
+
+        logging.info(f"Export succeeded, model has been exported to {export_dir}.")
 
 
 def get_calib_data_iter(
@@ -377,3 +376,31 @@ def create_data_iterator_getter(model, dataset, seq_len, batch_size, calibration
         return iter(tqdm(data))
 
     return _get_iterator
+
+
+def get_modelopt_decoder_type(model: "MegatronParallel") -> str:
+    """Infers the modelopt decoder type from GPTModel subclass."""
+    while not isinstance(model, llm.GPTModel):
+        model = model.module
+
+    mapping = [
+        (llm.Baichuan2Model, "baichuan"),
+        (llm.ChatGLMModel, "chatglm"),
+        (llm.Gemma2Model, "gemma2"),
+        (llm.GemmaModel, "gemma"),
+        (llm.LlamaModel, "llama"),
+        (llm.MistralModel, "llama"),
+        (llm.MixtralModel, "llama"),
+        (llm.NemotronModel, "gpt"),
+        (llm.Qwen2Model, "qwen"),
+        (llm.StarcoderModel, "gpt"),
+        (llm.Starcoder2Model, "gpt"),
+        (llm.Phi3Model, "phi3"),
+    ]
+
+    for config_class, decoder_type in mapping:
+        if isinstance(model, config_class):
+            return decoder_type
+
+    logging.warning(f"Could not infer the decoder type for {type(model)}")
+    return None

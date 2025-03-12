@@ -29,8 +29,7 @@ class BaseLoss(_Loss, metaclass=ABCMeta):
     """Abstract base class for Megatron distillation losses."""
 
     def __init__(self, model_config: "TransformerConfig"):
-        """
-        Constructor.
+        """Constructor.
 
         Args:
             model_config: MCore transformer config.
@@ -57,8 +56,7 @@ class LogitsKLLoss(BaseLoss):
     """Calculates KL-Divergence loss between two logits tensors without reducing the sequence dim."""
 
     def __init__(self, model_config: "TransformerConfig", temperature: float = 1.0, reverse: bool = False):
-        """
-        Constructor.
+        """Constructor.
 
         Args:
             model_config: MCore transformer config.
@@ -70,8 +68,7 @@ class LogitsKLLoss(BaseLoss):
         self._reverse = reverse
 
     def forward(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        """
-        Forward function.
+        """Forward function.
 
         Args:
             predictions: Student model tensors (size [s, b, h])
@@ -89,7 +86,6 @@ class LogitsKLLoss(BaseLoss):
 
         # Compute local softmax, and the reweight to compute global softmax.
         if self._config.tensor_model_parallel_size > 1:
-
             # Maximum value along vocab dimension across all GPUs.
             teacher_logits_max, _ = torch.max(output_teacher, dim=-1)
             torch.distributed.all_reduce(

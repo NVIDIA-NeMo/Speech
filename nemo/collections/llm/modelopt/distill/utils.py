@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any, Dict
 import torch
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.validation import StrictHandling, parse_strict_flag
-from torch import Tensor
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -86,7 +85,7 @@ def teacher_provider(
     model.load_state_dict(state_dict, strict=strict)
 
     torch.cuda.empty_cache()
-    logging.info("Distillation: ...teacher weights loaded.")
+    logging.info("Distillation: teacher weights loaded.")
     return model
 
 
@@ -114,7 +113,10 @@ def adjust_distillation_model_for_mcore(
     """Extra modifications to ``mtd.DistillationModel`` required for Megatron-Core."""
     # Get rid of ModelOpt Distillation state
     # NOTE: If re-placed, above losses need modifcation as `TransformerConfig` has non-pickleable elements.
-    mto.ModeloptStateManager(model)._state.pop()
+    existing_state = mto.ModeloptStateManager(model).state_dict()
+    assert len(existing_state) == 1 and existing_state[0][0] == "kd_loss", f"{existing_state=}"
+    # mto.ModeloptStateManager.remove_state(model)
+    delattr(model, mto.ModeloptStateManager._state_key)  # Use above method from modelopt 0.27
 
     # Hide teacher during `sharded_state_dict` method.
     def _sharded_state_dict(self, *args, **kwargs) -> "ShardedStateDict":
@@ -125,7 +127,7 @@ def adjust_distillation_model_for_mcore(
     model.sharded_state_dict = MethodType(_sharded_state_dict, model)
 
     # Skip `lm_loss` bypassing it when training if not needed for backprop.
-    def _compute_language_model_loss(self, labels, logits) -> Tensor:
+    def _compute_language_model_loss(self, labels, logits) -> torch.Tensor:
         if self.training:
             return torch.zeros_like(labels, dtype=logits.dtype)
         return self._compute_language_model_loss(labels, logits)
@@ -135,14 +137,14 @@ def adjust_distillation_model_for_mcore(
         model.compute_language_model_loss = MethodType(_compute_language_model_loss, model)
 
     # Skip `lm_loss` always for teacher.
-    def _compute_language_model_loss(self, labels, logits) -> Tensor:
+    def _compute_language_model_loss(self, labels, logits) -> torch.Tensor:
         return torch.zeros_like(labels, dtype=logits.dtype)
 
     model.teacher_model.compute_language_model_loss = MethodType(_compute_language_model_loss, model.teacher_model)
 
     if model_cfg.pipeline_model_parallel_size > 1:
 
-        def _set_input_tensor(self, input_tensor: Tensor):
+        def _set_input_tensor(self, input_tensor: torch.Tensor):
             obj = self.teacher_model if self._only_teacher_fwd else self
             return type(self).set_input_tensor(obj, input_tensor)
 

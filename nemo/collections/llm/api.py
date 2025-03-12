@@ -26,10 +26,19 @@ from torch.distributed import all_gather_object
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
-from nemo.collections.llm.distillation import DistillationGPTModel
 from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget
 from nemo.collections.llm.gpt.model import GPTModel
-from nemo.collections.llm.quantization import ExportConfig, QuantizationConfig
+from nemo.collections.llm.modelopt import (
+    DistillationGPTModel,
+    ExportConfig,
+    PruningConfig,
+    QuantizationConfig,
+    Quantizer,
+    prune_gpt_model,
+    save_pruned_model,
+    set_modelopt_spec_if_exists_in_ckpt,
+    setup_trainer_and_restore_model_with_modelopt_spec,
+)
 from nemo.lightning import (
     AutoResume,
     NeMoLogger,
@@ -39,6 +48,7 @@ from nemo.lightning import (
     io,
 )
 from nemo.lightning.base import NEMO_MODELS_CACHE
+from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.pytorch.callbacks import PEFT, JitTransform, ModelTransform
 from nemo.utils import logging
 from nemo.utils.get_rank import is_global_rank_zero
@@ -95,6 +105,13 @@ def train(
         >>> llm.train(model, data, trainer, tokenizer="data")
         PosixPath('/path/to/log_dir')
     """
+    # [ModelOpt]: If modelopt_state exists, overwrite transformer_layer_spec to modelopt spec
+    if resume:
+        if resume.restore_config and resume.restore_config.path:
+            set_modelopt_spec_if_exists_in_ckpt(model, resume.restore_config.path)
+        elif resume.resume_from_path:
+            set_modelopt_spec_if_exists_in_ckpt(model, resume.resume_from_path)
+
     app_state = _setup(
         model=model,
         data=data,
@@ -149,6 +166,7 @@ def pretrain(
         PosixPath('/path/to/log_dir')
     """
     _validate_config(model, data, trainer, log=log, resume=resume, optim=optim)
+
     return train(
         model=model,
         data=data,
@@ -267,6 +285,85 @@ def validate(
     return app_state.exp_dir
 
 
+@run.cli.entrypoint(name="prune", namespace="llm")
+def prune(
+    nemo_checkpoint: str,
+    save_path: str,
+    pruning_config: PruningConfig,
+    devices: int = 1,
+    num_nodes: int = 1,
+    tp_size: int = 1,
+    pp_size: int = 1,
+    num_train_samples: int = 1024,
+    data: pl.LightningDataModule | None = None,
+    tokenizer_path: str | None = None,
+    legacy_ckpt: bool = False,
+) -> str:
+    """
+    Prunes a model using the specified data and trainer. Currently only supports GPT models.
+
+    Args:
+        nemo_checkpoint (str): The path to the NeMo checkpoint to be pruned.
+        save_path (str): The path to save the pruned NeMo checkpoint.
+        pruning_config (PruningConfig): The pruning configuration.
+        devices (int): The number of devices to use for pruning.
+        num_nodes (int): The number of nodes to use for pruning.
+        tp_size (int): The tensor parallel size.
+        pp_size (int): The pipeline parallel size.
+        num_train_samples (int): Number of training samples for importance estimation using forward pass.
+        data (pl.LightningDataModule): The data module for forward pass.
+            Required if not dropping layers.
+        tokenizer_path (str): Path to the tokenizer if not using model's tokenizer.
+        legacy_ckpt (bool): If True, allow loading ckpt saved with older version of TE.
+            Use for cases like missing state dict keys ending with `_extra_state`.
+
+    Returns:
+        str: The path to the pruned NeMo checkpoint.
+
+    Examples:
+        >>> from nemo.collections import llm
+        >>> from nemo.collections.llm.modelopt.prune import PruningConfig
+        >>> data = llm.PretrainingDataModule(
+                paths=["1.0", "path/to/tokenized/data"],
+                seq_length=256,
+                global_batch_size=1,
+                micro_batch_size=1,
+            )
+        >>> llm.prune(
+                nemo_checkpoint="path/to/llama3.1-8b",
+                save_path="path/to/pruned_llama_model",
+                pruning_config=PruningConfig(target_ffn_hidden_size=9216, target_hidden_size=3072),
+                data=data
+            )
+    """
+    if data is not None:
+        assert data.global_batch_size == data.micro_batch_size, "Global batch size must be equal to micro batch size"
+        steps = num_train_samples // data.global_batch_size
+    else:
+        steps = num_train_samples
+
+    model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
+        model_path=nemo_checkpoint,
+        tensor_model_parallel_size=tp_size,
+        pipeline_model_parallel_size=pp_size,
+        devices=devices,
+        num_nodes=num_nodes,
+        inference_only=True,
+        tokenizer_path=tokenizer_path,
+        legacy_ckpt=legacy_ckpt,
+        strategy_kwargs={"sequence_parallel": False, "replace_progress_bar": False},
+        trainer_kwargs={"max_steps": steps, "limit_val_batches": steps, "val_check_interval": steps},
+        model_config_overrides={"sequence_parallel": False},
+    )
+    prune_gpt_model(model, pruning_config, data, trainer)
+    save_pruned_model(trainer, save_path)
+
+    console = Console()
+    console.print(f"[green]✓ Pruning succeded, pruned checkpoint saved to {save_path}[/green]")
+
+    return save_path
+
+
 @run.cli.entrypoint(name="distill", namespace="llm")
 def distill(
     student_model_path: AnyPath,
@@ -316,8 +413,8 @@ def distill(
         >>> llm.distill(student, teacher, data, trainer, tokenizer="model")
         PosixPath('/path/to/log_dir')
     """
-    _student_model = io.load_context(student_model_path, subpath="model")
-    _teacher_model = io.load_context(teacher_model_path, subpath="model")
+    _student_model = io.load_context(ckpt_to_context_subdir(student_model_path), subpath="model")
+    _teacher_model = io.load_context(ckpt_to_context_subdir(teacher_model_path), subpath="model")
     assert isinstance(_student_model, GPTModel), "Only models based on `llm.GPTModel` are supported currently."
     assert isinstance(_teacher_model, GPTModel), "Only models based on `llm.GPTModel` are supported currently."
 
@@ -350,8 +447,14 @@ def ptq(
     export_config: ExportConfig,
     calibration_tp: int = 1,
     calibration_pp: int = 1,
+    num_layers_in_first_pipeline_stage: int | None = None,
+    num_layers_in_last_pipeline_stage: int | None = None,
+    devices: int | None = None,
+    num_nodes: int | None = None,
     quantization_config: Annotated[Optional[QuantizationConfig], run.Config[QuantizationConfig]] = None,
-    ckpt_load_strictness: Optional[str] = None,
+    forward_loop: Callable | None = None,
+    tokenizer_path: str | None = None,
+    legacy_ckpt: bool = False,
 ) -> Path:
     """
     Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
@@ -383,31 +486,49 @@ def ptq(
         nemo_checkpoint (str): The path to model to be quantized.
         calibration_tp (int): Calibration tensor parallelism.
         calibration_pp (int): Calibration pipeline parallelism.
-        quantization_config (QuantizationConfig): Configuration for quantization algorithm.
+        num_layers_in_first_pipeline_stage (int): Number of layers in the first pipeline stage.
+        num_layers_in_last_pipeline_stage (int): Number of layers in the last pipeline stage.
         export_config (ExportConfig): Export configuration for output checkpoint.
-        ckpt_load_strictness (Optional[str]): Defines handling of checkpoint load mismatch.
+        devices (int): Number of devices to use for calibration. Default: calibration_tp.
+        num_nodes (int): Number of nodes to use for calibration. Default: calibration_pp.
+        quantization_config (QuantizationConfig): Configuration for quantization algorithm.
+        forward_loop (Callable): Forward loop to use for calibration.
+            If not provided, a forward loop will be created using the calibration dataset.
+        tokenizer_path (str): Path to the tokenizer if not using model's tokenizer.
+        legacy_ckpt (bool): If True, allow loading ckpt saved with older version of TE.
 
     Returns:
         Path: The path where the quantized checkpoint has been saved after calibration.
     """
     if not quantization_config:
         quantization_config = QuantizationConfig()
+    if devices is None:
+        devices = calibration_tp
+    if num_nodes is None:
+        num_nodes = calibration_pp
 
     if export_config.path is None:
         raise ValueError("The export_config.path needs to be specified, got None.")
 
-    from nemo.collections.llm import quantization
+    quantizer = Quantizer(quantization_config, export_config)
 
-    quantizer = quantization.Quantizer(quantization_config, export_config)
-
-    model, trainer = quantization.load_with_modelopt_layer_spec(
-        nemo_checkpoint,
-        calibration_tp,
-        calibration_pp,
-        ckpt_load_strictness=ckpt_load_strictness,
+    model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
+        model_path=nemo_checkpoint,
+        tensor_model_parallel_size=calibration_tp,
+        pipeline_model_parallel_size=calibration_pp,
+        num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
+        num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
+        devices=devices,
+        num_nodes=num_nodes,
+        inference_only=True,
+        tokenizer_path=tokenizer_path,
+        legacy_ckpt=legacy_ckpt,
+        strategy_kwargs={"sequence_parallel": False, "lazy_init": True},
+        trainer_kwargs={},
+        model_config_overrides={"sequence_parallel": False},
     )
 
-    model = quantizer.quantize(model)
+    model = quantizer.quantize(model, forward_loop)
 
     quantizer.export(model, nemo_checkpoint, trainer)
 

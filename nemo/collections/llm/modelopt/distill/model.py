@@ -16,14 +16,12 @@ from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 import torch
 from megatron.core import parallel_state
-from megatron.core.transformer.module import Float16Module as MCoreFloat16Module
 from torch import Tensor, nn
 
 from nemo.collections import llm
 from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank
-from nemo.collections.nlp.modules.common.megatron.module import Float16Module
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
-from nemo.lightning.megatron_parallel import DDP, MaskedTokenLossReduction
+from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
@@ -57,10 +55,10 @@ def gpt_distillation_data_step(dataloader_iter, attn_mask_cpu=False) -> Dict[str
     else:
         required_device_keys.add("attention_mask")
 
-    if 'cu_seqlens' in batch:
-        required_device_keys.add('cu_seqlens')
-        required_host_keys.add('cu_seqlens_argmin')
-        required_host_keys.add('max_seqlen')
+    if "cu_seqlens" in batch:
+        required_device_keys.add("cu_seqlens")
+        required_host_keys.add("cu_seqlens_argmin")
+        required_host_keys.add("max_seqlen")
 
     if parallel_state.is_pipeline_first_stage():
         required_device_keys.update(("tokens", "position_ids"))
@@ -143,8 +141,7 @@ class DistillationGPTModel(llm.GPTModel):
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        """
-        Constructor.
+        """Constructor.
 
         This subclass of GPTModel takes the configs of a student and teacher model and overrides
         the model construction step to create a ModelOpt `DistillationModel` as the underlying
@@ -246,7 +243,7 @@ class DistillationGPTModel(llm.GPTModel):
     @property
     def core_module(self):
         # pylint: disable=C0116
-        return unwrap_model(self.module, (DDP, Float16Module, MCoreFloat16Module))
+        return unwrap_model(self.module)
 
     def train(self, mode: bool = True):
         # pylint: disable=C0116

@@ -37,8 +37,10 @@ from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.import_utils import safe_import_from
 
 
-MixedPrecisionPolicy = safe_import_from("torch.distributed._composable.fsdp", "MixedPrecisionPolicy")
-fully_shard = safe_import_from("torch.distributed._composable.fsdp.fully_shard", "fully_shard")
+MixedPrecisionPolicy, HAS_MIXED_PRECISION_POLICY = safe_import_from(
+    "torch.distributed._composable.fsdp", "MixedPrecisionPolicy"
+)
+fully_shard, HAS_FULLY_SHARD = safe_import_from("torch.distributed._composable.fsdp.fully_shard", "fully_shard")
 
 
 @dataclass(kw_only=True)
@@ -454,6 +456,7 @@ def fsdp2_strategy_parallelize(
     """
 
     if not mp_policy:
+        assert HAS_MIXED_PRECISION_POLICY is not None, "Expected to have MixedPrecisionPolicy"
         mp_policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
 
     def parallelize_helper(module, mesh, mp_policy):
@@ -480,6 +483,7 @@ def fsdp2_strategy_parallelize(
     if dp_mesh.size() > 1:
         assert dp_mesh.ndim == 1, "Hybrid-sharding not supported"
 
+        assert HAS_FULLY_SHARD is not None, "Expected to have fully_shard"
         # Find transformer layers and apply parallelisms
         parallelize_helper(model, dp_mesh, mp_policy)
 

@@ -512,7 +512,7 @@ class TensorRTLLM(ITritonDeployable):
                 for path in glob(os.path.join(tokenizer_path_nemo2, "*.model")):
                     shutil.copy(path, os.path.join(self.model_dir, "tokenizer.model"))
             elif isinstance(self.tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
-                self.tokenizer.save_pretrained(os.path.join(self.model_dir))
+                self.tokenizer.save_pretrained(self.model_dir)
             elif os.path.exists(vocab_path):
                 shutil.copy(vocab_path, os.path.join(self.model_dir, "vocab.json"))
 
@@ -664,7 +664,7 @@ class TensorRTLLM(ITritonDeployable):
             if os.path.exists(tokenizer_path):
                 shutil.copy(tokenizer_path, self.model_dir)
             else:
-                self.tokenizer.save_pretrained(os.path.join(self.model_dir))
+                self.tokenizer.save_pretrained(self.model_dir)
 
             nemo_model_config = os.path.join(nemo_export_dir, "model_config.yaml")
             if os.path.exists(nemo_model_config):
@@ -1492,7 +1492,7 @@ class TensorRTLLM(ITritonDeployable):
                     self._load_prompt_tables()
                 except Exception as error:
                     raise RuntimeError(
-                        "Files in the TensorRT-LLM folder are corrupted and " "the model needs to be exported again."
+                        "Files in the TensorRT-LLM folder are corrupted and the model needs to be exported again."
                     ) from error
 
     def unload_engine(self):

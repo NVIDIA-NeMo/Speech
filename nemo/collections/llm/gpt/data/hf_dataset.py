@@ -13,14 +13,20 @@
 # limitations under the License.
 
 import os
+import re
+from functools import partial
+from typing import Dict
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 import torch.distributed as dist
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from nemo.collections.common.tokenizers import TokenizerSpec
+from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
 
@@ -34,8 +40,8 @@ def clean_split(name):
     Returns:
         str: return partition name without any selector (e.g. "train").
     """
-    if '[' in name:
-        return name.split('[')[0]
+    if "[" in name:
+        return name.split("[")[0]
     return name
 
 
@@ -69,7 +75,7 @@ def make_dataset_splits(dataset, split, split_aliases):
     >    "val": Dataset .. (with 10570 rows),
     > }
     """
-    valid_split_names = ['train', 'test', 'val']
+    valid_split_names = ["train", "test", "val"]
     dataset_splits = {_split: None for _split in valid_split_names}
 
     alias_to_split = {}
@@ -100,10 +106,10 @@ def make_dataset_splits(dataset, split, split_aliases):
         logging.info("Loaded HF dataset has a single split.")
         assert not isinstance(dataset, list)
         alias_split_name = split
-        if '+' in alias_split_name:
+        if "+" in alias_split_name:
             raise ValueError("Split concatenation not supported")
-        elif '[' in alias_split_name:
-            alias_split_name = alias_split_name.split('[')[0]
+        elif "[" in alias_split_name:
+            alias_split_name = alias_split_name.split("[")[0]
         split_name = alias_to_split[alias_split_name]
         assert dataset_splits[split_name] is None
         dataset_splits[split_name] = dataset
@@ -246,7 +252,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         pad_token_id=0,
         use_mcore_sampler=False,
         use_dist_sampler=False,
-        mcore_dataloader_type='cyclic',
+        mcore_dataloader_type="cyclic",
         train_aliases=["train", "training"],
         test_aliases=["test", "testing"],
         val_aliases=["val", "validation", "valid", "eval"],
@@ -257,7 +263,11 @@ class HFDatasetDataModule(pl.LightningDataModule):
         # A dataset usually will have several splits (e.g. train, val, test, etc).
         # We map synonym names to canonical names (train, test, val).
         # A synonym can be a prefix/suffixed word e.g. train <> training.
-        split_aliases = {'train': train_aliases, 'test': test_aliases, 'val': val_aliases}
+        split_aliases = {
+            "train": train_aliases,
+            "test": test_aliases,
+            "val": val_aliases,
+        }
 
         # self.dataset_splits will hold the actual dataset for each split.
         if isinstance(path_or_dataset, str):
@@ -304,7 +314,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
                 torch.LongTensor(
                     pad_within_micro(
                         extract_key_from_dicts(batch, key),
-                        pad_token_id if key != 'loss_mask' else 0,
+                        pad_token_id if key != "loss_mask" else 0,
                     )
                 )
             )
@@ -354,17 +364,17 @@ class HFDatasetDataModule(pl.LightningDataModule):
     @property
     def train(self):
         """Returns the training partition"""
-        return self.dataset_splits['train']
+        return self.dataset_splits["train"]
 
     @property
     def val(self):
         """Returns the validation partition"""
-        return self.dataset_splits['val']
+        return self.dataset_splits["val"]
 
     @property
     def test(self):
         """Returns the test partition"""
-        return self.dataset_splits['test']
+        return self.dataset_splits["test"]
 
     def train_dataloader(self):
         """Returns the train dataloader"""
@@ -391,6 +401,70 @@ class HFDatasetDataModule(pl.LightningDataModule):
             if subset is None:
                 continue
             dataset_splits[split_name] = subset.map(function, **kwargs)
+
+
+def preprocess(text):
+    """Preprocesses text data by removing unwanted characters and artifacts."""
+    text = text.strip()
+    # NOTE: Brackets are artifacts of the WikiHow dataset portion of HellaSwag.
+    text = text.replace(" [title]", ". ")
+    text = re.sub("\\[.*?\\]", "", text)
+    text = text.replace("  ", " ")
+    return text
+
+
+def process_doc(doc):
+    """Processes a document from the HellaSwag dataset into a structured format suitable for training."""
+    ctx = doc["ctx_a"] + " " + doc["ctx_b"].capitalize()
+    query = preprocess(doc["activity_label"] + ": " + ctx)
+    choices = [preprocess(ending) for ending in doc["endings"]]
+    gold = int(doc["label"])
+    out_doc = {
+        "query": query,
+        "choices": choices,
+        "gold": gold,
+        "text": query + " " + choices[gold],
+    }
+    return out_doc
+
+
+# Note: I'm training the model causally not through multiclass classification.
+def preprocess_dataset(tokenizer, max_length, dataset, seed=42):
+    """Preprocesses a dataset for training a language model."""
+    # Format each prompt.
+    print("Preprocessing dataset...")
+    dataset = dataset.map(process_doc)
+
+    def preprocess_batch(batch, tokenizer, max_length):
+        ans = tokenizer(
+            batch["text"],
+            max_length=max_length,
+            truncation=True,
+        )
+        ans["labels"] = [x[1:] + [-100] for x in ans["input_ids"]]
+        return ans
+
+    # Apply preprocessing to each batch of the dataset & and remove "conversations" and "text" fields.
+    _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
+    dataset = dataset.map(
+        _preprocessing_function,
+        batched=True,
+    ).select_columns(["input_ids", "attention_mask", "labels"])
+
+    # Shuffle dataset.
+    dataset = dataset.shuffle(seed=seed)
+
+    return dataset
+
+
+class HellaSwagHFDataModule(HFDatasetDataModule):
+    """A data module for handling the HellaSwag dataset using HFDatasetDataModule."""
+
+    def __init__(self, tokenizer, dataset_name="Rowan/hellaswag", *args, **kwargs):
+        tokenizer = tokenizer.tokenizer
+        tokenizer.pad_token = tokenizer.eos_token
+        dataset = load_dataset(dataset_name)
+        super().__init__(preprocess_dataset(tokenizer, 7500, dataset["train"]), *args, **kwargs)
 
 
 class SquadHFDataModule(HFDatasetDataModule):
@@ -465,5 +539,146 @@ class SquadHFDataModule(HFDatasetDataModule):
             self.formatting_prompts_func,
             batched=False,
             batch_size=2,
-            remove_columns=["id", "title", "context", "question", 'answers'],
+            remove_columns=["id", "title", "context", "question", "answers"],
         )
+
+
+class HFMockDataModule(pl.LightningDataModule):
+    """A PyTorch Lightning DataModule for generating mock data for testing purposes."""
+
+    def __init__(
+        self,
+        seq_length: int = 2048,
+        tokenizer=None,
+        micro_batch_size: int = 4,
+        global_batch_size: int = 8,
+        rampup_batch_size=None,
+        num_train_samples: int = 10_000,
+        num_val_samples: int = 10_000,
+        num_test_samples: int = 10_000,
+        num_workers: int = 8,
+        pin_memory: bool = True,
+        persistent_workers: bool = False,
+        create_attention_mask: bool = False,
+        vocab_file=None,
+        merges_file=None,
+    ):
+        super().__init__()
+        self.seq_length = seq_length
+        self.micro_batch_size = micro_batch_size
+        self.global_batch_size = global_batch_size
+        self.num_train_samples = num_train_samples
+        self.num_val_samples = num_val_samples
+        self.num_test_samples = num_test_samples
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
+        self.create_attention_mask = create_attention_mask
+        self.collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=0)
+
+        if tokenizer is None:
+            self.tokenizer = get_nmt_tokenizer(
+                "megatron",
+                "GPT2BPETokenizer",
+                vocab_file=vocab_file,
+                merges_file=merges_file,
+            )
+        else:
+            self.tokenizer = tokenizer
+
+    def setup(self, stage: str = None) -> None:
+        """setup"""
+        self._train_ds = _MockGPTDataset(
+            self.tokenizer,
+            "train",
+            self.num_train_samples,
+            self.seq_length,
+            self.create_attention_mask,
+        )
+        self._val_ds = _MockGPTDataset(
+            self.tokenizer,
+            "valid",
+            self.num_val_samples,
+            self.seq_length,
+            self.create_attention_mask,
+        )
+        self._test_ds = _MockGPTDataset(
+            self.tokenizer,
+            "test",
+            self.num_test_samples,
+            self.seq_length,
+            self.create_attention_mask,
+        )
+
+    def train_dataloader(self) -> DataLoader:
+        """train_dataloader"""
+        return self._create_dataloader(self._train_ds)
+
+    def val_dataloader(self) -> DataLoader:
+        """val_dataloader"""
+        return self._create_dataloader(self._val_ds)
+
+    def test_dataloader(self) -> DataLoader:
+        """test_dataloader"""
+        return self._create_dataloader(self._test_ds)
+
+    def _create_dataloader(self, dataset) -> DataLoader:
+        """creates the dataloader for given dataset"""
+        return DataLoader(
+            dataset,
+            batch_size=self.micro_batch_size,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            collate_fn=self.collate_fn,
+        )
+
+
+class _MockGPTDataset(torch.utils.data.Dataset):
+    """A mock dataset for generating random data for testing purposes."""
+
+    def __init__(
+        self,
+        tokenizer: "TokenizerSpec",
+        name: str,
+        num_samples: int,
+        seq_length: int,
+        create_attention_mask: bool = False,
+        seed: int = 42,
+    ) -> None:
+        super().__init__()
+        self.name = name
+        self.seq_length = seq_length
+        self.tokenizer = tokenizer
+        self.vocab_size = self.tokenizer.vocab_size
+        self.length = num_samples
+        self.seed = seed
+        self.create_attention_mask = create_attention_mask
+
+        if create_attention_mask:
+            self.attention_mask = np.tril(np.ones((self.seq_length, self.seq_length), dtype=np.float32))[
+                np.newaxis, :
+            ].tolist()
+
+        self.loss_mask = np.ones(self.seq_length, dtype=np.float32).tolist()
+        self.position_ids = np.arange(self.seq_length, dtype=np.int64).tolist()
+
+    def __len__(self) -> int:
+        return self.length
+
+    def __getitem__(self, idx) -> Dict[str, list]:
+        np_gen = np.random.default_rng(seed=(self.seed + idx))
+        tokens = np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64).tolist()
+        labels = np_gen.integers(self.vocab_size, size=[self.seq_length], dtype=np.int64).tolist()
+
+        batch = {
+            "tokens": tokens,
+            "labels": labels,
+            "loss_mask": self.loss_mask,
+            "position_ids": self.position_ids,
+        }
+
+        if self.create_attention_mask:
+            batch["attention_mask"] = self.attention_mask
+
+        return batch

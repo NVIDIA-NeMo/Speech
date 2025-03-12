@@ -1500,6 +1500,13 @@ jobs:
           --devices 2 \
           --strategy fsdp2 \
           --ckpt-folder /tmp/hf_peft_ckpt_fsdp2 --auto-resume
+
+        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/peft/automodel.py \
+          --model /home/TestData/akoumparouli/hf_mixtral_2l/ \
+          --max-steps 3 \
+          --devices 2 \
+          --strategy fsdp2
+
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
 
@@ -1568,12 +1575,9 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |
         TRANSFORMERS_OFFLINE=1 \
-        NCCL_CHECK_POINTERS=1 \
-        NCCL_DEBUG=TRACE \
-        NCCL_DEBUG_SUBSYS=INIT,ENV,GRAPH,NET,COLL \
-        NCCL_DEBUG_FILE=nccl_log.%h.%p.txt \
-        python tests/collections/llm/hf/sft_fsdp2.py --model /home/TestData/nlp/hf_gemma/hf_gemma_2b --max-steps 10 --devices 2
-        cat nccl_log*
+              python tests/collections/llm/hf/sft_fsdp2.py --model /home/TestData/nlp/hf_gemma/hf_gemma_2b --max-steps 10 --devices 2
+        TRANSFORMERS_OFFLINE=1 HF_HOME=/home/TestData/automodel/hf_home python examples/llm/sft/automodel.py --model /home/TestData/nlp/hf_gemma/hf_gemma_2b --max-steps 10 --devices 2 --strategy fsdp2
+
       AFTER_SCRIPT: |
         rm -rf nemo_experiments
 

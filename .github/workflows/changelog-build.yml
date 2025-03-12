@@ -19,7 +19,7 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v4
         with:
-          ref: ko3n1g/ci/fix-changelog-generator
+          ref: main
           fetch-depth: 0
 
       - name: Build Changelog

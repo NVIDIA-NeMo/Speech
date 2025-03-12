@@ -37,6 +37,7 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         trust_remote_code=False,
         default_dtype=torch.bfloat16,
         load_in_4bit=False,
+        **kwargs,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -50,6 +51,7 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.model_transform = model_transform
         self.trust_remote_code = trust_remote_code
         self.load_in_4bit = load_in_4bit
+        self.kwargs = kwargs
 
     @property
     def processor(self):
@@ -80,6 +82,7 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 torch_dtype='auto',
                 trust_remote_code=self.trust_remote_code,
                 load_in_4bit=self.load_in_4bit,
+                **self.kwargs,
             )
         else:
             config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=self.trust_remote_code)

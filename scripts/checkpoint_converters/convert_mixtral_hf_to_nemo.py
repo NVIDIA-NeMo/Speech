@@ -545,8 +545,6 @@ def save_to_nemo(args, checkpoint):
     model.cfg.use_cpu_initialization = False
     model.cfg.perform_initialization = True
 
-    torch.distributed.init_process_group()
-    parallel_state.initialize_model_parallel()
     model.save_to(args.output_path)
     logging.info(f'NeMo model saved to: {args.output_path}')
 
@@ -556,6 +554,8 @@ if __name__ == '__main__':
     if args.low_ram:
         os.makedirs(args.tmp_dir, exist_ok=True)
 
+    # Fake init expert model parallel for conversion
+    parallel_state._EXPERT_TENSOR_PARALLEL_GROUP = 0
     parallel_state.set_expert_model_parallel_world_size(1)
     checkpoint = OrderedDict()
     for i, ckpt_part in enumerate(convert(args)):

@@ -294,7 +294,7 @@ multi-GPU/multi-node training.
 ## Requirements
 
 - Python 3.10 or above
-- Pytorch 1.13.1 or above
+- Pytorch 2.5 or above
 - NVIDIA GPU (if you intend to do model training)
 
 ## Developer Documentation

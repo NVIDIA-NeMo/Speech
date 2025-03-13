@@ -6,6 +6,7 @@ jiwer
 kaldi-python-io
 kaldiio
 lhotse>=1.26.0
+# Align with upstream PyTorch requirements
 librosa>=0.10.1
 marshmallow
 optuna

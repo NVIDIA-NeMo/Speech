@@ -105,10 +105,6 @@ def main(args) -> None:
         model = vlm.MLlamaModel(vlm.MLlamaConfig11BInstruct(), tokenizer=tokenizer)
         model = fabric.load_model(args.local_model_path, model)
 
-    model = model.module.cuda()
-    model.eval()
-    model = model.to(torch.bfloat16)
-
     # Load the image
     raw_images = [load_image(url) for url in args.image_url]
     if not raw_images:

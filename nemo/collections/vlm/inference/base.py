@@ -18,15 +18,20 @@ import lightning.pytorch as pl
 import torch
 import torch.distributed
 from megatron.core.inference.common_inference_params import CommonInferenceParams
+from megatron.core.inference.model_inference_wrappers.abstract_model_inference_wrapper import (
+    AbstractModelInferenceWrapper,
+)
 from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
 from PIL.Image import Image
 from transformers import AutoProcessor
 
 import nemo.lightning as nl
 from nemo.collections import vlm
-from nemo.collections.vlm.inference.vlm_engine import VLMEngine
-from nemo.collections.vlm.inference.vlm_inference_controller import VLMTextGenerationController
-from nemo.collections.vlm.inference.vlm_inference_wrapper import VLMInferenceWrapper
+
+from .llava_inference_wrapper import LlavaInferenceWrapper
+from .mllama_inference_wrapper import MllamaInferenceWrapper
+from .vlm_engine import VLMEngine
+from .vlm_inference_controller import VLMTextGenerationController
 
 
 def _setup_trainer_and_restore_model(path: str, trainer: nl.Trainer, model: pl.LightningModule):
@@ -45,13 +50,23 @@ def setup_inference_wrapper(
     """Set up inference wrapper for the model"""
     config = model.config
 
-    mcore_model = model.module.cuda()
+    mcore_model = model.module.module.cuda()
     mcore_model = mcore_model.to(params_dtype)
+    mcore_model.eval()
 
-    inference_wrapped_model = VLMInferenceWrapper(
+    if isinstance(config, vlm.MLlamaModelConfig):
+        wrapper_cls = MllamaInferenceWrapper
+        hidden_size = config.language_model_config.hidden_size
+    elif isinstance(config, vlm.LlavaConfig):
+        wrapper_cls = LlavaInferenceWrapper
+        hidden_size = config.language_transformer_config.hidden_size
+    else:
+        raise ValueError(f"Unknown model config: {config}")
+
+    inference_wrapped_model = wrapper_cls(
         mcore_model,
         InferenceWrapperConfig(
-            hidden_size=config.language_model_config.hidden_size,
+            hidden_size=hidden_size,
             params_dtype=params_dtype,
             inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
             padded_vocab_size=tokenizer.vocab_size,
@@ -84,7 +99,7 @@ def setup_model_and_tokenizer(
 
 
 def generate(
-    wrapped_model: VLMInferenceWrapper,
+    wrapped_model: AbstractModelInferenceWrapper,
     tokenizer,
     image_processor,
     prompts: List[str],
@@ -96,7 +111,7 @@ def generate(
     """
     Generates text using a NeMo VLM model.
     Args:
-        wrapped_model (VLMInferenceWrapper): The model inference wrapper.
+        wrapped_model (AbstractModelInferenceWrapper): The model inference wrapper.
         tokenizer: tokenizer for the input text,
         image_processor: image processor for the input image,
         prompts (list[str]): The list of prompts to generate text for.

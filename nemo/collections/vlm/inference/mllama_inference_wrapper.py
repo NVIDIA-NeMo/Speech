@@ -27,7 +27,7 @@ from torch.utils.data import default_collate
 from nemo.collections.vlm.mllama.model.utils import create_vision_mask_tensor
 
 
-class VLMInferenceWrapper(AbstractModelInferenceWrapper):
+class MllamaInferenceWrapper(AbstractModelInferenceWrapper):
     """Constructor for the model inference wrapper
 
     The wrapper prepares the model for inference, provides the required input

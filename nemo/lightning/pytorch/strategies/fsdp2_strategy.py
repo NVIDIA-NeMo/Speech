@@ -189,6 +189,10 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         # Parallelize model
         if getattr(self, '_init_model_parallel', True):
             self.parallelize()
+        # Corner case, as FSDP2 expected to be used multi-device.
+        if self._data_parallel_size == 1:
+            self._lightning_module = self._lightning_module.to(self.root_device)
+
         # setup optim
         if getattr(self, '_setup_optimizers', True) and trainer.state.fn == TrainerFn.FITTING:
             super().setup_optimizers(trainer)

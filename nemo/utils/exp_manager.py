@@ -1006,7 +1006,7 @@ def check_resume(
         files_to_move = []
         if Path(log_dir).exists():
             for child in Path(log_dir).iterdir():
-                if child.is_file():
+                if child.is_file() and not child.name.startswith("events.out.tfevents"):
                     files_to_move.append(child)
 
         if len(files_to_move) > 0:
@@ -1455,7 +1455,7 @@ class SkipResumeTrainingValidationLoop(_TrainingEpochLoop):
 
     def _should_check_val_fx(self, data_fetcher) -> bool:
         """_should_check_val_fx"""
-        if self.restarting and self.global_step % self.trainer.val_check_batch == 0:
+        if self.restarting:
             return False
         return super()._should_check_val_fx(data_fetcher)
 

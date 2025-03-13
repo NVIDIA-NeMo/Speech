@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import lightning.pytorch as pl
 import nemo_run as run
@@ -26,6 +26,10 @@ from nemo.collections.llm.recipes.log.default import tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 from nemo.lightning.pytorch.callbacks import PEFT
+from nemo.utils.exp_manager import TimingCallback
+
+if TYPE_CHECKING:
+    from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
 
 def default_finetune_recipe(
@@ -74,7 +78,7 @@ def default_finetune_recipe(
             num_gpus_per_node=num_gpus_per_node,
         ),
         data=datamodule,
-        log=llm.default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
+        log=default_finetune_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=1e-4, min_lr=0, warmup_steps=50, adam_beta2=0.98),
         resume=nemo_resume(resume_path),
     )
@@ -118,6 +122,7 @@ def default_finetune_trainer(
         context_parallel_size=context_parallelism,
         sequence_parallel=sequence_parallelism,
         gradient_as_bucket_view=True,
+        ckpt_load_strictness="log_all",
     )
 
     trainer = run.Config(
@@ -127,16 +132,55 @@ def default_finetune_trainer(
         devices=num_gpus_per_node,
         limit_test_batches=limit_test_batches,
         limit_val_batches=limit_val_batches,
-        log_every_n_steps=10,
+        log_every_n_steps=1,
         max_steps=max_steps,
         num_nodes=num_nodes,
         plugins=bf16_mixed(),
         strategy=strategy,
         use_distributed_sampler=False,
         val_check_interval=val_check_interval,
+        callbacks=[run.Config(TimingCallback)],
     )
 
     return trainer
+
+
+def default_finetune_log(
+    dir: Optional[str] = None,
+    name: str = "default",
+    tensorboard_logger: Optional[run.Config['TensorBoardLogger']] = None,
+    wandb_logger: Optional[run.Config['WandbLogger']] = None,
+) -> run.Config[nl.NeMoLogger]:
+    """
+    Create a default fine-tuning logger for any model.
+
+    This function sets up a template for ModelCheckpoint and NeMoLogger.
+
+    Args:
+        See docstrings of ModelCheckpoint and NeMoLogger.
+
+    Returns:
+        run.Config: Config for a finetuning NeMoLogger.
+
+    See usages of this in recipes for further details.
+    """
+
+    ckpt = run.Config(
+        nl.ModelCheckpoint,
+        save_last="link",
+        save_top_k=2,
+        every_n_train_steps=50,
+        filename="{model_name}--{val_loss:.2f}-{step}-{consumed_samples}",
+    )
+
+    return run.Config(
+        nl.NeMoLogger,
+        ckpt=ckpt,
+        name=name,
+        tensorboard=tensorboard_logger,
+        wandb=wandb_logger,
+        log_dir=dir,
+    )
 
 
 def nemo_resume(model_id: str) -> run.Config[nl.AutoResume]:

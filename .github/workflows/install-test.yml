@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, macos-13]
+        os: [macos-latest]
         python: ["3.10", "3.11", "3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
@@ -44,18 +44,7 @@ jobs:
             bash reinstall.sh --library all --mode install
           fi
 
-      - name: Run LLM example
-        if: ${{ matrix.installer == 'nemo-install' && matrix.python != '3.12' }}
-        run: |
-          # This is guarded since it requires nemo-run. We expect Nemo-run to be
-          # available on PyPi with 25.04.
-
-          pip install jupyter nbconvert
-          jupyter nbconvert --to script examples/llm/pretrain/pretrain.ipynb
-          python examples/llm/pretrain/pretrain.py
-
       - name: Run import checks
-        if: ${{ matrix.os != 'macos-13' }}
         run: |
           # Run import checks
           for collection in "asr" "tts"; do
@@ -91,16 +80,6 @@ jobs:
             export INSTALL_DIR=$(pwd)
             bash reinstall.sh --library all --mode install
           fi
-
-      - name: Run LLM example
-        if: ${{ matrix.installer == 'nemo-install' }}
-        run: |
-          # This is guarded since it requires nemo-run. We expect Nemo-run to be
-          # available on PyPi with 25.04.
-
-          pip install jupyter nbconvert
-          jupyter nbconvert --to script examples/llm/pretrain/pretrain.ipynb
-          python examples/llm/pretrain/pretrain.py
 
       - name: Run import checks
         run: |

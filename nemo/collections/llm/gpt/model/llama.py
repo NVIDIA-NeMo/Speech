@@ -152,9 +152,9 @@ class Llama31Config(Llama3Config):
     including RoPE scaling parameters.
     """
 
-    scale_factor: int = 8
-    low_freq_factor: int = 1
-    high_freq_factor: int = 4
+    scale_factor: float = 8.0
+    low_freq_factor: float = 1.0
+    high_freq_factor: float = 4.0
     old_context_len: int = 8192
     init_method_std: float = 0.02
 
@@ -278,7 +278,7 @@ class Llama32Config1B(Llama31Config):
     2048 hidden size, and 32 attention heads (8 query groups).
     """
 
-    scale_factor: int = 32
+    scale_factor: float = 32.0
     share_embeddings_and_output_weights: bool = True
     rotary_base: int = 500_000
     num_layers: int = 16
@@ -1061,9 +1061,9 @@ def _export_linear_fc1(linear_fc1):
 
 def apply_rope_scaling(
     inv_freq,
-    factor: int = 8,
-    low_freq_factor: int = 1,
-    high_freq_factor: int = 4,
+    factor: float = 8.0,
+    low_freq_factor: float = 1.0,
+    high_freq_factor: float = 4.0,
     old_context_len: int = 8192,
 ):
     """Apply RoPE scaling for extending context length in Llama models.

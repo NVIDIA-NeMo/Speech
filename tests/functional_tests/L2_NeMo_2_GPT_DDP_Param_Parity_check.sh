@@ -11,11 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#!/bin/bash
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_ctc/speech_to_text_ctc.py \
-    model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-    model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-    trainer.devices=1 \
-    trainer.accelerator="gpu" \
-    +trainer.fast_dev_run=True \
-    exp_manager.exp_dir=/tmp/speech_to_text_results
+TORCHDYNAMO_DISABLE=1 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/lightning/test_ddp_parity_checker.py \
+    --vocab-path=/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json \
+    --merges-path=/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt \
+    --data-path=/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document

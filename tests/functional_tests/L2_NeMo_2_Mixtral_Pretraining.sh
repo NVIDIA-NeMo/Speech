@@ -11,11 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#!/bin/bash
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_ctc/speech_to_text_ctc.py \
-    model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-    model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-    trainer.devices=1 \
-    trainer.accelerator="gpu" \
-    +trainer.fast_dev_run=True \
-    exp_manager.exp_dir=/tmp/speech_to_text_results
+coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo3 tests/collections/llm/megatron_mixtral_pretraining.py \
+    --experiment-dir=/tmp/mixtral_pretrain_results \
+    --data-path=/home/TestData/nlp/megatron_t5/data/pile_val_small_bert_tokenizer_text_document

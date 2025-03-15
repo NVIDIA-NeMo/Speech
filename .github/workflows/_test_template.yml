@@ -26,9 +26,9 @@ on:
         description: Failure will cancel all other tests if set to true
         required: false
         default: false
-      SAVE_COVERAGE_REPORT:
+      IS_UNIT_TEST:
         type: boolean
-        description: Upload .coverage file
+        description: Upload coverage as unit test
         required: false
         default: false
     outputs:
@@ -93,19 +93,11 @@ jobs:
         env:
           DIR: ${{ github.run_id }}
           SCRIPT: ${{ inputs.SCRIPT }}
+          IS_UNIT_TEST: ${{ inputs.IS_UNIT_TEST }}
         id: create
         run: |
-          SCRIPT=$(echo "$SCRIPT" | grep -v '^#')
-          SCRIPT=$(perl -pe 'chomp if eof' <<< "$SCRIPT")
-          [[ "${SCRIPT: -1}" == ";" ]] && SCRIPT="${SCRIPT::-1}"
 
-          if [[ "$SCRIPT" == *pytest* ]]; then
-              COVERAGE_PREFIX="unit-test"
-          else
-              COVERAGE_PREFIX="e2e"
-              SCRIPT=$(echo "$SCRIPT" | sed 's|python|coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo|g')
-
-          fi
+          COVERAGE_PREFIX=$([[ "$IS_UNIT_TEST" == "true" ]] && echo "unit-test" || echo "e2e")
           echo "coverage-prefix=$COVERAGE_PREFIX" | tee -a "$GITHUB_OUTPUT"
 
           mkdir -p $DIR
@@ -140,7 +132,6 @@ jobs:
       - name: Check result
         id: check
         env:
-          SAVE_COVERAGE_REPORT: ${{ inputs.SAVE_COVERAGE_REPORT }}
           IS_OPTIONAL: ${{ inputs.IS_OPTIONAL }}
         run: |
           cat $DIR/err.log

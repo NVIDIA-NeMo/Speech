@@ -11,11 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#!/bin/bash
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_ctc/speech_to_text_ctc.py \
-    model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-    model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-    trainer.devices=1 \
-    trainer.accelerator="gpu" \
-    +trainer.fast_dev_run=True \
-    exp_manager.exp_dir=/tmp/speech_to_text_results
+coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt/model/megatron_ssm_finetuning.py \
+    --devices 1 \
+    --max-steps 10 \
+    --experiment-dir /tmp/nlp_megatron_mamba_nemo-ux-mamba_cicd_test_sft/$RUN_ID \
+    --model-path /home/TestData/nlp/megatron_mamba/model_optim_rng.pt \
+    --ckpt_load_strictness log_all

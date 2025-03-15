@@ -11,11 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#!/bin/bash
-coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/asr/asr_ctc/speech_to_text_ctc.py \
-    model.train_ds.manifest_filepath=/home/TestData/an4_dataset/an4_train.json \
-    model.validation_ds.manifest_filepath=/home/TestData/an4_dataset/an4_val.json \
-    trainer.devices=1 \
-    trainer.accelerator="gpu" \
-    +trainer.fast_dev_run=True \
-    exp_manager.exp_dir=/tmp/speech_to_text_results
+cd examples/nlp/machine_translation &&
+    coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo nmt_transformer_infer.py \
+        --model=/home/TestData/nlp/nmt/toy_data/enes_v16k_s100k_6x6.nemo \
+        --srctext=/home/TestData/nlp/nmt/toy_data/wmt14-de-en.test.src \
+        --tgtout=/home/TestData/nlp/nmt/toy_data/out.txt \
+        --target_lang en \
+        --source_lang de

@@ -51,23 +51,22 @@ jobs:
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
-  test-installs-linux:
-    name: ${{ matrix.os }}-${{ matrix.image }}-${{ matrix.installer }}
-    runs-on: ${{ matrix.os }}
-    container: ubuntu:${{ matrix.image }}
+  test-installs-linux-amd:
+    name: ubuntu-22.04-amd-py${{ matrix.python }}-${{ matrix.installer }}
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm]
-        image: ["22.04"]
+        python: ["3.10", "3.11", "3.12"]
         installer: ["pip-install", "nemo-install"]
     steps:
       - name: Checkout repo
         uses: actions/checkout@v2
 
       - name: Install Python
-        run: |
-          apt-get update && apt-get install -y python3-pip jq git python-is-python3
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Install NeMo
         env:
@@ -76,6 +75,42 @@ jobs:
           if [ "$INSTALLER" = "pip-install" ]; then
             pip install --upgrade pip
             pip install ".[all]"
+          else
+            export INSTALL_DIR=$(pwd)
+            bash reinstall.sh --library all --mode install
+          fi
+
+      - name: Run import checks
+        run: |
+          # Run import checks
+          for collection in "asr" "tts"; do
+            python tests/core_ptl/check_imports.py --domain "$collection"
+          done
+
+  test-installs-linux-arm:
+    name: ubuntu-22.04-arm-py${{ matrix.python }}-${{ matrix.installer }}
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+        installer: ["pip-install", "nemo-install"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install NeMo
+        env:
+          INSTALLER: ${{ matrix.installer }}
+        run: |
+          if [ "$INSTALLER" = "pip-install" ]; then
+            pip install --upgrade pip
+            pip install -vvv ".[all]"
           else
             export INSTALL_DIR=$(pwd)
             bash reinstall.sh --library all --mode install

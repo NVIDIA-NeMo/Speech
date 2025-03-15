@@ -2232,7 +2232,6 @@ jobs:
         --cp=2 --use_packed_sequence \
         --log_dir=/tmp/nemo2_neva_results/${{ github.run_id }}
 
-
   L2_NeMo_2_NEVA_MOCK_FINETUNE_TP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2279,7 +2278,7 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: |
-         python scripts/vlm/neva_generate.py --load_from_hf
+        python scripts/vlm/neva_generate.py --load_from_hf
 
   L2_NEMO_2_MLLAMA_Inference:
     needs: [pre-flight, cicd-test-container-build]

@@ -1,11 +1,11 @@
 huggingface_hub>=0.24
-nemo_run
 numba==0.61.0
 numpy>=1.22,<2.0.0
 onnx>=1.7.0
 # Align with upstream PyTorch requirements
 protobuf==4.24.4
 python-dateutil
+# nemo_run
 ruamel.yaml
 scikit-learn
 setuptools>=70.0.0

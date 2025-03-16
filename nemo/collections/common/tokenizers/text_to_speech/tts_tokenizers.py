@@ -17,7 +17,9 @@ import itertools
 import string
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import List, Optional
+from typing import List, Optional, Union
+
+from transformers import PreTrainedTokenizerBase
 
 from nemo.collections.common.tokenizers.text_to_speech.ipa_lexicon import (
     get_grapheme_character_set,
@@ -50,14 +52,14 @@ class BaseTokenizer(ABC):
             oov: OOV token as string.
             sep: Separation token as string.
             add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
+                if None then no blank in labels.
         """
         super().__init__()
 
         tokens = list(tokens)
         # TODO @xueyang: in general, IDs of pad, sil, blank, and oov are preserved ahead instead of dynamically
-        #  assigned according to the number of tokens. The downside of using dynamical assignment leads to different IDs
-        #  for each.
+        #  assigned according to the number of tokens. The downside of using dynamical assignment leads to different
+        #  IDs for each.
         self.pad, tokens = len(tokens), tokens + [pad]  # Padding
 
         if add_blank_at is not None:
@@ -477,7 +479,10 @@ class ItalianPhonemesTokenizer(BaseCharsTokenizer):
              Currently, it only applies lower() function.
         """
 
-        it_ipa = "abcdefghijklmnopqrstuvwxyzàèéìòùóæɐɑɔəɚɜɬɹʌʔᵻðŋɛɡɣɪɲɾʃʊʎʒʝβθd͡'t͡'øɒɕɓçɖɘɝɞɟʄɡɠɢʛɦɧħɥʜɨɬɫɮʟɱɯɰɳɵɸœɶʘɺɻʀʁɽʂʈʧʉʋⱱɤʍχʏʑʐʔʡʕʢǀǁǂᵻʃ'ː"
+        it_ipa = (
+            "abcdefghijklmnopqrstuvwxyzàèéìòùóæɐɑɔəɚɜɬɹʌʔᵻðŋɛɡɣɪɲɾʃʊʎʒʝβθd͡'t͡'øɒɕɓçɖɘɝɞɟʄɡɠɢʛɦɧħɥʜɨɬɫɮʟɱɯɰɳɵɸœɶʘɺ"
+            "ɻʀʁɽʂʈʧʉʋⱱɤʍχʏʑʐʔʡʕʢǀǁǂᵻʃ'ː"
+        )
         super().__init__(
             chars=it_ipa,
             punct=punct,
@@ -560,18 +565,20 @@ class EnglishPhonemesTokenizer(BaseTokenizer):
             punct: Whether to reserve grapheme for basic punctuation or not.
             non_default_punct_list: List of punctuation marks which will be used instead default.
             stresses: Whether to use phonemes codes with stresses (0-2) or not.
-            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return chars too.
+            chars: Whether to additionally use chars together with phonemes. It is useful if g2p module can return
+                chars too.
             space: Space token as string.
             silence: Silence token as string (will be disabled if it is None).
             apostrophe: Whether to use apostrophe or not.
             oov: OOV token as string.
             sep: Separation token as string.
             add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
+                if None then no blank in labels.
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
+                Basically, it replaces all non-unicode characters with unicode ones.
+                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+                handled by g2p).
         """
 
         self.phoneme_probability = None
@@ -801,11 +808,11 @@ class IPATokenizer(BaseTokenizer):
         `self.text_preprocessing_func` and `self.g2p` functions
 
         Args:
-            g2p_text (List[str]): a sequence of tokens from G2P's output. It could be a sequence of phonemes, a sequence
-                of graphemes, or a mixture of both. For example, `['ˈ', 's', 'i', ' ', '#O', '#O', '#V']`, which is the
-                G2P's output of the text "see OOV", where '#' is prepended to each grapheme in order to distinguish
-                graphemes from phonemes if there are overlaps in between. The prefix '#' can be customized in
-                `nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p.grapheme_prefix`.
+            g2p_text (List[str]): a sequence of tokens from G2P's output. It could be a sequence of phonemes, a
+                sequence of graphemes, or a mixture of both. For example, `['ˈ', 's', 'i', ' ', '#O', '#O', '#V']`,
+                which is the G2P's output of the text "see OOV", where '#' is prepended to each grapheme in order to
+                distinguish graphemes from phonemes if there are overlaps in between. The prefix '#' can be customized
+                in `nemo.collections.tts.g2p.models.i18n_ipa.IpaG2p.grapheme_prefix`.
             raw_text (str): the original text after calling `self.text_preprocessing_func`. It is optional. It is only
                 used to deliver a warning message that some graphemes from the original text are skipped.
 
@@ -885,11 +892,12 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             apostrophe: Whether to use apostrophe or not.
             sep: Separation token as string.
             add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
+                if None then no blank in labels.
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
+                Basically, it replaces all non-unicode characters with unicode ones.
+                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+                handled by g2p).
         """
         tokens = []
         self.space, tokens = len(tokens), tokens + [space]  # Space
@@ -944,7 +952,8 @@ class ChinesePhonemesTokenizer(BaseTokenizer):
             if p == space and len(ps) > 0 and ps[-1] != space:
                 ps.append(p)
             # Add next phoneme or tone or ascii letter or apostrophe.
-            elif (p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and p in tokens:
+            elif ((p.isalnum() or p == "'" or p in self.phoneme_list + self.tone_list + self.ascii_letter_list) and
+                   p in tokens):
                 ps.append(p)
             # Add punctuation
             elif (p in self.PUNCT_LIST) and self.punct:
@@ -996,11 +1005,12 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
             apostrophe: Whether to use apostrophe or not.
             sep: Separation token as string.
             add_blank_at: Add blank to labels in the specified order ("last") or after tokens (any non None),
-             if None then no blank in labels.
+                if None then no blank in labels.
             pad_with_space: Whether to pad text with spaces at the beginning and at the end or not.
             text_preprocessing_func: Text preprocessing function for correct execution of the tokenizer.
-             Basically, it replaces all non-unicode characters with unicode ones.
-             Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be handled by g2p).
+                Basically, it replaces all non-unicode characters with unicode ones.
+                Note that lower() function shouldn't be applied here, in case the text contains phonemes (it will be
+                handled by g2p).
         """
         tokens = []
         self.space, tokens = len(tokens), tokens + [space]  # Space
@@ -1074,3 +1084,45 @@ class JapanesePhonemeTokenizer(BaseTokenizer):
             ps = [space] + ps + [space]
 
         return [self._token2id[p] for p in ps]
+
+
+class AggregatedTTSTokenizer:
+    def __init__(self, tokenizers: List[Union[BaseTokenizer, PreTrainedTokenizerBase]], tokenizer_names: List[str]):
+        """A simple aggregated tokenizer. Aggregates multiple tokenizers into one by combining (simply concatenating)
+        their tokens into one vocabulary.
+        Args:
+            tokenizers: List of tokenizers to aggregate.
+            tokenizer_names: List of names for each tokenizer (usually the language identifier).
+        """
+        assert len(tokenizers) == len(tokenizer_names), "Number of tokenizers and tokenizer names must be the same."
+        tokens = []
+        toknizer_offsets = {}
+        tokenizer_offset = 0
+        self.tokenizers = {}
+        for idx, tokenizer in enumerate(tokenizers):
+            self.tokenizers[tokenizer_names[idx]] = tokenizer
+            toknizer_offsets[tokenizer_names[idx]] = tokenizer_offset
+            if isinstance(tokenizer, BaseTokenizer):
+                tokens.extend(tokenizer.tokens)
+                num_tokens = len(tokenizer.tokens)
+            elif isinstance(tokenizer, PreTrainedTokenizerBase):
+                _tokens = list(tokenizer.get_vocab().keys())
+                tokens.extend(_tokens)
+                num_tokens = len(_tokens)
+            else:
+                raise ValueError("Tokenizers must be either BaseTokenizer or HuggingFace PreTrainedTokenizerBase.")
+            tokenizer_offset += num_tokens
+
+        self.tokens = tokens
+        self.tokenizer_names = tokenizer_names
+        self.toknizer_offsets = toknizer_offsets
+        self.pad = self.tokenizers[tokenizer_names[0]].pad  # Use the first tokenizer's pad token
+
+    def encode(self, text: str, tokenizer_name: str) -> List[int]:
+        tokenizer = self.tokenizers[tokenizer_name]
+        tokens = tokenizer.encode(text)
+        return [self.toknizer_offsets[tokenizer_name] + token for token in tokens]
+
+    def decode(self, tokens: List[int], tokenizer_name: str) -> str:
+        tokenizer = self.tokenizers[tokenizer_name]
+        return tokenizer.decode([token - self.toknizer_offsets[tokenizer_name] for token in tokens])

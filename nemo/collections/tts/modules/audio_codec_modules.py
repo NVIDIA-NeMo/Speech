@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+import os
 from abc import ABC, abstractmethod
 from typing import Iterable, List, Optional, Tuple
 
@@ -43,6 +45,13 @@ try:
     HAVE_TORCHAUDIO = True
 except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
+
+try:
+    import fsspec
+
+    HAVE_FSSPEC = True
+except ModuleNotFoundError:
+    HAVE_FSSPEC = False
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -99,21 +108,19 @@ class SLMDiscriminator(NeuralModule):
     ):
         super().__init__()
 
-        if not HAVE_TORCHAUDIO:
-            logging.error('Could not import torchaudio. SLMDiscriminator will not work.')
-
-            raise ModuleNotFoundError(
-                f"torchaudio is not installed but is necessary to instantiate a {self.__class__.__name__}"
-            )
+        if HAVE_TORCHAUDIO:
+            self.resample = torchaudio.transforms.Resample(input_sr, slm_sr)
+        else:
+            self.resample = None
 
         self.slm_model = SSLModel(slm_model_name)
 
         # Freeze slm model
         self.slm_model.freeze()
 
-        self.resample = torchaudio.transforms.Resample(input_sr, slm_sr)
-
-        norm_f = torch.nn.utils.weight_norm if use_spectral_norm == False else torch.nn.utils.spectral_norm
+        norm_f = (
+            torch.nn.utils.parametrizations.weight_norm if use_spectral_norm == False else torch.nn.utils.spectral_norm
+        )
         self.pre = norm_f(nn.Conv1d(slm_hidden * slm_layers, initial_channel, 1, 1, padding=0))
 
         self.convs = nn.ModuleList(
@@ -132,8 +139,8 @@ class SLMDiscriminator(NeuralModule):
 
         x = self.pre(x)
         fmap = []
-        for l in self.convs:
-            x = l(x)
+        for layer in self.convs:
+            x = layer(x)
             x = F.leaky_relu(x, 0.1)
             fmap.append(x.unsqueeze(-1))
 
@@ -167,6 +174,293 @@ class SLMDiscriminator(NeuralModule):
         return [y_d_r.unsqueeze(1)], [y_d_g.unsqueeze(1)], [fmap_r], [fmap_g]
 
 
+# Torch version of transformers.models.wav2vec2.feature_extraction_wav2vec2.Wav2Vec2FeatureExtractor.zero_mean_unit_var_norm
+def zero_mean_unit_var_norm(input_values):
+    """
+    Normalized to have zero mean and unit variance
+    """
+    normed_input_values = (input_values - input_values.mean(dim=1).unsqueeze(-1)) / torch.sqrt(
+        input_values.var(dim=1).unsqueeze(-1) + 1e-7
+    )
+    return normed_input_values
+
+
+##############
+# Speaker encoder #
+##############
+def load_fsspec(path: str, map_location: str = None, **kwargs):
+    """Like torch.load but can load from other locations (e.g. s3:// , gs://).
+
+    Args:
+        path: Any path or url supported by fsspec.
+        map_location: torch.device or str.
+        cache: If True, cache a remote file locally for subsequent calls. It is cached under `get_user_data_dir()/tts_cache`. Defaults to True.
+        **kwargs: Keyword arguments forwarded to torch.load.
+
+    Returns:
+        Object stored in path.
+    """
+    is_local = os.path.isdir(path) or os.path.isfile(path)
+    if is_local:
+        return torch.load(path, map_location=map_location, **kwargs)
+    else:
+        if HAVE_FSSPEC:
+            with fsspec.open(path, "rb") as f:
+                return torch.load(f, map_location=map_location, **kwargs)
+        else:
+            logging.error('Could not import fsspec. Loading a checkpoint link is not supported!')
+            raise ModuleNotFoundError("fsspec is not installed but is necessary to download remote checkpoints !!")
+
+
+class PreEmphasis(NeuralModule):
+    def __init__(self, coefficient=0.97):
+        super().__init__()
+        self.coefficient = coefficient
+        self.register_buffer("filter", torch.FloatTensor([-self.coefficient, 1.0]).unsqueeze(0).unsqueeze(0))
+
+    def forward(self, x):
+        assert len(x.size()) == 2
+
+        x = torch.nn.functional.pad(x.unsqueeze(1), (1, 0), "reflect")
+        return torch.nn.functional.conv1d(x, self.filter).squeeze(1)
+
+
+class SELayer(NeuralModule):
+    def __init__(self, channel, reduction=8):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+
+class SEBasicBlock(NeuralModule):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, reduction=8):
+        super(SEBasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.se = SELayer(planes, reduction)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.relu(out)
+        out = self.bn1(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.se(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+        return out
+
+
+class ResNetSpeakerEncoder(NeuralModule):
+    """Implementation of the model H/ASP without batch normalization in speaker embedding. This model was proposed in: https://arxiv.org/abs/2009.14153
+    Adapted from: https://github.com/clovaai/voxceleb_trainer
+    """
+
+    def __init__(
+        self,
+        input_dim=64,
+        proj_dim=512,
+        layers=[3, 4, 6, 3],
+        num_filters=[32, 64, 128, 256],
+        encoder_type="ASP",
+        log_input=True,
+        use_torch_spec=True,
+        audio_config={
+            "fft_size": 512,
+            "win_length": 400,
+            "hop_length": 160,
+            "frame_shift_ms": None,
+            "frame_length_ms": None,
+            "stft_pad_mode": "reflect",
+            "sample_rate": 16000,
+            "resample": False,
+            "preemphasis": 0.97,
+            "ref_level_db": 20,
+            "do_sound_norm": False,
+            "do_trim_silence": False,
+            "trim_db": 60,
+            "power": 1.5,
+            "griffin_lim_iters": 60,
+            "num_mels": 64,
+            "mel_fmin": 0.0,
+            "mel_fmax": 8000.0,
+            "spec_gain": 20,
+            "signal_norm": False,
+            "min_level_db": -100,
+            "symmetric_norm": False,
+            "max_norm": 4.0,
+            "clip_norm": False,
+            "stats_path": None,
+            "do_rms_norm": True,
+            "db_level": -27.0,
+        },
+    ):
+        super(ResNetSpeakerEncoder, self).__init__()
+
+        self.encoder_type = encoder_type
+        self.input_dim = input_dim
+        self.log_input = log_input
+        self.use_torch_spec = use_torch_spec
+        self.audio_config = audio_config
+        self.proj_dim = proj_dim
+
+        self.conv1 = nn.Conv2d(1, num_filters[0], kernel_size=3, stride=1, padding=1)
+        self.relu = nn.ReLU(inplace=True)
+        self.bn1 = nn.BatchNorm2d(num_filters[0])
+
+        self.inplanes = num_filters[0]
+        self.layer1 = self.create_layer(SEBasicBlock, num_filters[0], layers[0])
+        self.layer2 = self.create_layer(SEBasicBlock, num_filters[1], layers[1], stride=(2, 2))
+        self.layer3 = self.create_layer(SEBasicBlock, num_filters[2], layers[2], stride=(2, 2))
+        self.layer4 = self.create_layer(SEBasicBlock, num_filters[3], layers[3], stride=(2, 2))
+
+        self.instancenorm = nn.InstanceNorm1d(input_dim)
+
+        if self.use_torch_spec and HAVE_TORCHAUDIO:
+            self.torch_spec = self.get_torch_mel_spectrogram_class(audio_config)
+        else:
+            self.torch_spec = None
+
+        outmap_size = int(self.input_dim / 8)
+
+        self.attention = nn.Sequential(
+            nn.Conv1d(num_filters[3] * outmap_size, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.BatchNorm1d(128),
+            nn.Conv1d(128, num_filters[3] * outmap_size, kernel_size=1),
+            nn.Softmax(dim=2),
+        )
+
+        if self.encoder_type == "SAP":
+            out_dim = num_filters[3] * outmap_size
+        elif self.encoder_type == "ASP":
+            out_dim = num_filters[3] * outmap_size * 2
+        else:
+            raise ValueError("Undefined encoder")
+
+        self.fc = nn.Linear(out_dim, proj_dim)
+
+        self._init_layers()
+
+    def _init_layers(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def create_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
+
+    def new_parameter(self, *size):
+        out = nn.Parameter(torch.FloatTensor(*size))
+        nn.init.xavier_normal_(out)
+        return out
+
+    def forward(self, x, l2_norm=False):
+        """Forward pass of the model.
+
+        Args:
+            x (Tensor): Raw waveform signal or spectrogram frames. If input is a waveform, `torch_spec` must be `True`
+                to compute the spectrogram on-the-fly.
+            l2_norm (bool): Whether to L2-normalize the outputs.
+
+        Shapes:
+            - x: :math:`(N, 1, T_{in})` or :math:`(N, D_{spec}, T_{in})`
+        """
+        x.squeeze_(1)
+        # if you torch spec compute it otherwise use the mel spec computed by the AP
+        if self.use_torch_spec:
+            x = self.torch_spec(x)
+
+        if self.log_input:
+            x = (x + 1e-6).log()
+        x = self.instancenorm(x).unsqueeze(1)
+
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.bn1(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = x.reshape(x.size()[0], -1, x.size()[-1])
+
+        w = self.attention(x)
+
+        if self.encoder_type == "SAP":
+            x = torch.sum(x * w, dim=2)
+        elif self.encoder_type == "ASP":
+            mu = torch.sum(x * w, dim=2)
+            sg = torch.sqrt((torch.sum((x**2) * w, dim=2) - mu**2).clamp(min=1e-5))
+            x = torch.cat((mu, sg), 1)
+
+        x = x.view(x.size()[0], -1)
+        x = self.fc(x)
+
+        if l2_norm:
+            x = torch.nn.functional.normalize(x, p=2, dim=1)
+        return x
+
+    def get_torch_mel_spectrogram_class(self, audio_config):
+        return torch.nn.Sequential(
+            PreEmphasis(audio_config["preemphasis"]),
+            torchaudio.transforms.MelSpectrogram(
+                sample_rate=audio_config["sample_rate"],
+                n_fft=audio_config["fft_size"],
+                win_length=audio_config["win_length"],
+                hop_length=audio_config["hop_length"],
+                window_fn=torch.hamming_window,
+                n_mels=audio_config["num_mels"],
+            ),
+        )
+
+    def load_checkpoint(self, checkpoint_path: str, strict=True):
+        state = load_fsspec(checkpoint_path, map_location=torch.device("cpu"))
+        self.load_state_dict(state["model"], strict=strict)
+
+
 class CodecActivation(nn.Module):
     """
     Choose between activation based on the input parameter.
@@ -194,6 +488,160 @@ class CodecActivation(nn.Module):
         return self.activation(x)
 
 
+class CausalConvTranspose1dNorm(NeuralModule):
+    """ConvTranspose1d causal padding and normalization."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        groups: int = None,
+        trim_right_ratio: int = 1,
+        bias=True,
+    ):
+        super().__init__()
+
+        self.trim_right_ratio = trim_right_ratio
+
+        # if groups are None, create a group for each out channel as done in Mini Codec
+        groups = out_channels if groups is None else groups
+
+        self.conv = nn.ConvTranspose1d(in_channels, out_channels, kernel_size, stride, groups=groups, bias=bias)
+
+        kernel_size = self.conv.kernel_size[0]
+        stride = self.conv.stride[0]
+        padding_total = kernel_size - stride
+
+        # Trim the padding on the right according to the specified ratio
+        # if trim_right_ratio = 1.0, trim everything from right
+        self.padding_right = math.ceil(padding_total * self.trim_right_ratio)
+        self.padding_left = padding_total - self.padding_right
+
+        # add weight norm
+        self.conv = nn.utils.parametrizations.weight_norm(self.conv)
+
+    def apply_weight_norm(self):
+        weight_norm = nn.utils.parametrizations.weight_norm
+        if hasattr(nn.utils.parametrizations, "weight_norm"):
+            weight_norm = nn.utils.parametrizations.weight_norm
+
+        weight_norm(self.conv)
+
+    def remove_weight_norm(self):
+        nn.utils.remove_weight_norm(self.conv)
+
+    def forward(self, inputs, input_len):
+        hidden_states = self.conv(inputs)
+
+        # unpad
+        end = hidden_states.shape[-1] - self.padding_right
+        hidden_states = hidden_states[..., self.padding_left : end]
+        # mask
+        hidden_states = mask_sequence_tensor(hidden_states, input_len)
+        return hidden_states
+
+
+class CausalConv1dNorm(NeuralModule):
+    """Conv1d with causal padding and normalization."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        stride: int = 1,
+        dilation: int = 1,
+        groups: int = 1,
+        pad_mode: str = "zeros",
+        extra_pad_mode: str = "constant",
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.extra_pad_mode = extra_pad_mode
+
+        # warn user on unusual setup between dilation and stride
+        if stride > 1 and dilation > 1:
+            print(
+                "CausalConv1dNorm has been initialized with stride > 1 and dilation > 1"
+                f" (kernel_size={kernel_size} stride={stride}, dilation={dilation})."
+            )
+
+        self.conv = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride,
+            dilation=dilation,
+            groups=groups,
+            bias=bias,
+            padding_mode=pad_mode,
+        )
+
+        kernel_size = self.conv.kernel_size[0]
+        stride = torch.tensor(self.conv.stride[0], dtype=torch.int64)
+        dilation = self.conv.dilation[0]
+
+        # Effective kernel size with dilations.
+        kernel_size = torch.tensor((kernel_size - 1) * dilation + 1, dtype=torch.int64)
+
+        self.register_buffer("stride", stride, persistent=False)
+        self.register_buffer("kernel_size", kernel_size, persistent=False)
+        self.register_buffer("padding_total", torch.tensor(kernel_size - stride, dtype=torch.int64), persistent=False)
+
+        # add weight norm
+        self.conv = nn.utils.parametrizations.weight_norm(self.conv)
+
+    def remove_weight_norm(self):
+        nn.utils.remove_weight_norm(self.conv)
+
+    # Copied from transformers.models.encodec.modeling_encodec.EncodecConv1d._get_extra_padding_for_conv1d
+    def _get_extra_padding_for_conv1d(
+        self,
+        hidden_states: torch.Tensor,
+    ) -> torch.Tensor:
+        """See `pad_for_conv1d`."""
+        length = hidden_states.shape[-1]
+        n_frames = (length - self.kernel_size + self.padding_total) / self.stride + 1
+        n_frames = torch.ceil(n_frames).to(torch.int64) - 1
+        ideal_length = n_frames * self.stride + self.kernel_size - self.padding_total
+
+        return ideal_length - length
+
+    @staticmethod
+    # Copied from transformers.models.encodec.modeling_encodec.EncodecConv1d._pad1d
+    def _pad1d(hidden_states: torch.Tensor, paddings: Tuple[int, int], mode: str = "zero", value: float = 0.0):
+        """Tiny wrapper around torch.nn.functional.pad, just to allow for reflect padding on small input.
+        If this is the case, we insert extra 0 padding to the right before the reflection happens.
+        """
+        length = hidden_states.shape[-1]
+        padding_left, padding_right = paddings
+        if not mode == "reflect":
+            return nn.functional.pad(hidden_states, paddings, mode, value)
+
+        max_pad = max(padding_left, padding_right)
+        extra_pad = 0
+        if length <= max_pad:
+            extra_pad = max_pad - length + 1
+            hidden_states = nn.functional.pad(hidden_states, (0, extra_pad))
+        padded = nn.functional.pad(hidden_states, paddings, mode, value)
+        end = padded.shape[-1] - extra_pad
+        return padded[..., :end]
+
+    def forward(self, inputs, input_len):
+        extra_padding = self._get_extra_padding_for_conv1d(inputs)
+
+        # Left padding for causal
+        hidden_states = self._pad1d(inputs, (self.padding_total, extra_padding), mode=self.extra_pad_mode)
+        hidden_states = self.conv(hidden_states)
+
+        # mask output
+        hidden_states = mask_sequence_tensor(hidden_states, input_len)
+
+        return hidden_states
+
+
 class Conv1dNorm(NeuralModule):
     def __init__(
         self,
@@ -203,6 +651,7 @@ class Conv1dNorm(NeuralModule):
         stride: int = 1,
         dilation: int = 1,
         padding: Optional[int] = None,
+        pad_mode: str = "reflect",
     ):
         super().__init__()
         if not padding:
@@ -214,9 +663,9 @@ class Conv1dNorm(NeuralModule):
             stride=stride,
             padding=padding,
             dilation=dilation,
-            padding_mode="reflect",
+            padding_mode=pad_mode,
         )
-        self.conv = nn.utils.weight_norm(conv)
+        self.conv = nn.utils.parametrizations.weight_norm(conv)
 
     @property
     def input_types(self):
@@ -242,7 +691,7 @@ class Conv1dNorm(NeuralModule):
 
 
 class ConvTranspose1dNorm(NeuralModule):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int = 1, groups: int = 1):
         super().__init__()
         padding, output_padding = get_up_sample_padding(kernel_size, stride)
         conv = nn.ConvTranspose1d(
@@ -253,8 +702,9 @@ class ConvTranspose1dNorm(NeuralModule):
             padding=padding,
             output_padding=output_padding,
             padding_mode="zeros",
+            groups=groups,
         )
-        self.conv = nn.utils.weight_norm(conv)
+        self.conv = nn.utils.parametrizations.weight_norm(conv)
 
     @property
     def input_types(self):
@@ -300,7 +750,7 @@ class Conv2dNorm(NeuralModule):
             padding=padding,
             padding_mode="reflect",
         )
-        self.conv = nn.utils.weight_norm(conv)
+        self.conv = nn.utils.parametrizations.weight_norm(conv)
 
     @property
     def input_types(self):
@@ -1030,16 +1480,36 @@ class ResidualBlock(NeuralModule):
         dilation: int = 1,
         dropout_rate: float = 0.0,
         activation: str = "lrelu",
+        is_causal: bool = False,
+        pad_mode: str = "reflect",
     ):
         super(ResidualBlock, self).__init__()
 
         self.input_activation = CodecActivation(activation=activation, channels=channels)
         self.skip_activation = CodecActivation(activation=activation, channels=filters)
         self.dropout = torch.nn.Dropout(dropout_rate)
-        self.input_conv = Conv1dNorm(
-            in_channels=channels, out_channels=filters, kernel_size=kernel_size, dilation=dilation
-        )
-        self.skip_conv = Conv1dNorm(in_channels=filters, out_channels=channels, kernel_size=kernel_size)
+        if not is_causal:
+            self.input_conv = Conv1dNorm(
+                in_channels=channels,
+                out_channels=filters,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                pad_mode=pad_mode,
+            )
+            self.skip_conv = Conv1dNorm(
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+            )
+        else:
+            self.input_conv = CausalConv1dNorm(
+                in_channels=channels,
+                out_channels=filters,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                pad_mode=pad_mode,
+            )
+            self.skip_conv = CausalConv1dNorm(
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+            )
 
     def remove_weight_norm(self):
         self.input_conv.remove_weight_norm()
@@ -1075,7 +1545,15 @@ class HiFiGANResBlock(NeuralModule):
         activation: Activation for the residual blocks.
     """
 
-    def __init__(self, channels: int, kernel_size: int, dilations: Iterable[int], activation: str):
+    def __init__(
+        self,
+        channels: int,
+        kernel_size: int,
+        dilations: Iterable[int],
+        activation: str,
+        is_causal: bool = False,
+        pad_mode: str = "reflect",
+    ):
         super().__init__()
 
         self.res_blocks = nn.ModuleList(
@@ -1086,6 +1564,8 @@ class HiFiGANResBlock(NeuralModule):
                     kernel_size=kernel_size,
                     dilation=dilation,
                     activation=activation,
+                    is_causal=is_causal,
+                    pad_mode=pad_mode,
                 )
                 for dilation in dilations
             ]
@@ -1127,12 +1607,27 @@ class HiFiGANResLayer(NeuralModule):
 
     """
 
-    def __init__(self, channels: int, kernel_sizes: Iterable[int], dilations: Iterable[int], activation: str):
+    def __init__(
+        self,
+        channels: int,
+        kernel_sizes: Iterable[int],
+        dilations: Iterable[int],
+        activation: str,
+        is_causal: bool = False,
+        pad_mode: str = "reflect",
+    ):
         super().__init__()
 
         self.res_blocks = nn.ModuleList(
             [
-                HiFiGANResBlock(channels=channels, kernel_size=kernel_size, dilations=dilations, activation=activation)
+                HiFiGANResBlock(
+                    channels=channels,
+                    kernel_size=kernel_size,
+                    dilations=dilations,
+                    activation=activation,
+                    is_causal=is_causal,
+                    pad_mode=pad_mode,
+                )
                 for kernel_size in kernel_sizes
             ]
         )
@@ -1159,9 +1654,9 @@ class HiFiGANResLayer(NeuralModule):
         return out
 
 
-class HiFiGANEncoder(NeuralModule):
+class CausalHiFiGANEncoder(NeuralModule):
     """
-    Audio encoder created by inverting the HiFi-GAN decoder.
+    Causal Audio encoder created by inverting the HiFi-GAN decoder and replacing Conv1D by CausalConv1D.
 
     Args:
         encoded_dim: Dimension of encoder output.
@@ -1186,6 +1681,7 @@ class HiFiGANEncoder(NeuralModule):
         resblock_kernel_sizes: Iterable[int] = (3, 7, 11),
         resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
         activation: str = "lrelu",
+        pad_mode: str = "zeros",
     ):
         assert in_kernel_size > 0
         assert out_kernel_size > 0
@@ -1193,7 +1689,9 @@ class HiFiGANEncoder(NeuralModule):
         super().__init__()
 
         self.down_sample_rates = down_sample_rates
-        self.pre_conv = Conv1dNorm(in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size)
+        self.pre_conv = CausalConv1dNorm(
+            in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+        )
 
         in_channels = base_channels
         self.activations = nn.ModuleList([])
@@ -1205,6 +1703,8 @@ class HiFiGANEncoder(NeuralModule):
                 kernel_sizes=resblock_kernel_sizes,
                 dilations=resblock_dilation_sizes,
                 activation=activation,
+                is_causal=True,
+                pad_mode=pad_mode,
             )
             self.res_layers.append(res_layer)
 
@@ -1214,19 +1714,21 @@ class HiFiGANEncoder(NeuralModule):
             out_channels = 2 * in_channels
             kernel_size = 2 * down_sample_rate
 
-            padding = get_down_sample_padding(kernel_size=kernel_size, stride=down_sample_rate)
-            down_sample_conv = Conv1dNorm(
+            # padding = get_down_sample_padding(kernel_size=kernel_size, stride=down_sample_rate)
+            down_sample_conv = CausalConv1dNorm(
                 in_channels=in_channels,
                 out_channels=out_channels,
                 kernel_size=kernel_size,
                 stride=down_sample_rate,
-                padding=padding,
+                pad_mode=pad_mode,
             )
             in_channels = out_channels
             self.down_sample_conv_layers.append(down_sample_conv)
 
         self.post_activation = CodecActivation(activation, channels=in_channels)
-        self.post_conv = Conv1dNorm(in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size)
+        self.post_conv = CausalConv1dNorm(
+            in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size, pad_mode=pad_mode
+        )
 
     @property
     def input_types(self):
@@ -1273,6 +1775,257 @@ class HiFiGANEncoder(NeuralModule):
         return encoded, encoded_len
 
 
+class HiFiGANEncoder(NeuralModule):
+    """
+    Audio encoder created by inverting the HiFi-GAN decoder.
+
+    Args:
+        encoded_dim: Dimension of encoder output.
+        down_sample_rates: Rate to upsample for each decoder block. The product of the downsample rates will
+            determine the output token rate. For example 2 * 2 * 8 * 8 = 256 samples per token.
+        base_channels: Number of filters in the first convolution. The number of channels will be doubled after each
+            downsample layer.
+        in_kernel_size: Kernel size of the input convolution.
+        out_kernel_size: Kernel size of the output convolution.
+        resblock_kernel_sizes: List of kernel sizes to use in each residual block.
+        resblock_dilation_sizes: List of dilations to use in each residual block.
+        activation: Activation to use in residual and downsample layers, defaults to leaky relu.
+    """
+
+    def __init__(
+        self,
+        encoded_dim: int,
+        down_sample_rates: Iterable[int] = (2, 2, 8, 8),
+        base_channels: int = 32,
+        in_kernel_size: int = 7,
+        out_kernel_size: int = 7,
+        resblock_kernel_sizes: Iterable[int] = (3, 7, 11),
+        resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
+        activation: str = "lrelu",
+        pad_mode: str = "reflect",
+    ):
+        assert in_kernel_size > 0
+        assert out_kernel_size > 0
+
+        super().__init__()
+
+        self.down_sample_rates = down_sample_rates
+        self.pre_conv = Conv1dNorm(
+            in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+        )
+
+        in_channels = base_channels
+        self.activations = nn.ModuleList([])
+        self.down_sample_conv_layers = nn.ModuleList([])
+        self.res_layers = nn.ModuleList([])
+        for i, down_sample_rate in enumerate(self.down_sample_rates):
+            res_layer = HiFiGANResLayer(
+                channels=in_channels,
+                kernel_sizes=resblock_kernel_sizes,
+                dilations=resblock_dilation_sizes,
+                activation=activation,
+                pad_mode=pad_mode,
+            )
+            self.res_layers.append(res_layer)
+
+            act = CodecActivation(activation, channels=in_channels)
+            self.activations.append(act)
+
+            out_channels = 2 * in_channels
+            kernel_size = 2 * down_sample_rate
+
+            padding = get_down_sample_padding(kernel_size=kernel_size, stride=down_sample_rate)
+            down_sample_conv = Conv1dNorm(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                stride=down_sample_rate,
+                padding=padding,
+                pad_mode=pad_mode,
+            )
+            in_channels = out_channels
+            self.down_sample_conv_layers.append(down_sample_conv)
+
+        self.post_activation = CodecActivation(activation, channels=in_channels)
+        self.post_conv = Conv1dNorm(
+            in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size, pad_mode=pad_mode
+        )
+
+    @property
+    def input_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "encoded": NeuralType(('B', 'D', 'T_encoded'), EncodedRepresentation()),
+            "encoded_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    def remove_weight_norm(self):
+        self.pre_conv.remove_weight_norm()
+        self.post_conv.remove_weight_norm()
+        for res_layer in self.res_layers:
+            res_layer.remove_weight_norm()
+        for down_sample_conv in self.down_sample_conv_layers:
+            down_sample_conv.remove_weight_norm()
+
+    @typecheck()
+    def forward(self, audio, audio_len):
+        encoded_len = audio_len
+        audio = rearrange(audio, "B T -> B 1 T")
+        # [B, C, T_audio]
+        out = self.pre_conv(inputs=audio, input_len=encoded_len)
+        for act, res_layer, down_sample_conv, down_sample_rate in zip(
+            self.activations, self.res_layers, self.down_sample_conv_layers, self.down_sample_rates
+        ):
+            # [B, C, T]
+            out = res_layer(inputs=out, input_len=encoded_len)
+            out = act(out)
+
+            encoded_len = encoded_len // down_sample_rate
+            # [B, 2 * C, T / down_sample_rate]
+            out = down_sample_conv(inputs=out, input_len=encoded_len)
+
+        out = self.post_activation(out)
+        # [B, encoded_dim, T_encoded]
+        encoded = self.post_conv(inputs=out, input_len=encoded_len)
+        return encoded, encoded_len
+
+
+class CausalHiFiGANDecoder(NeuralModule):
+    """
+    Codec decoder using the HiFi-GAN generator architecture with Causal Convolutions.
+
+    Args:
+        input_dim: Input dimension.
+        up_sample_rates: Rate to upsample for each decoder block. The product of the upsample rates should be the same
+            as the overall downsample rate for your encoder. For example, a symmetric encoder/decoder can be created
+            with encoder downsample rates [2, 2, 8, 8] and decoder upsample rates [8, 8, 2, 2].
+        base_channels: Number of filters in the first convolution. The number of channels will be cut in
+            half after each upsample layer.
+        in_kernel_size: Kernel size of the input convolution.
+        out_kernel_size: Kernel size of the output convolution.
+        resblock_kernel_sizes: List of kernel sizes to use in each residual block.
+        resblock_dilation_sizes: List of dilations to use in each residual block.
+        activation: Activation to use in residual and upsample layers, defaults to leaky relu.
+        output_activation: Activation to apply to output. To produce a valid audio signal, it should output values in
+         the range [-1.0, 1.0]. Supports "tanh" and "clamp".
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        up_sample_rates: Iterable[int] = (8, 8, 2, 2),
+        base_channels: int = 512,
+        in_kernel_size: int = 7,
+        out_kernel_size: int = 3,
+        resblock_kernel_sizes: Iterable[int] = (3, 7, 11),
+        resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
+        activation: str = "lrelu",
+        output_activation: str = "tanh",
+        pad_mode: str = "zeros",
+        n_groups_equal_to_out_channels: bool = True,
+    ):
+        assert in_kernel_size > 0
+        assert out_kernel_size > 0
+
+        super().__init__()
+
+        self.up_sample_rates = up_sample_rates
+
+        self.pre_conv = CausalConv1dNorm(
+            in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+        )
+
+        in_channels = base_channels
+        self.activations = nn.ModuleList([])
+        self.up_sample_conv_layers = nn.ModuleList([])
+        self.res_layers = nn.ModuleList([])
+        for i, up_sample_rate in enumerate(self.up_sample_rates):
+            out_channels = in_channels // 2
+            kernel_size = 2 * up_sample_rate
+
+            act = CodecActivation(activation, channels=in_channels)
+            self.activations.append(act)
+
+            up_sample_conv = CausalConvTranspose1dNorm(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                stride=up_sample_rate,
+                groups=out_channels if n_groups_equal_to_out_channels else 1,
+            )
+            in_channels = out_channels
+            self.up_sample_conv_layers.append(up_sample_conv)
+
+            res_layer = HiFiGANResLayer(
+                channels=in_channels,
+                kernel_sizes=resblock_kernel_sizes,
+                dilations=resblock_dilation_sizes,
+                activation=activation,
+                is_causal=True,
+                pad_mode=pad_mode,
+            )
+            self.res_layers.append(res_layer)
+
+        self.post_activation = CodecActivation(activation, channels=in_channels)
+        self.post_conv = CausalConv1dNorm(
+            in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size, pad_mode=pad_mode
+        )
+        if output_activation == "tanh":
+            self.out_activation = nn.Tanh()
+        elif output_activation == "clamp":
+            self.out_activation = ClampActivation()
+        else:
+            raise ValueError(f"Invalid audio output activation {output_activation}")
+
+    @property
+    def input_types(self):
+        return {
+            "inputs": NeuralType(('B', 'D', 'T_encoded'), VoidType()),
+            "input_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    @property
+    def output_types(self):
+        return {
+            "audio": NeuralType(('B', 'T_audio'), AudioSignal()),
+            "audio_len": NeuralType(tuple('B'), LengthsType()),
+        }
+
+    def remove_weight_norm(self):
+        self.pre_conv.remove_weight_norm()
+        for up_sample_conv in self.up_sample_conv_layers:
+            up_sample_conv.remove_weight_norm()
+        for res_layer in self.res_layers:
+            res_layer.remove_weight_norm()
+
+    @typecheck()
+    def forward(self, inputs, input_len):
+        audio_len = input_len
+        # [B, C, T_encoded]
+        out = self.pre_conv(inputs=inputs, input_len=audio_len)
+        for act, res_layer, up_sample_conv, up_sample_rate in zip(
+            self.activations, self.res_layers, self.up_sample_conv_layers, self.up_sample_rates
+        ):
+            audio_len = audio_len * up_sample_rate
+            out = act(out)
+            # [B, C / 2, T * up_sample_rate]
+            out = up_sample_conv(inputs=out, input_len=audio_len)
+            out = res_layer(inputs=out, input_len=audio_len)
+
+        out = self.post_activation(out)
+        # [B, 1, T_audio]
+        out = self.post_conv(inputs=out, input_len=audio_len)
+        audio = self.out_activation(out)
+        audio = rearrange(audio, "B 1 T -> B T")
+        return audio, audio_len
+
+
 class HiFiGANDecoder(NeuralModule):
     """
     Codec decoder using the HiFi-GAN generator architecture.
@@ -1306,6 +2059,8 @@ class HiFiGANDecoder(NeuralModule):
         resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
         activation: str = "lrelu",
         output_activation: str = "tanh",
+        pad_mode: str = "reflect",
+        n_groups_equal_to_out_channels: bool = False,
     ):
         assert in_kernel_size > 0
         assert out_kernel_size > 0
@@ -1313,7 +2068,10 @@ class HiFiGANDecoder(NeuralModule):
         super().__init__()
 
         self.up_sample_rates = up_sample_rates
-        self.pre_conv = Conv1dNorm(in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size)
+
+        self.pre_conv = Conv1dNorm(
+            in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+        )
 
         in_channels = base_channels
         self.activations = nn.ModuleList([])
@@ -1327,7 +2085,11 @@ class HiFiGANDecoder(NeuralModule):
             self.activations.append(act)
 
             up_sample_conv = ConvTranspose1dNorm(
-                in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=up_sample_rate
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                stride=up_sample_rate,
+                groups=out_channels if n_groups_equal_to_out_channels else 1,
             )
             in_channels = out_channels
             self.up_sample_conv_layers.append(up_sample_conv)
@@ -1337,11 +2099,14 @@ class HiFiGANDecoder(NeuralModule):
                 kernel_sizes=resblock_kernel_sizes,
                 dilations=resblock_dilation_sizes,
                 activation=activation,
+                pad_mode=pad_mode,
             )
             self.res_layers.append(res_layer)
 
         self.post_activation = CodecActivation(activation, channels=in_channels)
-        self.post_conv = Conv1dNorm(in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size)
+        self.post_conv = Conv1dNorm(
+            in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size, pad_mode=pad_mode
+        )
         if output_activation == "tanh":
             self.out_activation = nn.Tanh()
         elif output_activation == "clamp":
@@ -1468,10 +2233,13 @@ class ResNetEncoder(NeuralModule):
         kernel_size: int = 3,
         dropout_rate: float = 0.1,
         activation: str = "lrelu",
+        pad_mode: str = "reflect",
     ):
         super(ResNetEncoder, self).__init__()
 
-        self.pre_conv = Conv1dNorm(in_channels=in_channels, out_channels=hidden_channels, kernel_size=kernel_size)
+        self.pre_conv = Conv1dNorm(
+            in_channels=in_channels, out_channels=hidden_channels, kernel_size=kernel_size, pad_mode=pad_mode
+        )
         self.res_layers = nn.ModuleList(
             [
                 ResidualBlock(
@@ -1480,12 +2248,15 @@ class ResNetEncoder(NeuralModule):
                     kernel_size=kernel_size,
                     dropout_rate=dropout_rate,
                     activation=activation,
+                    pad_mode=pad_mode,
                 )
                 for _ in range(num_layers)
             ]
         )
         self.post_activation = CodecActivation(activation, channels=hidden_channels)
-        self.post_conv = Conv1dNorm(in_channels=hidden_channels, out_channels=out_channels, kernel_size=kernel_size)
+        self.post_conv = Conv1dNorm(
+            in_channels=hidden_channels, out_channels=out_channels, kernel_size=kernel_size, pad_mode=pad_mode
+        )
 
     def remove_weight_norm(self):
         self.pre_conv.remove_weight_norm()

@@ -32,6 +32,7 @@ from nemo.collections.tts.losses.audio_codec_loss import (
     SISDRLoss,
     TimeDomainLoss,
 )
+from nemo.collections.tts.modules.audio_codec_modules import ResNetSpeakerEncoder
 from nemo.collections.tts.modules.common import GaussianDropout
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
 from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers
@@ -42,6 +43,13 @@ from nemo.core.neural_types.neural_type import NeuralType
 from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
 from nemo.utils import logging, model_utils
 from nemo.utils.decorators import experimental
+
+try:
+    import torchaudio
+
+    HAVE_TORCHAUDIO = True
+except ModuleNotFoundError:
+    HAVE_TORCHAUDIO = False
 
 
 @experimental
@@ -152,12 +160,81 @@ class AudioCodecModel(ModelPT):
         if self.commit_loss_scale > 0 and not self.vector_quantizer_has_commit_loss:
             raise ValueError('Commit loss is enabled but the quantizer does not support it.')
 
+        self.use_scl_loss = cfg.get("use_scl_loss", False)
+        self.scl_loss_scale = cfg.get("scl_loss_scale", False)
+        if self.use_scl_loss:
+            self.speaker_encoder = ResNetSpeakerEncoder()
+            # load pretrained model
+            # self.speaker_encoder.load_checkpoint("https://github.com/coqui-ai/TTS/releases/download/speaker_encoder_model/model_se.pth.tar")
+            self.speaker_encoder.load_checkpoint(
+                "https://huggingface.co/Edresson/Speaker_Encoder_H_ASP/resolve/main/pytorch_model.bin", strict=False
+            )
+            # freeze the pretrained speaker encoder
+            self.speaker_encoder.freeze()
+            print("Speaker encoder loaded and frozen !!")
+
+        # Disabled for now as it is not used in final model
+        self.use_asr_consitency_loss = False
+        self.acl_loss_scale = False
+        # self.use_asr_consitency_loss = cfg.get("use_asr_consitency_loss", False)
+        # self.acl_loss_scale = cfg.get("acl_loss_scale", False)
+        # if self.use_asr_consitency_loss:
+        #     self.phoneme_asr_model = PhonemeASR(input_sr=self.sample_rate)
+        #     self.phoneme_asr_model.freeze()
+        #     # self.acl_loss = CrossEntropyLoss()
+        #     print("Phoneme ASR model loaded and frozen !!")
+
         # Log setup
         self.log_config = cfg.get("log_config", None)
 
         # Optimizer setup
         self.lr_schedule_interval = None
         self.automatic_optimization = False
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False):
+        if hasattr(self, '_no_state_dict') and self._no_state_dict:
+            return {}
+        # Don't save the speaker verification and codec model in the state dict
+        state_dict = super().state_dict(destination, prefix, keep_vars)
+        for key in list(state_dict.keys()):
+            if self.use_scl_loss and "speaker_encoder." in key:
+                del state_dict[key]
+            if "discriminator" in key and ".slm_model.ssl_model." in key:
+                del state_dict[key]
+        return state_dict
+
+    def load_state_dict(self, state_dict, strict=True):
+        # Override to load all the keys except .speaker_encoder. and WavLM model
+        for key in list(state_dict.keys()):
+            if self.use_scl_loss and "speaker_encoder." in key:
+                del state_dict[key]
+            if "discriminator" in key and ".slm_model.ssl_model." in key:
+                del state_dict[key]
+
+        super().load_state_dict(state_dict, strict=False)
+
+    def get_speaker_embedding(self, audio, requires_grad=False):
+        if not requires_grad:
+            with torch.no_grad():
+                if HAVE_TORCHAUDIO:
+                    audio_resampled = torchaudio.functional.resample(
+                        audio, self.sample_rate, self.speaker_encoder.audio_config["sample_rate"]
+                    )
+                else:
+                    logging.error('Could not import torchaudio!')
+                    raise ModuleNotFoundError("torchaudio is not installed but is necessary to audio resample !!")
+                g = self.speaker_encoder(audio_resampled, l2_norm=True).unsqueeze(-1)
+        else:
+            if HAVE_TORCHAUDIO:
+                audio_resampled = torchaudio.functional.resample(
+                    audio, self.sample_rate, self.speaker_encoder.audio_config["sample_rate"]
+                )
+            else:
+                logging.error('Could not import torchaudio!')
+                raise ModuleNotFoundError("torchaudio is not installed but is necessary to audio resample !!")
+            g = self.speaker_encoder(audio_resampled, l2_norm=True).unsqueeze(-1)
+
+        return g
 
     @typecheck(
         input_types={
@@ -470,6 +547,36 @@ class AudioCodecModel(ModelPT):
             metrics["g_loss_commit"] = commit_loss
             generator_losses.append(self.commit_loss_scale * commit_loss)
 
+        # compute embeddings for speaker consistency loss
+        if self.use_scl_loss:
+            # concate generated and GT waveforms
+            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
+
+            # get speaker embeddings with grads
+            pred_embs = self.get_speaker_embedding(audios_batch, requires_grad=True)
+
+            # split generated and GT speaker embeddings
+            gt_spk_emb, syn_spk_emb = torch.chunk(pred_embs, 2, dim=0)
+
+            # speaker consistency loss like YourTTS paper
+            loss_scl = -1 * torch.nn.functional.cosine_similarity(gt_spk_emb, syn_spk_emb).mean() * self.scl_loss_scale
+
+            metrics["g_loss_scl"] = loss_scl
+            generator_losses.append(metrics["g_loss_scl"])
+
+        if self.use_asr_consitency_loss:
+            # concate generated and GT waveforms
+            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
+
+            logits, _ = self.phoneme_asr_model(audios_batch)
+
+            logits_gt, logits_pred = torch.chunk(logits, 2, dim=0)
+            # labels_gt, labels_pred = torch.chunk(labels, 2, dim=0)
+
+            loss_acl = torch.nn.functional.mse_loss(logits_pred, logits_gt) * self.acl_loss_scale
+            metrics["g_loss_acl"] = loss_acl
+            generator_losses.append(metrics["g_loss_acl"])
+
         loss_gen_all = sum(generator_losses)
 
         optim_gen.zero_grad()
@@ -503,6 +610,34 @@ class AudioCodecModel(ModelPT):
             "val_loss_time_domain": loss_time_domain,
             "val_loss_si_sdr": loss_si_sdr,
         }
+        # compute embeddings for speaker consistency loss
+        if self.use_scl_loss:
+            # concate generated and GT waveforms
+            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
+
+            # get speaker embeddings with grads
+            pred_embs = self.get_speaker_embedding(audios_batch, requires_grad=True)
+
+            # split generated and GT speaker embeddings
+            gt_spk_emb, syn_spk_emb = torch.chunk(pred_embs, 2, dim=0)
+
+            # speaker consistency loss like YourTTS paper
+            loss_scl = -1 * torch.nn.functional.cosine_similarity(gt_spk_emb, syn_spk_emb).mean() * self.scl_loss_scale
+
+            metrics["val_loss_scl"] = loss_scl
+            metrics["val_loss"] += metrics["val_loss_scl"]
+
+        if self.use_asr_consitency_loss:
+            # concate generated and GT waveforms
+            audios_batch = torch.cat((audio.squeeze(1), audio_gen.squeeze(1)), dim=0)
+
+            logits, _ = self.phoneme_asr_model(audios_batch)
+            logits_gt, logits_pred = torch.chunk(logits, 2, dim=0)
+
+            loss_acl = torch.nn.functional.mse_loss(logits_pred, logits_gt) * self.acl_loss_scale
+            metrics["val_loss_acl"] = loss_acl
+            metrics["val_loss"] += metrics["val_loss_acl"]
+
         self.log_dict(metrics, on_epoch=True, sync_dist=True)
 
     def get_dataset(self, cfg):
@@ -590,8 +725,12 @@ class AudioCodecModel(ModelPT):
         sched_config = optim_config.pop("sched", None)
         OmegaConf.set_struct(optim_config, True)
 
+        asr_ph_params = self.phoneme_asr_model.parameters() if self.use_asr_consitency_loss else []
+        se_params = self.speaker_encoder.parameters() if self.use_scl_loss else []
         vq_params = self.vector_quantizer.parameters() if self.vector_quantizer else []
-        gen_params = itertools.chain(self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params)
+        gen_params = itertools.chain(
+            self.audio_encoder.parameters(), self.audio_decoder.parameters(), vq_params, asr_ph_params, se_params
+        )
         optim_g = instantiate(optim_config, params=gen_params)
 
         disc_params = self.discriminator.parameters()

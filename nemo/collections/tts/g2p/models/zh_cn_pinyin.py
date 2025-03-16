@@ -124,7 +124,9 @@ class ChineseG2p(BaseG2p):
                 import pkuseg
             except ImportError as e:
                 logging.error(
-                    "`pkuseg` is not the default word segmenter for Chinese in NeMo. Please install it manually by running `pip install pkuseg`, or choose `jieba` segmenter instead."
+                    "`pkuseg` is not the default word segmenter for Chinese in NeMo. Please install it manually by "
+                    "running `pip install pkuseg`, or choose `jieba` segmenter instead. "
+                    f"Raised error was {e}"
                 )
 
             self.word_segmenter = pkuseg.pkuseg().cut
@@ -149,7 +151,7 @@ class ChineseG2p(BaseG2p):
     ) -> Dict[str, List[str]]:
         """Loads pinyin dict file, and generates a set of all valid symbols."""
         g2p_dict = defaultdict(list)
-        with open(phoneme_dict_path, 'r') as file:
+        with open(phoneme_dict_path, 'r', encoding='utf-8') as file:
             for line in file:
                 # skip empty lines and comment lines starting with `;;;`.
                 if line.startswith(";;;") or len(line.strip()) == 0:

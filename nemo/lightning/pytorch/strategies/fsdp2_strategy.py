@@ -28,7 +28,6 @@ from lightning.fabric.utilities.seed import reset_seed
 from lightning.pytorch.strategies.model_parallel import ModelParallelStrategy as PLModelParallelStrategy
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
-from torch.utils.data import DataLoader
 from typing_extensions import override
 
 from nemo.lightning import io
@@ -37,7 +36,6 @@ from nemo.lightning.pytorch.strategies.utils import (
     ckpt_to_dir,
     create_checkpoint_io,
     fsdp2_strategy_parallelize,
-    setup_data_sampler,
 )
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import_from
@@ -183,7 +181,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             trainer (pl.Trainer): The PyTorch Lightning trainer instance.
         """
         self.trainer = trainer
-        setup_data_sampler(self.trainer)
         # connect trainer to accelerator.
         self.accelerator.setup(trainer)
         # Parallelize model
@@ -372,14 +369,6 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         with self.precision_plugin.predict_step_context():
             loss, reduced = self._step_proxy("predict", batch, batch_idx)
             return reduced
-
-    @override
-    def process_dataloader(self, dataloader: DataLoader) -> DataLoader:
-        """Applies data-samples to dataloader"""
-        if self.data_sampler:
-            return self.data_sampler.transform_dataloader(dataloader)
-
-        return dataloader
 
     @contextmanager
     @override

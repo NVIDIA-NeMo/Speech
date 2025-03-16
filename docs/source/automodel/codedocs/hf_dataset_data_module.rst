@@ -1,7 +1,8 @@
 HFDatasetDataModule
 ===================
 
-`HFDatasetDataModule` is a PyTorch Lightning `LightningDataModule` that wraps Hugging Face (HF) datasets, enabling seamless integration with NeMo Framework. It allows users to load and preprocess datasets from the Hugging Face hub or custom datasets, supporting multiple data splits and optional usage of Megatron data samplers for distributed training.
+`HFDatasetDataModule` is a PyTorch Lightning `LightningDataModule` that wraps Hugging Face (HF) datasets, enabling seamless integration with NeMo Framework. It allows users to load and preprocess datasets from the Hugging Face hub or custom datasets, supporting multiple data splits.
+
 
 .. warning::
     This class requires the following packages:
@@ -57,12 +58,6 @@ Initialization
 - **pad_token_id** (`int`, default=0):
   - Token ID used for padding sequences.
 
-- **use_mcore_sampler** (`bool`, default=False):
-  - If `True`, uses the Megatron data sampler for distributed training.
-
-- **mcore_dataloader_type** (`str`, default='cyclic'):
-  - Type of Megatron data loader to use (e.g., `'cyclic'`).
-
 - **train_aliases** (`list` of `str`, default=["train", "training"]):
   - Synonyms for the training split.
 
@@ -105,12 +100,6 @@ Attributes
 - **pad_token_id** (`int`):
   - Padding token ID.
 
-- **use_mcore_sampler** (`bool`):
-  - Flag to use Megatron sampler.
-
-- **mcore_dataloader_type** (`str`):
-  - Type of Megatron data loader.
-
 Methods
 -------
 
@@ -120,16 +109,6 @@ Methods
 
 Detailed Method Descriptions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-setup(stage)
-~~~~~~~~~~
-
-Set up the data sampler if `use_mcore_sampler` is enabled.
-
-**Parameters:**
-
-- **stage** (`str`):
-  - Stage to set up (`'fit'`, `'validate'`, `'test'`, or `'predict'`).
 
 train_dataloader()
 ~~~~~~~~~~~~~~~~~
@@ -273,24 +252,6 @@ Usage Examples
 
     train_loader = data_module.train_dataloader()
     val_loader = data_module.val_dataloader()
-
-**Using Megatron Sampler:**
-
-.. code-block:: python
-
-    from nemo_lightning import HFDatasetDataModule
-
-    data_module = HFDatasetDataModule(
-        path_or_dataset="bigscience/bloom",
-        split="train",
-        micro_batch_size=4,
-        global_batch_size=32,
-        pad_token_id=0,
-        use_mcore_sampler=True,
-        mcore_dataloader_type='cyclic'
-    )
-
-    train_loader = data_module.train_dataloader()
 
 Mapping a Function Over the Dataset
 -----------------------------------

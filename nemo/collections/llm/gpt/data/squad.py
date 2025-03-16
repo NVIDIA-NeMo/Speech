@@ -13,7 +13,8 @@
 # limitations under the License.
 import json
 import shutil
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from datasets import DatasetDict, load_dataset
 
@@ -30,18 +31,25 @@ if TYPE_CHECKING:
 class SquadDataModule(FineTuningDataModule, IOMixin):
     """A data module for fine-tuning on the Squad dataset.
 
-    This class inherits from the `FineTuningDataModule` class and is specifically designed for fine-tuning models on the
-    Stanford Question Answering Dataset (SQuAD). It handles data download, preprocessing, splitting, and preparing the data
-    in a format suitable for training, validation, and testing.
+    This class inherits from the `FineTuningDataModule` class and is specifically designed for
+    fine-tuning models on the Stanford Question Answering Dataset (SQuAD). It handles data download,
+    preprocessing, splitting, and preparing the data in a format suitable for training,
+    validation, and testing.
 
     Args:
-        force_redownload (bool, optional): Whether to force re-download the dataset even if it exists locally. Defaults to False.
-        delete_raw (bool, optional): Whether to delete the raw downloaded dataset after preprocessing. Defaults to True.
+        dataset_root (Optional[Union[str, Path]]): The root directory containing the training,
+            validation, and test data. Defaults to None, which by default downloads the data.
+        force_redownload (bool, optional): Whether to force re-download the dataset even if it
+            exists locally. Defaults to False.
+        delete_raw (bool, optional): Whether to delete the raw downloaded dataset after preprocessing.
+            Defaults to True.
+
         See FineTuningDataModule for the other args
     """
 
     def __init__(
         self,
+        dataset_root: Optional[Union[str, Path]] = None,
         seq_length: int = 2048,
         tokenizer: Optional["TokenizerSpec"] = None,
         micro_batch_size: int = 4,
@@ -61,7 +69,7 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
         self.delete_raw = delete_raw
 
         super().__init__(
-            dataset_root=get_dataset_root("squad"),
+            dataset_root=dataset_root if dataset_root is not None else get_dataset_root("squad"),
             seq_length=seq_length,
             tokenizer=tokenizer,
             micro_batch_size=micro_batch_size,
@@ -100,8 +108,8 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
             dset (DatasetDict): The downloaded dataset object.
             split_val_from_train (bool, optional): Whether to split the validation set from the training set.
                 If False, the validation set is split from the test set. Defaults to True.
-            val_proportion (float, optional): The proportion of the training or test set to be used for the validation split.
-                Defaults to 0.05.
+            val_proportion (float, optional): The proportion of the training or test set to be used
+                for the validation split. Defaults to 0.05.
         """
         logging.info(f"Preprocessing {self.__class__.__name__} to jsonl format and splitting...")
         save_splits = {}
@@ -144,4 +152,5 @@ class SquadDataModule(FineTuningDataModule, IOMixin):
                     p.unlink()
 
     def reconfigure_limit_batches(self):
+        """no op"""
         return

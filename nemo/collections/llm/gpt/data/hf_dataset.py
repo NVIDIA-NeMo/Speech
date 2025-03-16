@@ -24,10 +24,8 @@ import torch.distributed as dist
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-
 from nemo.collections.common.tokenizers import TokenizerSpec
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
-from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
 
 
@@ -85,18 +83,18 @@ def make_dataset_splits(dataset, split, split_aliases):
             alias_to_split[alias] = split_name
 
     if isinstance(dataset, Dataset):
-        assert isinstance(split, str), "Expected split to be a string, but got " + str(type(split))
+        assert isinstance(split, str), "Expected split to be a string, but got {}".format(type(split))
         split = clean_split(split)
         dataset_splits[split] = dataset
     elif isinstance(dataset, DatasetDict):
         dataset_split_names = dataset.keys()
-        logging.info(f"HF dataset has the following splits: {dataset_split_names}")
+        logging.info("HF dataset has the following splits: {}".format(dataset_split_names))
         for alias_split_name, split in dataset.items():
             split_name = alias_to_split[alias_split_name]
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = split
     elif isinstance(split, list):
-        logging.info(f"Loaded HF dataset will use {str(split)} splits.")
+        logging.info("Loaded HF dataset will use {} splits.".format(split))
         assert isinstance(dataset, list)
         for i, alias_split_name in enumerate(map(clean_split, split)):
             split_name = alias_to_split[alias_split_name]
@@ -118,7 +116,7 @@ def make_dataset_splits(dataset, split, split_aliases):
 
     assert set(valid_split_names) == set(dataset_splits.keys()), dataset_splits.keys()
     num_init_splits = sum(map(lambda x: x is not None, dataset_splits.values()))
-    assert num_init_splits > 0, f"Expected at least one split to have been initialized {num_init_splits}"
+    assert num_init_splits > 0, "Expected at least one split to have been initialized {}".format(num_init_splits)
     return dataset_splits
 
 
@@ -201,10 +199,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         micro_batch_size (int, optional): Batch size per device. Defaults to 2.
         global_batch_size (int, optional): Total batch size across all devices. Defaults to 2.
         pad_token_id (int, optional): Token ID used for padding sequences. Defaults to 0.
-        use_mcore_sampler (bool, optional): Whether to use NVIDIA MCore sampler for efficient data loading.
-            Defaults to False.
         use_dist_sampler (bool, optional): Whether to enable distributed sampling. Defaults to False.
-        mcore_dataloader_type (str, optional): Dataloader type when using MCore sampling. Defaults to 'cyclic'.
         train_aliases (list, optional): Alternative names for the training split. Defaults to ["train", "training"].
         test_aliases (list, optional): Alternative names for the test split. Defaults to ["test", "testing"].
         val_aliases (list, optional): Alternative names for the validation split.
@@ -233,8 +228,8 @@ class HFDatasetDataModule(pl.LightningDataModule):
         ```
 
     Notes:
-        - If neither `use_dist_sampler` nor `use_mcore_sampler` are enabled, but a distributed
-        environment is detected, HFDatasetDataModule will use a distributed-sampler automatically.
+        - If `use_dist_sampler` is not enabled, but a distributed environment is detected,
+        HFDatasetDataModule will use a distributed-sampler automatically.
         - If no collation function is provided, a default function with padding using `pad_token_id` is applied.
     """
 
@@ -250,9 +245,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         micro_batch_size=2,
         global_batch_size=2,
         pad_token_id=0,
-        use_mcore_sampler=False,
         use_dist_sampler=False,
-        mcore_dataloader_type="cyclic",
         train_aliases=["train", "training"],
         test_aliases=["test", "testing"],
         val_aliases=["val", "validation", "valid", "eval"],
@@ -271,14 +264,14 @@ class HFDatasetDataModule(pl.LightningDataModule):
 
         # self.dataset_splits will hold the actual dataset for each split.
         if isinstance(path_or_dataset, str):
-            logging.info(f"Loading HF dataset from {path_or_dataset}, this may take a moment.")
+            logging.info("Loading HF dataset from {}, this may take a moment.".format(path_or_dataset))
             dataset = load_dataset(path_or_dataset, split=split, **kwargs)
         elif isinstance(path_or_dataset, Dataset) or isinstance(path_or_dataset, DatasetDict):
-            logging.info(f"Using passed HF dataset {str(path_or_dataset)}")
+            logging.info("Using passed HF dataset {}".format(path_or_dataset))
             dataset = path_or_dataset
         else:
             raise ValueError(
-                "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got " + str(type(path_or_dataset))
+                "Expected `path_or_dataset` to be str, Dataset, DatasetDict, but got {}".format(type(path_or_dataset))
             )
 
         self.dataset_splits = make_dataset_splits(dataset, split, split_aliases)
@@ -296,8 +289,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
         self.global_batch_size = global_batch_size
         self.pad_token_id = pad_token_id
 
-        self.use_mcore_sampler = use_mcore_sampler
-        self.mcore_dataloader_type = mcore_dataloader_type
         self.use_dist_sampler = use_dist_sampler
 
     @staticmethod
@@ -324,23 +315,14 @@ class HFDatasetDataModule(pl.LightningDataModule):
     def setup(self, stage: str):
         """setups sampler"""
         # Turn-on dist-sampler if the user is running inside a dist-env.
-        if not self.use_dist_sampler and not self.use_mcore_sampler and has_dist_env_init_or_rank_env_var():
+        if not self.use_dist_sampler and has_dist_env_init_or_rank_env_var():
             self.use_dist_sampler = True
             logging.info("Turning on distributed data sampler")
-        elif self.use_mcore_sampler:
-            self.mcore_data_sampler = MegatronDataSampler(
-                seq_len=self.seq_length,
-                micro_batch_size=self.micro_batch_size,
-                global_batch_size=self.global_batch_size,
-                dataloader_type=self.mcore_dataloader_type,
-            )
 
     def get_data_sampler(self, dataset):
         """returns the data sampler"""
         if self.use_dist_sampler:
             return DistributedSampler(dataset)
-        elif self.use_mcore_sampler:
-            return self.mcore_data_sampler
         else:
             return None
 

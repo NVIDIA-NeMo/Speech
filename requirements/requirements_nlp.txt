@@ -13,7 +13,7 @@ matplotlib>=3.3.2
 megatron_core
 nltk>=3.6.5
 numpy<2  # tensorstore has an implicit compiled dependency on numpy<2
-nvidia-modelopt[torch]==0.23.2 ; platform_system != 'Darwin'
+nvidia-modelopt[torch]==0.25.0 ; platform_system != 'Darwin'
 nvidia-resiliency-ext; (platform_machine == 'x86_64' and platform_system != 'Darwin')
 opencc
 pangu

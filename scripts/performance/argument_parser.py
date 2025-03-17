@@ -14,7 +14,7 @@
 
 import argparse
 
-from nemo_run.config import NEMORUN_HOME
+from nemo_run.config import get_nemorun_home
 
 from .utils import DEFAULT_NEMO_HOME
 
@@ -44,9 +44,9 @@ def parse_cli_args():
         "-l",
         "--log_dir",
         type=str,
-        help=f"Directory for logging experiment results. Defaults to {NEMORUN_HOME}",
+        help=f"Directory for logging experiment results. Defaults to {get_nemorun_home()}",
         required=False,
-        default=NEMORUN_HOME,
+        default=get_nemorun_home(),
     )
     parser.add_argument(
         "-t",

@@ -15,13 +15,12 @@
 import json
 import os
 import shlex
-import subprocess
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 import nemo_run as run
-from nemo_run.config import NEMORUN_HOME
+from nemo_run.config import get_nemorun_home
 from nemo_run.core.execution.docker import DockerExecutor
 from nemo_run.core.execution.slurm import SlurmJobDetails
 from nemo_run.core.serialization.zlib_json import ZlibJSONSerializer
@@ -33,6 +32,14 @@ from nemo.utils import logging
 
 @lru_cache(maxsize=2)
 def get_tunnel(**ssh_tunnel):
+    """Get an SSH tunnel instance with caching.
+
+    Args:
+        **ssh_tunnel: SSH tunnel configuration parameters
+
+    Returns:
+        SSHTunnel: A configured SSH tunnel instance
+    """
     return SSHTunnel(**ssh_tunnel)
 
 
@@ -67,7 +74,7 @@ def get_mounts_from_config(cluster_config: dict, env_vars: dict = None):
 
             if mount_source not in os.environ:
                 raise ValueError(
-                    f"Required environment variable {mount_source} not found in env variables passed in cluster configs."
+                    f"Required environment variable {mount_source} not found in env variables passed in cluster configs."  # pylint: disable=line-too-long
                 )
 
             mount_source = os.environ[mount_source]
@@ -78,7 +85,7 @@ def get_mounts_from_config(cluster_config: dict, env_vars: dict = None):
 
             if mount_target not in os.environ:
                 raise ValueError(
-                    f"Required environment variable {mount_target} not found in env variables passed in cluster configs."
+                    f"Required environment variable {mount_target} not found in env variables passed in cluster configs."  # pylint: disable=line-too-long
                 )
 
             mount_target = os.environ[mount_target]
@@ -214,7 +221,6 @@ def check_remote_mount_directories(directories: list, cluster_config: dict, exit
     if cluster_config.get('executor') == 'local':
         tunnel = LocalTunnel(job_dir=None)
 
-        all_dirs_exist = True
         missing_source_locations = []
         for directory in directories:
             result = tunnel.run(f'test -e {directory} && echo "Directory Exists"', hide=True, warn=True)
@@ -377,6 +383,14 @@ def _get_latest_dir(path, expname, job_id) -> str:
 
 
 def get_exp_handles(expname):
+    """Get experiment handles from a given experiment name.
+
+    Args:
+        expname (str): Name of the experiment, optionally including a job ID suffix
+
+    Returns:
+        list: List of experiment handles extracted from the serialized tasks
+    """
     # TODO: remove this after we can properly use .from_title api
     if "_" in expname:
         try:
@@ -385,7 +399,7 @@ def get_exp_handles(expname):
         except:
             job_id = None
 
-    parent_dir = os.path.join(NEMORUN_HOME, "experiments", expname)
+    parent_dir = os.path.join(get_nemorun_home(), "experiments", expname)
     exp_dir = _get_latest_dir(parent_dir, expname, job_id)
 
     with open(os.path.join(exp_dir, '_TASKS')) as f:
@@ -406,22 +420,31 @@ def get_exp_handles(expname):
 
 @dataclass(kw_only=True)
 class CustomJobDetails(SlurmJobDetails):
+    """Custom job details class extending SlurmJobDetails with additional logging functionality.
+
+    This class customizes the log file paths and naming conventions for Slurm job outputs.
+    """
+
     log_prefix: str = "main"
 
     @property
     def stdout(self) -> Path:
+        """Get the path for standard output log file."""
         return Path(self.folder) / f"{self.log_prefix}_sbatch.log"
 
     @property
     def srun_stdout(self) -> Path:
+        """Get the path for srun standard output log file."""
         return Path(self.folder) / f"{self.log_prefix}_srun.log"
 
     @property
     def stderr(self) -> Path:
+        """Get the path for standard error log file."""
         return Path(self.folder) / f"{self.log_prefix}_sbatch.log"
 
     @property
     def srun_stderr(self) -> Path:
+        """Get the path for srun standard error log file."""
         return Path(self.folder) / f"{self.log_prefix}_srun.log"
 
     @property
@@ -435,7 +458,11 @@ class CustomJobDetails(SlurmJobDetails):
 
 
 def get_packager():
-    """Will check if we are running from a git repo and use git packager or default packager otherwise."""
+    """Get a Git archive packager for code packaging.
+
+    Returns:
+        GitArchivePackager: A packager instance configured to check for uncommitted changes
+    """
     return run.GitArchivePackager(
         check_uncommitted_changes=True,
     )
@@ -454,6 +481,27 @@ def get_executor(
     partition=None,
     dependencies=None,
 ):
+    """Get an appropriate executor (Docker or Slurm) based on cluster configuration.
+
+    Args:
+        cluster_config (dict): Configuration for the cluster
+        container (str): Container image to use
+        num_nodes (int): Number of nodes to use
+        tasks_per_node (int): Number of tasks per node
+        gpus_per_node (int): Number of GPUs per node
+        job_name (str): Name of the job
+        log_dir (str): Directory for logs
+        log_prefix (str, optional): Prefix for log files. Defaults to "main"
+        mounts (list, optional): List of volume mounts. Defaults to None
+        partition (str, optional): Slurm partition to use. Defaults to None
+        dependencies (tuple, optional): Job dependencies. Defaults to None
+
+    Returns:
+        Union[DockerExecutor, SlurmExecutor]: Appropriate executor instance
+
+    Raises:
+        ValueError: If local executor is used with multiple nodes
+    """
     env_vars = get_env_variables(cluster_config)
     config_mounts = get_mounts_from_config(cluster_config, env_vars)
 
@@ -532,6 +580,21 @@ def add_task(
     partition=None,
     run_after=None,
 ):
+    """Add a task to an experiment with specified execution parameters.
+
+    Args:
+        exp: Experiment instance to add the task to
+        cmd (str): Command to execute
+        task_name (str): Name of the task
+        cluster_config (dict): Configuration for the cluster
+        container (str): Container image to use
+        num_tasks (int, optional): Number of tasks. Defaults to 1
+        num_gpus (int, optional): Number of GPUs to use. Defaults to 1
+        num_nodes (int, optional): Number of nodes to use. Defaults to 1
+        log_dir (str, optional): Directory for logs. Defaults to None
+        partition (str, optional): Slurm partition to use. Defaults to None
+        run_after (str, optional): Experiment name to run after. Defaults to None
+    """
     if run_after is not None and cluster_config["executor"] == "slurm":
         dependencies = tuple(get_exp_handles(run_after))
     else:
@@ -570,6 +633,13 @@ def add_task(
 
 
 def run_exp(exp, cluster_config, sequential=False):
+    """Run an experiment either locally or on a cluster.
+
+    Args:
+        exp: The experiment to run
+        cluster_config: Configuration for the cluster
+        sequential: Whether to run tasks sequentially
+    """
     if cluster_config['executor'] == 'local':
         # locally we are always running sequentially - does that need to be changed?
         exp.run(detach=False, tail_logs=True, sequential=True)

@@ -20,7 +20,6 @@ import nemo_run as run
 from lightning.pytorch.callbacks.callback import Callback
 
 from nemo import lightning as nl
-from nemo.collections import llm
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.hf_dataset import SquadHFDataModule
@@ -213,7 +212,6 @@ def finetune_recipe(
         on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
         `examples/llm/finetune/` directory.
     """
-    tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(model_name)
     recipe = run.Partial(
         finetune,
         model=model(
@@ -232,7 +230,6 @@ def finetune_recipe(
             SquadHFDataModule,
             path_or_dataset="rajpurkar/squad",
             split="train",
-            pad_token_id=tokenizer.tokenizer.eos_token_id,
             tokenizer=run.Config(AutoTokenizer, pretrained_model_name=model_name),
         ),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),

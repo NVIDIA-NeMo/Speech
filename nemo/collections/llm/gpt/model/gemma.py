@@ -25,6 +25,7 @@ from nemo.collections.llm.fn.activation import openai_gelu
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
@@ -153,7 +154,23 @@ class HFGemmaImporter(io.ModelConnector["GemmaForCausalLM", GemmaModel]):
             "model.norm.weight": "decoder.final_layernorm.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv, _import_linear_fc1])
+        transforms = [
+            io.state_transform(
+                source_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                target_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                fn=TransformFns.merge_qkv,
+            ),
+            io.state_transform(
+                source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                target_key="decoder.layers.*.mlp.linear_fc1.weight",
+                fn=TransformFns.merge_fc1,
+            ),
+        ]
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
@@ -232,7 +249,23 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
             "decoder.final_layernorm.weight": "model.norm.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv, _export_linear_fc1])
+        transforms = [
+            io.state_transform(
+                source_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                target_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                fn=TransformFns.split_qkv,
+            ),
+            io.state_transform(
+                source_key="decoder.layers.*.mlp.linear_fc1.weight",
+                target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                fn=TransformFns.split_fc1,
+            ),
+        ]
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
     def tokenizer(self):
@@ -257,104 +290,6 @@ class HFGemmaExporter(io.ModelConnector[GemmaModel, "GemmaForCausalLM"]):
             num_key_value_heads=source.num_query_groups,
             vocab_size=self.tokenizer.vocab_size,
         )
-
-
-@io.state_transform(
-    source_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-    target_key="decoder.layers.*.self_attention.linear_qkv.weight",
-)
-def _import_qkv(ctx: io.TransformCTX, q, k, v):
-    """ """
-    megatron_config = ctx.target.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-    old_tensor_shape = q.size()
-    new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
-    new_kv_tensor_shape = (num_query_groups, head_size) + old_tensor_shape[1:]
-
-    q = q.view(*new_q_tensor_shape)
-    k = k.view(*new_kv_tensor_shape)
-    v = v.view(*new_kv_tensor_shape)
-
-    qkv_weights_l = []
-    for i in range(num_query_groups):
-        qkv_weights_l.append(q[i * heads_per_group : (i + 1) * heads_per_group, :, :])
-        qkv_weights_l.append(k[i : i + 1, :, :])
-        qkv_weights_l.append(v[i : i + 1, :, :])
-    qkv_weights = torch.cat(qkv_weights_l)
-    assert qkv_weights.ndim == 3, qkv_weights.shape
-    assert qkv_weights.shape[0] == (heads_per_group + 2) * num_query_groups, qkv_weights.shape
-    assert qkv_weights.shape[1] == head_size, qkv_weights.shape
-    assert qkv_weights.shape[2] == old_tensor_shape[1], qkv_weights.shape
-
-    qkv_weights = qkv_weights.reshape([head_size * (head_num + 2 * num_query_groups), hidden_size])
-
-    return qkv_weights
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.self_attention.linear_qkv.weight",
-    target_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-)
-def _export_qkv(ctx: io.TransformCTX, linear_qkv):
-    """ """
-    megatron_config = ctx.source.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-    qkv_total_dim = head_num + 2 * num_query_groups
-
-    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
-    q_slice = torch.cat(
-        [
-            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
-            for i in range(num_query_groups)
-        ]
-    )
-    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
-    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-
-    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
-    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
-    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
-
-    return q_proj, k_proj, v_proj
-
-
-@io.state_transform(
-    source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
-    target_key="decoder.layers.*.mlp.linear_fc1.weight",
-)
-def _import_linear_fc1(down, gate):
-    """ """
-    return torch.cat((down, gate), axis=0)
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.mlp.linear_fc1.weight",
-    target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
-)
-def _export_linear_fc1(linear_fc1):
-    """ """
-    gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
-
-    return gate_proj, up_proj
-
 
 __all__ = [
     "GemmaConfig",

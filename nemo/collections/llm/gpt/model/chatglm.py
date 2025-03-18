@@ -23,10 +23,11 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
-    from transformers import AutoConfig, AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM
 
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
@@ -34,6 +35,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class ChatGLMConfig(GPTConfig):
+    """
+    Configuration class for the ChatGLM Config, inheriting from GPTConfig.
+    """
+
     num_layers: int = 28
     hidden_size: int = 4096
     ffn_hidden_size: int = 13696
@@ -56,15 +61,30 @@ class ChatGLMConfig(GPTConfig):
 
 @dataclass
 class ChatGLM2Config6B(ChatGLMConfig):
+    """
+    Configuration class for the ChatGLM2Config6B Config, inheriting from ChatGLMConfig.
+    """
+
     seq_length: int = 32768
 
 
 @dataclass
 class ChatGLM3Config6B(ChatGLMConfig):
+    """
+    Configuration class for the ChatGLM3Config6B Config, inheriting from ChatGLMConfig.
+    """
+
     seq_length: int = 8192
 
 
 class ChatGLMModel(GPTModel):
+    """
+    ChatGLM model implementation based on the GPT model architecture.
+
+    This class provides a high-level interface for ChatGLM models,
+    implementing the specific architecture and settings needed for ChatGLM models.
+    """
+
     def __init__(
         self,
         config: Annotated[Optional[ChatGLMConfig], Config[ChatGLMConfig]] = None,
@@ -77,10 +97,33 @@ class ChatGLMModel(GPTModel):
 
 @io.model_importer(ChatGLMModel, "hf")
 class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel]):
+    """
+    Importer for converting Hugging Face ChatGLM models to NeMo format.
+
+    This class handles the conversion of Hugging Face's ChatGLMForCausalLM models
+    to NeMo's ChatGLM format, including weight mapping and configuration translation.
+    """
+
     def init(self) -> ChatGLMModel:
+        """
+        Initialize a NeMo ChatGLMModel instance.
+
+        Returns:
+            ChatGLMModel: Initialized NeMo Llama model with the appropriate configuration
+                        and tokenizer.
+        """
         return ChatGLMModel(self.config, tokenizer=self.tokenizer)
 
     def apply(self, output_path: Path) -> Path:
+        """
+        Apply the conversion from HF to NeMo format.
+
+        Args:
+            output_path: Path where the converted model will be saved
+
+        Returns:
+            Path: Path to the saved NeMo model
+        """
         from transformers import AutoModelForCausalLM
 
         source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
@@ -97,6 +140,20 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
         return output_path
 
     def convert_state(self, source, target):
+        """
+        Convert state dict from HF format to NeMo format.
+
+        Maps the weights from the HF model to the NeMo model according to
+        the appropriate mapping scheme.
+
+        Args:
+            source: Source HF model
+            target: Target NeMo model
+
+        Returns:
+            The result of applying the transforms
+        """
+        # pylint: disable=C0301
         mapping = {
             "transformer.embedding.word_embeddings.weight": "embedding.word_embeddings.weight",
             "transformer.encoder.layers.*.self_attention.dense.weight": "decoder.layers.*.self_attention.linear_proj.weight",
@@ -112,12 +169,27 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
+        """
+        Get the tokenizer for the HF model.
+
+        Returns:
+            AutoTokenizer: Tokenizer instance initialized from the HF model's tokenizer
+        """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
 
     @property
     def config(self) -> ChatGLMConfig:
+        """
+        Create a NeMo Baichuan2Config from the HF model config.
+
+        Translates the HF configuration parameters to the equivalent NeMo
+        configuration.
+
+        Returns:
+            ChatGLMConfig: NeMo configuration for Baichuan2 models
+        """
         from transformers import AutoConfig as HFAutoConfig
 
         source = HFAutoConfig.from_pretrained(str(self), trust_remote_code=True)
@@ -139,16 +211,32 @@ class HFChatGLMImporter(io.ModelConnector["AutoModelForCausalLM", ChatGLMModel])
 
 @io.model_exporter(ChatGLMModel, "hf")
 class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"]):
-    def init(self, dtype=torch.bfloat16) -> "AutoModelForCausalLM":
+    """
+    Exporter for converting NeMo ChatGLMModel to Hugging Face format.
+
+    This class handles the conversion of NeMo's ChatGLMModel to Hugging Face's
+    ChatGLMForCausalLM format, including weight mapping and configuration translation.
+    """
+
+    def init(self, dtype=torch.bfloat16, model_name="THUDM/chatglm3-6b") -> "AutoModelForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return AutoModelForCausalLM.from_config(self.config, trust_remote_code=True, torch_dtype=dtype)
+            # Since ChatGLM is not importable from transformers, we can only initialize the HF model
+            # from a known checkpoint. The model_name will need to be passed in.
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+            )
+            # Register the AutoModel Hook so that the custom modeling files are saved during save_pretrained()
+            type(hf_model).register_for_auto_class("AutoModelForCausalLM")
+            return hf_model
 
-    def apply(self, output_path: Path) -> Path:
+    def apply(self, output_path: Path, target_model_name=None) -> Path:
         source, _ = self.nemo_load(str(self))
-        target = self.init(torch_dtype_from_mcore_config(source.config))
+        target = self.init(torch_dtype_from_mcore_config(source.config), model_name=target_model_name)
         target = self.convert_state(source, target)
 
         target = target.cpu()
@@ -158,6 +246,20 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
         return output_path
 
     def convert_state(self, source, target):
+        """
+        Convert state dict from NeMo format to HF format.
+
+        Maps the weights from the NeMo model to the HF model according to
+        the appropriate mapping scheme.
+
+        Args:
+            source: Source NeMo model
+            target: Target HF model
+
+        Returns:
+            The target model with weights transferred from source
+        """
+        # pylint: disable=C0301
         mapping = {
             "decoder.layers.*.self_attention.linear_proj.weight": "transformer.encoder.layers.*.self_attention.dense.weight",
             "decoder.layers.*.mlp.linear_fc1.weight": "transformer.encoder.layers.*.mlp.dense_h_to_4h.weight",
@@ -167,55 +269,36 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
             "decoder.final_layernorm.weight": "transformer.encoder.final_layernorm.weight",
         }
 
+        transforms = [
+            _export_qkv_weight,
+            _export_qkv_bias,
+            io.state_transform(
+                source_key="embedding.word_embeddings.weight",
+                target_key="transformer.embedding.word_embeddings.weight",
+                fn=TransformFns.prune_padding,
+            ),
+            io.state_transform(
+                source_key="output_layer.weight",
+                target_key="transformer.output_layer.weight",
+                fn=TransformFns.prune_padding,
+            ),
+        ]
         return io.apply_transforms(
             source,
             target,
             mapping=mapping,
-            transforms=[
-                _export_qkv_weight,
-                _export_qkv_bias,
-                _export_embedding,
-                _export_head,
-            ],
+            transforms=transforms,
         )
 
     @property
     def tokenizer(self):
+        """
+        Get the tokenizer from the NeMo model.
+
+        Returns:
+            TokenizerSpec: Tokenizer from the NeMo model
+        """
         return io.load_context(str(self)).model.tokenizer.tokenizer
-
-    @property
-    def config(self) -> "AutoConfig":
-        source: ChatGLMConfig = io.load_context(str(self)).model.config
-
-        return AutoConfig(
-            num_layers=source.num_layers,
-            hidden_size=source.hidden_size,
-            ffn_hidden_size=source.ffn_hidden_size,
-            num_attention_heads=source.num_attention_heads,
-            seq_length=source.seq_length,
-            multi_query_group_num=source.num_query_groups,
-            padded_vocab_size=self.tokenizer.vocab_size,
-        )
-
-
-@io.state_transform(
-    source_key="embedding.word_embeddings.weight",
-    target_key="transformer.embedding.word_embeddings.weight",
-)
-def _export_embedding(ctx: io.TransformCTX, embedding):
-    megatron_config = ctx.target.config
-    # prune padding.
-    return embedding[: megatron_config.vocab_size, :]
-
-
-@io.state_transform(
-    source_key="output_layer.weight",
-    target_key="transformer.output_layer.weight",
-)
-def _export_head(ctx: io.TransformCTX, embedding):
-    megatron_config = ctx.target.config
-    # prune padding.
-    return embedding[: megatron_config.vocab_size, :]
 
 
 @io.state_transform(

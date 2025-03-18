@@ -30,6 +30,7 @@ from nemo.collections.llm.gpt.model import GPTConfig
 from nemo.collections.llm.gpt.model.llama import HFLlamaImporter, Llama32Config1B, LlamaConfig, LlamaModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io
+from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
@@ -334,7 +335,26 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "norm.weight",
         }
-        transforms = [_export_qkv, _export_linear_fc1, _export_embedding]
+        transforms = [
+            io.state_transform(
+                source_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                target_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                fn=TransformFns.split_qkv,
+            ),
+            io.state_transform(
+                source_key="decoder.layers.*.mlp.linear_fc1.weight",
+                target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                fn=TransformFns.split_fc1,
+            ),
+            io.state_transform(
+                source_key="embedding.word_embeddings.weight",
+                target_key="model.embed_tokens.weight",
+                fn=TransformFns.prune_padding,
+            ),]
 
         return io.apply_transforms(
             source,
@@ -349,56 +369,7 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         return io.load_context(str(self), subpath="model").tokenizer
 
 
-@io.state_transform(
-    source_key="decoder.layers.*.self_attention.linear_qkv.weight",
-    target_key=(
-        "layers.*.self_attn.q_proj.weight",
-        "layers.*.self_attn.k_proj.weight",
-        "layers.*.self_attn.v_proj.weight",
-    ),
-)
-def _export_qkv(ctx: io.TransformCTX, linear_qkv):
-    megatron_config = ctx.source.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-    qkv_total_dim = head_num + 2 * num_query_groups
-
-    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
-    q_slice = torch.cat(
-        [
-            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
-            for i in range(num_query_groups)
-        ]
-    )
-    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
-    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-
-    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
-    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
-    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
-
-    return q_proj, k_proj, v_proj
-
-
-@io.state_transform(
-    source_key="embedding.word_embeddings.weight",
-    target_key="embed_tokens.weight",
-)
-def _export_embedding(ctx: io.TransformCTX, embedding):
-    megatron_config = ctx.target.config
-    # prune padding.
-    return embedding[: megatron_config.vocab_size, :]
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.mlp.linear_fc1.weight",
-    target_key=("layers.*.mlp.gate_proj.weight", "layers.*.mlp.up_proj.weight"),
-)
-def _export_linear_fc1(linear_fc1):
-    gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
-
-    return gate_proj, up_proj
+__all__ = [
+    "Llama32EmbeddingConfig1B",
+    "LlamaEmbeddingModel",
+]

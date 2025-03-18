@@ -23,6 +23,7 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
+from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 
 if TYPE_CHECKING:
@@ -35,6 +36,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class Starcoder2Config(GPTConfig):
+    """
+    Configuration class for the Starcoder2 Config, inheriting from GPTConfig.
+    """
+
     # configs that are common across model sizes
     normalization: str = "LayerNorm"
     activation_func: Callable = F.gelu
@@ -57,6 +62,10 @@ class Starcoder2Config(GPTConfig):
 
 @dataclass
 class Starcoder2Config3B(Starcoder2Config):
+    """
+    Configuration class for the Starcoder2 3B Config, inheriting from Starcoder2Config.
+    """
+
     num_layers: int = 30
     hidden_size: int = 3072
     ffn_hidden_size: int = 12288
@@ -68,6 +77,10 @@ class Starcoder2Config3B(Starcoder2Config):
 
 @dataclass
 class Starcoder2Config7B(Starcoder2Config):
+    """
+    Configuration class for the Starcoder2 7B Config, inheriting from Starcoder2Config.
+    """
+
     num_layers: int = 32
     hidden_size: int = 4608
     ffn_hidden_size: int = 18432
@@ -79,6 +92,10 @@ class Starcoder2Config7B(Starcoder2Config):
 
 @dataclass
 class Starcoder2Config15B(Starcoder2Config):
+    """
+    Configuration class for the Starcoder2 15B Config, inheriting from Starcoder2Config.
+    """
+
     num_layers: int = 40
     hidden_size: int = 6144
     ffn_hidden_size: int = 24576
@@ -89,6 +106,13 @@ class Starcoder2Config15B(Starcoder2Config):
 
 
 class Starcoder2Model(GPTModel):
+    """
+    Starcoder2 model implementation based on the GPT model architecture.
+
+    This class provides a high-level interface for Starcoder2 models,
+    implementing the specific architecture and settings needed for Starcoder2 models.
+    """
+
     def __init__(
         self,
         config: Annotated[Optional[Starcoder2Config], Config[Starcoder2Config]] = None,
@@ -103,10 +127,33 @@ class Starcoder2Model(GPTModel):
 
 @io.model_importer(Starcoder2Model, "hf")
 class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2Model]):
+    """
+    Importer for converting Hugging Face Starcoder2 models to NeMo format.
+
+    This class handles the conversion of Hugging Face's Starcoder2ForCausalLM models
+    to NeMo's Starcoder2 format, including weight mapping and configuration translation.
+    """
+
     def init(self) -> Starcoder2Model:
+        """
+        Initialize a NeMo Starcoder2Model instance.
+
+        Returns:
+            Starcoder2Model: Initialized NeMo Starcoder2 model with the appropriate configuration
+                        and tokenizer.
+        """
         return Starcoder2Model(self.config, tokenizer=self.tokenizer)
 
     def apply(self, output_path: Path) -> Path:
+        """
+        Apply the conversion from HF to NeMo format.
+
+        Args:
+            output_path: Path where the converted model will be saved
+
+        Returns:
+            Path: Path to the saved NeMo model
+        """
         from transformers import Starcoder2ForCausalLM
 
         source = Starcoder2ForCausalLM.from_pretrained(str(self), torch_dtype='auto')
@@ -123,6 +170,19 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
         return output_path
 
     def convert_state(self, source, target):
+        """
+        Convert state dict from HF format to NeMo format.
+
+        Maps the weights from the HF model to the NeMo model according to
+        the appropriate mapping scheme.
+
+        Args:
+            source: Source HF model
+            target: Target NeMo model
+
+        Returns:
+            The result of applying the transforms
+        """
         mapping = {
             "model.embed_tokens.weight": "embedding.word_embeddings.weight",
             "model.layers.*.self_attn.o_proj.weight": "decoder.layers.*.self_attention.linear_proj.weight",
@@ -140,16 +200,51 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
             "lm_head.weight": "output_layer.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv_bias, _import_qkv_weight])
+        transforms = [
+            io.state_transform(
+                source_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                target_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                fn=TransformFns.merge_qkv,
+            ),
+            io.state_transform(
+                source_key=(
+                    "model.layers.*.self_attn.q_proj.bias",
+                    "model.layers.*.self_attn.k_proj.bias",
+                    "model.layers.*.self_attn.v_proj.bias",
+                ),
+                target_key="decoder.layers.*.self_attention.linear_qkv.bias",
+                fn=TransformFns.merge_qkv_bias,
+            ),
+        ]
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
+        """
+        Get the tokenizer for the HF model.
+
+        Returns:
+            AutoTokenizer: Tokenizer instance initialized from the HF model's tokenizer
+        """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
     @property
     def config(self) -> Starcoder2Config:
+        """
+        Create a NeMo Starcoder2Config from the HF model config.
+
+        Translates the HF configuration parameters to the equivalent NeMo
+        configuration.
+
+        Returns:
+            Starcoder2Config: NeMo configuration for Starcoder2 models
+        """
         from transformers import Starcoder2Config as HFStarcoder2Config
 
         source = HFStarcoder2Config.from_pretrained(str(self))
@@ -182,7 +277,23 @@ class HFStarcoder2Importer(io.ModelConnector["Starcoder2ForCausalLM", Starcoder2
 
 @io.model_exporter(Starcoder2Model, "hf")
 class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCausalLM"]):
+    """
+    Exporter for converting NeMo Starcoder2Model to Hugging Face format.
+
+    This class handles the conversion of NeMo's Starcoder2Model to Hugging Face's
+    Starcoder2ForCausalLM format, including weight mapping and configuration translation.
+    """
+
     def init(self) -> "Starcoder2ForCausalLM":
+        """
+        Initialize a HF Starcoder2ForCausalLM instance.
+
+        Args:
+            dtype: Data type for model parameters
+
+        Returns:
+            Starcoder2ForCausalLM: Initialized HF Starcoder2 model
+        """
         from transformers import Starcoder2ForCausalLM
         from transformers.modeling_utils import no_init_weights
 
@@ -201,6 +312,19 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
         return output_path
 
     def convert_state(self, source, target):
+        """
+        Convert state dict from NeMo format to HF format.
+
+        Maps the weights from the NeMo model to the HF model according to
+        the appropriate mapping scheme.
+
+        Args:
+            source: Source NeMo model
+            target: Target HF model
+
+        Returns:
+            The target model with weights transferred from source
+        """
         mapping = {
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
             "decoder.layers.*.self_attention.linear_proj.bias": "model.layers.*.self_attn.o_proj.bias",
@@ -216,14 +340,63 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
             "decoder.final_layernorm.bias": "model.norm.bias",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv_weight, _export_qkv_bias])
+        transforms = [
+            io.state_transform(
+                source_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                target_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                fn=TransformFns.split_qkv,
+            ),
+            io.state_transform(
+                source_key="decoder.layers.*.self_attention.linear_qkv.bias",
+                target_key=(
+                    "model.layers.*.self_attn.q_proj.bias",
+                    "model.layers.*.self_attn.k_proj.bias",
+                    "model.layers.*.self_attn.v_proj.bias",
+                ),
+                fn=TransformFns.split_qkv_bias,
+            ),
+            io.state_transform(
+                source_key="embedding.word_embeddings.weight",
+                target_key="model.embed_tokens.weight",
+                fn=TransformFns.prune_padding,
+            ),
+            io.state_transform(
+                source_key="output_layer.weight",
+                target_key="lm_head.weight",
+                fn=TransformFns.prune_padding,
+            )
+        ]
+        return io.apply_transforms(
+            source,
+            target,
+            mapping=mapping,
+            transforms=transforms,
+        )
 
     @property
     def tokenizer(self):
+        """
+        Get the tokenizer from the NeMo model.
+
+        Returns:
+            TokenizerSpec: Tokenizer from the NeMo model
+        """
         return io.load_context(str(self)).model.tokenizer.tokenizer
 
     @property
     def config(self) -> "HFStarcoder2Config":
+        """Create a HF HFStarcoder2Config from the NeMo model config.
+
+        Translates the NeMo configuration parameters to the equivalent HF
+        configuration.
+
+        Returns:
+            HFStarcoder2Config: HF configuration for Starcoder2 models
+        """
         from transformers import Starcoder2Config as HFStarcoder2Config
 
         source: Starcoder2Config = io.load_context(str(self)).model.config
@@ -249,148 +422,10 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
         )
 
 
-@io.state_transform(
-    source_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-    target_key="decoder.layers.*.self_attention.linear_qkv.weight",
-)
-def _import_qkv_weight(ctx: io.TransformCTX, q, k, v):
-    megatron_config = ctx.target.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-
-    old_tensor_shape = q.size()
-    new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
-    new_kv_tensor_shape = (num_query_groups, head_size) + old_tensor_shape[1:]
-
-    q = q.view(*new_q_tensor_shape)
-    k = k.view(*new_kv_tensor_shape)
-    v = v.view(*new_kv_tensor_shape)
-
-    qkv_weights_l = []
-    for i in range(num_query_groups):
-        qkv_weights_l.append(q[i * heads_per_group : (i + 1) * heads_per_group, :, :])
-        qkv_weights_l.append(k[i : i + 1, :, :])
-        qkv_weights_l.append(v[i : i + 1, :, :])
-
-    qkv_weights = torch.cat(qkv_weights_l)
-    assert qkv_weights.ndim == 3, qkv_weights.shape
-    assert qkv_weights.shape[0] == (heads_per_group + 2) * num_query_groups, qkv_weights.shape
-    assert qkv_weights.shape[1] == head_size, qkv_weights.shape
-    assert qkv_weights.shape[2] == old_tensor_shape[1], qkv_weights.shape
-
-    qkv_weights = qkv_weights.reshape([head_size * (head_num + 2 * num_query_groups), hidden_size])
-
-    return qkv_weights
-
-
-@io.state_transform(
-    source_key=(
-        "model.layers.*.self_attn.q_proj.bias",
-        "model.layers.*.self_attn.k_proj.bias",
-        "model.layers.*.self_attn.v_proj.bias",
-    ),
-    target_key="decoder.layers.*.self_attention.linear_qkv.bias",
-)
-def _import_qkv_bias(ctx: io.TransformCTX, qb, kb, vb):
-    megatron_config = ctx.target.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    head_size = megatron_config.kv_channels
-
-    new_q_bias_tensor_shape = (head_num, head_size)
-    new_kv_bias_tensor_shape = (num_query_groups, head_size)
-
-    qb = qb.view(*new_q_bias_tensor_shape)
-    kb = kb.view(*new_kv_bias_tensor_shape)
-    vb = vb.view(*new_kv_bias_tensor_shape)
-
-    qkv_bias_l = []
-    for i in range(num_query_groups):
-        qkv_bias_l.append(qb[i * heads_per_group : (i + 1) * heads_per_group, :])
-        qkv_bias_l.append(kb[i : i + 1, :])
-        qkv_bias_l.append(vb[i : i + 1, :])
-
-    qkv_bias = torch.cat(qkv_bias_l)
-    qkv_bias = qkv_bias.reshape([head_size * (head_num + 2 * num_query_groups)])
-
-    return qkv_bias
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.self_attention.linear_qkv.weight",
-    target_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-)
-def _export_qkv_weight(ctx: io.TransformCTX, linear_qkv):
-    megatron_config = ctx.source.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_num = megatron_config.num_attention_heads
-    head_size = megatron_config.kv_channels
-    qkv_total_dim = head_num + 2 * num_query_groups
-
-    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
-    q_slice = torch.cat(
-        [
-            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
-            for i in range(num_query_groups)
-        ]
-    )
-    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
-    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-
-    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
-    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
-    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
-
-    return q_proj, k_proj, v_proj
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.self_attention.linear_qkv.bias",
-    target_key=(
-        "model.layers.*.self_attn.q_proj.bias",
-        "model.layers.*.self_attn.k_proj.bias",
-        "model.layers.*.self_attn.v_proj.bias",
-    ),
-)
-def _export_qkv_bias(ctx: io.TransformCTX, qkv_bias):
-    megatron_config = ctx.source.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    head_size = megatron_config.kv_channels
-    qkv_total_dim = head_num + 2 * num_query_groups
-
-    qkv_bias = qkv_bias.reshape([qkv_total_dim, head_size])
-    q_slice = torch.cat(
-        [
-            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
-            for i in range(num_query_groups)
-        ]
-    )
-    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
-    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-
-    q_bias = qkv_bias[q_slice].reshape(-1).cpu()
-    k_bias = qkv_bias[k_slice].reshape(-1).cpu()
-    v_bias = qkv_bias[v_slice].reshape(-1).cpu()
-
-    return q_bias, k_bias, v_bias
+__all__ = [
+    "Starcoder2Config",
+    "Starcoder2Config3B",
+    "Starcoder2Config7B",
+    "Starcoder2Config15B",
+    "Starcoder2Model",
+]

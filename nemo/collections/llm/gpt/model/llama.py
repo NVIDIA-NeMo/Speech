@@ -482,7 +482,23 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             # llama 3.2 1B and 3B models have no shared input output embeddings
             del mapping["lm_head.weight"]
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv, _import_linear_fc1])
+        transforms = [
+            io.state_transform(
+                source_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                target_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                fn=TransformFns.merge_qkv,
+            ),
+            io.state_transform(
+                source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                target_key="decoder.layers.*.mlp.linear_fc1.weight",
+                fn=TransformFns.merge_fc1,
+            ),
+        ]
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
@@ -616,9 +632,36 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.layers.*.post_attention_layernorm.weight",
             "decoder.final_layernorm.weight": "model.norm.weight",
         }
-        transforms = [_export_qkv, _export_linear_fc1, _export_embedding]
+
+        transforms = [
+            io.state_transform(
+                source_key="decoder.layers.*.self_attention.linear_qkv.weight",
+                target_key=(
+                    "model.layers.*.self_attn.q_proj.weight",
+                    "model.layers.*.self_attn.k_proj.weight",
+                    "model.layers.*.self_attn.v_proj.weight",
+                ),
+                fn=TransformFns.split_qkv,
+            ),
+            io.state_transform(
+                source_key="decoder.layers.*.mlp.linear_fc1.weight",
+                target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                fn=TransformFns.split_fc1,
+            ),
+            io.state_transform(
+                source_key="embedding.word_embeddings.weight",
+                target_key="model.embed_tokens.weight",
+                fn=TransformFns.prune_padding,
+            ),
+        ]
         if not self.config.tie_word_embeddings:
-            transforms.append(_export_head)
+            transforms.append(
+                io.state_transform(
+                    source_key="output_layer.weight",
+                    target_key="lm_head.weight",
+                    fn=TransformFns.prune_padding,
+                )
+            )
 
         return io.apply_transforms(
             source,
@@ -874,189 +917,6 @@ class HFLlamaPEFTExporter(HFLlamaExporter):
             lora_dropout=self.peft_obj.dropout,
             use_dora=isinstance(self.peft_obj, DoRA),
         )
-
-
-@io.state_transform(
-    source_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-    target_key="decoder.layers.*.self_attention.linear_qkv.weight",
-)
-def _import_qkv(ctx: io.TransformCTX, q, k, v):
-    """Transform function to convert separate Q,K,V weights to fused QKV format.
-
-    Converts HF's separate Q, K, V projection weights to NeMo's fused QKV format,
-    handling grouped query attention (GQA) appropriately.
-
-    Args:
-        ctx: Transform context
-        q: Query projection weights
-        k: Key projection weights
-        v: Value projection weights
-
-    Returns:
-        torch.Tensor: Fused QKV weights in NeMo format
-    """
-    megatron_config = ctx.target.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-
-    old_tensor_shape = q.size()
-    new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
-    new_kv_tensor_shape = (num_query_groups, head_size) + old_tensor_shape[1:]
-
-    q = q.view(*new_q_tensor_shape)
-    k = k.view(*new_kv_tensor_shape)
-    v = v.view(*new_kv_tensor_shape)
-
-    qkv_weights_l = []
-    for i in range(num_query_groups):
-        qkv_weights_l.append(q[i * heads_per_group : (i + 1) * heads_per_group, :, :])
-        qkv_weights_l.append(k[i : i + 1, :, :])
-        qkv_weights_l.append(v[i : i + 1, :, :])
-    qkv_weights = torch.cat(qkv_weights_l)
-    assert qkv_weights.ndim == 3, qkv_weights.shape
-    assert qkv_weights.shape[0] == (heads_per_group + 2) * num_query_groups, qkv_weights.shape
-    assert qkv_weights.shape[1] == head_size, qkv_weights.shape
-    assert qkv_weights.shape[2] == old_tensor_shape[1], qkv_weights.shape
-
-    qkv_weights = qkv_weights.reshape([head_size * (head_num + 2 * num_query_groups), hidden_size])
-
-    return qkv_weights
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.self_attention.linear_qkv.weight",
-    target_key=(
-        "model.layers.*.self_attn.q_proj.weight",
-        "model.layers.*.self_attn.k_proj.weight",
-        "model.layers.*.self_attn.v_proj.weight",
-    ),
-)
-def _export_qkv(ctx: io.TransformCTX, linear_qkv):
-    """Transform function to convert fused QKV weights to separate Q,K,V format.
-
-    Converts NeMo's fused QKV projection weights to HF's separate Q, K, V format,
-    handling grouped query attention (GQA) appropriately.
-
-    Args:
-        ctx: Transform context
-        linear_qkv: Fused QKV projection weights
-
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Separate Q, K, V projection weights
-    """
-    megatron_config = ctx.source.config
-
-    head_num = megatron_config.num_attention_heads
-    num_query_groups = megatron_config.num_query_groups
-    heads_per_group = head_num // num_query_groups
-    hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
-    qkv_total_dim = head_num + 2 * num_query_groups
-
-    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
-    q_slice = torch.cat(
-        [
-            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
-            for i in range(num_query_groups)
-        ]
-    )
-    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
-    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
-
-    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
-    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
-    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
-
-    return q_proj, k_proj, v_proj
-
-
-@io.state_transform(
-    source_key="embedding.word_embeddings.weight",
-    target_key="model.embed_tokens.weight",
-)
-def _export_embedding(ctx: io.TransformCTX, embedding):
-    """Transform function to convert embedding weights from NeMo to HF format.
-
-    Removes padding from the embedding weights to match HF's vocab size.
-
-    Args:
-        ctx: Transform context
-        embedding: Embedding weights
-
-    Returns:
-        torch.Tensor: Trimmed embedding weights for HF format
-    """
-    megatron_config = ctx.target.config
-    # prune padding.
-    return embedding[: megatron_config.vocab_size, :]
-
-
-@io.state_transform(
-    source_key="output_layer.weight",
-    target_key="lm_head.weight",
-)
-def _export_head(ctx: io.TransformCTX, embedding):
-    """Transform function to convert output layer weights from NeMo to HF format.
-
-    Removes padding from the output layer weights to match HF's vocab size.
-
-    Args:
-        ctx: Transform context
-        embedding: Output layer weights
-
-    Returns:
-        torch.Tensor: Trimmed output layer weights for HF format
-    """
-    megatron_config = ctx.target.config
-    # prune padding.
-    return embedding[: megatron_config.vocab_size, :]
-
-
-@io.state_transform(
-    source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
-    target_key="decoder.layers.*.mlp.linear_fc1.weight",
-)
-def _import_linear_fc1(down, gate):
-    """Transform function to convert separate gate/up projection weights to fused format.
-
-    Converts HF's separate gate and up projection weights to NeMo's fused format.
-
-    Args:
-        down: Down projection weights
-        gate: Gate projection weights
-
-    Returns:
-        torch.Tensor: Fused projection weights in NeMo format
-    """
-    return torch.cat((down, gate), axis=0)
-
-
-@io.state_transform(
-    source_key="decoder.layers.*.mlp.linear_fc1.weight",
-    target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
-)
-def _export_linear_fc1(linear_fc1):
-    """Transform function to convert fused projection weights to separate gate/up format.
-
-    Converts NeMo's fused projection weights to HF's separate gate and up projections.
-
-    Args:
-        linear_fc1: Fused projection weights
-
-    Returns:
-        Tuple[torch.Tensor, torch.Tensor]: Separate gate and up projection weights
-    """
-    gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
-
-    return gate_proj, up_proj
 
 
 def apply_rope_scaling(

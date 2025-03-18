@@ -14,7 +14,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +23,12 @@ from torch import nn
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.pytorch.utils import dtype_from_hf
+
+if TYPE_CHECKING:
+    from transformers import Phi3Config as HFPhi3Config
+    from transformers import Phi3ForCausalLM
+
+    from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 
 
 @dataclass
@@ -105,7 +111,7 @@ class HFPhi3Importer(io.ModelConnector["Phi3ForCausalLM", Phi3Model]):
             "lm_head.weight": "output_layer.weight",
         }
 
-        return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv, _import_linear_fc1])
+        return io.apply_transforms(source, target, mapping=mapping, transforms=[_import_qkv])
 
     @property
     def tokenizer(self):
@@ -169,6 +175,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
         mapping = {
             "embedding.word_embeddings.weight": "model.embed_tokens.weight",
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
+            "decoder.layers.*.mlp.linear_fc1.weight": "model.layers.*.mlp.gate_up_proj.weight",
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
             "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "model.layers.*.input_layernorm.weight",
             "decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "model.layers.*.post_attention_layernorm.weight",
@@ -176,12 +183,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
             "output_layer.weight": "lm_head.weight",
         }
 
-        # Convert source weights to target dtype if needed
-        for name, param in source.state_dict().items():
-            if param.dtype != target.state_dict()[name].dtype:
-                param.data = param.data.to(target.state_dict()[name].dtype)
-
-        return io.apply_transforms(source, target, mapping=mapping)
+        return io.apply_transforms(source, target, mapping=mapping, transforms=[_export_qkv])
 
     @property
     def tokenizer(self):
@@ -206,6 +208,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
             num_key_value_heads=source.num_query_groups,
             rope_theta=source.rotary_base,
             vocab_size=self.tokenizer.vocab_size,
+            pad_token_id=self.tokenizer.pad_token_id,
         )
 
 
@@ -248,11 +251,46 @@ def _import_qkv(ctx: io.TransformCTX, qkv_weight):
 
 
 @io.state_transform(
-    source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),  # phi-3-mini-4k-instruct
-    target_key="decoder.layers.*.mlp.linear_fc1.weight",
+    source_key="decoder.layers.*.self_attention.linear_qkv.weight",
+    target_key="model.layers.*.self_attn.qkv_proj.weight",
 )
-def _import_linear_fc1(down, gate):
-    return torch.cat((down, gate), axis=0)
+def _export_qkv(ctx: io.TransformCTX, linear_qkv):
+    """Transform function to convert fused QKV weights to separate Q,K,V format.
+
+    Converts NeMo's fused QKV projection weights to HF's separate Q, K, V format,
+    handling grouped query attention (GQA) appropriately.
+
+    Args:
+        ctx: Transform context
+        linear_qkv: Fused QKV projection weights
+
+    Returns:
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Separate Q, K, V projection weights
+    """
+    megatron_config = ctx.source.config
+
+    head_num = megatron_config.num_attention_heads
+    num_query_groups = megatron_config.num_query_groups
+    heads_per_group = head_num // num_query_groups
+    hidden_size = megatron_config.hidden_size
+    head_size = megatron_config.kv_channels
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
+    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
+    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
+
+    return torch.cat([q_proj, k_proj, v_proj], dim=0)
 
 
 __all__ = ["Phi3Config", "Phi3ConfigMini", "Phi3Model"]

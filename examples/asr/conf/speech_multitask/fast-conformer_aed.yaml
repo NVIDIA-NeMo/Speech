@@ -24,14 +24,6 @@ name: "FastConformer-Transformer-MultiTask"
 #  may help (or even be required to) stabilize the training.
 init_from_nemo_model: null
 
-# If using example training script, below will be used to instantiate spl_tokens tokenizer.
-# Similar can be done by calling CanaryTokenizer.build_special_tokenizer(tokens, output_dir).
-# If a tokenizer exists in dir, will skip building and use already built tokenizer.
-spl_tokens:
-  model_dir: ???
-  tokens: ["translate", "transcribe", "en", "es", "de", "fr"]
-  force_rebuild: False  # Set to True to build new tokenizer each time.
-
 model:
   sample_rate: 16000
   label_smoothing: 0.0
@@ -39,7 +31,7 @@ model:
   log_prediction: true # enables logging sample predictions in the output during training
 
   # Important ! Set the prompt format to the class you need
-  prompt_format: ???   # Options supported: ["canary"]
+  prompt_format: ???   # Options supported: ["canary", "canary2"]
   prompt_defaults: null
 
   model_defaults:

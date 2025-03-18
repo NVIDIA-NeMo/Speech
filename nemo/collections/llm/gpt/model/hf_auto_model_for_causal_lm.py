@@ -45,8 +45,12 @@ def masked_cross_entropy(logits, targets, mask=None):
     Returns:
         torch.Tensor: The computed loss as a scalar tensor.
     """
+    if targets.device != logits.device:
+        targets = targets.to(logits.device)
     if mask is not None:
         with torch.no_grad():
+            if mask.device != targets.device:
+                mask = mask.to(targets.device)
             targets.masked_fill_(mask.view(-1) == 0, -100)
             del mask
     return F.cross_entropy(logits, targets)
@@ -318,10 +322,19 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 group = device_mesh.get_group()
 
             def reduce_item(val, op, device, group, dtype):
-                """util function"""
-                val = torch.tensor([val], device=device, dtype=dtype).detach()
-                dist.all_reduce(val, group=group, op=op)
-                return val.item()
+                 """util function"""
+                 divide_by_world_size = False
+                 if torch.distributed.get_backend(group) == "gloo" and op == dist.ReduceOp.AVG:
+                     # GLOO does not support the `ReduceOp.AVG` operation
+                     op = dist.ReduceOp.SUM
+                     divide_by_world_size = True
+
+                 val = torch.tensor([val], device=device, dtype=dtype).detach()
+                 dist.all_reduce(val, group=group, op=op)
+                 val = val.item()
+                 if divide_by_world_size:
+                     val /= dist.get_world_size(group)
+                 return val
 
             mean_loss = reduce_item(
                 mean_loss, op=dist.ReduceOp.AVG, device=self.device, group=group, dtype=torch.float32

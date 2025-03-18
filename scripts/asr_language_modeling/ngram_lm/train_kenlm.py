@@ -42,8 +42,8 @@ from glob import glob
 from typing import List
 
 from omegaconf import MISSING
-from scripts.asr_language_modeling.ngram_lm import kenlm_utils
 
+from nemo.collections.asr.parts.submodules.ngram_lm import FastNGramLM, kenlm_utils
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -59,9 +59,9 @@ class TrainKenlmConfig:
     Train an N-gram language model with KenLM to be used with beam search decoder of ASR models.
     """
 
-    train_paths: List[
-        str
-    ] = MISSING  # List of training files or folders. Files can be a plain text file or ".json" manifest or ".json.gz". Example: [/path/to/manifest/file,/path/to/folder]
+    train_paths: List[str] = (
+        MISSING  # List of training files or folders. Files can be a plain text file or ".json" manifest or ".json.gz". Example: [/path/to/manifest/file,/path/to/folder]
+    )
 
     nemo_model_file: str = MISSING  # The path to '.nemo' file of the ASR model, or name of a pretrained NeMo model
     kenlm_model_file: str = MISSING  # The path to store the KenLM binary model file
@@ -74,6 +74,8 @@ class TrainKenlmConfig:
     )  # List of digits to prune Ngram. Example: [0,0,1]. See Pruning section on the https://kheafield.com/code/kenlm/estimation
     cache_path: str = ""  # Cache path to save tokenized files.
     verbose: int = 1  # Verbose level, default is 1.
+    save_nemo: bool = False  # Save .nemo checkpoint to use with FastNGramLM
+    normalize_unk_nemo: bool = True  # Normalize the UNK token in the FastNGramLM model
 
 
 @hydra_runner(config_path=None, config_name='TrainKenlmConfig', schema=TrainKenlmConfig)
@@ -83,7 +85,9 @@ def main(args: TrainKenlmConfig):
     if isinstance(args.ngram_prune, str):
         args.ngram_prune = [args.ngram_prune]
 
-    tokenizer, encoding_level, is_aggregate_tokenizer = kenlm_utils.setup_tokenizer(args.nemo_model_file)
+    tokenizer, encoding_level, is_aggregate_tokenizer, full_vocab_size = kenlm_utils.setup_tokenizer(
+        args.nemo_model_file
+    )
 
     if encoding_level == "subword":
         discount_arg = "--discount_fallback"  # --discount_fallback is needed for training KenLM for BPE-based models
@@ -147,7 +151,6 @@ def main(args: TrainKenlmConfig):
     else:
         logging.info(f"Running lmplz command \n\n{' '.join(kenlm_args)}\n\n")
         kenlm_p = subprocess.Popen(kenlm_args, stdout=sys.stdout, stdin=subprocess.PIPE, stderr=sys.stderr)
-
         kenlm_utils.iter_files(
             source_path=train_paths,
             dest_path=kenlm_p.stdin,
@@ -175,6 +178,14 @@ def main(args: TrainKenlmConfig):
 
     if ret.returncode != 0:
         raise RuntimeError("Training KenLM was not successful!")
+
+    if args.save_nemo:
+        if full_vocab_size is None:
+            raise NotImplementedError("Unknown vocab size, cannot convert the model")
+        nemo_model = FastNGramLM.from_arpa(
+            lm_path=arpa_file, vocab_size=full_vocab_size, normalize_unk=args.normalize_unk_nemo
+        )
+        nemo_model.save_to(f"{args.kenlm_model_file}.nemo")
 
     if not args.preserve_arpa:
         os.remove(arpa_file)

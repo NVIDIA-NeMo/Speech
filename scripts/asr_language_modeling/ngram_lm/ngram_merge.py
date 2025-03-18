@@ -47,12 +47,11 @@ import subprocess
 import sys
 from typing import Tuple
 
-import kenlm_utils
 import torch
 
 import nemo.collections.asr as nemo_asr
 from nemo.collections.asr.modules.rnnt import RNNTDecoder
-from nemo.collections.asr.parts.submodules.ctc_beam_decoding import DEFAULT_TOKEN_OFFSET
+from nemo.collections.asr.parts.submodules.ngram_lm import DEFAULT_TOKEN_OFFSET, kenlm_utils
 from nemo.utils import logging
 
 
@@ -63,7 +62,7 @@ class NgramMerge:
     def ngrammerge(self, arpa_a: str, alpha: float, arpa_b: str, beta: float, arpa_c: str, force: bool) -> str:
         """
         Merge two ARPA n-gram language models using the ngrammerge command-line tool and output the result in ARPA format.
-        
+
         Args:
             arpa_a (str): Path to the first input ARPA file.
             alpha (float): Interpolation weight for the first model.
@@ -71,7 +70,7 @@ class NgramMerge:
             beta (float): Interpolation weight for the second model.
             arpa_c (str): Path to the output ARPA file.
             force (bool): Whether to overwrite existing output files.
-        
+
         Returns:
             str: Path to the output ARPA file in mod format.
         """
@@ -93,7 +92,15 @@ class NgramMerge:
             ]
             logging.info(
                 "\n"
-                + str(subprocess.run(sh_args, capture_output=False, text=True, stdout=sys.stdout, stderr=sys.stderr,))
+                + str(
+                    subprocess.run(
+                        sh_args,
+                        capture_output=False,
+                        text=True,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                    )
+                )
                 + "\n",
             )
         return mod_c
@@ -119,7 +126,13 @@ class NgramMerge:
                 arpa_path,
                 mod_path,
             ]
-            return subprocess.run(sh_args, capture_output=False, text=True, stdout=sys.stdout, stderr=sys.stderr,)
+            return subprocess.run(
+                sh_args,
+                capture_output=False,
+                text=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
 
     def merge(
         self, arpa_a: str, alpha: float, arpa_b: str, beta: float, out_path: str, force: bool
@@ -136,13 +149,16 @@ class NgramMerge:
             force (bool): Whether to force overwrite of existing files.
 
         Returns:
-            Tuple[str, str]: A tuple containing the path to the merged binary language model file and the path to the 
+            Tuple[str, str]: A tuple containing the path to the merged binary language model file and the path to the
             merged ARPA language model file.
         """
         logging.info("\n" + str(self.arpa2mod(arpa_a, force)) + "\n")
 
         logging.info("\n" + str(self.arpa2mod(arpa_b, force)) + "\n")
-        arpa_c = os.path.join(out_path, f"{os.path.split(arpa_a)[1]}-{alpha}-{os.path.split(arpa_b)[1]}-{beta}.arpa",)
+        arpa_c = os.path.join(
+            out_path,
+            f"{os.path.split(arpa_a)[1]}-{alpha}-{os.path.split(arpa_b)[1]}-{beta}.arpa",
+        )
         mod_c = self.ngrammerge(arpa_a, alpha, arpa_b, beta, arpa_c, force)
         return mod_c, arpa_c
 
@@ -206,7 +222,13 @@ class NgramMerge:
                 ngram_mod,
                 ngram_arpa,
             ]
-            return subprocess.run(sh_args, capture_output=False, text=True, stdout=sys.stdout, stderr=sys.stderr,)
+            return subprocess.run(
+                sh_args,
+                capture_output=False,
+                text=True,
+                stdout=sys.stdout,
+                stderr=sys.stderr,
+            )
 
     def test_perplexity(self, mod_c: str, symbols: str, test_txt: str, nemo_model_file: str, tmp_path: str) -> str:
         """
@@ -262,9 +284,15 @@ def farcompile(symbols: str, text_file: str, tmp_path: str, nemo_model_file: str
         test_far,
     ]
 
-    tokenizer, encoding_level, is_aggregate_tokenizer = kenlm_utils.setup_tokenizer(nemo_model_file)
+    tokenizer, encoding_level, is_aggregate_tokenizer, _ = kenlm_utils.setup_tokenizer(nemo_model_file)
 
-    ps = subprocess.Popen(" ".join(sh_args), shell=True, stdin=subprocess.PIPE, stdout=sys.stdout, stderr=sys.stderr,)
+    ps = subprocess.Popen(
+        " ".join(sh_args),
+        shell=True,
+        stdin=subprocess.PIPE,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
 
     kenlm_utils.iter_files(
         source_path=[text_file],
@@ -302,7 +330,13 @@ def make_kenlm(kenlm_bin_path: str, ngram_arpa: str, force: bool):
         return None
     else:
         sh_args = [os.path.join(kenlm_bin_path, "build_binary"), "trie", "-i", ngram_arpa, ngram_kenlm]
-        return subprocess.run(sh_args, capture_output=False, text=True, stdout=sys.stdout, stderr=sys.stderr,)
+        return subprocess.run(
+            sh_args,
+            capture_output=False,
+            text=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
 
 
 def make_symbol_list(nemo_model_file, symbols, force):
@@ -315,7 +349,7 @@ def make_symbol_list(nemo_model_file, symbols, force):
         nemo_model_file (str): Path to the NeMo model file.
         symbols (str): Path to the file where symbol list will be saved.
         force (bool): Flag to force creation of symbol list even if it already exists.
-    
+
     Returns:
         None
 
@@ -358,7 +392,7 @@ def main(
     force: bool,
 ) -> None:
     """
-    Entry point function for merging ARPA format language models, testing perplexity, creating symbol list, 
+    Entry point function for merging ARPA format language models, testing perplexity, creating symbol list,
     and making ARPA and Kenlm models.
 
     Args:
@@ -402,17 +436,26 @@ def _parse_args():
         description="Interpolate ARPA N-gram language models and make KenLM binary model to be used with beam search decoder of ASR models."
     )
     parser.add_argument(
-        "--kenlm_bin_path", required=True, type=str, help="The path to the bin folder of KenLM library.",
+        "--kenlm_bin_path",
+        required=True,
+        type=str,
+        help="The path to the bin folder of KenLM library.",
     )  # Use /workspace/nemo/decoders/kenlm/build/bin if installed it with scripts/asr_language_modeling/ngram_lm/install_beamsearch_decoders.sh
     parser.add_argument(
-        "--ngram_bin_path", required=True, type=str, help="The path to the bin folder of OpenGrm Ngram library.",
+        "--ngram_bin_path",
+        required=True,
+        type=str,
+        help="The path to the bin folder of OpenGrm Ngram library.",
     )  # Use /workspace/nemo/decoders/ngram-1.3.14/src/bin if installed it with scripts/installers/install_opengrm.sh
     parser.add_argument("--arpa_a", required=True, type=str, help="Path to the arpa_a")
     parser.add_argument("--alpha", required=True, type=float, help="Weight of arpa_a")
     parser.add_argument("--arpa_b", required=True, type=str, help="Path to the arpa_b")
     parser.add_argument("--beta", required=True, type=float, help="Weight of arpa_b")
     parser.add_argument(
-        "--out_path", required=True, type=str, help="Path to write tmp and resulted files.",
+        "--out_path",
+        required=True,
+        type=str,
+        help="Path to write tmp and resulted files.",
     )
     parser.add_argument(
         "--test_file",

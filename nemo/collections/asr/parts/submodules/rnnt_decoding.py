@@ -354,6 +354,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         confidence_method_cfg=self.confidence_method_cfg,
                         loop_labels=self.cfg.greedy.get('loop_labels', True),
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
+                        ngram_lm_model=self.cfg.greedy.get('ngram_lm_model', None),
+                        ngram_lm_alpha=self.cfg.greedy.get('ngram_lm_alpha', 0),
                     )
                 else:
                     self.decoding = rnnt_greedy_decoding.GreedyBatchedTDTInfer(
@@ -371,6 +373,8 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                         include_duration_confidence=self.tdt_include_duration_confidence,
                         confidence_method_cfg=self.confidence_method_cfg,
                         use_cuda_graph_decoder=self.cfg.greedy.get('use_cuda_graph_decoder', True),
+                        ngram_lm_model=self.cfg.greedy.get('ngram_lm_model', None),
+                        ngram_lm_alpha=self.cfg.greedy.get('ngram_lm_alpha', 0),
                     )
 
             else:

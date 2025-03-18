@@ -14,6 +14,7 @@
 
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
@@ -21,6 +22,7 @@ import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig, ListConfig
 
+from nemo.collections.asr.parts.submodules.ngram_lm import FastNGramLM
 from nemo.collections.asr.parts.utils import rnnt_utils
 from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
 from nemo.collections.common.parts.optional_cuda_graphs import WithOptionalCudaGraphs
@@ -83,6 +85,10 @@ class LoopLabelsState:
 
     batched_hyps: rnnt_utils.BatchedHyps  # batched hypotheses - decoding result
     alignments: Optional[rnnt_utils.BatchedAlignments] = None  # batched alignments
+
+    batch_lm_states: Optional[torch.Tensor] = None
+    lm_scores: Optional[torch.Tensor] = None
+    batch_lm_states_candidates: Optional[torch.Tensor] = None
 
     def __init__(
         self,
@@ -204,6 +210,7 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
     full_graph: Optional[torch.cuda.CUDAGraph]
     cuda_graphs_mode: Optional[CudaGraphsMode]
     state: Optional[LoopLabelsState]
+    ngram_lm_batch: Optional[FastNGramLM]
 
     def __init__(
         self,
@@ -218,6 +225,8 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         include_duration_confidence: bool = False,
         confidence_method_cfg: Optional[DictConfig] = None,
         allow_cuda_graphs: bool = True,
+        ngram_lm_model: Optional[str | Path] = None,
+        ngram_lm_alpha: float = 0.0,
     ):
         """
         Init method.
@@ -232,6 +241,8 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
             include_duration: if predicted token durations are needed to be added to the Hypothesis object
             include_duration_confidence: if duration confidence is needed to be added to the frame confidence
             confidence_method_cfg: config for the confidence
+            ngram_lm_model: optional n-gram language model (LM) file to use for decoding
+            ngram_lm_alpha: LM weight
         """
         super().__init__()
         self.decoder = decoder
@@ -255,6 +266,13 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
 
         self.cuda_graphs_mode = None
         self.maybe_enable_cuda_graphs()
+
+        if ngram_lm_model is not None:
+            assert self._blank_index == self.joint.num_classes_with_blank - self.joint.num_extra_outputs - 1
+            self.ngram_lm_batch = FastNGramLM.from_file(lm_path=ngram_lm_model, vocab_size=self._blank_index)
+        else:
+            self.ngram_lm_batch = None
+        self.ngram_lm_alpha = ngram_lm_alpha
 
     def maybe_enable_cuda_graphs(self):
         """Enable CUDA graphs if conditions met"""
@@ -322,6 +340,8 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         """
         batch_size, max_time, _unused = encoder_output.shape
         device = encoder_output.device
+        if self.ngram_lm_batch is not None:
+            self.ngram_lm_batch.to(device)  # ngram_lm_batch is nn.Module, but self is not; need to move manually
 
         # do not recalculate joint projection, project only once
         encoder_output_projected = self.joint.project_encoder(encoder_output)
@@ -376,6 +396,9 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         active_mask_prev = torch.empty_like(active_mask)
         became_inactive_mask = torch.empty_like(active_mask)
 
+        if self.ngram_lm_batch is not None:
+            batch_lm_states = self.ngram_lm_batch.get_init_states(batch_size=batch_size, bos=True)
+
         # loop while there are active utterances
         while active_mask.any():
             active_mask_prev.copy_(active_mask, non_blocking=True)
@@ -396,6 +419,19 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
                 .squeeze(1)
             )
             scores, labels = logits[:, :-num_durations].max(dim=-1)
+            if self.ngram_lm_batch is not None:
+                lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
+                    states=batch_lm_states
+                )  # vocab_size_no_blank
+                lm_scores = lm_scores.to(dtype=float_dtype)
+                # combined scores with LM - without blank
+                scores_w_lm, labels_w_lm = (logits[:, : -num_durations - 1] + self.ngram_lm_alpha * lm_scores).max(
+                    dim=-1
+                )
+                # preserve "blank" / "non-blank" category
+                torch.where(labels == self._blank_index, labels, labels_w_lm, out=labels)
+                torch.where(labels == self._blank_index, scores, scores_w_lm, out=scores)
+
             jump_durations_indices = logits[:, -num_durations:].argmax(dim=-1)
             durations = all_durations[jump_durations_indices]
 
@@ -457,6 +493,14 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
                 # get labels (greedy) and scores from current logits, replace labels/scores with new
                 # labels[advance_mask] are blank, and we are looking for non-blank labels
                 more_scores, more_labels = logits[:, :-num_durations].max(dim=-1)
+                if self.ngram_lm_batch is not None:
+                    # combined scores with LM - without blank
+                    more_scores_w_lm, more_labels_w_lm = (
+                        logits[:, : -num_durations - 1] + self.ngram_lm_alpha * lm_scores
+                    ).max(dim=-1)
+                    # preserve "blank" / "non-blank" category
+                    torch.where(more_labels == self._blank_index, more_labels, more_labels_w_lm, out=more_labels)
+
                 # same as: labels[advance_mask] = more_labels[advance_mask], but non-blocking
                 torch.where(advance_mask, more_labels, labels, out=labels)
                 # same as: scores[advance_mask] = more_scores[advance_mask], but non-blocking
@@ -551,6 +595,14 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
                 torch.minimum(time_indices, last_timesteps, out=safe_time_indices)
                 # same as: active_mask = time_indices < encoder_output_length
                 torch.less(time_indices, encoder_output_length, out=active_mask)
+            if self.ngram_lm_batch is not None:
+                # select necessary LM states based on chosen labels
+                torch.where(
+                    active_mask,
+                    batch_lm_states_candidates[batch_indices, labels * active_mask],
+                    batch_lm_states,
+                    out=batch_lm_states,
+                )
         if use_alignments:
             return batched_hyps, alignments, last_decoder_state
         return batched_hyps, None, last_decoder_state
@@ -680,6 +732,20 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         )
         # to avoid recalculation of joint projection, store decoder output in state
         self.state.decoder_output = self.joint.project_prednet(decoder_output)
+
+        if self.ngram_lm_batch is not None:
+            device = encoder_output_projected.device
+            float_dtype = encoder_output_projected.dtype
+            vocab_size = self.ngram_lm_batch.vocab_size
+            self.ngram_lm_batch.to(device)  # ngram_lm_batch is nn.Module, but self is not; need to move manually
+            self.state.batch_lm_states = self.ngram_lm_batch.get_init_states(
+                batch_size=self.state.batch_size, bos=True
+            )
+            self.state.batch_lm_states_candidates = torch.zeros(
+                [batch_size, vocab_size], dtype=torch.long, device=device
+            )
+            self.state.lm_scores = torch.zeros([batch_size, vocab_size], dtype=float_dtype, device=device)
+
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             self._full_graph_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
@@ -795,6 +861,12 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
             src_states=self.decoder.initialize_state(self.state.encoder_output_projected),
             dst_states=self.state.decoder_state,
         )
+        # initial state - lm
+        if self.ngram_lm_batch is not None:
+            self.state.batch_lm_states.copy_(
+                self.ngram_lm_batch.get_init_states(batch_size=self.state.batch_size, bos=True)
+            )
+
         # last found labels - initially <SOS> (<blank>) symbol
         self.state.labels.fill_(self._SOS)
         self.state.scores.fill_(0.0)
@@ -823,6 +895,14 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         decoder_output_projected = self.joint.project_prednet(decoder_output)  # do not recalculate joint projection
         self.state.decoder_output.copy_(decoder_output_projected)
 
+        # get lm scores/states
+        if self.ngram_lm_batch is not None:
+            lm_scores, batch_lm_states_candidates = self.ngram_lm_batch.advance(
+                states=self.state.batch_lm_states
+            )  # vocab_size_no_blank
+            self.state.batch_lm_states_candidates.copy_(batch_lm_states_candidates)
+            self.state.lm_scores.copy_(lm_scores.to(dtype=self.state.float_dtype))
+
     def _before_inner_loop_get_joint_output(self):
         """Get Joint output after decoder output, prepare inner loop to search for all next non-blank labels"""
         # stage 2: get joint output, iteratively seeking for non-blank labels
@@ -840,6 +920,12 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         )
         # same as: scores, labels = logits[:, : -self.state.all_durations.shape[0]].max(-1)
         torch.max(logits[:, : -self.state.all_durations.shape[0]], dim=-1, out=(self.state.scores, self.state.labels))
+        if self.ngram_lm_batch is not None:
+            scores_w_lm, labels_w_lm = (
+                logits[:, : -self.state.all_durations.shape[0] - 1] + self.ngram_lm_alpha * self.state.lm_scores
+            ).max(dim=-1)
+            torch.where(self.state.labels == self._blank_index, self.state.labels, labels_w_lm, out=self.state.labels)
+            torch.where(self.state.labels == self._blank_index, self.state.scores, scores_w_lm, out=self.state.scores)
         jump_durations_indices = logits[:, -self.state.all_durations.shape[0] :].argmax(dim=-1)
         durations = self.state.all_durations[jump_durations_indices]
 
@@ -915,6 +1001,14 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
         # get labels (greedy) and scores from current logits, replace labels/scores with new
         # labels[advance_mask] are blank, and we are looking for non-blank labels
         more_scores, more_labels = logits[:, : -self.state.all_durations.shape[0]].max(-1)
+        if self.ngram_lm_batch is not None:
+            # combined scores with LM - without blank
+            more_scores_w_lm, more_labels_w_lm = (
+                logits[:, : -self.state.all_durations.shape[0] - 1] + self.ngram_lm_alpha * self.state.lm_scores
+            ).max(dim=-1)
+            # preserve "blank" / "non-blank" category
+            torch.where(more_labels == self._blank_index, more_labels, more_labels_w_lm, out=more_labels)
+            torch.where(more_labels == self._blank_index, more_scores, more_scores_w_lm, out=more_scores)
         jump_durations_indices = logits[:, -self.state.all_durations.shape[0] :].argmax(dim=-1)
         durations = self.state.all_durations[jump_durations_indices]
         # same as: labels[advance_mask] = more_labels[advance_mask], but non-blocking
@@ -987,6 +1081,17 @@ class GreedyBatchedTDTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMetho
             self.state.time_indices_current_labels,
             self.state.scores,
         )
+
+        if self.ngram_lm_batch is not None:
+            # select necessary LM states based on chosen labels
+            torch.where(
+                self.state.active_mask,
+                self.state.batch_lm_states_candidates[
+                    self.state.batch_indices, self.state.labels * self.state.active_mask
+                ],
+                self.state.batch_lm_states,
+                out=self.state.batch_lm_states,
+            )
 
         # stage 4: to avoid looping, go to next frame after max_symbols emission
         # if labels are non-blank (not end-of-utterance), check that last observed timestep with label:

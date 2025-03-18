@@ -283,7 +283,7 @@ def test_make_dataset_splits_invalid_split():
     dataset = Dataset.from_dict(data)
     split_aliases = {"train": ["train"], "val": ["validation"], "test": ["test"]}
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(KeyError):
         make_dataset_splits(dataset, "invalid_split", split_aliases)
 
 
@@ -450,3 +450,112 @@ def test_squad_data_module_with_pth_dataloader_init(mock_tokenizer, mock_trainer
         else:
             assert list(batch_val.size()) == val, (key, val, batch_val)
     assert len(batch) == 0
+
+
+@pytest.fixture
+def sample_hf_dataset():
+    data = {
+        "id": [1, 2, 3],
+        "title": ["title1", "title2", "title3"],
+        "context": ["context1", "context2", "context3"],
+        "question": ["question1", "question2", "question3"],
+        "answers": [["ans1"], ["ans2"], ["ans3"]],
+    }
+    return Dataset.from_dict(data)
+
+@pytest.fixture
+def sample_hf_dataset_dict(sample_hf_dataset):
+    return DatasetDict({
+        "train": sample_hf_dataset,
+        "validation": sample_hf_dataset,  # alias -> val in our clean_split
+    })
+
+@pytest.fixture
+def split_aliases():
+    return {
+        "train": ["train"],
+        "val": ["validation", "val"],
+        "test": ["test"],
+    }
+
+def test_single_dataset_str_split(sample_hf_dataset, split_aliases):
+    """Covers the branch: dataset is Dataset, split is str."""
+    splits = make_dataset_splits(
+        dataset=sample_hf_dataset,
+        split="train",
+        split_aliases=split_aliases
+    )
+    assert splits["train"] is not None
+    assert splits["val"] is None
+    assert splits["test"] is None
+
+def test_dataset_dict_splits(sample_hf_dataset_dict, split_aliases):
+    """Covers the branch: dataset is DatasetDict."""
+    splits = make_dataset_splits(
+        dataset=sample_hf_dataset_dict,
+        split=None,  # Not used in this branch
+        split_aliases=split_aliases
+    )
+    assert splits["train"] is not None
+    assert splits["val"] is not None
+    assert splits["test"] is None
+
+def test_list_dataset_splits(sample_hf_dataset, split_aliases):
+    """Covers the branch: dataset is list, split is list."""
+    # Suppose we have two splits in a list
+    dataset_list = [sample_hf_dataset, sample_hf_dataset]
+    splits_list = ["train", "validation"]  # alias will map validation -> val
+    splits = make_dataset_splits(
+        dataset=dataset_list,
+        split=splits_list,
+        split_aliases=split_aliases
+    )
+    assert splits["train"] is not None
+    assert splits["val"] is not None
+    assert splits["test"] is None
+
+def test_single_dataset_with_plus_sign(sample_hf_dataset, split_aliases):
+    """Covers the branch that raises ValueError if '+' in split string."""
+    splits = make_dataset_splits(
+        dataset=sample_hf_dataset,
+        split="train+val",
+        split_aliases=split_aliases
+    )
+    assert splits["train"] is not None
+    assert splits["val"] is None
+    assert splits["test"] is None
+
+def test_single_dataset_with_bracket(sample_hf_dataset, split_aliases):
+    """
+    Covers the branch that strips bracket notation 
+    and uses the cleaned alias (e.g. 'validation[10:20]' -> 'validation').
+    """
+    splits = make_dataset_splits(
+        dataset=sample_hf_dataset,
+        split="validation[10:20]",
+        split_aliases=split_aliases
+    )
+    assert splits["val"] is not None
+    assert splits["train"] is None
+    assert splits["test"] is None
+
+def test_invalid_split_type_raises(sample_hf_dataset, split_aliases):
+    with pytest.raises(AssertionError, match="Expected split to be a string, but got <class 'int'>"):
+        make_dataset_splits(
+            dataset=sample_hf_dataset,
+            split=123,  # Invalid type
+            split_aliases=split_aliases
+        )
+
+def test_no_alias_match_raises(sample_hf_dataset_dict, split_aliases):
+    """If alias in the dataset dict isn't in split_aliases, we get a KeyError."""
+    # Make a dataset dict with a split name not in our alias map
+    wrong_dataset_dict = DatasetDict({
+        "custom_split": sample_hf_dataset_dict["train"]
+    })
+    with pytest.raises(KeyError):
+        make_dataset_splits(
+            dataset=wrong_dataset_dict,
+            split=None,
+            split_aliases=split_aliases
+        )

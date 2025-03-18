@@ -39,7 +39,9 @@ def clean_split(name):
         str: return partition name without any selector (e.g. "train").
     """
     if "[" in name:
-        return name.split("[")[0]
+        name = name.split("[")[0]
+    if '+' in name:
+        name = name.split('+')[0]
     return name
 
 
@@ -81,10 +83,13 @@ def make_dataset_splits(dataset, split, split_aliases):
         assert split_name in valid_split_names
         for alias in _split_aliases:
             alias_to_split[alias] = split_name
+    for name in valid_split_names:
+        alias_to_split[name] = name
 
     if isinstance(dataset, Dataset):
         assert isinstance(split, str), "Expected split to be a string, but got {}".format(type(split))
         split = clean_split(split)
+        split = alias_to_split[split]
         dataset_splits[split] = dataset
     elif isinstance(dataset, DatasetDict):
         dataset_split_names = dataset.keys()
@@ -385,58 +390,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
             dataset_splits[split_name] = subset.map(function, **kwargs)
 
 
-def preprocess(text):
-    """Preprocesses text data by removing unwanted characters and artifacts."""
-    text = text.strip()
-    # NOTE: Brackets are artifacts of the WikiHow dataset portion of HellaSwag.
-    text = text.replace(" [title]", ". ")
-    text = re.sub("\\[.*?\\]", "", text)
-    text = text.replace("  ", " ")
-    return text
-
-
-def process_doc(doc):
-    """Processes a document from the HellaSwag dataset into a structured format suitable for training."""
-    ctx = doc["ctx_a"] + " " + doc["ctx_b"].capitalize()
-    query = preprocess(doc["activity_label"] + ": " + ctx)
-    choices = [preprocess(ending) for ending in doc["endings"]]
-    gold = int(doc["label"])
-    out_doc = {
-        "query": query,
-        "choices": choices,
-        "gold": gold,
-        "text": query + " " + choices[gold],
-    }
-    return out_doc
-
-
-# Note: I'm training the model causally not through multiclass classification.
-def preprocess_dataset(tokenizer, max_length, dataset, seed=42):
-    """Preprocesses a dataset for training a language model."""
-    # Format each prompt.
-    print("Preprocessing dataset...")
-    dataset = dataset.map(process_doc)
-
-    def preprocess_batch(batch, tokenizer, max_length):
-        ans = tokenizer(
-            batch["text"],
-            max_length=max_length,
-            truncation=True,
-        )
-        ans["labels"] = [x[1:] + [-100] for x in ans["input_ids"]]
-        return ans
-
-    # Apply preprocessing to each batch of the dataset & and remove "conversations" and "text" fields.
-    _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
-    dataset = dataset.map(
-        _preprocessing_function,
-        batched=True,
-    ).select_columns(["input_ids", "attention_mask", "labels"])
-
-    # Shuffle dataset.
-    dataset = dataset.shuffle(seed=seed)
-
-    return dataset
 
 
 class HellaSwagHFDataModule(HFDatasetDataModule):
@@ -446,8 +399,62 @@ class HellaSwagHFDataModule(HFDatasetDataModule):
         tokenizer = tokenizer.tokenizer
         tokenizer.pad_token = tokenizer.eos_token
         dataset = load_dataset(dataset_name)
-        super().__init__(preprocess_dataset(tokenizer, 7500, dataset["train"]), *args, **kwargs)
+        super().__init__(HellaSwagHFDataModule.preprocess_dataset(tokenizer, 7500, dataset["train"]), *args, **kwargs)
 
+    @staticmethod
+    def preprocess(text):
+        """Preprocesses text data by removing unwanted characters and artifacts."""
+        text = text.strip()
+        # NOTE: Brackets are artifacts of the WikiHow dataset portion of HellaSwag.
+        text = text.replace(" [title]", ". ")
+        text = re.sub("\\[.*?\\]", "", text)
+        text = text.replace("  ", " ")
+        return text
+
+    @staticmethod
+    def process_doc(doc):
+        """Processes a document from the HellaSwag dataset into a structured format suitable for training."""
+        ctx = doc["ctx_a"] + " " + doc["ctx_b"].capitalize()
+        query = HellaSwagHFDataModule.preprocess(doc["activity_label"] + ": " + ctx)
+        choices = [HellaSwagHFDataModule.preprocess(ending) for ending in doc["endings"]]
+        gold = int(doc["label"])
+        out_doc = {
+            "query": query,
+            "choices": choices,
+            "gold": gold,
+            "text": query + " " + choices[gold],
+        }
+        return out_doc
+
+
+    # Note: I'm training the model causally not through multiclass classification.
+    @staticmethod
+    def preprocess_dataset(tokenizer, max_length, dataset, seed=42):
+        """Preprocesses a dataset for training a language model."""
+        # Format each prompt.
+        print("Preprocessing dataset...")
+        dataset = dataset.map(HellaSwagHFDataModule.process_doc)
+
+        def preprocess_batch(batch, tokenizer, max_length):
+            ans = tokenizer(
+                batch["text"],
+                max_length=max_length,
+                truncation=True,
+            )
+            ans["labels"] = [x[1:] + [-100] for x in ans["input_ids"]]
+            return ans
+
+        # Apply preprocessing to each batch of the dataset & and remove "conversations" and "text" fields.
+        _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
+        dataset = dataset.map(
+            _preprocessing_function,
+            batched=True,
+        ).select_columns(["input_ids", "attention_mask", "labels"])
+
+        # Shuffle dataset.
+        dataset = dataset.shuffle(seed=seed)
+
+        return dataset
 
 class SquadHFDataModule(HFDatasetDataModule):
     """

@@ -53,7 +53,8 @@ if __name__ == '__main__':
         peft_scheme='none',
         max_steps=args.max_steps,
     )
-    recipe.trainer.val_check_interval = 50
+    recipe.trainer.val_check_interval = 0.0
+    recipe.trainer.max_epochs = 1
 
     tokenizer = llm.HFAutoModelForCausalLM.configure_tokenizer(args.model)
     recipe.data = run.Config(
@@ -64,4 +65,4 @@ if __name__ == '__main__':
         tokenizer=run.Config(AutoTokenizer, pretrained_model_name=args.model),
     )
     executor = local_executor_torchrun(nodes=recipe.trainer.num_nodes, devices=recipe.trainer.devices)
-    run.run(recipe, executor=executor)
+    run.run(recipe, executor=executor, direct=True)

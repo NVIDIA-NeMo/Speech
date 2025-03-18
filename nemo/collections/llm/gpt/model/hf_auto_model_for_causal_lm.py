@@ -73,6 +73,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         load_in_4bit=False,
         attn_implementation="sdpa",
         use_liger_kernel=False,
+        enable_grad_ckpt=False,
     ):
         """
         Initialize the HFAutoModelForCausalLM.
@@ -90,6 +91,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             load_in_4bit (bool, optional): Whether to load the model in 4-bit precision. Defaults to False.
             attn_implementation (str, optional): Attention implementation to use. Defaults to "sdpa".
             use_liger_kernel (bool, optional): Enables custom kernels from the Liger-Kernel Library. Defaults to False.
+            enable_grad_ckpt (bool, optional): Enables gradient checkpoints. Defaults to False.
         """
         super().__init__()
         self.save_hyperparameters()
@@ -110,6 +112,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.loss_buffer = []
         self.n_tok = 0
         self.timestamp = None
+        self.enable_grad_ckpt = enable_grad_ckpt
 
     @property
     def tokenizer(self):
@@ -213,6 +216,13 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate
 
             te_accelerate(self.model, self.model_accelerator.fp8_autocast)
+
+        if self.enable_grad_ckpt:
+            if getattr(self.model, 'supports_gradient_checkpointing', False):
+                self.model.gradient_checkpointing_enable()
+            else:
+                # TODO(@akoumparouli): custom logic goes here, but for now just a warning
+                logging.warning("Asked to use gradient checkpoint, but model does not support it")
 
         self.model.train()
 

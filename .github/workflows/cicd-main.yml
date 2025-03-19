@@ -897,7 +897,6 @@ jobs:
           --devices 2 \
           --strategy fsdp2 --liger
 
-
   L2_HF_Transformer_PEFT_2gpu_FSDP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1787,7 +1786,7 @@ jobs:
         rm -rf /tmp/nemo2_speechlm_lora/${{ github.run_id }}
 
   L2_NeMo_2_Conversion_Test_Baichuan2:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1797,7 +1796,7 @@ jobs:
         NEMO_MODEL_CONFIG=Baichuan2Config7B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH} --add-model-name
 
@@ -1806,7 +1805,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_ChatGLM:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1816,7 +1815,7 @@ jobs:
         NEMO_MODEL_CONFIG=ChatGLM3Config6B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH} --add-model-name
 
@@ -1825,7 +1824,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_DeepSeek:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1835,7 +1834,7 @@ jobs:
         NEMO_MODEL_CONFIG=DeepSeekV3Config
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH} --add-model-name
 
@@ -1844,7 +1843,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Gemma:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1854,7 +1853,7 @@ jobs:
         NEMO_MODEL_CONFIG=GemmaConfig2B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1863,7 +1862,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Gemma2:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1873,7 +1872,7 @@ jobs:
         NEMO_MODEL_CONFIG=Gemma2Config2B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1882,7 +1881,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Mistral:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1892,7 +1891,7 @@ jobs:
         NEMO_MODEL_CONFIG=MistralConfig7B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1901,7 +1900,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Llama:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1911,7 +1910,7 @@ jobs:
         NEMO_MODEL_CONFIG=Llama31Config8B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1920,7 +1919,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Nemotron:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1930,7 +1929,7 @@ jobs:
         NEMO_MODEL_CONFIG=NemotronConfig
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1939,7 +1938,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Phi3Mini:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1949,7 +1948,7 @@ jobs:
         NEMO_MODEL_CONFIG=Phi3ConfigMini
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1958,7 +1957,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Qwen2:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1968,7 +1967,7 @@ jobs:
         NEMO_MODEL_CONFIG=Qwen2Config500M
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1977,7 +1976,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Starcoder:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -1987,7 +1986,7 @@ jobs:
         NEMO_MODEL_CONFIG=StarcoderConfig15B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -1996,7 +1995,7 @@ jobs:
         rm -rf ${HF_OUTPUT_PATH}
 
   L2_NeMo_2_Conversion_Test_Starcoder2:
-    needs: [ pre-flight, cicd-test-container-build ]
+    needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
@@ -2006,7 +2005,7 @@ jobs:
         NEMO_MODEL_CONFIG=Starcoder2Config15B
         NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt
         HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-        
+
         python tests/collections/llm/conversion/test_import_from_hf.py --hf-path=${HF_ORI_PATH} --model-type=${NEMO_MODEL_TYPE} --model-config=${NEMO_MODEL_CONFIG} --output-path=${NEMO_OUTPUT_PATH}
         python tests/collections/llm/conversion/test_export_to_hf.py --nemo-path=${NEMO_OUTPUT_PATH} --original-hf-path=${HF_ORI_PATH} --output-path=${HF_OUTPUT_PATH}
 
@@ -2369,3 +2368,11 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
           flags: ${{ matrix.flag }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.flag }}-aggregated
+          path: |
+            .coverage
+          include-hidden-files: true

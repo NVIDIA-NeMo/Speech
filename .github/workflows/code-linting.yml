@@ -19,122 +19,121 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      #   Until tj-actions/changed-files is re-enabled.
-      # - name: Select filter
-      #   id: filter
-      #   run: |
-      #     if [[ "$DOMAIN" == "speech" ]]; then
-      #       FILTER=$(jq -crn '[
-      #         "nemo/collections/asr/**/*.py",
-      #         "nemo/collections/tts/**/*.py",
-      #         "nemo/collections/audio/**/*.py",
-      #         "nemo/collections/multimodal/speech_llm/**/*.py",
-      #         "nemo/collections/speechlm/**/*.py"
-      #       ] | join(",")')
+      - name: Select filter
+        id: filter
+        run: |
+          if [[ "$DOMAIN" == "speech" ]]; then
+            FILTER=$(jq -crn '[
+              "nemo/collections/asr/**/*.py",
+              "nemo/collections/tts/**/*.py",
+              "nemo/collections/audio/**/*.py",
+              "nemo/collections/multimodal/speech_llm/**/*.py",
+              "nemo/collections/speechlm/**/*.py"
+            ] | join(",")')
 
-      #     else
-      #       FILTER=$(jq -crn '[
-      #         "nemo/**/*.py",
-      #         "!nemo/collections/asr/**/*.py",
-      #         "!nemo/collections/tts/**/*.py",
-      #         "!nemo/collections/audio/**/*.py",
-      #         "!nemo/collections/multimodal/speech_llm/**/*.py",
-      #         "!nemo/collections/speechlm/**/*.py"
-      #       ] | join(",")')
-      #     fi
+          else
+            FILTER=$(jq -crn '[
+              "nemo/**/*.py",
+              "!nemo/collections/asr/**/*.py",
+              "!nemo/collections/tts/**/*.py",
+              "!nemo/collections/audio/**/*.py",
+              "!nemo/collections/multimodal/speech_llm/**/*.py",
+              "!nemo/collections/speechlm/**/*.py"
+            ] | join(",")')
+          fi
 
-      #     echo "main=$FILTER" | tee -a "$GITHUB_OUTPUT"
+          echo "main=$FILTER" | tee -a "$GITHUB_OUTPUT"
 
-      # - name: Get changed files
-      #   id: changed-files
-      #   uses: tj-actions/changed-files@v44
-      #   with:
-      #     files: ${{ steps.filter.outputs.main }}
-      #     files_separator: ","
-      #     separator: " "
+      - name: Get changed files
+        id: changed-files
+        uses: step-security/changed-files@v45.0.1
+        with:
+          files: ${{ steps.filter.outputs.main }}
+          files_separator: ","
+          separator: " "
 
-      # - name: Run PyLint
-      #   id: pylint
-      #   env:
-      #     CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-      #     SKIP_DOCS: ${{ contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
-      #     SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
-      #   run: |
-      #     if [[ -z "$CHANGED_FILES" ]]; then
-      #       echo Nothing to lint.
-      #       echo "exit-code=0" | tee -a "$GITHUB_OUTPUT"
-      #       exit 0
-      #     fi
+      - name: Run PyLint
+        id: pylint
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+          SKIP_DOCS: ${{ contains(github.event.pull_request.labels.*.name, 'skip-docs') }}
+          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
+        run: |
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo Nothing to lint.
+            echo "exit-code=0" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      #     if [[ $SKIP_DOCS == true ]]; then
-      #       ADDITIONAL_PYLINT_ARGS="--disable=C0115,C0116"
-      #     else
-      #       ADDITIONAL_PYLINT_ARGS=""
-      #     fi
+          if [[ $SKIP_DOCS == true ]]; then
+            ADDITIONAL_PYLINT_ARGS="--disable=C0115,C0116"
+          else
+            ADDITIONAL_PYLINT_ARGS=""
+          fi
 
-      #     if [[ $SKIP_LINTING == true ]]; then
-      #       ADDITIONAL_PYLINT_ARGS="--exit-zero"
-      #     fi
+          if [[ $SKIP_LINTING == true ]]; then
+            ADDITIONAL_PYLINT_ARGS="--exit-zero"
+          fi
 
-      #     pip install pylint
-      #     set +e
-      #     pylint $ADDITIONAL_PYLINT_ARGS --output "pylintrc.$DOMAIN.txt" --rcfile ".pylintrc.$DOMAIN" ${CHANGED_FILES[@]}
-      #     echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
+          pip install pylint
+          set +e
+          pylint $ADDITIONAL_PYLINT_ARGS --output "pylintrc.$DOMAIN.txt" --rcfile ".pylintrc.$DOMAIN" ${CHANGED_FILES[@]}
+          echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
 
-      # - name: Run flake8
-      #   id: flake8
-      #   env:
-      #     CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-      #     SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
-      #   run: |
-      #     if [[ -z "$CHANGED_FILES" ]]; then
-      #       echo Nothing to lint.
-      #       echo "exit-code=0" | tee -a "$GITHUB_OUTPUT"
-      #       exit 0
-      #     fi
+      - name: Run flake8
+        id: flake8
+        env:
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
+          SKIP_LINTING: ${{ contains(github.event.pull_request.labels.*.name, 'skip-linting') }}
+        run: |
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo Nothing to lint.
+            echo "exit-code=0" | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      #     if [[ $SKIP_LINTING == true ]]; then
-      #       ADDITIONAL_FLAKE8_ARGS="--exit-zero"
-      #     else
-      #       ADDITIONAL_FLAKE8_ARGS=""
-      #     fi
+          if [[ $SKIP_LINTING == true ]]; then
+            ADDITIONAL_FLAKE8_ARGS="--exit-zero"
+          else
+            ADDITIONAL_FLAKE8_ARGS=""
+          fi
 
-      #     pip install flake8
-      #     set +e
-      #     flake8 $ADDITIONAL_FLAKE8_ARGS --output "flake8.$DOMAIN.txt" --config ".flake8.$DOMAIN" ${CHANGED_FILES[@]}
-      #     echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
+          pip install flake8
+          set +e
+          flake8 $ADDITIONAL_FLAKE8_ARGS --output "flake8.$DOMAIN.txt" --config ".flake8.$DOMAIN" ${CHANGED_FILES[@]}
+          echo "exit-code=$?" | tee -a "$GITHUB_OUTPUT"
 
-      # - name: Summary
-      #   env:
-      #     PYLINT: ${{ steps.pylint.outputs.exit-code == 0 }}
-      #     FLAKE8: ${{ steps.flake8.outputs.exit-code == 0 }}
-      #   run: |
+      - name: Summary
+        env:
+          PYLINT: ${{ steps.pylint.outputs.exit-code == 0 }}
+          FLAKE8: ${{ steps.flake8.outputs.exit-code == 0 }}
+        run: |
 
-      #     if [[ "$PYLINT" != "true" ]]; then
-      #       echo "Pylint output:" | tee -a $GITHUB_STEP_SUMMARY
+          if [[ "$PYLINT" != "true" ]]; then
+            echo "Pylint output:" | tee -a $GITHUB_STEP_SUMMARY
 
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
-      #       cat pylintrc.$DOMAIN.txt | tee -a $GITHUB_STEP_SUMMARY
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
-      #     fi
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
+            cat pylintrc.$DOMAIN.txt | tee -a $GITHUB_STEP_SUMMARY
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
+          fi
 
-      #     if [[ "$FLAKE8" != "true" ]]; then
-      #       echo "Flake8 output:" | tee -a $GITHUB_STEP_SUMMARY
+          if [[ "$FLAKE8" != "true" ]]; then
+            echo "Flake8 output:" | tee -a $GITHUB_STEP_SUMMARY
 
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
-      #       cat flake8.$DOMAIN.txt | tee -a $GITHUB_STEP_SUMMARY
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
-      #     fi
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
+            cat flake8.$DOMAIN.txt | tee -a $GITHUB_STEP_SUMMARY
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
+          fi
 
-      #     if [[ "$PYLINT" != "true" ||  "$FLAKE8" != "true" ]]; then
-      #       echo "The following directories got scanned:" | tee -a $GITHUB_STEP_SUMMARY
+          if [[ "$PYLINT" != "true" ||  "$FLAKE8" != "true" ]]; then
+            echo "The following directories got scanned:" | tee -a $GITHUB_STEP_SUMMARY
 
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
-      #       echo ${{ steps.filter.outputs.main }} | tee -a $GITHUB_STEP_SUMMARY
-      #       echo '```' | tee -a $GITHUB_STEP_SUMMARY
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
+            echo ${{ steps.filter.outputs.main }} | tee -a $GITHUB_STEP_SUMMARY
+            echo '```' | tee -a $GITHUB_STEP_SUMMARY
 
-      #       exit 1
-      #     fi
+            exit 1
+          fi
 
   Nemo_Linting_Test:
     needs: linting

@@ -15,23 +15,30 @@
 import copy
 import os
 import re
+import numpy as np
+from collections import OrderedDict
 from typing import List, Optional
 
-from nemo.collections.llm import GPTModel
 from nemo.collections.llm.api import pretrain
 from nemo.collections.llm.tools.auto_configurator.core.training_config import generate_grid_search_configs
-from nemo.collections.llm.tools.auto_configurator.core.utils import generic_base_config
+from nemo.collections.llm.tools.auto_configurator.core.utils import generic_base_config, _calculate_model_size
 from nemo.collections.llm.utils import Config, Partial
 from nemo.utils import logging
 
-SUPPORTED_MODELS = [
-    "gpt3",
-    "llama",
-    "mixtral",
-    "mistral",
-    "gemma",
-    "nemotron",
-]
+SUPPORTED_MODELS = OrderedDict(
+    [
+        ("gpt3", "GPT"),
+        ("bert", "Bert"),
+        ("t5", "T5"),
+        ("llama", "Llama"),
+        ("mixtral", "Mixtral"),
+        ("mistral", "Mistral"),
+        ("gemma", "Gemma"),
+        ("nemotron", "Nemotron"),
+        ("starcoder", "Starcoder"),
+        ("qwen", "Qwen"),
+    ]
+)
 
 
 class AutoConfigurator:
@@ -55,25 +62,32 @@ class AutoConfigurator:
         max_training_days: Optional[int] = 2,
         max_steps_per_run: Optional[int] = 50,
         vocab_size: Optional[int] = 32000,
+        calculate_model_size: Optional[bool] = False,
     ):
         """
         Args:
             recipe (Partial): recipe to be used for training.
             path_to_logs (str): path to the directory where the logs will be stored.
             gpu_memory_gb (Optional[int]): memory per GPU, in GB. Currently 40GB and 80GB A100s/H100s supported.
-            tensor_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
-            pipeline_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
-            micro_batch_sizes (Optional[List[int]]): set to "auto" to use our recommendation, or a list, such as [1, 2, 4, 8].
+            tensor_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation,
+                or a list, such as [1, 2, 4, 8].
+            pipeline_parallel_sizes (Optional[List[int]]): set to "auto" to use our recommendation,
+                or a list, such as [1, 2, 4, 8].
+            micro_batch_sizes (Optional[List[int]]): set to "auto" to use our recommendation,
+                or a list, such as [1, 2, 4, 8].
             context_parallel_sizes (Optional[List[int]]): model context parallel size. A list, such as [1, 2, 4, 8].
             expert_parallel_sizes (Optional[List[int]]): model expert parallel size. A list, such as [1, 2, 4, 8].
-            min_model_parallel_size (Optional[int]): set to "auto" to use our recommendation, or a value for the minimum desired parallelism.
-            max_model_parallel_size (Optional[int]): set to "auto" to use our recommendation, or a value for the maximum desired parallelism.
+            min_model_parallel_size (Optional[int]): set to "auto" to use our recommendation,
+                or a value for the minimum desired parallelism.
+            max_model_parallel_size (Optional[int]): set to "auto" to use our recommendation,
+                or a value for the maximum desired parallelism.
             num_tokens_in_b (Optional[int]): number of tokens in billions in train dataset.
             tflops_per_gpu (Optional[int]): estimated tflops per GPU.
             max_minutes_per_run (Optional[int]): maximum number of minutes per run for the grid search.
             max_training_days (Optional[int]): number of days expected model to be trained.
             max_steps_per_run (Optional[int]): maximum number of steps per run for the grid search.
             vocab_size (Optional[int]): size of tokenizer vocabulary.
+            calculate_model_size (Optional[bool]): whether the AutoConfigurator should calculate the model size or not.
         """
 
         # Print out the config
@@ -84,15 +98,21 @@ class AutoConfigurator:
         logging.info(self._get_message(config))
 
         model_type = self._get_model_type(recipe.model.config)
-        assert model_type in SUPPORTED_MODELS, f"model_type must be set to one of {SUPPORTED_MODELS}."
-        assert recipe.data.seq_length in [
-            2048,
-            4096,
-            8192,
-            16384,
-            32768,
-        ], "Available seq_length list for GPT-based models: [2048, 4096, 8192, 16384, 32768]."
-        assert path_to_logs, f"path_to_logs parameter must be specified."
+        assert model_type in SUPPORTED_MODELS, f"model_type must be set to one of {list(SUPPORTED_MODELS.keys())}."
+
+        if model_type in ["bert", "t5"]:
+            assert (
+                recipe.data.seq_length <= 2048
+            ), "seq_length higher than 2048 is not supported for bert and t5 models."
+        else:
+            assert recipe.data.seq_length in [
+                2048,
+                4096,
+                8192,
+                16384,
+                32768,
+            ], "Available seq_length list for GPT-based models: [2048, 4096, 8192, 16384, 32768]."
+        assert path_to_logs, "path_to_logs parameter must be specified."
 
         self.num_gpus = recipe.trainer.devices
         self.num_nodes = recipe.trainer.num_nodes
@@ -105,7 +125,12 @@ class AutoConfigurator:
         assert max_minutes_per_run >= 10, "max_minutes_per_run must be an int and be at least 10 minutes."
 
         self.model_type = model_type
-        self.model_size_in_b = self._get_model_size(recipe.model.config)
+        self.model_size_in_b = self._get_model_size(
+            recipe.model.config,
+            model_type,
+            config['vocab_size'],
+            config['calculate_model_size'],
+        )
         self.gpu_count = gpu_count
         self.seq_length = recipe.data.seq_length
         self.global_batch_size = recipe.data.global_batch_size
@@ -138,43 +163,57 @@ class AutoConfigurator:
             str: model type.
         """
 
-        match = re.search(r"\w+\d+[MB]", str(model))
-        if match:
-            model = match.group(0)
+        for k, v in SUPPORTED_MODELS.items():
+            if v in str(model):
+                return k
 
-        if "GPT" in model:
-            return "gpt3"
-        elif "Llama" in model:
-            return "llama"
-        elif "Mixtral" in model:
-            return "mixtral"
-        elif "Mistral" in model:
-            return "mistral"
-        elif "Gemma" in model:
-            return "gemma"
-        elif "Nemotron" in model:
-            return "nemotron"
-        else:
-            return None
+        return None
 
-    def _get_model_size(self, model: Config) -> int:
+    def _get_model_size(
+        self,
+        model: Config,
+        model_type: str,
+        vocab_size: int,
+        calculate_model_size: bool,
+    ) -> int:
         """
         Function that returns model size from model class name.
 
         Args:
             model (Config): model class name.
+            model_type (str): model type.
+            vocab_size (int): vocab size.
+            calculate_model_size (bool): whether the AutoConfigurator should calculate the model size or not.
 
         Returns:
-            int: model size.
+            float: model size.
         """
-        match = re.search(r'(\d+)([BM])', str(model))
-        if match:
-            size = int(match.group(1))
-            measure = match.group(2)
-            if measure == 'B':
-                return size
-            elif measure == 'M':
-                return size / 1000  # Convert millions to billions
+
+        if calculate_model_size:
+            return None
+
+        if model_type != "bert":
+            match = re.search(r'(\d+)([BM])', str(model))
+            if match:
+                size = int(match.group(1))
+                measure = match.group(2)
+                if measure == 'B':
+                    return size
+                elif measure == 'M':
+                    return size / 1000  # Convert millions to billions
+        elif model_type == "bert":
+            return np.round(
+                    _calculate_model_size(
+                        vocab_size=vocab_size,
+                        seq_length=model.seq_length,
+                        hidden_size=model.hidden_size,
+                        num_layers=model.num_layers,
+                        ffn_size=model.ffn_hidden_size,
+                        att_heads=model.num_attention_heads,
+                        model_name=model_type,
+                    ),
+                    3,
+                )
         return None
 
 

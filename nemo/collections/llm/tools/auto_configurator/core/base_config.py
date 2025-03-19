@@ -75,7 +75,8 @@ def _estimate_model_size(
     num_tokens_in_b: int,
     model_name: str,
 ) -> float:
-    """Estimates model size given time and hardware constraints. It's only used if the model size is not provided by the user.
+    """Estimates model size given time and hardware constraints.
+        It's only used if the model size is not provided by the user.
 
     Args:
         max_training_days (float): number of days to train the model for.
@@ -92,7 +93,19 @@ def _estimate_model_size(
     """
 
     model_penalty = 0.87 if model_name == "mt5" else 1.0
-    valid_models = ["gpt3", "t5", "mt5", "bert", "llama", "mixtral", "mistral", "gemma", "nemotron"]
+    valid_models = [
+        "gpt3",
+        "t5",
+        "mt5",
+        "bert",
+        "llama",
+        "mixtral",
+        "mistral",
+        "gemma",
+        "nemotron",
+        "starcoder",
+        "qwen",
+    ]
     try:
         if model_name in valid_models:
             return round(
@@ -120,7 +133,8 @@ def _estimate_training_time(
     num_tokens_in_b: int,
     model_name: str,
 ) -> float:
-    """Estimates training time for a given model size and hardware constraint. To be used when a model size is provided by the user.
+    """Estimates training time for a given model size and hardware constraint.
+        To be used when a model size is provided by the user.
 
     Args:
         model_size_in_b (float): number of parameters to use for training.
@@ -137,7 +151,19 @@ def _estimate_training_time(
     """
 
     model_penalty = 1.15 if model_name == "mt5" else 1.0
-    valid_models = ["gpt3", "t5", "mt5", "bert", "llama", "mixtral", "mistral", "gemma", "nemotron"]
+    valid_models = [
+        "gpt3",
+        "t5",
+        "mt5",
+        "bert",
+        "llama",
+        "mixtral",
+        "mistral",
+        "gemma",
+        "nemotron",
+        "starcoder",
+        "qwen",
+    ]
     try:
         if model_name in valid_models:
             return round(

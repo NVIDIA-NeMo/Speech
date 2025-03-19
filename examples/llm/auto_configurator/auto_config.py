@@ -98,7 +98,7 @@ def train_config(args):
         pretrain()
     else:
         # # Get Auto Configurator results
-        get_results(base_cfg, runner, args.log_dir)
+        get_results(base_cfg, runner, args.log_dir, log_file_prefix="nemo_error")
         print(f"The results were successfully saved to {args.log_dir}.")
 
 

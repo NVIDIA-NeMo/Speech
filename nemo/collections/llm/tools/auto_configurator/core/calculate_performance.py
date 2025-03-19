@@ -14,24 +14,41 @@
 
 import os
 import re
+import pandas as pd
 from typing import Optional
 
-import pandas as pd
+
 from tensorboard.backend.event_processing import event_accumulator
 
 
+GPT_BASED_MODELS = [
+    "gpt3",
+    "bert",
+    "llama",
+    "qwen",
+    "mixtral",
+    "mistral",
+    "gemma",
+    "nemotron",
+    "starcoder",
+]
+
+
 def get_results(
-    base_config=None,
-    train_config=None,
+    base_config = None,
+    train_config = None,
     path_to_save: str = None,
     output_top_n: Optional[int] = 10,
+    log_file_prefix: Optional[str] = 'log-',
 ):
     """Generates performance results.
 
     Args:
-        config (AutoConfigurator): auto configurator runner config.
+        base_config (Partial): model base config.
+        train_config (AutoConfigurator): Auto Configurator runner config.
         path_to_save (str): path where to save performance results.
         output_top_n (Optional[int]): Number of configs to be printed out as best configs.
+        log_file_prefix: (Optional[str]): prefix of log files.
     """
 
     # Define needed variables
@@ -93,7 +110,7 @@ def get_results(
     result = []
     errors = []
     training_logs = os.path.abspath(training_logs)
-    error_files = find_tb_logs(training_logs, "nemo_error_log")
+    error_files = find_tb_logs(training_logs, log_file_prefix)
     tb_files = find_tb_logs(training_logs, "events")
     dirs = [f.path for f in os.scandir(training_logs) if f.is_dir()]
 
@@ -129,10 +146,8 @@ def get_results(
             if len(timing_list) < 10:
                 continue
             timing_list = [x.value for x in timing_list[1:]]
-            print(timing_list)
             avg_global_step_time = round(sum(timing_list) / len(timing_list), 2)
             samples_per_s = round(global_batch_size / avg_global_step_time, 2)
-            print(samples_per_s)
             m_tflops, m_tflops_gpu = calculate_tflops(
                 model_name=model_name,
                 gbs=global_batch_size,
@@ -175,11 +190,16 @@ def get_results(
     result.sort(key=lambda x: x[15])
     print(f"Top {min(output_top_n, len(result))} configs sorted from fastest to slowest:")
     for i, res in enumerate(result):
-        print(f"Config #{i+1}: {res[-1]} with {res[15]:.4f}s per global step.")
+        print(f"Config #{i+1}: {res[-1]} TFLOPS per GPU with {res[15]:.4f}s per global step.")
         if i + 1 == output_top_n:
             break
 
-    top_config = f"{model_name}_{model_size}b_{num_nodes}nodes_tp_{result[0][3]}_pp_{result[0][4]}_cp_{result[0][5]}_ep_{result[0][6]}_mbs_{result[0][7]}_vp_{result[0][8]}"
+    top_config = (
+        f"{model_name}_{model_size}b_{num_nodes}nodes_tp_"
+        f"{result[0][3]}_pp_{result[0][4]}_cp_"
+        f"{result[0][5]}_ep_{result[0][6]}_mbs_"
+        f"{result[0][7]}_vp_{result[0][8]}"
+    )
     print("\n==================================================")
     print(f"Optimal config: {top_config} with {result[0][15]:.4f}s per global step.")
     print("==================================================\n")
@@ -216,7 +236,7 @@ def calculate_tflops(
         Model FLOPs = 72BLsh^2 * ( 1 + (s/6h) + (v/12hL))
     """
 
-    if model_name in ["gpt3", "llama", "baichuan2", "chatglm", "qwen2", "mixtral"]:
+    if model_name in GPT_BASED_MODELS:
         # Model FLOPS calculation
         model_flops = (
             (24 * gbs * enc_seq_len * hs * hs + 4 * gbs * enc_seq_len * enc_seq_len * hs) * (3 * layers)
@@ -336,7 +356,3 @@ def find_tb_logs(logs_dir: str, tb_prefix: str) -> list:
                 tb_files.append(absolute_path)
 
     return tb_files
-
-
-if __name__ == "__main__":
-    main()

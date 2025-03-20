@@ -14,11 +14,11 @@
 
 import json
 import os
-import time
 from dataclasses import dataclass, field, is_dataclass
 from typing import List, Optional, Union
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from omegaconf import OmegaConf, open_dict
 
@@ -39,6 +39,7 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
 )
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
+from nemo.utils.timers import SimpleTimer
 
 """
 Transcribe audio file on a single CPU/GPU. Useful for transcription of moderate amounts of audio data.
@@ -203,6 +204,8 @@ class TranscriptionConfig:
     extract_nbest: bool = False  # Extract n-best hypotheses from the model
 
     calculate_rtfx: bool = False
+    warmup_steps: int = 0  # by default - no warmup
+    run_steps: int = 1  # by default - single run
 
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
@@ -378,11 +381,16 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
                     )
                 total_duration += item["duration"]
 
+        if cfg.warmup_steps == 0:
+            logging.warning(
+                "RTFx measurement enabled, but warmup_steps=0. "
+                "At least one warmup step is recommended to measure RTFx"
+            )
+
+    timer = SimpleTimer()
+    model_measurements = []
     with torch.amp.autocast('cuda' if torch.cuda.is_available() else 'cpu', dtype=amp_dtype, enabled=cfg.amp):
         with torch.no_grad():
-            if cfg.calculate_rtfx:
-                start_time = time.time()
-
             override_cfg = asr_model.get_transcribe_config()
             override_cfg.batch_size = cfg.batch_size
             override_cfg.num_workers = cfg.num_workers
@@ -395,12 +403,29 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             if hasattr(override_cfg, "prompt"):
                 override_cfg.prompt = parse_multitask_prompt(OmegaConf.to_container(cfg.prompt))
 
-            transcriptions = asr_model.transcribe(
-                audio=filepaths,
-                override_config=override_cfg,
-            )
-            if cfg.calculate_rtfx:
-                transcribe_time = time.time() - start_time
+            device = next(asr_model.parameters()).device
+            for run_step in range(cfg.warmup_steps + cfg.run_steps):
+                if run_step < cfg.warmup_steps:
+                    logging.info(f"Running warmup step {run_step}")
+                # reset timer
+                timer.reset()
+                timer.start(device=device)
+                # call transcribe
+                transcriptions = asr_model.transcribe(
+                    audio=filepaths,
+                    override_config=override_cfg,
+                )
+                # stop timer, log time
+                timer.stop(device=device)
+                logging.info(f"Model time for iteration {run_step}: {timer.total_sec():.3f}")
+                if run_step >= cfg.warmup_steps:
+                    model_measurements.append(timer.total_sec())
+
+    model_measurements_np = np.asarray(model_measurements)
+    logging.info(
+        f"Model time avg: {model_measurements_np.mean():.3f}"
+        + (f" (std: {model_measurements_np.std():.3f})" if cfg.run_steps > 1 else "")
+    )
 
     if cfg.dataset_manifest is not None:
         logging.info(f"Finished transcribing from manifest file: {cfg.dataset_manifest}")
@@ -453,7 +478,11 @@ def main(cfg: TranscriptionConfig) -> Union[TranscriptionConfig, List[Hypothesis
             logging.info(f"{total_res}")
 
     if cfg.calculate_rtfx:
-        logging.info(f"Dataset RTFx {(total_duration/transcribe_time)}")
+        rtfx_measurements = total_duration / model_measurements_np
+        logging.info(
+            f"Model RTFx on the dataset: {rtfx_measurements.mean():.3f}"
+            + (f" (std: {rtfx_measurements.std():.3f})" if cfg.run_steps > 1 else "")
+        )
 
     return cfg
 

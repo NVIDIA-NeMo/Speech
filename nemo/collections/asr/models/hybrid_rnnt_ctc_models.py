@@ -102,7 +102,7 @@ class EncDecHybridRNNTCTCModel(EncDecRNNTModel, ASRBPEMixin, InterCTCMixin):
         channel_selector: Optional[ChannelSelectorType] = None,
         augmentor: DictConfig = None,
         verbose: bool = True,
-        timestamps: bool = False,
+        timestamps: bool = None,
         override_config: Optional[TranscribeConfig] = None,
     ) -> TranscriptionReturnType:
         """

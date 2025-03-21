@@ -564,6 +564,7 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
 __all__ = [
     "DeepSeekConfig",
     "DeepSeekV2Config",
+    "DeepSeekV2LiteConfig",
     "DeepSeekV3Config",
     "DeepSeekModel",
 ]

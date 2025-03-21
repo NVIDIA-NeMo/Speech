@@ -85,14 +85,14 @@ class SpeechToTextLLMPEFT(PEFT):
     def transform(self, module, name=None, prefix=None):
         return self.peft.transform(module, name=name, prefix=prefix)
 
-    def set_trainable_params(self, trainer: pl.Trainer):
+    def set_params_to_save(self, trainer: pl.Trainer):
         """
         Set params that should be saved for PEFT, including some params that don't require gradients,
         such as the running mean and var of batchnorm.
         """
         model = trainer.lightning_module  # type: nemo.collections.speechlm.model.SpeechToTextLLM # noqa: F821
-        self.trainable_params = set([name for name, _ in model.trainable_parameters()])
-        if len(self.trainable_params) == 0:
+        self.params_to_save = set([name for name, _ in model.trainable_parameters()])
+        if len(self.params_to_save) == 0:
             raise RuntimeError("No trainable parameters found for PEFT!")
 
 

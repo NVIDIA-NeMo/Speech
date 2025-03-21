@@ -144,3 +144,67 @@ class TestPEFT:
         trainer.strategy.load_model_state_dict.assert_called_once_with({"dummy_state": "dummy_value"}, strict=False)
         trainer.strategy.init_model_parallel.assert_called_once()
         trainer.strategy.setup_optimizers.assert_called_once_with(trainer)
+
+    def test_params_to_save(self):
+        # Create model and PEFT instance
+        model = self.DummyModel()
+        peft = self.DummyPEFT()
+        trainer = MagicMock()
+        trainer.lightning_module = model
+
+        # Freeze conv, keep linear trainable
+        model.conv.requires_grad_(False)
+        model.linear.requires_grad_(True)
+
+        # Call set_params_to_save
+        peft.set_params_to_save(trainer)
+
+        # Expected trainable parameter names
+        expected_trainable = {'linear.weight', 'linear.bias'}
+
+        # Check that params_to_save contains exactly the expected parameters
+        assert hasattr(peft, 'params_to_save'), "params_to_save not set"
+        assert (
+            peft.params_to_save == expected_trainable
+        ), f"Expected trainable params {expected_trainable}, but got {peft.params_to_save}"
+
+        # Verify that the parameters marked as trainable actually require gradients
+        for name, param in model.named_parameters():
+            if name in peft.params_to_save:
+                assert param.requires_grad, f"Parameter {name} should require gradients"
+            else:
+                assert not param.requires_grad, f"Parameter {name} should not require gradients"
+
+    def test_params_to_save_batchnorm(self):
+        # Create model and PEFT instance
+        model = self.DummyModel()
+        model.bn = nn.BatchNorm2d(8)
+        peft = self.DummyPEFT()
+        trainer = MagicMock()
+        trainer.lightning_module = model
+
+        # Freeze everything
+        model.freeze()
+
+        # Call set_params_to_save
+        peft.set_params_to_save(trainer)
+
+        # Expect BN buffers to be saved
+        expected_trainable = {
+            'bn.running_mean',
+            'bn.running_var',
+            'bn.num_batches_tracked',
+        }
+
+        # Check that params_to_save contains exactly the expected parameters
+        assert hasattr(peft, 'params_to_save'), "params_to_save not set"
+        assert (
+            peft.params_to_save == expected_trainable
+        ), f"Expected trainable params {expected_trainable}, but got {peft.params_to_save}"
+
+        # Verify that the parameters marked as trainable actually require gradients
+        for name, param in model.named_parameters():
+            if name in peft.params_to_save:
+                assert param.requires_grad, f"Parameter {name} should require gradients"
+            else:
+                assert not param.requires_grad, f"Parameter {name} should not require gradients"

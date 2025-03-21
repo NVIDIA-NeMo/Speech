@@ -516,6 +516,7 @@ class TransformerBlockWithPostLNSupport(TransformerBlock):
         rotary_pos_emb: Tensor = None,
         inference_params: InferenceParams = None,
         packed_seq_params: PackedSeqParams = None,
+        **kwargs,
     ):
         """
         Perform the forward pass through the transformer block.

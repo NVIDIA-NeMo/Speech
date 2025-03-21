@@ -354,7 +354,8 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
                 source_key="embedding.word_embeddings.weight",
                 target_key="model.embed_tokens.weight",
                 fn=TransformFns.prune_padding,
-            ),]
+            ),
+        ]
 
         return io.apply_transforms(
             source,

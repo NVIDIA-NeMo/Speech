@@ -591,9 +591,9 @@ class TransformFns:
 
         qkv_weights_l = []
         for i in range(num_query_groups):
-            qkv_weights_l.append(q[i * heads_per_group: (i + 1) * heads_per_group, :, :])
-            qkv_weights_l.append(k[i: i + 1, :, :])
-            qkv_weights_l.append(v[i: i + 1, :, :])
+            qkv_weights_l.append(q[i * heads_per_group : (i + 1) * heads_per_group, :, :])
+            qkv_weights_l.append(k[i : i + 1, :, :])
+            qkv_weights_l.append(v[i : i + 1, :, :])
         qkv_weights = torch.cat(qkv_weights_l)
         assert qkv_weights.ndim == 3, qkv_weights.shape
         assert qkv_weights.shape[0] == (heads_per_group + 2) * num_query_groups, qkv_weights.shape
@@ -627,9 +627,9 @@ class TransformFns:
 
         qkv_bias = torch.empty((0, head_size)).type_as(qb)
         for i in range(num_query_groups):
-            qkv_bias = torch.cat((qkv_bias, qb[i * heads_per_group: (i + 1) * heads_per_group, :]))
-            qkv_bias = torch.cat((qkv_bias, kb[i: i + 1, :]))
-            qkv_bias = torch.cat((qkv_bias, vb[i: i + 1, :]))
+            qkv_bias = torch.cat((qkv_bias, qb[i * heads_per_group : (i + 1) * heads_per_group, :]))
+            qkv_bias = torch.cat((qkv_bias, kb[i : i + 1, :]))
+            qkv_bias = torch.cat((qkv_bias, vb[i : i + 1, :]))
         qkv_bias = qkv_bias.reshape(
             [
                 head_size * (head_num + 2 * num_query_groups),
@@ -682,5 +682,4 @@ class TransformFns:
         Example: export embedding/output layer to HF with non-padded vocab size
         """
         megatron_config = ctx.target.config
-        return embedding[:megatron_config.vocab_size, :]
-
+        return embedding[: megatron_config.vocab_size, :]

@@ -368,7 +368,7 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
                 source_key="output_layer.weight",
                 target_key="lm_head.weight",
                 fn=TransformFns.prune_padding,
-            )
+            ),
         ]
         return io.apply_transforms(
             source,

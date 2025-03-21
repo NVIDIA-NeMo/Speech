@@ -17,7 +17,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import InitVar, dataclass, field
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import NamedTuple, Optional, Union, cast
 
 import numpy as np
 import torch
@@ -575,11 +575,11 @@ class FastNGramLM(ModelPT):
         """Stub necessary to create the ModelPT. Not used for LM"""
         return []
 
-    def setup_training_data(self, train_data_config: DictConfig | dict):
+    def setup_training_data(self, train_data_config: Union[DictConfig, dict]):
         """Stub necessary to create the ModelPT. Not used for LM"""
         pass
 
-    def setup_validation_data(self, val_data_config: DictConfig | dict):
+    def setup_validation_data(self, val_data_config: Union[DictConfig, dict]):
         """Stub necessary to create the ModelPT. Not used for LM"""
         pass
 
@@ -841,7 +841,7 @@ class FastNGramLM(ModelPT):
     def forward(
         self,
         labels: torch.Tensor,
-        labels_lengths: torch.Tensor | None = None,
+        labels_lengths: Optional[torch.Tensor] = None,
         bos: bool = True,
         eos: bool = False,
     ) -> torch.Tensor:
@@ -862,7 +862,7 @@ class FastNGramLM(ModelPT):
     def score_sentences(
         self,
         labels: torch.Tensor,
-        labels_lengths: torch.Tensor | None = None,
+        labels_lengths: Optional[torch.Tensor] = None,
         bos: bool = True,
         eos: bool = False,
     ) -> torch.Tensor:

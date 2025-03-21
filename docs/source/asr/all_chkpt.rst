@@ -60,16 +60,6 @@ Japanese
 
 -----------------------------
 
-Chinese
-^^^^^^^
-.. csv-table::
-   :file: data/benchmark_cn.csv
-   :align: left
-   :widths: 50,50
-   :header-rows: 1
-
------------------------------
-
 Georgian
 ^^^^^^^^
 .. csv-table::
@@ -195,7 +185,7 @@ Catalan
 .. csv-table::
    :file: data/benchmark_ca.csv
    :align: left
-   :widths: 50,50
+   :widths: 30,30,40
    :header-rows: 1
 
 -----------------------------
@@ -209,6 +199,7 @@ Hindi
    :header-rows: 1
 
 -----------------------------
+
 Marathi
 ^^^^^^^
 .. csv-table::
@@ -220,7 +211,7 @@ Marathi
 -----------------------------
 
 Mandarin
-^^^^^^^
+^^^^^^^^
 .. csv-table::
    :file: data/benchmark_zh.csv
    :align: left

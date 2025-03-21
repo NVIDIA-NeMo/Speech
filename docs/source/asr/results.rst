@@ -254,7 +254,7 @@ If ``allow_mps=true`` flag is passed to ``speech_to_text_eval.py``, the ``mps`` 
 Fine-tuning on Different Datasets
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-There are multiple ASR tutorials provided in the :ref:`Tutorials <tutorials>` section. Most of these tutorials explain how to instantiate a pre-trained model, prepare the model for fine-tuning on some dataset (in the same language) as a demonstration.
+There are multiple ASR tutorials provided in the Tutorials section. Most of these tutorials explain how to instantiate a pre-trained model, prepare the model for fine-tuning on some dataset (in the same language) as a demonstration.
 
 Inference Execution Flow Diagram
 --------------------------------
@@ -264,6 +264,8 @@ When preparing your own inference scripts, please follow the execution flow diag
 
 Automatic Speech Recognition Models
 -----------------------------------
+
+.. _asr-checkpoint-list-by-language:
 
 Speech Recognition
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

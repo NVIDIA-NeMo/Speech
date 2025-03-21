@@ -129,7 +129,7 @@ In ``beamsearch`` mode, the evaluation is performed using beam search decoding w
 
 The script initially loads the ASR model and predicts the outputs of the model's encoder as log probabilities. This part is computed in batches on a device specified by --device, which can be either a CPU (`--device=cpu`) or a single GPU (`--device=cuda:0`).
 The batch size for this part is specified by ``--acoustic_batch_size``. Using the largest feasible batch size can speed up the calculation of log probabilities. Additionally, you can use `--use_amp` to accelerate the calculation and allow for larger --acoustic_batch_size values.
-Currently, multi-GPU support is not available for calculating log probabilities. However, using ``--probs_cache_file`` can help. This option stores the log probabilities produced by the model’s encoder in a pickle file, allowing you to skip the first step in future runs.
+Currently, multi-GPU support is not available for calculating log probabilities. However, using ``--probs_cache_file`` can help. This option stores the log probabilities produced by the model's encoder in a pickle file, allowing you to skip the first step in future runs.
 
 The following is the list of the important arguments for the evaluation script:
 
@@ -308,15 +308,14 @@ You can also find a similar script to evaluate an RNNT/HAT model with beam searc
 Neural Rescoring
 ****************
 
-When using the neural rescoring approach, a neural network is used to score candidates. A candidate is the text transcript predicted by the ASR model’s decoder. The top K candidates produced by beam search decoding (with a beam width of K) are given to a neural language model for ranking. The language model assigns a score to each candidate, which is usually combined with the scores from beam search decoding to produce the final scores and rankings.
+When using the neural rescoring approach, a neural network is used to score candidates. A candidate is the text transcript predicted by the ASR model's decoder. The top K candidates produced by beam search decoding (with a beam width of K) are given to a neural language model for ranking. The language model assigns a score to each candidate, which is usually combined with the scores from beam search decoding to produce the final scores and rankings.
 
 Train Neural Rescorer
 =====================
 
 An example script to train such a language model with Transformer can be found at `examples/nlp/language_modeling/transformer_lm.py <https://github.com/NVIDIA/NeMo/blob/stable/examples/nlp/language_modeling/transformer_lm.py>`__.
-It trains a ``TransformerLMModel`` which can be used as a neural rescorer for an ASR system. Full documentation on language models training is available at:
+It trains a ``TransformerLMModel`` which can be used as a neural rescorer for an ASR system. For more information on language models training, see LLM/NLP documentation.
 
-:doc:`../nlp/language_modeling`
 
 You can also use a pretrained language model from the Hugging Face library, such as Transformer-XL and GPT, instead of training your model.
 Models like BERT and RoBERTa are not supported by this script because they are trained as Masked Language Models. As a result, they are not efficient or effective for scoring sentences out of the box.

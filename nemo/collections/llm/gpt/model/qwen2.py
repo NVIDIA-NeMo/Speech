@@ -184,9 +184,7 @@ class HFQwen2Importer(io.ModelConnector["AutoModelForCausalLM", Qwen2Model]):
                 fn=TransformFns.merge_fc1,
             ),
         ]
-        return io.apply_transforms(
-            source, target, mapping=mapping, transforms=transforms
-        )
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
     def tokenizer(self) -> "AutoTokenizer":
@@ -288,7 +286,7 @@ class HFQwen2Exporter(io.ModelConnector[Qwen2Model, "AutoModelForCausalLM"]):
                 source_key="output_layer.weight",
                 target_key="lm_head.weight",
                 fn=TransformFns.prune_padding,
-            )
+            ),
         ]
         return io.apply_transforms(
             source,

@@ -8,11 +8,11 @@ Speaker diarization training and inference both require the same type of manifes
 
 .. code-block:: bash
   
-  python NeMo/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py \ 
-    --add_duration \ 
-    --paths2audio_files='/path/to/audio_file_path_list.txt' \
-    --paths2rttm_files='/path/to/rttm_file_list.txt' \
-    --manifest_filepath='/path/to/manifest_filepath/train_manifest.json 
+  python NeMo/scripts/speaker_tasks/pathfiles_to_diarize_manifest.py \
+    --add_duration \
+    --paths2audio_files="/path/to/audio_file_path_list.txt" \
+    --paths2rttm_files="/path/to/rttm_file_list.txt" \
+    --manifest_filepath="/path/to/manifest_filepath/train_manifest.json"
 
 
 All three arguments are required. Note that we need to maintain consistency on unique filenames for every field (key) by only changing the filename extensions. For example, if there is an audio file named ``abcd01.wav``, the rttm file should be named as ``abcd01.rttm`` and the transcription file should be named as ``abcd01.txt``. 

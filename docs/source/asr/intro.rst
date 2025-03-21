@@ -229,4 +229,5 @@ For more information, see additional sections in the ASR docs on the left-hand-s
    scores
    configs
    api
+   all_chkpt
    examples/kinyarwanda_asr.rst

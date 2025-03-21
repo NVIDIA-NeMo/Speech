@@ -159,7 +159,7 @@ class HFBaichuan2Importer(io.ModelConnector["AutoModelForCausalLM", Baichuan2Mod
                 source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
                 target_key="decoder.layers.*.mlp.linear_fc1.weight",
                 fn=TransformFns.merge_fc1,
-            )
+            ),
         ]
         return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
@@ -290,7 +290,7 @@ class HFBaichuan2Exporter(io.ModelConnector[Baichuan2Model, "AutoModelForCausalL
                 source_key="decoder.layers.*.mlp.linear_fc1.weight",
                 target_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
                 fn=TransformFns.split_fc1,
-            )
+            ),
         ]
         return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
@@ -367,6 +367,7 @@ def _export_qkv(ctx: io.TransformCTX, qkv_weights):
             qkv_weights[v_slice].reshape(-1, hidden_size),
         ]
     )
+
 
 __all__ = [
     "Baichuan2Config",

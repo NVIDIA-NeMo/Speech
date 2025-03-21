@@ -6,7 +6,7 @@ with those datasets by following the instructions to run those scripts in the se
 
 If the user has their own data and want to preprocess it to use with NeMo ASR models, refer to the `Preparing Custom ASR Data`_ section.
 
-If the user already has a dataset that you want to convert to a tarred format, refer to the `Tarred Datasets`_ section.
+If the user already has a dataset that you want to convert to a tarred format, refer to the :ref:`Tarred Datasets <Tarred_Datasets>` section.
 
 .. _LibriSpeech_dataset:
 
@@ -197,6 +197,8 @@ in the same directory as the manifest, or even in any specific directory structu
 Once there is a manifest that describes each audio file in the dataset, use the dataset by passing
 in the manifest file path in the experiment config file, e.g. as ``training_ds.manifest_filepath=<path/to/manifest.json>``.
 
+.. _Tarred_Datasets:
+
 Tarred Datasets
 ---------------
 
@@ -280,6 +282,8 @@ Semi sorted batching is supported by the following models:
     nemo.collections.asr.models.EncDecHybridRNNTCTCBPEModel
 
 For more details about this algorithm, see the `paper <https://www.isca-archive.org/interspeech_2021/ge21_interspeech.pdf>`_ .
+
+.. _Bucketing_Datasets:
 
 Bucketing Datasets
 ---------------------
@@ -463,7 +467,7 @@ For tarred datasets, shards from the AIS cluster are used by piping ``ais get`` 
 Tarred Dataset from AIS
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-A tarred dataset can be easily used as described in the :ref:`Tarred Datasets` section by providing paths to manifests on an AIS cluster.
+A tarred dataset can be easily used as described in the :ref:`Tarred Datasets <Tarred_Datasets>` section by providing paths to manifests on an AIS cluster.
 For example, a tarred dataset from an AIS cluster can be configured as
 
 .. code::
@@ -471,7 +475,7 @@ For example, a tarred dataset from an AIS cluster can be configured as
   manifest_filepath='ais://bucket/tarred_audio_manifest.json'
   tarred_audio_filepaths='ais://bucket/shard_{1..64}.tar'
 
-:ref:`Bucketing Datasets` are configured in a similar way by providing paths on an AIS cluster.
+:ref:`Bucketing Datasets <Bucketing_Datasets>` are configured in a similar way by providing paths on an AIS cluster.
 
 Non-tarred Dataset from AIS
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -540,7 +540,7 @@ As mentioned above, Citrinet uses the ``ConvASRDecoder`` as the decoder layer si
 changed slightly as Citrinet utilizes sub-word tokenization.
 
 .. note::
-    The following information is relevant to any of the above models that implements its encoder as an :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder`, and utilizes the ``SqueezeExcite`` mechanism.
+    The following information is relevant to any of the above models that implements its encoder as an :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder`, and utilized the ``SqueezeExcite`` mechanism.
 
 The ``SqueezeExcite`` block within a :class:`~nemo.collections.asr.modules.conv_asr.ConvASREncoder` network can be modified to utilize a different context window after the model has been instantiated (even after the model has been trained) so as to evaluate the model with limited context. This can be achieved using the :meth:`~nemo.collections.asr.parts.mixins.mixins.ASRModuleMixin.change_conv_asr_se_context_window`
 
@@ -925,8 +925,8 @@ Hybrid ASR-TTS Model Configuration
 :ref:`Hybrid ASR-TTS model <Hybrid-ASR-TTS_model>` consists of three parts:
 
 * ASR model (``EncDecCTCModelBPE``, ``EncDecRNNTBPEModel`` or ``EncDecHybridRNNTCTCBPEModel``)
-* TTS Mel Spectrogram Generator (currently, only :ref:`FastPitch <FastPitch_model>` model is supported)
-* :ref:`Enhancer model <SpectrogramEnhancer_model>` (optional)
+* TTS Mel Spectrogram Generator (currently, only FastPitch model is supported)
+* Enhancer model (SpectrogramEnhancerModel) (optional)
 
 Also, the config allows to specify :ref:`text-only dataset <Hybrid-ASR-TTS_model__Text-Only-Data>`.
 

@@ -322,19 +322,19 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 group = device_mesh.get_group()
 
             def reduce_item(val, op, device, group, dtype):
-                 """util function"""
-                 divide_by_world_size = False
-                 if torch.distributed.get_backend(group) == "gloo" and op == dist.ReduceOp.AVG:
-                     # GLOO does not support the `ReduceOp.AVG` operation
-                     op = dist.ReduceOp.SUM
-                     divide_by_world_size = True
+                """util function"""
+                divide_by_world_size = False
+                if torch.distributed.get_backend(group) == "gloo" and op == dist.ReduceOp.AVG:
+                    # GLOO does not support the `ReduceOp.AVG` operation
+                    op = dist.ReduceOp.SUM
+                    divide_by_world_size = True
 
-                 val = torch.tensor([val], device=device, dtype=dtype).detach()
-                 dist.all_reduce(val, group=group, op=op)
-                 val = val.item()
-                 if divide_by_world_size:
-                     val /= dist.get_world_size(group)
-                 return val
+                val = torch.tensor([val], device=device, dtype=dtype).detach()
+                dist.all_reduce(val, group=group, op=op)
+                val = val.item()
+                if divide_by_world_size:
+                    val /= dist.get_world_size(group)
+                return val
 
             mean_loss = reduce_item(
                 mean_loss, op=dist.ReduceOp.AVG, device=self.device, group=group, dtype=torch.float32

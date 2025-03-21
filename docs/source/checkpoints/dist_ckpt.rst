@@ -1,5 +1,5 @@
 NeMo Distributed Checkpoint User Guide
-=======================
+======================================
 
 This guide provides details about the distributed checkpoints best practices from NeMo Megatron Core.
 
@@ -46,7 +46,7 @@ The following figure illustrates asynchronous saving in NeMo Framework, where ch
 
 
 Parameter Tuning
---------------
+----------------
 
 You can configure distributed checkpoints in NeMo pre-training and fine-tuning jobs.
 
@@ -56,7 +56,7 @@ The latest NeMo version is Nemo 2.0 (NGC container ``nvcr.io/nvidia/nemo:24.09``
 
 
 Best Practices
-^^^^^^^^^^^
+^^^^^^^^^^^^^^
 
 Here are best practices for configuring distributed checkpoints in NeMo:
 

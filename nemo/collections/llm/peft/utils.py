@@ -68,7 +68,13 @@ def get_adapter_attributes_from_linear(m: nn.Module):
             # LoRA is applied after layernorm, so layernorm output must be returned
             m.return_layernorm_output = True
             # perf optimization for LoRA + SP
-            if m.config.sequence_parallel and not m.ub_overlap_ag:
+            if hasattr(m, "ub_overlap_ag"):
+                ub_overlap_ag = m.ub_overlap_ag
+            elif hasattr(m, "ub_overlap_ag_fprop"):
+                ub_overlap_ag = m.ub_overlap_ag_fprop
+            else:
+                ub_overlap_ag = False
+            if m.config.sequence_parallel and not ub_overlap_ag:
                 m.return_layernorm_output_gathered = True
                 te_version = packaging.version.Version(version("transformer-engine"))
                 if te_version >= packaging.version.Version("1.5.0dev") and (

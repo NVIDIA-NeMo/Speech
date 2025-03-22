@@ -1728,6 +1728,30 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact.sh
 
+  L2_NeMo_2_Automodel_PTQ_trtllm:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Automodel_PTQ_trtllm')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Automodel_PTQ_trtllm.sh
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/trtllm_quantized
+
+  L2_NeMo_2_Automodel_PTQ_hf:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Automodel_PTQ_hf')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Automodel_PTQ_hf.sh
+
+      AFTER_SCRIPT: |
+        rm -rf /tmp/hf_quantized
+
   L2_NeMo_2_PTQ_Llama2_FP8_trtllm:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2245,6 +2269,8 @@ jobs:
       - L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir
       - L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest
       - L2_NeMo_2_NeMo_Mcore_Mixtral_bitexact
+      - L2_NeMo_2_Automodel_PTQ_trtllm
+      - L2_NeMo_2_Automodel_PTQ_hf
       - L2_NeMo_2_PTQ_Llama2_FP8_trtllm
       - L2_NeMo_2_PTQ_Llama2_FP8_nemo
       - L2_NeMo_2_Distill_Llama3_TP1PP2

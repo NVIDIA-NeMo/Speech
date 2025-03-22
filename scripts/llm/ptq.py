@@ -62,7 +62,7 @@ def get_args():
     parser.add_argument("-nodes", "--num_nodes", type=int, help="Number of nodes used")
     parser.add_argument("-out", "--export_path", "--output_path", type=str, help="Path for the exported engine")
     parser.add_argument(
-        "--export_format", default="trtllm", choices=["trtllm", "nemo"], help="Model format to export as"
+        "--export_format", default="trtllm", choices=["trtllm", "nemo", "hf"], help="Model format to export as"
     )
     parser.add_argument(
         "-algo",
@@ -97,8 +97,10 @@ def get_args():
     parser.add_argument(
         "--generate_sample", help="Generate sample model output after performing PTQ", action="store_true"
     )
-    parser.add_argument("--legacy_ckpt", action="store_true", help="""Load ckpt saved with TE < 1.14""")
-    parser.set_defaults(generate_sample=False)
+    parser.add_argument(
+        "--trust_remote_code", help="Trust remote code when loading HuggingFace models", action="store_true"
+    )
+    parser.add_argument("--legacy_ckpt", help="Load ckpt saved with TE < 1.14", action="store_true")
 
     args = parser.parse_args()
 
@@ -106,7 +108,7 @@ def get_args():
         if args.export_format == "trtllm":
             args.export_path = f"./qnemo_{args.algorithm}_tp{args.inference_tp}_pp{args.inference_pp}"
         else:
-            args.export_path = f"./nemo_{args.algorithm}"
+            args.export_path = f"./{args.export_format}_{args.algorithm}"
 
     if args.devices is None:
         args.devices = args.calibration_tp
@@ -141,7 +143,7 @@ def main():
     )
 
     llm.ptq(
-        nemo_checkpoint=args.nemo_checkpoint,
+        model_path=args.nemo_checkpoint,
         export_config=export_config,
         calibration_tp=args.calibration_tp,
         calibration_pp=args.calibration_pp,
@@ -152,6 +154,7 @@ def main():
         quantization_config=quantization_config,
         tokenizer_path=args.tokenizer,
         legacy_ckpt=args.legacy_ckpt,
+        trust_remote_code=args.trust_remote_code,
     )
 
 

@@ -16,6 +16,7 @@ import logging
 from typing import Any, Callable, Generic, TypeVar, Union, overload
 
 import torch
+import torch.distributed as dist
 
 T = TypeVar("T", bound=Callable[..., Any])
 
@@ -98,3 +99,9 @@ def torch_dtype_from_precision(precision: Union[int, str]) -> torch.dtype:
         return torch.float32
     else:
         raise ValueError(f"Could not parse the precision of `{precision}` to a valid torch.dtype")
+
+
+def barrier():
+    """Waits for all processes."""
+    if dist.is_initialized():
+        dist.barrier()

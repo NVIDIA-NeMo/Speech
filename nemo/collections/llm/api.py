@@ -26,8 +26,8 @@ from torch.distributed import all_gather_object
 from typing_extensions import Annotated
 
 import nemo.lightning as nl
+from nemo.collections.llm import GPTModel, HFAutoModelForCausalLM
 from nemo.collections.llm.evaluation.api import EvaluationConfig, EvaluationTarget
-from nemo.collections.llm.gpt.model import GPTModel
 from nemo.collections.llm.modelopt import (
     DistillationGPTModel,
     ExportConfig,
@@ -443,7 +443,7 @@ def distill(
 
 @run.cli.entrypoint(name="ptq", namespace="llm")
 def ptq(
-    nemo_checkpoint: str,
+    model_path: str,
     export_config: ExportConfig,
     calibration_tp: int = 1,
     calibration_pp: int = 1,
@@ -455,6 +455,7 @@ def ptq(
     forward_loop: Callable | None = None,
     tokenizer_path: str | None = None,
     legacy_ckpt: bool = False,
+    trust_remote_code: bool = False,
 ) -> Path:
     """
     Applies Post-Training Quantization (PTQ) for a model using the specified quantization and export configs. It runs
@@ -465,25 +466,34 @@ def ptq(
     The function can be used through the NeMo CLI in the following way:
     ```bash
     # Run calibration using tensor parallel set to 8 and export quantized checkpoint with tensor parallel equal 2
-    nemo llm ptq nemo_checkpoint=/models/Llama-3-70B \
+    nemo llm ptq run.executor=torchrun run.executor.ntasks_per_node=8 \
+        model_path=/models/Llama-3-70B \
         export_config.path=/models/Llama-3-70B-FP8 \
         calibration_tp=8 \
         export_config.inference_tp=2
 
     # Choose different quantization method, for example, INT8 SmoothQuant
-    nemo llm ptq nemo_checkpoint=/models/Llama-3-8B \
+    nemo llm ptq run.executor=torchrun run.executor.ntasks_per_node=1 \
+        model_path=/models/Llama-3-8B \
         export_config.path=/models/Llama-3-8B-INT8_SQ \
         quantization_config.algorithm=int8_sq
 
     # Export as NeMo checkpoint instead
-    nemo llm ptq nemo_checkpoint=/models/Llama-3-8B \
+    nemo llm ptq run.executor=torchrun \
+        model_path=/models/Llama-3-8B \
         export_config.path=/models/Llama-3-8B-INT8_SQ \
         quantization_config.algorithm=int8_sq \
         export_config.export_format=nemo
+
+    # Quantize HF AutoModel checkpoint.
+    nemo llm ptq run.executor=torchrun run.executor.ntasks_per_node=1 \
+        model_path=/models/Llama-3-70B-HF \
+        export_config.path=/models/Llama-3-70B-HF-FP8 \
+        export_config.export_format=hf
     ```
 
     Args:
-        nemo_checkpoint (str): The path to model to be quantized.
+        model_path (str): The path to model to be quantized.
         calibration_tp (int): Calibration tensor parallelism.
         calibration_pp (int): Calibration pipeline parallelism.
         num_layers_in_first_pipeline_stage (int): Number of layers in the first pipeline stage.
@@ -496,6 +506,7 @@ def ptq(
             If not provided, a forward loop will be created using the calibration dataset.
         tokenizer_path (str): Path to the tokenizer if not using model's tokenizer.
         legacy_ckpt (bool): If True, allow loading ckpt saved with older version of TE.
+        trust_remote_code (bool): Trust remote code when loading HuggingFace models.
 
     Returns:
         Path: The path where the quantized checkpoint has been saved after calibration.
@@ -507,34 +518,39 @@ def ptq(
     if num_nodes is None:
         num_nodes = calibration_pp
 
-    if export_config.path is None:
-        raise ValueError("The export_config.path needs to be specified, got None.")
-
     quantizer = Quantizer(quantization_config, export_config)
+    assert Path(model_path).exists(), f"Path {model_path} does not exist"
+    is_automodel = (Path(model_path) / 'config.json').exists()
 
-    model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
-        model_path=nemo_checkpoint,
-        tensor_model_parallel_size=calibration_tp,
-        pipeline_model_parallel_size=calibration_pp,
-        num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
-        num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
-        devices=devices,
-        num_nodes=num_nodes,
-        inference_only=True,
-        tokenizer_path=tokenizer_path,
-        legacy_ckpt=legacy_ckpt,
-        strategy_kwargs={"sequence_parallel": False, "lazy_init": True},
-        trainer_kwargs={},
-        model_config_overrides={"sequence_parallel": False},
-    )
+    trainer = None
+    if is_automodel:
+        assert export_config.export_format != "nemo", "Automodel PTQ does not support export format nemo"
+        model = HFAutoModelForCausalLM(model_name=model_path, trust_remote_code=trust_remote_code, device_map="auto")
+        model.configure_model()
+    else:
+        assert export_config.export_format != "hf", "Automodel PTQ does not support export format hf"
+        model, trainer = setup_trainer_and_restore_model_with_modelopt_spec(
+            model_path=model_path,
+            tensor_model_parallel_size=calibration_tp,
+            pipeline_model_parallel_size=calibration_pp,
+            num_layers_in_first_pipeline_stage=num_layers_in_first_pipeline_stage,
+            num_layers_in_last_pipeline_stage=num_layers_in_last_pipeline_stage,
+            devices=devices,
+            num_nodes=num_nodes,
+            inference_only=True,
+            tokenizer_path=tokenizer_path,
+            legacy_ckpt=legacy_ckpt,
+            strategy_kwargs={"sequence_parallel": False, "lazy_init": True},
+            trainer_kwargs={},
+            model_config_overrides={"sequence_parallel": False},
+        )
 
     model = quantizer.quantize(model, forward_loop)
+    quantizer.export(model, model_path, trainer)
 
-    quantizer.export(model, nemo_checkpoint, trainer)
-
-    console = Console()
-    console.print(f"[green]✓ PTQ succeded, quantized checkpoint exported to {export_config.path}[/green]")
-
+    if is_global_rank_zero():
+        console = Console()
+        console.print(f"[green]✓ PTQ succeded, quantized checkpoint exported to {export_config.path}[/green]")
     return export_config.path
 
 

@@ -13,7 +13,18 @@
 
 <!-- markdownlint-disable -->
 <details open>
-  <summary><b>NeMo 2.0</b></summary>
+  <summary><b>Pretrain and finetune :hugs:Hugging Face models via AutoModel</b></summary>
+      Nemo Framework's latest feature AutoModel enables broad support for :hugs:Hugging Face models, with 25.02 focusing on <a href=https://huggingface.co/transformers/v3.5.1/model_doc/auto.html#automodelforcausallm>AutoModelForCausalLM<a> in the <a href=https://huggingface.co/models?pipeline_tag=text-generation&sort=trending>text generation category<a>. Future releases will enable support for more model families such as Vision Language Model.
+</details>
+
+<details open>
+  <summary><b>Training on Blackwell using Nemo</b></summary>
+      NeMo Framework has added Blackwell support, with 25.02 focusing on functional parity for B200. More optimizations to come in the upcoming releases.
+</details>
+
+
+<details open>
+  <summary><b>NeMo Framework 2.0</b></summary>
       We've released NeMo 2.0, an update on the NeMo Framework which prioritizes modularity and ease-of-use. Please refer to the <a href=https://docs.nvidia.com/nemo-framework/user-guide/latest/nemo-2.0/index.html>NeMo Framework User Guide</a> to get started.
 </details>
 <details open>

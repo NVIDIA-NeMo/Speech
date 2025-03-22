@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import tempfile
+
 import nemo_run as run
 import pytest
 import torch
@@ -172,3 +174,17 @@ class TestValidateConfig:
             model.config.num_moe_experts = 3
             trainer.strategy.expert_model_parallel_size = 2
             _validate_config(model, data, trainer)
+
+
+class TestImportCkpt:
+
+    def test_output_path_exists_no_overwrite(self):
+        """Test that an error is raised when the output path exists and overwrite is set to False."""
+
+        with pytest.raises(FileExistsError), tempfile.TemporaryDirectory() as output_path:
+            llm.import_ckpt(
+                model=llm.LlamaModel(config=llm.Llama32Config1B()),
+                source="hf://meta-llama/Llama-3.2-1B",
+                output_path=output_path,
+                overwrite=False,
+            )

@@ -760,9 +760,13 @@ def import_ckpt(
     Raises:
         ValueError: If the model does not implement ConnectorMixin, indicating a lack of
             necessary importer functionality.
+        FileExistsError: If the output path is provided (that is, when not using models cache)
+            and it exists and overwrite is not set to True.
     """
-    if output_path and not isinstance(output_path, Path):
+    if output_path:
         output_path = Path(output_path)
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(f"Output path {output_path} exists. Use overwrite=True to force overwrite.")
 
     output = io.import_ckpt(model=model, source=source, output_path=output_path, overwrite=overwrite)
 

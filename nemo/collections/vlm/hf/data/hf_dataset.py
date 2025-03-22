@@ -12,19 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import lightning.pytorch as pl
 import torch
+import torch.distributed as dist
 from datasets import Dataset, DatasetDict, load_dataset
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
-from nemo.lightning.pytorch.plugins import MegatronDataSampler
 from nemo.utils import logging
 
 
 def clean_split(name):
-    """name="train[:100]" returns "train" """
-    if '[' in name:
-        return name.split('[')[0]
+    """removes split from name
+
+    Args:
+        name (str): partition name (e.g. "train[:100]")
+
+    Returns:
+        str: return partition name without any selector (e.g. "train").
+    """
+    if "[" in name:
+        name = name.split("[")[0]
+    if '+' in name:
+        name = name.split('+')[0]
     return name
 
 
@@ -58,7 +70,7 @@ def make_dataset_splits(dataset, split, split_aliases):
     >    "val": Dataset .. (with 10570 rows),
     > }
     """
-    valid_split_names = ['train', 'test', 'val']
+    valid_split_names = ["train", "test", "val"]
     dataset_splits = {_split: None for _split in valid_split_names}
 
     alias_to_split = {}
@@ -66,33 +78,36 @@ def make_dataset_splits(dataset, split, split_aliases):
         assert split_name in valid_split_names
         for alias in _split_aliases:
             alias_to_split[alias] = split_name
+    for name in valid_split_names:
+        alias_to_split[name] = name
 
     if isinstance(dataset, Dataset):
-        assert isinstance(split, str), "Expected split to be a string, but got " + str(type(split))
+        assert isinstance(split, str), "Expected split to be a string, but got {}".format(type(split))
         split = clean_split(split)
+        split = alias_to_split[split]
         dataset_splits[split] = dataset
     elif isinstance(dataset, DatasetDict):
         dataset_split_names = dataset.keys()
-        logging.info(f"HF dataset has the following splits: {dataset_split_names}")
+        logging.info("HF dataset has the following splits: {}".format(dataset_split_names))
         for alias_split_name, split in dataset.items():
             split_name = alias_to_split[alias_split_name]
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = split
     elif isinstance(split, list):
-        logging.info(f"Loaded HF dataset will use " + str(split) + " splits.")
+        logging.info("Loaded HF dataset will use {} splits.".format(split))
         assert isinstance(dataset, list)
         for i, alias_split_name in enumerate(map(clean_split, split)):
             split_name = alias_to_split[alias_split_name]
             assert dataset_splits[split_name] is None
             dataset_splits[split_name] = dataset[i]
     elif isinstance(split, str):
-        logging.info(f"Loaded HF dataset has a single split.")
+        logging.info("Loaded HF dataset has a single split.")
         assert not isinstance(dataset, list)
         alias_split_name = split
-        if '+' in alias_split_name:
+        if "+" in alias_split_name:
             raise ValueError("Split concatenation not supported")
-        elif '[' in alias_split_name:
-            alias_split_name = alias_split_name.split('[')[0]
+        elif "[" in alias_split_name:
+            alias_split_name = alias_split_name.split("[")[0]
         split_name = alias_to_split[alias_split_name]
         assert dataset_splits[split_name] is None
         dataset_splits[split_name] = dataset
@@ -101,8 +116,71 @@ def make_dataset_splits(dataset, split, split_aliases):
 
     assert set(valid_split_names) == set(dataset_splits.keys()), dataset_splits.keys()
     num_init_splits = sum(map(lambda x: x is not None, dataset_splits.values()))
-    assert num_init_splits > 0, f"Expected at least one split to have been initialized {num_init_splits}"
+    assert num_init_splits > 0, "Expected at least one split to have been initialized {}".format(num_init_splits)
     return dataset_splits
+
+
+def has_dist_env_init_or_rank_env_var():
+    """returns whether it runs on a dist-environment"""
+    return dist.is_initialized() or int(os.environ.get('WORLD_SIZE', '0')) > 1
+
+
+def batchify(tensor):
+    """Ensures that the input tensor has at least two dimensions by adding an extra batch dimension if necessary.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be batchified.
+
+    Returns
+    -------
+    torch.Tensor
+        The tensor with an extra dimension added if it was originally 1-dimensional.
+        Otherwise, the tensor is returned as-is.
+    """
+    if tensor.ndim == 1:
+        return tensor.unsqueeze_(0)
+    return tensor
+
+
+def extract_key_from_dicts(batch, key):
+    """Extracts the value of the given key from each dictionary in a list of dictionaries.
+
+    Parameters
+    ----------
+    batch : List[dict]
+        A list of dictionaries.
+    key : str
+        The key whose values are to be extracted from each dictionary.
+
+    Returns
+    -------
+    List
+        A list of values associated with the specified key, in the same order as
+        the dictionaries in the input batch.
+    """
+    return list(map(lambda x: x[key], batch))
+
+
+def pad_within_micro(batch, pad_token_id):
+    """Pads each list in a batch of lists to the same length with a specified token.
+
+    Parameters
+    ----------
+    batch : List[List[int]]
+        A batch of sequences (e.g., token IDs), where each sequence is a list of integers.
+    pad_token_id : int
+        The token ID to use for padding shorter sequences.
+
+    Returns
+    -------
+    List[List[int]]
+        A batch of sequences where each inner list has been padded with the pad token
+        to match the length of the longest sequence in the batch.
+    """
+    max_len = max(map(len, batch))
+    return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
 
 
 class HFDatasetDataModule(pl.LightningDataModule):
@@ -131,14 +209,18 @@ class HFDatasetDataModule(pl.LightningDataModule):
         micro_batch_size=2,
         global_batch_size=2,
         pad_token_id=0,
-        use_mcore_sampler=False,
-        mcore_dataloader_type='cyclic',
+        use_dist_sampler=False,
         train_aliases=["train", "training"],
         test_aliases=["test", "testing"],
         val_aliases=["val", "validation", "valid", "eval"],
         **kwargs,
     ) -> None:
         super().__init__()
+        # Removed support for mcore-sampler post 25.02.
+        if 'use_mcore_sampler' in kwargs:
+            kwargs.pop('use_mcore_sampler')
+        if 'mcore_dataloader_type' in kwargs:
+            kwargs.pop('mcore_dataloader_type')
         assert pad_token_id is not None
         # A dataset usually will have several splits (e.g. train, val, test, etc).
         # We map synonym names to canonical names (train, test, val).
@@ -171,9 +253,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
         self.micro_batch_size = micro_batch_size
         self.global_batch_size = global_batch_size
         self.pad_token_id = pad_token_id
-
-        self.use_mcore_sampler = use_mcore_sampler
-        self.mcore_dataloader_type = mcore_dataloader_type
+        self.use_dist_sampler = use_dist_sampler
 
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
@@ -184,19 +264,6 @@ class HFDatasetDataModule(pl.LightningDataModule):
     @staticmethod
     def collate_fn(batch, pad_token_id=0):
         """Collate for VLM data"""
-
-        def batchify(tensor):
-            if tensor.ndim == 1:
-                return tensor.unsqueeze_(0)
-            return tensor
-
-        def extract_key_from_dicts(batch, key):
-            return list(map(lambda x: x[key], batch))
-
-        def pad_within_micro(batch, pad_token_id):
-            max_len = max(map(len, batch))
-            return [item + [pad_token_id] * (max_len - len(item)) for item in batch]
-
         return {
             key: batchify(
                 torch.LongTensor(
@@ -210,15 +277,18 @@ class HFDatasetDataModule(pl.LightningDataModule):
         }
 
     def setup(self, stage: str):
-        """PTL hook"""
-        if not self.use_mcore_sampler:
-            return
-        self.data_sampler = MegatronDataSampler(
-            seq_len=self.seq_length,
-            micro_batch_size=self.micro_batch_size,
-            global_batch_size=self.global_batch_size,
-            dataloader_type=self.mcore_dataloader_type,
-        )
+        """setups sampler"""
+        # Turn-on dist-sampler if the user is running inside a dist-env.
+        if not self.use_dist_sampler and has_dist_env_init_or_rank_env_var():
+            self.use_dist_sampler = True
+            logging.info("Turning on distributed data sampler")
+
+    def get_data_sampler(self, dataset):
+        """returns the data sampler"""
+        if self.use_dist_sampler:
+            return DistributedSampler(dataset)
+        else:
+            return None
 
     def _make_dataloader(self, dataset, collate_fn=None):
         """Creates a dataloader"""
@@ -236,6 +306,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
             persistent_workers=self.persistent_workers,
             collate_fn=collate_fn,
             batch_size=self.micro_batch_size,
+            sampler=self.get_data_sampler(dataset),
         )
 
     @property
@@ -269,13 +340,14 @@ class HFDatasetDataModule(pl.LightningDataModule):
         """Maps a function to all/selected splits
         Additional arguments can be passed down to dataset's map via kwargs"""
         if isinstance(split_names, str):
-            dataset_splits = {split_names: self.dataset_splits[split_names]}
+            split_names = [split_names]
         elif isinstance(split_names, list):
-            dataset_splits = {k: self.dataset_splits[k] for k in split_names}
+            pass
+        elif split_names is None:
+            split_names = self.dataset_splits.keys()
         else:
-            dataset_splits = self.dataset_splits
+            raise ValueError("split_names must None/str/list")
 
-        for split_name, subset in dataset_splits.items():
-            if subset is None:
-                continue
-            dataset_splits[split_name] = subset.map(function, **kwargs)
+        for split_name in split_names:
+            if not self.dataset_splits[split_name] is None:
+                self.dataset_splits[split_name] = self.dataset_splits[split_name].map(function, **kwargs)

@@ -50,6 +50,7 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.is_hf_model = True
         self.model_transform = model_transform
         self.trust_remote_code = trust_remote_code
+        self.default_dtype = default_dtype
         self.load_in_4bit = load_in_4bit
         self.kwargs = kwargs
 

@@ -643,8 +643,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_Speech_Transcription_Canary_Transcribe_Full_Manifest.sh
-      AFTER_SCRIPT: |
-        rm -rf /tmp/preds.json transcribe.log
 
   L2_Speech_Transcription_Canary_Transcribe_With_Prompt:
     needs: [pre-flight, cicd-test-container-build]
@@ -1737,9 +1735,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Automodel_PTQ_trtllm.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/trtllm_quantized
-
   L2_NeMo_2_Automodel_PTQ_hf:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1748,9 +1743,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Automodel_PTQ_hf.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /tmp/hf_quantized
 
   L2_NeMo_2_PTQ_Llama2_FP8_trtllm:
     needs: [pre-flight, cicd-test-container-build]
@@ -1761,10 +1753,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_PTQ_Llama2_FP8_trtllm.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_ckpt
-        rm -rf /tmp/nemo2_ptq_engine
-
   L2_NeMo_2_PTQ_Llama2_FP8_nemo:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1773,10 +1761,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_PTQ_Llama2_FP8_nemo.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_ckpt
-        rm -rf /tmp/nemo2_ptq_ckpt
 
   L2_NeMo_2_Distill_Llama3_TP1PP2:
     needs: [pre-flight, cicd-test-container-build]
@@ -1787,10 +1771,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Distill_Llama3_TP1PP2.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_ckpt
-        rm -rf /tmp/distill_logs
-
   L2_NeMo_2_Prune_Llama_TP1PP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1799,8 +1779,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Prune_Llama_TP1PP2.sh
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_ckpt /tmp/pruned-llama
 
   L2_NeMo_2_Export_In_Framework:
     needs: [pre-flight, cicd-test-container-build]
@@ -1811,9 +1789,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Export_In_Framework.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_ckpt /tmp/lambada.json
-
   L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1823,9 +1798,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_llava_next_results
-
   L2_NeMo_2_CLIP_PRETRAIN:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1834,9 +1806,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_CLIP_PRETRAIN.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /results/clip_pretrain
 
   L2_NeMo_2_CLIP_INFER:
     needs: [pre-flight, cicd-test-container-build]
@@ -1856,11 +1825,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_VLLM_EXPORT.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/llama_head64
-        rm -rf /tmp/nemo2_ckpt
-        rm -rf /tmp/vllm_from_nemo2
-
   L2_NeMo_2_EVAL:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1869,9 +1833,6 @@ jobs:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_EVAL.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /tmp/trtllm_dir
 
   L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]
@@ -1915,9 +1876,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_SpeechLM_LoRA_TP1PP1_MBS2.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_speechlm_lora/${{ github.run_id }}
-
   L2_NeMo_2_Conversion_Test_Baichuan2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1933,10 +1891,6 @@ jobs:
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt \
           add-model-name
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
-
   L2_NeMo_2_Conversion_Test_ChatGLM:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1951,9 +1905,6 @@ jobs:
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt \
           add-model-name
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_DeepSeek:
     needs: [pre-flight, cicd-test-container-build]
@@ -1969,9 +1920,6 @@ jobs:
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt \
           add-model-name
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Gemma:
     needs: [pre-flight, cicd-test-container-build]
@@ -1986,9 +1934,6 @@ jobs:
           NEMO_MODEL_CONFIG=GemmaConfig2B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Gemma2:
     needs: [pre-flight, cicd-test-container-build]
@@ -2003,9 +1948,6 @@ jobs:
           NEMO_MODEL_CONFIG=Gemma2Config2B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Mistral:
     needs: [pre-flight, cicd-test-container-build]
@@ -2020,9 +1962,6 @@ jobs:
           NEMO_MODEL_CONFIG=MistralConfig7B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Llama:
     needs: [pre-flight, cicd-test-container-build]
@@ -2037,9 +1976,6 @@ jobs:
           NEMO_MODEL_CONFIG=Llama31Config8B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Nemotron:
     needs: [pre-flight, cicd-test-container-build]
@@ -2054,9 +1990,6 @@ jobs:
           NEMO_MODEL_CONFIG=NemotronConfig \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Phi3Mini:
     needs: [pre-flight, cicd-test-container-build]
@@ -2071,9 +2004,6 @@ jobs:
           NEMO_MODEL_CONFIG=Phi3ConfigMini \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Qwen2:
     needs: [pre-flight, cicd-test-container-build]
@@ -2088,9 +2018,6 @@ jobs:
           NEMO_MODEL_CONFIG=Qwen2Config500M \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Starcoder:
     needs: [pre-flight, cicd-test-container-build]
@@ -2105,9 +2032,6 @@ jobs:
           NEMO_MODEL_CONFIG=StarcoderConfig15B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   L2_NeMo_2_Conversion_Test_Starcoder2:
     needs: [pre-flight, cicd-test-container-build]
@@ -2122,9 +2046,6 @@ jobs:
           NEMO_MODEL_CONFIG=Starcoder2Config15B \
           NEMO_OUTPUT_PATH=/tmp/output_nemo2_ckpt \
           HF_OUTPUT_PATH=/tmp/output_hf_ckpt
-      AFTER_SCRIPT: |
-        rm -rf /tmp/output_nemo2_ckpt
-        rm -rf /tmp/output_hf_ckpt
 
   Nemo_CICD_Test:
     needs:

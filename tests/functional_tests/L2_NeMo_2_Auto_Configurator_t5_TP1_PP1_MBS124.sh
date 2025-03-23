@@ -11,20 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-mkdir examples/llm/auto_configurator/auto_conf_logs
+mkdir examples/llm/auto_configurator/auto_conf_logs_t5
 
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
-    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+    --model_type=t5 \
+    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_t5 \
     --run_number=1
 
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
-    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+    --model_type=t5 \
+    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_t5 \
     --run_number=2
 
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
-    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+    --model_type=t5 \
+    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_t5 \
     --run_number=3
 
 coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/nemo examples/llm/auto_configurator/auto_config.py \
-    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs \
+    --model_type=t5 \
+    --log_dir=/workspace/examples/llm/auto_configurator/auto_conf_logs_t5 \
     --get_results

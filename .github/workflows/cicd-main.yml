@@ -1873,16 +1873,38 @@ jobs:
       AFTER_SCRIPT: |
         rm -rf /tmp/trtllm_dir
 
-  L2_NeMo_2_Auto_Configurator_TP1_PP1_MBS124:
+  L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Auto_Configurator_TP1_PP1_MBS124')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124')
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: |-
-        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Auto_Configurator_TP1_PP1_MBS124.sh
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124.sh
       AFTER_SCRIPT: |
-        rm -rf examples/llm/auto_configurator/auto_conf_logs
+        rm -rf examples/llm/auto_configurator/auto_conf_logs_llama
+
+  L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124')
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124.sh
+      AFTER_SCRIPT: |
+        rm -rf examples/llm/auto_configurator/auto_conf_logs_bert
+
+  L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124')
+    with:
+      RUNNER: self-hosted-azure-gpus-1
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124.sh
+      AFTER_SCRIPT: |
+        rm -rf examples/llm/auto_configurator/auto_conf_logs_t5
 
   L2_SpeechLM_LoRA_TP1PP1_MBS2:
     needs: [pre-flight, cicd-test-container-build]
@@ -2257,7 +2279,9 @@ jobs:
       - L2_NEMO_2_LoRA_Export
       - L2_NEMO_2_LoRA_Inference
       - L2_NeMo_2_Mixtral_Pretraining
-      - L2_NeMo_2_Auto_Configurator_TP1_PP1_MBS124
+      - L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124
+      - L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124
+      - L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124
       - L2_Speech_to_Text_AED
       - L2_Speech_Estimate_Duration_Bins
       - L2_Speech_Batch_Size_OOMptimizer

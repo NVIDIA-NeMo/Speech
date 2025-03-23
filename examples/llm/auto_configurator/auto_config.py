@@ -27,6 +27,7 @@ from nemo.collections.llm.tools.auto_configurator import AutoConfigurator, gener
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model_type", type=str, choices=["llama", "bert", "t5"], help="Model type to run")
     parser.add_argument("--run_number", type=int, help="Number of config to run")
     parser.add_argument("--log_dir", type=str, help="Path where to save training logs")
     parser.add_argument("--get_results", action="store_true")
@@ -47,7 +48,6 @@ class Llama3Config145M(Llama3Config):
 def llama3_145m(num_nodes=1, num_gpus_per_node=1):
     # Setup Llama3 145M config
     recipe = partial(llm.llama3_8b.pretrain_recipe, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)()
-    recipe.data.global_batch_size = 16
     recipe.data.seq_length = 2048
 
     recipe.trainer.strategy.context_parallel_size = 1
@@ -67,14 +67,27 @@ def llama3_145m(num_nodes=1, num_gpus_per_node=1):
 
 
 def train_config(args):
-    # Llama3 145M
     # This example will generate 3 configs.
     # It is expected that this script will be run 3 times with changing --run_number flag for each run from 1 to 3.
     # After all configurations are trained, please trigger the script using --get_results flag.
+    # This script provides only Auto Configurator example using only a single GPU.
 
     # Get Auto Conf runner
+    calculate_model_size = False
+    if args.model_type == "llama":
+        recipe = partial(llama3_145m)()
+    elif args.model_type == "bert":
+        recipe = partial(llm.bert_110m.pretrain_recipe, num_nodes=1, num_gpus_per_node=1)()
+    elif args.model_type == "t5":
+        recipe = partial(llm.t5_220m.pretrain_recipe, num_nodes=1, num_gpus_per_node=1)()
+        # Set to False if you don't want Auto Configurator to calculate model size
+        calculate_model_size = True
+    else:
+        raise ValueError(f"Unsupported model type for this script: {args.model_type}")
+    recipe.data.global_batch_size = 16
+
     runner = AutoConfigurator(
-        recipe=partial(llama3_145m)(),
+        recipe=recipe,
         gpu_memory_gb=40,
         tensor_parallel_sizes=[1],
         pipeline_parallel_sizes=[1],
@@ -84,6 +97,7 @@ def train_config(args):
         num_tokens_in_b=10,
         vocab_size=32000,
         path_to_logs=args.log_dir,
+        calculate_model_size=calculate_model_size,
     )
 
     base_cfg, configs = generate_configs(runner)
@@ -93,7 +107,7 @@ def train_config(args):
         names = list(configs.keys())
 
         # Run pre-training
-        pretrain_cfg = partials[args.run_number - 1]  # partial(llama3_145m)() #
+        pretrain_cfg = partials[args.run_number - 1]
         pretrain = fdl.build(pretrain_cfg)
         pretrain()
     else:

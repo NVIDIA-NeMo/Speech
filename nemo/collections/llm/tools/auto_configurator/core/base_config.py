@@ -93,37 +93,14 @@ def _estimate_model_size(
     """
 
     model_penalty = 0.87 if model_name == "mt5" else 1.0
-    valid_models = [
-        "gpt3",
-        "t5",
-        "mt5",
-        "bert",
-        "llama",
-        "mixtral",
-        "mistral",
-        "gemma",
-        "nemotron",
-        "starcoder",
-        "qwen",
-    ]
-    try:
-        if model_name in valid_models:
-            return round(
-                model_penalty
-                * (max_training_days * 3600 * 24 * gpu_count * tflops_per_gpu * 1e12)
-                / (8 * num_tokens_in_b * 1e9)
-                / 1e9,
-                2,
-            )
-        else:
-            raise NotImplementedError
-    except ValueError as err:
-        print(f"Input values were not valid: {err}")
-    except ZeroDivisionError as err:
-        print(f"Cannot divide by zero. This can happen if num_tokens_in_b is zero: {err}")
-    except NotImplementedError as err:
-        print(f"Model size estimation is only available for {valid_models}: {err}")
-    return None
+
+    return round(
+        model_penalty
+        * (max_training_days * 3600 * 24 * gpu_count * tflops_per_gpu * 1e12)
+        / (8 * num_tokens_in_b * 1e9)
+        / 1e9,
+        2,
+    )
 
 
 def _estimate_training_time(
@@ -145,39 +122,13 @@ def _estimate_training_time(
 
     Returns:
         float: number of days it will take to train the model.
-
-    Raises:
-        NotImplementedError: if the model_name is not one of the supported models.
     """
 
     model_penalty = 1.15 if model_name == "mt5" else 1.0
-    valid_models = [
-        "gpt3",
-        "t5",
-        "mt5",
-        "bert",
-        "llama",
-        "mixtral",
-        "mistral",
-        "gemma",
-        "nemotron",
-        "starcoder",
-        "qwen",
-    ]
-    try:
-        if model_name in valid_models:
-            return round(
-                model_penalty
-                * (model_size_in_b * 1e9 * 8 * num_tokens_in_b * 1e9)
-                / (3600 * 24 * gpu_count * tflops_per_gpu * 1e12),
-                2,
-            )
-        else:
-            raise NotImplementedError
-    except ValueError as err:
-        print(f"Input values were not valid: {err}")
-    except ZeroDivisionError as err:
-        print(f"Cannot divide by zero. This can happen if gpu_count or tflops_per_gpu are zero: {err}")
-    except NotImplementedError as err:
-        print(f"Training time estimation is only available for {valid_models}: {err}")
-    return None
+
+    return round(
+        model_penalty
+        * (model_size_in_b * 1e9 * 8 * num_tokens_in_b * 1e9)
+        / (3600 * 24 * gpu_count * tflops_per_gpu * 1e12),
+        2,
+    )

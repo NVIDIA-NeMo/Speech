@@ -114,7 +114,8 @@ class AutoConfigurator:
                 32768,
             ], "Available seq_length list for GPT-based models: [2048, 4096, 8192, 16384, 32768]."
         assert path_to_logs, "path_to_logs parameter must be specified."
-
+        assert num_tokens_in_b > 0, "num_tokens_in_b must be an int larger than zero."
+        assert tflops_per_gpu > 0, "tflops_per_gpu must be an int larger than zero."
         self.num_gpus = recipe.trainer.devices
         self.num_nodes = recipe.trainer.num_nodes
         gpu_count = self.num_nodes * self.num_gpus
@@ -124,6 +125,7 @@ class AutoConfigurator:
             80,
         ), "gpu_memory_gb can only be 40 or 80."
         assert max_minutes_per_run >= 10, "max_minutes_per_run must be an int and be at least 10 minutes."
+        assert max_steps_per_run >= 10, "max_steps_per_run must be an int and be at least 10 minutes."
 
         self.model_type = model_type
         self.model_size_in_b = self._get_model_size(

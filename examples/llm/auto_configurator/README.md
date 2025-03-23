@@ -7,7 +7,7 @@ Use Auto Configurator to Find the Optimal Configuration
 Auto Configurator searches for hyperparameters (HPs) that achieve the maximum highest training throughput when working with Large Language Models (LLMs) utilizing the NeMo Framework.
 
 > [!NOTE] 
-> Auto Configurator is only supported now for GPT-based models: GPT3, LLama, Mixtral, Mistral, Gemma and Nemotron.
+> Auto Configurator is supported for Bert, T5, and GPT-based models: GPT3, LLama, Mixtral, Mistral, Gemma, Nemotron, Starcoder, and Qwen.
 
 Auto Configurator Capabilities
 ------------------------------
@@ -16,7 +16,6 @@ Auto Configurator is intended to iterate over different model configurations qui
 
 - **Model size recommendation**: finds the optimal model size if the parameter is not specified.
 - **Training time estimation**: estimates model training time based on input parameters.
-- **Base configuration generation**: returns a basic model configuration.
 - **Hyperparameters recommendation**: finds the optimal list of hyperparameters to be trained.
 - **Optimal configuration recommendation**: calculates the performance after a short training of candidate configurations and finds the optimal model configuration.
 
@@ -31,11 +30,6 @@ Training Time Estimation
 ------------------------
 
 Auto Configurator calculates the estimated training time for your model. It provides a projection of the training time in days, based on the input dataset and parameters you provide.
-
-Base Configuration Generation
------------------------------
-
-When you provide the model size, or Auto Configurator has suggested one, it generates a base configuration for the target model. The base configuration is a valid configuration in NeMo 2.0 format. The optimization of throughput, however, is conducted in the next step.
 
 Hyperparameters Recommendation
 ------------------------------
@@ -62,15 +56,11 @@ End-To-End Example
 
 The following list shows the required input parameters for the Auto Configurator runner:
 
-- ``model``: model configuration based on NeMo 2.0.
-- ``num_nodes``: number of nodes to be used for the training.
-- ``seq_length``: sequence length to be used for the training.
-- ``data_paths``: dataset to be used for the training.
-- ``tokenizer_path``: path to tokenizer model if custom tokenizer will be used.
+- ``recipe``: model recipe based on NeMo 2.0.
+- ``path_to_logs``: path to the directory where the logs will be stored.
 
 The following list shows the optional parameters for the Auto Configurator runner:
 
-- ``global_batch_size``: global batch size to be used.
 - ``tensor_parallel_sizes``: a list, such as ``[1, 2, 4]``.
 - ``pipeline_parallel_sizes``: a list, such as ``[1, 2, 4]``.
 - ``context_parallel_sizes``: a list, such as ``[1, 2, 4]``.

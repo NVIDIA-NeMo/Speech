@@ -43,7 +43,7 @@ from typing import List
 
 from omegaconf import MISSING
 
-from nemo.collections.asr.parts.submodules.ngram_lm import FastNGramLM, kenlm_utils
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel, kenlm_utils
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
@@ -74,8 +74,8 @@ class TrainKenlmConfig:
     )  # List of digits to prune Ngram. Example: [0,0,1]. See Pruning section on the https://kheafield.com/code/kenlm/estimation
     cache_path: str = ""  # Cache path to save tokenized files.
     verbose: int = 1  # Verbose level, default is 1.
-    save_nemo: bool = False  # Save .nemo checkpoint to use with FastNGramLM
-    normalize_unk_nemo: bool = True  # Normalize the UNK token in the FastNGramLM model
+    save_nemo: bool = False  # Save .nemo checkpoint to use with NGramGPULanguageModel
+    normalize_unk_nemo: bool = True  # Normalize the UNK token in the NGramGPULanguageModel model
 
 
 @hydra_runner(config_path=None, config_name='TrainKenlmConfig', schema=TrainKenlmConfig)
@@ -182,7 +182,7 @@ def main(args: TrainKenlmConfig):
     if args.save_nemo:
         if full_vocab_size is None:
             raise NotImplementedError("Unknown vocab size, cannot convert the model")
-        nemo_model = FastNGramLM.from_arpa(
+        nemo_model = NGramGPULanguageModel.from_arpa(
             lm_path=arpa_file, vocab_size=full_vocab_size, normalize_unk=args.normalize_unk_nemo
         )
         nemo_model.save_to(f"{args.kenlm_model_file}.nemo")

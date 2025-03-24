@@ -20,7 +20,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from tqdm.auto import tqdm
 
-from nemo.collections.asr.parts.submodules.ngram_lm import FastNGramLM, KenLMBatchedWrapper
+from nemo.collections.asr.parts.submodules.ngram_lm import KenLMBatchedWrapper, NGramGPULanguageModel
 from nemo.core.utils.optional_libs import KENLM_AVAILABLE, TRITON_AVAILABLE
 
 DEVICES = [torch.device("cpu")]
@@ -33,7 +33,7 @@ if torch.cuda.is_available():
 def n_gpu_lm(test_data_dir):
     kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
     vocab_size = 1024
-    return FastNGramLM.from_arpa(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
+    return NGramGPULanguageModel.from_arpa(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
 
 
 @pytest.fixture(scope="module")
@@ -43,12 +43,12 @@ def kenlm_wrapper(test_data_dir):
     return KenLMBatchedWrapper.from_file(lm_path=kenlm_model_path, vocab_size=vocab_size)
 
 
-class TestFastNGramLM:
+class TestNGramGPULanguageModel:
     @pytest.mark.with_downloads
     @pytest.mark.unit
     def test_load(self, test_data_dir):
         kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
-        _ = FastNGramLM.from_arpa(kenlm_model_path, vocab_size=1024)
+        _ = NGramGPULanguageModel.from_arpa(kenlm_model_path, vocab_size=1024)
 
     @pytest.mark.with_downloads
     @pytest.mark.unit
@@ -58,7 +58,7 @@ class TestFastNGramLM:
     @pytest.mark.parametrize("bos", [True, False])
     def test_initial_states(
         self,
-        n_gpu_lm: FastNGramLM,
+        n_gpu_lm: NGramGPULanguageModel,
         kenlm_wrapper: KenLMBatchedWrapper,
         bos: bool,
         batch_size: int,
@@ -75,7 +75,7 @@ class TestFastNGramLM:
     @pytest.mark.unit
     @pytest.mark.skipif(not TRITON_AVAILABLE, reason="Triton is not available")
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
-    def test_triton_vs_pytorch_random_states(self, n_gpu_lm: FastNGramLM, batch_size=2, num_iterations=100):
+    def test_triton_vs_pytorch_random_states(self, n_gpu_lm: NGramGPULanguageModel, batch_size=2, num_iterations=100):
         """Randomly initializes the states and compares the scores from Triton and PyTorch implementations."""
         torch.manual_seed(777)
         device = torch.device("cuda")
@@ -96,7 +96,9 @@ class TestFastNGramLM:
     @pytest.mark.skipif(not KENLM_AVAILABLE, reason="KenLM is not available")
     @pytest.mark.parametrize("device", DEVICES)
     @pytest.mark.parametrize("bos", [True, False])
-    def test_final(self, n_gpu_lm: FastNGramLM, kenlm_wrapper: KenLMBatchedWrapper, bos: bool, device: torch.device):
+    def test_final(
+        self, n_gpu_lm: NGramGPULanguageModel, kenlm_wrapper: KenLMBatchedWrapper, bos: bool, device: torch.device
+    ):
         """Test final (eos) scores"""
         n_gpu_lm = n_gpu_lm.to(device)
         sentences = [
@@ -129,7 +131,12 @@ class TestFastNGramLM:
     @pytest.mark.parametrize("bos", [True, False])
     @pytest.mark.parametrize("eos", [True, False])
     def test_sentences(
-        self, n_gpu_lm: FastNGramLM, kenlm_wrapper: KenLMBatchedWrapper, bos: bool, eos: bool, device: torch.device
+        self,
+        n_gpu_lm: NGramGPULanguageModel,
+        kenlm_wrapper: KenLMBatchedWrapper,
+        bos: bool,
+        eos: bool,
+        device: torch.device,
     ):
         n_gpu_lm = n_gpu_lm.to(device)
         sentences = [
@@ -161,10 +168,10 @@ class TestFastNGramLM:
     def test_save_load_nemo(self, tmp_path, test_data_dir):
         vocab_size = 1024
         kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
-        n_gpu_lm = FastNGramLM.from_arpa(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
+        n_gpu_lm = NGramGPULanguageModel.from_arpa(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
         nemo_path = tmp_path / "ngram_lm.nemo"
         n_gpu_lm.save_to(f"{nemo_path}")
-        n_gpu_lm_loaded = FastNGramLM.from_nemo(f"{nemo_path}", vocab_size=vocab_size)
+        n_gpu_lm_loaded = NGramGPULanguageModel.from_nemo(f"{nemo_path}", vocab_size=vocab_size)
 
         # arcs data
         assert torch.allclose(n_gpu_lm_loaded.arcs_weights, n_gpu_lm.arcs_weights)
@@ -183,10 +190,10 @@ class TestFastNGramLM:
     def test_save_load_from_file(self, tmp_path, test_data_dir):
         vocab_size = 1024
         kenlm_model_path = Path(test_data_dir) / "asr/kenlm_ngram_lm/parakeet-tdt_ctc-110m-libri-1024.kenlm.tmp.arpa"
-        n_gpu_lm = FastNGramLM.from_file(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
+        n_gpu_lm = NGramGPULanguageModel.from_file(kenlm_model_path, vocab_size=vocab_size, normalize_unk=False)
         nemo_path = tmp_path / "ngram_lm.nemo"
         n_gpu_lm.save_to(f"{nemo_path}")
-        n_gpu_lm_loaded = FastNGramLM.from_file(f"{nemo_path}", vocab_size=vocab_size)
+        n_gpu_lm_loaded = NGramGPULanguageModel.from_file(f"{nemo_path}", vocab_size=vocab_size)
 
         # arcs data
         assert torch.allclose(n_gpu_lm_loaded.arcs_weights, n_gpu_lm.arcs_weights)

@@ -1,7 +1,6 @@
 accelerated-scan
 boto3
 faiss-cpu
-fasttext
 flask_restful
 ftfy
 gdown

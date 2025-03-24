@@ -22,6 +22,7 @@ from typing import Any, Dict, Literal, Optional, Union
 
 import lightning.pytorch as pl
 import torch
+import torch.distributed as dist
 from lightning.fabric.plugins import CheckpointIO
 from lightning.fabric.utilities.rank_zero import rank_zero_info
 from lightning.fabric.utilities.seed import reset_seed
@@ -440,20 +441,23 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
     @override
     def lightning_module_state_dict(self) -> Dict[str, Any]:
-        """Collects the state dict of the model.
-
-        Only returns a non-empty state dict on rank 0 if ``save_distributed_checkpoint=False``.
-
-        """
+        """Collects the state dict of the model."""
         from nemo.lightning.pytorch.strategies.utils import to_cpu
 
         assert self.lightning_module is not None
         state_dict = self.lightning_module.state_dict()
+        is_adapter_only = getattr(self._checkpoint_io, 'adapter_only', False)
+        name_has_lora = lambda x: 'lora' in x.lower()
 
         module_names = list(state_dict.keys())
         for name in module_names:
             param = state_dict.pop(name)
-            state_dict[name] = to_cpu(param)
+            # @akoumparouli: refactor this.
+            # if any key has "lora" in FQN, then it will only move lora keys to cpu, since only
+            # the adapter weights are saved.
+            if (is_adapter_only and name_has_lora(name)) or not is_adapter_only:
+                state_dict[name] = to_cpu(param)
+        dist.barrier()
         return state_dict
 
     @override

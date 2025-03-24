@@ -18,42 +18,14 @@ import _io
 import lightning.pytorch as pl
 import torch
 import torch.distributed as dist
-import torch.nn.functional as F
 from transformers import AutoModelForCausalLM
 
+from nemo.automodel.loss import masked_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
 from nemo.utils import logging
 from nemo.utils.import_utils import safe_import
-
-
-def masked_cross_entropy(logits, targets, mask=None):
-    """
-    Compute the masked cross-entropy loss between logits and targets.
-
-    If a mask is provided, the loss is computed per element, multiplied by the mask,
-    and then averaged. If no mask is provided, the standard cross-entropy loss is used.
-
-    Args:
-        logits (torch.Tensor): The predicted logits with shape (N, C) where C is the number of classes.
-        targets (torch.Tensor): The ground truth class indices with shape (N,).
-        mask (torch.Tensor, optional): A tensor that masks the loss computation. Items marked with
-            1 will be used to calculate loss, otherwise ignored. Must be broadcastable to the shape
-            of the loss. Defaults to None.
-
-    Returns:
-        torch.Tensor: The computed loss as a scalar tensor.
-    """
-    if targets.device != logits.device:
-        targets = targets.to(logits.device)
-    if mask is not None:
-        with torch.no_grad():
-            if mask.device != targets.device:
-                mask = mask.to(targets.device)
-            targets.masked_fill_(mask.view(-1) == 0, -100)
-            del mask
-    return F.cross_entropy(logits, targets)
 
 
 class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
@@ -286,11 +258,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         outputs = self.forward(batch)
 
         # Prepare for loss calculation
-        logits = outputs.logits.float()
+        logits = outputs.logits
         n_cls = logits.shape[-1]
         logits = logits.view(-1, n_cls)
         labels = labels.view(-1)
-
         assert logits.shape[-2] == labels.shape[-1], "Expected logits & labels to have the same length"
         loss = self.loss_fn(logits, labels, loss_mask)
         # logging
@@ -379,7 +350,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         outputs = self.forward(batch)
 
-        logits = outputs.logits.float()
+        logits = outputs.logits
         n_cls = logits.shape[-1]
         logits = logits.view(-1, n_cls)
         labels = labels.view(-1)

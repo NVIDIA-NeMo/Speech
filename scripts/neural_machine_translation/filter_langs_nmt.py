@@ -21,7 +21,15 @@ import warnings
 from pathlib import Path
 from time import sleep
 
-import fasttext
+try:
+    import fasttext
+
+    HAVE_FASTTEXT = True
+
+except ModuleNotFoundError:
+
+    HAVE_FASTTEXT = False
+
 from tqdm import tqdm
 
 """
@@ -40,7 +48,12 @@ python filter_langs_nmt.py --input-src train.en \
 
 logging.basicConfig(level=logging.INFO)
 # temp fix for the warning: "Warning : 'load_model' does not return WordVectorModel or SupervisedModel any more, but a 'FastText' object which is very similar."
-fasttext.FastText.eprint = lambda x: None
+try:
+    fasttext.FastText.eprint = lambda x: None
+
+except ModuleNotFoundError:
+
+    raise ImportError("Pypi package fasttext is required but not installed")
 
 
 def get_args():
@@ -76,7 +89,10 @@ def get_args():
         type=Path,
     )
     parser.add_argument(
-        "--output-tgt", "-T", help="Path to the output target file", type=Path,
+        "--output-tgt",
+        "-T",
+        help="Path to the output target file",
+        type=Path,
     )
     parser.add_argument(
         "--source-lang",
@@ -90,10 +106,17 @@ def get_args():
         help="Output language. For options see https://fasttext.cc/docs/en/language-identification.html.",
     )
     parser.add_argument(
-        "--removed-src", "-r", required=True, help="Path to file where removed source lines will be saved", type=Path,
+        "--removed-src",
+        "-r",
+        required=True,
+        help="Path to file where removed source lines will be saved",
+        type=Path,
     )
     parser.add_argument(
-        "--removed-tgt", "-R", help="Path to file where removed target lines will be saved", type=Path,
+        "--removed-tgt",
+        "-R",
+        help="Path to file where removed target lines will be saved",
+        type=Path,
     )
     parser.add_argument(
         "--num-jobs",
@@ -190,14 +213,21 @@ def filter_pairs(
     rank,
 ):
     global counter
+    if not HAVE_FASTTEXT:
+        raise ImportError("Pypi package fasttext is required but not installed")
     fasttext_model = fasttext.load_model(str(fasttext_model))
     output_src = filtered_dir_src / Path(f"rank{rank}")
     output_src_removed = removed_dir_src / Path(f"rank{rank}")
     output_tgt = filtered_dir_tgt / Path(f"rank{rank}")
     output_tgt_removed = removed_dir_tgt / Path(f"rank{rank}")
-    with open(input_src) as in_src, open(input_tgt) as in_tgt, open(output_src, 'w') as out_src, open(
-        output_tgt, 'w'
-    ) as out_tgt, open(output_src_removed, 'w') as out_r_src, open(output_tgt_removed, 'w') as out_r_tgt:
+    with (
+        open(input_src) as in_src,
+        open(input_tgt) as in_tgt,
+        open(output_src, 'w') as out_src,
+        open(output_tgt, 'w') as out_tgt,
+        open(output_src_removed, 'w') as out_r_src,
+        open(output_tgt_removed, 'w') as out_r_tgt,
+    ):
         in_src.seek(src_edges[0])
         in_tgt.seek(tgt_edges[0])
         src_l, tgt_l, i = in_src.readline(), in_tgt.readline(), 0
@@ -237,10 +267,18 @@ def filter_pairs(
 
 
 def filter_singles(
-    src_edges, input_src, filtered_dir_src, removed_dir_src, source_lang, fasttext_model, rank,
+    src_edges,
+    input_src,
+    filtered_dir_src,
+    removed_dir_src,
+    source_lang,
+    fasttext_model,
+    rank,
 ):
     logging.debug("filter singles")
     global counter
+    if not HAVE_FASTTEXT:
+        raise ImportError("Pypi package fasttext is required but not installed")
     fasttext_model = fasttext.load_model(str(fasttext_model))
     output_src = filtered_dir_src / Path(f"rank{rank}")
     output_src_removed = removed_dir_src / Path(f"rank{rank}")
@@ -285,7 +323,13 @@ def filter_by_lang(args):
         if tgt_edges is not None:
             warnings.warn("If input target is not provided `tgt_edges` argument is expected to be `None`")
         filter_singles(
-            src_edges, input_src, filtered_dir_src, removed_dir_src, source_lang, fasttext_model, rank,
+            src_edges,
+            input_src,
+            filtered_dir_src,
+            removed_dir_src,
+            source_lang,
+            fasttext_model,
+            rank,
         )
     else:
         filter_pairs(

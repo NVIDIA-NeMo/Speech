@@ -51,11 +51,9 @@ MixedPrecisionPolicy, HAS_MIXED_PRECISION_POLICY = safe_import_from(
     "torch.distributed._composable.fsdp", "MixedPrecisionPolicy"
 )
 
-CPUOffloadPolicy, HAS_CPU_OFFLOAD_POLICY = safe_import_from("torch.distributed.fsdp", "CPUOffloadPolicy")
-if not HAS_CPU_OFFLOAD_POLICY:
-    CPUOffloadPolicy, HAS_CPU_OFFLOAD_POLICY = safe_import_from(
-        "torch.distributed._composable.fsdp", "CPUOffloadPolicy"
-    )
+CPUOffloadPolicy, HAS_CPU_OFFLOAD_POLICY = safe_import_from(
+    "torch.distributed.fsdp", "CPUOffloadPolicy", fallback_module="torch.distributed._composable.fsdp"
+)
 
 _logger = _logging.getLogger(__name__)
 

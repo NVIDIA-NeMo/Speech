@@ -178,7 +178,7 @@ We recommend applying the following steps to clean, normalize, and tokenize your
 
    For example:
 
-   .. code ::
+   .. code-block:: none
 
        Before - Aquí se encuentran joyerías como Tiffany`s entre negocios tradicionales suizos como la confitería Sprüngli.
        After  - Aquí se encuentran joyerías como Tiffany's entre negocios tradicionales suizos como la confitería Sprüngli.
@@ -206,7 +206,7 @@ We recommend applying the following steps to clean, normalize, and tokenize your
    
    For example:
 
-   .. code ::
+   .. code-block:: none
 
        Before - 同时，卫生局认为有必要接种的其他人员，包括公共部门，卫生局将主动联络有关机构取得名单后由卫生中心安排接种。
        After  - 同时 ， 卫生局 认为 有 必要 接种 的 其他 人员 ， 包括 公共部门 ， 卫生局 将 主动 联络 有关 机构 取得 名单 后 由 卫生 中心 安排 接种 。
@@ -728,7 +728,7 @@ The ``checkpoint_file`` should be the path to Megatron-LM checkpoint:
 In case your megatron model requires model parallelism, then ``checkpoint_file`` should point to the directory containing the
 standard Megatron-LM checkpoint format:
 
-.. code ::
+.. code-block:: bash
 
   3.9b_bert_no_rng
   ├── mp_rank_00

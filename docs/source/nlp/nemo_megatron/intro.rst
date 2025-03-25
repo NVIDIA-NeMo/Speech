@@ -14,12 +14,8 @@ To learn more about using NeMo to train Large Language Models at scale, please r
 
    gpt/gpt_training
    batching
-   retro/retro_model
-   hiddens/hiddens_module
-   peft/landing_page
    positional_embeddings
    mcore_customization
-   model_distillation/drop_layers
    reset_learning_rate
    rampup_batch_size
 

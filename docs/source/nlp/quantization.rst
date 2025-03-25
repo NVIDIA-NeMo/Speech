@@ -1,4 +1,5 @@
-.. _megatron_quantization:
+:orphan:
+.. _megatron__quantization:
 
 Quantization
 ==========================
@@ -102,21 +103,17 @@ The output directory stores the following files:
     ├── tokenizer.model
     └── tokenizer_config.yaml
 
-
 The TensorRT-LLM engine can be conveniently built and run using ``TensorRTLLM`` class available in ``nemo.export`` submodule:
 
 .. code-block:: python
 
     from nemo.export.tensorrt_llm import TensorRTLLM
-
-
     trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")
     trt_llm_exporter.export(
         nemo_checkpoint_path="llama3-70b-base-fp8-qnemo",
         model_type="llama",
     )
     trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
-
 
 Alternatively, it can also be built directly using ``trtllm-build`` command, see `TensorRT-LLM documentation <https://github.com/NVIDIA/TensorRT-LLM/tree/main/examples/llama#fp8-post-training-quantization>`_:
 
@@ -129,7 +126,6 @@ Alternatively, it can also be built directly using ``trtllm-build`` command, see
         --max_input_len 2048 \
         --max_output_len 512 \
         --strongly_typed
-
 
 Known issues
 ^^^^^^^^^^^^
@@ -185,7 +181,7 @@ It can also optionally produce an exported TensorRT-LLM engine directory or a ``
 Note that you may tweak the QAT trainer steps and learning rate if needed to achieve better model quality.
 
 NeMo checkpoints trained in FP8 with `NVIDIA Transformer Engine <https://github.com/NVIDIA/TransformerEngine>`_
----------------------------------
+----------------------------------------------------------------------------------------------------------------
 
 If you have an FP8-quantized checkpoint, produced during pre-training or fine-tuning with Transformer Engine, you can convert it to a FP8 TensorRT-LLM engine directly using ``nemo.export``.
 The API is the same as with regular ``.nemo`` and ``.qnemo`` checkpoints:
@@ -193,16 +189,12 @@ The API is the same as with regular ``.nemo`` and ``.qnemo`` checkpoints:
 .. code-block:: python
 
     from nemo.export.tensorrt_llm import TensorRTLLM
-
-
     trt_llm_exporter = TensorRTLLM(model_dir="/path/to/trt_llm_engine_folder")
     trt_llm_exporter.export(
         nemo_checkpoint_path="/path/to/llama2-7b-base-fp8.nemo",
         model_type="llama",
     )
     trt_llm_exporter.forward(["Hi, how are you?", "I am good, thanks, how about you?"])
-
-
 
 The export settings for quantization can be adjusted via ``trt_llm_exporter.export`` arguments:
 

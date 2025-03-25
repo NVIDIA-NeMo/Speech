@@ -105,15 +105,15 @@ The memory map format makes training more efficient, especially with many nodes 
 Create a Custom Training Recipe
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-To train a model with NeMo 2.0, a training recipe is required. You can refer to `this tutorial <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/ADD-RECIPE.md>`_ 
-To learn how to create a custom training recipe or use an existing one, refer to the `LLM recipes <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes>`_ developed by NeMo team.
+To train a model with NeMo 2.0, a training recipe is required. You can refer to `this page <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/ADD-RECIPE.md>`_ 
+to learn how to create a custom training recipe or use an existing one, refer to the `LLM recipes <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes>`_ developed by NeMo team.
 
 
 Train a Model
 ~~~~~~~~~~~~~
 
 Once you have prepared the training data, tokenizer, and recipe, you are ready to train the model. You can follow `this tutorial <https://github.com/NVIDIA/NeMo/blob/main/examples/llm/pretrain/README.md#run-pre-training-with-a-default-recipe>`_ 
-To train a model using an existing recipe or a custom one, follow `this tutorial <https://github.com/NVIDIA/NeMo/blob/main/examples/llm/pretrain/README.md#create-and-run-a-custom-recipe>`_ to train a model with a custom recipe.
+To train a model using an existing recipe or a custom one, follow `this example <https://github.com/NVIDIA/NeMo/blob/main/examples/llm/pretrain/README.md#create-and-run-a-custom-recipe>`_ to train a model with a custom recipe.
 
 Next Steps
 ~~~~~~~~~~

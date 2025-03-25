@@ -19,8 +19,9 @@ When pretraining an existing checkpoint "from scratch" on a different dataset. T
 
 2. ``reset_lr=True, reset_lr_steps=True``
 When continuing training from an existing checkpoint with the same configuration. The learning rate will be reset to its initial value, and the ``max_steps`` and ``decay_steps`` for learning rate schedule will be recalculated by subtracting the number of steps already completed at the checkpoint. Specifically:
-    * ``max_steps`` will be recalculated as ``max_steps -= completed_steps``.
-    * ``decay_steps`` will be recalculated as ``decay_steps -= completed_steps``.
+* ``max_steps`` will be recalculated as ``max_steps -= completed_steps``.
+* ``decay_steps`` will be recalculated as ``decay_steps -= completed_steps``.
+
 This ensures that the learning rate reaches the ``min_lr`` value by the end of training without changing the ``trainer.max_steps``:
 
 .. image:: https://github.com/NVIDIA/NeMo/releases/download/v2.0.0rc0/asset-post-reset-learning-rate-example.png

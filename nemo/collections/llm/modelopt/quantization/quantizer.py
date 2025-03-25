@@ -286,7 +286,7 @@ class Quantizer:
             output_tensor = model(data, position_ids, None)
 
             def _mock_loss_function(tensor):
-                return 0, {}
+                return torch.zeros(1), {}
 
             return output_tensor, _mock_loss_function
 

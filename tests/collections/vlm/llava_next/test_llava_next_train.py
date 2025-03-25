@@ -26,6 +26,7 @@ from nemo import lightning as nl
 from nemo.collections import llm, vlm
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm.api import train
+from nemo.collections.multimodal.data.energon import ImageToken
 from nemo.lightning import AutoResume, NeMoLogger
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
@@ -39,6 +40,27 @@ def get_args():
     parser.add_argument(
         '--experiment-dir', type=str, default=None, help="directory to write results and checkpoints to"
     )
+    parser.add_argument(
+        '--data-type',
+        type=str,
+        choices=['mock', 'energon'],
+        default='mock',
+        help="Type of data to use for training: mock or energon",
+    )
+    parser.add_argument(
+        '--data-path',
+        type=str,
+        default=None,
+        help="Path to the WebDataset for Energon data (only needed if data-type is energon)",
+    )
+    parser.add_argument(
+        '--use-packed-sequence', action='store_true', help="Use packed sequence for more efficient training"
+    )
+    parser.add_argument('--gbs', type=int, default=2, help="Global batch size")
+    parser.add_argument('--mbs', type=int, default=2, help="Micro batch size")
+    parser.add_argument('--tensor-model-parallel-size', type=int, default=1, help="Tensor model parallel size")
+    parser.add_argument('--pipeline-model-parallel-size', type=int, default=1, help="Pipeline model parallel size")
+    parser.add_argument('--context-parallel-size', type=int, default=1, help="Context parallel size")
 
     return parser.parse_args()
 
@@ -47,20 +69,67 @@ if __name__ == '__main__':
 
     args = get_args()
 
-    gbs = 2
-    mbs = 2
-    decoder_seq_length = 1024
-    processor = AutoProcessor.from_pretrained("llava-hf/llava-v1.6-vicuna-7b-hf")
-    tokenizer = AutoTokenizer("llava-hf/llava-v1.6-vicuna-7b-hf")
+    gbs = args.gbs
+    mbs = args.mbs
+    decoder_seq_length = 8192
 
-    data = vlm.LlavaNextMockDataModule(
-        seq_length=decoder_seq_length,
-        tokenizer=tokenizer,
-        image_processor=processor.image_processor,
-        global_batch_size=gbs,
-        micro_batch_size=mbs,
-        num_workers=0,
-    )
+    model_id = "llava-hf/llava-v1.6-vicuna-7b-hf"
+    processor = AutoProcessor.from_pretrained(model_id)
+    tokenizer = AutoTokenizer(model_id)
+
+    # Setup data module based on type
+    if args.data_type == 'mock':
+        # Use mock data for simple testing
+        data = vlm.LlavaNextMockDataModule(
+            seq_length=decoder_seq_length,
+            tokenizer=tokenizer,
+            image_processor=processor.image_processor,
+            global_batch_size=gbs,
+            micro_batch_size=mbs,
+            num_workers=0,
+        )
+    elif args.data_type == 'energon':
+        # Validate args
+        if not args.data_path:
+            raise ValueError("For Energon data type, you must specify --data-path")
+
+        from nemo.collections.multimodal.data.energon import EnergonMultiModalDataModule
+        from nemo.collections.multimodal.data.energon.config import MultiModalSampleConfig
+        from nemo.collections.vlm import LlavaNextTaskEncoder
+
+        # Configure multimodal sample settings
+        multimodal_sample_config = MultiModalSampleConfig(
+            image_token=ImageToken(token_str="<image>", token_id=-200),
+            ignore_place_holder=-100,
+        )
+        # Setting system prompt to empty string
+        multimodal_sample_config.conversation_template_config.system = ''
+
+        # Setup task encoder
+        task_encoder = LlavaNextTaskEncoder(
+            tokenizer=tokenizer.tokenizer,
+            image_processor=processor.image_processor,
+            multimodal_sample_config=multimodal_sample_config,
+            packed_sequence=args.use_packed_sequence,
+            packed_sequence_size=decoder_seq_length,
+        )
+
+        # Create data module with Energon
+        data = EnergonMultiModalDataModule(
+            path=args.data_path,
+            tokenizer=tokenizer,
+            image_processor=processor.image_processor,
+            num_workers=2,
+            micro_batch_size=mbs,
+            global_batch_size=gbs,
+            seq_length=decoder_seq_length,
+            multimodal_sample_config=multimodal_sample_config,
+            task_encoder=task_encoder,
+            packing_buffer_size=200 if args.use_packed_sequence else None,
+            virtual_epoch_length=10,  # Small value for testing
+        )
+    else:
+        raise ValueError(f"Unknown data type: {args.data_type}")
 
     # Transformer configurations
     language_transformer_config = llm.Llama2Config7B(seq_length=decoder_seq_length, num_layers=2)
@@ -87,8 +156,9 @@ if __name__ == '__main__':
     model = vlm.LlavaNextModel(neva_config, tokenizer=data.tokenizer)
 
     strategy = nl.MegatronStrategy(
-        tensor_model_parallel_size=1,
-        pipeline_model_parallel_size=1,
+        tensor_model_parallel_size=args.tensor_model_parallel_size,
+        pipeline_model_parallel_size=args.pipeline_model_parallel_size,
+        context_parallel_size=args.context_parallel_size,
         encoder_pipeline_model_parallel_size=0,
         pipeline_dtype=torch.bfloat16,
     )

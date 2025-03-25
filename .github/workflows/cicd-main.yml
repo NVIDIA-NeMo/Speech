@@ -1798,9 +1798,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_llava_next_results
-
   L2_NeMo_2_LLAVA_NEXT_HF_CONVERSION:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1809,9 +1806,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_LLAVA_NEXT_HF_CONVERSION.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_llava_next_hf_conversion_results
 
   L2_NeMo_2_LLAVA_NEXT_ENERGON_TRAIN:
     needs: [pre-flight, cicd-test-container-build]
@@ -1822,9 +1816,6 @@ jobs:
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_LLAVA_NEXT_ENERGON_TRAIN.sh
 
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_llava_next_energon_results
-
   L2_NeMo_2_LLAVA_NEXT_ENERGON_PACKED_TRAIN:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1833,9 +1824,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_LLAVA_NEXT_ENERGON_PACKED_TRAIN.sh
-
-      AFTER_SCRIPT: |
-        rm -rf /tmp/nemo2_llava_next_energon_packed_results
 
   L2_NeMo_2_CLIP_PRETRAIN:
     needs: [pre-flight, cicd-test-container-build]

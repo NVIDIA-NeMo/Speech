@@ -13,6 +13,8 @@
 # limitations under the License.
 name: CICD NeMo
 on:
+  schedule:
+    - cron: 0 0 * * *
   pull_request:
     branches:
       - main
@@ -31,7 +33,7 @@ on:
         description: Comma-separated list of tests to run. Use "all" to run the full test suite.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -180,7 +182,7 @@ jobs:
       IS_UNIT_TEST: true
       SCRIPT: |-
         RUN_ID=${{ github.run_id }} bash tests/functional_tests/L0_Unit_Tests_GPU_LLM.sh
-  
+
   L0_Unit_Tests_GPU_VLM:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml

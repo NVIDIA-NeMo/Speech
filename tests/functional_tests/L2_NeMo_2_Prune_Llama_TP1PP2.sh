@@ -25,9 +25,9 @@ coverage run --branch -a --data-file=/workspace/.coverage --source=/workspace/ne
   --num_train_samples 32 \
   --data_paths 1.0 /home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document \
   --index_mapping_dir examples/nlp/language_modeling/gpt_index_mappings \
-  --prune_hidden_size 64 \
-  --prune_ffn_hidden_size 128 \
-  --prune_num_attention_heads 4 \
-  --prune_num_query_groups 4 \
-  --prune_num_layers 2 \
+  --target_hidden_size 64 \
+  --target_ffn_hidden_size 128 \
+  --target_num_attention_heads 4 \
+  --target_num_query_groups 4 \
+  --target_num_layers 2 \
   --save_path /tmp/pruned-llama

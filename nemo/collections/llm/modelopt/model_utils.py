@@ -48,6 +48,7 @@ def _set_gpt_modelopt_spec(model_cfg: llm.GPTConfig) -> llm.GPTConfig:
 
 def set_modelopt_spec_if_exists_in_ckpt(model: L.LightningModule, path: str) -> None:
     """Set model.config.transformer_layer_spec to modelopt spec if modelopt_state exists in the checkpoint."""
+    path = str(path).lstrip("nemo://")  # Remove nemo:// prefix added by finetune_recipe
     modelopt_state_path = ckpt_to_weights_subdir(path, is_saving=False) / "modelopt_state"
     if not modelopt_state_path.exists() or hasattr(model, "module"):
         return

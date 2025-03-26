@@ -18,7 +18,7 @@ The default config (i.e., marblenet_3x2x64_20ms.yaml) outputs 20ms frames.
 
 ## Training
 ```sh
-python speech_to_label.py \
+python speech_to_frame_label.py \
     --config-path=<path to dir of configs e.g. "../conf/marblenet">
     --config-name=<name of config without .yaml e.g. "marblenet_3x2x64_20ms"> \
     model.train_ds.manifest_filepath="<path to train manifest>" \

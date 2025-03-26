@@ -22,7 +22,6 @@ from megatron.core.distributed import DistributedDataParallelConfig
 
 from nemo import lightning as nl
 from nemo.collections import llm
-from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
@@ -138,18 +137,21 @@ def distillation_recipe(
         performance_mode (bool): If true, enables optimizations for maximum performance.
 
     Returns:
-        run.Partial: Partial configuration for pre-training.
+        run.Partial: Partial configuration for distillation.
 
-    Examples:
-        CLI usage:
-            $ nemo llm distill --factory "default(name='my_distillation', student_model_path='/path/to/student/nemo/ckpt/', teacher_model_path='/path/to/teacher/nemo/ckpt/')"
-
-        Python API usage:
-            >>> recipe = distillation_recipe(
-            ...     student_model_path="/path/to/student/nemo/ckpt/",
-            ...     teacher_model_path="/path/to/teacher/nemo/ckpt/",
-            ... )
-            >>> print(recipe)
+    Python recipe usage:
+        >>> import nemo_run as run
+        >>> from nemo.collections import llm
+        >>> from nemo.collections.llm.modelopt.recipes import distillation_recipe
+        >>> recipe = distillation_recipe(
+        ...     student_model_path="/path/to/student/nemo/ckpt/",
+        ...     teacher_model_path="/path/to/teacher/nemo/ckpt/",
+        ... )
+        >>> # Override the configuration with desired components:
+        >>> recipe.data = run.Config(llm.PreTrainingDataModule, ...)
+        >>> recipe.trainer.strategy.tensor_model_parallel_size = 8
+        >>> ...
+        >>> run.run(recipe)
     """
     recipe = run.Partial(
         llm.distill,
@@ -159,7 +161,7 @@ def distillation_recipe(
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,
         ),
-        data=run.Config(MockDataModule, seq_length=8192, global_batch_size=512, micro_batch_size=1),
+        data=run.Config(llm.MockDataModule, seq_length=8192, global_batch_size=512, micro_batch_size=1),
         log=default_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=3e-5),
         resume=default_resume(),

@@ -23,10 +23,10 @@ Example usage to prune width automatically (you can skip parameters that you don
         --seq_length 8192 \
         --data_paths 1.0 path/to/tokenized/data \
         --index_mapping_dir path/to/index_mapping_dir \
-        --prune_ffn_hidden_size 9216 \
-        --prune_hidden_size 3072 \
-        --prune_num_attention_heads 32 \
-        --prune_num_query_groups 8 \
+        --target_ffn_hidden_size 9216 \
+        --target_hidden_size 3072 \
+        --target_num_attention_heads 32 \
+        --target_num_query_groups 8 \
         --save_path llama3.1-8b-width-pruned
 ```
 
@@ -40,7 +40,7 @@ Example usage to prune depth automatically using cosine-similarity based importa
         --seq_length 8192 \
         --data_paths 1.0 path/to/tokenized/data \
         --index_mapping_dir path/to/index_mapping_dir \
-        --prune_num_layers 16 \
+        --target_num_layers 16 \
         --save_path llama3.1-8b-depth-pruned
 ```
 
@@ -102,11 +102,11 @@ def get_data_module(args):
 def main(args):
     """Main function for pruning Llama model."""
     pruning_config = PruningConfig(
-        target_ffn_hidden_size=args.prune_ffn_hidden_size,
-        target_hidden_size=args.prune_hidden_size,
-        target_num_attention_heads=args.prune_num_attention_heads,
-        target_num_query_groups=args.prune_num_query_groups,
-        target_num_layers=args.prune_num_layers,
+        target_ffn_hidden_size=args.target_ffn_hidden_size,
+        target_hidden_size=args.target_hidden_size,
+        target_num_attention_heads=args.target_num_attention_heads,
+        target_num_query_groups=args.target_num_query_groups,
+        target_num_layers=args.target_num_layers,
         drop_layers=args.drop_layers,
     )
 
@@ -184,20 +184,20 @@ if __name__ == "__main__":
         help="Number of training samples for importance estimation",
     )
     # Pruning parameters
-    parser.add_argument("--prune_ffn_hidden_size", type=int, help="Prune MLP FFN hidden size to this value")
-    parser.add_argument("--prune_hidden_size", type=int, help="Prune hidden size (embedding dim) to this value")
+    parser.add_argument("--target_ffn_hidden_size", type=int, help="Prune MLP FFN hidden size to this value")
+    parser.add_argument("--target_hidden_size", type=int, help="Prune hidden size (embedding dim) to this value")
     parser.add_argument(
-        "--prune_num_attention_heads",
+        "--target_num_attention_heads",
         type=int,
-        help="Prune number of attention heads to this value. Must be supplied with --prune_num_query_groups",
+        help="Prune number of attention heads to this value. Must be supplied with --target_num_query_groups",
     )
     parser.add_argument(
-        "--prune_num_query_groups",
+        "--target_num_query_groups",
         type=int,
-        help="Prune number of query groups to this value. Must be supplied with --prune_num_attention_heads",
+        help="Prune number of query groups to this value. Must be supplied with --target_num_attention_heads",
     )
     parser.add_argument(
-        "--prune_num_layers",
+        "--target_num_layers",
         type=int,
         help="Prune number of transformer layers to this value based on "
         "Block Influence metric (cosine similarity) as per https://arxiv.org/abs/2403.03853",

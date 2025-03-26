@@ -110,10 +110,10 @@ class MultimodalProjectorConfig(TransformerConfig, io.IOMixin):
         mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', self.projector_type)
         if mlp_gelu_match:
             mlp_depth = int(mlp_gelu_match.group(1))
-            modules = [torch.nn.Linear(self.input_size, self.hidden_size, bias=True)]
+            modules = [torch.nn.Linear(self.input_size, self.ffn_hidden_size, bias=True)]
             for _ in range(1, mlp_depth):
                 modules.append(torch.nn.GELU())
-                modules.append(torch.nn.Linear(self.hidden_size, self.hidden_size, bias=True))
+                modules.append(torch.nn.Linear(self.ffn_hidden_size, self.hidden_size, bias=True))
             model = torch.nn.Sequential(*modules)
             from types import MethodType
 

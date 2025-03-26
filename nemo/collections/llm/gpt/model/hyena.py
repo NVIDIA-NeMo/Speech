@@ -171,6 +171,7 @@ class HyenaConfig(TransformerConfig, io.IOMixin):
     fp16: bool = False
     bf16: bool = True
     num_layers: int = 2
+    hidden_size: int = 1024
     num_attention_heads: int = 8
     num_groups_hyena: int = None
     num_groups_hyena_medium: int = None
@@ -187,7 +188,7 @@ class HyenaConfig(TransformerConfig, io.IOMixin):
     seq_len_interpolation_factor: Optional[float] = None
     apply_rope_fusion: bool = True
     make_vocab_size_divisible_by: int = 128
-    gated_linear_unit: bool = False
+    gated_linear_unit: bool = True
     fp32_residual_connection: bool = True
     normalization: str = 'RMSNorm'
     add_bias_linear: bool = False
@@ -737,62 +738,66 @@ class HuggingFaceSavannaHyenaImporter(PyTorchHyenaImporter):
         import huggingface_hub.errors
         from huggingface_hub import hf_hub_download
 
-        if ":" in str(self):
-            repo_id, revision = str(self).split(":")
+        if os.path.exists(str(self)):
+            logging.info(f"Loading model from local path {str(self)}")
+            return torch.load(str(self), map_location='cpu', weights_only=False)
         else:
-            repo_id = str(self)
-            revision = None
-        # See HF download logic here:
-        #   https://github.com/ArcInstitute/evo2/blob/96ac9d9cd/evo2/models.py#L191-L231
-        modelname = repo_id.split("/")[-1]
-        download_dir = str(NEMO_MODELS_CACHE / repo_id)
-        weights_filename = f"{modelname}.pt"
-        try:
-            weights_path = hf_hub_download(
-                repo_id=repo_id, local_dir=download_dir, revision=revision, filename=weights_filename
-            )
-        except Exception:
-            # Try downloading multi-part
-            # If file is split, download and join parts
-            logging.warning(f"Single path download failed, try loading checkpoint shards for {modelname}")
-            # If file is split, get the first part's directory to use the same cache location
-            weights_path = os.path.join(download_dir, weights_filename)
-            if os.path.exists(weights_path):
-                logging.info(f"Found {weights_path}")
+            if ":" in str(self):
+                repo_id, revision = str(self).split(":")
             else:
-                # Download and join parts
-                parts = []
-                part_num = 0
-                while True:
-                    try:
-                        part_path = hf_hub_download(
-                            repo_id=repo_id,
-                            local_dir=download_dir,
-                            revision=revision,
-                            filename=f"{weights_filename}.part{part_num}",
-                        )
-                        parts.append(part_path)
-                        part_num += 1
-                    except huggingface_hub.errors.EntryNotFoundError:
-                        break
+                repo_id = str(self)
+                revision = None
+            # See HF download logic here:
+            #   https://github.com/ArcInstitute/evo2/blob/96ac9d9cd/evo2/models.py#L191-L231
+            modelname = repo_id.split("/")[-1]
+            download_dir = str(NEMO_MODELS_CACHE / repo_id)
+            weights_filename = f"{modelname}.pt"
+            try:
+                weights_path = hf_hub_download(
+                    repo_id=repo_id, local_dir=download_dir, revision=revision, filename=weights_filename
+                )
+            except Exception:
+                # Try downloading multi-part
+                # If file is split, download and join parts
+                logging.warning(f"Single path download failed, try loading checkpoint shards for {modelname}")
+                # If file is split, get the first part's directory to use the same cache location
+                weights_path = os.path.join(download_dir, weights_filename)
+                if os.path.exists(weights_path):
+                    logging.info(f"Found {weights_path}")
+                else:
+                    # Download and join parts
+                    parts = []
+                    part_num = 0
+                    while True:
+                        try:
+                            part_path = hf_hub_download(
+                                repo_id=repo_id,
+                                local_dir=download_dir,
+                                revision=revision,
+                                filename=f"{weights_filename}.part{part_num}",
+                            )
+                            parts.append(part_path)
+                            part_num += 1
+                        except huggingface_hub.errors.EntryNotFoundError:
+                            break
 
-                # Join in the same directory
-                with open(weights_path, 'wb') as outfile:
+                    # Join in the same directory
+                    with open(weights_path, 'wb') as outfile:
+                        for part in parts:
+                            with open(part, 'rb') as infile:
+                                while True:
+                                    chunk = infile.read(8192 * 1024)
+                                    if not chunk:
+                                        break
+                                    outfile.write(chunk)
+
+                    # Cleaning up the parts
                     for part in parts:
-                        with open(part, 'rb') as infile:
-                            while True:
-                                chunk = infile.read(8192 * 1024)
-                                if not chunk:
-                                    break
-                                outfile.write(chunk)
-
-                # Cleaning up the parts
-                for part in parts:
-                    try:
-                        os.remove(part)
-                    except OSError as e:
-                        print(f"Error removing {part}: {e}")
-                    print("Cleaned up shards, final checkpoint saved to", weights_path)
+                        try:
+                            os.remove(part)
+                        except OSError as e:
+                            print(f"Error removing {part}: {e}")
+                        print("Cleaned up shards, final checkpoint saved to", weights_path)
 
         return torch.load(weights_path, map_location='cpu', weights_only=False)
 

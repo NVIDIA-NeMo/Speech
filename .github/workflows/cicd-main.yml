@@ -1363,6 +1363,18 @@ jobs:
         rm -rf tests/collections/llm/gpt_pretrain_results
         rm -rf tests/collections/llm/gpt_index_mappings
 
+  L2_NeMo_2_Hyena_Conversion_from_HF:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_Hyena_Conversion_from_HF')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: |-
+        RUN_ID=${{ github.run_id }} bash tests/functional_tests/L2_NeMo_2_Hyena_Conversion_from_HF.sh
+
+      AFTER_SCRIPT: |
+        rm -rf tests/collections/llm/hyena_conversion_results/${{ github.run_id }}
+
   L2_NeMo_2_Hyena_DDP_Pretraining_Test:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2244,6 +2256,7 @@ jobs:
       - L2_HF_Transformer_SpeechLM_SFT_2gpu
       - L2_NeMo_2_SSM_Pretraining
       - L2_NeMo_2_SSM_Finetuning
+      - L2_NeMo_2_Hyena_Conversion_from_HF
       - L2_NeMo_2_Hyena_DDP_Pretraining_Test
       - L2_NeMo_2_T5_Pretraining
       - L2_NeMo_2_T5_Finetuning

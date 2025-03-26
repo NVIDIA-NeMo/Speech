@@ -18,10 +18,14 @@
 
 import random
 import timeit
+from collections import OrderedDict
 from typing import Tuple
+
 
 import pytest
 import torch
+from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
+from megatron.core.datasets.utils import Split
 
 from nemo.collections.llm.gpt.data.megatron.hyena.evo2_dataset import Evo2Dataset, Evo2DatasetPadEodLossMask
 
@@ -1057,3 +1061,118 @@ if __name__ == "__main__":
     print(f"Old implementation average time: {old_time/num_iterations:.6f} seconds")
     print(f"New implementation average time: {new_time/num_iterations:.6f} seconds")
     print(f"Speed improvement: {(old_time/new_time - 1)*100:.2f}%")
+
+
+def test_evo2_dataset_getitem(monkeypatch):
+    """Test Evo2Dataset.__getitem__ method."""
+    import numpy as np
+
+    class MockIndexedDataset:
+        def __init__(self):
+            self.sequence_lengths = np.ones(100, dtype=np.int32) * 10
+            self.path_prefix = "/mock/path"
+
+        def get(self, idx, offset=0, length=None):
+            return np.ones(10, dtype=np.int64)
+
+    class MockGPTDataset:
+        def __init__(
+            self,
+            indexed_dataset,
+            dataset_path,
+            indexed_indices,
+            num_samples,
+            index_split,
+            config,
+        ):
+            self.config = config
+            self.dataset = indexed_dataset
+            self.indices = indexed_indices
+
+        def __getitem__(self, idx):
+
+            return {
+                "loss_mask": torch.ones(10, dtype=torch.float),  # Will be modified by Evo2Dataset
+                "labels": torch.tensor([65, 64, 84, 124, 100, 95, 84, 35, 65, 84]),  # A@T|d_T#AT
+                "tokens": torch.tensor([97, 64, 116, 124, 100, 95, 116, 35, 97, 116]),  # a@t|d_t#at
+                "attention_mask": torch.ones(10, 10),  # Add attention mask
+                "position_ids": torch.arange(10),  # Add position ids
+            }
+
+    class MockTokenizer(MegatronTokenizer):
+        def __init__(self):
+            super().__init__("mock_path")
+            self._vocab_size = 512
+            self._vocab = {"[PAD]": 0, "[EOD]": 1}
+            self._inv_vocab = {0: "[PAD]", 1: "[EOD]"}
+            self._eod_id = 1
+            self._pad_id = 0
+
+        @property
+        def vocab_size(self):
+            return self._vocab_size
+
+        @property
+        def vocab(self):
+            return self._vocab
+
+        @property
+        def inv_vocab(self):
+            return self._inv_vocab
+
+        @property
+        def eod(self):
+            return self._eod_id
+
+        @property
+        def pad(self):
+            return self._pad_id
+
+        def tokenize(self, text):
+            return [0]
+
+    class MockConfig:
+        def __init__(self):
+            # GPTDatasetConfig specific
+            self.reset_position_ids = False
+            self.reset_attention_mask = False
+            self.eod_mask_loss = False
+            self.create_attention_mask = True
+            self.drop_last_partial_validation_sequence = True
+            self.add_extra_token_to_sequence = True
+            self.s3_cache_path = None
+
+            # BlendedMegatronDatasetConfig
+            self.random_seed = 42
+            self.sequence_length = 10
+            self.blend = None
+            self.blend_per_split = None
+            self.split = "1,1,1"
+            self.split_matrix = [(0.0, 0.33), (0.33, 0.66), (0.66, 1.0)]
+            self.num_dataset_builder_threads = 1
+            self.path_to_cache = None
+            self.mmap_bin_files = True
+            self.mock = True
+            self.tokenizer = MockTokenizer()
+
+    monkeypatch.setattr("nemo.collections.llm.gpt.data.megatron.hyena.evo2_dataset.GPTDataset", MockGPTDataset)
+
+    mock_indexed_dataset = MockIndexedDataset()
+
+    dataset = Evo2Dataset(
+        indexed_dataset=mock_indexed_dataset,
+        dataset_path="/mock/path",
+        indexed_indices=np.arange(10, dtype=np.int32),
+        num_samples=10,
+        index_split=Split.train,
+        config=MockConfig(),
+    )
+    dataset.RESET_PAD_EOD_MASK = False
+    dataset.TO_UPPER_TOKENS = True
+
+    result = dataset[0]
+
+    assert result["loss_mask"][1] == 1
+    assert result["loss_mask"][7] == 1
+
+    assert all(result["loss_mask"][3:6] == 1)

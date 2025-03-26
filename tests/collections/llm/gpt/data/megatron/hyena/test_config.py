@@ -22,7 +22,11 @@ from typing import Union
 import pytest
 import yaml
 
-from nemo.collections.llm.gpt.data.megatron.hyena.config import Evo2BlendedDatasetConfig, parse_dataset_config
+from nemo.collections.llm.gpt.data.megatron.hyena.config import (
+    Evo2BlendedDatasetConfig,
+    infer_global_batch_size,
+    parse_dataset_config,
+)
 
 
 @contextmanager
@@ -180,3 +184,53 @@ def test_parse_dataset_config(temp_dataset_config):
 
     # Assert the result matches the expected result
     assert result == expected_result
+
+
+def test_infer_global_batch_size_validation():
+    # Test non-integer inputs
+    with pytest.raises(ValueError, match="All arguments must be of type int"):
+        infer_global_batch_size(1.0, 1, 1, 1, 1, 1, 1)
+
+    # Test all non-positive inputs
+    with pytest.raises(ValueError, match="micro_batch_size must be greater than 0"):
+        infer_global_batch_size(0, 1, 1, 1, 1, 1, 1)
+
+    with pytest.raises(ValueError, match="num_nodes must be greater than 0"):
+        infer_global_batch_size(1, 0, 1, 1, 1, 1, 1)
+
+    with pytest.raises(ValueError, match="devices must be greater than 0"):
+        infer_global_batch_size(1, 1, 0, 1, 1, 1, 1)
+
+    with pytest.raises(ValueError, match="accumulate_grad_batches must be greater than 0"):
+        infer_global_batch_size(1, 1, 1, 0, 1, 1, 1)
+
+    with pytest.raises(ValueError, match="tensor_model_parallel_size must be greater than 0"):
+        infer_global_batch_size(1, 1, 1, 1, 0, 1, 1)
+
+    with pytest.raises(ValueError, match="pipeline_model_parallel_size must be greater than 0"):
+        infer_global_batch_size(1, 1, 1, 1, 1, 0, 1)
+
+    with pytest.raises(ValueError, match="context_model_parallel_size must be greater than 0"):
+        infer_global_batch_size(1, 1, 1, 1, 1, 1, 0)
+
+
+def test_infer_global_batch_size_calculation():
+    # Test world_size divisibility error
+    with pytest.raises(ValueError, match="world_size must be divisible by"):
+        infer_global_batch_size(1, 1, 3, 1, 2, 1, 1)  # 3 devices not divisible by TP=2
+
+    # Test successful calculation
+    result = infer_global_batch_size(
+        micro_batch_size=2,
+        num_nodes=1,
+        devices=4,
+        accumulate_grad_batches=2,
+        tensor_model_parallel_size=2,
+        pipeline_model_parallel_size=1,
+        context_model_parallel_size=1,
+    )
+    # world_size = 1 * 4 = 4
+    # model_parallel_size = 2 * 1 * 1 = 2
+    # data_parallel_size = 4 // 2 = 2
+    # global_batch_size = 2 * 2 * 2 = 8
+    assert result == 8

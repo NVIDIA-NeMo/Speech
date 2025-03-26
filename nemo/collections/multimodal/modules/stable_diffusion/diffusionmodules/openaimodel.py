@@ -198,6 +198,14 @@ class Upsample(nn.Module):
         if self.dims == 3:
             t_factor = 1 if not self.third_up else 2
             x = F.interpolate(x, (t_factor * x.shape[2], x.shape[3] * 2, x.shape[4] * 2), mode="nearest")
+        elif self.dims == 2:
+            x = (
+                x.permute(0, 2, 3, 1)
+                .view(x.shape[0], x.shape[2], 1, x.shape[3], 1, x.shape[1])
+                .expand(x.shape[0], x.shape[2], 2, x.shape[3], 2, x.shape[1])
+                .reshape(x.shape[0], x.shape[2] * 2, x.shape[3] * 2, x.shape[1])
+                .permute(0, 3, 1, 2)
+            )
         else:
             x = F.interpolate(x, scale_factor=2, mode="nearest")
         if dtype == torch.bfloat16:

@@ -31,7 +31,7 @@ Lhotse Format
 -------------
 
 NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading option.
-Lhotse can be easily enabled using `use_lhotse=True` in the dataset configuration file, as described in `Configs <./configs.html#lhotse-dataset-configuration>`_.
+Lhotse can be easily enabled using `use_lhotse=True` in the dataset configuration file, as described in `Lhotse dataset configuration <./configs.html#lhotse-dataset-configuration>`_.
 
 Lhotse dataloading supports the following types of inputs:
 

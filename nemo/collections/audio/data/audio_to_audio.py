@@ -794,23 +794,17 @@ class AudioToTargetDataset(BaseAudioDataset):
     """A dataset for audio-to-audio tasks where the goal is to use
     an input signal to recover the corresponding target signal.
 
-    Each line of the manifest file is expected to have the following format
-        ```
-        {
-            'input_key': 'path/to/input.wav',
-            'target_key': 'path/to/path_to_target.wav',
-            'duration': duration_of_input,
-        }
-        ```
+    Each line of the manifest file is expected to have the following format:
+
+    .. code-block:: json
+
+        {"input_key": "path/to/input.wav", "target_key": "path/to/target.wav", "duration": "duration_in_seconds"}
 
     Additionally, multiple audio files may be provided for each key in the manifest, for example,
-        ```
-        {
-            'input_key': 'path/to/input.wav',
-            'target_key': ['path/to/path_to_target_ch0.wav', 'path/to/path_to_target_ch1.wav'],
-            'duration': duration_of_input,
-        }
-        ```
+
+    .. code-block:: json
+
+        {"input_key": "path/to/input.wav", "target_key": ["path/to/path_to_target_ch0.wav", "path/to/path_to_target_ch1.wav"], "duration": "duration_in_seconds"}
 
     Keys for input and target signals can be configured in the constructor (`input_key` and `target_key`).
 
@@ -883,15 +877,15 @@ class AudioToTargetDataset(BaseAudioDataset):
         """Returns definitions of module output ports.
 
         Returns:
-            Ordered dictionary in the following form:
-            ```
-            {
-                'input_signal': batched single- or multi-channel format,
-                'input_length': batched original length of each input signal
-                'target_signal': batched single- or multi-channel format,
-                'target_length': batched original length of each target signal
-            }
-            ```
+            OrderedDict: Dictionary containing the following items:
+                input_signal:
+                    Batched single- or multi-channel input audio signal
+                input_length:
+                    Batched original length of each input signal
+                target_signal:
+                    Batched single- or multi-channel target audio signal
+                target_length:
+                    Batched original length of each target signal
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
         mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())
@@ -922,14 +916,10 @@ class AudioToTargetWithReferenceDataset(BaseAudioDataset):
     - reference from another sensor that correlates with the target signal
 
     Each line of the manifest file is expected to have the following format
-        ```
-        {
-            'input_key': 'path/to/input.wav',
-            'target_key': 'path/to/path_to_target.wav',
-            'reference_key': 'path/to/path_to_reference.wav',
-            'duration': duration_of_input,
-        }
-        ```
+
+    .. code-block:: json
+
+        {"input_key": "path/to/input.wav", "target_key": "path/to/path_to_target.wav", "reference_key": "path/to/path_to_reference.wav", "duration": "duration_in_seconds"}
 
     Keys for input, target and reference signals can be configured in the constructor.
 
@@ -1031,17 +1021,19 @@ class AudioToTargetWithReferenceDataset(BaseAudioDataset):
         """Returns definitions of module output ports.
 
         Returns:
-            Ordered dictionary in the following form:
-            ```
-            {
-                'input_signal': batched single- or multi-channel format,
-                'input_length': batched original length of each input signal
-                'target_signal': batched single- or multi-channel format,
-                'target_length': batched original length of each target signal
-                'reference_signal': single- or multi-channel format,
-                'reference_length': original length of each reference signal
-            }
-            ```
+            OrderedDict: Dictionary containing the following items:
+                input_signal:
+                    Batched single- or multi-channel input audio signal
+                input_length:
+                    Batched original length of each input signal
+                target_signal:
+                    Batched single- or multi-channel target audio signal
+                target_length:
+                    Batched original length of each target signal
+                reference_signal:
+                    Batched single- or multi-channel reference audio signal
+                reference_length:
+                    Batched original length of each reference signal
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
         mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())
@@ -1069,14 +1061,10 @@ class AudioToTargetWithEmbeddingDataset(BaseAudioDataset):
     is in a form of a vector.
 
     Each line of the manifest file is expected to have the following format
-        ```
-        {
-            input_key: 'path/to/input.wav',
-            target_key: 'path/to/path_to_target.wav',
-            embedding_key: 'path/to/path_to_reference.npy',
-            'duration': duration_of_input,
-        }
-        ```
+
+    .. code-block:: json
+
+        {"input_key": "path/to/input.wav", "target_key": "path/to/path_to_target.wav", "embedding_key": "path/to/path_to_reference.npy", "duration": "duration_in_seconds"}
 
     Keys for input, target and embedding signals can be configured in the constructor.
 
@@ -1155,17 +1143,19 @@ class AudioToTargetWithEmbeddingDataset(BaseAudioDataset):
         """Returns definitions of module output ports.
 
         Returns:
-            Ordered dictionary in the following form:
-            ```
-            {
-                'input_signal': batched single- or multi-channel format,
-                'input_length': batched original length of each input signal
-                'target_signal': batched single- or multi-channel format,
-                'target_length': batched original length of each target signal
-                'embedding_vector': batched embedded vector format,
-                'embedding_length': batched original length of each embedding vector
-            }
-            ```
+            OrderedDict: Dictionary containing the following items:
+                input_signal:
+                    Batched single- or multi-channel input audio signal
+                input_length:
+                    Batched original length of each input signal
+                target_signal:
+                    Batched single- or multi-channel target audio signal
+                target_length:
+                    Batched original length of each target signal
+                embedding_vector:
+                    Batched embedded vector format
+                embedding_length:
+                    Batched original length of each embedding vector
         """
         sc_audio_type = NeuralType(('B', 'T'), AudioSignal())
         mc_audio_type = NeuralType(('B', 'C', 'T'), AudioSignal())

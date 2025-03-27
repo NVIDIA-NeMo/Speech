@@ -23,7 +23,7 @@ Local Checkpoints
 Pretrained Checkpoints
 ----------------------
 
-The table below in :ref:`Checkpoints<Audio Models>` list part of available pre-trained audio processing models including speech processing, restoration and extraction.
+The table below in :ref:`checkpoints_audio_models` list part of available pre-trained audio processing models including speech processing, restoration and extraction.
 
 Load Model Checkpoints
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -34,8 +34,10 @@ The models can be accessed via the :code:`from_pretrained()` method inside the a
     import nemo.collections.audio as nemo_audio
     model = nemo_audio.models.<MODEL_BASE_CLASS>.from_pretrained(model_name="<MODEL_NAME>")
 
-where ``<MODEL_NAME>`` is the value in ``Model Name`` column in the tables in :ref:`Checkpoints<Audio Models>`. These names are predefined in the each model's member function ``self.list_available_models()``. 
+where ``<MODEL_NAME>`` is the value in ``Model Name`` column in the tables in :ref:`checkpoints_audio_models`. These names are predefined in the each model's member function ``self.list_available_models()``. 
 
+
+.. _checkpoints_audio_models:
 
 Audio Models
 ------------

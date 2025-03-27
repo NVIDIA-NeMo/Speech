@@ -955,16 +955,12 @@ class WPEFilter(NeuralModule):
             `tilde{X}` the corresponding multi-channel correlation matrix,
             and `w` the vector of weights.
 
-            The first output is
-                Q = tilde{X}^H * diag(w) * tilde{X}     (1)
-            for each (b, f).
-            The matrix calculated in (1) has shape (C * filter_length, C * filter_length)
+            The first output is Q = tilde{X}^H * diag(w) * tilde{X}, for each (b, f).
+            The matrix Q has shape (C * filter_length, C * filter_length)
             The output is returned in a tensor with shape (B, F, C, filter_length, C, filter_length).
 
-            The second output is
-                R = tilde{X}^H * diag(w) * X            (2)
-            for each (b, f).
-            The matrix calculated in (2) has shape (C * filter_length, C)
+            The second output is R = tilde{X}^H * diag(w) * X, for each (b, f).
+            The matrix R has shape (C * filter_length, C)
             The output is returned in a tensor with shape (B, F, C, filter_length, C). The last
             dimension corresponds to output channels.
         """
@@ -986,8 +982,7 @@ class WPEFilter(NeuralModule):
         return Q, R
 
     def estimate_filter(self, Q: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
-        r"""Estimate the MIMO prediction filter as
-            G(b,f) = Q(b,f) \ R(b,f)
+        r"""Estimate the MIMO prediction filter as G(b,f) = Q(b,f) \ R(b,f)
         for each subband in each example in the batch (b, f).
 
         Args:

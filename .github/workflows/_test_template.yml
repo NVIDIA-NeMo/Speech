@@ -50,6 +50,9 @@ jobs:
       potential_infra_failure: ${{ steps.check.outputs.potential_infra_failure }}
     env:
       DIR: ${{ github.run_id }}
+      IS_OPTIONAL: ${{ inputs.IS_OPTIONAL }}
+      SCRIPT: ${{ inputs.SCRIPT }}
+      IS_UNIT_TEST: ${{ inputs.IS_UNIT_TEST }}
     steps:
       - name: Docker system cleanup
         run: |
@@ -60,8 +63,6 @@ jobs:
           docker pull nemoci.azurecr.io/nemo_container:${{ github.run_id }}
 
       - name: Start container
-        env:
-          DIR: ${{ github.run_id }}
         run: |
           mkdir -p $DIR
 
@@ -90,10 +91,6 @@ jobs:
           bash $DIR/retry_job.sh
 
       - name: Create run-script
-        env:
-          DIR: ${{ github.run_id }}
-          SCRIPT: ${{ inputs.SCRIPT }}
-          IS_UNIT_TEST: ${{ inputs.IS_UNIT_TEST }}
         id: create
         run: |
 
@@ -110,7 +107,7 @@ jobs:
           (
             set -e
 
-            docker exec nemo_container_${{ github.run_id }} bash -c '$SCRIPT && echo "Finished successfully." || echo "Did not finish."'
+            docker exec -t nemo_container_${{ github.run_id }} bash -c '$SCRIPT && echo "Finished successfully." || echo "Did not finish."'
           ) 2>&1 | tee $DIR/err.log
 
           RUN_TEST_EOF
@@ -131,8 +128,6 @@ jobs:
 
       - name: Check result
         id: check
-        env:
-          IS_OPTIONAL: ${{ inputs.IS_OPTIONAL }}
         run: |
           cat $DIR/err.log
 
@@ -163,6 +158,11 @@ jobs:
           fi
 
           exit $EXIT_CODE
+
+      - name: Test coverage
+        shell: bash -x -e -u -o pipefail {0}
+        run: |
+          docker exec -t nemo_container_${{ github.run_id }} coverage report -i
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

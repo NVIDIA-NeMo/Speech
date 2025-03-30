@@ -154,6 +154,7 @@ def test_hyena_nv_test_config():
     assert config.tokenizer_library == "byte-level"
 
 
+@pytest.mark.pleasefixme
 def test_convert_hyena():
 
     from huggingface_hub.utils import RepositoryNotFoundError

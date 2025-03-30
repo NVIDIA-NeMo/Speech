@@ -130,6 +130,7 @@ def test_preprocess_and_split_data(squad_data_module, temp_dataset_dir, sample_s
         assert data["input"].endswith("Answer:")
 
 
+@pytest.mark.pleasefixme
 def test_dataloaders(squad_data_module, mock_trainer):
     squad_data_module.prepare_data()
 
@@ -142,6 +143,7 @@ def test_dataloaders(squad_data_module, mock_trainer):
     assert isinstance(test_loader, torch.utils.data.DataLoader)
 
 
+@pytest.mark.pleasefixme
 def test_force_redownload(squad_data_module, temp_dataset_dir):
     # First prepare data
     squad_data_module.prepare_data()

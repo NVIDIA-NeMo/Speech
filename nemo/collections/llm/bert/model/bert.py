@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Annotated, Callable, Optional
 import torch
 from torch import nn
 
-from nemo.collections.common.tokenizers import AutoTokenizer
+from nemo.collections.common.tokenizers import AutoTokenizer, TokenizerSpec
 from nemo.collections.llm.bert.model.base import BertConfig, BertModel
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
@@ -260,7 +260,7 @@ class HuggingFaceBertExporter(io.ModelConnector[BertModel, "BertModel"]):
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return BertModel.from_config(self.config, torch_dtype=dtype)
+            return BertModel._from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
         source, _ = self.nemo_load(str(self))
@@ -297,17 +297,25 @@ class HuggingFaceBertExporter(io.ModelConnector[BertModel, "BertModel"]):
             "encoder.layers.*.post_mlp_layernorm.bias": "encoder.layer.*.output.LayerNorm.bias",
         }
 
+        if source.config.add_pooler:
+            mapping.update(
+                {
+                    "pooler.dense.weight": "pooler.dense.weight",
+                    "pooler.dense.bias": "pooler.dense.bias",
+                }
+            )
+
         return io.apply_transforms(
             source,
             target,
             mapping=mapping,
-            transforms=[_export_qkv, _export_embedding],
+            transforms=[_export_qkv, _export_qkv_bias, _export_embedding],
         )
 
     @property
     def config(self) -> "HFBertConfig":
         """Generate HF Config based on NeMo config"""
-        source: BertConfig = io.load_context(str(self)).model.config
+        source: BertConfig = io.load_context(str(self), subpath="model.config")
 
         from transformers import BertConfig as HFBertConfig
 
@@ -319,6 +327,7 @@ class HuggingFaceBertExporter(io.ModelConnector[BertModel, "BertModel"]):
             max_position_embeddings=source.seq_length,
             initializer_range=source.init_method_std,
             layer_norm_eps=source.layernorm_epsilon,
+            vocab_size=self.tokenizer.vocab_size,
         )
 
 
@@ -336,7 +345,9 @@ def _import_qkv(ctx: io.TransformCTX, q, k, v):
 
     head_num = megatron_config.num_attention_heads
     hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
 
     old_tensor_shape = q.size()
     new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
@@ -368,7 +379,9 @@ def _import_qkv_bias(ctx: io.TransformCTX, qb, kb, vb):
     megatron_config = ctx.target.config
 
     head_num = megatron_config.num_attention_heads
-    head_size = megatron_config.kv_channels
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
 
     new_q_tensor_shape_bias = (head_num, head_size)
 
@@ -441,7 +454,9 @@ def _import_qkv_2(ctx: io.TransformCTX, q, k, v):
 
     head_num = megatron_config.num_attention_heads
     hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
 
     old_tensor_shape = q.size()
     new_q_tensor_shape = (head_num, head_size) + old_tensor_shape[1:]
@@ -473,7 +488,9 @@ def _import_qkv_bias_2(ctx: io.TransformCTX, qb, kb, vb):
     megatron_config = ctx.target.config
 
     head_num = megatron_config.num_attention_heads
-    head_size = megatron_config.kv_channels
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
 
     new_q_tensor_shape_bias = (head_num, head_size)
 
@@ -528,7 +545,10 @@ def _export_qkv(ctx: io.TransformCTX, linear_qkv):
     num_query_groups = head_num  # BERT Does not use GQA
     heads_per_group = head_num // num_query_groups
     hidden_size = megatron_config.hidden_size
-    head_size = megatron_config.kv_channels
+
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
     qkv_total_dim = head_num + 2 * num_query_groups
 
     linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, hidden_size])
@@ -562,7 +582,9 @@ def _export_qkv_bias(ctx: io.TransformCTX, qkv_bias):
     head_num = megatron_config.num_attention_heads
     num_query_groups = head_num  # BERT does not use GQA
     heads_per_group = head_num // num_query_groups
-    head_size = megatron_config.kv_channels
+    head_size = getattr(
+        megatron_config, 'kv_channels', megatron_config.hidden_size // megatron_config.num_attention_heads
+    )
     qkv_total_dim = head_num + 2 * num_query_groups
 
     qkv_bias = qkv_bias.reshape([qkv_total_dim, head_size])

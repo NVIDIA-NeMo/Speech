@@ -65,30 +65,26 @@ def temp_dataset_dir():
 
 @pytest.fixture
 def govreport_data_module(mock_tokenizer, temp_dataset_dir, sample_govreport_dataset, mock_trainer, mock_sampler):
-    with (
-        patch('datasets.load_dataset') as mock_load_dataset,
-        patch('nemo.collections.llm.gpt.data.core.get_dataset_root') as mock_get_dataset_root,
-    ):
-        mock_load_dataset.return_value = sample_govreport_dataset
-        mock_get_dataset_root.return_value = temp_dataset_dir
+    # Patch the _download_data method directly
+    with patch.object(MLPerfGovReportDataModule, '_download_data', return_value=sample_govreport_dataset):
+        with patch('nemo.collections.llm.gpt.data.core.get_dataset_root', return_value=temp_dataset_dir):
+            mock_packed_sequence_specs = MagicMock(
+                packed_sequence_size=2048, pad_cu_seqlens=False  # Disable pad_cu_seqlens to avoid metadata requirement
+            )
 
-        mock_packed_sequence_specs = MagicMock(
-            packed_sequence_size=2048, pad_cu_seqlens=False  # Disable pad_cu_seqlens to avoid metadata requirement
-        )
+            data_module = MLPerfGovReportDataModule(
+                tokenizer=mock_tokenizer,
+                seq_length=2048,
+                micro_batch_size=1,
+                global_batch_size=4,
+                force_redownload=True,
+                packed_sequence_specs=mock_packed_sequence_specs,
+            )
+            data_module.dataset_root = temp_dataset_dir
+            data_module.trainer = mock_trainer
+            data_module.data_sampler = mock_sampler
 
-        data_module = MLPerfGovReportDataModule(
-            tokenizer=mock_tokenizer,
-            seq_length=2048,
-            micro_batch_size=1,
-            global_batch_size=4,
-            force_redownload=True,
-            packed_sequence_specs=mock_packed_sequence_specs,
-        )
-        data_module.dataset_root = temp_dataset_dir
-        data_module.trainer = mock_trainer
-        data_module.data_sampler = mock_sampler
-
-        return data_module
+            yield data_module
 
 
 def test_govreport_data_module_initialization(govreport_data_module):

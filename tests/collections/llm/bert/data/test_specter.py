@@ -18,10 +18,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import torch
 from datasets import Dataset, DatasetDict
 
-from nemo.collections.llm.gpt.data.alpaca import AlpacaDataModule
+from nemo.collections.llm.bert.data.specter import SpecterDataModule
 
 
 @pytest.fixture
@@ -49,16 +48,16 @@ def mock_sampler():
 
 
 @pytest.fixture
-def sample_alpaca_dataset():
+def sample_specter_dataset():
     dataset_len = 30
-    dataset = Dataset.from_dict(
+    train_dataset = Dataset.from_dict(
         {
-            "prompt": ["Write a function to calculate fibonacci numbers### Output"] * dataset_len,
-            "output": ["def fibonacci(n):\n if n <= 1:\n  return n\n return fibonacci(n-1) + fibonacci(n-2)"]
-            * dataset_len,
+            "anchor": ["Paper A abstract"] * dataset_len,
+            "positive": ["Similar paper B abstract"] * dataset_len,
+            "negative": ["Unrelated paper C abstract"] * dataset_len,
         }
     )
-    return DatasetDict({'train': dataset})
+    return DatasetDict({'train': train_dataset})
 
 
 @pytest.fixture
@@ -68,36 +67,32 @@ def temp_dataset_dir():
 
 
 @pytest.fixture
-def alpaca_data_module(mock_tokenizer, temp_dataset_dir, sample_alpaca_dataset, mock_trainer, mock_sampler):
+def specter_data_module(mock_tokenizer, temp_dataset_dir, sample_specter_dataset):
     # Patch the _download_data method directly
-    with patch.object(AlpacaDataModule, '_download_data', return_value=sample_alpaca_dataset):
-        with patch('nemo.collections.llm.gpt.data.core.get_dataset_root', return_value=temp_dataset_dir):
-            data_module = AlpacaDataModule(
+    with patch.object(SpecterDataModule, '_download_data', return_value=sample_specter_dataset):
+        with patch('nemo.collections.llm.bert.data.core.get_dataset_root', return_value=temp_dataset_dir):
+            data_module = SpecterDataModule(
                 tokenizer=mock_tokenizer,
                 seq_length=512,
-                micro_batch_size=2,
-                global_batch_size=4,
+                micro_batch_size=4,
+                global_batch_size=8,
                 force_redownload=True,
             )
             data_module.dataset_root = temp_dataset_dir
-            data_module.trainer = mock_trainer
-            data_module.data_sampler = mock_sampler
-
             yield data_module
 
 
-def test_alpaca_data_module_initialization(alpaca_data_module):
-    assert alpaca_data_module.seq_length == 512
-    assert alpaca_data_module.micro_batch_size == 2
-    assert alpaca_data_module.global_batch_size == 4
-    assert alpaca_data_module.force_redownload is True
-    assert alpaca_data_module.delete_raw is True
+def test_specter_data_module_initialization(specter_data_module):
+    assert specter_data_module.seq_length == 512
+    assert specter_data_module.micro_batch_size == 4
+    assert specter_data_module.global_batch_size == 8
+    assert specter_data_module.force_redownload is True
+    assert specter_data_module.delete_raw is True
 
 
-def test_preprocess_and_split_data(alpaca_data_module, temp_dataset_dir, sample_alpaca_dataset):
-
+def test_preprocess_and_split_data(specter_data_module, temp_dataset_dir, sample_specter_dataset):
     # Call the preprocessing function
-    alpaca_data_module._preprocess_and_split_data(sample_alpaca_dataset)
+    specter_data_module._preprocess_and_split_data(sample_specter_dataset)
 
     # Check if files were created
     assert (temp_dataset_dir / "training.jsonl").exists()
@@ -109,68 +104,45 @@ def test_preprocess_and_split_data(alpaca_data_module, temp_dataset_dir, sample_
         lines = f.readlines()
         assert len(lines) > 0
         data = json.loads(lines[0])
-        assert "input" in data
-        assert "output" in data
-        assert "### Output" not in data["input"]
+        assert "query" in data
+        assert "pos_doc" in data
+        assert "neg_doc" in data
+        assert isinstance(data["neg_doc"], list)
+        assert len(data["neg_doc"]) == 1
 
 
-def test_prepare_data(alpaca_data_module, temp_dataset_dir):
-    alpaca_data_module.prepare_data()
-
-    # Check if files were created
-    assert (temp_dataset_dir / "training.jsonl").exists()
-    assert (temp_dataset_dir / "validation.jsonl").exists()
-    assert (temp_dataset_dir / "test.jsonl").exists()
-
-
-def test_dataloaders(alpaca_data_module, mock_trainer):
-    alpaca_data_module.prepare_data()
-
-    train_loader = alpaca_data_module.train_dataloader()
-    val_loader = alpaca_data_module.val_dataloader()
-    test_loader = alpaca_data_module.test_dataloader()
-
-    assert isinstance(train_loader, torch.utils.data.DataLoader)
-    assert isinstance(val_loader, torch.utils.data.DataLoader)
-    assert isinstance(test_loader, torch.utils.data.DataLoader)
-
-
-def test_force_redownload(alpaca_data_module, temp_dataset_dir):
+def test_force_redownload(specter_data_module, temp_dataset_dir, sample_specter_dataset):
     # First prepare data
-    alpaca_data_module.prepare_data()
+    specter_data_module.prepare_data()
 
     # Create a marker file to simulate existing data
     marker_file = temp_dataset_dir / "training.jsonl"
     assert marker_file.exists()
 
-    # Store original file stats and content
+    # Store original file stats
     original_mtime = marker_file.stat().st_mtime
-    with open(marker_file, "r") as f:
-        f.read()
 
     # Set force_redownload to True and prepare again
-    alpaca_data_module.force_redownload = True
-    alpaca_data_module.prepare_data()
+    specter_data_module.force_redownload = True
+    specter_data_module.prepare_data()
 
     # Check if files were recreated
     assert marker_file.exists()
-
-    # Verify the file is different
     new_mtime = marker_file.stat().st_mtime
     assert new_mtime > original_mtime, "File modification time should be newer after redownload"
 
 
-def test_delete_raw(alpaca_data_module, temp_dataset_dir, sample_alpaca_dataset):
+def test_delete_raw(specter_data_module, temp_dataset_dir, sample_specter_dataset):
     # First prepare data
-    alpaca_data_module.prepare_data()
+    specter_data_module.prepare_data()
 
     # Create a mock raw data file
     raw_file = temp_dataset_dir / "raw_data.txt"
     raw_file.touch()
 
     # Set delete_raw to True and prepare again
-    alpaca_data_module.delete_raw = True
-    alpaca_data_module._preprocess_and_split_data(sample_alpaca_dataset)
+    specter_data_module.delete_raw = True
+    specter_data_module._preprocess_and_split_data(sample_specter_dataset)
 
     # Check if raw file was deleted
     assert not raw_file.exists()

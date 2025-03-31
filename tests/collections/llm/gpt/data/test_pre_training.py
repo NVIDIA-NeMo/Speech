@@ -231,8 +231,3 @@ class TestPreTrainingDataModule:
         assert isinstance(call_args[1], list)  # Second arg should be list of num samples
         assert len(call_args[1]) == 3  # Should have train, valid, test samples
         assert mock_builder_instance.build.called  # Verify build() was called
-
-
-if __name__ == "__main__":
-    pytest.main(["-v", "test_pre_training.py"])
-    pytest.main(["-v", "test_pre_training.py"])

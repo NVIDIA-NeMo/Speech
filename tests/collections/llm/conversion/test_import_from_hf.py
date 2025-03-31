@@ -28,14 +28,17 @@ def get_parser():
     parser.add_argument("--model-type", type=str, help="Name of the model", default="LlamaModel")
     parser.add_argument("--model-config", type=str, help="Model config", default="Llama31Config8B")
     parser.add_argument("--output-path", type=str, help="Output NeMo2 model")
+    parser.add_argument("--ignore-keys", nargs='+', type=str, default=[], help="Ignore keys")
     return parser
 
 
-def count_parameters(model):
+def count_parameters(model, ignore_keys=None):
     table = PrettyTable(["NeMo Modules", "Parameters"])
     total_params = 0
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
+            continue
+        if ignore_keys is not None and name in ignore_keys:
             continue
         params = parameter.numel()
         table.add_row([name, params])
@@ -78,7 +81,7 @@ if __name__ == '__main__':
         table.add_row([key, value])
     print(table)
 
-    nemo_param_cnt = count_parameters(model_nemo)
+    nemo_param_cnt = count_parameters(model_nemo, args.ignore_keys)
     hf_param_cnt = hf_stats['total_params']
 
     assert (

@@ -467,7 +467,3 @@ def test_special_tokens(temp_jsonl_file, tokenizer):
     )
 
     assert dataset.special_tokens == special_tokens
-
-
-if __name__ == '__main__':
-    pytest.main([__file__])

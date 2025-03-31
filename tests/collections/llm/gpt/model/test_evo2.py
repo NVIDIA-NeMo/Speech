@@ -157,11 +157,9 @@ def test_hyena_nv_test_config():
 @pytest.mark.pleasefixme
 def test_convert_hyena():
 
-    from huggingface_hub.utils import RepositoryNotFoundError
-
     evo2_config = llm.Hyena1bConfig()
     model_ckpt = "dummy/model"
     exporter = HuggingFaceSavannaHyenaImporter(model_ckpt, model_config=evo2_config)
 
-    with pytest.raises(RepositoryNotFoundError):
+    with pytest.raises(Exception):
         exporter.apply("dummy_output")

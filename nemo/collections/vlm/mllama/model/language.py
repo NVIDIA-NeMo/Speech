@@ -345,34 +345,26 @@ class CrossAttentionTransformerBlock(TransformerBlock):
                     layer: TransformerLayer
                     xattn_layer: Union[DummyCrossAttentionTransformerLayer, CrossAttentionTransformerLayer]
                     with self.offload_context:
-                        if (len(self.cuda_graphs) == 0) or (not self.training):
-                            hidden_states, context = xattn_layer(
-                                hidden_states=hidden_states,
-                                cross_attention_masks=cross_attention_masks,
-                                xattn_cache=xattn_caches[l_no],
-                                full_text_row_masked_out_mask=full_text_row_masked_out_mask,
-                                rotary_pos_emb=rotary_pos_emb,
-                                cross_attention_bias=cross_attention_bias,
-                                inference_params=None,  # Skip inference_params for xattn
-                                packed_seq_params=packed_seq_params,
-                            )
-                            hidden_states, context = layer(
-                                hidden_states=hidden_states,
-                                attention_mask=attention_mask,
-                                rotary_pos_emb=rotary_pos_emb,
-                                attention_bias=attention_bias,
-                                inference_params=inference_params,
-                                packed_seq_params=packed_seq_params,
-                            )
-                            # CUDA graph doesn't output context and is expected to be None
-                            assert (context is None) or (not self.config.enable_cuda_graph) or (not self.training)
-                        else:
-                            assert (len(self.cuda_graphs) > l_no) and (
-                                self.current_microbatch < len(self.cuda_graphs[l_no])
-                            )
-                            hidden_states = self.cuda_graphs[l_no][self.current_microbatch](
-                                hidden_states, is_first_microbatch=(self.current_microbatch == 0)
-                            )
+                        hidden_states, context = xattn_layer(
+                            hidden_states=hidden_states,
+                            cross_attention_masks=cross_attention_masks,
+                            xattn_cache=xattn_caches[l_no],
+                            full_text_row_masked_out_mask=full_text_row_masked_out_mask,
+                            rotary_pos_emb=rotary_pos_emb,
+                            cross_attention_bias=cross_attention_bias,
+                            inference_params=None,  # Skip inference_params for xattn
+                            packed_seq_params=packed_seq_params,
+                        )
+                        hidden_states, context = layer(
+                            hidden_states=hidden_states,
+                            attention_mask=attention_mask,
+                            rotary_pos_emb=rotary_pos_emb,
+                            attention_bias=attention_bias,
+                            inference_params=inference_params,
+                            packed_seq_params=packed_seq_params,
+                        )
+                        # CUDA graph doesn't output context and is expected to be None
+                        assert (context is None) or (not self.config.enable_cuda_graph) or (not self.training)
 
                     if (
                         torch.is_grad_enabled()

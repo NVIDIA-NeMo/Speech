@@ -192,6 +192,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 self.model = self._configure_model(attn_implementation="eager")
             else:
                 raise e
+        if self.use_liger_kernel:
+            from liger_kernel.transformers import _apply_liger_kernel_to_instance
+
+            _apply_liger_kernel_to_instance(model=self.model)
 
         if self.model_accelerator is not None:
             from nemo.lightning.pytorch.accelerate.transformer_engine import te_accelerate

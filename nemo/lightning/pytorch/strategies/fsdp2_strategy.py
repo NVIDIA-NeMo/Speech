@@ -224,6 +224,10 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         reset_seed()
         self.set_world_ranks()
         self._process_group_backend = self._get_process_group_backend()
+        # See https://github.com/pytorch/pytorch/issues/148532 for details.
+        if self.offload_policy is not None:
+            self._process_group_backend = "cuda:nccl,cpu:gloo"
+
         assert self.cluster_environment is not None
         if not torch.distributed.is_available():
             raise RuntimeError("torch.distributed is not available. Cannot initialize distributed process group")

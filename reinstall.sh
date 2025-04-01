@@ -47,15 +47,14 @@ trtllm() {
           --CUDNN_VER="9.7.0.66-1" \
           --NCCL_VER="2.25.1-1+cuda12.8" \
           --CUBLAS_VER="12.8.3.14-1" \  &&
-        python3 ./scripts/build_wheel.py --job_count $(nproc) --trt_root /usr/local/tensorrt --python_bindings --benchmarks &&
-        pip wheel --wheel-dir $WHEELS_DIR/trtllm/ $TRTLLM_DIR
+        python3 ./scripts/build_wheel.py --job_count $(nproc) --trt_root /usr/local/tensorrt --dist_dir $WHEELS_DIR/trtllm/ --python_bindings --benchmarks
     fi
   else
     if [ -d "$WHEELS_DIR" ] && [ -z "$(ls -A "$WHEELS_DIR")" ]; then
       build
     fi
 
-    pip install --no-cache-dir $WHEELS_DIR/trtllm/*.whl || true
+    pip install --no-cache-dir $WHEELS_DIR/trtllm/tensorrt_llm*.whl --extra-index-url https://pypi.nvidia.com || true
   fi
 }
 

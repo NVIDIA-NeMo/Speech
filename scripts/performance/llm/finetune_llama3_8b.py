@@ -104,6 +104,9 @@ def override_recipe_configs(
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
+    recipe.optim.config.use_distributed_optimizer = True
+    recipe.model.config.disable_parameter_transpose_cache = True
+
     return recipe
 
 

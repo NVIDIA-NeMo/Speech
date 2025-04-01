@@ -16,7 +16,7 @@ import math
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Callable, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -372,8 +372,15 @@ class LlamaModel(GPTModel):
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
+        model_context_managers: Optional[List] = [],
     ):
-        super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
+        super().__init__(
+            config or LlamaConfig(),
+            optim=optim,
+            tokenizer=tokenizer,
+            model_transform=model_transform,
+            model_context_managers=model_context_managers,
+        )
 
 
 class MLPerfLoRALlamaModel(LlamaModel):
@@ -393,26 +400,15 @@ class MLPerfLoRALlamaModel(LlamaModel):
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,
     ):
-        super().__init__(config or LlamaConfig(), optim=optim, tokenizer=tokenizer, model_transform=model_transform)
-
-        from nemo.utils.import_utils import safe_import
-
-        _, HAVE_TE = safe_import("transformer_engine")
-        assert HAVE_TE, "TransformerEngine is required for MLPerfLoRALlamaModel."
-
-    def configure_model(self):
-        """Configure the model with memory optimization.
-
-        Applies context managers to reduce memory by avoiding unnecessary gradients
-        and requesting that Transformer Engine initialize params as FP8.
-        """
-        # Apply context managers to reduce memory by (1) avoiding unnecessary gradients
-        # and (2) requesting that TE initialize params as FP8. See:
-        # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/api/pytorch.html#transformer_engine.pytorch.fp8_model_init
-        import transformer_engine.pytorch as te
-
-        with torch.no_grad(), te.fp8_model_init():
-            super().configure_model()
+        # Apply context manager to reduce memory by avoiding unnecessary gradients
+        model_context_managers = [torch.no_grad()]
+        super().__init__(
+            config or LlamaConfig(),
+            optim=optim,
+            tokenizer=tokenizer,
+            model_transform=model_transform,
+            model_context_managers=model_context_managers,
+        )
 
 
 @io.model_importer(LlamaModel, "hf")

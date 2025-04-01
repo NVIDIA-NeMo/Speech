@@ -104,7 +104,7 @@ def mlperf_lora_llama2_70b_recipe(
         lr_scheduler=scheduler,
     )
     peft = run.Config(
-        llm.peft.lora.LoRA,
+        llm.peft.LoRA,
         dim=16,
         alpha=32,
         dropout=0.1,

@@ -14,16 +14,22 @@
 
 from os.path import basename, splitext
 
+import fiddle as fdl
+import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.llama31_405b import finetune_recipe, model
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
+from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
+    userbuffers_fp8_h100_h16384_tp4_mbs1_seqlen2048_lora,
+)
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import (
     args_sanity_check,
+    get_comm_overlap_callback_idx,
     get_user_configs,
     hf_tokenizer,
     import_ckpt_experiment,
@@ -98,6 +104,30 @@ def override_recipe_configs(
     if args.compute_dtype.lower() == "fp8":
         recipe.trainer.plugins = bf16_with_fp8_mixed()
         recipe.trainer.plugins.grad_reduce_in_fp32 = False
+
+    if finetuning_scheme == "lora" and tp_size > 1 and args.compute_dtype.lower() == "fp8":
+        tp_comm_overlap_cfg = userbuffers_fp8_h100_h16384_tp4_mbs1_seqlen2048_lora if tp_size == 4 else None
+        if tp_comm_overlap_cfg:
+            comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
+            assert (
+                comm_overlap_callback_idx is not None
+            ), "MegatronCommOverlapCallback missing. Required for performance."
+
+            # Enable TP comm overlap with the given config
+            recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap = True
+            tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
+            recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
+
+            # Disable this overlap to allow skipping an all-gather which is redundant for LoRA
+            recipe.model.config.tp_comm_overlap_disable_qkv = True
+
+            # Allow overlapping of dgrad reduce-scatter with dgrad GEMMs
+            # (instead of wgrad GEMMs which are not done when using LoRA)
+            recipe.model.config.tp_comm_bulk_dgrad = False
+            recipe.model.config.tp_comm_overlap_rs_dgrad = True
+
+    recipe.optim.config.use_distributed_optimizer = True
+    recipe.model.config.disable_parameter_transpose_cache = True
 
     return recipe
 

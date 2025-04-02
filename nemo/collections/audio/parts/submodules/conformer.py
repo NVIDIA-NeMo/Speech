@@ -63,7 +63,7 @@ class SpectrogramConformer(NeuralModule):
         conformer_params['feat_in'] = conformer_params['feat_out'] = (
             2 * self.in_channels * kwargs['feat_in']
         )  # stack real and imag
-        logging.info('Conformer params: %s', conformer_params)
+        logging.debug('Conformer params: %s', conformer_params)
         self.conformer = ConformerEncoder(**conformer_params)
 
         # Output projection to generate real and imaginary components of the output channels

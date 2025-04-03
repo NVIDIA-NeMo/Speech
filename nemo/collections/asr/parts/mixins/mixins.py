@@ -610,7 +610,7 @@ class ASRModuleMixin(ASRAdapterModelMixin):
             processed_signal: the input audio signals
             processed_signal_length: the length of the audios
             cache_last_channel: the cache tensor for last channel layers like MHA
-            cache_last_channel_len: engths for cache_last_channel
+            cache_last_channel_len: lengths for cache_last_channel
             cache_last_time: the cache tensor for last time layers like convolutions
             keep_all_outputs: if set to True, would not drop the extra outputs specified by encoder.streaming_cfg.valid_out_len
             previous_hypotheses: the hypotheses from the previous step for RNNT models

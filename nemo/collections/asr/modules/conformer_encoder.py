@@ -863,8 +863,14 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             streaming_cfg.last_channel_cache_size = att_context_size[0] if att_context_size[0] >= 0 else max_context
         else:
             if left_chunks is None:
-                raise ValueError("left_chunks can not be None when chunk_size is set.")
-            streaming_cfg.last_channel_cache_size = left_chunks * chunk_size
+                streaming_cfg.last_channel_cache_size = (
+                    att_context_size[0] if att_context_size[0] >= 0 else max_context
+                )
+                logging.warning(
+                    f"left_chunks is not set. Setting it to default: {streaming_cfg.last_channel_cache_size}."
+                )
+            else:
+                streaming_cfg.last_channel_cache_size = left_chunks * chunk_size
 
         if hasattr(self.pre_encode, "get_sampling_frames"):
             sampling_frames = self.pre_encode.get_sampling_frames()

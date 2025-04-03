@@ -92,7 +92,7 @@ class Qwen2Config1P5B(Qwen2Config):
 
 
 @dataclass
-class Qwen25Config1P5B(Qwen2Config):
+class Qwen25Config1P5B(Qwen2Config1P5B):
     """
     Config for Qwen 2.5 1.5B: https://huggingface.co/Qwen/Qwen2.5-1.5B
     """

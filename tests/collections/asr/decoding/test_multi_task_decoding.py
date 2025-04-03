@@ -20,10 +20,12 @@ import torch
 from nemo.collections.asr.modules.transformer.transformer import TransformerDecoderNM
 from nemo.collections.asr.modules.transformer.transformer_generators import (
     BeamSearchSequenceGenerator,
+    BeamSearchSequenceGeneratorWithNGramLM,
     GreedySequenceGenerator,
 )
 from nemo.collections.asr.parts.submodules.multitask_beam_decoding import TransformerAEDBeamInfer
 from nemo.collections.asr.parts.submodules.multitask_greedy_decoding import TransformerAEDGreedyInfer
+from nemo.collections.asr.parts.submodules.ngram_lm import NGramGPULanguageModel
 from nemo.collections.asr.parts.submodules.token_classifier import TokenClassifier
 
 
@@ -131,6 +133,36 @@ def test_beam_decoding_beam_scores_false(inputs, nnet):
 
 def test_beam_decoding_beam_scores_true(inputs, nnet):
     gen = BeamSearchSequenceGenerator(*nnet, beam_size=2)
+    output = gen(*inputs, return_beam_scores=True)
+
+    assert len(output) == 3
+    beam_paths, scores, best_path = output
+
+    assert beam_paths is not None
+    assert isinstance(beam_paths, list)
+    assert len(beam_paths) == 1
+    (beam_paths_seq0,) = beam_paths
+    assert torch.is_tensor(beam_paths_seq0)
+    assert beam_paths_seq0.shape == (2, 26)
+
+    assert scores is not None
+    assert isinstance(scores, list)
+    assert len(scores) == 1
+    (scores_seq0,) = scores
+    assert torch.is_tensor(scores_seq0)
+    assert scores_seq0.shape == (2,)
+
+    assert best_path is not None
+    assert torch.is_tensor(best_path)
+    assert best_path.shape == (1, 26)
+
+
+def test_beam_decoding_beam_scores_true_with_lm(inputs, nnet, tmp_path):
+    """Test decoding with dummy unigram LM"""
+    lm = NGramGPULanguageModel.dummy_unigram_lm(vocab_size=8)
+    lm_path = tmp_path / "unigram_lm.nemo"
+    lm.save_to(f"{lm_path}")
+    gen = BeamSearchSequenceGeneratorWithNGramLM(*nnet, ngram_lm_model=lm_path, ngram_lm_alpha=0.2, beam_size=2)
     output = gen(*inputs, return_beam_scores=True)
 
     assert len(output) == 3

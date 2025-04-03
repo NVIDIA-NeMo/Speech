@@ -25,9 +25,30 @@ from nemo.collections.asr.modules.transformer.transformer_encoders import Transf
 from nemo.collections.asr.modules.transformer.transformer_generators import (
     BeamSearchSequenceGenerator,
     BeamSearchSequenceGeneratorWithLanguageModel,
+    BeamSearchSequenceGeneratorWithNGramLM,
     EnsembleBeamSearchSequenceGenerator,
     GreedySequenceGenerator,
     TopKSequenceGenerator,
 )
 from nemo.collections.asr.modules.transformer.transformer_modules import AttentionBridge, TransformerEmbedding
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
+
+__all__ = [
+    "BridgeEncoder",
+    "PerceiverEncoder",
+    "NeMoTransformerBottleneckConfig",
+    "NeMoTransformerBottleneckDecoderConfig",
+    "NeMoTransformerBottleneckEncoderConfig",
+    "TransformerBottleneckEncoderNM",
+    "TransformerDecoder",
+    "TransformerEncoder",
+    "BeamSearchSequenceGenerator",
+    "BeamSearchSequenceGeneratorWithLanguageModel",
+    "BeamSearchSequenceGeneratorWithNGramLM",
+    "EnsembleBeamSearchSequenceGenerator",
+    "GreedySequenceGenerator",
+    "TopKSequenceGenerator",
+    "AttentionBridge",
+    "TransformerEmbedding",
+    "get_nemo_transformer",
+]

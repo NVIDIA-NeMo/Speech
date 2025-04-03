@@ -14,11 +14,15 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Union
 
 import torch
 
-from nemo.collections.asr.modules.transformer import BeamSearchSequenceGenerator
+from nemo.collections.asr.modules.transformer import (
+    BeamSearchSequenceGenerator,
+    BeamSearchSequenceGeneratorWithNGramLM,
+)
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core import Typing, typecheck
@@ -129,6 +133,8 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         max_generation_delta: int = 50,
         return_best_hypothesis: bool = True,
         preserve_alignments: bool = False,
+        ngram_lm_model: Path | str | None = None,
+        ngram_lm_alpha: float = 0.0,
     ):
         super().__init__(
             transformer_decoder=transformer_decoder,
@@ -142,18 +148,34 @@ class TransformerAEDBeamInfer(AEDBeamInfer, Typing):
         self.bos = tokenizer.bos
         self.pad = tokenizer.pad
         self.eos = tokenizer.eos
-        self.beam_search = BeamSearchSequenceGenerator(
-            embedding=transformer_decoder.embedding,
-            decoder=transformer_decoder.decoder,
-            log_softmax=log_softmax_module,
-            max_sequence_length=transformer_decoder.max_sequence_length,
-            beam_size=beam_size,
-            bos=self.bos,
-            pad=self.pad,
-            eos=self.eos,
-            len_pen=length_penalty,
-            max_delta_length=max_generation_delta,
-        )
+        if ngram_lm_model is None:
+            self.beam_search = BeamSearchSequenceGenerator(
+                embedding=transformer_decoder.embedding,
+                decoder=transformer_decoder.decoder,
+                log_softmax=log_softmax_module,
+                max_sequence_length=transformer_decoder.max_sequence_length,
+                beam_size=beam_size,
+                bos=self.bos,
+                pad=self.pad,
+                eos=self.eos,
+                len_pen=length_penalty,
+                max_delta_length=max_generation_delta,
+            )
+        else:
+            self.beam_search = BeamSearchSequenceGeneratorWithNGramLM(
+                embedding=transformer_decoder.embedding,
+                decoder=transformer_decoder.decoder,
+                log_softmax=log_softmax_module,
+                max_sequence_length=transformer_decoder.max_sequence_length,
+                beam_size=beam_size,
+                bos=self.bos,
+                pad=self.pad,
+                eos=self.eos,
+                len_pen=length_penalty,
+                max_delta_length=max_generation_delta,
+                ngram_lm_model=ngram_lm_model,
+                ngram_lm_alpha=ngram_lm_alpha,
+            )
 
         self.preserve_alignments = preserve_alignments
         if self.preserve_alignments:
@@ -249,3 +271,6 @@ class AEDBeamInferConfig:
     max_generation_delta: int = -1  # -1 means up to the max length of the decoder
     return_best_hypothesis: bool = True
     preserve_alignments: bool = False
+    # ngram LM params
+    ngram_lm_model: Optional[str] = None
+    ngram_lm_alpha: float = 0.0

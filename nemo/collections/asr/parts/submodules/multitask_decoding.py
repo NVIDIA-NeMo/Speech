@@ -174,7 +174,10 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 self.preserve_alignments = self.cfg.beam.get('preserve_alignments', False)
 
         if strategy in ['greedy', 'greedy_batch']:
-
+            if self.cfg.greedy.get('ngram_lm_model') is not None:
+                raise ValueError(
+                    "Greedy strategy cannot be used with ngram_lm_model. Use beam strategy with beam=1 instead."
+                )
             self.decoding = TransformerAEDGreedyInfer(
                 transformer_decoder=self.transformer_decoder,
                 log_softmax_module=self.log_softmax_module,
@@ -199,6 +202,8 @@ class AbstractMultiTaskDecoding(ConfidenceMixin):
                 max_generation_delta=self.cfg.beam.get('max_generation_delta', -1),
                 return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
                 preserve_alignments=self.preserve_alignments,
+                ngram_lm_model=self.cfg.beam.get('ngram_lm_model', None),
+                ngram_lm_alpha=self.cfg.beam.get('ngram_lm_alpha', 0.0),
             )
 
         else:

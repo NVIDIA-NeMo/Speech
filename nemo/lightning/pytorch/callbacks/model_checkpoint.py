@@ -683,13 +683,23 @@ class ModelCheckpoint(PTLModelCheckpoint):
         # barrier_after=True, so all ranks continue after the unfinished checkpoint marker is placed.
         # if anything goes wrong during removal, we should be able to detect that data is incomplete.
         self.set_checkpoint_unfinished_marker(filepath, barrier_after=True)
-        super()._remove_checkpoint(trainer, filepath)
+        try:
+            super()._remove_checkpoint(trainer, filepath)
+        except Exception as e:
+            logging.warning(
+                f'Error removing checkpoint, common if doing manual cleanup and restarting: {filepath}: {e}'
+            )
         ema_callback = self._ema_callback(trainer)
         if ema_callback is not None:
             # remove EMA copy of the state dict as well.
 
             filepath = self._ema_format_filepath(filepath)
-            super()._remove_checkpoint(trainer, filepath)
+            try:
+                super()._remove_checkpoint(trainer, filepath)
+            except Exception as e:
+                logging.warning(
+                    f'Error removing checkpoint, common if doing manual cleanup and restarting: {filepath}: {e}'
+                )
         # barrier_before=True, so all ranks synchronize before removing the unfinished checkpoint marker
         # we don't want to remove the marker until the checkpoint is actually removed.
         self.remove_checkpoint_unfinished_marker(filepath, barrier_before=True)

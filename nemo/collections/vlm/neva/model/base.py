@@ -67,14 +67,6 @@ MODEL_CONFIG_ATTR = [
 ]
 
 
-def get_image_sequence_length(img_h, img_w, patch_dim, add_class_token, class_token_len):
-    """Get image sequence length given image size, patch size, and class token."""
-    num_patches_per_dim_h = img_h // patch_dim
-    num_patches_per_dim_w = img_w // patch_dim
-    num_patches = num_patches_per_dim_h * num_patches_per_dim_w
-    return num_patches + (class_token_len if add_class_token else 0)
-
-
 def restore_model_weights(model, checkpoint_path, strict=False):
     """
     Restores model weights from a checkpoint.
@@ -130,7 +122,11 @@ def neva_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
 
     packed_seq_params = _batch.get("packed_seq_params", None)
     _batch = {
-        key: val.cuda(non_blocking=True) if key in required_keys and val is not None else None
+        key: (
+            (val if isinstance(val, list) else val.cuda(non_blocking=True))
+            if key in required_keys and val is not None
+            else None
+        )
         for key, val in _batch.items()
     }
     if packed_seq_params is not None:
@@ -570,16 +566,6 @@ class MCoreNevaModel(MCoreLLaVAModel):
             # Pipeline parallel expects fixed input size. Check if we need to pad.
             if self._language_is_pipeline_parallel and max_seq_len < self._language_max_sequence_length:
                 max_seq_len = self._language_max_sequence_length
-                if packed_sequence:
-                    last_seqlen = packed_seq_params.cu_seqlens_q[-1] - packed_seq_params.cu_seqlens_q[-2]
-                    last_seqlen_padded = max_seq_len - packed_seq_params.cu_seqlens_q_padded[-2]
-                    assert (
-                        last_seqlen_padded >= last_seqlen
-                    ), "`language_max_sequence_length` needs to increase for sequence packing to work properly."
-                    packed_seq_params.cu_seqlens_q_padded[-1] = max_seq_len
-                    packed_seq_params.cu_seqlens_kv_padded[-1] = max_seq_len
-                    packed_seq_params.max_seqlen_q = max(last_seqlen_padded, packed_seq_params.max_seqlen_q)
-                    packed_seq_params.max_seqlen_kv = max(last_seqlen_padded, packed_seq_params.max_seqlen_kv)
 
             if self.sequence_parallel_lm:
                 if self.tp_comm_overlap_lm:
@@ -591,8 +577,19 @@ class MCoreNevaModel(MCoreLLaVAModel):
                     # Pad to multiple of tp size for sequence parallelism
                     tp_world_size = ps.get_tensor_model_parallel_world_size()
                     padded_seq_len = int((max_seq_len + (tp_world_size - 1)) // tp_world_size * tp_world_size)
-
                 max_seq_len = padded_seq_len
+
+            if packed_sequence and packed_seq_params.cu_seqlens_q[-1] != max_seq_len:
+                last_seqlen = packed_seq_params.cu_seqlens_q[-1] - packed_seq_params.cu_seqlens_q[-2]
+                last_seqlen_padded = max_seq_len - packed_seq_params.cu_seqlens_q_padded[-2]
+                assert (
+                    last_seqlen_padded >= last_seqlen
+                ), "`language_max_sequence_length` needs to increase for sequence packing to work properly."
+                packed_seq_params.cu_seqlens_q_padded[-1] = max_seq_len
+                packed_seq_params.cu_seqlens_kv_padded[-1] = max_seq_len
+                packed_seq_params.max_seqlen_q = max(last_seqlen_padded, packed_seq_params.max_seqlen_q)
+                packed_seq_params.max_seqlen_kv = max(last_seqlen_padded, packed_seq_params.max_seqlen_kv)
+
             batch_indices, non_image_indices = torch.where(input_ids != image_token_index)
 
             # New position ids for the text tokens, shifted by the image sequence length.

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import List, Literal, Optional, Union
@@ -36,8 +35,6 @@ from megatron.core.transformer.transformer_layer import TransformerLayer, Transf
 from megatron.core.transformer.utils import sharded_state_dict_default
 from megatron.core.utils import make_viewless_tensor
 from torch import Tensor, nn
-
-from nemo.utils import logging
 
 try:
     from megatron.core.transformer.custom_layers.transformer_engine import (
@@ -736,44 +733,3 @@ class MLlamaCrossAttention(Attention):
     def _compute_xattn_kv_cache(self, xattn_tokens: Tensor) -> Tensor:
         key, value = self.get_key_value_tensors(xattn_tokens)
         return torch.stack([key, value])
-
-
-def apply_rope_scaling(
-    inv_freq,
-    factor: int = 8,
-    low_freq_factor: int = 1,
-    high_freq_factor: int = 4,
-    old_context_len: int = 8192,
-):
-    """
-    Apply scaling to rotary embeddings for positional encoding.
-
-    Args:
-        inv_freq (Tensor): Tensor of inverse frequencies.
-        factor (int): Scaling factor for medium-to-high frequencies.
-        low_freq_factor (int): Factor for identifying low frequencies.
-        high_freq_factor (int): Factor for identifying high frequencies.
-        old_context_len (int): Original context length for scaling computation.
-
-    Returns:
-        Tensor: Scaled inverse frequencies.
-    """
-    logging.info(
-        f"Apply rope scaling with factor={factor}, low_freq_factor={low_freq_factor}, "
-        f"high_freq_factor={high_freq_factor}, old_context_len={old_context_len}."
-    )
-
-    low_freq_wavelen = old_context_len / low_freq_factor
-    high_freq_wavelen = old_context_len / high_freq_factor
-
-    wavelen = 2 * math.pi / inv_freq
-    # wavelen < high_freq_wavelen: do nothing
-    # wavelen > low_freq_wavelen: divide by factor
-    inv_freq_llama = torch.where(wavelen > low_freq_wavelen, inv_freq / factor, inv_freq)
-    # otherwise: interpolate between the two, using a smooth factor
-    smooth_factor = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
-    smoothed_inv_freq = (1 - smooth_factor) * inv_freq_llama / factor + smooth_factor * inv_freq_llama
-    is_medium_freq = ~(wavelen < high_freq_wavelen) * ~(wavelen > low_freq_wavelen)
-    inv_freq_llama = torch.where(is_medium_freq, smoothed_inv_freq, inv_freq_llama)
-
-    return inv_freq_llama

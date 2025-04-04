@@ -15,7 +15,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-
+from typing import Optional
 import lightning.pytorch as L
 import torch
 
@@ -59,7 +59,7 @@ class SigLIPViT400M_14_384_Config(CLIPViTConfig):
 class SigLIPViTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin):
     """SigLIP ViT NeMo Wrapper"""
 
-    def __init__(self, config):
+    def __init__(self, config: Optional[CLIPViTConfig] = None):
         # pylint: disable=C0115,C0116
         super().__init__()
         self.config = config

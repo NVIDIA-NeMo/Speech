@@ -26,6 +26,8 @@ from nemo.utils import logging
 
 
 class LlamaImageTextSample(ImageTextSample):
+    """Llama Image Text Sample"""
+
     vision_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
     aspect_ratio_ids: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
     aspect_ratio_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
@@ -33,6 +35,8 @@ class LlamaImageTextSample(ImageTextSample):
 
 
 class Llama3SampleEncoder(VQASampleEncoder):
+    """MLlama Sample Encoder"""
+
     def __init__(self, tokenizer, image_processor, multimodal_sample_config=MultiModalSampleConfig()):
         """
         Initialize the VQASampleEncoder.
@@ -98,7 +102,7 @@ class Llama3SampleEncoder(VQASampleEncoder):
             )
         else:
             raise ValueError(
-                f"VQA Sample context/answers should either be a List[str] or str. Other types not supported"
+                "VQA Sample context/answers should either be a List[str] or str. Other types not supported"
             )
 
         templated_prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
@@ -142,3 +146,6 @@ class Llama3SampleEncoder(VQASampleEncoder):
         output_sample.loss_mask = loss_mask
         output_sample.vision_mask = vision_mask
         return output_sample
+
+    def process_answer_str(self, answer, stop_str):
+        return answer + ("" if stop_str is None else stop_str)

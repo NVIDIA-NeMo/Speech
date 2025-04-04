@@ -46,10 +46,10 @@ class MLlamaDataset(LazySupervisedDataset):
     ):
 
         if data_path.endswith(".json"):
-            super().__init__(data_path, data_config, tokenizer, image_processor, sequence_length)
+            super().__init__(data_path, data_config, tokenizer, image_processor)
 
         elif data_path.endswith(".jsonl"):
-            super().__init__(None, data_config, tokenizer, image_processor, sequence_length)
+            super().__init__(None, data_config, tokenizer, image_processor)
             logging.warning("Loading image inputs from SteerLM Dataset...")
             if data_config.media_type == 'image':
                 image_folder = data_config.image_folder
@@ -76,6 +76,7 @@ class MLlamaDataset(LazySupervisedDataset):
 
         else:
             raise ValueError(f"Formatting of {data_path} is not supported in MLlama.")
+        self.sequence_length = sequence_length
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         source = self.list_data_dict[i]

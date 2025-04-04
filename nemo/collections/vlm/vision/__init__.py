@@ -18,7 +18,7 @@ from nemo.collections.vlm.vision.base import (
     HFCLIPVisionConfig,
     MultimodalProjectorConfig,
 )
-from nemo.collections.vlm.vision.clip_vit import CLIPViTL_14_336_Config
+from nemo.collections.vlm.vision.clip_vit import CLIPViTL_14_336_Config, CLIPViTModel
 from nemo.collections.vlm.vision.intern_vit import (
     InternViT_6B_448px_Config,
     InternViT_300M_448px_Config,
@@ -37,4 +37,5 @@ __all__ = [
     "InternViTModel",
     "InternViT_300M_448px_Config",
     "InternViT_6B_448px_Config",
+    "CLIPViTModel",
 ]

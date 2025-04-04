@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=C0115,C0116
 from dataclasses import dataclass, field
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 from megatron.core.packed_seq_params import PackedSeqParams
 
-from nemo.collections.multimodal.data.energon.conversation import LLaVATemplateConfig
+from nemo.collections.multimodal.data.energon.conversation import BaseConversationTemplateConfig, LLaVATemplateConfig
 
 
 @dataclass
@@ -44,6 +45,7 @@ class ImageTextSample:
     tokens: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     labels: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     loss_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+    num_image_tiles: Optional[List[int]] = None
 
 
 @dataclass
@@ -66,6 +68,7 @@ class ImageTextRawBatch:
     tokens: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     labels: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.long))
     loss_mask: torch.Tensor = field(default_factory=lambda: torch.empty(0, dtype=torch.float))
+    num_image_tiles: Optional[List[int]] = None
 
 
 @dataclass
@@ -80,5 +83,5 @@ class PackedImageTextRawBatch(ImageTextRawBatch):
 class MultiModalSampleConfig:
     image_token: ImageToken = field(default_factory=ImageToken)
     ignore_place_holder: int = -100
-    conversation_template_config: LLaVATemplateConfig = field(default_factory=LLaVATemplateConfig)
+    conversation_template_config: BaseConversationTemplateConfig = field(default_factory=LLaVATemplateConfig)
     image_following_text: bool = True

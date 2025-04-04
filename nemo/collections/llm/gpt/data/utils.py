@@ -15,6 +15,7 @@
 import copy
 import datetime
 import json
+import logging
 import multiprocessing as mp
 import os
 import pickle
@@ -27,7 +28,9 @@ import torch
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.core.classes import Dataset
-from nemo.utils import AppState, logging
+from nemo.utils import AppState
+
+logger = logging.getLogger(__name__)
 
 PREFIX_STR = (
     "\x00"  # the prefix string used in the tokenizer to deal with the added empty token for some of the tokenizers
@@ -126,7 +129,7 @@ class _TextMemMapDataset(Dataset):
         if sort_dataset_paths:
             self._files_list = sorted(self._files_list)
 
-        logging.info("Building data files")
+        logger.info("Building data files")
         # load all files into memmap
         is_distributed = torch.distributed.is_available() and torch.distributed.is_initialized()
 
@@ -168,15 +171,15 @@ class _TextMemMapDataset(Dataset):
         if is_distributed and not lightning_prepare_data():
             torch.distributed.barrier()
 
-        logging.info("Loading data files")
+        logger.info("Loading data files")
         start_time = time.time()
         mdata_midx_list = [self.load_file(fn, index_mapping_dir) for fn in self._files_list]
-        logging.info(
+        logger.info(
             f"Time loading {len(mdata_midx_list)} "
             f"mem-mapped files: {datetime.timedelta(seconds=time.time() - start_time)}"
         )
 
-        logging.info("Computing global indices")
+        logger.info("Computing global indices")
         midx_bins = np.cumsum([(len(midx) - header_lines) for _, midx in mdata_midx_list])
 
         self.midx_bins = midx_bins
@@ -218,16 +221,16 @@ class _TextMemMapDataset(Dataset):
         try:
             sample = self._fetch_sample_from_memmap(mdata, i, j)
         except Exception as e:
-            logging.error(f"Error while fetching sample from memmap: {e}")
-            logging.error(f"file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
+            logger.error(f"Error while fetching sample from memmap: {e}")
+            logger.error(f"file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
             raise e
 
         # parse raw text (e.g., tokenize)
         try:
             data = self._build_data_from_text(sample)
         except Exception as e:
-            logging.error(f"Error while building data from text, possible issue with sample expected format: {e}")
-            logging.error(f"sample: {sample}, file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
+            logger.error(f"Error while building data from text, possible issue with sample expected format: {e}")
+            logger.error(f"sample: {sample}, file_id: {file_id}, file_idx: {file_idx}, i: {i}, j: {j}")
             raise e
 
         return data
@@ -262,7 +265,7 @@ class _TextMemMapDataset(Dataset):
             midx - indices pointing to the end-of-line (or end of file) position
             size - number of lines in file
         """
-        logging.info(f"Loading {fn}")
+        logger.info(f"Loading {fn}")
         idx_fn = _index_fn(fn, index_mapping_dir)
 
         # create data map
@@ -282,9 +285,7 @@ class _TextMemMapDataset(Dataset):
             if "newline_int" in idx_info_dict:
                 newline_int = idx_info_dict["newline_int"]
                 if self._newline_int != newline_int:
-                    logging.warning(
-                        f"Mismatch in newline_int, expected = {self._newline_int} but loaded {newline_int}"
-                    )
+                    logger.warning(f"Mismatch in newline_int, expected = {self._newline_int} but loaded {newline_int}")
 
             # test for version mismatch (useful to force recreation of index files)
             idx_version = idx_info_dict.get("version", "0.0")
@@ -342,8 +343,8 @@ class _JSONLMemMapDataset(_TextMemMapDataset):
         try:
             record = json.loads(text)
         except Exception as e:
-            logging.error(f"Exception: {e}")
-            logging.error(f"datapoint: {text}")
+            logger.error(f"Exception: {e}")
+            logger.error(f"datapoint: {text}")
             raise e
         return record
 
@@ -540,7 +541,7 @@ def build_index_files(
     if workers is None:
         workers = max(1, os.cpu_count() // 2)
 
-    logging.info(f"Processing {len(dataset_paths)} data files using {workers} workers")
+    logger.info(f"Processing {len(dataset_paths)} data files using {workers} workers")
     # load all files into memmap
     start_time = time.time()
     ctx = mp.get_context("fork")
@@ -555,7 +556,7 @@ def build_index_files(
             dataset_paths,
         )
 
-    logging.info(
+    logger.info(
         f"Time building {sum(build_status)} / {len(build_status)} "
         f"mem-mapped files: {datetime.timedelta(seconds=time.time() - start_time)}"
     )
@@ -668,7 +669,7 @@ def _get_samples_mapping(
         # Build samples mapping
         verbose = torch.distributed.get_rank() == 0
         start_time = time.time()
-        logging.info(' > building samples index mapping for {} ...'.format(name))
+        logger.info(' > building samples index mapping for {} ...'.format(name))
         # First compile and then import.
         try:
             from megatron.core.datasets import helpers_cpp
@@ -688,11 +689,11 @@ def _get_samples_mapping(
             verbose,
             2 if binary_head else 1,
         )
-        logging.info(' > done building samples index maping')
+        logger.info(' > done building samples index maping')
         np.save(indexmap_filename, samples_mapping, allow_pickle=True)
-        logging.info(' > saved the index mapping in {}'.format(indexmap_filename))
+        logger.info(' > saved the index mapping in {}'.format(indexmap_filename))
         # Make sure all the ranks have built the mapping
-        logging.info(
+        logger.info(
             ' > elasped time to build and save samples mapping ' '(seconds): {:4f}'.format(time.time() - start_time)
         )
 
@@ -707,11 +708,11 @@ def _get_samples_mapping(
         )
     # Load indexed dataset if not given externally.
     if samples_mapping is None:
-        logging.info(' > loading indexed mapping from {}'.format(indexmap_filename))
+        logger.info(' > loading indexed mapping from {}'.format(indexmap_filename))
         start_time = time.time()
         samples_mapping = np.load(indexmap_filename, allow_pickle=True, mmap_mode='r')
-        logging.info('    loaded indexed file in {:3.3f} seconds'.format(time.time() - start_time))
-        logging.info('    total number of samples: {}'.format(samples_mapping.shape[0]))
+        logger.info('    loaded indexed file in {:3.3f} seconds'.format(time.time() - start_time))
+        logger.info('    total number of samples: {}'.format(samples_mapping.shape[0]))
 
     # Deallocate temporary numpy arrays that were created for `get_samples_mapping()` when needed
     if hasattr(indexed_dataset, 'doc_idx') and hasattr(indexed_dataset, 'sizes'):
@@ -873,7 +874,7 @@ def _mask_targets(
         elif cur_idx + tokenized_len < tgt_len:
             # Check whether the mask is applied to the correct position, the first token is turn start tokens
             if not torch.equal(target[cur_idx + 1 : cur_idx + tokenized_len], s_id[1:]):
-                logging.warning("a sentence mismatches the corresponding piece " "in the conversation")
+                logger.warning("a sentence mismatches the corresponding piece " "in the conversation")
         if i == 0 and (gtype == 'VALUE_TO_TEXT' or gtype is None):
             # mask the first turn completely to provide at least one turn as context for the rest
             target[cur_idx : cur_idx + tokenized_len] = IGNORE_INDEX
@@ -1002,7 +1003,7 @@ def _build_memmap_index_files(newline_int, build_index_fn, fn, index_mapping_dir
     if _index_file_exists(idx_fn):
         return False
     else:
-        logging.info(f"Building indexing for fn = {fn}")
+        logger.info(f"Building indexing for fn = {fn}")
         # find all newline positions
         midx = build_index_fn(fn, newline_int)
         # validate midx
@@ -1014,9 +1015,9 @@ def _build_memmap_index_files(newline_int, build_index_fn, fn, index_mapping_dir
         data = dict(newline_int=newline_int, version=__idx_version__)
 
         # save index as numpy array to enable memmap reading
-        logging.info(f"Saving idx file = {idx_fn}.npy")
+        logger.info(f"Saving idx file = {idx_fn}.npy")
         np.save(idx_fn + ".npy", midx, allow_pickle=True)
-        logging.info(f"Saving metadata file = {idx_fn}.info")
+        logger.info(f"Saving metadata file = {idx_fn}.info")
         pickle.dump(data, open(idx_fn + ".info", "wb"))
 
         return True

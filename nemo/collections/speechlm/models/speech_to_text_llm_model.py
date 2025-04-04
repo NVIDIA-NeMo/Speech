@@ -46,7 +46,6 @@ from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model.base import (
     GPTConfig,
-    GPTModel,
     get_batch_on_this_context_parallel_rank,
     get_packed_seq_params,
 )
@@ -883,7 +882,7 @@ class SpeechToTextLLM(SpeechLanguageModel):
 
         if isinstance(forward_output, tuple):
             # reduce validation loss
-            loss = self.validation_loss_reduction.forward(batch=batch, forward_out=forward_output)[1]['avg']
+            loss = self.validation_loss_reduction.forward(batch=batch, forward_out=forward_output)[-1]['avg']
         else:
             # no labels provided, use a dummy loss value
             loss = 0.0
@@ -915,8 +914,14 @@ class SpeechToTextLLM(SpeechLanguageModel):
                 labels_text = clean_end_string(labels_text, self.tokenizer, data_cfg.end_string)
 
             if data_cfg.get("remove_text_pc", False):
-                preds_text = [remove_punctuations(p.lower(), data_cfg.get("punctuations", None)) for p in preds_text]
-                labels_text = [remove_punctuations(l.lower(), data_cfg.get("punctuations", None)) for l in labels_text]
+                preds_text = [
+                    remove_punctuations(pred_text.lower(), data_cfg.get("punctuations", None))
+                    for pred_text in preds_text
+                ]
+                labels_text = [
+                    remove_punctuations(label_text.lower(), data_cfg.get("punctuations", None))
+                    for label_text in labels_text
+                ]
 
             if data_cfg.get("log_every_n_steps", None) is not None:
                 if batch_idx % data_cfg.log_every_n_steps == 0:

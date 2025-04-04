@@ -1742,7 +1742,7 @@ class MaskedTokenLossReduction(MegatronLossReduction):
 
     def forward(
         self, batch: Dict[str, torch.Tensor], forward_out: torch.Tensor
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
         """Taken from: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L951-L976 ."""  # pylint: disable=line-too-long
         from megatron.core import parallel_state
 
@@ -1752,33 +1752,30 @@ class MaskedTokenLossReduction(MegatronLossReduction):
         if isinstance(forward_out, tuple):
             forward_out, loss_mask = forward_out
             batch["loss_mask"] = loss_mask
+
         cp_size = parallel_state.get_context_parallel_world_size()
-        if cp_size == 1:
-            loss_for_ub = masked_token_loss(forward_out, batch["loss_mask"])
+        loss_sum_for_ub = masked_token_loss(forward_out, batch["loss_mask"], cp_size)
+        if cp_size == 1 or batch['num_valid_tokens_in_ub'] is None:
+            num_valid_tokens_in_ub = batch["loss_mask"].sum()
         else:
-            loss_for_ub = masked_token_loss_context_parallel(
-                forward_out, batch["loss_mask"], batch['num_valid_tokens_in_ub']
-            )
+            num_valid_tokens_in_ub = batch['num_valid_tokens_in_ub']
+        if num_valid_tokens_in_ub < 0.5:  # no valid tokens
+            num_valid_tokens_in_ub += 1.0
+        num_valid_tokens_in_ub = num_valid_tokens_in_ub.clone().detach().to(torch.int)
 
         if self.validation_step and not self.val_drop_last:
-            num_valid_tokens_in_ub = batch["loss_mask"].sum()
-            if loss_for_ub.isnan():
-                assert batch["loss_mask"].count_nonzero() == 0, "Got NaN loss with non-empty input"
+            if loss_sum_for_ub.isnan():
+                assert num_valid_tokens_in_ub == 0, "Got NaN loss with non-empty input"
                 loss_sum_for_ub = torch.zeros_like(num_valid_tokens_in_ub)
-            else:
-                loss_sum_for_ub = num_valid_tokens_in_ub * loss_for_ub
 
             loss_sum_and_ub_size_all_gpu = torch.cat(
-                [
-                    loss_sum_for_ub.clone().detach().view(1),
-                    torch.tensor([num_valid_tokens_in_ub], device=torch.cuda.current_device()).clone().detach(),
-                ]
+                [loss_sum_for_ub.clone().detach().view(1), num_valid_tokens_in_ub]
             )
             torch.distributed.all_reduce(loss_sum_and_ub_size_all_gpu, group=parallel_state.get_data_parallel_group())
-            return loss_for_ub * cp_size, {"loss_sum_and_ub_size": loss_sum_and_ub_size_all_gpu}
+            return loss_sum_for_ub, num_valid_tokens_in_ub, {"loss_sum_and_ub_size": loss_sum_and_ub_size_all_gpu}
 
-        reduced_loss = average_losses_across_data_parallel_group([loss_for_ub])
-        return loss_for_ub * cp_size, {"avg": reduced_loss}
+        reduced_loss = average_losses_across_data_parallel_group([loss_sum_for_ub / num_valid_tokens_in_ub])
+        return loss_sum_for_ub, num_valid_tokens_in_ub, {"avg": reduced_loss}
 
     def reduce(self, losses_reduced_per_micro_batch) -> torch.Tensor:
         """Taken from: https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""  # pylint: disable=line-too-long
@@ -1818,34 +1815,17 @@ class MaskedTokenLossReductionWithLossMask(MaskedTokenLossReduction):
         return super().forward(batch, forward_out)
 
 
-def masked_token_loss(tensor: Tensor, mask: Tensor):
+def masked_token_loss(tensor: Tensor, mask: Tensor, cp_size: int = 1):
     """
     The function takes as input per-token loss and masks non-required values.
     """
     losses = tensor.float()
     loss_mask = mask.view(-1).float()
-    num_valid_tokens = loss_mask.sum()
-    if num_valid_tokens < 0.5:  # no valid tokens
-        num_valid_tokens += 1.0
-    loss = torch.sum(losses.view(-1) * loss_mask) / num_valid_tokens  # sequence level nll
+    loss = torch.sum(losses.view(-1) * loss_mask)  # sequence level nll
+    if cp_size > 1:
+        from megatron.core import parallel_state
 
-    return loss
-
-
-def masked_token_loss_context_parallel(tensor: Tensor, mask: Tensor, num_valid_tokens_in_ub: int):
-    """
-    masked token loss for CP > 1 as a separate function for readability.
-    """
-    from megatron.core import parallel_state
-
-    losses = tensor.float()
-    loss_mask = mask.view(-1).float()
-    if num_valid_tokens_in_ub is None:
-        num_valid_tokens_in_ub = loss_mask.sum()
-    if num_valid_tokens_in_ub < 0.5:  # no valid tokens
-        num_valid_tokens_in_ub += 1.0
-    loss = torch.sum(losses.view(-1) * loss_mask) / num_valid_tokens_in_ub  # sequence level nll
-    torch.distributed.all_reduce(loss, group=parallel_state.get_context_parallel_group())
+        torch.distributed.all_reduce(loss, group=parallel_state.get_context_parallel_group())
 
     return loss
 

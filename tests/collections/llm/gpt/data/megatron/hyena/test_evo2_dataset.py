@@ -1066,6 +1066,18 @@ if __name__ == "__main__":
 def test_evo2_dataset_getitem(monkeypatch):
     """Test Evo2Dataset.__getitem__ method."""
     import numpy as np
+    from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+
+    tokenizer = get_nmt_tokenizer("byte-level")
+    eod_token_id = tokenizer.eod
+    # labels are all case, tokens are converted to upper case.
+    input_string = f"a  @  t  |  d  _  _  t  {eod_token_id}  #  a  t".replace(" ", "")
+    starting_loss_mask = torch.tensor([1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1], dtype=torch.bool)
+    expected_loss_mask = torch.tensor([1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1], dtype=torch.bool)
+    input_tokens = [
+        ord(t) if t != str(eod_token_id) else eod_token_id for t in input_string
+    ]  # starts out both lower/upper
+    input_labels = [ord(t) if t != str(eod_token_id) else eod_token_id for t in input_string]
 
     class MockIndexedDataset:
         def __init__(self):
@@ -1074,62 +1086,6 @@ def test_evo2_dataset_getitem(monkeypatch):
 
         def get(self, idx, offset=0, length=None):
             return np.ones(10, dtype=np.int64)
-
-    class MockGPTDataset:
-        def __init__(
-            self,
-            indexed_dataset,
-            dataset_path,
-            indexed_indices,
-            num_samples,
-            index_split,
-            config,
-        ):
-            self.config = config
-            self.dataset = indexed_dataset
-            self.indices = indexed_indices
-
-        def __getitem__(self, idx):
-
-            return {
-                "loss_mask": torch.ones(10, dtype=torch.float),  # Will be modified by Evo2Dataset
-                "labels": torch.tensor([65, 64, 84, 124, 100, 95, 84, 35, 65, 84]),  # A@T|d_T#AT
-                "tokens": torch.tensor([97, 64, 116, 124, 100, 95, 116, 35, 97, 116]),  # a@t|d_t#at
-                "attention_mask": torch.ones(10, 10),  # Add attention mask
-                "position_ids": torch.arange(10),  # Add position ids
-            }
-
-    class MockTokenizer(MegatronTokenizer):
-        def __init__(self):
-            super().__init__("mock_path")
-            self._vocab_size = 512
-            self._vocab = {"[PAD]": 0, "[EOD]": 1}
-            self._inv_vocab = {0: "[PAD]", 1: "[EOD]"}
-            self._eod_id = 1
-            self._pad_id = 0
-
-        @property
-        def vocab_size(self):
-            return self._vocab_size
-
-        @property
-        def vocab(self):
-            return self._vocab
-
-        @property
-        def inv_vocab(self):
-            return self._inv_vocab
-
-        @property
-        def eod(self):
-            return self._eod_id
-
-        @property
-        def pad(self):
-            return self._pad_id
-
-        def tokenize(self, text):
-            return [0]
 
     class MockConfig:
         def __init__(self):
@@ -1144,7 +1100,7 @@ def test_evo2_dataset_getitem(monkeypatch):
 
             # BlendedMegatronDatasetConfig
             self.random_seed = 42
-            self.sequence_length = 10
+            self.sequence_length = len(input_tokens)
             self.blend = None
             self.blend_per_split = None
             self.split = "1,1,1"
@@ -1153,26 +1109,32 @@ def test_evo2_dataset_getitem(monkeypatch):
             self.path_to_cache = None
             self.mmap_bin_files = True
             self.mock = True
-            self.tokenizer = MockTokenizer()
-
-    monkeypatch.setattr("nemo.collections.llm.gpt.data.megatron.hyena.evo2_dataset.GPTDataset", MockGPTDataset)
+            self.tokenizer = tokenizer
 
     mock_indexed_dataset = MockIndexedDataset()
 
+    # Now when Evo2Dataset is instantiated, it will inherit from MockGPTDataset
+    # Create a real instance with minimal arguments
     dataset = Evo2Dataset(
         indexed_dataset=mock_indexed_dataset,
         dataset_path="/mock/path",
-        indexed_indices=np.arange(10, dtype=np.int32),
-        num_samples=10,
+        indexed_indices=np.arange(5, dtype=np.int32),
+        num_samples=5,
         index_split=Split.train,
         config=MockConfig(),
     )
     dataset.RESET_PAD_EOD_MASK = False
     dataset.TO_UPPER_TOKENS = True
+    parent_batch = {
+        "loss_mask": starting_loss_mask,  # Will be modified by Evo2Dataset
+        "labels": torch.tensor(input_labels),  # A@T|d_T#AT
+        "tokens": torch.tensor(input_tokens),  # a@t|d_t#at
+        "attention_mask": torch.ones(len(input_tokens), len(input_tokens)),  # Add attention mask
+        "position_ids": torch.arange(len(input_tokens)),  # Add position ids
+    }
+    # monkey patch the _get_gpt_batch method in this dataset so that we use our parent_batch as the starting point.
+    dataset._get_gpt_batch = lambda x: parent_batch
 
     result = dataset[0]
 
-    assert result["loss_mask"][1] == 1
-    assert result["loss_mask"][7] == 1
-
-    assert all(result["loss_mask"][3:6] == 1)
+    torch.testing.assert_close(result["loss_mask"], expected_loss_mask.to(torch.int32))

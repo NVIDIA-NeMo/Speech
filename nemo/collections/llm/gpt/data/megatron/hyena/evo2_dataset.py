@@ -32,10 +32,10 @@ class Evo2Dataset(GPTDataset):
     TO_UPPER_TOKENS: bool = True  # If set, do an in-place transform to make all tokens capital letters
     RESET_PAD_EOD_MASK: bool = True  # If set, unset the mask for [pad] and [eod] tokens (matches Evo2 paper).
 
-    def __getitem__(self, idx: Optional[int]) -> Dict[str, torch.Tensor]:
-        """Get data at the specified index."""
-        # 1. Call the default gpt dataset object
-        databatch: dict = super().__getitem__(idx)
+    def _get_gpt_batch(self, idx: Optional[int]) -> dict[str, torch.Tensor]:
+        return super().__getitem__(idx)
+
+    def _modify_gpt_batch(self, databatch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         loss_mask = databatch.get("loss_mask", None)
         if self.RESET_PAD_EOD_MASK and loss_mask is not None:
             # Reset the mask for 'pad', '[eod]', '[pad token]', which will lower the loss, but matches Evo2 pub.
@@ -60,6 +60,13 @@ class Evo2Dataset(GPTDataset):
             #  relies in part on the original case of the tag tokens.
             databatch["tokens"], _ = make_upper_case(databatch["tokens"])
         return databatch
+
+    def __getitem__(self, idx: Optional[int]) -> Dict[str, torch.Tensor]:
+        """Get data at the specified index."""
+        # 1. Call the default gpt dataset object
+        databatch: dict = self._get_gpt_batch(idx)
+        # 2. Modify loss tokens and upper-case as configured.
+        return self._modify_gpt_batch(databatch)
 
     @staticmethod
     def mask_phylogenetic_tags(

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=C0115,C0116
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -80,14 +81,14 @@ class LlamaTaskEncoder(MultiModalTaskEncoder):
         batch_keys = batch_list(keys)
         batch_images = batch_pad_stack(images)
 
-        batch_tokens = pad_sequence(tokens, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        batch_tokens = pad_sequence(tokens, batch_first=True)
         batch_labels = pad_sequence(labels, batch_first=True, padding_value=self.ignore_index)
         batch_loss_mask = batch_pad_stack(loss_mask)
         if self.seq_length is not None:
             seq_length = self.seq_length
         else:
             seq_length = (batch_tokens.size(1) - 1) // 64 * 64 + 64
-        batch_tokens = pad_or_truncate(batch_tokens, seq_length, self.tokenizer.pad_token_id)
+        batch_tokens = pad_or_truncate(batch_tokens, seq_length, 0)
         batch_labels = pad_or_truncate(batch_labels, seq_length, self.ignore_index)
         batch_loss_mask = pad_or_truncate(batch_loss_mask, seq_length, 0)
         assert batch_loss_mask.sum() > 0, "This batch has nothing to predict! Will trigger a nan loss."

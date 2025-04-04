@@ -21,17 +21,19 @@ import torch
 import torch.distributed
 from megatron.core.transformer import TransformerConfig
 from torch import Tensor
-from transformers import AutoTokenizer
 
+from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.vlm.mllama.model.base import (
     CrossAttentionTextConfig,
     CrossAttentionVisionConfig,
     MLlamaModel,
     MLlamaModelConfig,
 )
-from nemo.lightning import MegatronStrategy, Trainer, io, teardown
+from nemo.lightning import io, teardown
 from nemo.lightning.io.state import _ModelState
 from nemo.lightning.pytorch.utils import dtype_from_hf
+
+# pylint: disable=C0115,C0116,C0301
 
 
 @dataclass
@@ -89,15 +91,7 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
         state_dict = _rename_xattn_layer_nums_hf(source.state_dict())
         source = _ModelState(state_dict)
         target = self.init()
-        dummy_trainer = Trainer(
-            devices=1,
-            accelerator="cpu",
-            strategy=MegatronStrategy(
-                store_optimizer_states=False,
-                save_ckpt_format='torch_dist',
-            ),
-        )
-        trainer = self.nemo_setup(target, dummy_trainer)
+        trainer = self.nemo_setup(target)
         self.convert_state(source, target)
         self.nemo_save(output_path, trainer)
 

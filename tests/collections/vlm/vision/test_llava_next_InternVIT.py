@@ -23,16 +23,18 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from transformers import AutoProcessor
 
 from nemo import lightning as nl
-from nemo.collections import vlm
+from nemo.collections import llm, vlm
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
-from nemo.collections.llm.api import train
+from nemo.collections.llm.api import finetune, train
+from nemo.collections.vlm.peft import LoRA
 from nemo.lightning import AutoResume, NeMoLogger
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint, ParameterDebugger
 from nemo.lightning.pytorch.optim.megatron import MegatronOptimizerModule
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description='Train a small MLLAMA model using NeMo 2.0')
+    # pylint: disable=C0115,C0116
+    parser = argparse.ArgumentParser(description='Train a small Llava Next model using NeMo 2.0')
     parser.add_argument('--devices', type=int, default=1, help="Number of devices to use for training")
     parser.add_argument('--max-steps', type=int, default=5, help="Number of steps to train for")
     parser.add_argument(
@@ -46,32 +48,42 @@ if __name__ == '__main__':
 
     args = get_args()
 
-    gbs = 4
-    mbs = 1
-    # encoder (vision) seq length
-    # ((img_res / patch_size) ** 2 + cls_token) * num_tiles, = ((560 / 14) ** 2 + 1) * 4 = 6404
-    seq_length = 6404
-    decoder_seq_length = 768  # decoder (llm) seq length
-    model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-    processor = AutoProcessor.from_pretrained(model_id)
-    image_processor = processor.image_processor
-    tokenizer = AutoTokenizer(model_id)
+    gbs = 2
+    mbs = 2
+    decoder_seq_length = 1024
+    processor = AutoProcessor.from_pretrained("llava-hf/llava-v1.6-vicuna-7b-hf")
+    tokenizer = AutoTokenizer("llava-hf/llava-v1.6-vicuna-7b-hf")
 
-    data = vlm.MLlamaMockDataModule(
-        seq_length=seq_length,
-        decoder_seq_length=decoder_seq_length,
+    data = vlm.LlavaNextMockDataModule(
+        seq_length=decoder_seq_length,
+        tokenizer=tokenizer,
+        image_processor=processor.image_processor,
         global_batch_size=gbs,
         micro_batch_size=mbs,
-        num_workers=2,
-        tokenizer=tokenizer,
-        image_processor=image_processor,
+        num_workers=0,
     )
 
     # Transformer configurations
-    conf = vlm.MLlamaConfig11BInstruct()
-    conf.language_model_config.num_layers = 2
-    # conf.vision_model_config.num_layers = 8
-    model = vlm.MLlamaModel(conf, tokenizer=tokenizer)
+    language_transformer_config = llm.Llama2Config7B(seq_length=decoder_seq_length, num_layers=2)
+
+    vision_transformer_config = vlm.InternViT_6B_448px_Config(img_h=336, img_w=336, patch_dim=14, num_layers=2)
+    vision_projection_config = vlm.MultimodalProjectorConfig(
+        projector_type="mcore_mlp",
+        input_size=3200,
+        hidden_size=4096,
+        ffn_hidden_size=4096,
+    )
+
+    # Llava Next model configuration
+    neva_config = vlm.LlavaNextConfig(
+        language_transformer_config=language_transformer_config,
+        vision_transformer_config=vision_transformer_config,
+        vision_projection_config=vision_projection_config,
+        freeze_language_model=True,
+        freeze_vision_model=True,
+    )
+
+    model = vlm.LlavaNextModel(neva_config, tokenizer=data.tokenizer)
 
     strategy = nl.MegatronStrategy(
         tensor_model_parallel_size=1,
@@ -133,12 +145,12 @@ if __name__ == '__main__':
         resume_ignore_no_checkpoint=True,
     )
 
-    train(
+    finetune(
         model=model,
         data=data,
         trainer=trainer,
         log=nemo_logger,
         resume=resume,
-        tokenizer='data',
         optim=opt,
+        peft=LoRA(target_modules=["*.language_model.*.linear_qkv"], dim=32),
     )

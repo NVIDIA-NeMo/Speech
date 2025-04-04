@@ -15,7 +15,7 @@
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import lightning.pytorch as L
 import torch
@@ -375,7 +375,7 @@ class InternViT_300M_448px_Config(InternViTConfig):
 class InternViTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin):
     """InternViT NeMo Wrapper"""
 
-    def __init__(self, config):
+    def __init__(self, config: Optional[InternViTConfig] = None):
         # pylint: disable=C0115,C0116
         super().__init__()
         self.config = config

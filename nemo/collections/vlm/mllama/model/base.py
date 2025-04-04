@@ -299,7 +299,7 @@ class CrossAttentionVisionModel(MegatronModule):
         self.image_res = config.vision_chunk_size
         self.max_num_chunks = config.vision_max_num_chunks
         if return_intermediate is not None:
-            return_intermediate = [int(l) for l in return_intermediate.split(",")]
+            return_intermediate = [int(l_no) for l_no in return_intermediate.split(",")]
             self.vision_input_dim = (len(return_intermediate) + 1) * self.vision_input_dim
         self.patch_size = 14
         self.vision_encoder = VisionEncoder(
@@ -524,7 +524,7 @@ class MLlamaModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
 
     def __init__(
         self,
-        config: MLlamaModelConfig,
+        config: Optional[MLlamaModelConfig] = None,
         optim: Optional[OptimizerModule] = None,
         tokenizer: Optional["TokenizerSpec"] = None,
         model_transform: Optional[Callable[[nn.Module], nn.Module]] = None,

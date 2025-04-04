@@ -15,7 +15,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-
+from typing import Optional
 import lightning.pytorch as L
 import torch
 
@@ -56,7 +56,7 @@ class CLIPViTL_14_336_Config(CLIPViTConfig):
 class CLIPViTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin):
     """CLIP ViT Model Wrapper"""
 
-    def __init__(self, config):
+    def __init__(self, config: Optional[CLIPViTConfig] = None):
         # pylint: disable=C0115,C0116
         super().__init__()
         self.config = config

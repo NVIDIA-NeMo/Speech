@@ -1266,10 +1266,10 @@ jobs:
       SCRIPT: L2_NeMo_2_SSM_Pretraining
       IS_OPTIONAL: true
 
-  Optional_Optional_L2_NeMo_2_SSM_Finetuning:
+  Optional_L2_NeMo_2_SSM_Finetuning:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_Optional_L2_NeMo_2_SSM_Finetuning')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_NeMo_2_SSM_Finetuning')
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_SSM_Finetuning

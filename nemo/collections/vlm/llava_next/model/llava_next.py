@@ -436,7 +436,10 @@ class HFLlavaNextExporter(io.ModelConnector[LlavaNextModel, "LlavaNextForConditi
 
         source = io.load_context(str(self), subpath="model.config")
         language_config = source.language_transformer_config
-        vision_config = CLIPVisionConfig.from_pretrained("openai/clip-vit-large-patch14-336")
+        vit_path = getattr(
+            source.vision_transformer_config, "pretrained_model_name_or_path", "openai/clip-vit-large-patch14-336"
+        )
+        vision_config = CLIPVisionConfig.from_pretrained(vit_path)
 
         # Create text config for HuggingFace model
         text_config = HFLlamaConfig(

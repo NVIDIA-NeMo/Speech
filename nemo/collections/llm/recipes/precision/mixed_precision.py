@@ -21,6 +21,9 @@ from nemo.lightning.pytorch.plugins.mixed_precision import MegatronMixedPrecisio
 
 @run.cli.factory
 def bf16_mixed() -> run.Config[MegatronMixedPrecision]:
+    """
+    BF16 mixed precision configuration for Megatron models.
+    """
     return run.Config(
         MegatronMixedPrecision,
         precision="bf16-mixed",
@@ -33,6 +36,9 @@ def bf16_mixed() -> run.Config[MegatronMixedPrecision]:
 
 @run.cli.factory
 def fp16_mixed() -> run.Config[MegatronMixedPrecision]:
+    """
+    FP16 mixed precision configuration for Megatron models.
+    """
     return run.Config(
         MegatronMixedPrecision,
         precision="16-mixed",
@@ -51,6 +57,17 @@ def bf16_with_fp8_mixed() -> run.Config[MegatronMixedPrecision]:
     cfg.fp8_amax_history_len = 1024
     cfg.fp8_amax_compute_algo = "max"
     cfg.fp8_params = True
+    return cfg
+
+
+def bf16_with_fp8_mixed_current_scaling() -> run.Config[MegatronMixedPrecision]:
+    """FP8 recipes are experimental and have not been tested for training convergence."""
+    cfg = bf16_mixed()
+    cfg.fp8 = "hybrid"
+    cfg.fp8_recipe = "tensorwise"
+    cfg.fp8_amax_history_len = 1
+    cfg.fp8_amax_compute_algo = "max"
+    cfg.fp8_params = False
     return cfg
 
 

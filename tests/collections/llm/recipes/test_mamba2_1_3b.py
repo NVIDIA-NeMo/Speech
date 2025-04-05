@@ -29,7 +29,7 @@ class TestMamba2_1_3B:
     def test_model(self, recipe_module):
         model_config = recipe_module.model()
         assert isinstance(model_config, run.Config)
-        assert model_config.__fn_or_cls__.__name__ == "GPTModel"
+        assert model_config.__fn_or_cls__.__name__ == "MambaModel"
         assert isinstance(model_config.config, run.Config)
         assert model_config.config.__fn_or_cls__.__name__ == "BaseMambaConfig1_3B"
 
@@ -60,7 +60,7 @@ class TestMamba2_1_3B:
         assert isinstance(recipe, run.Partial)
         assert recipe.__fn_or_cls__ == pretrain
         assert isinstance(recipe.model, run.Config)
-        assert recipe.model.__fn_or_cls__.__name__ == "GPTModel"
+        assert recipe.model.__fn_or_cls__.__name__ == "MambaModel"
         assert isinstance(recipe.trainer, run.Config)
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)
@@ -73,7 +73,7 @@ class TestMamba2_1_3B:
         assert isinstance(recipe, run.Partial)
         assert recipe.__fn_or_cls__ == finetune
         assert isinstance(recipe.model, run.Config)
-        assert recipe.model.__fn_or_cls__.__name__ == "GPTModel"
+        assert recipe.model.__fn_or_cls__.__name__ == "MambaModel"
         assert isinstance(recipe.trainer, run.Config)
         assert recipe.trainer.__fn_or_cls__ == Trainer
         assert isinstance(recipe.data, run.Config)

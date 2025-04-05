@@ -18,6 +18,9 @@ from nemo.collections.llm.gpt.model.ssm import (
     BaseMambaConfig130M,
     BaseMambaConfig370M,
     BaseMambaConfig780M,
+    Nemotron5HybridConfig8B,
+    Nemotron5HybridConfig47B,
+    Nemotron5HybridConfig56B,
     NVIDIAMambaConfig8B,
     NVIDIAMambaHybridConfig8B,
     SSMConfig,
@@ -32,14 +35,13 @@ def test_ssm_config():
     assert config.parallel_output is True
     assert config.share_embeddings_and_output_weights is False
     assert config.num_layers == 2
-    assert config.mamba_ssm_ngroups == 8
     assert config.num_attention_heads == 1
     assert config.hybrid_attention_ratio == 0.0
     assert config.hybrid_mlp_ratio == 0.0
     assert config.hybrid_override_pattern is None
     assert config.post_process is True
     assert config.pre_process is True
-    assert config.seq_length == 2048
+    assert config.seq_length == 8192
     assert config.position_embedding_type == "none"
     assert config.rotary_percent == 1.0
     assert config.rotary_base == 10000
@@ -47,7 +49,6 @@ def test_ssm_config():
     assert config.apply_rope_fusion is True
     assert config.make_vocab_size_divisible_by == 128
     assert config.gated_linear_unit is False
-    assert config.fp32_residual_connections is True
     assert config.normalization == "RMSNorm"
     assert config.add_bias_linear is False
     assert config.hidden_dropout == 0.0
@@ -64,7 +65,6 @@ def test_base_mamba_config_130m():
     assert config.num_layers == 24
     assert config.seq_length == 2048
     assert config.hidden_size == 768
-    assert config.mamba_ssm_ngroups == 1
     assert config.ffn_hidden_size == 768
     assert config.make_vocab_size_divisible_by == 16
     assert config.tokenizer_library == 'huggingface'
@@ -78,7 +78,6 @@ def test_base_mamba_config_370m():
     assert config.num_layers == 48
     assert config.seq_length == 2048
     assert config.hidden_size == 1024
-    assert config.mamba_ssm_ngroups == 1
     assert config.ffn_hidden_size == 1024
     assert config.make_vocab_size_divisible_by == 16
     assert config.tokenizer_library == 'huggingface'
@@ -92,7 +91,6 @@ def test_base_mamba_config_780m():
     assert config.num_layers == 48
     assert config.seq_length == 2048
     assert config.hidden_size == 1536
-    assert config.mamba_ssm_ngroups == 1
     assert config.ffn_hidden_size == 1536
     assert config.make_vocab_size_divisible_by == 16
     assert config.tokenizer_library == 'huggingface'
@@ -106,7 +104,6 @@ def test_base_mamba_config_1_3b():
     assert config.num_layers == 48
     assert config.seq_length == 2048
     assert config.hidden_size == 2048
-    assert config.mamba_ssm_ngroups == 1
     assert config.ffn_hidden_size == 2048
     assert config.make_vocab_size_divisible_by == 16
     assert config.tokenizer_library == 'huggingface'
@@ -120,7 +117,6 @@ def test_base_mamba_config_2_7b():
     assert config.num_layers == 64
     assert config.seq_length == 2048
     assert config.hidden_size == 2560
-    assert config.mamba_ssm_ngroups == 1
     assert config.ffn_hidden_size == 2560
     assert config.make_vocab_size_divisible_by == 16
     assert config.tokenizer_library == 'huggingface'
@@ -134,7 +130,6 @@ def test_nvidia_mamba_config_8b():
     assert config.num_layers == 56
     assert config.seq_length == 4096
     assert config.hidden_size == 4096
-    assert config.mamba_ssm_ngroups == 8
     assert config.ffn_hidden_size == 4096
     assert config.make_vocab_size_divisible_by == 128
     assert config.tokenizer_library == 'megatron'
@@ -148,7 +143,6 @@ def test_nvidia_mamba_hybrid_config_8b():
     assert config.num_layers == 56
     assert config.seq_length == 4096
     assert config.hidden_size == 4096
-    assert config.mamba_ssm_ngroups == 8
     assert config.ffn_hidden_size == 16384
     assert config.num_attention_heads == 32
     assert config.num_query_groups == 8
@@ -156,3 +150,86 @@ def test_nvidia_mamba_hybrid_config_8b():
     assert config.tokenizer_library == 'megatron'
     assert config.tokenizer_name == "GPTSentencePieceTokenizer"
     assert config.mapping_type == "nvidia-hybrid"
+
+
+def test_nemotron5_hybrid_config_8b():
+    config = Nemotron5HybridConfig8B()
+    assert config.hybrid_override_pattern == "M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-"
+    assert config.num_layers == 52
+    assert config.seq_length == 8192
+    assert config.hidden_size == 4096
+    assert config.mamba_num_groups == 8
+    assert config.mamba_state_dim == 128
+    assert config.mamba_head_dim == 64
+    assert config.mamba_nheads == 256
+    assert config.ffn_hidden_size == 21504
+    assert config.num_attention_heads == 32
+    assert config.num_query_groups == 8
+    assert config.make_vocab_size_divisible_by == 128
+    assert config.tokenizer_library == 'tiktoken'
+    assert config.tokenizer_name == "TiktokenTokenizer"
+    assert config.mapping_type == "nvidia-hybrid-nemotron5"
+    assert config.masked_softmax_fusion is True
+    assert config.apply_query_key_layer_scaling is False
+    assert config.persist_layer_norm is True
+    assert config.attention_softmax_in_fp32 is False
+    assert config.vocab_size == 131072
+    assert config.first_last_layers_bf16 is True
+    assert config.is_hybrid_model is True
+
+
+def test_nemotron5_hybrid_config_47b():
+    config = Nemotron5HybridConfig47B()
+    assert config.hybrid_override_pattern == (
+        "M-M-M-M-M-M-M-M-M*-M-M-M-M-M-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-M-M---MM---M-M*-M-M-M-M-M-"
+    )
+    assert config.num_layers == 98
+    assert config.seq_length == 8192
+    assert config.hidden_size == 8192
+    assert config.mamba_num_groups == 8
+    assert config.mamba_state_dim == 256
+    assert config.mamba_head_dim == 64
+    assert config.mamba_nheads == 256
+    assert config.ffn_hidden_size == 30720
+    assert config.num_attention_heads == 64
+    assert config.num_query_groups == 8
+    assert config.make_vocab_size_divisible_by == 128
+    assert config.tokenizer_library == 'tiktoken'
+    assert config.tokenizer_name == "TiktokenTokenizer"
+    assert config.mapping_type == "nvidia-hybrid-nemotron5"
+    assert config.masked_softmax_fusion is True
+    assert config.apply_query_key_layer_scaling is False
+    assert config.persist_layer_norm is True
+    assert config.attention_softmax_in_fp32 is False
+    assert config.vocab_size == 131072
+    assert config.first_last_layers_bf16 is True
+    assert config.is_hybrid_model is True
+
+
+def test_nemotron5_hybrid_config_56b():
+    config = Nemotron5HybridConfig56B()
+    assert config.hybrid_override_pattern == (
+        "M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-"
+        "M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-"
+    )
+    assert config.num_layers == 118
+    assert config.seq_length == 8192
+    assert config.hidden_size == 8192
+    assert config.mamba_num_groups == 8
+    assert config.mamba_state_dim == 256
+    assert config.mamba_head_dim == 64
+    assert config.mamba_nheads == 256
+    assert config.ffn_hidden_size == 32768
+    assert config.num_attention_heads == 64
+    assert config.num_query_groups == 8
+    assert config.make_vocab_size_divisible_by == 128
+    assert config.tokenizer_library == 'tiktoken'
+    assert config.tokenizer_name == "TiktokenTokenizer"
+    assert config.mapping_type == "nvidia-hybrid-nemotron5"
+    assert config.masked_softmax_fusion is True
+    assert config.apply_query_key_layer_scaling is False
+    assert config.persist_layer_norm is True
+    assert config.attention_softmax_in_fp32 is False
+    assert config.vocab_size == 131072
+    assert config.first_last_layers_bf16 is True
+    assert config.is_hybrid_model is True

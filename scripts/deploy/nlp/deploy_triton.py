@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from nemo.deploy import DeployPyTriton
 
@@ -52,6 +53,7 @@ def get_args(argv):
         description=f"Deploy nemo models to Triton",
     )
     parser.add_argument("-nc", "--nemo_checkpoint", type=str, help="Source .nemo file")
+    parser.add_argument("-hfp", "--hf_model_id_path", type=str, help="Huggingface model path or id")
     parser.add_argument(
         "-ptnc",
         "--ptuning_nemo_checkpoint",
@@ -68,7 +70,6 @@ def get_args(argv):
         "--model_type",
         type=str,
         required=False,
-        choices=["gptnext", "gpt", "llama", "falcon", "starcoder", "mixtral", "gemma"],
         help="Type of the model. gptnext, gpt, llama, falcon, and starcoder are only supported."
         " gptnext and gpt are the same and keeping it for backward compatibility",
     )
@@ -268,19 +269,56 @@ def get_trtllm_deployable(args):
     else:
         trt_llm_path = args.triton_model_repository
 
-    if args.nemo_checkpoint is None and args.triton_model_repository is None:
+    if args.hf_model_id_path:
+        # Check if the path is an existing hf checkpoint
+        LOGGER.info(f"Checking if the model is available in the local cache: {args.hf_model_id_path}")
+        local_path = Path(args.hf_model_id_path)
+        model_available = local_path.exists() and (local_path / "config.json").exists()
+        if not model_available:
+            # Download the model from huggingface
+            # Download model, tokenizer and config from HF
+            LOGGER.info(f"Downloading model from HuggingFace: {args.hf_model_id_path}")
+            try:
+                hf_model_cache_dir = "/tmp/hf_model_dir/"
+                Path(hf_model_cache_dir).mkdir(parents=True, exist_ok=True)
+                # Create model specific directory
+                hf_model_path = os.path.join(hf_model_cache_dir, args.hf_model_id_path)
+                Path(hf_model_path).mkdir(parents=True, exist_ok=True)
+
+                # Download model weights in safetensor format
+                model = AutoModelForCausalLM.from_pretrained(
+                    args.hf_model_id_path, cache_dir=hf_model_path, torch_dtype="auto", use_safetensors=True
+                )
+                # Download tokenizer files and config
+                tokenizer = AutoTokenizer.from_pretrained(args.hf_model_id_path, cache_dir=hf_model_path)
+                config = AutoConfig.from_pretrained(args.hf_model_id_path, cache_dir=hf_model_path)
+
+                # Save model weights to model directory
+                model.save_pretrained(hf_model_path, safe_serialization=True)
+
+                # Save tokenizer files and config to model directory
+                tokenizer.save_pretrained(hf_model_path)
+                config.save_pretrained(hf_model_path)
+                args.hf_model_id_path = hf_model_path
+
+                LOGGER.info(f"Downloaded model, tokenizer and config to {args.hf_model_id_path}")
+            except Exception as e:
+                raise RuntimeError(f"Error downloading from HuggingFace: {str(e)}")
+
+    checkpoint_missing = args.nemo_checkpoint is None and args.hf_model_id_path is None
+    if checkpoint_missing and args.triton_model_repository is None:
         raise ValueError(
             "The provided model repository is not a valid TensorRT-LLM model "
             "directory. Please provide a --nemo_checkpoint."
         )
 
-    if args.nemo_checkpoint is None and not os.path.isdir(args.triton_model_repository):
+    if checkpoint_missing and not os.path.isdir(args.triton_model_repository):
         raise ValueError(
             "The provided model repository is not a valid TensorRT-LLM model "
             "directory. Please provide a --nemo_checkpoint."
         )
 
-    if args.nemo_checkpoint is not None and args.model_type is None:
+    if not checkpoint_missing and args.model_type is None:
         raise ValueError("Model type is required to be defined if a nemo checkpoint is provided.")
 
     ptuning_tables_files = []
@@ -308,7 +346,7 @@ def get_trtllm_deployable(args):
     trt_llm_exporter = TensorRTLLM(
         model_dir=trt_llm_path,
         lora_ckpt_list=args.lora_ckpt,
-        load_model=(args.nemo_checkpoint is None),
+        load_model=(args.nemo_checkpoint is None and args.hf_model_id_path is None),
         use_python_runtime=(not args.use_cpp_runtime),
         multi_block_mode=args.multi_block_mode,
     )
@@ -340,6 +378,20 @@ def get_trtllm_deployable(args):
                 gemm_plugin=args.gemm_plugin,
                 fp8_quantized=args.export_fp8_quantized,
                 fp8_kvcache=args.use_fp8_kv_cache,
+            )
+        except Exception as error:
+            raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))
+    elif args.hf_model_id_path is not None:
+        LOGGER.info("Export operation will be started to export the hugging face checkpoint to TensorRT-LLM.")
+        try:
+            trt_llm_exporter.export_hf_model(
+                hf_model_path=args.hf_model_id_path,
+                max_batch_size=args.max_batch_size,
+                tensor_parallelism_size=args.tensor_parallelism_size,
+                max_input_len=args.max_input_len,
+                max_output_len=args.max_output_len,
+                dtype=args.dtype,
+                model_type=args.model_type,
             )
         except Exception as error:
             raise RuntimeError("An error has occurred during the model export. Error message: " + str(error))

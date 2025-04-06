@@ -214,6 +214,7 @@ def run_inference(
     checkpoint_path,
     model_dir,
     use_vllm,
+    use_huggingface,
     max_batch_size=8,
     use_embedding_sharing=False,
     max_input_len=128,
@@ -316,25 +317,34 @@ def run_inference(
             )
         else:
             exporter = TensorRTLLM(model_dir, lora_ckpt_list, load_model=False)
-
-            exporter.export(
-                nemo_checkpoint_path=checkpoint_path,
-                model_type=model_type,
-                tensor_parallelism_size=tp_size,
-                pipeline_parallelism_size=pp_size,
-                max_input_len=max_input_len,
-                max_seq_len=(max_input_len + max_output_len),
-                max_batch_size=max_batch_size,
-                use_parallel_embedding=use_parallel_embedding,
-                max_prompt_embedding_table_size=max_prompt_embedding_table_size,
-                use_lora_plugin=use_lora_plugin,
-                lora_target_modules=lora_target_modules,
-                max_num_tokens=max_num_tokens,
-                use_embedding_sharing=use_embedding_sharing,
-                fp8_quantized=fp8_quantized,
-                fp8_kvcache=fp8_kvcache,
-                **trt_llm_export_kwargs,
-            )
+            if use_huggingface:
+                exporter.export_hf_model(
+                    hf_model_path=checkpoint_path,
+                    max_batch_size=max_batch_size,
+                    tensor_parallelism_size=tp_size,
+                    max_input_len=max_input_len,
+                    max_num_tokens=max_num_tokens,
+                    model_type=model_type,
+                )
+            else:
+                exporter.export(
+                    nemo_checkpoint_path=checkpoint_path,
+                    model_type=model_type,
+                    tensor_parallelism_size=tp_size,
+                    pipeline_parallelism_size=pp_size,
+                    max_input_len=max_input_len,
+                    max_seq_len=(max_input_len + max_output_len),
+                    max_batch_size=max_batch_size,
+                    use_parallel_embedding=use_parallel_embedding,
+                    max_prompt_embedding_table_size=max_prompt_embedding_table_size,
+                    use_lora_plugin=use_lora_plugin,
+                    lora_target_modules=lora_target_modules,
+                    max_num_tokens=max_num_tokens,
+                    use_embedding_sharing=use_embedding_sharing,
+                    fp8_quantized=fp8_quantized,
+                    fp8_kvcache=fp8_kvcache,
+                    **trt_llm_export_kwargs,
+                )
 
         if ptuning:
             exporter.add_prompt_table(
@@ -646,6 +656,11 @@ def get_args():
         default="False",
     )
     parser.add_argument(
+        "--use_huggingface",
+        type=str,
+        default="False",
+    )
+    parser.add_argument(
         "--in_framework",
         type=str,
         default="False",
@@ -707,6 +722,7 @@ def get_args():
     args.save_engine = str_to_bool("save_engine", args.save_engine)
     args.run_accuracy = str_to_bool("run_accuracy", args.run_accuracy)
     args.use_vllm = str_to_bool("use_vllm", args.use_vllm)
+    args.use_huggingface = str_to_bool("use_huggingface", args.use_huggingface)
     args.lora = str_to_bool("lora", args.lora)
     args.ptuning = str_to_bool("ptuning", args.ptuning)
     args.use_parallel_embedding = str_to_bool("use_parallel_embedding", args.use_parallel_embedding)
@@ -781,6 +797,7 @@ def run_inference_tests(args):
                 checkpoint_path=args.checkpoint_dir,
                 model_dir=args.model_dir,
                 use_vllm=args.use_vllm,
+                use_huggingface=args.use_huggingface,
                 tp_size=tps,
                 pp_size=args.pps,
                 max_batch_size=args.max_batch_size,

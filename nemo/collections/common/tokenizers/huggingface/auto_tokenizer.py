@@ -312,6 +312,10 @@ class AutoTokenizer(TokenizerSpec):
         ids = self.tokens_to_ids(tokens)
         return ids
 
+    def apply_chat_template(self, *args, **kwargs):
+        """Appies chat template and tokenizes results"""
+        return self.tokenizer.apply_chat_template(*args, **kwargs)
+
     def ids_to_text(self, ids, remove_special_tokens=True):
         """
         Converts token IDs back to text.

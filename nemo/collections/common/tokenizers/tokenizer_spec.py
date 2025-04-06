@@ -26,33 +26,45 @@ class TokenizerSpec(ABC):
 
     @abstractmethod
     def text_to_tokens(self, text):
+        """Converts text into a list of tokens."""
         pass
 
     @abstractmethod
     def tokens_to_text(self, tokens):
+        """Converts a list of tokens back into text."""
         pass
 
     @abstractmethod
     def tokens_to_ids(self, tokens):
+        """Converts a list of tokens to their corresponding IDs."""
         pass
 
     @abstractmethod
     def ids_to_tokens(self, ids):
+        """Converts a list of token IDs back to tokens."""
         pass
 
     @abstractmethod
     def text_to_ids(self, text):
+        """Converts text directly to token IDs."""
         pass
 
     @abstractmethod
     def ids_to_text(self, ids):
+        """Converts token IDs back to text."""
         pass
 
     def add_special_tokens(self, special_tokens: List[str]):
+        """Adds special tokens (eos, pad, cls...) to vocab."""
+        raise NotImplementedError("To be implemented")
+
+    def apply_chat_template(self, *args, **kwargs):
+        """Appies chat template and tokenizes results"""
         raise NotImplementedError("To be implemented")
 
     @property
     def name(self):
+        """name of the class"""
         return type(self).__name__
 
     @property

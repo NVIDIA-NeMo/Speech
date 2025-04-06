@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -20,6 +21,7 @@ import numpy as np
 import torch
 import torch.distributed
 import wrapt
+from jinja2 import Template
 from megatron.core.inference.common_inference_params import CommonInferenceParams
 from megatron.core.inference.inference_request import InferenceRequest
 
@@ -31,7 +33,14 @@ from nemo.deploy.utils import NEMO2, cast_output, nemo_checkpoint_version, str_n
 
 @wrapt.decorator
 def noop_decorator(func):
+    """
+    A no-operation decorator that simply calls the original function without modifying its behavior.
+    """
+
     def wrapper(*args, **kwargs):
+        """
+        Wrapper method returning the func.
+        """
         return func(*args, **kwargs)
 
     return wrapper
@@ -120,6 +129,8 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         context_parallel_size (int): context parallelism.
         params_dtype (torch.dtype): max input length.
         inference_batch_times_seqlen_threshold (int): squence threshold.
+        inference_max_seq_length (int): max_seq_length for inference. Required by MCoreEngine (>=0.12). Defaults to
+        4096.
     """
 
     def __init__(
@@ -133,6 +144,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         expert_model_parallel_size: int = 1,
         params_dtype: torch.dtype = torch.bfloat16,
         inference_batch_times_seqlen_threshold: int = 1000,
+        inference_max_seq_length: int = 4096,
     ):
         self.nemo_checkpoint_filepath = nemo_checkpoint_filepath
 
@@ -144,6 +156,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             sequence_parallel=False,
             setup_optimizers=False,
             store_optimizer_states=False,
+            ckpt_load_strictness="log_all",
         )
 
         trainer = nl.Trainer(
@@ -165,6 +178,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             trainer=trainer,
             params_dtype=params_dtype,
             inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
+            inference_max_seq_length=inference_max_seq_length,
         )
 
     def generate(
@@ -189,7 +203,6 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         # TODO: This function doesn't account for parallelism settings currently
 
         inference_params = inference_params or CommonInferenceParams()
-
         results = inference.generate(
             model=self.inference_wrapped_model,
             tokenizer=self.mcore_tokenizer,
@@ -226,6 +239,47 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             else:
                 return
 
+    def apply_chat_template(self, messages, add_generation_prompt=True):
+        """
+        Load the chat template.
+        Works when model's tokenizer has chat template (typically chat models).
+        """
+        try:
+            tokenizer_chat_template = self.mcore_tokenizer.tokenizer.tokenizer.chat_template
+            bos_token = self.mcore_tokenizer.tokenizer.tokenizer.bos_token
+            template = Template(tokenizer_chat_template)
+        except AttributeError:
+            # If the tokenizer does not have chat_template
+            raise ValueError(
+                "The tokenizer does not have chat template, if you would like to evaluate chat model \
+                             ensure your model's tokenizer has a chat template"
+            )
+        # Render the template with the provided messages
+        rendered_output = template.render(
+            messages=messages, bos_token=bos_token, add_generation_prompt=add_generation_prompt
+        )
+
+        return rendered_output
+
+    def remove_eos_token(self, text):
+        """
+        Removes eos token if it exists in the output, otherwise does nothing
+        """
+        eos_token = self.mcore_tokenizer.tokenizer.tokenizer.eos_token
+        output = []
+        for t in text:
+            if eos_token in t:
+                output.append(t.rsplit(eos_token, 1)[0])
+            else:
+                output.append(t)
+        return output
+
+    def str_to_dict(self, json_str):
+        """
+        Convert str to dict.
+        """
+        return json.loads(json_str)
+
     @property
     def get_triton_input(self):
         inputs = (
@@ -238,6 +292,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             Tensor(name="random_seed", shape=(-1,), dtype=np.int_, optional=True),
             Tensor(name="max_length", shape=(-1,), dtype=np.int_, optional=True),
             Tensor(name="compute_logprob", shape=(-1,), dtype=np.bool_, optional=True),
+            Tensor(name="apply_chat_template", shape=(-1,), dtype=np.bool_, optional=True),
         )
         return inputs
 
@@ -251,57 +306,62 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
     @batch
     def triton_infer_fn(self, **inputs: np.ndarray):
         output_infer = {}
-        try:
-            prompts = str_ndarray2list(inputs.pop("prompts"))
-            max_batch_size = inputs.pop("max_batch_size")[0][0] if "max_batch_size" in inputs else 32
-            random_seed = inputs.pop("random_seed")[0][0] if "random_seed" in inputs else None
-            temperature = inputs.pop("temperature")[0][0] if "temperature" in inputs else 1.0
-            top_k = inputs.pop("top_k")[0][0] if "top_k" in inputs else 1
-            top_p = inputs.pop("top_p")[0][0] if "top_k" in inputs else 0.0
-            num_tokens_to_generate = inputs.pop("max_length")[0][0] if "max_length" in inputs else 256
-            log_probs = inputs.pop("compute_logprob")[0][0] if "compute_logprob" in inputs else False
-            text_only = True
+        prompts = str_ndarray2list(inputs.pop("prompts"))
+        max_batch_size = inputs.pop("max_batch_size")[0][0] if "max_batch_size" in inputs else 32
+        random_seed = inputs.pop("random_seed")[0][0] if "random_seed" in inputs else None
+        temperature = inputs.pop("temperature")[0][0] if "temperature" in inputs else 1.0
+        top_k = inputs.pop("top_k")[0][0] if "top_k" in inputs else 1
+        top_p = inputs.pop("top_p")[0][0] if "top_p" in inputs else 0.0
+        num_tokens_to_generate = inputs.pop("max_length")[0][0] if "max_length" in inputs else 256
+        log_probs = inputs.pop("compute_logprob")[0][0] if "compute_logprob" in inputs else False
+        apply_chat_template = inputs.pop("apply_chat_template")[0][0] if "apply_chat_template" in inputs else False
+        text_only = True
+        if apply_chat_template:
+            # Deserialize the JSON string back to a dictionary
+            prompts = self.str_to_dict(prompts[0])
+            prompts = self.apply_chat_template(prompts)
+            # Input to generate should be list of string, otherwise if its string directly TE raises an error:
+            # The provided qkv memory layout is not supported!
+            prompts = [prompts]
+        if torch.distributed.is_initialized():
+            if torch.distributed.get_world_size() > 1:
+                torch.distributed.broadcast(torch.tensor([0], dtype=torch.long, device="cuda"), src=0)
+                broadcast_list(prompts, src=0)
+                broadcast_list(
+                    data=[
+                        max_batch_size,
+                        random_seed,
+                        temperature,
+                        top_k,
+                        top_p,
+                        num_tokens_to_generate,
+                        log_probs,
+                    ],
+                    src=0,
+                )
 
-            if torch.distributed.is_initialized():
-                if torch.distributed.get_world_size() > 1:
-                    torch.distributed.broadcast(torch.tensor([0], dtype=torch.long, device="cuda"), src=0)
-                    broadcast_list(prompts, src=0)
-                    broadcast_list(
-                        data=[
-                            max_batch_size,
-                            random_seed,
-                            temperature,
-                            top_k,
-                            top_p,
-                            num_tokens_to_generate,
-                            log_probs,
-                        ],
-                        src=0,
-                    )
+        inference_params = CommonInferenceParams(
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            num_tokens_to_generate=num_tokens_to_generate,
+            return_log_probs=log_probs,
+        )
 
-            inference_params = CommonInferenceParams(
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                num_tokens_to_generate=num_tokens_to_generate,
-                return_log_probs=log_probs,
-            )
-
-            results = self.generate(prompts, max_batch_size, inference_params, random_seed)
-
-            output_texts = [r.generated_text if text_only else r for r in results]
-            output_infer = {"sentences": cast_output(output_texts, np.bytes_)}
-            if log_probs:
-                output_log_probs = []
-                for r in results:
-                    lp = r.generated_log_probs.cpu().detach().numpy()
-                    if len(lp) == 0:
-                        output_log_probs.append([0])
-                    else:
-                        output_log_probs.append(lp)
-                output_infer["log_probs"] = np.array(output_log_probs)
-        except Exception as error:
-            err_msg = "An error occurred: {0}".format(str(error))
-            output_infer["sentences"] = cast_output([err_msg], np.bytes_)
+        results = self.generate(prompts, max_batch_size, inference_params, random_seed)
+        output_texts = [r.generated_text if text_only else r for r in results]
+        output_texts = self.remove_eos_token(output_texts)
+        output_infer = {"sentences": cast_output(output_texts, np.bytes_)}
+        if log_probs:
+            output_log_probs = []  ## will have 2 np arrays if 2 prompts are sent
+            for r in results:
+                # Convert to torch tensor and then move to cpu as generated_log_probs is a list and cant be moved
+                # to cpu otherwise
+                lp = torch.tensor(r.generated_log_probs).cpu().detach().numpy()
+                if len(lp) == 0:
+                    output_log_probs.append([0])
+                else:
+                    output_log_probs.append(lp)
+            output_infer["log_probs"] = np.array(output_log_probs)
 
         return output_infer

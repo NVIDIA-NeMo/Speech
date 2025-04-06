@@ -14,7 +14,6 @@
 
 import fiddle as fdl
 import torch
-from lightning.pytorch.loggers import WandbLogger
 from packaging.version import Version as PkgVersion
 from utils import get_torch_version_str
 
@@ -70,6 +69,8 @@ if __name__ == '__main__':
 
         wandb = None
         if args.wandb_project is not None:
+            from lightning.pytorch.loggers import WandbLogger
+
             model = '_'.join(args.model.split('/')[-2:])
             wandb = WandbLogger(
                 project=args.wandb_project,

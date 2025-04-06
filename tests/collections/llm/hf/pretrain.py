@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import fiddle as fdl
-from lightning.pytorch.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -77,6 +76,8 @@ if __name__ == '__main__':
 
     wandb = None
     if args.wandb_project is not None:
+        from lightning.pytorch.loggers import WandbLogger
+
         model = '_'.join(args.model.split('/')[-2:])
         wandb = WandbLogger(
             project=args.wandb_project,

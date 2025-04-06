@@ -16,7 +16,6 @@ import tempfile
 
 import fiddle as fdl
 import lightning.pytorch as pl
-from lightning.pytorch.loggers import WandbLogger
 
 from nemo import lightning as nl
 from nemo.collections import llm
@@ -164,6 +163,8 @@ def main():
 
     wandb = None
     if args.wandb_project is not None:
+        from lightning.pytorch.loggers import WandbLogger
+
         model = '_'.join(args.model.split('/')[-2:])
         wandb = WandbLogger(
             project=args.wandb_project,

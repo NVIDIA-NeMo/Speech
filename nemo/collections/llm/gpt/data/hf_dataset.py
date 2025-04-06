@@ -561,6 +561,7 @@ class HFMockDataModule(pl.LightningDataModule):
         create_attention_mask: bool = False,
         vocab_file=None,
         merges_file=None,
+        pad_seq_len_divisible=None,
     ):
         super().__init__()
         self.seq_length = seq_length
@@ -575,6 +576,8 @@ class HFMockDataModule(pl.LightningDataModule):
         self.create_attention_mask = create_attention_mask
         self.collate_fn = lambda x: HFDatasetDataModule.collate_fn(x, pad_token_id=0)
         self.vocab_size = vocab_size
+        if pad_seq_len_divisible is not None:
+            self.seq_length = (seq_length + pad_seq_len_divisible - 1) // pad_seq_len_divisible * pad_seq_len_divisible
 
     def setup(self, stage: str = None) -> None:
         """setup"""

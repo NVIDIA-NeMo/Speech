@@ -43,10 +43,10 @@ from nemo.utils.import_utils import safe_import_from
 
 try:
     from torch.distributed.tensor._api import distribute_tensor
-    from torch.distributed.tensor.placement_types import Shard
+    from torch.distributed.tensor.placement_types import Replicate, Shard
 except ImportError:
     from torch.distributed._tensor.api import distribute_tensor
-    from torch.distributed._tensor.placement_types import Shard
+    from torch.distributed._tensor.placement_types import Replicate, Shard
 
 MixedPrecisionPolicy, HAS_MIXED_PRECISION_POLICY = safe_import_from(
     "torch.distributed._composable.fsdp", "MixedPrecisionPolicy"
@@ -70,6 +70,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self,
         data_parallel_size: Union[Literal["auto"], int] = "auto",
         tensor_parallel_size: Union[Literal["auto"], int] = "auto",
+        context_parallel_size: Optional[int] = 1,
         offload_policy: 'CPUOffloadPolicy' = None,
         data_sampler=None,
         checkpoint_io=None,
@@ -80,8 +81,9 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         """Initializes the FSDP2Strategy with specified parallelization settings.
 
         Args:
-            data_parallel_size (Union[Literal["auto"], int]): Number of data-parallel replicas.
-            tensor_parallel_size (Union[Literal["auto"], int]): Number of tensor-parallel groups.
+            data_parallel_size (Union[Literal["auto"], int]): Size of data parallel. Defaults to "auto".
+            tensor_parallel_size (Union[Literal["auto"], int]): Size of tensor parallel. Defaults to "auto".
+            context_parallel_size (optional): Number of context-parallel groups. Defaults to 1.
             data_sampler (optional): Custom data sampler to process dataloaders.
             mp_policy (optional): Mixed precision policy for parameter and operation casting.
                 Defaults to:
@@ -98,6 +100,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         """
         super().__init__(data_parallel_size=data_parallel_size, tensor_parallel_size=tensor_parallel_size, **kwargs)
         self._checkpoint_io = checkpoint_io
+        self.context_parallel_size = context_parallel_size
         self.data_sampler = data_sampler
         self.checkpoint = None
         self.mp_policy = mp_policy
@@ -171,12 +174,25 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             self._data_parallel_size = self.num_nodes
         if self._tensor_parallel_size == "auto":
             self._tensor_parallel_size = self.num_processes
-        # No TP currently
+
+        # TODO: "tensor_parallel" is currently not supported.
+        mesh_dim_names = ("data_parallel", "context_parallel")
+        mesh_shape = (self._data_parallel_size, self.context_parallel_size)
+
         self._device_mesh = init_device_mesh(
             device_type=self.root_device.type,
-            mesh_shape=(self._data_parallel_size,),
-            mesh_dim_names=("data_parallel",),
+            mesh_shape=mesh_shape,
+            mesh_dim_names=mesh_dim_names,
         )
+
+        # Construct sharding and reduction meshes for specific configurations.
+        # Replace existing mesh strategies if a custom mesh design is provided.
+        # WARNING: ADDING MESHES INCREASES MEMORY USAGE. Use device meshes for
+        # multiple dimensions of parallelism if possible.
+        if self._device_mesh["context_parallel"].size() > 1:
+            # Context parallelism loss reduction mesh. Remember to divide out CP size in tokens per second throughput.
+            self._device_mesh[("data_parallel", "context_parallel")]._flatten(mesh_dim_name="dp_cp")
+
         self.lightning_module._device_mesh = self._device_mesh
 
     @override
@@ -315,7 +331,12 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         assert self.lightning_module is not None
         assert self.model is not None
 
-        loss = self.lightning_module.training_step(batch, batch_idx)
+        if self.context_parallel_size > 1:
+            # Only pass context_parallel=True if AutoModel supports and has non-trivial CP.
+            loss = self.lightning_module.training_step(batch, batch_idx, context_parallel=True)
+        else:
+            loss = self.lightning_module.training_step(batch, batch_idx)
+
         self.lightning_module.log(
             'global_step',
             self.trainer.global_step,
@@ -485,8 +506,20 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
     def load_model_state_dict(self, ckpt, strict=False):
         """Shards a full state dict"""
         # TODO(@akoumparouli): update `placements` value once TP is enabled.
-        sharded_state = {
-            k: distribute_tensor(v, self.device_mesh, placements=(Shard(dim=0),))
-            for k, v in ckpt['state_dict'].items()
-        }
+        if self._device_mesh["context_parallel"].size() > 1:
+            # Shard across the CP device mesh, associated with the fully_shard() call
+            # in utils.fsdp2_strategy_parallelize().
+            sharded_state = {
+                k: distribute_tensor(
+                    v, self._device_mesh[("data_parallel", "context_parallel")], placements=(Replicate(), Shard(dim=0))
+                )
+                for k, v in ckpt['state_dict'].items()
+            }
+        else:
+            # Default shard across DP for FSDP2.
+            sharded_state = {
+                k: distribute_tensor(v, self._device_mesh["data_parallel"], placements=(Shard(dim=0),))
+                for k, v in ckpt['state_dict'].items()
+            }
+
         self.lightning_module.load_state_dict(sharded_state, strict=strict)

@@ -30,7 +30,8 @@ git fetch origin $NEMO_TAG
 git checkout -f $NEMO_TAG
 EOF
 
-FROM ${BASE_IMAGE}
+
+FROM ${BASE_IMAGE} AS trt-base
 ARG IMAGE_LABEL
 LABEL "nemo.library"=${IMAGE_LABEL}
 
@@ -49,10 +50,21 @@ ARG TRTLLM_REPO
 ARG TRTLLM_TAG
 RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
   
-  bash /tmp/NeMo/reinstall.sh --library trtllm --mode build
-  ls -al /tmp/Megatron-LM || true
+  bash /tmp/NeMo/reinstall.sh --library trt --mode install
 EOF
 
+
+FROM trt-base AS trt-llm-wheel
+
+ARG TRTLLM_REPO
+ARG TRTLLM_TAG
+RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
+  
+  bash /tmp/NeMo/reinstall.sh --library trtllm --mode build
+EOF
+
+
+FROM trt-base AS test-image
 
 ARG MLM_REPO
 ARG MLM_TAG
@@ -64,6 +76,7 @@ EOF
 
 WORKDIR /workspace
 RUN \
+  --mount=type=bind,from=trt-llm-wheel,source=/opt/wheels/trtllm,target=/opt/wheels/trtllm \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/requirements,target=/tmp/NeMo/requirements \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh \

@@ -44,6 +44,9 @@ def override_recipe_configs(
     ep_size: int,
     etp_size: Optional[int],
     enable_cuda_graphs: bool,
+    use_mcore_fsdp: bool,
+    recompute_layers: int,
+    activation_offload_layers: int,
 ):
     """
     mixtral 8x22b pre-train recipe aimed at achieving best possible performance.
@@ -66,6 +69,9 @@ def override_recipe_configs(
         ep_size,
         etp_size,
         enable_cuda_graphs,
+        use_mcore_fsdp,
+        recompute_layers,
+        activation_offload_layers,
     )
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "mixtral", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
@@ -92,10 +98,37 @@ if __name__ == "__main__":
     args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "mixtral", "8x22b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, enable_cuda_graphs = kwargs
+    (
+        num_nodes,
+        mbs,
+        gbs,
+        tp_size,
+        pp_size,
+        cp_size,
+        vp_size,
+        ep_size,
+        etp_size,
+        enable_cuda_graphs,
+        use_mcore_fsdp,
+        recompute_layers,
+        activation_offload_layers,
+    ) = kwargs
 
     recipe = override_recipe_configs(
-        args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, etp_size, enable_cuda_graphs
+        args,
+        num_nodes,
+        mbs,
+        gbs,
+        tp_size,
+        pp_size,
+        cp_size,
+        vp_size,
+        ep_size,
+        etp_size,
+        enable_cuda_graphs,
+        use_mcore_fsdp,
+        recompute_layers,
+        activation_offload_layers,
     )
 
     exp_config = (

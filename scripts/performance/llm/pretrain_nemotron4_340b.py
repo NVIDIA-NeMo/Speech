@@ -22,6 +22,7 @@ from nemo.collections.llm.recipes.nemotron4_340b import pretrain_recipe
 from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096,
+    userbuffers_fp8_b200_h18432_tp8_mbs1_seqlen4096,
 )
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
@@ -48,6 +49,9 @@ def override_recipe_configs(
     vp_size: int,
     ep_size: int,
     enable_cuda_graphs: bool,
+    use_mcore_fsdp: bool,
+    recompute_layers: int,
+    activation_offload_layers: int,
 ):
     """
     nemotron4 340b pre-train recipe aimed at achieving best possible performance.
@@ -69,6 +73,9 @@ def override_recipe_configs(
         vp_size,
         ep_size,
         enable_cuda_graphs=enable_cuda_graphs,
+        use_mcore_fsdp=use_mcore_fsdp,
+        recompute_layers=recompute_layers,
+        activation_offload_layers=activation_offload_layers,
     )
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "nemotron", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
@@ -90,8 +97,12 @@ def override_recipe_configs(
     comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
     assert comm_overlap_callback_idx is not None, "MegatronCommOverlapCallback missing. Required for performance."
 
-    if gpu_type == "b200":
-        tp_comm_overlap_cfg = userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096
+    if gpu_type in ["b200", "gb200"]:
+        tp_comm_overlap_cfg = (
+            userbuffers_fp8_b200_h18432_tp8_mbs1_seqlen4096
+            if args.compute_dtype.lower() == "fp8"
+            else userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096
+        )
         # needed as tp_overlap_configs.userbuffers are dataclass objects which are unserializable
         tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
         recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
@@ -104,10 +115,36 @@ if __name__ == "__main__":
     args_sanity_check(args)
 
     kwargs = get_user_configs(args.gpu.lower(), "pre_train", "nemotron4", "340b", args)
-    num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, _, enable_cuda_graphs = kwargs
+    (
+        num_nodes,
+        mbs,
+        gbs,
+        tp_size,
+        pp_size,
+        cp_size,
+        vp_size,
+        ep_size,
+        _,
+        enable_cuda_graphs,
+        use_mcore_fsdp,
+        recompute_layers,
+        activation_offload_layers,
+    ) = kwargs
 
     recipe = override_recipe_configs(
-        args, num_nodes, mbs, gbs, tp_size, pp_size, cp_size, vp_size, ep_size, enable_cuda_graphs
+        args,
+        num_nodes,
+        mbs,
+        gbs,
+        tp_size,
+        pp_size,
+        cp_size,
+        vp_size,
+        ep_size,
+        enable_cuda_graphs,
+        use_mcore_fsdp,
+        recompute_layers,
+        activation_offload_layers,
     )
 
     exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
@@ -122,7 +159,10 @@ if __name__ == "__main__":
         args.time_limit,
         args.container_image,
         custom_mounts=args.custom_mounts,
-        custom_env_vars={},
+        custom_env_vars={
+            "NVTE_NORM_FWD_USE_CUDNN": "1",
+            "NVTE_NORM_BWD_USE_CUDNN": "1",
+        },  # for properly overlapping normalization kernels with FSDP communication
         hf_token=args.hf_token,
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,

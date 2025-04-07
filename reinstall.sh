@@ -248,7 +248,7 @@ nemo() {
 
   if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
     DEPS+=(
-      "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@b6eb61dbf9fe272b1a943b1b0d9efdde99df0737 ; platform_machine == 'x86_64'" # Compiling NvRX requires CUDA
+      "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@e7e7a05a404451ab3bc9ee156b939d1a777dca48 ; platform_machine == 'x86_64'" # Compiling NvRX requires CUDA
     )
   fi
 

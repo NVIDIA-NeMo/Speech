@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import time
 
 import _io
@@ -21,6 +22,7 @@ import torch.distributed as dist
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
 from nemo.automodel.loss import masked_cross_entropy
+from nemo.automodel.loss.linear_ce import HAVE_LINEAR_LOSS_CE, fused_linear_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 from nemo.collections.llm import fn
 from nemo.lightning import io
@@ -51,6 +53,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         use_liger_kernel=False,
         enable_grad_ckpt=False,
         device_map="cpu",
+        use_linear_ce_loss=True,
     ):
         """
         Initialize the HFAutoModelForCausalLM.
@@ -92,6 +95,15 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         self.n_tok = 0
         self.timestamp = None
         self.enable_grad_ckpt = enable_grad_ckpt
+        self.use_linear_ce_loss = use_linear_ce_loss
+
+        if self.use_linear_ce_loss and not HAVE_LINEAR_LOSS_CE:
+            logging.warning(
+                "Dependency for linear CE loss is not available. \
+                    Please refer to https://github.com/apple/ml-cross-entropy."
+            )
+            self.use_linear_ce_loss = False
+        logging.info(f"use_linear_ce_loss: {self.use_linear_ce_loss}")
 
     @property
     def tokenizer(self):
@@ -229,16 +241,22 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             self.model_transform(self)
             self.model_transform.__num_calls__ = 0
 
-    def forward(self, batch):
+    def forward(self, batch, num_logits_to_keep=0):
         """
         Perform a forward pass of the model.
 
         Args:
             batch (dict): A dictionary of inputs that the model expects.
-
+            num_logits_to_keep (int, optional): The number of logits to keep. 0 means all logits are kept.
         Returns:
             ModelOutput: The output of the underlying Hugging Face model.
         """
+        # Check if num_logits_to_keep parameter exists in model's forward method
+        model_forward_params = inspect.signature(self.model.forward).parameters
+        if 'num_logits_to_keep' in model_forward_params:
+            return self.model(**batch, num_logits_to_keep=num_logits_to_keep)
+        if 'logits_to_keep' in model_forward_params:
+            return self.model(**batch, logits_to_keep=num_logits_to_keep)
         return self.model(**batch)
 
     def training_step(self, batch, batch_idx=None, context_parallel=False):
@@ -267,7 +285,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         labels = batch.pop('labels').to(self.model.device)
         loss_mask = batch.pop('loss_mask', None)
         # GPTSFTDataset emits `tokens` instead of `input_ids`
-        if not 'input_ids' in batch and 'tokens' in batch:
+        if 'input_ids' not in batch and 'tokens' in batch:
             batch['input_ids'] = batch['tokens']
         batch = self._remove_extra_batch_keys(batch)
 
@@ -306,19 +324,39 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 self.n_tok += labels.numel()
 
         else:
-            outputs = self.forward(batch)
+            batch["output_hidden_states"] = True if self.use_linear_ce_loss else False  # Enable hidden states output
 
-            # Prepare for loss calculation
-            logits = outputs.logits.float()
-            n_cls = logits.shape[-1]
-            logits = logits.view(-1, n_cls)
-            labels = labels.view(-1)
+            if not self.use_linear_ce_loss:
+                outputs = self.forward(batch)
+                # Prepare for loss calculation
+                logits = outputs.logits
+                n_cls = logits.shape[-1]
+                logits = logits.view(-1, n_cls)
+                labels = labels.view(-1)
+                assert logits.shape[-2] == labels.shape[-1], "Expected logits & labels to have the same length"
+                loss = self.loss_fn(logits, labels, loss_mask)
+            else:
+                # use num_logits_to_keep=1 to avoid full logits matrix in memory
+                # TODO: test CE with CP enabled
+                outputs = self.forward(batch, num_logits_to_keep=1)
+                hidden_states = outputs.hidden_states[-1]
+                lm_head = self.model.get_output_embeddings().weight  # Get the weight matrix
+                if loss_mask is not None:
+                    # Replace labels with -100 where mask is 0 (don't compute loss for these positions)
+                    # -100 is the default ignore index in PyTorch's cross entropy loss
+                    labels = labels.masked_fill(loss_mask == 0, -100)
+                num_items_in_batch = torch.count_nonzero(labels != -100).item()
+                logit_softcapping = 0
+                loss = fused_linear_cross_entropy(
+                    hidden_states=hidden_states,
+                    lm_weight=lm_head,
+                    labels=labels,
+                    num_items_in_batch=num_items_in_batch,
+                    logit_softcapping=logit_softcapping,
+                )
+        self.loss_buffer.append(loss.item())
+        self.n_tok += labels.numel()
 
-            assert logits.shape[-2] == labels.shape[-1], "Expected logits & labels to have the same length"
-            loss = self.loss_fn(logits, labels, loss_mask)
-            # logging
-            self.loss_buffer.append(loss.item())
-            self.n_tok += labels.numel()
         return loss
 
     def on_before_optimizer_step(self, optimizer) -> None:
@@ -406,7 +444,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         loss_mask = batch.pop('loss_mask', None)
 
         # GPTSFTDataset emits `tokens` instead of `input_ids`
-        if not 'input_ids' in batch and 'tokens' in batch:
+        if 'input_ids' not in batch and 'tokens' in batch:
             batch['input_ids'] = batch['tokens']
         batch = self._remove_extra_batch_keys(batch)
 
@@ -540,8 +578,6 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         Returns:
             dict: dictionary of tensors; keys that are not in model's forward are removed.
         """
-        import inspect
-
         fwd_signature = inspect.signature(self.model.forward)
         allowed_keys = list(fwd_signature.parameters.keys()) + reserved_keys
         return {k: batch[k] for k in allowed_keys if k in batch}

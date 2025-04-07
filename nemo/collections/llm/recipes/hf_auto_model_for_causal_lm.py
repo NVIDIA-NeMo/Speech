@@ -35,7 +35,11 @@ NAME = "hf_auto_model_for_causal_lm"
 
 @run.cli.factory(name=NAME)
 def model(
-    model_name, load_pretrained_weights, trust_remote_code=False, attn_implementation="sdpa"
+    model_name,
+    load_pretrained_weights,
+    trust_remote_code=False,
+    attn_implementation="sdpa",
+    use_linear_ce_loss=True,
 ) -> run.Config[pl.LightningModule]:
     """
     Factory function to create HFAutoModelForCausalLM model configurations.
@@ -60,6 +64,7 @@ def model(
         load_pretrained_weights=load_pretrained_weights,
         trust_remote_code=trust_remote_code,
         attn_implementation=attn_implementation,
+        use_linear_ce_loss=use_linear_ce_loss,
     )
 
 
@@ -180,6 +185,7 @@ def finetune_recipe(
     max_steps: int = 100,
     trust_remote_code: bool = False,
     attn_implementation: str = 'sdpa',
+    use_linear_ce_loss: bool = True,
 ) -> run.Partial:
     """
     Create a fine-tuning recipe for a HFAutoModelForCausalLM model.
@@ -195,7 +201,7 @@ def finetune_recipe(
         num_gpus_per_node (int): Number of GPUs per node.
         peft_scheme (Optional[str]): Name of the peft scheme to use for fine-tuning.
             Allowed values: 'lora', 'none'/None.
-
+        use_linear_ce_loss (bool): Whether to use linear CE loss.
     Returns:
         run.Partial: Partial configuration for fine-tuning.
 
@@ -219,6 +225,7 @@ def finetune_recipe(
             load_pretrained_weights=True,
             trust_remote_code=trust_remote_code,
             attn_implementation=attn_implementation,
+            use_linear_ce_loss=use_linear_ce_loss,
         ),
         trainer=trainer(
             num_nodes=num_nodes,

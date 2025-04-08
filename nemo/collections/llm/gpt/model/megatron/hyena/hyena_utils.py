@@ -17,11 +17,14 @@
 
 import math
 from functools import partial
+from typing import Literal
 
 import torch
+
+# CP related utils
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 from megatron.core.parallel_state import (
     get_context_parallel_group,
     get_context_parallel_rank,
@@ -31,16 +34,10 @@ from megatron.core.parallel_state import (
 )
 from megatron.core.tensor_parallel import get_cuda_rng_tracker
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
+from torch.autograd.function import Function
 
 from nemo.collections.llm.gpt.model.megatron.hyena.hyena_config import HyenaConfig
-
-try:
-    from flashfftconv import FlashFFTConv
-except ImportError:
-
-    def FlashFFTConv(*args, **kwargs):
-        """Not imported: FlashFFTConv. An error will be raised if this is called."""
-        raise Exception("Not imported: FlashFFTConv")
 
 
 try:
@@ -57,19 +54,13 @@ except ImportError:
         raise ImportError("causal_conv1d is required by the Hyena model but cannot be imported")
 
 
-from typing import Literal
-
-# CP related utils
-import torch.distributed as dist
-from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint, sharded_state_dict_default
-
-
 def _get_zigzag_indices(N, device=None):
-    """
-    Generates the zigzag indices for rearrangement.
+    """Generates the zigzag indices for rearrangement.
+
     Args:
         N (int): The total number of chunks.
         device (torch.device): The device on which to create tensors.
+
     Returns:
         torch.Tensor: The zigzag indices.
     """
@@ -83,11 +74,12 @@ def _get_zigzag_indices(N, device=None):
 
 
 def _get_inverse_zigzag_indices(N, device=None):
-    """
-    Generates the inverse zigzag indices for rearrangement.
+    """Generates the inverse zigzag indices for rearrangement.
+
     Args:
         N (int): The total number of chunks.
         device (torch.device): The device on which to create tensors.
+
     Returns:
         torch.Tensor: The inverse zigzag indices.
     """
@@ -107,17 +99,17 @@ def all_to_all_single_fn(
     input: torch.Tensor,
     with_zigzag_splitting: bool = True,
 ) -> torch.Tensor:
-    """
-    Autograd-aware all_to_all_single communication function.
+    """Autograd-aware all_to_all_single communication function.
+
     Args:
         group (dist.ProcessGroup): The process group for communication.
         type (str): Either 'split_to_full' or 'full_to_split' to specify the communication pattern.
         input (torch.Tensor): Input tensor to be communicated.
         with_zigzag_splitting (bool, optional): Whether to apply zigzag splitting. Defaults to True.
+
     Returns:
         torch.Tensor: Output tensor after communication.
     """
-
     world_size = dist.get_world_size(group=group)
 
     if type == "split_to_full":
@@ -194,12 +186,9 @@ def all_to_all_single_fn(
         raise ValueError(f"Unknown type {type}")
 
 
-from torch.autograd.function import Function
-
-
 class AllToAllSingleFunction(Function):
-    """
-    A custom autograd function for performing all_to_all_single communication with optional zigzag splitting.
+    """A custom autograd function for performing all_to_all_single communication with optional zigzag splitting.
+
     Attributes:
     - ctx: A context object that stores information for the forward and backward passes.
     - group: The process group for communication.
@@ -209,9 +198,7 @@ class AllToAllSingleFunction(Function):
 
     @staticmethod
     def forward(ctx, input_tensor, group, type, with_zigzag_splitting):
-        """
-        Forward pass for the AllToAllSingleFunction.
-        """
+        """Forward pass for the AllToAllSingleFunction."""
         ctx.group = group
         ctx.type = type
         ctx.with_zigzag_splitting = with_zigzag_splitting
@@ -228,9 +215,7 @@ class AllToAllSingleFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        """
-        Backward pass for the AllToAllSingleFunction.
-        """
+        """Backward pass for the AllToAllSingleFunction."""
         # The backward pass will perform the reverse communication
         grad_input = all_to_all_single_fn(
             group=ctx.group,
@@ -243,12 +228,13 @@ class AllToAllSingleFunction(Function):
 
 
 def zigzag_get_overlapping_patches(data, seq_dim, overlap_size):
-    """
-    Extracts the overlapping patches from data in each rank.
+    """Extracts the overlapping patches from data in each rank.
+
     Arguments:
         data (torch.Tensor): The concatenated data (chunk_a and chunk_b), e.g., [0, 3] , [1, 2] with zigzag and 2 GPUs.
         seq_dim (int): The sequence dimension along which the data is concatenated.
         overlap_size (int): The size of the overlapping patch.
+
     Returns:
         overlap_a, overlap_b (torch.Tensor): The overlapping chunks from the data. That is the end of the lowest, and
         the beginning of the last, e.g., end for 0 and start for 3.
@@ -276,11 +262,11 @@ def zigzag_get_overlapping_patches(data, seq_dim, overlap_size):
 
 
 class ExchangeOverlappingRegionsCausal(Function):
-    """
-    A custom autograd function for exchanging overlapping regions between chunks of data in a causal manner.
-    The data is split across multiple GPUs using a distributed process group.
-    The forward method handles the exchange of overlapping regions between chunks, while the backward
-        method computes the gradients.
+    """A custom autograd function for exchanging overlapping regions between chunks of data in a causal manner.
+
+    The data is split across multiple GPUs using a distributed process group. The forward method handles the exchange
+    of overlapping regions between chunks, while the backward method computes the gradients.
+
     Attributes:
     - ctx: A context object that stores information for the forward and backward passes.
     - chunk_a: Chunk to pass to the left.
@@ -291,9 +277,7 @@ class ExchangeOverlappingRegionsCausal(Function):
 
     @staticmethod
     def forward(ctx, chunk_a, chunk_b, group, group_rank):
-        """
-        Forward pass for the ExchangeOverlappingRegionsCausal function.
-        """
+        """Forward pass for the ExchangeOverlappingRegionsCausal function."""
         group_ranks = dist.get_process_group_ranks(group)  # Get all global ranks in the cp_group
         group_world_size = len(group_ranks)  # Size of the cp_group
 
@@ -349,9 +333,7 @@ class ExchangeOverlappingRegionsCausal(Function):
 
     @staticmethod
     def backward(ctx, grad_chunk_a, grad_chunk_b):
-        """
-        Backward pass for the ExchangeOverlappingRegionsCausal function.
-        """
+        """Backward pass for the ExchangeOverlappingRegionsCausal function."""
         # chunk_a, chunk_b = ctx.saved_tensors
         group_rank = ctx.group_rank
         group_world_size = ctx.group_world_size
@@ -414,9 +396,7 @@ class ExchangeOverlappingRegionsCausal(Function):
 
 
 def hyena_no_weight_decay_cond(name, param):
-    """
-    Condition for no weight decay for Hyena parameters.
-    """
+    """Condition for no weight decay for Hyena parameters."""
     # ImplicitModalFilter parameters
     if name.endswith('filter.p') or name.endswith('filter.R') or name.endswith('filter.gamma'):
         no_wd = True
@@ -439,14 +419,6 @@ def hyena_no_weight_decay_cond(name, param):
         no_wd = name.endswith(".bias") or len(param.shape) == 1
 
     return no_wd
-
-
-@torch.jit.script
-def _mul_sum(y, q):
-    """
-    Multiply and sum the elements of two tensors along dimension 1.
-    """
-    return (y * q).sum(dim=1)
 
 
 def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=False):
@@ -503,9 +475,7 @@ def fftconv_func(u, k, D, dropout_mask, gelu=True, k_rev=None, bidirectional=Fal
 
 
 class ImplicitModalFilter(nn.Module):
-    """
-    An implicit modal filter.
-    """
+    """An implicit modal filter."""
 
     def __init__(
         self,
@@ -520,9 +490,9 @@ class ImplicitModalFilter(nn.Module):
         self.order = order
         self.d_model = d_model
         # Do not register into buffer, so it doesn't cast to BF16!
-        self.t = rearrange(torch.arange(L_cache, dtype=torch.float32), "L -> 1 1 L").to(
-            device=torch.cuda.current_device()
-        )  # <- this should be arange
+        self.t = torch.arange(L_cache, dtype=torch.float32, device=torch.cuda.current_device()).view(
+            1, 1, -1
+        )  # 1, 1, L_cache
         self.use_cached_t = False
         with get_cuda_rng_tracker().fork():
             gamma = torch.rand(self.d_model, order, dtype=torch.float32) * (gamma_max - gamma_min) + gamma_min
@@ -537,23 +507,19 @@ class ImplicitModalFilter(nn.Module):
             setattr(self.p, 'tensor_model_parallel', True)
 
     def get_t(self, L):
-        """
-        Get the t tensor.
-        """
+        """Get the t tensor."""
         # Assumes L <= L_cache
         if self.use_cached_t:
             return self.t[..., :L]
 
-        t = rearrange(torch.arange(L, dtype=torch.float32, device=self.t.device), "L -> 1 1 L")
+        t = torch.arange(L, dtype=torch.float32, device=self.t.device).view(1, 1, -1)  # 1, 1, L
         self.t = t
         self.use_cached_t = True
 
         return t
 
     def compute_filter(self, L, t):
-        """
-        Compute the filter for convolution.
-        """
+        """Compute the filter for convolution."""
         assert (
             t.dtype == torch.float32
         ), f"t must be float32. At lower precision, indexes will be merged together. Current dtype: {t.dtype}"
@@ -578,29 +544,23 @@ class ImplicitModalFilter(nn.Module):
         return h, None
 
     def filter(self, L, *args, **kwargs):
-        """
-        Get t and the convolution filter for t and the requested sequence length.
-        """
+        """Get t and the convolution filter for t and the requested sequence length."""
         t = self.get_t(L)
         h = self.compute_filter(L, t)
         return h
 
     def forward(self, L, **kwargs):
-        """
-        Return the final convolutional filter for the requested sequence length.
-        """
+        """Return the final convolutional filter for the requested sequence length."""
         return self.filter(L)
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """Sharding along axis 0, bias not sharded"""
+        """Sharding along axis 0, bias not sharded."""
         state_dict = self.state_dict(prefix='', keep_vars=True)
         return make_sharded_tensors_for_checkpoint(state_dict, prefix, {'gamma': 0, 'R': 0, 'p': 0}, sharded_offsets)
 
 
 class ExplicitSingleDecayFilter(nn.Module):
-    """
-    An explicit single decay filter.
-    """
+    """An explicit single decay filter."""
 
     def __init__(
         self,
@@ -647,22 +607,21 @@ class ExplicitSingleDecayFilter(nn.Module):
         setattr(self.decay, 'tensor_model_parallel', True)
 
     def forward(self, L, *args, **kwargs):
-        """
-        Forward pass for the explicit single decay filter. This returns the filter for the requested sequence length.
+        """Forward pass for the explicit single decay filter.
+
+        This returns the filter for the requested sequence length.
         """
         return self.filter(L, *args, **kwargs)
 
     @torch.compile(mode="max-autotune")
     def filter(self, L, *args, **kwargs):
-        """
-        Compute the filter as a function of h and decay for the requested sequence length.
-        """
+        """Compute the filter as a function of h and decay for the requested sequence length."""
         h = self.h[:, :L]
         h = h * self.decay[:, :L]
         return h
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """Sharding along axis 0, bias not sharded"""
+        """Sharding along axis 0, bias not sharded."""
         state_dict = self.state_dict(prefix='', keep_vars=True)
         return make_sharded_tensors_for_checkpoint(
             state_dict,
@@ -676,8 +635,9 @@ class ExplicitSingleDecayFilter(nn.Module):
 
 
 def small_init_init_method(dim):
-    """Fills the input Tensor with values according to the method described in Transformers without Tears: Improving
-    the Normalization of Self-Attention - Nguyen, T. & Salazar, J. (2010), using a normal distribution.
+    """Fills the input Tensor with values according to the method described in Transformers without Tears.
+
+    Improving the Normalization of Self-Attention - Nguyen, T. & Salazar, J. (2010), using a normal distribution.
     """
     std = math.sqrt(2 / (5 * dim))
 
@@ -688,9 +648,7 @@ def small_init_init_method(dim):
 
 
 def wang_init_method(n_layers, dim):
-    """
-    Initialize the weights of the model using the Wang initialization method.
-    """
+    """Initialize the weights of the model using the Wang initialization method."""
     std = 2 / n_layers / math.sqrt(dim)
 
     def init_(tensor):
@@ -700,9 +658,7 @@ def wang_init_method(n_layers, dim):
 
 
 def get_init_method(init_method_name, num_layers, hidden_size):
-    """
-    Gets parameter initialization methods for the linear layers of the model.
-    """
+    """Gets parameter initialization methods for the linear layers of the model."""
     if init_method_name == "wang_init":
         return wang_init_method(num_layers, hidden_size)
     elif init_method_name == "small_init":
@@ -717,15 +673,13 @@ def ensure_divisibility(numerator, denominator):
 
 
 def divide(numerator, denominator):
-    """Ensure that numerator is divisible by the denominator and return
-    the division value."""
+    """Ensure that numerator is divisible by the denominator and return the division value."""
     ensure_divisibility(numerator, denominator)
     return numerator // denominator
 
 
 def initialize_affine_weight_gpu(weight, init_method, partition_dim, stride=1):
     """Initialize affine weight for model parallel on GPU."""
-
     weight.model_parallel = True
     weight.partition_dim = partition_dim
     weight.partition_stride = stride
@@ -735,9 +689,7 @@ def initialize_affine_weight_gpu(weight, init_method, partition_dim, stride=1):
 
 
 def get_groups_and_group_sizes(hidden_size, num_groups, world_size, expand_factor):
-    """
-    Get the groups and group sizes for the model.
-    """
+    """Get the groups and group sizes for the model."""
     width_per_tp_group = divide(hidden_size, world_size)
     num_groups_per_tp = int(divide(num_groups, world_size) * expand_factor)
     group_dim = width_per_tp_group // num_groups_per_tp
@@ -745,9 +697,7 @@ def get_groups_and_group_sizes(hidden_size, num_groups, world_size, expand_facto
 
 
 class ParallelHyenaOperator(nn.Module):
-    """
-    A class for the ParallelHyenaOperator.
-    """
+    """A class for the ParallelHyenaOperator."""
 
     def __init__(
         self,
@@ -757,7 +707,6 @@ class ParallelHyenaOperator(nn.Module):
         init_method,
         operator_type,
         max_sequence_length,
-        downsample_factor=1,
         zigzag=True,
     ):
         super().__init__()
@@ -768,18 +717,14 @@ class ParallelHyenaOperator(nn.Module):
         self.operator_type = operator_type
         self.fp16 = transformer_config.fp16
         self.bf16 = transformer_config.bf16
-        self.cgcg_dtype = getattr(torch, hyena_config.cgcg_dtype)  # torch.float32
 
         if self.operator_type == "hyena_medium_conv" and hyena_config.hyena_medium_filter_cls is not None:
             self.hyena_filter_cls = hyena_config.hyena_medium_filter_cls
         else:
             self.hyena_filter_cls = hyena_config.hyena_filter_cls
 
-        self.downsample_factor = downsample_factor
         self.bidirectional = hyena_config.bidirectional
         self.use_hyena_filter = hyena_config.use_hyena_filter
-        self.use_slow_heads = hyena_config.use_slow_heads
-
         self.zigzag = zigzag
 
         self.model_parallel_size = get_tensor_model_parallel_world_size()
@@ -815,15 +760,6 @@ class ParallelHyenaOperator(nn.Module):
         self.short_conv_L = hyena_config.short_conv_L
         self.use_medium_hyena = True if self.operator_type == "hyena_medium_conv" else False
         self.hyena_medium_conv_len = hyena_config.hyena_medium_conv_len
-
-        # TODO: Check which if of these use_* is needed, if any
-        self.use_long_conv1d = hyena_config.use_long_conv1d
-        self.use_flashfft = hyena_config.use_flashfft
-        self.use_cgcg = hyena_config.use_cgcg
-        self.is_medium_cgcg = self.use_cgcg and self.use_medium_hyena
-
-        if self.use_flashfft:
-            self.fftconv_fn = FlashFFTConv(self.L, dtype=torch.float16 if self.fp16 else torch.bfloat16)
 
         # TODO: Check which of these filters can be removed
         #       At the moment only "explicit_single_decay" and "implicit_modal" are used
@@ -864,36 +800,19 @@ class ParallelHyenaOperator(nn.Module):
             self.conv_bias.stride = 1
 
     def forward(self, x1, x2, v, _hyena_use_cp=True):
-        """
-        Note:
-            Input shapes: bs, seq_length, (num_groups, group_size)
-            Output shapes: bs, seq_length, num_groups, group_size
-        """
+        """Shape specification for inputs and outputs.
 
-        B, L, G, DG = x1.shape
+        Input shapes: bs, (num_groups, group_size), seq_length
+        Output shapes: bs, (num_groups, group_size), seq_length
+        """
+        B, GDG, L = x1.shape
+        x1, x2, v = x1[..., :L], x2[..., :L], v[..., :L]
 
         # CP control
         if _hyena_use_cp:
             cp_group = get_context_parallel_group()
         else:
             cp_group = None
-
-        # downsampled = self.downsample_factor > 1
-
-        # Only permute if not medium cgcg
-        if not self.is_medium_cgcg:
-            x1 = rearrange(x1, "b l g dg -> b (g dg) l", g=self.num_groups, dg=self.group_dim)
-            x2 = rearrange(x2, "b l g dg -> b (g dg) l", g=self.num_groups, dg=self.group_dim)
-            v = rearrange(v, "b l g dg -> b (g dg) l", g=self.num_groups, dg=self.group_dim)
-
-        x1, x2, v = x1[..., :L], x2[..., :L], v[..., :L]
-
-        # FIXME: add support post cp refactor
-        # if self.downsample_factor > 1:
-        #     x1 = x1[..., :: self.downsample_factor]
-        #     x2 = x2[..., :: self.downsample_factor]
-        #     v = v[..., :: self.downsample_factor]
-        #     L = L // self.downsample_factor
 
         # The kernel length must be adjusted in CP settings
         _L_kernel = L if cp_group is None else L * len(torch.distributed.get_process_group_ranks(cp_group))
@@ -902,7 +821,7 @@ class ParallelHyenaOperator(nn.Module):
         else:
             h = self.filter(_L_kernel)
 
-        if type(h) == tuple:
+        if isinstance(h, tuple):
             h = h[0]
 
         conv_bias = self.conv_bias
@@ -929,55 +848,29 @@ class ParallelHyenaOperator(nn.Module):
             local_bias_size = self.width_per_tp_group // get_context_parallel_world_size()
             conv_bias = self.conv_bias[rank * local_bias_size : (rank + 1) * local_bias_size]
 
-        if self.use_long_conv1d:
+        else:
             h = h.repeat_interleave(self.group_dim, dim=-2)
-            z = x2 * v
 
-            z = (
-                F.conv1d(z, h[:, None].flip(-1), padding=L - 1, groups=v.shape[1])[..., :L]
-                + conv_bias.unsqueeze(-1) * z
+            z = x2 * v
+            # with torch.autocast("cuda"):
+            z = fftconv_func(
+                u=z.to(torch.float32),
+                k=h.to(torch.float32),
+                D=conv_bias.to(torch.float32),
+                dropout_mask=None,
+                gelu=False,
+                bidirectional=self.bidirectional,
             )
             z = z.to(v.dtype)
             z = x1 * z
 
-        else:
-            h = h.repeat_interleave(self.group_dim, dim=-2)
-
-            if self.hyena_config.use_flashfft:
-                # squeeze h dim (kernel), to get rid of leading 1 dim
-                h = h.squeeze(0)
-                z = self.fftconv_fn(v, h, x2, x1)
-            else:
-                z = x2 * v
-                # with torch.autocast("cuda"):
-                z = fftconv_func(
-                    u=z.to(torch.float32),
-                    k=h.to(torch.float32),
-                    D=conv_bias.to(torch.float32),
-                    dropout_mask=None,
-                    gelu=False,
-                    bidirectional=self.bidirectional,
-                )
-                z = z.to(v.dtype)
-                z = x1 * z
-
-        # if downsampled:
-        #     z = z.repeat_interleave(self.downsample_factor, dim=-1)
-
-        # print(
-        #   f"[rank={dist.get_rank()}] shape of z = {z.shape} | "
-        #   f"num_groups = {self.num_groups}, local_size = {local_size}"
-        # )  # DEBUG
-
         if cp_group is not None and len(torch.distributed.get_process_group_ranks(cp_group)) > 1:
             z = AllToAllSingleFunction.apply(z, cp_group, "full_to_split", True)
             # [ B, H, L // num_ranks]
-        return rearrange(z, "b d l -> b l d")
+        return z  # [B, (G, DG), L]
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """
-        Sharded state dictionary for the ParallelHyenaOperator.
-        """
+        """Sharded state dictionary for the ParallelHyenaOperator."""
         sharded_state_dict = {}
         # Parameters
         self._save_to_state_dict(sharded_state_dict, '', keep_vars=True)
@@ -998,9 +891,7 @@ class ParallelHyenaOperator(nn.Module):
 
 
 class ParallelShortHyenaOperator(nn.Module):
-    """
-    A class for the ParallelShortHyenaOperator.
-    """
+    """A class for the ParallelShortHyenaOperator."""
 
     def __init__(
         self,
@@ -1010,20 +901,13 @@ class ParallelShortHyenaOperator(nn.Module):
         init_method,
         short_conv_class,
         use_fast_causal_conv=False,
-        is_mlp=False,  # TODO: Check if needed, only used when using Hyena for the MLP block
         local_init=False,
         use_conv_bias=True,
     ):
         super().__init__()
         self.transformer_config = transformer_config
         self.hyena_config = hyena_config
-        self.is_mlp = is_mlp
         self.hidden_size = hidden_size
-        self.cgcg_dtype = getattr(torch, hyena_config.cgcg_dtype)
-        self.use_cgcg_mlp = hyena_config.use_cgcg_mlp and self.is_mlp
-        self.use_cgcg_short = hyena_config.use_cgcg_short and not self.is_mlp
-        self.use_custom_hyena_mlp_kernel = hyena_config.use_custom_hyena_mlp_kernel
-        self.use_custom_hyena_short_kernel = hyena_config.use_custom_hyena_short_kernel
         self.use_fast_causal_conv = use_fast_causal_conv
 
         # world_size = mpu.get_model_parallel_world_size() if not local_init else 1
@@ -1034,35 +918,7 @@ class ParallelShortHyenaOperator(nn.Module):
         if use_fast_causal_conv:
             assert hyena_config.hyena_short_conv_len <= 4, "fast_conv_mixer requires hyena_short_conv_len <= 4"
 
-        # for mlp type
-        if is_mlp:
-            # option to have a different kernel size for the short conv inside the mlp
-            if hyena_config.hyena_mlp_len is not None:
-                kernel_size = hyena_config.hyena_mlp_len
-            else:
-                kernel_size = hyena_config.hyena_short_conv_len
-
-            # check for fast causal conv
-            if hyena_config.fast_hyena_mlp_conv:
-                assert hyena_config.hyena_mlp_len <= 4, "fast_hyena_mlp_conv requires hyena_mlp_len <= 4"
-                use_fast_causal_conv = True
-
-            self.pregate = hyena_config.hyena_mlp_pregate
-            self.postgate = hyena_config.hyena_mlp_postgate
-
-            self.num_groups = (
-                hyena_config.num_groups_hyena_mlp
-                if hyena_config.num_groups_hyena_mlp is not None
-                else hyena_config.num_groups_hyena
-            )
-
-            if self.num_groups is None:
-                self.num_groups = transformer_config.hidden_size
-
-            self.num_groups = int(self.num_groups * hyena_config.hyena_mlp_expansion_factor)
-        # handle mixer case
         else:
-
             kernel_size = hyena_config.hyena_short_conv_len
             self.pregate = hyena_config.hyena_short_conv_pregate
             self.postgate = hyena_config.hyena_short_conv_postgate
@@ -1112,17 +968,12 @@ class ParallelShortHyenaOperator(nn.Module):
                 self.conv_bias.stride = 1
 
     def forward(self, x1, x2, v, _hyena_use_cp=True):
-        """
-        Note:
-            Input shapes: bs, seq_length, (num_groups, group_size)
-            Output shapes: bs, seq_length, num_groups, group_size
-        """
-        B, L, G, DG = x1.shape
+        """Shape specification for inputs and outputs.
 
-        x1 = rearrange(x1, "b l g dg -> b (g dg) l")
-        x2 = rearrange(x2, "b l g dg -> b (g dg) l")
-        v = rearrange(v, "b l g dg -> b (g dg) l")
-
+        Input shapes: bs, (num_groups, group_size), seq_length
+        Output shapes: bs, (num_groups, group_size), seq_length
+        """
+        B, GDG, L = x1.shape
         x1, x2, v = x1[..., :L], x2[..., :L], v[..., :L]
 
         z = x2 * v if self.pregate else v
@@ -1135,12 +986,10 @@ class ParallelShortHyenaOperator(nn.Module):
 
         z = x1 * z if self.postgate else z
 
-        return rearrange(z, "b d l -> b l d")
+        return z  # [B, (G, DG), L]
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """
-        Sharded state dictionary for the ParallelShortHyenaOperator.
-        """
+        """Sharded state dictionary for the ParallelShortHyenaOperator."""
         sharded_state_dict = {}
         # Parameters
         self._save_to_state_dict(sharded_state_dict, '', keep_vars=True)
@@ -1161,9 +1010,7 @@ class ParallelShortHyenaOperator(nn.Module):
 
 
 class ParallelCausalDepthwiseConv1d(nn.Module):
-    """
-    A class for the ParallelCausalDepthwiseConv1d.
-    """
+    """A class for the ParallelCausalDepthwiseConv1d."""
 
     def __init__(
         self,
@@ -1228,9 +1075,7 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
                 initialize_affine_weight_gpu(self.short_conv_weight, conv_init_method, partition_dim=0)
 
     def forward(self, x, _use_cp=True):
-        """
-        Forward pass for the ParallelCausalDepthwiseConv1d.
-        """
+        """Forward pass for the ParallelCausalDepthwiseConv1d."""
         assert x.ndim == 3, "Only 3D tensors supported."
 
         x_shape = x.shape
@@ -1280,7 +1125,7 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         return y
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """Sharding along axis 0, bias not sharded"""
+        """Sharding along axis 0, bias not sharded."""
         state_dict = self.state_dict(prefix='', keep_vars=True)
         return make_sharded_tensors_for_checkpoint(
             state_dict,
@@ -1292,30 +1137,32 @@ class ParallelCausalDepthwiseConv1d(nn.Module):
         )
 
 
-def make_upper_case(tokens):
-    """
-    Replace lowercase ASCII characters with uppercase.
-    """
-    # tokens, labels, loss_mask, attention_mask, position_ids = batch
+def make_upper_case(tokens, lowercase_start=97, lowercase_end=122, case_diff=32):
+    """Replace lowercase ASCII characters with uppercase.
 
-    lowercase_mask = (tokens >= 97) & (tokens <= 122)
-    uppercase_tensor = tokens.clone()
-    uppercase_tensor[lowercase_mask] -= 32
+    Args:
+        tokens: Input tensor containing token IDs
+        lowercase_start: ASCII value for the first lowercase character (default: 97 for 'a')
+        lowercase_end: ASCII value for the last lowercase character (default: 122 for 'z')
+        case_diff: Difference between lowercase and uppercase (default: 32)
 
+    Returns:
+        tuple: (uppercase_tensor, lowercase_mask)
+    """
+    lowercase_mask = (tokens >= lowercase_start) & (tokens <= lowercase_end)
+    uppercase_tensor = torch.where(lowercase_mask, tokens - case_diff, tokens)
     return uppercase_tensor, lowercase_mask
 
 
 def reweighted_cross_entropy(loss, labels, lowercase_weight=1.0, normalize_per_batch=True):
-    """
-    Modified for lower case loss reweighting, using the cross_entropy function as a base.
+    """Modified for lower case loss reweighting, using the cross_entropy function as a base.
 
     If normalize_per_batch, loss_weights are normalized by the number of tokens in the batch so
-        the magnitude of the loss is not affected by the number of upper/lower case letters
-        otherwise, loss_weights are normalized by the number of tokens: combined_loss/len
+    the magnitude of the loss is not affected by the number of upper/lower case letters
+    otherwise, loss_weights are normalized by the number of tokens: combined_loss/len.
 
-    performs mean reduction and applies loss_mask
+    Performs mean reduction and applies loss_mask.
     """
-
     labels, loss_mask, lowercase_mask = labels[0], labels[1], labels[2]
 
     upper_loss_mask = loss_mask.bool() & (~lowercase_mask.bool())

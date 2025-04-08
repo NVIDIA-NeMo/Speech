@@ -40,6 +40,7 @@ from nemo.collections.llm.gpt.model.megatron.hyena.hyena_utils import (
     divide,
 )
 
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -67,7 +68,7 @@ except ImportError:
 
 
 def set_format_recipe():
-    """Set the fp8 format recipe. for Hyena"""
+    """Set the fp8 format recipe. for Hyena."""
     fp8_format = Format.HYBRID  # E4M3 during forward pass, E5M2 during backward pass
     fp8_recipe = DelayedScaling(fp8_format=fp8_format, amax_history_len=16, amax_compute_algo="max")
     return fp8_recipe
@@ -75,18 +76,14 @@ def set_format_recipe():
 
 @dataclass
 class HyenaMixerSubmodules:
-    """
-    Contains the module specs for the input and output linear layers.
-    """
+    """Contains the module specs for the input and output linear layers."""
 
     dense_projection: Union[ModuleSpec, type] = None
     dense: Union[ModuleSpec, type] = None
 
 
 class HyenaMixer(MegatronModule):
-    """
-    A class for the HyenaMixer.
-    """
+    """A class for the HyenaMixer."""
 
     def __init__(
         self,
@@ -96,13 +93,11 @@ class HyenaMixer(MegatronModule):
         submodules,
         layer_number=1,
         operator_type="H",
-        is_mlp=False,  # TODO: Check if needed, only used when using Hyena for the MLP block
     ):
 
         super().__init__(transformer_config)
         self.transformer_config = transformer_config
         self.hyena_config = hyena_config
-        self.is_mlp = is_mlp
         self.operator_type = operator_type
         self.layer_number = layer_number
         self.grouped_attention = self.hyena_config.grouped_attention
@@ -115,11 +110,8 @@ class HyenaMixer(MegatronModule):
         self.model_parallel_size = get_tensor_model_parallel_world_size()
         world_size: int = get_tensor_model_parallel_world_size()
 
-        # Width expansion for Hyena depending on if it's a mixer of mlp
-        if self.is_mlp:
-            self.hyena_width_expansion = self.hyena_config.hyena_mlp_expansion_factor
-        else:
-            self.hyena_width_expansion = self.hyena_config.hyena_width_expansion
+        # Width expansion for Hyena
+        self.hyena_width_expansion = self.hyena_config.hyena_width_expansion
 
         # we might expand the hidden size for hyena
         self.input_size = self.transformer_config.hidden_size
@@ -185,7 +177,6 @@ class HyenaMixer(MegatronModule):
                 self.transformer_config.init_method,
                 short_conv_class=ParallelCausalDepthwiseConv1d,
                 use_fast_causal_conv=self.fast_conv_mixer,
-                is_mlp=self.is_mlp,
                 use_conv_bias=self.transformer_config.use_short_conv_bias,
             )
 
@@ -206,7 +197,6 @@ class HyenaMixer(MegatronModule):
                 self.transformer_config.init_method,
                 operator_type,
                 max_sequence_length,
-                downsample_factor=1,
             )
 
         # Dropout. Note that for a single iteration, this layer will generate
@@ -229,9 +219,7 @@ class HyenaMixer(MegatronModule):
         )
 
     def sharded_state_dict(self, prefix='', sharded_offsets=(), metadata=None):
-        """
-        Sharded state dictionary for the HyenaMixer.
-        """
+        """Sharded state dictionary for the HyenaMixer."""
         sharded_state_dict = {}
         # Submodules
         for name, module in self.named_children():
@@ -242,12 +230,23 @@ class HyenaMixer(MegatronModule):
 
         return sharded_state_dict
 
+    def _maybe_use_fp8(self, func, *args, **kwargs):
+        if self.transformer_config.vortex_style_fp8:
+            with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
+                return func(*args, **kwargs)
+        return func(*args, **kwargs)
+
     def forward(self, x, layer_past=None, inference_params=None, _hyena_use_cp=True):
-        """
-        Applies sequence mixing to a sequence of 1-dimensional embeddings: batch_size, seq_len, d_model
+        """Applies the Hyena sequence mixing operation to input embeddings.
 
         Args:
-            u: input to the operator, in format [B, L, D]
+            x: Input tensor of shape [L, B, D] (seq_len, batch_size, hidden_dim)
+            layer_past: Past layer state for inference (default: None)
+            inference_params: Parameters for inference (default: None)
+            _hyena_use_cp: Whether to use context parallelism (default: True)
+
+        Returns:
+            Tuple of (output tensor, bias)
         """
         # CP control
         if _hyena_use_cp:
@@ -259,21 +258,16 @@ class HyenaMixer(MegatronModule):
             _proj_use_cp = True
         else:
             _proj_use_cp = False
-        if self.transformer_config.vortex_style_fp8:
-            with te.fp8_autocast(enabled=True, fp8_recipe=set_format_recipe()):
-                features, _ = self.dense_projection(x)
-        else:
-            features, _ = self.dense_projection(x)
-        features = rearrange(features, "l b d -> b l d").contiguous()
-        features_L_last = features.permute(0, 2, 1)
-        features_D_last = self.hyena_proj_conv(features_L_last, _use_cp=_proj_use_cp).permute(0, 2, 1)
+        features, _ = self._maybe_use_fp8(self.dense_projection, x)
+        features = rearrange(features, "l b d -> b d l").contiguous()
+        features = self.hyena_proj_conv(features, _use_cp=_proj_use_cp)  # [B, D, L]
 
-        x1, x2, v = rearrange(
-            features_D_last, "b l (g dg p) -> b l g p dg", p=3, g=self.num_groups_per_tp_rank
-        ).unbind(dim=3)
+        x1, x2, v = rearrange(features, "b (g dg p) l -> b (g dg) p l", p=3, g=self.num_groups_per_tp_rank).unbind(
+            dim=2
+        )
 
         z = self.mixer(x1, x2, v)
-        z = rearrange(z, "b l d -> l b d").contiguous()
+        z = rearrange(z, "b d l -> l b d").contiguous()
 
         y, bias = self.dense(z)
         return y, bias

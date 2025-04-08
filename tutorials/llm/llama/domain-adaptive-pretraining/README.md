@@ -33,3 +33,7 @@ After placing the curated data in the directories mentioned above, we can procee
 Once we have the domain adapted custom tokenizer from above, we can proceed with pretraining using the customer tokenizer.
 
 * `./code/domain_adaptive_pretraining.ipynb` walks through the pretraining workflow required for DAPT 
+
+## Deployment of .nemo via NIMs
+
+Once the domain adapted pretraining is completed a .nemo checkpoint will be saved. Follow the document 'Deploying .nemo as a NIM' to deploy the .nemo checkpoint as NIMs and send inference request. 

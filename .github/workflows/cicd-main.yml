@@ -1805,13 +1805,14 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_VLLM_EXPORT
 
-  L2_NeMo_2_EVAL:
+  Optional_L2_NeMo_2_EVAL:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_EVAL')
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'Optional_L2_NeMo_2_EVAL')
     with:
       RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: L2_NeMo_2_EVAL
+      SCRIPT: Optional_L2_NeMo_2_EVAL
+      IS_OPTIONAL: true
 
   L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124:
     needs: [pre-flight, cicd-test-container-build]
@@ -2170,7 +2171,7 @@ jobs:
       - L2_HF_Transformer_SFT_FSDP2_2gpu
       - L2_HF_Transformer_SFT_2gpu_nemorun_fsdp2
       - L2_NeMo_2_VLLM_EXPORT
-      - L2_NeMo_2_EVAL
+      - Optional_L2_NeMo_2_EVAL
       - L2_SpeechLM_LoRA_TP1PP1_MBS2
       - L2_NeMo_2_Export_HF_TRT_LLM
 

@@ -199,6 +199,7 @@ class MegatronBaseModel(NLPModel):
             tensor_model_parallel_size=cfg.get('tensor_model_parallel_size', 1),
             expert_model_parallel_size=cfg.get('expert_model_parallel_size', 1),
             pipeline_model_parallel_size=cfg.get('pipeline_model_parallel_size', 1),
+            pipeline_model_parallel_comm_backend=cfg.get('pipeline_model_parallel_comm_backend', None),
             virtual_pipeline_model_parallel_size=vp_size,
             pipeline_model_parallel_split_rank=cfg.get('pipeline_model_parallel_split_rank', 0),
             use_tp_pp_dp_mapping=cfg.get('use_tp_pp_dp_mapping', False),
@@ -336,6 +337,10 @@ class MegatronBaseModel(NLPModel):
         args.pop('module')
 
     def get_model_module_list(self):
+        """
+        Extracts the list of modules from the model.
+        """
+
         def extract_module(model):
             if isinstance(model, (McoreDDP, Float16Module, MCoreFloat16Module)):
                 return extract_module(model.module)
@@ -464,15 +469,24 @@ class MegatronBaseModel(NLPModel):
             self.tokenizer.add_special_tokens(tokens_list)
 
     def on_train_start(self) -> None:
+        """
+        Callback function invoked when the train starts.
+        """
         super().on_train_start()
         self.init_global_step = self.trainer.global_step
 
     def on_validation_start(self) -> None:
+        """
+        Callback function invoked when the validation starts.
+        """
         super().on_validation_start()
         if self.gc_interval > 0 and self.gc_in_validation:
             gc.collect()
 
     def on_validation_end(self) -> None:
+        """
+        Callback function invoked when the validation ends.
+        """
         super().on_validation_end()
         if self.gc_interval > 0 and self.gc_in_validation:
             gc.collect()
@@ -720,10 +734,16 @@ class MegatronBaseModel(NLPModel):
             self._optimizer.try_grad_sync(params)
 
     def sync_overlap_parameters(self, params=None):
+        """
+        Start parameter sync. It is unblocking and can be overlapped with computation.
+        """
         if self.with_distributed_adam:
             self._optimizer._try_start_bucket_param_sync(params)
 
     def on_train_batch_end(self, outputs, dataloader_iter: Any, batch_idx: int, unused: Optional[int] = 0) -> None:
+        """
+        Callback function invoked when the train batch ends.
+        """
         super().on_train_batch_end(outputs, dataloader_iter, batch_idx)
 
         # Megatron Timers
@@ -772,6 +792,9 @@ class MegatronBaseModel(NLPModel):
             gc.collect()
 
     def on_validation_batch_end(self, outputs, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        """
+        Callback function invoked when the validation batch ends.
+        """
         super().on_validation_batch_end(outputs, batch, batch_idx, dataloader_idx)
 
         if self.gc_interval > 0 and self.gc_in_validation:
@@ -954,6 +977,9 @@ class MegatronBaseModel(NLPModel):
             return [self._optimizer], [self._scheduler]
 
     def compute_consumed_samples(self, steps_since_resume=0):
+        """
+        Compute the number of consumed samples.
+        """
         app_state = AppState()
 
         if self.cfg.get('rampup_batch_size', None):
@@ -1064,6 +1090,9 @@ class MegatronBaseModel(NLPModel):
             raise ValueError('Torch FSDP does not support FP8.')
 
     def is_data_parallel_rank_zero(self):
+        """
+        Check if the current process is the data parallel rank zero.
+        """
         if is_global_rank_zero():
             return True
         else:
@@ -1301,6 +1330,10 @@ class MegatronBaseModel(NLPModel):
         return steps_per_epoch * self._trainer.max_epochs
 
     def configure_sharded_model(self):
+        """
+        Configure the sharded model.
+        """
+
         def find_frozen_submodules(model):
             frozen_submodules = []
             frozen_submodule_names = []
@@ -1337,14 +1370,23 @@ class MegatronBaseModel(NLPModel):
             self.model = self.model.cuda(torch.cuda.current_device())
 
     def megatron_timer_start(self, name, log_level):
+        """
+        Start a timer.
+        """
         if self.megatron_timers:
             self.megatron_timers(name, log_level).start(barrier=False)
 
     def megatron_timer_stop(self, name):
+        """
+        Stop a timer.
+        """
         if self.megatron_timers:
             self.megatron_timers(name).stop()
 
     def optimizer_step(self, *args, **kwargs):
+        """
+        Step the optimizer.
+        """
         self.megatron_timer_start('optimizer', log_level=1)
         super().optimizer_step(*args, **kwargs)
         self.megatron_timer_stop('optimizer')

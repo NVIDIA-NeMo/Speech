@@ -94,6 +94,7 @@ def initialize_model_parallel_for_nemo(
     pipeline_model_parallel_size=1,
     virtual_pipeline_model_parallel_size=None,
     pipeline_model_parallel_split_rank=None,
+    pipeline_model_parallel_comm_backend=None,
     context_parallel_size=1,
     encoder_tensor_model_parallel_size=0,
     encoder_pipeline_model_parallel_size=0,
@@ -108,6 +109,9 @@ def initialize_model_parallel_for_nemo(
     use_te_rng_tracker=False,
     num_distributed_optimizer_instances=1,
 ):
+    """
+    Initialize the model parallel groups for NeMo.
+    """
 
     if virtual_pipeline_model_parallel_size is not None and not HAVE_INTERLEAVED:
         raise ValueError("set_virtual_pipeline_model_parallel_world_size is needed in megatron-core for interleaved.")
@@ -126,6 +130,7 @@ def initialize_model_parallel_for_nemo(
     app_state.context_parallel_size = context_parallel_size
     app_state.encoder_tensor_model_parallel_size = encoder_tensor_model_parallel_size
     app_state.encoder_pipeline_model_parallel_size = encoder_pipeline_model_parallel_size
+    app_state.pipeline_model_parallel_comm_backend = pipeline_model_parallel_comm_backend
     app_state.use_fp8 = use_fp8
     app_state.init_mpi_proc_group = init_mpi_proc_group
     (

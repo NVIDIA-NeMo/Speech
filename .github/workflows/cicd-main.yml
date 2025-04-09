@@ -356,6 +356,15 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L0_Setup_Test_Data_And_Models
 
+  L0_Unit_Tests_Eval:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L0_Unit_Tests_Eval')
+    with:
+      RUNNER: self-hosted-azure
+      IS_UNIT_TEST: true
+      SCRIPT: L0_Unit_Tests_Eval
+
   # L2: Community llava multimodal Checkpoints tests
   L2_Community_vita_Checkpoints_tests_Llama3:
     needs: [pre-flight, cicd-test-container-build]
@@ -1989,6 +1998,7 @@ jobs:
       - L0_Unit_Tests_CPU_Hydra
       - L0_Unit_Tests_CPU_Lightning
       - L0_Unit_Tests_CPU_Others
+      - L0_Unit_Tests_Eval
 
       # Nemo2 Conversion Tests
       - L2_NeMo_2_Conversion_Test_Baichuan2

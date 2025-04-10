@@ -12,4 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.deploy.nlp.query_llm import NemoQueryLLM, NemoQueryLLMPyTorch
+
+from nemo.deploy.nlp.query_llm import NemoQueryLLM, NemoQueryLLMHF, NemoQueryLLMPyTorch
+
+__all__ = [
+    "NemoQueryLLM",
+    "NemoQueryLLMHF",
+    "NemoQueryLLMPyTorch",
+]

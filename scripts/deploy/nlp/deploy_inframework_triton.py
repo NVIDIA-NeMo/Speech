@@ -108,7 +108,7 @@ def nemo_deploy(argv):
                 return
 
             try:
-                LOGGER.info("Model serving on Triton is will be started.")
+                LOGGER.info("Model serving on Triton will be started.")
                 nm.serve()
             except Exception as error:
                 LOGGER.error("Error message has occurred during deploy function. Error message: " + str(error))

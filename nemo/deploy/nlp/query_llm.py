@@ -14,6 +14,7 @@
 
 import time
 from abc import ABC
+from typing import List, Optional
 
 import numpy as np
 
@@ -70,20 +71,20 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
     # names and optionality should exactly match the get_triton_input() results for MegatronGPTDeployable
     def query_llm(
         self,
-        prompts,
-        use_greedy: bool = None,
-        temperature: float = None,
-        top_k: int = None,
-        top_p: float = None,
-        repetition_penalty: float = None,
-        add_BOS: bool = None,
-        all_probs: bool = None,
-        compute_logprob: bool = None,
-        end_strings=None,
-        min_length: int = None,
-        max_length: int = None,
+        prompts: List[str],
+        use_greedy: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        add_BOS: Optional[bool] = None,
+        all_probs: Optional[bool] = None,
+        compute_logprob: Optional[bool] = None,
+        end_strings: Optional[List[str]] = None,
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
         apply_chat_template: bool = False,
-        init_timeout=60.0,
+        init_timeout: float = 60.0,
     ):
         """
         Query the Triton server synchronously and return a list of responses.
@@ -161,6 +162,126 @@ class NemoQueryLLMPyTorch(NemoQueryLLMBase):
                     openai_response["choices"][0]["logprobs"]["token_logprobs"] = log_probs_output
                     # TODO athitten: get top_n_logprobs from mcore once available
                     openai_response["choices"][0]["logprobs"]["top_logprobs"] = log_probs_output
+                return openai_response
+            else:
+                return result_dict["sentences"]
+
+
+class NemoQueryLLMHF(NemoQueryLLMBase):
+    """
+    Sends a query to Triton for LLM inference
+
+    Example:
+        from nemo.deploy import NemoQueryLLMHF
+
+        nq = NemoQueryLLMHF(url="localhost", model_name="GPT-2B")
+
+        prompts = ["hello, testing GPT inference", "another GPT inference test?"]
+        output = nq.query_llm(
+            prompts=prompts,
+            max_length=100,
+            top_k=1,
+            top_p=0.0,
+            temperature=0.0,
+        )
+        print("prompts: ", prompts)
+    """
+
+    def __init__(self, url, model_name):
+        super().__init__(
+            url=url,
+            model_name=model_name,
+        )
+
+    # these arguments are explicitly defined in order to make it clear to user what they can pass
+    # names and optionality should exactly match the get_triton_input() results for HuggingFaceLLMDeploy
+    def query_llm(
+        self,
+        prompts: List[str],
+        use_greedy: Optional[bool] = None,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
+        add_BOS: Optional[bool] = None,
+        all_probs: Optional[bool] = None,
+        output_logits: Optional[bool] = None,
+        output_scores: Optional[bool] = None,
+        end_strings: Optional[List[str]] = None,
+        min_length: Optional[int] = None,
+        max_length: Optional[int] = None,
+        init_timeout: float = 60.0,
+    ):
+        """
+        Query the Triton server synchronously and return a list of responses.
+
+        Args:
+            prompts (List[str]): list of sentences.
+            use_greedy (Optional[bool]): use greedy sampling, effectively the same as top_k=1
+            temperature (Optional[float]): A parameter of the softmax function, which is the last layer in the network.
+            top_k (Optional[int]): limits us to a certain number (K) of the top tokens to consider.
+            top_p (Optional[float]): limits us to the top tokens within a certain probability mass (p).
+            repetition_penalty (Optional[float]): penalty applied to repeated sequences, 1.0 means no penalty.
+            add_BOS (Optional[bool]): whether or not to add a BOS (beginning of sentence) token.
+            all_probs (Optional[bool]): when using compute_logprob, returns probabilities for all tokens in vocabulary.
+            output_logits (Optional[bool]): whether to return logits for each token
+            output_scores (Optional[bool]): whether to return scores for each token
+            end_strings (Optional[List[str]]): list of strs which will stop generation when they appear in the output.
+            min_length (Optional[int]): min generated tokens.
+            max_length (Optional[int]): max generated tokens.
+            init_timeout (float): timeout for the connection.
+        """
+        prompts = str_list2numpy(prompts)
+        inputs = {
+            "prompts": prompts,
+        }
+        if use_greedy is not None:
+            inputs["use_greedy"] = np.full(prompts.shape, use_greedy, dtype=np.bool_)
+        if temperature is not None:
+            inputs["temperature"] = np.full(prompts.shape, temperature, dtype=np.single)
+        if top_k is not None:
+            inputs["top_k"] = np.full(prompts.shape, top_k, dtype=np.int_)
+        if top_p is not None:
+            inputs["top_p"] = np.full(prompts.shape, top_p, dtype=np.single)
+        if repetition_penalty is not None:
+            inputs["repetition_penalty"] = np.full(prompts.shape, repetition_penalty, dtype=np.single)
+        if add_BOS is not None:
+            inputs["add_BOS"] = np.full(prompts.shape, add_BOS, dtype=np.bool_)
+        if all_probs is not None:
+            inputs["all_probs"] = np.full(prompts.shape, all_probs, dtype=np.bool_)
+        if output_logits is not None:
+            inputs["output_logits"] = np.full(prompts.shape, output_logits, dtype=np.bool_)
+        if output_scores is not None:
+            inputs["output_scores"] = np.full(prompts.shape, output_scores, dtype=np.bool_)
+        if end_strings is not None:
+            inputs["end_strings"] = str_list2numpy(end_strings)
+        if min_length is not None:
+            inputs["min_length"] = np.full(prompts.shape, min_length, dtype=np.int_)
+        if max_length is not None:
+            inputs["max_length"] = np.full(prompts.shape, max_length, dtype=np.int_)
+
+        with ModelClient(self.url, self.model_name, init_timeout_s=init_timeout) as client:
+            result_dict = client.infer_batch(**inputs)
+            output_type = client.model_config.outputs[0].dtype
+
+            if output_type == np.bytes_:
+                if "sentences" in result_dict.keys():
+                    output = result_dict["sentences"]
+                else:
+                    return "Unknown output keyword."
+
+                sentences = np.char.decode(output.astype("bytes"), "utf-8")
+                openai_response = {
+                    "id": f"cmpl-{int(time.time())}",
+                    "object": "text_completion",
+                    "created": int(time.time()),
+                    "model": self.model_name,
+                    "choices": [{"text": sentences}],
+                }
+                if output_logits and "logits" in result_dict:
+                    openai_response["logits"] = result_dict["logits"]
+                if output_scores and "scores" in result_dict:
+                    openai_response["scores"] = result_dict["scores"]
                 return openai_response
             else:
                 return result_dict["sentences"]

@@ -31,6 +31,7 @@ try:
     from megatron.core import parallel_state, tensor_parallel
     from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
     from megatron.core.transformer.cuda_graphs import CudaGraphManager
+    from megatron.core.transformer.module import MegatronModule
     from megatron.core.transformer.spec_utils import ModuleSpec
     from megatron.core.transformer.transformer_block import TransformerBlockSubmodules, get_num_layers_to_build
     from megatron.core.transformer.transformer_layer import BaseTransformerLayer
@@ -40,7 +41,8 @@ try:
 
 except (ImportError, ModuleNotFoundError) as e:
 
-    ModuleSpec = BaseTransformerLayer = ApexGuardDefaults
+    MegatronModule = ModuleSpec = ApexGuardDefaults
+    BaseTransformerLayer = object  # try to avoid inconsistent-mro for TETransformerLayerAutocast
 
     HAVE_MEGATRON_CORE = False
     IMPORT_ERROR = e
@@ -49,6 +51,12 @@ except (ImportError, ModuleNotFoundError) as e:
 # Copied from nemo/collections/nlp/modules/common/megatron/transformer.py
 # as the source file is slated to be removed
 class AutocastTransformerLayer(TransformerLayer):
+    """
+    Wrapper of te.pytorch.TransformerLayer: a single transformerlayer
+    that takes input with size [s, b, h] and returns an output of
+    the same size.
+    """
+
     def __init__(
         self,
         hidden_size: int,
@@ -154,6 +162,9 @@ class AutocastTransformerLayer(TransformerLayer):
         is_first_microbatch: Optional[bool] = None,
         checkpoint_core_attention: Optional[bool] = False,
     ) -> torch.Tensor:
+        """
+        Perform a forward pass through the transformer layer.
+        """
         if self.dtype == torch.float32:
             return super().forward(
                 hidden_states,
@@ -176,11 +187,23 @@ class AutocastTransformerLayer(TransformerLayer):
             )
 
 
-class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer):
+class TETransformerLayerAutocast(MegatronModule, BaseTransformerLayer):  # type: ignore
+    """
+    A MegatronModule that wraps the AutocastTransformerLayer.
+    """
+
     def __init__(self, config, layer_number=1, hidden_dropout=None):
         assert (
             HAVE_MEGATRON_CORE and HAVE_TE
         ), "TETransformerLayerAutocast requires Megatron Core and Transformer Engine to be installed."
+
+        # to make type check happy
+        if HAVE_MEGATRON_CORE:
+            kwargs = {'config': config}
+        else:
+            kwargs = {}
+        super().__init__(**kwargs)
+        self.layer_number = layer_number + self._get_layer_offset()
 
         self.config = config
         self.is_first_microbatch = True
@@ -234,11 +257,11 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
             transformer_layer_args["ub_split_rs"] = config.tp_comm_split_rs
             transformer_layer_args["ub_atomic_gemm_ag"] = config.tp_comm_atomic_ag
             transformer_layer_args["ub_atomic_gemm_rs"] = config.tp_comm_atomic_rs
-        super().__init__(**transformer_layer_args)
+        self.transformer_layer = AutocastTransformerLayer(**transformer_layer_args)
 
         if self.config.enable_cuda_graph and self.training:
             assert not config.cpu_offloading and config.recompute_granularity is None, "Cudagraphs not supported"
-            self.add_module('cudagraph_manager', CudaGraphManager())
+            self.add_module('cudagraph_manager', CudaGraphManager(config))
 
     # Called by MCore's TransformerBlock.forward
     # megatron/core/transformer/transformer_block.py
@@ -249,16 +272,12 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
         attention_mask=None,
         context=None,
         context_mask=None,
-        rotary_pos_emb=None,
-        rotary_pos_cos=None,
-        rotary_pos_sin=None,
-        attention_bias=None,
         inference_params=None,
-        packed_seq_params=None,  # TODO: handle this
-        sequence_len_offset=None,  # TODO: handle this
+        **kwargs,
     ):
+        """Forward function of TETransformerLayerAutocast. Called by MCore's TransformerBlock.forward."""
         # Use is_first_microbatch argument during CUDA graph capture. Use self.is_first_microbatch otherwise.
-        hidden_states = super().forward(
+        hidden_states = self.transformer_layer.forward(
             hidden_states,
             attention_mask=attention_mask,
             encoder_output=context,
@@ -302,6 +321,7 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
         return offset
 
     def sharded_state_dict(self, prefix: str = '', sharded_offsets: tuple = (), metadata=None):
+        """Get the sharded state dict for the transformer layer."""
         TENSOR_PARALLEL_LAYERS_AXIS_MAP = {
             'self_attention.layernorm_qkv.weight': 0,
             'self_attention.layernorm_qkv.bias': 0,
@@ -330,11 +350,12 @@ class TETransformerLayerAutocast(AutocastTransformerLayer, BaseTransformerLayer)
     def __call__(self, *args, **kwargs):
         if hasattr(self, 'cudagraph_manager'):
             return self.cudagraph_manager(self, args, kwargs)
-        return super().__call__(*args, **kwargs)
+        return self.transformer_layer(*args, **kwargs)
 
 
 # Use this spec to use the full Transformer layer from Transformer Engine
 def get_gpt_full_te_layer_autocast_spec(transformer_config) -> ModuleSpec:
+    """Get the ModuleSpec for full Transformer layer from Transformer Engine."""
     assert HAVE_MEGATRON_CORE and HAVE_TE, "Please ensure Megatron Core and Transformer Engine are installed."
     num_layers = get_num_layers_to_build(transformer_config)
     return TransformerBlockSubmodules(

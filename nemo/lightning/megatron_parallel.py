@@ -674,10 +674,10 @@ class MegatronParallel(nn.ModuleList, Generic[ModelT]):
                     and self.fsdp == "megatron"
                     and not isinstance(unwrapped_module, FullyShardedDataParallel)
                 ):
-                    if not module.config.use_custom_fsdp:
+                    if not getattr(module.config, "use_custom_fsdp", False):
                         from nemo.utils import logging
 
-                        module.config.use_custom_fsdp = True
+                        setattr(module.config, "use_custom_fsdp", True)
                         logging.warning("Setting module.config.use_custom_fsdp to True for MCore FSDP.")
 
                     assert module.config.use_custom_fsdp, "Custom FSDP is not enabled in module.config."

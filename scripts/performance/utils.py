@@ -289,7 +289,7 @@ def set_primary_perf_configs(
     # FSDP configs
     if use_mcore_fsdp:
         recipe.model.config.init_model_with_meta_device = True
-        recipe.trainer.strategy.ddp.use_custom_fsdp = True
+        recipe.trainer.strategy.fsdp = "megatron"
         recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = "optim_grads_params"
         recipe.trainer.strategy.ddp.average_in_collective = False
         recipe.trainer.strategy.ddp.keep_fp8_transpose_cache_when_using_custom_fsdp = False

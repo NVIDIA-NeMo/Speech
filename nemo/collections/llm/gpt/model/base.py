@@ -648,7 +648,10 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         return self.forward_step(batch)
 
     def get_inference_wrapper(
-        self, params_dtype, inference_batch_times_seqlen_threshold, inference_max_seq_length
+        self,
+        params_dtype: torch.dtype,
+        inference_batch_times_seqlen_threshold: int,
+        inference_max_seq_length: int = 2560,
     ) -> torch.Tensor:
         """Get an inference wrapper for the model.
 
@@ -657,6 +660,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         Args:
             params_dtype: Data type for parameters
             inference_batch_times_seqlen_threshold: Threshold for optimizing inference
+            inference_max_seq_length: Maximum sequence length for inference (prefill and decode)
 
         Returns:
             torch.Tensor: Wrapped model for inference

@@ -34,7 +34,7 @@ jobs:
       yaml-path: '."vcs-dependencies"."megatron-lm".ref'
       file: requirements/manifest.json
       base-branch: weekly-bump
-      cicd-labels: Run CICD
-      pr-reviewers: "pablo-garay"
+      cicd-labels: Run CICD,no-fail-fast
+      pr-reviewers: "chtruong814"
     secrets:
       PAT: ${{ secrets.PAT }}

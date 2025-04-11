@@ -15,6 +15,7 @@
 import os
 from argparse import ArgumentParser
 
+import torch
 from lightning.pytorch.loggers import TensorBoardLogger
 from megatron.core.dist_checkpointing.validation import StrictHandling
 from megatron.core.optimizer import OptimizerConfig
@@ -82,7 +83,12 @@ if __name__ == "__main__":
         limit_val_batches=args.limit_val_batches,
         strategy=strategy,
         accelerator="gpu",
-        plugins=nl.MegatronMixedPrecision(precision=args.precision),
+        plugins=nl.MegatronMixedPrecision(
+            precision=args.precision,
+            params_dtype=torch.bfloat16 if "bf16" in args.precision else torch.float32,
+            autocast_enabled=False,
+            grad_reduce_in_fp32=True,
+        ),
     )
 
     # Set up dataset

@@ -134,7 +134,9 @@ def setup_trainer_and_restore_model_with_modelopt_spec(
         num_nodes=num_nodes,
         accelerator="gpu",
         strategy=strategy,
-        plugins=nl.MegatronMixedPrecision(precision="bf16", params_dtype=torch.bfloat16, autocast_enabled=True),
+        plugins=nl.MegatronMixedPrecision(
+            precision="bf16-mixed", params_dtype=torch.bfloat16, autocast_enabled=False, grad_reduce_in_fp32=True
+        ),
         **trainer_kwargs,
     )
 

@@ -366,6 +366,11 @@ class HFGemmaExporter(io.ModelConnector[Gemma2Model, "GemmaForCausalLM"]):
             hidden_size=source.hidden_size,
             intermediate_size=source.ffn_hidden_size,
             num_attention_heads=source.num_attention_heads,
+            head_dim=(
+                source.kv_channels
+                if source.kv_channels is not None
+                else source.hidden_size // source.num_attention_heads
+            ),
             max_position_embeddings=source.seq_length,
             initializer_range=source.init_method_std,
             rms_norm_eps=source.layernorm_epsilon,

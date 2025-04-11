@@ -67,6 +67,7 @@ class TestDistCkptIO:
         assert os.environ['NVTE_APPLY_QK_LAYER_SCALING'] == '1'
         gbs, mbs = 2, 2
         model, data = get_model_and_data(mbs, gbs)
+
         from tests.lightning.mcore_microbatch_utils import reconfigure_num_microbatches_calculator_manager
 
         with reconfigure_num_microbatches_calculator_manager(0, None, gbs, mbs, data_parallel_size=1):
@@ -146,7 +147,10 @@ class TestDistCkptIO:
             )
             async_test_trainer.fit(model, data)
 
-        checkpoint = {'sharded_state_dict': model.sharded_state_dict()}
+        ## NOTE: model does not have `sharded_state_dict` attribute because
+        ## this is after MegatronStrategy teardown
+        ## so model class' __getattr__ gets replaced with original __getattr__
+        checkpoint = {'sharded_state_dict': model.module.sharded_state_dict()}
 
         sync_state_dict = sync_checkpoint_io.load_checkpoint(
             Path(f"{sync_ckpt_dir}/checkpoints/{_get_last_checkpoint_dir(model)}"), sharded_state_dict=checkpoint

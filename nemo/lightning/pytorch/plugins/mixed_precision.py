@@ -25,7 +25,6 @@ from torch.nn import Module
 from torch.optim import Optimizer
 
 from nemo.utils import logging
-from nemo.utils.import_utils import safe_import
 
 AnyT = TypeVar("AnyT")
 
@@ -70,12 +69,14 @@ class DtypeConfig:
     # fp8 related
     fp8: str = None
     fp8_recipe: str = "delayed"
+    first_last_layers_bf16: bool = False
     fp8_margin: int = 0
     fp8_amax_history_len: int = 1
     fp8_amax_compute_algo: str = "most_recent"
     fp8_wgrad: bool = True
     fp8_dot_product_attention: bool = False
     fp8_multi_head_attention: bool = False
+    fp8_param: bool = True
     fp8_param_gather: bool = True
     # FP16 Loss scaling
     loss_scale: float = (None,)
@@ -105,13 +106,14 @@ class MegatronMixedPrecision(Precision):
         # fp8 related,
         fp8: str = None,
         fp8_recipe: str = "delayed",  # "tensorwise", "delayed", "mxfp8" (for Blackwell only)
+        first_last_layers_bf16: bool = False,
         fp8_margin: int = 0,
         fp8_amax_history_len: int = 1,
         fp8_amax_compute_algo: str = "most_recent",
         fp8_wgrad: bool = True,
         fp8_dot_product_attention: bool = False,
         fp8_multi_head_attention: bool = False,
-        fp8_params: bool = False,
+        fp8_param_gather: bool = False,
         fp16_loss_scale: float = None,
         fp16_initial_loss_scale: float = 4294967296,
         fp16_min_loss_scale: float = 1.0,
@@ -123,18 +125,6 @@ class MegatronMixedPrecision(Precision):
 
         if isinstance(precision, int):
             precision = str(precision)
-
-        fp8_param_gather = False
-        if fp8 is not None:
-            te_fp8, HAVE_TE = safe_import("transformer_engine.pytorch.fp8")
-            assert HAVE_TE, "FP8 precision requires transformer engine."
-            if fp8_params:
-                te_fp8.FP8GlobalStateManager.FP8_PARAMETERS = True
-                # Explicitly set the recipe to delayed scaling.
-                # Otherwise TE v2.0 will assume the default, which is mxfp8 recipe.
-                te_recipe, _ = safe_import("transformer_engine.common.recipe")
-                te_fp8.FP8GlobalStateManager.FP8_RECIPE = te_recipe.DelayedScaling()
-                fp8_param_gather = True
 
         dtype = torch.bfloat16 if precision in ['bf16', 'bf16-mixed'] else torch.float32
         self.dtype_config = DtypeConfig(
@@ -148,12 +138,14 @@ class MegatronMixedPrecision(Precision):
             grad_reduce_in_fp32=grad_reduce_in_fp32,
             fp8=fp8,
             fp8_recipe=fp8_recipe,
+            first_last_layers_bf16=first_last_layers_bf16,
             fp8_margin=fp8_margin,
             fp8_amax_history_len=fp8_amax_history_len,
             fp8_amax_compute_algo=fp8_amax_compute_algo,
             fp8_wgrad=fp8_wgrad,
             fp8_dot_product_attention=fp8_dot_product_attention,
             fp8_multi_head_attention=fp8_multi_head_attention,
+            fp8_param=fp8_param_gather,
             fp8_param_gather=fp8_param_gather,
             num_layers_at_start_in_bf16=num_layers_at_start_in_bf16,
             num_layers_at_end_in_bf16=num_layers_at_end_in_bf16,

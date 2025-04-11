@@ -21,8 +21,10 @@ from nemo.lightning.pytorch.plugins.mixed_precision import MegatronMixedPrecisio
 
 @run.cli.factory
 def bf16_mixed() -> run.Config[MegatronMixedPrecision]:
-    """
-    BF16 mixed precision configuration for Megatron models.
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 mixed precision training
     """
     return run.Config(
         MegatronMixedPrecision,
@@ -36,8 +38,10 @@ def bf16_mixed() -> run.Config[MegatronMixedPrecision]:
 
 @run.cli.factory
 def fp16_mixed() -> run.Config[MegatronMixedPrecision]:
-    """
-    FP16 mixed precision configuration for Megatron models.
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for FP16 mixed precision training
     """
     return run.Config(
         MegatronMixedPrecision,
@@ -50,13 +54,20 @@ def fp16_mixed() -> run.Config[MegatronMixedPrecision]:
 
 
 def bf16_with_fp8_mixed() -> run.Config[MegatronMixedPrecision]:
-    """FP8 recipes are experimental and have not been tested for training convergence."""
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16 with FP8.
+
+    Note: FP8 recipes are experimental and have not been tested for training convergence.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 with FP8 mixed precision training
+    """
     cfg = bf16_mixed()
     cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "delayed"
     cfg.fp8_margin = 0
     cfg.fp8_amax_history_len = 1024
     cfg.fp8_amax_compute_algo = "max"
-    cfg.fp8_params = True
+    cfg.fp8_param_gather = True
     return cfg
 
 
@@ -67,16 +78,91 @@ def bf16_with_fp8_mixed_current_scaling() -> run.Config[MegatronMixedPrecision]:
     cfg.fp8_recipe = "tensorwise"
     cfg.fp8_amax_history_len = 1
     cfg.fp8_amax_compute_algo = "max"
-    cfg.fp8_params = False
+    cfg.fp8_param_gather = False
     return cfg
 
 
 def fp16_with_fp8_mixed() -> run.Config[MegatronMixedPrecision]:
-    """FP8 recipes are experimental and have not been tested for training convergence."""
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16 with FP8.
+
+    Note: FP8 recipes are experimental and have not been tested for training convergence.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for FP16 with FP8 mixed precision training
+    """
     cfg = fp16_mixed()
     cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "delayed"
     cfg.fp8_margin = 0
     cfg.fp8_amax_history_len = 1024
     cfg.fp8_amax_compute_algo = "max"
-    cfg.fp8_params = True
+    cfg.fp8_param_gather = True
+    return cfg
+
+
+def bf16_with_mxfp8_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16 with MXFP8.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 with MXFP8 mixed precision training
+    """
+    cfg = bf16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "mxfp8"
+    cfg.fp8_param_gather = False
+    return cfg
+
+
+def fp16_with_mxfp8_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16 with MXFP8.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for FP16 with MXFP8 mixed precision training
+    """
+    cfg = fp16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "mxfp8"
+    cfg.fp8_param_gather = False
+    return cfg
+
+
+def bf16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16 with FP8
+    per-tensor current scaling.
+
+    Note: The baseline current scaling recipe uses BF16 in the first and last Transformer layers. The user
+    can choose to disable the BF16 layers or apply BF16 to more Transformer layers.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 with FP8 per-tensor current scaling mixed
+        precision training
+    """
+    cfg = bf16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "tensorwise"
+    cfg.first_last_layers_bf16 = True
+    cfg.num_layers_at_start_in_bf16 = 1
+    cfg.num_layers_at_end_in_bf16 = 1
+    cfg.fp8_param_gather = True
+    return cfg
+
+
+def fp16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16 with FP8
+    per-tensor current scaling.
+
+    Note: The baseline current scaling recipe uses FP16 in the first and last Transformer layers. The user
+    can choose to disable the FP16 layers or apply FP16 to more Transformer layers.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for FP16 with FP8 per-tensor current scaling mixed
+        precision training
+    """
+    cfg = fp16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "tensorwise"
+    cfg.first_last_layers_bf16 = True
+    cfg.num_layers_at_start_in_bf16 = 1
+    cfg.num_layers_at_end_in_bf16 = 1
+    cfg.fp8_param_gather = True
     return cfg

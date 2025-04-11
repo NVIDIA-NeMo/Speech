@@ -16,7 +16,7 @@
 # pylint: disable=missing-function-docstring
 
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Generator, Literal, TypeVar
+from typing import TYPE_CHECKING, Generator, Literal, Optional, TypeVar
 
 import torch
 from lightning.fabric.plugins.precision import MixedPrecision
@@ -30,7 +30,6 @@ from nemo.lightning.pytorch.plugins.mixed_precision import (
     get_optim_config,
     update_config_with_dtype_overrides,
 )
-from nemo.utils.import_utils import safe_import
 
 if TYPE_CHECKING:
     from megatron.core.model_parallel_config import ModelParallelConfig
@@ -56,13 +55,17 @@ class FabricMegatronMixedPrecision(MixedPrecision):
         grad_reduce_in_fp32: bool = True,
         # fp8 related,
         fp8: str = None,
+        fp8_recipe: Optional[str] = None,
+        first_last_layers_bf16: bool = False,
+        num_layers_at_start_in_bf16: int = 0,
+        num_layers_at_end_in_bf16: int = 0,
         fp8_margin: int = 0,
         fp8_amax_history_len: int = 1,
         fp8_amax_compute_algo: str = "most_recent",
         fp8_wgrad: bool = True,
         fp8_dot_product_attention: bool = False,
         fp8_multi_head_attention: bool = False,
-        fp8_params: bool = False,
+        fp8_param_gather: bool = False,
         fp16_loss_scale: float = None,
         fp16_initial_loss_scale: float = 4294967296,
         fp16_min_loss_scale: float = 1.0,
@@ -71,18 +74,6 @@ class FabricMegatronMixedPrecision(MixedPrecision):
     ) -> None:
         if isinstance(precision, int):
             precision = str(precision)
-
-        fp8_param_gather = False
-        if fp8 is not None:
-            te_fp8, HAVE_TE = safe_import("transformer_engine.pytorch.fp8")
-            assert HAVE_TE, "FP8 precision requires transformer engine."
-            if fp8_params:
-                te_fp8.FP8GlobalStateManager.FP8_PARAMETERS = True
-                # Explicitly set the recipe to delayed scaling.
-                # Otherwise TE v2.0 will assume the default, which is mxfp8 recipe.
-                te_recipe, _ = safe_import("transformer_engine.common.recipe")
-                te_fp8.FP8GlobalStateManager.FP8_RECIPE = te_recipe.DelayedScaling()
-                fp8_param_gather = True
 
         dtype = torch.bfloat16 if precision in ['bf16', 'bf16-mixed'] else torch.float32
         self.dtype_config = DtypeConfig(
@@ -95,12 +86,17 @@ class FabricMegatronMixedPrecision(MixedPrecision):
             autocast_enabled=autocast_enabled,
             grad_reduce_in_fp32=grad_reduce_in_fp32,
             fp8=fp8,
+            fp8_recipe=fp8_recipe,
+            first_last_layers_bf16=first_last_layers_bf16,
+            num_layers_at_start_in_bf16=num_layers_at_start_in_bf16,
+            num_layers_at_end_in_bf16=num_layers_at_end_in_bf16,
             fp8_margin=fp8_margin,
             fp8_amax_history_len=fp8_amax_history_len,
             fp8_amax_compute_algo=fp8_amax_compute_algo,
             fp8_wgrad=fp8_wgrad,
             fp8_dot_product_attention=fp8_dot_product_attention,
             fp8_multi_head_attention=fp8_multi_head_attention,
+            fp8_param=fp8_param_gather,
             fp8_param_gather=fp8_param_gather,
             # fp16 loss scale
             loss_scale=fp16_loss_scale,

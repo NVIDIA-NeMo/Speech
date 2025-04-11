@@ -161,7 +161,7 @@ def mlperf_lora_llama2_70b_recipe(
         fp8="hybrid",
         fp8_amax_history_len=32,
         fp8_amax_compute_algo='max',
-        fp8_params=True,
+        fp8_param_gather=True,
         fp8_dot_product_attention=1,
     )
 

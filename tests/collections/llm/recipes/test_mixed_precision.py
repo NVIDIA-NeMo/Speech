@@ -15,9 +15,13 @@ import torch
 
 from nemo.collections.llm.recipes.precision.mixed_precision import (
     bf16_mixed,
+    bf16_with_fp8_current_scaling_mixed,
     bf16_with_fp8_mixed,
+    bf16_with_mxfp8_mixed,
     fp16_mixed,
+    fp16_with_fp8_current_scaling_mixed,
     fp16_with_fp8_mixed,
+    fp16_with_mxfp8_mixed,
 )
 
 
@@ -48,10 +52,11 @@ def test_bf16_with_fp8_mixed_config():
 
     # Check FP8 specific settings
     assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "delayed"
     assert config.fp8_margin == 0
     assert config.fp8_amax_history_len == 1024
     assert config.fp8_amax_compute_algo == "max"
-    assert config.fp8_params is True
+    assert config.fp8_param_gather is True
 
 
 def test_fp16_with_fp8_mixed_config():
@@ -63,7 +68,61 @@ def test_fp16_with_fp8_mixed_config():
 
     # Check FP8 specific settings
     assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "delayed"
     assert config.fp8_margin == 0
     assert config.fp8_amax_history_len == 1024
     assert config.fp8_amax_compute_algo == "max"
-    assert config.fp8_params is True
+    assert config.fp8_param_gather is True
+
+
+def test_bf16_with_mxfp8_mixed_config():
+    config = bf16_with_mxfp8_mixed()
+    assert config.precision == "bf16-mixed"
+    assert config.params_dtype == torch.bfloat16
+    assert config.pipeline_dtype == torch.bfloat16
+
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "mxfp8"
+    assert config.fp8_param_gather is False
+
+
+def test_fp16_with_mxfp8_mixed_config():
+    config = fp16_with_mxfp8_mixed()
+    assert config.precision == "16-mixed"
+    assert config.params_dtype == torch.half
+    assert config.pipeline_dtype == torch.half
+
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "mxfp8"
+    assert config.fp8_param_gather is False
+
+
+def test_bf16_with_fp8_current_scaling_mixed_config():
+    config = bf16_with_fp8_current_scaling_mixed()
+    assert config.precision == "bf16-mixed"
+    assert config.params_dtype == torch.bfloat16
+    assert config.pipeline_dtype == torch.bfloat16
+
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "tensorwise"
+    assert config.fp8_param_gather is True
+    assert config.first_last_layers_bf16 is True
+    assert config.num_layers_at_start_in_bf16 == 1
+    assert config.num_layers_at_end_in_bf16 == 1
+
+
+def test_fp16_with_fp8_current_scaling_mixed_config():
+    config = fp16_with_fp8_current_scaling_mixed()
+    assert config.precision == "16-mixed"
+    assert config.params_dtype == torch.half
+    assert config.pipeline_dtype == torch.half
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "tensorwise"
+    assert config.fp8_param_gather is True
+    assert config.first_last_layers_bf16 is True
+    assert config.num_layers_at_start_in_bf16 == 1
+    assert config.num_layers_at_end_in_bf16 == 1

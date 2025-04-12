@@ -187,7 +187,10 @@ def local_layer_spec(config: "GPTConfig") -> ModuleSpec:
     from megatron.core.models.gpt import gpt_layer_specs
 
     return gpt_layer_specs.get_gpt_layer_local_spec(
-        num_experts=config.num_moe_experts, moe_grouped_gemm=config.moe_grouped_gemm, qk_layernorm=config.qk_layernorm
+        num_experts=config.num_moe_experts,
+        moe_grouped_gemm=config.moe_grouped_gemm,
+        qk_layernorm=config.qk_layernorm,
+        normalization=config.normalization,
     )
 
 

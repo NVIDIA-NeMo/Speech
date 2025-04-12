@@ -69,9 +69,7 @@ class ConfigParams(BaseModel):
     )
     max_new_tokens: Optional[int] = Field(description="max tokens to generate", default=None)
     max_retries: Optional[int] = Field(description="Number of REST request retries", default=None)
-    parallelism: Optional[int] = Field(
-        description="Number of parallel requests to be sent to the server", default=None
-    )
+    parallelism: Optional[int] = Field(description="Number of parallel requests to be sent to the server", default=1)
     task: Optional[str] = Field(description="Name of the task", default=None)
     request_timeout: Optional[int] = Field(description="REST response timeout", default=300)
     extra: Optional[Dict[str, Any]] = Field(

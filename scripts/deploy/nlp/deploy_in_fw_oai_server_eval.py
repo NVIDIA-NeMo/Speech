@@ -21,7 +21,7 @@ from nemo.collections.llm.api import deploy
 
 
 def get_parser():
-    parser = argparse.ArgumentParser(description="NeMo2.0 Pretraining")
+    parser = argparse.ArgumentParser(description="NeMo2.0 Deployment")
     parser.add_argument(
         "--nemo_checkpoint",
         type=str,
@@ -63,6 +63,13 @@ def get_parser():
         default=1,
         help="Expert model parallelism size to deploy the model",
     )
+
+    parser.add_argument(
+        "--max_batch_size",
+        type=int,
+        default=8,
+        help="Max batch size for the underlying Triton server",
+    )
     return parser
 
 
@@ -77,4 +84,5 @@ if __name__ == "__main__":
         pipeline_parallelism_size=args.pipeline_parallelism_size,
         context_parallel_size=args.context_parallel_size,
         expert_model_parallel_size=args.expert_model_parallel_size,
+        max_batch_size=args.max_batch_size,
     )

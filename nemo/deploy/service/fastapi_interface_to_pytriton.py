@@ -129,25 +129,73 @@ def convert_numpy(obj):
         return obj
 
 
+def _helper_fun(url, model, prompts, temperature, top_k, top_p, compute_logprob, max_length, apply_chat_template):
+    """
+    run_in_executor doesn't allow to pass kwargs, so we have this helper function to pass args as a list
+    """
+    nq = NemoQueryLLMPyTorch(url=url, model_name=model)
+    output = nq.query_llm(
+        prompts=prompts,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        compute_logprob=compute_logprob,
+        max_length=max_length,
+        apply_chat_template=apply_chat_template,
+        init_timeout=300,
+    )
+    return output
+
+
+async def query_llm_async(
+    *, url, model, prompts, temperature, top_k, top_p, compute_logprob, max_length, apply_chat_template
+):
+    """
+    Sends requests to `NemoQueryLLMPyTorch.query_llm` in a non-blocking way, allowing the server to process
+    concurrent requests. This way enables batching of requests in the underlying Triton server.
+    """
+    import asyncio
+    import concurrent
+
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        result = await loop.run_in_executor(
+            pool,
+            _helper_fun,
+            url,
+            model,
+            prompts,
+            temperature,
+            top_k,
+            top_p,
+            compute_logprob,
+            max_length,
+            apply_chat_template,
+        )
+    return result
+
+
 @app.post("/v1/completions/")
 async def completions_v1(request: CompletionRequest):
     """
     Defines the completions endpoint and queries the model deployed on PyTriton server.
     """
     url = f"http://{triton_settings.triton_service_ip}:{triton_settings.triton_service_port}"
-    nq = NemoQueryLLMPyTorch(url=url, model_name=request.model)
     logging.info(f"Request: {request}")
     prompts = request.prompt
     if not isinstance(request.prompt, list):
         prompts = [request.prompt]
-    output = nq.query_llm(
+
+    output = await query_llm_async(
+        url=url,
+        model=request.model,
         prompts=prompts,
         temperature=request.temperature,
         top_k=request.top_k,
         top_p=request.top_p,
         compute_logprob=True if request.logprobs == 1 else False,
         max_length=request.max_tokens,
-        init_timeout=300,
+        apply_chat_template=False,
     )
 
     output_serializable = convert_numpy(output)
@@ -176,7 +224,6 @@ async def chat_completions_v1(request: CompletionRequest):
     Defines the chat completions endpoint and queries the model deployed on PyTriton server.
     """
     url = f"http://{triton_settings.triton_service_ip}:{triton_settings.triton_service_port}"
-    nq = NemoQueryLLMPyTorch(url=url, model_name=request.model)
     logging.info(f"Request: {request}")
     prompts = request.messages
     if not isinstance(request.messages, list):
@@ -185,7 +232,9 @@ async def chat_completions_v1(request: CompletionRequest):
     # (str_list2numpy) and back to list (str_ndarray2list) as required by PyTriton. Using the dictionaries directly
     # with these methods is not possible as they expect string type.
     json_prompts = [dict_to_str(prompts)]
-    output = nq.query_llm(
+    output = await query_llm_async(
+        url=url,
+        model=request.model,
         prompts=json_prompts,
         temperature=request.temperature,
         top_k=request.top_k,
@@ -193,7 +242,6 @@ async def chat_completions_v1(request: CompletionRequest):
         compute_logprob=True if request.logprobs == 1 else False,
         max_length=request.max_tokens,
         apply_chat_template=True,
-        init_timeout=300,
     )
     # Add 'role' as 'assistant' key to the output dict
     output["choices"][0]["message"] = {"role": "assistant", "content": output["choices"][0]["text"]}

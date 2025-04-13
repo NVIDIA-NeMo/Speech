@@ -14,6 +14,7 @@
 
 import contextlib
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
 
 import lightning.pytorch as L
@@ -349,29 +350,35 @@ class GPTConfig(TransformerConfig, io.IOMixin):
         else:
             vocab_size = get_vocab_size(self, tokenizer.vocab_size, self.make_vocab_size_divisible_by)
 
+        # Initialize model as meta data instead of allocating data on a device
+        model_init_device_context = contextlib.nullcontext
+        if self.init_model_with_meta_device:
+            model_init_device_context = partial(torch.device, device='meta')
+
         import inspect
 
         if 'mtp_block_spec' in inspect.signature(MCoreGPTModel.__init__).parameters:
             kwargs = {"mtp_block_spec": mtp_block_spec(self)}
         else:
             kwargs = {}
-        model = MCoreGPTModel(
-            self,
-            transformer_layer_spec=transformer_layer_spec,
-            vocab_size=vocab_size,
-            max_sequence_length=self.seq_length,
-            fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
-            parallel_output=self.parallel_output,
-            share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
-            position_embedding_type=self.position_embedding_type,
-            rotary_percent=self.rotary_percent,
-            rotary_base=self.rotary_base,
-            seq_len_interpolation_factor=self.seq_len_interpolation_factor,
-            pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
-            post_process=post_process or parallel_state.is_pipeline_last_stage(),
-            scatter_embedding_sequence_parallel=self.scatter_embedding_sequence_parallel,
-            **kwargs,
-        )
+        with model_init_device_context():
+            model = MCoreGPTModel(
+                self,
+                transformer_layer_spec=transformer_layer_spec,
+                vocab_size=vocab_size,
+                max_sequence_length=self.seq_length,
+                fp16_lm_cross_entropy=self.fp16_lm_cross_entropy,
+                parallel_output=self.parallel_output,
+                share_embeddings_and_output_weights=self.share_embeddings_and_output_weights,
+                position_embedding_type=self.position_embedding_type,
+                rotary_percent=self.rotary_percent,
+                rotary_base=self.rotary_base,
+                seq_len_interpolation_factor=self.seq_len_interpolation_factor,
+                pre_process=pre_process or parallel_state.is_pipeline_first_stage(),
+                post_process=post_process or parallel_state.is_pipeline_last_stage(),
+                scatter_embedding_sequence_parallel=self.scatter_embedding_sequence_parallel,
+                **kwargs,
+            )
 
         # If using full TE layer, need to set TP, CP group since the module call
         # is not routed through megatron core, which normally handles passing the

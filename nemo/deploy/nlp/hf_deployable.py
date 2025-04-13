@@ -147,7 +147,13 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
                 - return_full_text: Whether to return full text or only generated part
 
         Returns:
+            If output logits and output scores are False:
             List[str]: A list of generated texts, one for each input prompt.
+            If output logits and output scores are True:
+            Dict: A dictionary containing:
+                - sentences: List of generated texts
+                - logits: List of logits
+                - scores: List of scores
 
         Raises:
             RuntimeError: If the pipeline is not initialized.
@@ -170,12 +176,11 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
 
         with torch.no_grad():
             generated_ids = self.model.generate(**kwargs)
-
         return_dict_in_generate = kwargs.get("return_dict_in_generate", False)
         if return_dict_in_generate:
             output = {"sentences": self.tokenizer.batch_decode(generated_ids["sequences"], skip_special_tokens=True)}
-            if kwargs.get("output_logit", False):
-                output["logit"] = generated_ids["sequences"]
+            if kwargs.get("output_logits", False):
+                output["logits"] = generated_ids["logits"]
             if kwargs.get("output_scores", False):
                 output["scores"] = generated_ids["scores"]
         else:
@@ -250,7 +255,6 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
             num_tokens_to_generate = inputs.pop("max_length")[0][0] if "max_length" in inputs else 256
             output_logits = inputs.pop("output_logits")[0][0] if "output_logits" in inputs else False
             output_scores = inputs.pop("output_scores")[0][0] if "output_scores" in inputs else False
-
             return_dict_in_generate = False
             if output_logits or output_scores:
                 return_dict_in_generate = True
@@ -294,7 +298,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
                             output_scores.append([0])
                         else:
                             output_scores.append(lp)
-                    output_infer["scores"] = np.array(output_scores)
+                    output_infer["scores"] = np.array(output_scores).transpose(1, 0, 2)
 
                 if "logits" in output.keys():
                     output_logits = []
@@ -304,7 +308,7 @@ class HuggingFaceLLMDeploy(ITritonDeployable):
                             output_logits.append([0])
                         else:
                             output_logits.append(lp)
-                    output_infer["logits"] = np.array(output_logits)
+                    output_infer["logits"] = np.array(output_logits).transpose(1, 0, 2)
             else:
                 output_infer = {"sentences": cast_output(output, np.bytes_)}
 

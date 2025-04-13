@@ -182,14 +182,14 @@ def estimate_duration_buckets(
         print("Duration distribution:")
         print(pd.Series(sizes).describe(percentiles=[0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.995, 0.999]))
     if math.isinf(max_duration):
-        max_duration = sizes[-1]
+        max_duration = round(sizes[-1], 3)  # Round to 3 decimal places to be consistent for the output format.
 
     bins = []
     tps_thresholds = []
     bin_indexes = [0]
     tot = 0.0
 
-    def _estimate_token_buckets(max_bucket_duration):
+    def _estimate_token_buckets(max_bucket_duration, start_idx, end_idx, corr_subbuckets=None):
         # Since this is 2D bucketing, apply the same bin creation logic
         # for the second dimension (i.e. token count) as for the first dimension (duration).
         # That means we aim to have each bucket contain roughly the same number of tokens.
@@ -197,12 +197,15 @@ def estimate_duration_buckets(
         # a lot of zero-token examples (e.g. non-speech).
         nonlocal bins
 
+        if not corr_subbuckets:
+            corr_subbuckets = num_subbuckets
+
         # Start by discarding outlier examples as defined by token-per-second (TPS) attribute.
         # We empirically determined high TPS examples to cause severe OOMs limiting batch sizes.
         # We cap the TPS for each top-level bucket at 4 standard deviations of TPS.
         # Examples exceeding that TPS value will be discarded during sampling at training time.
-        num_tokens_bucket_all = num_tokens[bin_indexes[-1] : binidx]
-        sizes_bucket_all = sizes[bin_indexes[-1] : binidx]
+        num_tokens_bucket_all = num_tokens[start_idx:end_idx]
+        sizes_bucket_all = sizes[start_idx:end_idx]
         non_outlier_indexes = find_non_outliers_z_score(
             num_tokens_bucket_all / sizes_bucket_all, threshold=token_outlier_threshold
         )
@@ -213,14 +216,14 @@ def estimate_duration_buckets(
         if not quiet:
             outlier_tps = np.delete(num_tokens_bucket_all / sizes_bucket_all, non_outlier_indexes)
             print(
-                f"[bucket <= {max_bucket_duration:.2f}s] [{num_tokens_bucket.min()} - {num_tokens_bucket.max()}] [approx-max-tps: {max_tps_bucket:.2f}] Discarded {binidx - bin_indexes[-1] - len(num_tokens_bucket)} max token outliers",
+                f"[bucket <= {max_bucket_duration:.2f}s] [{num_tokens_bucket.min()} - {num_tokens_bucket.max()}] [approx-max-tps: {max_tps_bucket:.2f}] Discarded {end_idx - start_idx - len(num_tokens_bucket)} max token outliers",
                 end=" ",
             )
             if len(outlier_tps) > 0:
                 print(f"min-outlier: {outlier_tps.min():.2f}, max-outlier: {outlier_tps.max():.2f}).", end="")
             print()
 
-        tokens_per_subbucket = num_tokens_bucket.sum() / num_subbuckets
+        tokens_per_subbucket = num_tokens_bucket.sum() / corr_subbuckets
         tot_toks = 0
         # Iterate over token counts, and whenever we hit tokens_per_subbucket, create a new 2D bucket bin.
         for num_toks, size in zip(num_tokens_bucket, sizes_bucket):
@@ -233,18 +236,58 @@ def estimate_duration_buckets(
         bins.append((max_bucket_duration, num_toks))
         tps_thresholds.append(max_tps_bucket)
 
-    # Iterate over data, and whenever we hit size_per_bucket, create a new bucket bin.
+    duration_bins = []
+
+    # Iterate over data, and whenever we hit size_per_bucket, register it as a new duration bucket.
     for binidx, size in enumerate(sizes):
         if tot > size_per_bucket:
-            # Threshold hit: we are creating a new duration bin (multiplied by number of token bins).
-            _estimate_token_buckets(max_bucket_duration=size)
+            size = round(size, 3)  # Round to 3 decimal places to be consistent for the output format.
+            duration_bins.append(size)
             bin_indexes.append(binidx)
             tot = 0.0
         tot += size
 
-    # Estimate an extra 2D bin set for global max duration.
-    _estimate_token_buckets(max_bucket_duration=max_duration)
+    if not quiet:
+        print(f"Initial duration_bins={duration_bins}")
 
+    skipped_buckets = 1
+    start_idx = 0
+
+    # Iterate over newly created duration bins to handle cases where some bins have the same value —
+    # this usually happens when the data is skewed.
+    # If we detect such bins, we skip estimating token buckets for that particular bin.
+    # Instead, we keep track of how many bins got skipped because they had the same duration.
+    # Then, when we finally hit a bin with a different duration, we treat all those skipped bins as one "combined" bin.
+    # For that combined bin, we create more subbuckets — specifically, the number of skipped bins × `num_subbuckets` (set by the user).
+    #
+    # Example of durations bins created from skewed duration distribution: [5, 20, 30, 30, 30, 40]
+    # Here, we'd end up making token subbuckets for: [5, 20, 40]
+    # where [20, 40] bucket will have 4 times more subbuckets (as we combined 4 buckets into 1) than usual bucket in that settings.
+
+    for i, (duration_bin, bin_idx) in enumerate(zip(duration_bins, bin_indexes[1:])):
+        if (i != len(duration_bins) - 1 and duration_bins[i + 1] == duration_bin) or (
+            i == len(duration_bins) - 1 and max_duration == duration_bin
+        ):
+            skipped_buckets += 1
+            continue
+        _estimate_token_buckets(
+            max_bucket_duration=duration_bin,
+            start_idx=start_idx,
+            end_idx=binidx,
+            corr_subbuckets=num_subbuckets * skipped_buckets,
+        )
+        start_idx = bin_idx
+        skipped_buckets = 1
+
+    # Estimate an extra 2D bin set for global max duration.
+    # Also, if the last value in duration_bins is equal to max_duration,
+    # we need to make sure we properly handle any previously "skipped" buckets that ended at this max value.
+    _estimate_token_buckets(
+        max_bucket_duration=max_duration,
+        start_idx=start_idx,
+        end_idx=binidx,
+        corr_subbuckets=num_subbuckets * skipped_buckets,
+    )
     return bins, tps_thresholds
 
 

@@ -246,12 +246,6 @@ nemo() {
     "nemo_run"                                                                                 # Not compatible in Python 3.12
   )
 
-  if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
-    DEPS+=(
-      "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@e7e7a05a404451ab3bc9ee156b939d1a777dca48 ; platform_machine == 'x86_64'" # Compiling NvRX requires CUDA
-    )
-  fi
-
   echo 'Installing dependencies of nemo'
   pip install --force-reinstall --no-deps --no-cache-dir "${DEPS[@]}"
   pip install --no-cache-dir "${DEPS[@]}"

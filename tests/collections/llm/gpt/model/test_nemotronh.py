@@ -38,16 +38,16 @@ from nemo.utils.exp_manager import TimingCallback
 torch._dynamo.config.suppress_errors = True
 
 model_options: dict[str, Type[llm.SSMConfig]] = {
-    "8B": llm.Nemotron5HybridConfig8B,
-    "47B": llm.Nemotron5HybridConfig47B,
-    "56B": llm.Nemotron5HybridConfig56B,
+    "8B": llm.NemotronHConfig8B,
+    "47B": llm.NemotronHConfig47B,
+    "56B": llm.NemotronHConfig56B,
 }
 
 
 def parse_args():
-    """Parse arguments for NM5 model training."""
+    """Parse arguments for NMH model training."""
     parser = argparse.ArgumentParser(
-        description="Train a nemotron5 model using NeMo 2.0.",
+        description="Train a nemotronh model using NeMo 2.0.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     data_group = parser.add_mutually_exclusive_group()
@@ -88,7 +88,7 @@ def parse_args():
         "--context-parallel-size", type=int, default=1, help="Order of context parallelism. Defaults to 1."
     )
     parser.add_argument("--no-wandb", action="store_true", default=False, help="Disable Wandb logging")
-    parser.add_argument("--wandb-project", type=str, default="nemotron5", help="Wandb project name")
+    parser.add_argument("--wandb-project", type=str, default="nemotronh", help="Wandb project name")
     parser.add_argument("--wandb-run-id", type=str, default=None, help="Wandb run identifier")
     parser.add_argument(
         "--wandb-group", type=str, default=None, help="A unique string shared by all runs in a given group"
@@ -156,7 +156,14 @@ def parse_args():
     parser.add_argument(
         "--vocab-file",
         type=str,
-        required=True,
+        required=False,
+        help="Path to tokenizer vocab file.",
+    )
+    parser.add_argument(
+        "--hf-tokenizer-name",
+        type=str,
+        default="nvidia/Nemotron-H-8B-Base-8K",
+        required=False,
         help="Path to tokenizer vocab file.",
     )
     parser.add_argument(
@@ -316,16 +323,23 @@ def parse_args():
 
 
 def main():
-    """Main function to run NM5 training."""
+    """Main function to run NMH training."""
     args = parse_args()
 
     # Instantiate tokenizer.
-    tokenizer = get_nmt_tokenizer(
-        library='tiktoken',
-        model_name="TiktokenTokenizer",
-        vocab_file=args.vocab_file,
-        use_fast=True,
-    )
+    if args.vocab_file:
+        tokenizer = get_nmt_tokenizer(
+            library='tiktoken',
+            model_name="TiktokenTokenizer",
+            vocab_file=args.vocab_file,
+            use_fast=True,
+        )
+    else:
+        tokenizer = get_nmt_tokenizer(
+            library='huggingface',
+            model_name=args.hf_tokenizer_name,
+            use_fast=True,
+        )
 
     # Infer global batch size.
     global_batch_size = args.global_batch_size
@@ -430,7 +444,7 @@ def main():
     if (not args.no_wandb) and args.wandb_project:
         wandb_logger = WandbLogger(
             name=(
-                f"nm5-ux-size-{args.model_size}-TP{args.tensor_parallel_size}-"
+                f"nemotronh-size-{args.model_size}-TP{args.tensor_parallel_size}-"
                 f"PP{args.pipeline_model_parallel_size}-CP{args.context_parallel_size}"
                 f"-GBS{global_batch_size}-MBS{args.micro_batch_size}"
                 f"FP8{args.fp8}"
@@ -483,7 +497,7 @@ def main():
         log_every_n_steps=args.log_every_n_steps,
         limit_val_batches=args.limit_val_batches,
         num_sanity_val_steps=0,
-        use_distributed_sampler=True,
+        use_distributed_sampler=False,
         plugins=nl.MegatronMixedPrecision(
             precision="bf16-mixed",
             params_dtype=torch.bfloat16,
@@ -549,7 +563,7 @@ def main():
 if __name__ == "__main__":
     """ Example command to run the script, use --help for more options.:
     CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc-per-node=8 \
-        /opt/NeMo/tests/collections/llm/gpt/model/test_nemotron5.py \
+        /opt/NeMo/tests/collections/llm/gpt/model/test_nemotronh.py \
             --num-nodes=1 \
             --devices=8 \
             --max-steps=500000 \
@@ -568,7 +582,7 @@ if __name__ == "__main__":
             --clip-grad 1 \
             --lr=0.0003 \
             --warmup-steps=2500 \
-            --wandb-project=nemotron5
+            --wandb-project=nemotronh
             
     """
     main()

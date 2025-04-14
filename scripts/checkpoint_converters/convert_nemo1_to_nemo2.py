@@ -72,6 +72,9 @@ MODEL_CONFIG_MAPPING = {
     "nemotron4-22b": (llm.NemotronModel, llm.Nemotron3Config22B),
     "nemotron4-15b": (llm.NemotronModel, llm.Nemotron4Config15B),
     "nemotron4-340b": (llm.NemotronModel, llm.Nemotron4Config340B),
+    "nemotronh8b": (llm.MambaModel, llm.NemotronHConfig8B),
+    "nemotronh47b": (llm.MambaModel, llm.NemotronHConfig47B),
+    "nemotronh56b": (llm.MambaModel, llm.NemotronHConfig56B),
 }
 
 
@@ -113,6 +116,20 @@ def get_args():
         default=None,
         required=False,
         help="Tokenizer library, e.g. `sentencepiece`, `megatron`. Defaults to `sentencepiece`",
+    )
+    parser.add_argument(
+        "--tokenizer_vocab_file",
+        type=str,
+        default=None,
+        required=False,
+        help="Tokenizer vocab file. Defaults to None",
+    )
+    parser.add_argument(
+        "--tokenizer_model_name",
+        type=str,
+        default="TiktokenTokenizer",
+        required=False,
+        help="Tokenizer model name, e.g. TiktokenTokenizer. Defaults to TiktokenTokenizer",
     )
     args = parser.parse_args()
     return args
@@ -167,6 +184,13 @@ def get_tokenizer(input_path: Path, tokenizer_tmp_dir: Path) -> AutoTokenizer:
     Returns:
         AutoTokenizer: tokenizer instance
     """
+    if args.tokenizer_vocab_file:
+        return get_nmt_tokenizer(
+            library=args.tokenizer_library,
+            model_name=args.tokenizer_model_name,
+            vocab_file=args.tokenizer_vocab_file,
+            use_fast=True,
+        )
     if not input_path.is_dir():  # if .nemo tar
         with tempfile.TemporaryDirectory() as tmp_dir:  # we want to clean up this tmp dir
             NLPSaveRestoreConnector._unpack_nemo_file(input_path, tmp_dir)
@@ -179,7 +203,9 @@ def get_tokenizer(input_path: Path, tokenizer_tmp_dir: Path) -> AutoTokenizer:
                 HFAutoTokenizer.from_pretrained(cfg.tokenizer.type).save_pretrained(tokenizer_tmp_dir)
             tokenizer_model = f"{tokenizer_tmp_dir}/{tokenizer_model}" if tokenizer_model else None
     else:
-        if args.tokenizer_path:  # not .nemo file, only weight dir need to specify tokenizer lib and path
+        if (
+            args.tokenizer_path or args.tokenizer_vocab_file
+        ):  # not .nemo file, only weight dir need to specify tokenizer lib and path
             tokenizer_lib = args.tokenizer_library or "sentencepiece"
             if args.tokenizer_library is None:
                 logging.warning(

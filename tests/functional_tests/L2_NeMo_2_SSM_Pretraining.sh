@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt/model/test_nemotron5.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt/model/test_nemotronh.py \
             --num-nodes=1 \
             --devices=1 \
             --max-steps=10 \

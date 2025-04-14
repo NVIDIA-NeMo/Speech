@@ -35,6 +35,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           # custom token is required to trigger actions after reformatting + pushing
           token: ${{ secrets.NEMO_REFORMAT_TOKEN }}
+          fetch-depth: 0
 
       - name: Get changed files
         id: changed-files

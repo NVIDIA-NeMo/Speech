@@ -26,7 +26,7 @@ from megatron.core.transformer.attention import (
     SelfAttention,
     SelfAttentionSubmodules,
 )
-
+from megatron.core.transformer.cuda_graphs import CudaGraphManager
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.mlp import MLP, MLPSubmodules
@@ -579,6 +579,9 @@ class MMDiTLayer(TransformerLayer):
         hidden_size = config.hidden_size
         super().__init__(config=config, submodules=submodules, layer_number=layer_number)
 
+        if config.enable_cuda_graph:
+            self.cudagraph_manager = CudaGraphManager(config, share_cudagraph_io_buffers=False)
+
         self.adaln = AdaLN(config, modulation_bias=True, n_adaln_chunks=6, use_second_norm=True)
 
         self.context_pre_only = context_pre_only
@@ -665,6 +668,11 @@ class MMDiTLayer(TransformerLayer):
 
         return hidden_states, encoder_hidden_states
 
+    def __call__(self, *args, **kwargs):
+        if hasattr(self, 'cudagraph_manager'):
+            return self.cudagraph_manager(self, args, kwargs)
+        return super(MegatronModule, self).__call__(*args, **kwargs)
+
 
 class FluxSingleTransformerBlock(TransformerLayer):
     """
@@ -686,6 +694,9 @@ class FluxSingleTransformerBlock(TransformerLayer):
         modulation_bias: bool = True,
     ):
         super().__init__(config=config, submodules=submodules, layer_number=layer_number)
+
+        if config.enable_cuda_graph:
+            self.cudagraph_manager = CudaGraphManager(config, share_cudagraph_io_buffers=False)
         self.adaln = AdaLN(
             config=config, n_adaln_chunks=n_adaln_chunks, modulation_bias=modulation_bias, use_second_norm=False
         )
@@ -717,7 +728,12 @@ class FluxSingleTransformerBlock(TransformerLayer):
 
         hidden_states = self.adaln.scale_add(residual, x=hidden_states, gate=gate)
 
-        return hidden_states
+        return hidden_states, None
+
+    def __call__(self, *args, **kwargs):
+        if hasattr(self, 'cudagraph_manager'):
+            return self.cudagraph_manager(self, args, kwargs)
+        return super(MegatronModule, self).__call__(*args, **kwargs)
 
 
 def get_stdit_adaln_block_with_transformer_engine_spec() -> ModuleSpec:

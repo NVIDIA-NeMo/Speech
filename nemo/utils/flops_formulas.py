@@ -189,7 +189,7 @@ def flux(config: FLOPSConfig):
         * config.layers[0]
         * (
             10 * hs * hs  # hidden size operations
-            + 2 * hs * (config.model_channels + config.inp_s) * (1 + hs * 5)  # channel and context joint attention
+            + 2 * hs * (config.model_channels + config.inp_s) * (1 + hs * 7)  # channel and context joint attention
             + 2 * (config.model_channels + config.inp_s) * hs  # final projection
         )
     )

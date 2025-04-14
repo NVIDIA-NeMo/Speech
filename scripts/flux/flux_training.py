@@ -99,6 +99,8 @@ def flux_training() -> run.Partial:
                     data_parallel_sharding_strategy='optim_grads_params',
                     check_for_nan_in_grad=True,
                     grad_reduce_in_fp32=True,
+                    overlap_param_gather=True,
+                    overlap_grad_reduce=True,
                 ),
             ),
             plugins=nl.MegatronMixedPrecision(precision="bf16-mixed"),
@@ -186,6 +188,7 @@ def full_model_tp2_dp4_mock() -> run.Partial:
     recipe.trainer.strategy.tensor_model_parallel_size = 2
     recipe.trainer.devices = 8
     recipe.data.global_batch_size = 8
+
     return recipe
 
 

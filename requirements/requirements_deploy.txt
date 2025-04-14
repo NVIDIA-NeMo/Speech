@@ -1,6 +1,6 @@
 accelerate
 fastapi
-nvidia-pytriton ; (platform_machine == 'x86_64' and platform_system != 'Darwin')
+nvidia-pytriton ; platform_system != 'Darwin'
 pydantic-settings
 tensorstore<0.1.72; platform_system != 'Darwin'
 uvicorn

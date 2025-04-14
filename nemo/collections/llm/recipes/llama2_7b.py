@@ -176,10 +176,6 @@ def pretrain_recipe(
         Python API usage:
             >>> recipe = pretrain_recipe(name="llama2_7b_pretrain", num_nodes=2)
             >>> print(recipe)
-
-    Note:
-        For more details on pre-training LLMs with NeMo, see the pre-training
-        guide in the `examples/llm/pretrain/` directory.
     """
     recipe = run.Partial(
         fn,
@@ -269,9 +265,7 @@ def finetune_recipe(
             >>> print(recipe)
 
     Note:
-        This recipe uses the SQuAD dataset for fine-tuning. For more information
-        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
-        `examples/llm/finetune/` directory.
+        This recipe uses the SQuAD dataset for fine-tuning.
     """
     # Default to unpacked data in normal mode and packed data in performance mode
     # once packing recipe is well tested, change this default to true

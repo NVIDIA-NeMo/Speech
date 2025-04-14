@@ -203,10 +203,6 @@ def pretrain_recipe(
         Python API usage:
             >>> recipe = pretrain_recipe(name="mamba2_370M_pretrain", num_nodes=1)
             >>> print(recipe)
-
-    Note:
-        For more details on pre-training LLMs with NeMo, see the pre-training
-        guide in the `examples/llm/pretrain/` directory.
     """
     return run.Partial(
         fn,
@@ -282,9 +278,7 @@ def finetune_recipe(
             >>> print(recipe)
 
     Note:
-        This recipe uses the SQuAD dataset for fine-tuning. For more information
-        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
-        `examples/llm/finetune/` directory.
+        This recipe uses the SQuAD dataset for fine-tuning.
         For converting an SSM pytorch checkpoint, use the following line of python code:
 
         llm.MambaModel(llm.BaseMambaConfig370M(), tokenizer=tokenizer()).import_ckpt(

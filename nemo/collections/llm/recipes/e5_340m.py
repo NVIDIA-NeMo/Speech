@@ -87,9 +87,7 @@ def finetune_recipe(
             >>> print(recipe)
 
     Note:
-        This recipe uses the Specter dataset for fine-tuning. For more information
-        on fine-tuning LLMs with NeMo, see the fine-tuning guide in the
-        `examples/llm/finetune/` directory.
+        This recipe uses the Specter dataset for fine-tuning.
     """
     recipe = default_finetune_recipe(model(), resume_path, dir, name, num_nodes, num_gpus_per_node)
     datamodule = run.Config(

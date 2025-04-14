@@ -30,7 +30,8 @@ from megatron.core.transformer.utils import _get_extra_state_offsets
 from torch import Tensor, nn
 from torch.distributed._sharded_tensor import ShardedTensor as TorchShardedTensor
 from torch.distributed._tensor import DTensor, Replicate, Shard
-from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor import DeviceMesh
+from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel, SequenceParallel, parallelize_module
 
 from nemo.lightning import _strategy_lib
 from nemo.lightning.pytorch.callbacks import MegatronProgressBar, ProgressPrinter
@@ -451,13 +452,25 @@ def fsdp2_strategy_parallelize(
     model,
     device_mesh: DeviceMesh = None,
     mp_policy: MixedPrecisionPolicy = None,
+    tp_shard_plan: Optional[Dict[str, Union[RowwiseParallel, ColwiseParallel, SequenceParallel]]] = None,
     offload_policy: 'CPUOffloadPolicy' = None,
 ):
     """Apply parallelisms and activation checkpointing to the model.
+
+    Args:
+        model: The model to be parallelized.
+        device_mesh (DeviceMesh): The device mesh for distributed training.
+        mp_policy (MixedPrecisionPolicy): Mixed precision policy for model parallelism.
+        tp_shard_plan (Optional[Dict[str, Union[RowwiseParallel, ColwiseParallel, SequenceParallel]]]):
+            A tensor parallel sharding plan. The keys should be the module names and the values should be the
+            corresponding parallel styles (e.g., RowwiseParallel, ColwiseParallel, SequenceParallel).
+        offload_policy (CPUOffloadPolicy): The offload policy for FSDP. If None, it will use the default policy.
+
     NOTE: The passed-in model preferably should be on meta device. Otherwise,
     the model must fit on GPU or CPU memory.
     NOTE: Currently, the user is required to manually handle precision settings such as the `mp_policy` here
     because the model parallel strategy does not respect all settings of `Fabric(precision=...)` at the moment.
+    NOTE: Currently, the user should make sure that custom_tp_plan is compatible with the model architecture.
     """
 
     if not mp_policy:
@@ -486,18 +499,26 @@ def fsdp2_strategy_parallelize(
 
     # Set FSDP sharding mesh to context parallel mesh if CP > 1, else default to the data parallel mesh.
     dp_mesh = device_mesh["context_parallel" if device_mesh["context_parallel"].size() > 1 else "data_parallel"]
+    tp_mesh = device_mesh["tensor_parallel"]
     if dp_mesh.size() > 1:
         assert dp_mesh.ndim == 1, "Hybrid-sharding not supported"
 
-        assert HAS_FULLY_SHARD is not None, "Expected to have fully_shard"
-        # Find transformer layers and apply parallelisms
-        parallelize_helper(model, dp_mesh, mp_policy)
+    # TP sharding
+    if tp_mesh.size() > 1:
+        parallelize_module(model, tp_mesh, tp_shard_plan)
 
-        # reshard_after_forward=True based on
-        # https://github.com/pytorch/torchtitan/blob/main/torchtitan/parallelisms/parallelize_llama.py#L359
-        model = fully_shard(
-            model, mesh=dp_mesh, mp_policy=mp_policy, reshard_after_forward=True, offload_policy=offload_policy
-        )
+    # FSDP sharding
+    assert dp_mesh.ndim == 1, "Hybrid-sharding not supported"
+    assert HAS_FULLY_SHARD is not None, "Expected to have fully_shard"
+
+    # Find transformer layers and apply parallelisms
+    parallelize_helper(model, dp_mesh, mp_policy)
+
+    # reshard_after_forward=True based on
+    # https://github.com/pytorch/torchtitan/blob/main/torchtitan/parallelisms/parallelize_llama.py#L359
+    model = fully_shard(
+        model, mesh=dp_mesh, mp_policy=mp_policy, reshard_after_forward=True, offload_policy=offload_policy
+    )
 
     return model
 

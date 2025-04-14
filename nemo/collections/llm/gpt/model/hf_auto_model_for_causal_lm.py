@@ -287,6 +287,10 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         # GPTSFTDataset emits `tokens` instead of `input_ids`
         if 'input_ids' not in batch and 'tokens' in batch:
             batch['input_ids'] = batch['tokens']
+
+        # TODO(@boxiangw): Refractor. Needed for SP support
+        batch["position_ids"] = torch.arange(0, batch['input_ids'].shape[1]).unsqueeze(0).to(self.model.device)
+
         batch = self._remove_extra_batch_keys(batch)
 
         # based on https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L336

@@ -21,7 +21,7 @@ from nemo import lightning as nl
 from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule
-from nemo.collections.llm.recipes.optim.adam import pytorch_adam_with_flat_lr
+from nemo.collections.llm.recipes.optim.adam import pytorch_adam_with_cosine_annealing
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 
 # Run this example with torchrun, for example:
@@ -35,7 +35,9 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
-def make_squad_hf_dataset(tokenizer, micro_batch_size, seq_length, limit_dataset_samples=None, fp8=False):
+def make_squad_hf_dataset(
+    tokenizer, micro_batch_size, seq_length, limit_dataset_samples=None, fp8=False, num_replicas=1, rank=0
+):
     def formatting_prompts_func(example):
         formatted_text = [
             f"Context: {example['context']} Question: {example['question']} Answer:",
@@ -67,6 +69,8 @@ def make_squad_hf_dataset(tokenizer, micro_batch_size, seq_length, limit_dataset
         micro_batch_size=micro_batch_size,
         pad_token_id=tokenizer.eos_id if tokenizer.eos_id is not None else 0,
         pad_seq_len_divisible=16 if fp8 else None,  # FP8 training requires seq length to be divisible by 16.
+        num_replicas=num_replicas,
+        rank=rank,
     )
     datamodule.map(
         formatting_prompts_func,
@@ -86,6 +90,7 @@ def make_strategy(
     dp_size=None,
     tp_size=None,
     cp_size=None,
+    sequence_parallel=False,
 ):
     if strategy == 'auto':
         return pl.strategies.SingleDeviceStrategy(
@@ -97,6 +102,10 @@ def make_strategy(
             checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
         )
     elif strategy == 'fsdp2':
+        print(
+            f"Using FSDP2 strategy with DP size: {dp_size}, TP size: {tp_size}, devices: {devices}, num_nodes: {num_nodes}"
+        )
+
         offload_policy = None
         if enable_cpu_offload:
             from nemo.lightning.pytorch.strategies.fsdp2_strategy import HAS_CPU_OFFLOAD_POLICY, CPUOffloadPolicy
@@ -124,8 +133,9 @@ def make_strategy(
         print(f"Using FSDP2 with DP={dp_size}, TP={1}, CP={cp_size}")
         return nl.FSDP2Strategy(
             data_parallel_size=dp_size,
-            tensor_parallel_size=1,
+            tensor_parallel_size=tp_size,
             context_parallel_size=cp_size,
+            sequence_parallel=sequence_parallel,
             checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
             offload_policy=offload_policy,
         )
@@ -167,9 +177,14 @@ def main():
     )
     parser.add_argument('--devices', type=int, default=2, help='Number of GPUs to use')
     parser.add_argument('--num-nodes', type=int, default=1, help='Number of Nodes to use; to be used with torchrun')
-    parser.add_argument('--dp-size', type=int, default=None, help='Data Parallel size; to be used with fsdp2')
-    parser.add_argument('--tp-size', type=int, default=None, help='Tensor Parallel size; to be used with fsdp2')
-    parser.add_argument('--cp-size', type=int, default=None, help='Context Parallel size; to be used with fsdp2')
+    parser.add_argument('--dp-size', type=int, default=2, help='Data Parallel size; to be used with fsdp2')
+    parser.add_argument('--tp-size', type=int, default=1, help='Tensor Parallel size; to be used with fsdp2')
+    parser.add_argument('--cp-size', type=int, default=1, help='Context Parallel size; to be used with fsdp2')
+    parser.add_argument(
+        '--sequence-parallel',
+        action='store_true',
+        help='Use Sequence Parallelism; to be used with fsdp2 and tp_size > 1',
+    )
     parser.add_argument('--use-te-optimizer', action='store_true', help='Use TE optimizer')
     parser.add_argument('--grad-clip', type=float, default=1.0, help='Grad clip value')
     parser.add_argument(
@@ -236,7 +251,7 @@ def main():
 
         wandb = WandbLogger(
             project=args.wandb_project,
-            name=f"{model}_nodes{args.num_nodes}_dev{args.devices}_strat_{args.strategy}_dp{args.dp_size}_cp{args.cp_size}_tp{args.tp_size}_seqlen{args.seq_length}_gb{args.global_batch_size}_mb{args.micro_batch_size}_lr{args.lr}",
+            name=f"{model}_nodes{args.num_nodes}_dev{args.devices}_strat_{args.strategy}_dp{args.dp_size}_cp{args.cp_size}_tp{args.tp_size}_sp{args.sequence_parallel}_seqlen{args.seq_length}_gb{args.global_batch_size}_mb{args.micro_batch_size}_lr{args.lr}",
         )
 
     callbacks = []
@@ -249,7 +264,9 @@ def main():
         # Faster convergence but may lead to memory issues
         optimizer = fdl.build(llm.adam.te_adam_with_flat_lr(lr=args.lr))
     else:
-        optimizer = fdl.build(pytorch_adam_with_flat_lr(lr=args.lr))
+        optimizer = fdl.build(
+            pytorch_adam_with_cosine_annealing(max_lr=args.lr, foreach=False)
+        )  # foreach need to be False for TP
 
     if args.fp8:
         from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig
@@ -268,25 +285,35 @@ def main():
         enable_grad_ckpt=args.enable_grad_ckpt,
     )
 
+    assert (
+        args.devices * args.num_nodes == args.dp_size * args.tp_size * args.cp_size
+    ), f"Total devices {args.devices * args.num_nodes} must equal Data Parallel size {args.dp_size} * Tensor Parallel size {args.tp_size} * Context Parallel size {args.cp_size}."
+
     strategy = make_strategy(
         args.strategy,
         model,
         args.devices,
         args.num_nodes,
         False,
+        args.enable_cpu_offload,
         dp_size=args.dp_size,
         tp_size=args.tp_size,
         cp_size=args.cp_size,
+        sequence_parallel=args.sequence_parallel,
     )
 
     resume = (
         nl.AutoResume(
             resume_if_exists=True,
-            resume_ignore_no_checkpoint=False,
+            resume_ignore_no_checkpoint=True,
         )
         if args.auto_resume
         else None
     )
+
+    # TP WA
+    if args.tp_size > 1:
+        args.grad_clip = 0.0
 
     # Instantiate training dataset.
     dataset = None

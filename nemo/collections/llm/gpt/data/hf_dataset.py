@@ -256,6 +256,8 @@ class HFDatasetDataModule(pl.LightningDataModule):
         test_aliases=["test", "testing"],
         val_aliases=["val", "validation", "valid", "eval"],
         pad_seq_len_divisible=None,
+        num_replicas=None,
+        rank=None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -301,6 +303,10 @@ class HFDatasetDataModule(pl.LightningDataModule):
         self.use_dist_sampler = use_dist_sampler
         self.pad_seq_len_divisible = pad_seq_len_divisible
 
+        # TODO: refractor this
+        self.num_replicas = num_replicas
+        self.rank = rank
+
     @staticmethod
     def from_dict(dataset_dict, split, **kwargs):
         """wraps Dataset's from_dict method"""
@@ -333,7 +339,7 @@ class HFDatasetDataModule(pl.LightningDataModule):
     def get_data_sampler(self, dataset):
         """returns the data sampler"""
         if self.use_dist_sampler:
-            return DistributedSampler(dataset)
+            return DistributedSampler(dataset, num_replicas=self.num_replicas, rank=self.rank)
         else:
             return None
 

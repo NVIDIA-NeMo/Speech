@@ -38,7 +38,7 @@ def mock_tokenizer():
 
     # Replace __call__ with a MagicMock and set the side_effect
     tokenizer.__call__ = MagicMock(side_effect=tokenizer_call)
-
+    tokenizer.text_to_ids = MagicMock(side_effect=tokenizer_call)
     return tokenizer
 
 

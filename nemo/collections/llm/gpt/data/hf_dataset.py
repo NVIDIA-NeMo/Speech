@@ -407,6 +407,7 @@ class HellaSwagHFDataModule(HFDatasetDataModule):
         tokenizer.pad_token = tokenizer.eos_token
         self.pad_token_id = tokenizer.eos_id
         dataset = load_dataset(dataset_name)
+        kwargs['split'] = 'train'
         super().__init__(HellaSwagHFDataModule.preprocess_dataset(tokenizer, 7500, dataset["train"]), *args, **kwargs)
 
     @staticmethod
@@ -442,21 +443,18 @@ class HellaSwagHFDataModule(HFDatasetDataModule):
         print("Preprocessing dataset...")
         dataset = dataset.map(HellaSwagHFDataModule.process_doc)
 
-        def preprocess_batch(batch, tokenizer, max_length):
-            ans = tokenizer(
-                batch["text"],
-                max_length=max_length,
-                truncation=True,
-            )
-            ans["labels"] = [x[1:] + [-100] for x in ans["input_ids"]]
-            return ans
+        def preprocess(example, tokenizer, max_length):
+            input_ids = tokenizer.text_to_ids(example["text"])
+            if max_length > 0:
+                input_ids = input_ids[:max_length]
+            return dict(input_ids=input_ids, labels=input_ids[1:] + [-100])
 
-        # Apply preprocessing to each batch of the dataset & and remove "conversations" and "text" fields.
-        _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
+        # Apply preprocessing to each example of the dataset & and remove "conversations" and "text" fields.
+        _preprocessing_function = partial(preprocess, max_length=max_length, tokenizer=tokenizer)
         dataset = dataset.map(
             _preprocessing_function,
-            batched=True,
-        ).select_columns(["input_ids", "attention_mask", "labels"])
+            batched=False,
+        ).select_columns(["input_ids", "labels"])
 
         # Shuffle dataset.
         dataset = dataset.shuffle(seed=seed)

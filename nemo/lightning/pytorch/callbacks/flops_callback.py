@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+from typing import List, Tuple
 
 import lightning.pytorch as pl
 import numpy as np
@@ -35,6 +35,7 @@ _model_flops_map = {
     "mixtral": flops_formulas.mixtral,
     "bert": flops_formulas.bert,
     "hyena": hyena,
+    "transformer": flops_formulas.transformer,
 }
 
 
@@ -114,7 +115,6 @@ class FLOPsMeasurementCallback(Callback):
             self.avg_train_step_time += trainer.progress_bar_metrics['train_step_timing in s']
         except KeyError:
             print("'train_step_timing in s' not found. Make sure to use TimingCallback with FLOPsMeasurementCallback.")
-
         n = trainer.strategy.current_epoch_step
         if n % trainer.log_every_n_steps == 0:
             # skip calculation if we haven't accumulated any timing data
@@ -151,11 +151,10 @@ class FLOPsMeasurementCallback(Callback):
 
         return flops_per_gpu / (1e12 * train_step_time)
 
-    def eval_model_flops(self):
+    def eval_model_flops(self) -> Tuple[float, float]:
         """
         Calculate model FLOPs for a given model
         """
-
         if self.model is not None:
             model_matches = [model for model in _model_flops_map if model in self.model]
             self.model = model_matches[0] if len(model_matches) > 0 else self.model

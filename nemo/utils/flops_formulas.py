@@ -42,6 +42,7 @@ class FLOPSConfig:
     vocab_size: Optional[int] = None
     model_channels: Optional[int] = None
     vec_in_dim: Optional[int] = None
+    causal_self_attn: Optional[bool] = None
 
 
 def gpt3(config: FLOPSConfig):
@@ -148,6 +149,109 @@ def bert(config: FLOPSConfig):
         * config.hs
         * (1 + (config.enc_seq_len / (6 * config.hs)) + (vocab_size / (12 * config.hs * config.layers)))
     )
+
+
+def transformer(config: FLOPSConfig):
+    """Calculate FLOPs for a standard Transformer model.
+    Note: This does not cover encoder-decoder models.
+    """
+    # Extract parameters from config
+    batch_size = config.gbs
+    hidden_size = config.hs
+    seq_length = config.enc_seq_len
+    num_layers = config.layers
+    num_attention_heads = config.attention_heads
+    ffn_hidden_size = config.ffn_hs
+    vocab_size = config.vocab_size
+
+    if vocab_size is None:
+        raise ValueError("vocab_size is required for transformer FLOPs calculation")
+    
+    # Handle optional parameters with reasonable defaults
+    query_groups = config.query_groups if config.query_groups is not None else num_attention_heads
+    causal_self_attn = config.causal_self_attn if config.causal_self_attn is not None else False
+    moe_router_topk = config.moe_router_topk if config.moe_router_topk is not None else 0
+    kv_channels = hidden_size // num_attention_heads  # Standard dimension per head
+    
+    # Calculate query projection size and ratio
+    query_projection_size = kv_channels * num_attention_heads
+    query_projection_to_hidden_size_ratio = query_projection_size / hidden_size
+    
+    # MoE parameters - simplified for NeMo config
+    # In this implementation, we assume all layers are dense if num_experts is None
+    if moe_router_topk == 0:
+        num_dense_layers = num_layers
+        num_moe_layers = 0
+        num_experts_routed_to = 0
+    else:
+        # Simplified MoE handling - assuming uniform distribution of MoE layers
+        # This can be expanded based on NeMo's actual MoE implementation
+        num_moe_layers = num_layers // 2  # Simplified assumption
+        num_dense_layers = num_layers - num_moe_layers
+        num_experts_routed_to = moe_router_topk
+    
+    # Handle SwiGLU vs standard GELU/ReLU
+    # Default to standard activation (no SwiGLU)
+    gated_linear_multiplier = 1
+    
+    # Define the expansion factor as described in the paper
+    # 3x: Each GEMM needs forward pass, backward wgrad, and backward dgrad
+    # 2x: GEMMs are stacked twice in standard Transformer architectures
+    # 2x: A GEMM of m*n with n*k requires 2mnk floating-point operations
+    expansion_factor = 3 * 2 * 2
+    # Attention
+    if not causal_self_attn:
+        attention_component = (
+                    (
+                        1
+                        + (query_groups / num_attention_heads)
+                        # Only half of the attention matrix is non-zero and needs to be multiplied with V
+                        + (seq_length / hidden_size) # If causal self attn -> divide by 2.
+                    ) * query_projection_to_hidden_size_ratio
+                ) 
+    else:
+        attention_component = (
+                (
+                    1
+                    + (query_groups / num_attention_heads)
+                    # Only half of the attention matrix is non-zero and needs to be multiplied with V
+                    + (seq_length / hidden_size / 2) # If causal self attn -> divide by 2.
+                ) * query_projection_to_hidden_size_ratio
+            ) 
+
+    # Calculate total FLOPs
+    total_flops = (
+        expansion_factor
+        * batch_size
+        * seq_length
+        * num_layers
+        * hidden_size
+        * hidden_size
+        * (
+            
+            attention_component
+            # MLP component
+            + (
+                (
+                    # Dense layers
+                    (ffn_hidden_size * num_dense_layers) +
+                    # MoE layers
+                    (
+                        (
+                            # Routed experts
+                            ffn_hidden_size * num_experts_routed_to
+                            # Note: Shared experts are not implemented in this version
+                        )
+                        * num_moe_layers
+                    )
+                ) * gated_linear_multiplier / (num_layers * hidden_size)
+            )
+            # Logit component
+            + (vocab_size / (2 * num_layers * hidden_size))
+        )
+    )
+    
+    return total_flops
 
 
 def clip_vit_l(config: FLOPSConfig):

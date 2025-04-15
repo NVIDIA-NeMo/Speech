@@ -14,7 +14,7 @@
 
 import pytest
 
-from nemo.utils.flops_formulas import FLOPSConfig, bert, gpt3, llama2, llama3, mixtral, nemotron
+from nemo.utils.flops_formulas import FLOPSConfig, bert, gpt3, llama2, llama3, mixtral, nemotron, transformer
 from nemo.utils.hyena_flops_formulas import hyena
 
 
@@ -67,3 +67,13 @@ def test_bert(flops_config):
 def test_hyena(flops_config):
     expected_flops = 116883062784.0
     assert hyena(flops_config) == expected_flops
+
+
+def test_transformer(flops_config):
+    expected_flops = 118427811840.0
+    assert transformer(flops_config) == expected_flops
+
+def test_transformer_no_moe(flops_config):
+    flops_config.moe_router_topk = 0
+    expected_flops = 96684539904.0
+    assert transformer(flops_config) == expected_flops

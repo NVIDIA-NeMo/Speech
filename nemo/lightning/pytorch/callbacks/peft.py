@@ -147,7 +147,7 @@ class PEFT(IOMixin, ABC, ModelTransform):
 
         super().setup(trainer, pl_module, stage=stage)
 
-        self._is_fsdp_v1 = type(trainer.strategy).__name__ in ['FSDPStrategy', 'FSDP2Strategy']
+        self._add_via_setattr = 'HFAutoModel' in type(pl_module).__name__
         trainer.strategy.trainer = trainer
         wrapped_io = self.get_wrappped_io()
 
@@ -186,6 +186,10 @@ class PEFT(IOMixin, ABC, ModelTransform):
             else trainer.strategy._checkpoint_io
         )
         trainer.strategy._init_model_parallel = False
+        # it will enter the following if statement if the model is on the automodel workflow
+        # where the PEFT is applied in the configure_model
+        if self.transform_already_applied:
+            trainer.strategy._init_model_parallel = True
         trainer.strategy._setup_optimizers = False
 
     def set_params_to_save(self, trainer: pl.Trainer) -> None:
@@ -214,9 +218,6 @@ class PEFT(IOMixin, ABC, ModelTransform):
         if not getattr(self, 'transform_already_applied', False):
             super().apply_transform(trainer)
         self.set_params_to_save(trainer)
-        # @akoumparouli: only used with automodel + FSDP2Strategy.
-        if callable(getattr(trainer.strategy, 'parallelize', None)):
-            trainer.strategy.parallelize()
 
         # Handle automodel and return early.
         if (
@@ -225,9 +226,11 @@ class PEFT(IOMixin, ABC, ModelTransform):
         ):
             # Automodel adapter restoration is handled in restore_automodel.
             return self.restore_automodel(trainer, self.wrapped_io.adapter_ckpt_path.parent)
-        elif getattr(self, 'automodel_setup_optimizers', None) is not None:
-            logging.info("Setting up optimizers")
-            self.automodel_setup_optimizers(trainer)
+        elif getattr(self, 'transform_already_applied', False) == True or self.automodel_setup_optimizers is not None:
+            if self.automodel_setup_optimizers is not None:
+                logging.info("Setting up optimizers")
+                self.automodel_setup_optimizers(trainer)
+                self.automodel_setup_optimizers = None
             return
 
         adapter_sharded_state_dict = {}

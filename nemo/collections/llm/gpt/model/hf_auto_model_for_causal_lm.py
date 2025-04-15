@@ -241,7 +241,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             self.model_transform(self)
             self.model_transform.__num_calls__ = 0
 
-    def forward(self, batch, num_logits_to_keep=0):
+    def forward(self, batch, num_logits_to_keep=None):
         """
         Perform a forward pass of the model.
 
@@ -251,6 +251,8 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
         Returns:
             ModelOutput: The output of the underlying Hugging Face model.
         """
+        if num_logits_to_keep is None:
+            return self.model(**batch)
         # Check if num_logits_to_keep parameter exists in model's forward method
         model_forward_params = inspect.signature(self.model.forward).parameters
         if 'num_logits_to_keep' in model_forward_params:

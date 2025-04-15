@@ -430,7 +430,7 @@ class LoRA(PEFT, ModuleMatcher):
                 # - is DTensor (has _local_tensor attribute)
                 # - has quant_state attribute
                 if (
-                    self._is_fsdp_v1
+                    self._add_via_setattr
                     or hasattr(m.weight.data, '_local_tensor')
                     or (
                         getattr(m, 'quant_state', None) is not None

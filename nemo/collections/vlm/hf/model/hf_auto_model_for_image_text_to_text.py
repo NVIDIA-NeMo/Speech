@@ -94,6 +94,11 @@ class HFAutoModelForImageTextToText(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
         self.model.train()
 
+        # Ugly hack for PEFT: adapters are added here so that can be wrapped correctly with DDP.
+        if getattr(self, 'model_transform', None) is not None:
+            self.model_transform(self)
+            self.model_transform.__num_calls__ = 0
+
     def forward(self, batch):
         """Runs forward with the model"""
         return self.model(**batch)

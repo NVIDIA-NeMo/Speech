@@ -188,7 +188,6 @@ class DoRA(PEFT, ModuleMatcher):
                 self.dim,
                 base_linear_name=full_name,
                 activation='identity',
-                norm_position=None,
                 norm_type=None,
                 column_init_method=self.lora_A_init_method,
                 row_init_method=self.lora_B_init_method,

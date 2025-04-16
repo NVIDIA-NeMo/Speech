@@ -1105,7 +1105,6 @@ jobs:
   #           model.prompt="a DSLR photo of a delicious hamburger" \
   #           exp_manager.exp_dir=examples/multimodal/text_to_image/nerf/dreamfusion_results
   #
-  #           rm -rf examples/multimodal/text_to_image/nerf/dreamfusion_results
   #       - uses: "NVIDIA/NeMo/.github/actions/cancel-workflow@main"
   #         if: "failure()"
 
@@ -1135,9 +1134,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_GPT_Pretraining_no_transformer_engine
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/gpt_pretrain_results
-        rm -rf tests/collections/llm/gpt_index_mappings
 
   L2_NeMo_2_llama3_pretraining_recipe:
     needs: [pre-flight, cicd-test-container-build]
@@ -1171,10 +1167,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_GPT_DDP_Param_Parity_check
 
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/gpt_pretrain_results
-        rm -rf tests/collections/llm/gpt_index_mappings
-
   L2_NeMo_2_Hyena_Conversion_from_HF:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1183,9 +1175,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_Hyena_Conversion_from_HF
 
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/hyena_conversion_results/${{ github.run_id }}
-
   L2_NeMo_2_Hyena_DDP_Pretraining_Test:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -1193,9 +1182,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure # Assume runner has 2 GPUs
       SCRIPT: L2_NeMo_2_Hyena_DDP_Pretraining_Test
-
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/hyena_pretrain_results/${{ github.run_id }}
 
   Optional_L2_NeMo_2_SSM_Pretraining:
     needs: [pre-flight, cicd-test-container-build]
@@ -1238,9 +1224,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_Pretraining
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/t5_pretrain_results/${{ github.run_id }}
-        rm -rf tests/collections/llm/t5_index_mappings/${{ github.run_id }}
 
   L2_NeMo_2_T5_MockData_Pretraining:
     needs: [pre-flight, cicd-test-container-build]
@@ -1249,8 +1232,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_MockData_Pretraining
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/t5_pretrain_mockdata_results/${{ github.run_id }}
 
   L2_NeMo_2_T5_Finetuning:
     needs: [pre-flight, cicd-test-container-build]
@@ -1259,8 +1240,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_Finetuning
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
 
   L2_NeMo_2_T5_Squad:
     needs: [pre-flight, cicd-test-container-build]
@@ -1269,9 +1248,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_Squad
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/squad_download
-        rm -rf tests/collections/llm/t5_finetune_results/${{ github.run_id }}
 
   L2_NeMo_2_T5_LoRA:
     needs: [pre-flight, cicd-test-container-build]
@@ -1280,8 +1256,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_LoRA
-      AFTER_SCRIPT: |
-        rm -rf tests/collections/llm/t5_peft_results/${{ github.run_id }}
 
   L2_NeMo_2_BERT_Pretraining_Megatron:
     needs: [pre-flight, cicd-test-container-build]
@@ -1782,8 +1756,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_NeMo_2_Auto_Configurator_t5_TP1_PP1_MBS124
-      AFTER_SCRIPT: |
-        rm -rf examples/llm/auto_configurator/auto_conf_logs_t5
 
   L2_SpeechLM_LoRA_TP1PP1_MBS2:
     needs: [pre-flight, cicd-test-container-build]

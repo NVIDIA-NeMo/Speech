@@ -365,6 +365,7 @@ class HFMixtralExporter(io.ModelConnector[MixtralModel, "MixtralForCausalLM"]):
         from transformers import MixtralConfig as HfMixtralConfig
 
         return HfMixtralConfig(
+            architectures=["MixtralForCausalLM"],
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
             intermediate_size=source.ffn_hidden_size,

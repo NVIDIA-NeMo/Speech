@@ -198,6 +198,7 @@ class HFPhi3Exporter(io.ModelConnector[Phi3Model, "Phi3ForCausalLM"]):
         from transformers import Phi3Config as HFPhi3Config
 
         return HFPhi3Config(
+            architectures=["Phi3ForCausalLM"],
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
             intermediate_size=source.ffn_hidden_size,

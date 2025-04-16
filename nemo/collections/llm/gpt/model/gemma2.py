@@ -362,6 +362,7 @@ class HFGemmaExporter(io.ModelConnector[Gemma2Model, "GemmaForCausalLM"]):
         from transformers import Gemma2Config as HFGemmaConfig
 
         return HFGemmaConfig(
+            architectures=["Gemma2ForCausalLM"],
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
             intermediate_size=source.ffn_hidden_size,

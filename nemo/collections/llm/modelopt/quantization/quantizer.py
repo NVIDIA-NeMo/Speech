@@ -14,6 +14,7 @@
 
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
@@ -22,11 +23,13 @@ import torch
 from datasets import load_dataset
 from megatron.core.inference.common_inference_params import CommonInferenceParams
 from tqdm import tqdm
+from transformers import PreTrainedTokenizerBase
 
 from nemo.collections import llm
 from nemo.collections.llm.inference import MCoreTokenizerWrappper, generate
 from nemo.collections.llm.modelopt.quantization.quant_cfg_choices import get_quant_cfg_choices
 from nemo.collections.llm.utils import barrier, torch_dtype_from_precision
+from nemo.lightning import io
 from nemo.lightning.ckpt_utils import ckpt_to_context_subdir
 from nemo.lightning.io.pl import TrainerContext, ckpt_to_weights_subdir
 from nemo.utils import logging
@@ -328,11 +331,19 @@ class Quantizer:
                 export_dir = export_dir / "huggingface_tokenizer"
             model.tokenizer.save_pretrained(str(export_dir))
         else:
-            # Save the model context in order to restore its tokenizer later. The destination
-            # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
-            shutil.copytree(
-                ckpt_to_context_subdir(model_dir), os.path.join(export_dir, "nemo_context"), dirs_exist_ok=True
-            )
+            if (
+                export_fmt == "hf"
+                and hasattr(model, "tokenizer")
+                and hasattr(model.tokenizer, "tokenizer")
+                and isinstance(model.tokenizer.tokenizer, PreTrainedTokenizerBase)
+            ):
+                model.tokenizer.tokenizer.save_pretrained(str(export_dir))
+            else:
+                # Save the model context in order to restore its tokenizer later. The destination
+                # path is "nemo_context" as this name is used in nemo.export to setup tokenizer.
+                shutil.copytree(
+                    ckpt_to_context_subdir(model_dir), os.path.join(export_dir, "nemo_context"), dirs_exist_ok=True
+                )
 
     def export(self, model, model_dir: str, trainer: Optional["Trainer"] = None) -> None:
         """Export model to a TensorRT-LLM or NeMo checkpoint."""
@@ -355,13 +366,22 @@ class Quantizer:
                 TrainerContext.from_trainer(trainer).io_dump(ckpt_to_context_subdir(export_dir), yaml_attrs=["model"])
                 assert (Path(ckpt_to_weights_subdir(export_dir, False)) / "modelopt_state").exists()
         elif self.export_config.export_format == "hf":
-            assert is_automodel, "HF export is only supported for AutoModelForCausalLM"
             unwrapped_model = unwrap_for_modelopt_operations(model)
             with torch.inference_mode():
-                mte.export_hf_checkpoint(
-                    unwrapped_model,
-                    export_dir=export_dir,
-                )
+                if is_automodel:
+                    mte.export_hf_checkpoint(
+                        unwrapped_model,
+                        export_dir=export_dir,
+                    )
+                else:
+                    context = io.load_context(model_dir, subpath="model")
+                    exporter = context.exporter("hf", model_dir)
+                    config = exporter.config
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        config.save_pretrained(tmp_dir)
+                        mte.export_mcore_gpt_to_hf(
+                            unwrapped_model, pretrained_model_name_or_path=tmp_dir, export_dir=str(export_dir)
+                        )
         # TRT-LLM
         else:
             inference_tp = self.export_config.inference_tp

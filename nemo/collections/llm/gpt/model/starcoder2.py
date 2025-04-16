@@ -402,6 +402,7 @@ class HFStarcoder2Exporter(io.ModelConnector[Starcoder2Model, "Starcoder2ForCaus
         source: Starcoder2Config = io.load_context(str(self)).model.config
 
         return HFStarcoder2Config(
+            architectures=["Starcoder2ForCausalLM"],
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,
             intermediate_size=source.ffn_hidden_size,

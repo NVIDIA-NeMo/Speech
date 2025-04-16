@@ -303,6 +303,7 @@ class HFMistralExporter(io.ModelConnector[MistralModel, "MistralForCausalLM"]):
         from transformers import MistralConfig as HfMistralConfig
 
         return HfMistralConfig(
+            architectures=["MistralForCausalLM"],
             sliding_window=source.window_size[0] if source.window_size is not None else None,
             num_hidden_layers=source.num_layers,
             hidden_size=source.hidden_size,

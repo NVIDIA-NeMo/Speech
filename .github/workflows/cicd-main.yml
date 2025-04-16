@@ -1636,6 +1636,14 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_PTQ_Llama2_FP8_nemo
 
+  L2_NeMo_2_PTQ_Unified_Export:
+    needs: [pre-flight, cicd-test-container-build]
+    uses: ./.github/workflows/_test_template.yml
+    if: contains(fromJSON(needs.pre-flight.outputs.test_to_run), 'L2_NeMo_2_PTQ_Unified_Export')
+    with:
+      RUNNER: self-hosted-azure
+      SCRIPT: L2_NeMo_2_PTQ_Unified_Export
+
   L2_NeMo_2_Distill_Llama3_TP1PP2:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/_test_template.yml
@@ -2081,6 +2089,7 @@ jobs:
       - L2_NeMo_2_Automodel_PTQ_hf
       - L2_NeMo_2_PTQ_Llama2_FP8_trtllm
       - L2_NeMo_2_PTQ_Llama2_FP8_nemo
+      - L2_NeMo_2_PTQ_Unified_Export
       - L2_NeMo_2_Distill_Llama3_TP1PP2
       - L2_NeMo_2_Prune_Llama_TP1PP2
       - L2_NeMo_2_Export_In_Framework

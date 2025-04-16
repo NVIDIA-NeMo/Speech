@@ -465,4 +465,4 @@ def _legacy_evaluate(
         bootstrap_iters=params.bootstrap_iters,
     )
 
-    logging.info(f"score: {results["results"][eval_task]}")
+    logging.info(f"score: {results['results'][eval_task]}")

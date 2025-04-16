@@ -55,8 +55,8 @@ Instead of adding those to the `docs/false_positives.json` file, it would be bes
 reference using a [:ref:](https://www.sphinx-doc.org/en/master/usage/referencing.html#role-ref).
 
 For example, instead of writing `Modules <../api.html#modules>` to link to the modules section of
-a `api.rst` file, write it as ``:ref:`Modules <asr-api-modules>` ``. And in the `api.rst` file,
-add this label before the section being linked to:
+a `api.rst` file, write it as ``:ref:`Modules <asr-api-modules>` ``. And in the `api.rst` file, add
+this label before the section being linked to:
 
 ```
 .. _asr-api-modules:

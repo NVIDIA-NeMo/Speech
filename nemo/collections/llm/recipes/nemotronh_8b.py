@@ -28,7 +28,7 @@ from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed_current_scaling
+from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_current_scaling_mixed
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
@@ -177,7 +177,7 @@ def trainer(
         limit_val_batches=limit_val_batches,
         num_sanity_val_steps=0,
         use_distributed_sampler=False,
-        plugins=[bf16_with_fp8_mixed_current_scaling()],
+        plugins=[bf16_with_fp8_current_scaling_mixed()],
         val_check_interval=val_check_interval,
         enable_checkpointing=True,
     )

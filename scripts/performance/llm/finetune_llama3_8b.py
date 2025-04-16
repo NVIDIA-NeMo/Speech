@@ -18,7 +18,6 @@ import nemo_run as run
 
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.llama3_8b import finetune_recipe, model
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
@@ -81,6 +80,8 @@ def override_recipe_configs(
         vp_size,
         ep_size,
         enable_cuda_graphs=enable_cuda_graphs,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe,
@@ -98,11 +99,6 @@ def override_recipe_configs(
     if recipe.data.__fn_or_cls__ == SquadDataModule and not isfile_train_pack_metadata(HF_MODEL_URI, recipe.data):
         # flag is valid only for SquadDataModule
         recipe.data.force_redownload = True
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     recipe.optim.config.use_distributed_optimizer = True
     recipe.model.config.disable_parameter_transpose_cache = True

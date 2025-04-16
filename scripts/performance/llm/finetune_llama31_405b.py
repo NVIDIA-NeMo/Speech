@@ -20,7 +20,6 @@ import nemo_run as run
 
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.llama31_405b import finetune_recipe, model
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_fp8_h100_h16384_tp4_mbs1_seqlen2048_lora,
 )
@@ -88,6 +87,8 @@ def override_recipe_configs(
         use_mcore_fsdp=use_mcore_fsdp,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe,
@@ -105,11 +106,6 @@ def override_recipe_configs(
     if recipe.data.__fn_or_cls__ == SquadDataModule and not isfile_train_pack_metadata(HF_MODEL_URI, recipe.data):
         # flag is valid only for SquadDataModule
         recipe.data.force_redownload = True
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     if finetuning_scheme == "lora" and tp_size > 1 and args.compute_dtype.lower() == "fp8":
         tp_comm_overlap_cfg = userbuffers_fp8_h100_h16384_tp4_mbs1_seqlen2048_lora if tp_size == 4 else None

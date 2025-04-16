@@ -19,7 +19,6 @@ import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
 from nemo.collections.llm.recipes.nemotron4_340b import pretrain_recipe
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096,
     userbuffers_fp8_b200_h18432_tp8_mbs1_seqlen4096,
@@ -76,6 +75,8 @@ def override_recipe_configs(
         use_mcore_fsdp=use_mcore_fsdp,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "nemotron", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
@@ -88,11 +89,6 @@ def override_recipe_configs(
         get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
     )
     recipe.model.tokenizer = recipe.data.tokenizer
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
     assert comm_overlap_callback_idx is not None, "MegatronCommOverlapCallback missing. Required for performance."

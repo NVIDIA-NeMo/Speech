@@ -19,7 +19,6 @@ import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
 from nemo.collections.llm.recipes.llama3_70b import pretrain_recipe
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_bf16_b200_h8192_tp2_mbs1_seqlen8192,
     userbuffers_bf16_h100_h8192_tp4_mbs1_seqlen8192,
@@ -78,6 +77,8 @@ def override_recipe_configs(
         use_mcore_fsdp=use_mcore_fsdp,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "llama3", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
@@ -87,11 +88,6 @@ def override_recipe_configs(
 
     # data module configs
     recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-70B")
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     ub_cfg = {
         "h100": {

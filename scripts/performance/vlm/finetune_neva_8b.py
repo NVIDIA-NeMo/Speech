@@ -16,7 +16,6 @@ from os.path import basename, splitext
 
 import nemo_run as run
 
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.collections.vlm.recipes.neva_llama3_8b import finetune_recipe
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
@@ -64,6 +63,8 @@ def override_recipe_configs(
         vp_size,
         ep_size,
         enable_cuda_graphs=enable_cuda_graphs,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe,
@@ -79,11 +80,6 @@ def override_recipe_configs(
     recipe.data.tokenizer = run.Config(
         get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=128256
     )
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     return recipe
 

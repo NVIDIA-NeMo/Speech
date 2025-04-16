@@ -17,7 +17,6 @@ from os.path import basename, splitext
 import nemo_run as run
 
 from nemo.collections.llm.recipes.llama3_8b import pretrain_recipe
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_mixed
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
@@ -64,6 +63,8 @@ def override_recipe_configs(
         vp_size,
         ep_size,
         enable_cuda_graphs=enable_cuda_graphs,
+        compute_dtype=args.compute_dtype,
+        fp8_recipe=args.fp8_recipe,
     )
     recipe = set_exp_logging_configs(
         recipe, "pre_train", "llm", "llama3", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
@@ -71,11 +72,6 @@ def override_recipe_configs(
 
     # data module configs
     recipe.data.tokenizer = hf_tokenizer("meta-llama/Meta-Llama-3-8B")
-
-    # compute dtype configs
-    if args.compute_dtype.lower() == "fp8":
-        recipe.trainer.plugins = bf16_with_fp8_mixed()
-        recipe.trainer.plugins.grad_reduce_in_fp32 = False
 
     return recipe
 

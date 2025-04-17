@@ -227,7 +227,6 @@ class TestPredictiveModelNCSN:
         instance2 = PredictiveAudioToAudioModel.from_config_dict(confdict)
         assert isinstance(instance2, PredictiveAudioToAudioModel)
 
-    @pytest.mark.pleasefixme
     @pytest.mark.unit
     @pytest.mark.parametrize(
         "batch_size, sample_len",
@@ -242,7 +241,9 @@ class TestPredictiveModelNCSN:
         model = predictive_model_ncsn.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5
@@ -298,7 +299,9 @@ class TestPredictiveModelConformer:
         model = predictive_model_conformer.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5
@@ -354,7 +357,9 @@ class TestPredictiveModelStreamingConformer:
         model = predictive_model_streaming_conformer.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5

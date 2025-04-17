@@ -14,6 +14,7 @@
 
 
 """Interfaces common to all Neural Modules and Models."""
+from __future__ import annotations
 import copy
 import hashlib
 import inspect
@@ -26,14 +27,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import total_ordering
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import hydra
 import torch
 import wrapt
-from huggingface_hub import HfApi
+from huggingface_hub import _CACHED_NO_EXIST, HfApi
 from huggingface_hub import get_token as get_hf_token
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download, try_to_load_from_cache
 from omegaconf import DictConfig, OmegaConf
 
 import nemo
@@ -853,6 +854,12 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
         # Resolve the model name without origin for filename
         resolved_model_filename = model_name.split("/")[-1] + '.nemo'
 
+        # Try to take from cache first - if not fallback to options below
+        if not refresh_cache:
+            path = try_to_load_from_cache(repo_id=model_name, filename=resolved_model_filename)
+            if path is not None and path is not _CACHED_NO_EXIST:
+                return cls, path
+
         # Check if api token exists, use if it does
         hf_token = get_hf_token()
 
@@ -918,11 +925,7 @@ class Model(Typing, Serialization, FileIO, HuggingFaceFileIO):
                 token=hf_token,
             )
 
-        # Cannot pre-resolve the specific class without double instantiation (first for config, second for model params)
-        # Default to current class, and perform basic class path resolution (handled via restore_from() + target class)
-        class_ = cls
-
-        return class_, path
+        return cls, path
 
     def generate_model_card(
         self, type: str = "hf", template: str = None, template_kwargs: Optional[Dict[str, str]] = None

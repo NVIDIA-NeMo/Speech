@@ -199,7 +199,9 @@ class TestMaskModelRNN:
         model = mask_model_rnn.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5
@@ -258,7 +260,9 @@ class TestMaskModelFlexArray:
         model = mask_model_flexarray.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, num_channels, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, num_channels, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5
@@ -319,7 +323,9 @@ class TestBFModelFlexArray:
         model = bf_model_flexarray.eval()
         confdict = model.to_config_dict()
         sampling_rate = confdict['sample_rate']
-        input_signal = torch.randn(size=(batch_size, num_channels, sample_len * sampling_rate))
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, num_channels, sample_len * sampling_rate), generator=rng)
         input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
 
         abs_tol = 1e-5

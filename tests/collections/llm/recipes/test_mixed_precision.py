@@ -17,10 +17,12 @@ from nemo.collections.llm.recipes.precision.mixed_precision import (
     bf16_mixed,
     bf16_with_fp8_current_scaling_mixed,
     bf16_with_fp8_mixed,
+    bf16_with_fp8_subchannel_scaling_mixed,
     bf16_with_mxfp8_mixed,
     fp16_mixed,
     fp16_with_fp8_current_scaling_mixed,
     fp16_with_fp8_mixed,
+    fp16_with_fp8_subchannel_scaling_mixed,
     fp16_with_mxfp8_mixed,
 )
 
@@ -126,3 +128,26 @@ def test_fp16_with_fp8_current_scaling_mixed_config():
     assert config.first_last_layers_bf16 is True
     assert config.num_layers_at_start_in_bf16 == 1
     assert config.num_layers_at_end_in_bf16 == 1
+
+
+def test_bf16_with_fp8_subchannel_scaling_mixed_config():
+    config = bf16_with_fp8_subchannel_scaling_mixed()
+    assert config.precision == "bf16-mixed"
+    assert config.params_dtype == torch.bfloat16
+    assert config.pipeline_dtype == torch.bfloat16
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "blockwise"
+    assert config.fp8_param_gather is False
+
+
+def test_fp16_with_fp8_subchannel_scaling_mixed_config():
+    config = fp16_with_fp8_subchannel_scaling_mixed()
+    assert config.precision == "16-mixed"
+    assert config.params_dtype == torch.half
+    assert config.pipeline_dtype == torch.half
+
+    # Check FP8 specific settings
+    assert config.fp8 == "hybrid"
+    assert config.fp8_recipe == "blockwise"
+    assert config.fp8_param_gather is False

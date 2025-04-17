@@ -155,3 +155,33 @@ def fp16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
     cfg.num_layers_at_end_in_bf16 = 1
     cfg.fp8_param_gather = True
     return cfg
+
+
+def bf16_with_fp8_subchannel_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16 with FP8
+    NV Subchannel scaling. This recipe uses 128x128 blockwise quantization for weight and 1x128 blockwise
+    quantization for activation.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 with FP8 subchannel scaling mixed precision training
+    """
+    cfg = bf16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "blockwise"
+    cfg.fp8_param_gather = False
+    return cfg
+
+
+def fp16_with_fp8_subchannel_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16 with FP8
+    NV Subchannel scaling. This recipe uses 128x128 blockwise quantization for weight and 1x128 blockwise
+    quantization for activation.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for FP16 with FP8 subchannel scaling mixed precision training
+    """
+    cfg = fp16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "blockwise"
+    cfg.fp8_param_gather = False
+    return cfg

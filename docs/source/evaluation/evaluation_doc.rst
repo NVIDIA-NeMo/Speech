@@ -76,7 +76,7 @@ the processes from being killed and aborting the runs.
 
     api_endpoint = ApiEndpoint()
     eval_target = EvaluationTarget(api_endpoint=api_endpoint)
-    eval_params = ConfigParams(top_p=1, temperature=1, limit_samples=2, parallelism=4)
+    eval_params = ConfigParams(top_p=1, temperature=1, limit_samples=2, parallelism=1)
     eval_config = EvaluationConfig(type='mmlu', params=eval_params)
 
     if __name__ == "__main__":

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import lightning.pytorch as pl
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch.utils.data import DataLoader
 
 from nemo.collections.common.tokenizers import AutoTokenizer
@@ -191,6 +192,12 @@ class FineTuningDataModule(pl.LightningDataModule):
             consistency_check=False,
         )
         self.data_sampler.if_first_step = 1
+
+        rank_zero_info(
+            "*** Loaded DataModule state dict successfully."
+            " IGNORE PTL's warning below about the dataloader not being resumable."
+            " This is warning is expected because we are handling dataloader resumption manually in NeMo. ***"
+        )
 
     def train_dataloader(self) -> DataLoader:
         # pylint: disable=C0115,C0116

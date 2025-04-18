@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Callable, Literal, Optional
+from typing import Annotated, Callable, Literal, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -35,7 +35,7 @@ try:
     from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import GPTInferenceWrapper
     from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
     from megatron.core.models.mamba import MambaModel as MCoreMambaModel
-    from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec
+    from megatron.core.models.mamba.mamba_layer_specs import mamba_stack_spec as default_mamba_stack_spec
 
     HAVE_MEGATRON_CORE_OR_TE = True
 
@@ -44,6 +44,7 @@ except (ImportError, ModuleNotFoundError):
     HAVE_MEGATRON_CORE_OR_TE = False
 
 from megatron.core.transformer.enums import AttnBackend
+from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 
 
@@ -207,11 +208,18 @@ class SSMConfig(TransformerConfig, io.IOMixin):
     deallocate_pipeline_outputs: bool = True
     bias_dropout_fusion: bool = True
     cross_entropy_loss_fusion: bool = True
+    mamba_stack_spec: Union[ModuleSpec, Callable[[], ModuleSpec]] = field(
+        default_factory=lambda: default_mamba_stack_spec
+    )
 
     def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreMambaModel":
         """
         Configures the model for training or inference.
         """
+        mamba_stack_spec = self.mamba_stack_spec
+        if not isinstance(mamba_stack_spec, ModuleSpec):
+            mamba_stack_spec = mamba_stack_spec()
+
         return MCoreMambaModel(
             self,
             mamba_stack_spec=mamba_stack_spec,

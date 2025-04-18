@@ -14,6 +14,8 @@
 
 from dataclasses import dataclass
 
+from nemo.lightning.io.mixin import track_io
+
 
 @dataclass
 class TPOverlapCfg:
@@ -32,7 +34,7 @@ class PipelineOverlapCfg(TPOverlapCfg):
     set_sm_margin: bool
     fp8_buf: bool = (False,)
     atomic_gemm: bool = False
-    method: str = 'pipeline'
+    method: str = "pipeline"
 
 
 @dataclass
@@ -40,7 +42,7 @@ class RingExchangeOverlapCfg(TPOverlapCfg):
     """Dataclass for ring exchange TP overlap config."""
 
     aggregate: bool = False
-    method: str = 'ring_exchange'
+    method: str = "ring_exchange"
     num_sm: int = 1
     cga_size: int = 1
     set_sm_margin: bool = False
@@ -55,7 +57,7 @@ class BulkOverlapCfg(TPOverlapCfg):
     num_sm: int
     cga_size: int
     set_sm_margin: bool
-    method: str = 'bulk'
+    method: str = "bulk"
 
 
 @dataclass
@@ -73,6 +75,9 @@ class TransformerLayerTPOverlapCfg:
     proj_fprop: TPOverlapCfg
     fc2_fprop: TPOverlapCfg
 
+
+track_io(TPOverlapCfg)
+track_io(TransformerLayerTPOverlapCfg)
 
 # TODO: Add more configs and create a getter function for expose a single api
 # Model configs: H100/70B/TP8/MBS1/SeqLen8K

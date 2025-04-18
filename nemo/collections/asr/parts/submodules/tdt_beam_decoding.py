@@ -26,6 +26,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -34,6 +35,9 @@ from tqdm import tqdm
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules.rnnt_beam_decoding import pack_hypotheses
+from nemo.collections.asr.parts.submodules.tdt_malsd_batched_computer import ModifiedALSDBatchedTDTComputer
+from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceMethodMixin
+from nemo.collections.asr.parts.utils.rnnt_batched_beam_utils import BlankLMScoreMode, PruningMode
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis, NBestHypotheses, is_prefix
 from nemo.core.classes import Typing, typecheck
 from nemo.core.neural_types import AcousticEncodedRepresentation, HypothesisType, LengthsType, NeuralType
@@ -161,6 +165,10 @@ class BeamTDTInfer(Typing):
         preserve_alignments: bool = False,
         ngram_lm_model: Optional[str] = None,
         ngram_lm_alpha: float = 0.3,
+        max_symbols_per_step: Optional[int] = None,
+        blank_lm_score_mode: Optional[str] = "no_score",
+        pruning_mode: Optional[str] = "early",
+        allow_cuda_graphs: bool = False,
     ):
         self.joint = joint_model
         self.decoder = decoder_model
@@ -204,6 +212,27 @@ class BeamTDTInfer(Typing):
         else:
             raise NotImplementedError(
                 f"The search type ({search_type}) supplied is not supported!\n" f"Please use one of : (default, maes)"
+            )
+
+        if max_symbols_per_step is not None:
+            logging.warning(
+                f"Not supported parameter `max_symbols_per_step` for decoding strategy {self.search_algorithm }"
+            )
+
+        if allow_cuda_graphs:
+            logging.warning(
+                f"""Cuda Graphs are not supported for the decoding strategy {self.search_algorithm}.
+                                Decoding will proceed without Cuda Graphs."""
+            )
+
+        strategies = ["default", "maes"]
+        strategies_batch = ["malsd_batch"]
+        if (pruning_mode, blank_lm_score_mode) != ("early", "no_score"):
+            logging.warning(
+                f"""Decoding strategies {strategies} support early pruning and the 'no_score' blank scoring mode.
+                Please choose a strategy from {strategies_batch} for {pruning_mode} pruning 
+                and {blank_lm_score_mode} blank scoring mode." 
+                """
             )
 
         if self.search_type == 'maes':
@@ -798,3 +827,140 @@ class BeamTDTInfer(Typing):
             return sorted(hyps, key=lambda x: x.score / len(x.y_sequence), reverse=True)
         else:
             return sorted(hyps, key=lambda x: x.score, reverse=True)
+
+
+class BeamBatchedTDTInfer(Typing, ConfidenceMethodMixin):
+    @property
+    def input_types(self):
+        """Returns definitions of module input ports."""
+        return {
+            "encoder_output": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+            "encoded_lengths": NeuralType(tuple('B'), LengthsType()),
+            "partial_hypotheses": [NeuralType(elements_type=HypothesisType(), optional=True)],  # must always be last
+        }
+
+    def __init__(
+        self,
+        decoder_model: rnnt_abstract.AbstractRNNTDecoder,
+        joint_model: rnnt_abstract.AbstractRNNTJoint,
+        durations: list,
+        blank_index: int,
+        beam_size: int,
+        search_type: str = 'malsd_batch',
+        score_norm: bool = True,
+        max_symbols_per_step: Optional[int] = None,
+        preserve_alignments: bool = False,
+        ngram_lm_model: Optional[str | Path] = None,
+        ngram_lm_alpha: float = 0.0,
+        blank_lm_score_mode: Optional[str | BlankLMScoreMode] = BlankLMScoreMode.NO_SCORE,
+        pruning_mode: Optional[str | PruningMode] = PruningMode.EARLY,
+        allow_cuda_graphs: Optional[bool] = True,
+        return_best_hypothesis: Optional[str] = True,
+    ):
+        """
+        Init method.
+        Args:
+            decoder_model: Prediction network from RNN-T
+            joint_model: Joint module from RNN-T
+            durations: Token durations tensor for TDT
+            blank_index: index of blank symbol
+            beam_size: beam size
+            max_symbols_per_step: max symbols to emit on each step (to avoid infinite looping)
+            preserve_alignments: if alignments are needed
+            ngram_lm_model: path to the NGPU-LM n-gram LM model: .arpa or .nemo formats
+            ngram_lm_alpha: weight for the n-gram LM scores
+            blank_lm_score_mode: mode for scoring blank symbol with LM
+            pruning_mode: mode for pruning hypotheses with LM
+            allow_cuda_graphs: whether to allow CUDA graphs
+            score_norm: whether to normalize scores before best hypothesis extraction
+        """
+        super().__init__()
+        self.decoder = decoder_model
+        self.joint = joint_model
+
+        self.durations = durations
+        self._blank_index = blank_index
+        self._SOS = blank_index  # Start of single index
+        self.beam_size = beam_size
+        self.return_best_hypothesis = return_best_hypothesis
+        self.score_norm = score_norm
+
+        if max_symbols_per_step is not None and max_symbols_per_step <= 0:
+            raise ValueError(f"Expected max_symbols_per_step > 0 (or None), got {max_symbols_per_step}")
+        self.max_symbols = max_symbols_per_step
+        self.preserve_alignments = preserve_alignments
+
+        if search_type == "malsd_batch":
+            # Depending on availability of `blank_as_pad` support
+            # switch between more efficient batch decoding technique
+            self._decoding_computer = ModifiedALSDBatchedTDTComputer(
+                decoder=self.decoder,
+                joint=self.joint,
+                durations=durations,
+                beam_size=self.beam_size,
+                blank_index=self._blank_index,
+                max_symbols_per_step=self.max_symbols,
+                preserve_alignments=preserve_alignments,
+                ngram_lm_model=ngram_lm_model,
+                ngram_lm_alpha=ngram_lm_alpha,
+                blank_lm_score_mode=blank_lm_score_mode,
+                pruning_mode=pruning_mode,
+                allow_cuda_graphs=allow_cuda_graphs,
+            )
+        else:
+            raise Exception(f"Decoding strategy {search_type} nor implemented.")
+
+    @property
+    def output_types(self):
+        """Returns definitions of module output ports."""
+        return {"predictions": [NeuralType(elements_type=HypothesisType())]}
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+
+    @typecheck()
+    def forward(
+        self,
+        encoder_output: torch.Tensor,
+        encoded_lengths: torch.Tensor,
+        partial_hypotheses: Optional[list[Hypothesis]] = None,
+    ) -> Tuple[list[Hypothesis] | List[NBestHypotheses]]:
+        """Returns a list of hypotheses given an input batch of the encoder hidden embedding.
+        Output token is generated auto-regressively.
+        Args:
+            encoder_output: A tensor of size (batch, features, timesteps).
+            encoded_lengths: list of int representing the length of each sequence
+                output sequence.
+        Returns:
+            Tuple[list[Hypothesis] | List[NBestHypotheses]]: Tuple of a list of hypotheses for each batch. Each hypothesis contains
+                the decoded sequence, timestamps and associated scores. The format of the returned hypotheses depends
+                on the `return_best_hypothesis` attribute:
+                    - If `return_best_hypothesis` is True, returns the best hypothesis for each batch.
+                    - Otherwise, returns the N-best hypotheses for each batch.
+        """
+        # Preserve decoder and joint training state
+        decoder_training_state = self.decoder.training
+        joint_training_state = self.joint.training
+
+        with torch.inference_mode():
+            # Apply optional preprocessing
+            encoder_output = encoder_output.transpose(1, 2)  # (B, T, D)
+            logitlen = encoded_lengths
+
+            self.decoder.eval()
+            self.joint.eval()
+
+            inseq = encoder_output  # [B, T, D]
+            batched_beam_hyps = self._decoding_computer(x=inseq, out_len=logitlen)
+
+            # Ensures the correct number of hypotheses (batch_size) for CUDA Graphs compatibility
+            batch_size = encoder_output.shape[0]
+            if self.return_best_hypothesis:
+                hyps = batched_beam_hyps.to_hyps_list(score_norm=self.score_norm)[:batch_size]
+            else:
+                hyps = batched_beam_hyps.to_nbest_hyps_list(score_norm=self.score_norm)[:batch_size]
+
+        self.decoder.train(decoder_training_state)
+        self.joint.train(joint_training_state)
+
+        return (hyps,)

@@ -29,7 +29,7 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from nemo.collections.asr.modules import rnnt_abstract
 from nemo.collections.asr.parts.submodules import stateless_net
@@ -379,13 +379,26 @@ class StatelessTransducerDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
     @classmethod
     def batch_replace_states_mask(
         cls,
-        src_states: list[torch.Tensor],
-        dst_states: list[torch.Tensor],
+        src_states: tuple[torch.Tensor, torch.Tensor] | list[torch.Tensor],
+        dst_states: tuple[torch.Tensor, torch.Tensor] | list[torch.Tensor],
         mask: torch.Tensor,
+        other_src_states: Optional[tuple[torch.Tensor, torch.Tensor] | list[torch.Tensor]] = None,
     ):
-        """Replace states in dst_states with states from src_states using the mask"""
+        """
+        Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
+
+        Args:
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            src_states (tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
+            dst_states (tuple[torch.Tensor, torch.Tensor], optional): The output states.
+            other_src_states (tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.
+
+        Note:
+            This operation is performed without CPU-GPU synchronization by using `torch.where`.
+        """
+        other = other_src_states if other_src_states is not None else dst_states
         # same as `dst_states[0][mask] = src_states[0][mask]`, but non-blocking
-        torch.where(mask.unsqueeze(-1), src_states[0], dst_states[0], out=dst_states[0])
+        torch.where(mask.unsqueeze(-1), src_states[0], other[0], out=dst_states[0])
 
     @classmethod
     def batch_replace_states_all(
@@ -1021,6 +1034,57 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
 
         return None
 
+    @classmethod
+    def batch_aggregate_states_beam(
+        cls,
+        src_states: tuple[torch.Tensor, torch.Tensor],
+        batch_size: int,
+        beam_size: int,
+        indices: torch.Tensor,
+        dst_states: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Aggregates decoder states based on the given indices.
+        Args:
+            src_states (Tuple[torch.Tensor, torch.Tensor]): source states of
+                shape `([L x (batch_size * beam_size, H)], [L x (batch_size * beam_size, H)])`
+            batch_size (int): The size of the batch.
+            beam_size (int): The size of the beam.
+            indices (torch.Tensor): A tensor of shape `(batch_size, beam_size)` containing
+                the indices in beam that map the source states to the destination states.
+            dst_states (Optional[Tuple[torch.Tensor, torch.Tensor]]): If provided, the method
+                updates these tensors in-place.
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]:
+        Note:
+            - The `indices` tensor is expanded to match the shape of the source states
+            during the gathering operation.
+        """
+        layers_num = src_states[0].shape[0]
+        layers_dim = src_states[0].shape[-1]
+
+        beam_shape = torch.Size((layers_num, batch_size, beam_size, layers_dim))
+        flat_shape = torch.Size((layers_num, batch_size * beam_size, layers_dim))
+
+        # Expand indices to match the source states' shape
+        indices_expanded = indices[None, :, :, None].expand(beam_shape)
+
+        if dst_states is not None:
+            # Perform in-place gathering into dst_states
+            torch.gather(
+                src_states[0].view(beam_shape), dim=2, index=indices_expanded, out=dst_states[0].view(beam_shape)
+            )
+            torch.gather(
+                src_states[1].view(beam_shape), dim=2, index=indices_expanded, out=dst_states[1].view(beam_shape)
+            )
+            return dst_states
+
+        # Gather and reshape into the output format
+        return (
+            torch.gather(src_states[0].view(beam_shape), dim=2, index=indices_expanded).view(flat_shape),
+            torch.gather(src_states[1].view(beam_shape), dim=2, index=indices_expanded).view(flat_shape),
+        )
+
     def batch_concat_states(self, batch_states: List[List[torch.Tensor]]) -> List[torch.Tensor]:
         """Concatenate a batch of decoder state to a packed state.
 
@@ -1057,13 +1121,27 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable, AdapterModuleMi
         src_states: Tuple[torch.Tensor, torch.Tensor],
         dst_states: Tuple[torch.Tensor, torch.Tensor],
         mask: torch.Tensor,
+        other_src_states: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ):
-        """Replace states in dst_states with states from src_states using the mask"""
+        """
+        Replaces states in `dst_states` with states from `src_states` based on the given `mask`.
+
+        Args:
+            mask (torch.Tensor): When True, selects values from `src_states`, otherwise `out` or `other_src_states`(if provided).
+            src_states (Tuple[torch.Tensor, torch.Tensor]): Values selected at indices where `mask` is True.
+            dst_states (Tuple[torch.Tensor, torch.Tensor])): The output states.
+            other_src_states (Tuple[torch.Tensor, torch.Tensor], optional): Values selected at indices where `mask` is False.
+
+        Note:
+            This operation is performed without CPU-GPU synchronization by using `torch.where`.
+        """
         # same as `dst_states[i][mask] = src_states[i][mask]`, but non-blocking
         # we need to cast, since LSTM is calculated in fp16 even if autocast to bfloat16 is enabled
+
+        other = other_src_states if other_src_states is not None else dst_states
         dtype = dst_states[0].dtype
-        torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[0].to(dtype), dst_states[0], out=dst_states[0])
-        torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[1].to(dtype), dst_states[1], out=dst_states[1])
+        torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[0].to(dtype), other[0].to(dtype), out=dst_states[0])
+        torch.where(mask.unsqueeze(0).unsqueeze(-1), src_states[1].to(dtype), other[1].to(dtype), out=dst_states[1])
 
     @classmethod
     def batch_replace_states_all(

@@ -41,7 +41,7 @@ fi
 aptupdate && apt-get upgrade -y && apt-get install -y swig liblzma-dev && rm -rf /var/lib/apt/lists/* # liblzma needed for flashlight decoder
 
 # install Boost package for KenLM
-wget https://boostorg.jfrog.io/artifactory/main/release/1.80.0/source/boost_1_80_0.tar.bz2 --no-check-certificate && tar --bzip2 -xf $NEMO_PATH/boost_1_80_0.tar.bz2 && cd boost_1_80_0 && ./bootstrap.sh && b2install --layout=tagged link=static,shared threading=multi,single install -j4 && cd .. || echo FAILURE
+wget https://archives.boost.io/release/1.80.0/source/boost_1_80_0.tar.bz2 --no-check-certificate && tar --bzip2 -xf $NEMO_PATH/boost_1_80_0.tar.bz2 && cd boost_1_80_0 && ./bootstrap.sh && b2install --layout=tagged link=static,shared threading=multi,single install -j4 && cd .. || echo FAILURE
 export BOOST_ROOT=$NEMO_PATH/boost_1_80_0
 
 git clone https://github.com/NVIDIA/OpenSeq2Seq

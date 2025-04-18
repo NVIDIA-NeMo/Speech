@@ -89,6 +89,7 @@ def get_model_encoder_output(data_dir, model_name):
         model = ASRModel.from_pretrained(model_name, map_location='cpu')  # type: ASRModel
         model.preprocessor.featurizer.dither = 0.0
         model.preprocessor.featurizer.pad_to = 0
+        model.eval()
 
         audio, sr = librosa.load(path=audio_filepath, sr=16000, mono=True)
 

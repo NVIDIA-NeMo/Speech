@@ -51,9 +51,8 @@ except ImportError:
     from torch.distributed._tensor.placement_types import Replicate, Shard
 
 MixedPrecisionPolicy, HAS_MIXED_PRECISION_POLICY = safe_import_from(
-    "torch.distributed._composable.fsdp", "MixedPrecisionPolicy"
+    "torch.distributed.fsdp", "MixedPrecisionPolicy", fallback_module="torch.distributed._composable.fsdp"
 )
-
 CPUOffloadPolicy, HAS_CPU_OFFLOAD_POLICY = safe_import_from(
     "torch.distributed.fsdp", "CPUOffloadPolicy", fallback_module="torch.distributed._composable.fsdp"
 )

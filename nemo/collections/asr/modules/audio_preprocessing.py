@@ -290,11 +290,11 @@ class AudioToMelSpectrogramPreprocessor(AudioPreprocessor, Exportable):
         )
 
     def input_example(self, max_batch: int = 8, max_dim: int = 32000, min_length: int = 200):
-        batch_size = torch.randint(low=1, high=max_batch, size=[1]).item()
-        max_length = torch.randint(low=min_length, high=max_dim, size=[1]).item()
-        signals = torch.rand(size=[batch_size, max_length]) * 2 - 1
-        lengths = torch.randint(low=min_length, high=max_dim, size=[batch_size])
-        lengths[0] = max_length
+        dev = self.filter_banks.device
+
+        signals = torch.randn(size=[max_batch, max_dim], device=dev)
+        lengths = torch.randint(low=min_length, high=max_dim, size=[max_batch], device=dev)
+        lengths[0] = max_dim
         return signals, lengths
 
     def get_features(self, input_signal, length):

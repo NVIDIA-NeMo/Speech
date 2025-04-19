@@ -44,8 +44,7 @@ class TestASRModulesBasicTests:
 
         # Ensure that the two functions behave similarily
         for _ in range(10):
-            input_signal = torch.randn(size=(4, 512))
-            length = torch.randint(low=161, high=500, size=[4])
+            input_signal, length = instance1.input_example(4, 512, 161)
 
             with torch.no_grad():
                 # batch size 1
@@ -68,6 +67,16 @@ class TestASRModulesBasicTests:
             diff = torch.max(torch.abs(res_instance - res_batch))
             assert diff <= 1e-3
 
+    @pytest.mark.run_only_on('GPU')
+    def test_AudioToMelSpectrogramPreprocessor_gpu(self):
+        instance0 = modules.AudioToMelSpectrogramPreprocessor().to("cuda")
+        input_signal, length = instance0.input_example()
+
+        with torch.no_grad():
+            processed_signal, _ = instance0(input_signal=input_signal, length=length)
+
+        assert processed_signal.device == input_signal.device
+
     @pytest.mark.unit
     def test_SpectrogramAugmentationr_legacy(self):
         # Make sure constructor works
@@ -78,8 +87,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal = torch.randn(size=(4, 512))
-        length = torch.randint(low=161, high=500, size=[4])
+        input_signal, length = instance0.input_example(4, 512, 161)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -96,8 +104,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal = torch.randn(size=(4, 512))
-        length = torch.randint(low=161, high=500, size=[4])
+        input_signal, length = instance0.input_example(4, 512, 161)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -121,8 +128,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal = torch.randn(size=(8, 512))
-        length = torch.randint(low=161, high=500, size=[8])
+        input_signal, length = instance0.input_example(8, 512, 161)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 
@@ -156,8 +162,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal = torch.randn(size=(4, 512))
-        length = torch.randint(low=161, high=500, size=[4])
+        input_signal, length = instance0.input_example(4, 512, 161)
         res0 = instance0(input_signal=input_signal, length=length)
         res, new_length = instance1(input_signal=res0[0], length=length)
 
@@ -186,8 +191,7 @@ class TestASRModulesBasicTests:
 
         # Make sure forward doesn't throw with expected input
         instance0 = modules.AudioToMelSpectrogramPreprocessor(dither=0)
-        input_signal = torch.randn(size=(4, 512))
-        length = torch.randint(low=161, high=500, size=[4])
+        input_signal, length = instance0.input_example(4, 512, 161)
         res0 = instance0(input_signal=input_signal, length=length)
         res = instance1(input_spec=res0[0], length=length)
 

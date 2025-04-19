@@ -848,21 +848,20 @@ class ParallelHyenaOperator(nn.Module):
             local_bias_size = self.width_per_tp_group // get_context_parallel_world_size()
             conv_bias = self.conv_bias[rank * local_bias_size : (rank + 1) * local_bias_size]
 
-        else:
-            h = h.repeat_interleave(self.group_dim, dim=-2)
+        h = h.repeat_interleave(self.group_dim, dim=-2)
 
-            z = x2 * v
-            # with torch.autocast("cuda"):
-            z = fftconv_func(
-                u=z.to(torch.float32),
-                k=h.to(torch.float32),
-                D=conv_bias.to(torch.float32),
-                dropout_mask=None,
-                gelu=False,
-                bidirectional=self.bidirectional,
-            )
-            z = z.to(v.dtype)
-            z = x1 * z
+        z = x2 * v
+        # with torch.autocast("cuda"):
+        z = fftconv_func(
+            u=z.to(torch.float32),
+            k=h.to(torch.float32),
+            D=conv_bias.to(torch.float32),
+            dropout_mask=None,
+            gelu=False,
+            bidirectional=self.bidirectional,
+        )
+        z = z.to(v.dtype)
+        z = x1 * z
 
         if cp_group is not None and len(torch.distributed.get_process_group_ranks(cp_group)) > 1:
             z = AllToAllSingleFunction.apply(z, cp_group, "full_to_split", True)
@@ -910,27 +909,23 @@ class ParallelShortHyenaOperator(nn.Module):
         self.hidden_size = hidden_size
         self.use_fast_causal_conv = use_fast_causal_conv
 
-        # world_size = mpu.get_model_parallel_world_size() if not local_init else 1
-        # world_size: int = torch.distributed.get_world_size() if not local_init else 1
-
         world_size: int = get_tensor_model_parallel_world_size() if not local_init else 1
         # assert, if using fast_conv_mixer, then the hyena_short_conv_len must be 3
         if use_fast_causal_conv:
             assert hyena_config.hyena_short_conv_len <= 4, "fast_conv_mixer requires hyena_short_conv_len <= 4"
 
-        else:
-            kernel_size = hyena_config.hyena_short_conv_len
-            self.pregate = hyena_config.hyena_short_conv_pregate
-            self.postgate = hyena_config.hyena_short_conv_postgate
-            self.num_groups = (
-                hyena_config.num_groups_hyena_short
-                if hyena_config.num_groups_hyena_short is not None
-                else hyena_config.num_groups_hyena
-            )
-            if self.num_groups is None:
-                self.num_groups = transformer_config.hidden_size
+        kernel_size = hyena_config.hyena_short_conv_len
+        self.pregate = hyena_config.hyena_short_conv_pregate
+        self.postgate = hyena_config.hyena_short_conv_postgate
+        self.num_groups = (
+            hyena_config.num_groups_hyena_short
+            if hyena_config.num_groups_hyena_short is not None
+            else hyena_config.num_groups_hyena
+        )
+        if self.num_groups is None:
+            self.num_groups = transformer_config.hidden_size
 
-            self.num_groups = int(self.num_groups * hyena_config.hyena_width_expansion)
+        self.num_groups = int(self.num_groups * hyena_config.hyena_width_expansion)
 
         self.width_per_tp_group, self.num_groups, self.group_dim = get_groups_and_group_sizes(
             self.hidden_size, self.num_groups, world_size, hyena_config.hyena_width_expansion

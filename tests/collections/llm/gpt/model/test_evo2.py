@@ -156,6 +156,7 @@ def test_hyena_nv_test_config():
 
 @pytest.mark.pleasefixme
 def test_convert_hyena():
+    from huggingface_hub.utils import RepositoryNotFoundError
 
     evo2_config = llm.Hyena1bConfig()
     model_ckpt = "dummy_model_deosnt_exist"

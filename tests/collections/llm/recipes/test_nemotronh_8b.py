@@ -43,7 +43,7 @@ class TestNemotronH8B:
         assert trainer_config.__fn_or_cls__ == Trainer
         assert trainer_config.accelerator == "gpu"
         assert trainer_config.devices == 8
-        assert trainer_config.num_nodes == 1
+        assert trainer_config.num_nodes == 8
         assert trainer_config.max_steps == 10
 
         # Check strategy configuration
@@ -69,7 +69,7 @@ class TestNemotronH8B:
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__ == MockDataModule
         assert recipe.data.seq_length == 8192
-        assert recipe.data.global_batch_size == 8
+        assert recipe.data.global_batch_size == 768
 
     def test_finetune_recipe(self, recipe):
         recipe = recipe.finetune_recipe(resume_path="dummy_path", vocab_file="dummy_vocab")
@@ -82,7 +82,7 @@ class TestNemotronH8B:
         assert isinstance(recipe.data, run.Config)
         assert recipe.data.__fn_or_cls__.__name__ == "MockDataModule"
         assert recipe.data.seq_length == 8192
-        assert recipe.data.global_batch_size == 8
+        assert recipe.data.global_batch_size == 768
 
     @pytest.mark.parametrize("num_nodes,num_gpus_per_node", [(32, 8), (16, 16)])
     def test_pretrain_recipe_with_different_configurations(self, recipe, num_nodes, num_gpus_per_node):

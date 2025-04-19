@@ -68,13 +68,6 @@ class TestHyena7B:
         assert recipe.trainer.num_nodes == num_nodes
         assert recipe.trainer.devices == num_gpus_per_node
 
-    def test_finetune_recipe_default(self):
-        """
-        Test the finetune_recipe factory function with default parameters.
-        """
-        with pytest.raises(AssertionError, match="resume_path None, invalid for finetune"):
-            finetune_recipe()
-
     def test_finetune_recipe_with_parameters(self):
         """
         Test the finetune_recipe factory function with valid parameters.

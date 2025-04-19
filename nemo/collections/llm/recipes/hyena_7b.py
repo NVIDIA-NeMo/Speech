@@ -98,7 +98,7 @@ def pretrain_recipe(
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
     dir=None,
-    resume_path=None,
+    resume_path="hyena-7b-pretrain",
     micro_batch_size=1,
     global_batch_size=8,
     num_nodes=1,
@@ -110,7 +110,7 @@ def finetune_recipe(
     **kwargs,
 ) -> run.Partial:
     """ """
-    assert resume_path is not None, "resume_path None, invalid for finetune"
+
     return pretrain_recipe_creater(
         dir=dir,
         resume_path=resume_path,

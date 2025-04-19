@@ -136,6 +136,27 @@ def bf16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
     return cfg
 
 
+def nemotron_h_bf16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
+    """Create a MegatronMixedPrecision plugin configuration for mixed precision training using BF16 with FP8
+    per-tensor current scaling.
+
+    Note: The baseline current scaling recipe uses BF16 in the first and last Transformer layers. The user
+    can choose to disable the BF16 layers or apply BF16 to more Transformer layers.
+
+    Returns:
+        run.Config[MegatronMixedPrecision]: Configuration for BF16 with FP8 per-tensor current scaling mixed
+        precision training
+    """
+    cfg = bf16_mixed()
+    cfg.fp8 = 'hybrid'
+    cfg.fp8_recipe = "tensorwise"
+    cfg.first_last_layers_bf16 = True
+    cfg.num_layers_at_start_in_bf16 = 2
+    cfg.num_layers_at_end_in_bf16 = 2
+    cfg.fp8_param_gather = True
+    return cfg
+
+
 def fp16_with_fp8_current_scaling_mixed() -> run.Config[MegatronMixedPrecision]:
     """Create a MegatronMixedPrecision plugin configuration for mixed precision training using FP16 with FP8
     per-tensor current scaling.

@@ -28,7 +28,7 @@ from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.recipes.log.default import default_log, default_resume, tensorboard_logger
 from nemo.collections.llm.recipes.optim.adam import distributed_fused_adam_with_cosine_annealing
-from nemo.collections.llm.recipes.precision.mixed_precision import bf16_with_fp8_current_scaling_mixed
+from nemo.collections.llm.recipes.precision.mixed_precision import bf16_mixed
 from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
@@ -90,7 +90,7 @@ def trainer(
     virtual_pipeline_parallelism: Optional[int] = None,
     context_parallelism: int = 1,
     sequence_parallelism: bool = True,
-    num_nodes: int = 1,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
     max_steps: int = 10,
     val_check_interval: int = 10,
@@ -149,6 +149,7 @@ def trainer(
     )
 
     callbacks = [
+        run.Config(TimingCallback),
         run.Config(
             MegatronCommOverlapCallback,
             tp_comm_bootstrap_backend="nccl",
@@ -177,7 +178,7 @@ def trainer(
         limit_val_batches=limit_val_batches,
         num_sanity_val_steps=0,
         use_distributed_sampler=False,
-        plugins=[bf16_with_fp8_current_scaling_mixed()],
+        plugins=[bf16_mixed()],
         val_check_interval=val_check_interval,
         enable_checkpointing=True,
     )
@@ -189,7 +190,7 @@ def pretrain_recipe(
     dir: Optional[str] = None,
     name: str = "default",
     vocab_file: str = None,
-    num_nodes: int = 1,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
     tensor_parallelism: int = 2,
     sequence_parallelism: bool = True,
@@ -202,9 +203,8 @@ def pretrain_recipe(
     save_top_k: int = 5,
     ckpt_async_save: bool = False,
     seq_length: int = 8192,
-    gbs: int = 8,
+    gbs: int = 768,
     mbs: int = 1,
-    performance_mode: bool = False,
     fn=pretrain,
 ) -> run.Partial:
     """
@@ -245,7 +245,6 @@ def pretrain_recipe(
             log_every_n_steps=log_every_n_steps,
             save_top_k=save_top_k,
             ckpt_async_save=ckpt_async_save,
-            callbacks=[run.Config(TimingCallback)],
         ),
         data=run.Config(
             MockDataModule,
@@ -258,18 +257,16 @@ def pretrain_recipe(
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=3e-4),
         resume=default_resume(),
     )
-    if performance_mode:
-        recipe = performance_optimizations(recipe)
     return recipe
 
 
 @run.cli.factory(target=finetune, name=NAME)
 def finetune_recipe(
-    resume_path,
+    resume_path: str = "nemotronh-8b-pretrain",
     vocab_file: str = None,
     dir: Optional[str] = None,
     name: str = "default",
-    num_nodes: int = 1,
+    num_nodes: int = 8,
     num_gpus_per_node: int = 8,
     tensor_parallelism: int = 2,
     sequence_parallelism: bool = True,
@@ -282,9 +279,8 @@ def finetune_recipe(
     log_every_n_steps: int = 10,
     save_top_k: int = 5,
     ckpt_async_save: bool = False,
-    gbs: int = 8,
+    gbs: int = 768,
     mbs: int = 1,
-    performance_mode: bool = False,
     peft_scheme: Optional[str] = 'none',
 ) -> run.Partial:
     """
@@ -336,7 +332,6 @@ def finetune_recipe(
             log_every_n_steps=log_every_n_steps,
             save_top_k=save_top_k,
             ckpt_async_save=ckpt_async_save,
-            callbacks=[run.Config(TimingCallback)],
         ),
         data=run.Config(
             MockDataModule,
@@ -354,28 +349,4 @@ def finetune_recipe(
         recipe.optim.config.lr = 5e-6
     else:
         raise ValueError(f"Unrecognized peft scheme: {peft_scheme}")
-    if performance_mode:
-        recipe = performance_optimizations(recipe)
-    return recipe
-
-
-def performance_optimizations(recipe: run.Partial) -> run.Partial:
-    """
-    Create a performance-optimized pre-training recipe for NemotronH Hybrid 8B model.
-    This method enables performance optimizations that may not be suitable for all use cases.
-    It builds upon the standard pre-training recipe and adds additional performance enhancements.
-    Args:
-        recipe (run.Partial): Base pre-train recipe to which performance optimizations will be added
-    Returns:
-        run.Partial: Partial configuration for performance-optimized pre-training.
-    Note:
-        Use this method with caution and only when you need maximum performance.
-        It may not be suitable for all hardware configurations or use cases.
-    """
-    recipe.trainer.callbacks.append(
-        run.Config(
-            MegatronCommOverlapCallback,
-            tp_comm_overlap=True,
-        )
-    )
     return recipe

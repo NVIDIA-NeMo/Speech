@@ -240,7 +240,6 @@ nemo() {
   fi
 
   DEPS=(
-    "sox<=1.5.0"                                                                               # v1.5.0 throws "Can not execute `setup.py` since setuptools is not available in the build environment."; requires numpy to be there @URL: https://github.com/marl/pysox/issues/167
     "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
     "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
     "nemo_run"                                                                                 # Not compatible in Python 3.12

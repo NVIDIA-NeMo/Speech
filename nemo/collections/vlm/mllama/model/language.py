@@ -553,6 +553,7 @@ class MLlamaCrossAttention(Attention):
         submodules: MLlamaCrossAttentionSubmodules,
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
+        **kwargs,
     ):
         super().__init__(
             config=config,
@@ -560,6 +561,7 @@ class MLlamaCrossAttention(Attention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             attention_type="cross",
+            **kwargs,
         )
 
         # TODO might need special care when TP>8

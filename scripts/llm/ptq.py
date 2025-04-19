@@ -103,6 +103,9 @@ def get_args():
         "--trust_remote_code", help="Trust remote code when loading HuggingFace models", action="store_true"
     )
     parser.add_argument("--legacy_ckpt", help="Load ckpt saved with TE < 1.14", action="store_true")
+    parser.add_argument(
+        "--kv_cache_qformat", type=str, default="fp8", choices=["fp8", "nvfp4"], help="KV-cache quantization format"
+    )
 
     args = parser.parse_args()
 
@@ -129,6 +132,7 @@ def main():
         awq_block_size=args.awq_block_size,
         sq_alpha=args.sq_alpha,
         enable_kv_cache=args.enable_kv_cache,
+        kv_cache_qformat=args.kv_cache_qformat,
         calibration_dataset=args.calibration_dataset,
         calibration_dataset_size=args.calibration_dataset_size,
         calibration_batch_size=args.batch_size,

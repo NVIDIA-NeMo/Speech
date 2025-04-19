@@ -11,7 +11,7 @@ on:
         type: string
         description: Number of GPUs this VM has
         required: true
-        
+
 jobs:
   check-status-and-maybe-shutdown:
     environment: main
@@ -22,7 +22,7 @@ jobs:
       - name: Check status
         id: status
         run: |
-          docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+          docker run --rm --runtime=nvidia --gpus ${{ inputs.n_gpus }} ubuntu nvidia-smi
 
           NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 

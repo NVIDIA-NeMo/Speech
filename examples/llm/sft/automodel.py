@@ -19,9 +19,9 @@ import lightning.pytorch as pl
 
 from nemo import lightning as nl
 from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
+from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
 from nemo.collections.llm.gpt.data.hf_dataset import HFMockDataModule
-from nemo.collections.llm.recipes.optim.adam import pytorch_adam_with_cosine_annealing
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 
 # Run this example with torchrun, for example:
@@ -188,7 +188,11 @@ def main():
     parser.add_argument('--use-te-optimizer', action='store_true', help='Use TE optimizer')
     parser.add_argument('--grad-clip', type=float, default=1.0, help='Grad clip value')
     parser.add_argument(
-        '--accumulate_grad_batches', type=int, default=1, help='Number of batches to accumulate gradient over.'
+        '--accumulate-grad-batches',
+        '--accumulate_grad_batches',
+        type=int,
+        default=1,
+        help='Number of batches to accumulate gradient over.',
     )
     parser.add_argument('--max-steps', type=int, default=100, help='Maximum number of training steps')
     parser.add_argument('--log-every-n-steps', type=int, default=1, help='Log every n steps')
@@ -244,6 +248,21 @@ def main():
     if args.enable_cpu_offload and args.use_te_optimizer:
         args.use_te_optimizer = False
 
+    try:
+        args.accumulate_grad_batches = calculate_valid_accumulate_grad_batches(
+            global_batch_size=args.global_batch_size,
+            micro_batch_size=args.micro_batch_size,
+            devices=args.devices,
+            num_nodes=args.num_nodes,
+            tp_size=args.tp_size,
+            cp_size=args.cp_size,
+        )
+    except ValueError as e:
+        print(f"Error calculating gradient accumulation steps: {e}")
+        print("Using default value of 1 for accumulate_grad_batches")
+        args.accumulate_grad_batches = 1
+    print(f"Accumulate grad batches: {args.accumulate_grad_batches}")
+
     wandb = None
     if args.wandb_project is not None:
         model = '_'.join(args.model.split('/')[-2:])
@@ -264,9 +283,7 @@ def main():
         # Faster convergence but may lead to memory issues
         optimizer = fdl.build(llm.adam.te_adam_with_flat_lr(lr=args.lr))
     else:
-        optimizer = fdl.build(
-            pytorch_adam_with_cosine_annealing(max_lr=args.lr, foreach=False)
-        )  # foreach need to be False for TP
+        optimizer = fdl.build(llm.adam.pytorch_adam_with_flat_lr(lr=args.lr))  # foreach need to be False for TP
 
     if args.fp8:
         from nemo.lightning.pytorch.accelerate.transformer_engine import TEConfig

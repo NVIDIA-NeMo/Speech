@@ -218,10 +218,12 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
     ChatGLMForCausalLM format, including weight mapping and configuration translation.
     """
 
-    def init(self, dtype=torch.bfloat16, model_name="THUDM/chatglm3-6b") -> "AutoModelForCausalLM":
+    def init(self, dtype=torch.bfloat16, model_name=None) -> "AutoModelForCausalLM":
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
+        if model_name is None:
+            model_name = "THUDM/chatglm3-6b"
         with no_init_weights(True):
             # Since ChatGLM is not importable from transformers, we can only initialize the HF model
             # from a known checkpoint. The model_name will need to be passed in.

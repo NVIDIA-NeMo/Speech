@@ -16,21 +16,6 @@
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 
-FROM ${BASE_IMAGE} as nemo-bump
-ARG NEMO_TAG
-WORKDIR /opt
-# NeMo
-RUN <<"EOF" bash -exu
-if [[ ! -d NeMo ]]; then
-    git clone https://github.com/NVIDIA/NeMo.git
-fi
-cd NeMo/
-git fetch origin '+refs/pull/*/merge:refs/remotes/pull/*/merge'
-git fetch origin $NEMO_TAG
-git checkout -f $NEMO_TAG
-EOF
-
-
 FROM ${BASE_IMAGE} AS trt-base
 ARG IMAGE_LABEL
 LABEL "nemo.library"=${IMAGE_LABEL}
@@ -48,7 +33,7 @@ EOF
 
 ARG TRTLLM_REPO
 ARG TRTLLM_TAG
-RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
+RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
   
   bash /tmp/NeMo/reinstall.sh --library trt --mode install
 EOF
@@ -58,17 +43,17 @@ FROM trt-base AS trt-llm-wheel
 
 ARG TRTLLM_REPO
 ARG TRTLLM_TAG
-RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
+RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
   
   bash /tmp/NeMo/reinstall.sh --library trtllm --mode build
 EOF
 
 
-FROM trt-base AS test-image
+FROM trt-base as final
 
 ARG MLM_REPO
 ARG MLM_TAG
-RUN --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
+RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
   
   bash /tmp/NeMo/reinstall.sh --library mcore --mode build
   ls -al /tmp/Megatron-LM || true
@@ -77,34 +62,19 @@ EOF
 WORKDIR /workspace
 RUN \
   --mount=type=bind,from=trt-llm-wheel,source=/opt/wheels/trtllm,target=/opt/wheels/trtllm \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/requirements,target=/tmp/NeMo/requirements \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/setup.py,target=/tmp/NeMo/setup.py \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/external/patches,target=/tmp/NeMo/external/patches \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/README.md,target=/tmp/NeMo/README.md \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
+  --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
+  --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
+  --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh \
+  --mount=type=bind,source=setup.py,target=/tmp/NeMo/setup.py \
+  --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches \
+  --mount=type=bind,source=README.md,target=/tmp/NeMo/README.md \
+  --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
+  --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
     
     bash /tmp/NeMo/reinstall.sh --library all --mode install
     rm -rf $NEMO_DIR || true
 EOF
 
-# Copy over NeMo code
-ARG NEMO_REPO
-ARG NEMO_TAG
-RUN \
-  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/reinstall.sh <<"EOF" bash -ex
-
-  bash /tmp/reinstall.sh --library all --mode install
-
-  # Copy into workspace
-  cp -a /opt/NeMo/. /workspace/
-  cp -r /opt/Megatron-LM/ /workspace/
-
-  # set permission
-  chmod 777 -R /workspace
-EOF
 
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
 ENV NEMO_HOME="/home/TestData/nemo_home"

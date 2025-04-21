@@ -206,10 +206,10 @@ def decoding_step(
             else:
                 preds_tensor = torch.tensor(preds, device='cpu').unsqueeze(0)
                 if isinstance(asr_model, EncDecHybridRNNTCTCModel):
-                    pred_text = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor)[0][0]
+                    hyp = asr_model.ctc_decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
                 else:
-                    pred_text = asr_model.wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0][0]
-
+                    hyp = asr_model.wer.decoding.ctc_decoder_predictions_tensor(preds_tensor)[0]
+                pred_text = hyp.text
             pred_split_w = pred_text.split()
             target_split_w = target_transcripts[batch_idx].split()
             pred_split_c = list(pred_text)
@@ -253,7 +253,7 @@ def decoding_step(
                     packed_batch[prob_index, :, : probs_lens[prob_index]] = torch.tensor(
                         probs_batch[prob_index].unsqueeze(0), device=packed_batch.device, dtype=packed_batch.dtype
                     )
-                best_hyp_batch, beams_batch = asr_model.decoding.rnnt_decoder_predictions_tensor(
+                best_hyp_batch = asr_model.decoding.rnnt_decoder_predictions_tensor(
                     packed_batch,
                     probs_lens,
                     return_hypotheses=True,

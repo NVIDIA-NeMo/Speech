@@ -96,6 +96,7 @@ te() {
   fi &&
     pushd $TE_DIR &&
     git checkout -f $TE_TAG &&
+    patch -p1 < /tmp/NeMo/external/patches/nemo_2.3.0_te.patch &&
     popd
 
   if [[ "$mode" == "build" ]]; then

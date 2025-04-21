@@ -81,6 +81,7 @@ RUN \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/reinstall.sh,target=/tmp/NeMo/reinstall.sh \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/setup.py,target=/tmp/NeMo/setup.py \
+  --mount=type=bind,from=nemo-bump,source=/opt/NeMo/external/patches,target=/tmp/NeMo/external/patches \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/README.md,target=/tmp/NeMo/README.md \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,from=nemo-bump,source=/opt/NeMo/nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex

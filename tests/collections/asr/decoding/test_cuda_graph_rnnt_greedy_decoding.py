@@ -14,31 +14,40 @@
 import copy
 import glob
 
+
 import jiwer
+import lightning.pytorch as ptl
 import pytest
 import torch
-from omegaconf import open_dict
+from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.models import ASRModel
+from nemo.core.config.pytorch_lightning import TrainerConfig
 from nemo.core.utils.cuda_python_utils import skip_cuda_python_test_if_cuda_graphs_conditional_nodes_not_supported
 
 
 @pytest.fixture(scope="module")
 def stt_en_fastconformer_transducer_xlarge():
     model_name = "stt_en_fastconformer_transducer_xlarge"
-    return ASRModel.from_pretrained(model_name, map_location="cpu")
+    return ASRModel.from_pretrained(model_name, map_location="cpu").eval()
 
 
 @pytest.fixture(scope="module")
 def stt_en_fastconformer_transducer_xxlarge():
     model_name = "stt_en_fastconformer_transducer_xxlarge"
-    return ASRModel.from_pretrained(model_name, map_location="cpu")
+    return ASRModel.from_pretrained(model_name, map_location="cpu").eval()
 
 
 @pytest.fixture(scope="module")
 def stt_en_fastconformer_transducer_large():
     model_name = "stt_en_fastconformer_transducer_large"
-    return ASRModel.from_pretrained(model_name, map_location="cpu")
+    return ASRModel.from_pretrained(model_name, map_location="cpu").eval()
+
+
+@pytest.fixture(scope="module")
+def stt_en_fastconformer_tdt_large():
+    model_name = "nvidia/stt_en_fastconformer_tdt_large"
+    return ASRModel.from_pretrained(model_name=model_name, map_location="cpu").eval()
 
 
 @pytest.mark.with_downloads
@@ -165,6 +174,59 @@ def test_loop_labels_cuda_graph_rnnt_greedy_decoder_forced_mode(
             print("erroneous samples:")
             print("Original transcript:", actual)
             print("New transcript:", fast)
+
+
+@pytest.mark.with_downloads
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+    reason="Test requires CUDA device with bf16 support",
+)
+@pytest.mark.parametrize("is_tdt", [False, True])
+def test_loop_labels_cuda_graph_ddp_mixed_precision(
+    tmp_path_factory,
+    an4_train_manifest_corrected,
+    stt_en_fastconformer_transducer_large,
+    stt_en_fastconformer_tdt_large,
+    is_tdt: bool,
+):
+    """CUDA graphs with DDP and mixed precision have bugs. We need to test that validation works with these settings."""
+    batch_size = 16
+
+    # instantiate trainer with bf16 mixed precision
+    trainer_cfg = TrainerConfig(devices=[0], accelerator="cuda", strategy="ddp", max_epochs=1, precision="bf16-mixed")
+    trainer = ptl.Trainer(**DictConfig(trainer_cfg))
+
+    model = stt_en_fastconformer_tdt_large if is_tdt else stt_en_fastconformer_transducer_large
+
+    # setup validation data
+    val_ds_cfg = model.cfg.validation_ds
+    with open_dict(val_ds_cfg):
+        val_ds_cfg.manifest_filepath = [str(an4_train_manifest_corrected)]
+        val_ds_cfg.batch_size = batch_size
+        val_ds_cfg.is_tarred = False
+        val_ds_cfg.use_lhotse = False
+        if is_tdt:
+            # TDT model has config with missing mandatory values, this results in errors when setting up validation data
+            # we set all the mandatory values to dummy values
+            model.cfg.train_ds.tarred_audio_filepaths = None
+            model.cfg.train_ds.manifest_filepath = None
+            model.cfg.test_ds.manifest_filepath = None
+            model.cfg.tokenizer.dir = None
+
+    model.setup_multiple_validation_data(val_ds_cfg)
+
+    # validate using trainer
+    val_results = trainer.validate(model)
+    wer = val_results[0]["val_wer"]
+
+    # explicitly free resources, then test conditions
+    trainer._teardown()
+    # teardown from the trainer is not enough, and problem with CPU will still exist, related issue:
+    # https://github.com/Lightning-AI/pytorch-lightning/issues/18803)
+    # solution is to destroy torch process group explicitly
+    torch.distributed.destroy_process_group()
+
+    assert wer <= 0.1, f"WER is too high: {wer}"
 
 
 @pytest.mark.with_downloads

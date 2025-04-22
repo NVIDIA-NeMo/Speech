@@ -22,7 +22,6 @@ from examples.asr.transcribe_speech import TranscriptionConfig
 from omegaconf import OmegaConf
 
 from nemo.collections.asr.models import EncDecRNNTBPEModel
-from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.asr.parts.utils.transcribe_utils import prepare_audio_data
 
@@ -36,23 +35,6 @@ if torch.cuda.is_available():
 def stt_en_conformer_transducer_small_model():
     model = EncDecRNNTBPEModel.from_pretrained(model_name="stt_en_conformer_transducer_small", map_location="cpu")
     return model
-
-
-@pytest.fixture(scope="module")
-def an4_val_manifest_corrected(tmp_path_factory, test_data_dir):
-    """
-    Correct an4_val manifest audio filepaths, e.g.,
-    "tests/data/asr/test/an4/wav/an440-mjgm-b.wav" -> test_data_dir / "test/an4/wav/an440-mjgm-b.wav"
-    """
-    an4_val_manifest_orig_path = Path(test_data_dir) / "asr/an4_val.json"
-    an4_val_manifest_corrected_path = tmp_path_factory.mktemp("manifests") / "an4_val_corrected.json"
-    an4_val_records = read_manifest(an4_val_manifest_orig_path)
-    for record in an4_val_records:
-        record["audio_filepath"] = record["audio_filepath"].replace(
-            "tests/data/asr", str(an4_val_manifest_orig_path.resolve().parent)
-        )
-    write_manifest(an4_val_manifest_corrected_path, an4_val_records)
-    return an4_val_manifest_corrected_path
 
 
 def get_rnnt_alignments(

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
@@ -33,7 +35,6 @@ from nemo.core.utils.cuda_python_utils import (
 )
 from nemo.utils import logging
 from nemo.utils.enum import PrettyStrEnum
-from nemo.utils.nemo_logging import LogMode
 
 try:
     from cuda import cudart
@@ -672,6 +673,9 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
             )
             self.state.lm_scores = torch.zeros([batch_size, vocab_size], dtype=float_dtype, device=device)
 
+        # warmup before graph compilation
+        self._warmup_for_cuda_graphs()
+
         if self.cuda_graphs_mode is self.CudaGraphsMode.FULL_GRAPH:
             self._full_graph_compile()
         elif self.cuda_graphs_mode is self.CudaGraphsMode.NO_WHILE_LOOPS:
@@ -681,6 +685,26 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
             pass
         else:
             raise NotImplementedError
+
+    def _warmup_for_cuda_graphs(self):
+        """Warmup before compiling CUDA graphs"""
+        is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
+        # 11 warmup steps required in DDP mode
+        # see https://pytorch.org/docs/stable/notes/cuda.html#usage-with-distributeddataparallel
+        num_runs = 11 if is_ddp else 3
+        self.state.encoder_output_projected.fill_(0.0)
+        self.state.encoder_output_length.fill_(1)
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(num_runs):
+                self._before_outer_loop()
+                self._before_inner_loop_get_decoder_output()
+                self._before_inner_loop_get_joint_output()
+                self._inner_loop_code()
+                self._after_inner_loop()
+        torch.cuda.current_stream().wait_stream(s)
+        self.state.encoder_output_length.fill_(0)
 
     def _partial_graphs_compile(self):
         """Compile decoding by parts"""
@@ -729,6 +753,7 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
         """Compile full graph for decoding"""
         # Always create a new stream, because the per-thread default stream disallows stream capture to a graph.
         stream_for_graph = torch.cuda.Stream(self.state.device)
+        stream_for_graph.wait_stream(torch.cuda.default_stream(self.state.device))
         self.full_graph = torch.cuda.CUDAGraph()
         with (
             torch.cuda.stream(stream_for_graph),
@@ -750,7 +775,9 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
                 [outer_loop_conditional_handle.getPtr(), active_mask_any_ptr.ctypes.data],
                 dtype=np.uint64,
             )
+
             # loop while there are active utterances
+            # while self.active_mask_any:
             with with_conditional_node(
                 outer_loop_kernel, outer_loop_args, outer_loop_conditional_handle, device=self.state.device
             ):
@@ -767,6 +794,7 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
                     ],
                     dtype=np.uint64,
                 )
+                # while self.advance_mask_any.item():
                 with with_conditional_node(
                     inner_while_loop_kernel, inner_loop_args, inner_loop_conditional_handle, device=self.state.device
                 ):
@@ -995,12 +1023,12 @@ class GreedyBatchedRNNTLoopLabelsComputer(WithOptionalCudaGraphs, ConfidenceMeth
         x: torch.Tensor,
         out_len: torch.Tensor,
     ) -> Tuple[rnnt_utils.BatchedHyps, Optional[rnnt_utils.BatchedAlignments], Any]:
-        # TODO(vbataev): Fix CUDA graphs in distributed environment and re-enable decoding with CUDA graphs
-        is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
         if self.cuda_graphs_mode is not None and x.device.type == "cuda":
-            if not is_ddp:
+            is_ddp = torch.distributed.is_available() and torch.distributed.is_initialized()
+            # disable CUDA graphs if DDP and Mixed Precision are used
+            ctx = torch.amp.autocast(device_type="cuda", enabled=False) if is_ddp else nullcontext()
+            with ctx:
+                # TODO(vbataev): fix issue with DDP+mixed precision, remove this restriction
                 return self.loop_labels_cuda_graphs(encoder_output=x, encoder_output_length=out_len)
-            else:
-                logging.warning("CUDA graphs are temporary disabled in distributed environment", mode=LogMode.ONCE)
 
         return self.loop_labels_torch(encoder_output=x, encoder_output_length=out_len)

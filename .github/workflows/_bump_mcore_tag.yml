@@ -1,0 +1,54 @@
+name: Bump Megatron Tag Template
+on:
+  workflow_call:
+    inputs:
+      nemo-target-branch:
+        required: true
+        type: string
+        description: "The target branch to bump"
+      mcore-target-branch:
+        required: true
+        type: string
+        description: "The target branch to bump"
+    secrets:
+      PAT:
+        required: true
+
+jobs:
+  update-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: main
+
+      - name: Set Git config
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "Github Actions"
+      - name: Merge ${{ inputs.nemo-target-branch }} back to base branch
+        run: |
+          git fetch --unshallow
+          # Try to checkout and pull existing branch, create new one if it doesn't exist
+          if git ls-remote --exit-code origin ${{ inputs.nemo-target-branch }}; then
+            git checkout ${{ inputs.nemo-target-branch }}
+            git pull origin ${{ inputs.nemo-target-branch }}
+            git merge --no-ff ${{ inputs.nemo-target-branch }} -m "chore: Auto-merge main back to ${{ inputs.nemo-target-branch }}"
+          else
+            git checkout -b ${{ inputs.nemo-target-branch }} main
+          fi
+          git push -u origin ${{ inputs.nemo-target-branch }}
+
+  mcore:
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_bump_yamlfile.yml@v0.27.1
+    needs: [update-branch]
+    with:
+      source-repository: NVIDIA/Megatron-LM
+      source-ref: ${{ inputs.mcore-target-branch }}
+      yaml-path: '."vcs-dependencies"."megatron-lm".ref'
+      file: requirements/manifest.json
+      base-branch: ${{ inputs.nemo-target-branch }}
+      cicd-labels: Run CICD,no-fail-fast
+      pr-reviewers: ${{ inputs.pr-reviewers }}
+    secrets:
+      PAT: ${{ secrets.PAT }}

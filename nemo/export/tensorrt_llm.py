@@ -865,7 +865,10 @@ class TensorRTLLM(ITritonDeployable):
             for weight_dict, model_config in zip(weights_dicts, model_configs):
                 rank = model_config.mapping.tp_rank
                 for k, v in weight_dict.items():
-                    weight_dict[k] = numpy_to_torch(v)
+                    if isinstance(v, np.ndarray):
+                        weight_dict[k] = numpy_to_torch(v)
+                    else:
+                        weight_dict[k] = v
 
                 safetensors.torch.save_file(weight_dict, os.path.join(self.model_dir, f'rank{rank}.safetensors'))
             model_configs[0].to_json_file(os.path.join(self.model_dir, 'config.json'))
@@ -874,7 +877,8 @@ class TensorRTLLM(ITritonDeployable):
             if os.path.exists(tokenizer_path):
                 shutil.copy(tokenizer_path, self.model_dir)
             else:
-                self.tokenizer.save_pretrained(self.model_dir)
+                if self.tokenizer is not None:
+                    self.tokenizer.save_pretrained(self.model_dir)
 
             nemo_model_config = os.path.join(nemo_export_dir, "model_config.yaml")
             if os.path.exists(nemo_model_config):

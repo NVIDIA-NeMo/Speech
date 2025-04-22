@@ -35,7 +35,7 @@ on:
         type: string
         description: Tests to run
         required: false
-        default: "all"
+        default: '["all"]'
     outputs:
       conclusion:
         description: Conclusion of main test step

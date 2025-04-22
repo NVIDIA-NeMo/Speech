@@ -32,6 +32,11 @@ _, HAVE_TE = safe_import("transformer_engine")
 if HAVE_TE:
     # These custom modelopt specs are a mix of local MCORE and TE specs.
     from megatron.core.post_training.modelopt.gpt.model_specs import get_gpt_modelopt_spec
+
+_, HAVE_MAMBA_SSM = safe_import("mamba_ssm")
+_, HAVE_CAUSAL_CONV1D = safe_import("causal_conv1d")
+if HAVE_TE and HAVE_MAMBA_SSM and HAVE_CAUSAL_CONV1D:
+    # Additionally, mamba-based models require both mamba_ssm and causal_conv1d.
     from megatron.core.post_training.modelopt.mamba.model_specs import get_mamba_stack_modelopt_spec
 
 __all__ = ["set_modelopt_spec_if_exists_in_ckpt", "setup_trainer_and_restore_model_with_modelopt_spec"]

@@ -40,6 +40,7 @@ from nemo.collections.llm.gpt.data import (  # noqa: F401
     DollyDataModule,
     FineTuningDataModule,
     HFDatasetDataModule,
+    HFDatasetDataModulePacked,
     HFMockDataModule,
     MockDataModule,
     PreTrainingDataModule,

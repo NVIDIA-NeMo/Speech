@@ -291,9 +291,17 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
             batch['input_ids'] = batch['tokens']
 
         # TODO(@boxiangw): Refractor. Needed for SP support
-        batch["position_ids"] = torch.arange(0, batch['input_ids'].shape[1]).unsqueeze(0).to(self.model.device)
+        # If 'position_ids' does not exist in batch already then override it. batch in case of Packed sequence
+        # contains 'position_ids' and we don't want to override it.
+        if not 'position_ids' in batch:
+            batch["position_ids"] = torch.arange(0, batch['input_ids'].shape[1]).unsqueeze(0).to(self.model.device)
 
         batch = self._remove_extra_batch_keys(batch)
+        # if attn_mask exists in the batch convert to float. For some reason although torch.bool when created,
+        # inside training step it becomes torch.int64 which can lead to error during transformers sdpa call,
+        # convert to float.
+        if 'attention_mask' in batch:
+            batch['attention_mask'] = batch['attention_mask'].float()
 
         # based on https://github.com/pytorch/torchtitan/blob/main/torchtitan/train.py#L336
         if context_parallel:

@@ -367,13 +367,6 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NMT_Tarred_Dataset_Creation_Script_Tarred_Dataset_Creation
 
-  L2_Megatron_NMT_Training_TP2:
-    uses: ./.github/workflows/_test_template.yml
-    if: contains(fromJSON(inputs.test_to_run), 'L2_Megatron_NMT_Training_TP2')
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_Megatron_NMT_Training_TP2
-
   L2_VLM_HF_Transformer_PEFT:
     uses: ./.github/workflows/_test_template.yml
     if: contains(fromJSON(inputs.test_to_run), 'L2_VLM_HF_Transformer_PEFT')

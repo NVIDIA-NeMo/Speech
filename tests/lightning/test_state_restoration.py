@@ -34,6 +34,9 @@ VOCAB_PATH = "/home/TestData/nlp/megatron_gpt/data/gpt/vocab.json"
 MERGES_PATH = "/home/TestData/nlp/megatron_gpt/data/gpt/merges.txt"
 DATA_PATH = "/home/TestData/nlp/megatron_gpt/data/gpt/simple_wiki_gpt_preproc_text_document"
 EXP_DIR = '/tmp/nemo_exp/'
+# @akoumparouli: post-https://github.com/NVIDIA/Megatron-LM/commit/e6759409675b9911c529d3054ca9dc40c10802e5
+# return value is ProxyDict even for all models (dense and moe).
+from megatron.core.optimizer.optimizer import ProxyDict
 
 
 def teardown(exp_dir=EXP_DIR):
@@ -47,14 +50,14 @@ class ValidateOptStateRestoration(Callback):
         # PTL has no on_load_checkpoint_start event to be triggered before
         # the checkpoint restoration.
         opt_state = trainer.optimizers[0].state
-        assert isinstance(opt_state, dict), "Expected state to be a dictionary"
+        assert isinstance(opt_state, (dict, ProxyDict)), "Expected state to be a dictionary"
         assert len(opt_state) == 0, "Expected state to be empty"
 
     def on_load_checkpoint(self, trainer, pl_module, checkpoint) -> None:
         # This runs after the checkpoint restoration
         # on_load_checkpoint == on_load_checkpoint_end
         opt_state = trainer.optimizers[0].state
-        assert isinstance(opt_state, dict), "Expected state to be a dictionary"
+        assert isinstance(opt_state, (dict, ProxyDict)), "Expected state to be a dictionary"
         assert len(opt_state) > 0, "Expected a non-empty state"
         for key, val in opt_state.items():
             for param in val.values():
@@ -64,12 +67,12 @@ class ValidateOptStateRestoration(Callback):
 class ValidateOptStateScratchInit(Callback):
     def on_fit_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         opt_state = trainer.optimizers[0].state
-        assert isinstance(opt_state, dict), "Expected state to be a dictionary"
+        assert isinstance(opt_state, (dict, ProxyDict)), "Expected state to be a dictionary "
         assert len(opt_state) == 0, "Expected state to be empty"
 
     def on_train_start(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
         opt_state = trainer.optimizers[0].state
-        assert isinstance(opt_state, dict), "Expected state to be a dictionary"
+        assert isinstance(opt_state, (dict, ProxyDict)), "Expected state to be a dictionary"
         assert len(opt_state) == 0, "Expected state to be empty"
 
 

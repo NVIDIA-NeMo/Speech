@@ -603,6 +603,7 @@ class TERowParallelLinearLayerNorm(TERowParallelLinear):
         skip_bias_add: bool,
         is_expert: bool,
         tp_comm_buffer_name: str = None,
+        tp_group: Optional[torch.distributed.ProcessGroup] = None,
     ):
         super().__init__(
             input_size,
@@ -614,6 +615,7 @@ class TERowParallelLinearLayerNorm(TERowParallelLinear):
             skip_bias_add=skip_bias_add,
             is_expert=is_expert,
             tp_comm_buffer_name=tp_comm_buffer_name,
+            tp_group=tp_group,
         )
         self.post_layernorm = TENorm(config, output_size)
 

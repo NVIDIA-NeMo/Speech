@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
-    --restore_path /home/TestData/nemo2_ckpt/llama_68M_v3 \
+    --restore_path /home/TestData/nemo2_ckpt/llama_68M_v4 \
     --devices 2 \
     --max_steps 3 \
     --experiment_dir /tmp/nemo2_gpt_finetune/$RUN_ID \
@@ -23,7 +23,7 @@ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/
     --dataset chat
 
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/gpt_finetuning.py \
-    --restore_path /home/TestData/nemo2_ckpt/llama_68M_v3 \
+    --restore_path /home/TestData/nemo2_ckpt/llama_68M_v4 \
     --devices 2 \
     --max_steps 6 \
     --experiment_dir /tmp/nemo2_gpt_finetune/$RUN_ID \

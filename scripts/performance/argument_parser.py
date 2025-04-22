@@ -299,6 +299,15 @@ def parse_cli_args():
         return arg.split(',')
 
     parser.add_argument(
+        "-rm",
+        "--recompute_modules",
+        type=list_of_strings,
+        help="Comma-separated string of modules to recompute. Defaults to None",
+        required=False,
+        default=None,
+    )
+
+    parser.add_argument(
         "-cm",
         "--custom_mounts",
         type=list_of_strings,

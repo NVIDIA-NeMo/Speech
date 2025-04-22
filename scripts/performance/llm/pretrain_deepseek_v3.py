@@ -13,28 +13,31 @@
 # limitations under the License.
 
 from os.path import basename, splitext
+from typing import List, Optional
 
-import fiddle as fdl
-import fiddle._src.experimental.dataclasses as fdl_dc
 import nemo_run as run
 
-from nemo.collections.llm.recipes.nemotron4_340b import pretrain_recipe
-from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
-    userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096,
-    userbuffers_fp8_b200_h18432_tp8_mbs1_seqlen4096,
-)
-from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
+from nemo.collections.llm.recipes.deepseek_v3 import pretrain_recipe
+from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
+from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
+from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
 from nemo.lightning.run.plugins import NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
 from ..utils import (
     args_sanity_check,
-    get_comm_overlap_callback_idx,
     get_user_configs,
+    hf_tokenizer,
     set_exp_logging_configs,
     set_primary_perf_configs,
     slurm_executor,
 )
+
+HF_MODEL_URI = "deepseek-ai/DeepSeek-V3-Base"
+
+
+# Use token drop callback
+USE_TOKEN_DROP = True
 
 
 def override_recipe_configs(
@@ -47,17 +50,45 @@ def override_recipe_configs(
     cp_size: int,
     vp_size: int,
     ep_size: int,
+    etp_size: int,
     enable_cuda_graphs: bool,
     use_mcore_fsdp: bool,
     recompute_layers: int,
     activation_offload_layers: int,
+    recompute_modules: Optional[List[str]] = None,
 ):
     """
-    nemotron4 340b pre-train recipe aimed at achieving best possible performance.
-
-    NOTE: Use fp8 precision training with caution. It might not give desirable results.
+    DeepSeek V3 pre-train recipe aimed at achieving best possible performance.
     """
-    recipe = pretrain_recipe(performance_mode=True)
+    recipe = pretrain_recipe()
+    recipe.model.config.moe_permute_fusion = True
+    recipe.model.config.recompute_granularity = "selective"
+    recipe.model.config.recompute_num_layers = None
+    recipe.model.config.recompute_method = None
+    recipe.model.config.cross_entropy_fusion_impl = "te"
+    recipe.model.config.moe_router_dtype = 'fp32'
+
+    assert pp_size is None or pp_size == 1 or (64 % pp_size == 0), "pp_size must be 1 or a factor of 64"
+    num_layers_in_middle_pipeline_stages = 64 // pp_size
+
+    recipe.trainer.strategy.num_layers_in_first_pipeline_stage = num_layers_in_middle_pipeline_stages - 1
+    recipe.trainer.strategy.num_layers_in_last_pipeline_stage = num_layers_in_middle_pipeline_stages - 2
+
+    callbacks = []
+    if USE_TOKEN_DROP:
+        callbacks.append(run.Config(MegatronTokenDropCallback))
+    garbage_collection_callback = run.Config(
+        GarbageCollectionCallback,
+        gc_interval_train=60,
+        gc_interval_val=60,
+    )
+    comm_overlap_callback = run.Config(
+        MegatronCommOverlapCallback,
+        tp_comm_overlap=False,
+    )
+    callbacks.extend([garbage_collection_callback, comm_overlap_callback])
+    recipe.trainer.callbacks.extend(callbacks)
+
     recipe = set_primary_perf_configs(
         recipe,
         "pre_train",
@@ -71,37 +102,33 @@ def override_recipe_configs(
         cp_size,
         vp_size,
         ep_size,
+        etp_size,
         enable_cuda_graphs=enable_cuda_graphs,
         use_mcore_fsdp=use_mcore_fsdp,
         recompute_layers=recompute_layers,
         activation_offload_layers=activation_offload_layers,
         compute_dtype=args.compute_dtype,
         fp8_recipe=args.fp8_recipe,
+        recompute_modules=recompute_modules,
     )
     recipe = set_exp_logging_configs(
-        recipe, "pre_train", "llm", "nemotron", args.tensorboard, args.wandb, args.wandb_prj_name, args.wandb_job_name
+        recipe,
+        "pre_train",
+        "llm",
+        "deepseekv3",
+        args.tensorboard,
+        args.wandb,
+        args.wandb_prj_name,
+        args.wandb_job_name,
     )
-
-    gpu_type = args.gpu.lower()
 
     # data module configs
-    recipe.data.tokenizer = run.Config(
-        get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
-    )
+    recipe.data.tokenizer = hf_tokenizer(HF_MODEL_URI)
     recipe.model.tokenizer = recipe.data.tokenizer
 
-    comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)
-    assert comm_overlap_callback_idx is not None, "MegatronCommOverlapCallback missing. Required for performance."
-
-    if gpu_type in ["b200", "gb200"]:
-        tp_comm_overlap_cfg = (
-            userbuffers_fp8_b200_h18432_tp8_mbs1_seqlen4096
-            if args.compute_dtype.lower() == "fp8"
-            else userbuffers_bf16_b200_h18432_tp8_mbs1_seqlen4096
-        )
-        # needed as tp_overlap_configs.userbuffers are dataclass objects which are unserializable
-        tp_comm_overlap_cfg = fdl.cast(run.Config, fdl_dc.convert_dataclasses_to_configs(tp_comm_overlap_cfg))
-        recipe.trainer.callbacks[comm_overlap_callback_idx].tp_comm_overlap_cfg = tp_comm_overlap_cfg
+    # compute dtype configs
+    if args.compute_dtype.lower() == "fp8":
+        raise ValueError("Deepseek FP8 recipe requires subchannel scaling which will be supported soon.")
 
     return recipe
 
@@ -110,7 +137,7 @@ if __name__ == "__main__":
     args = parse_cli_args().parse_args()
     args_sanity_check(args)
 
-    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "nemotron4", "340b", args)
+    kwargs = get_user_configs(args.gpu.lower(), "pre_train", "deepseek", "v3", args)
     (
         num_nodes,
         mbs,
@@ -120,12 +147,13 @@ if __name__ == "__main__":
         cp_size,
         vp_size,
         ep_size,
-        _,
+        etp_size,
         enable_cuda_graphs,
         use_mcore_fsdp,
         recompute_layers,
         activation_offload_layers,
-    ) = kwargs[:13]
+        recompute_modules,
+    ) = kwargs
 
     recipe = override_recipe_configs(
         args,
@@ -137,13 +165,15 @@ if __name__ == "__main__":
         cp_size,
         vp_size,
         ep_size,
+        etp_size,
         enable_cuda_graphs,
         use_mcore_fsdp,
         recompute_layers,
         activation_offload_layers,
+        recompute_modules,
     )
 
-    exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_{mbs}mbs_{gbs}gbs"
+    exp_config = f"{num_nodes}nodes_tp{tp_size}_pp{pp_size}_cp{cp_size}_vp{vp_size}_ep{ep_size}_{mbs}mbs_{gbs}gbs"
     exp_name = f"{splitext(basename(__file__))[0]}_{args.compute_dtype}_{exp_config}"
 
     executor = slurm_executor(
@@ -155,10 +185,7 @@ if __name__ == "__main__":
         args.time_limit,
         args.container_image,
         custom_mounts=args.custom_mounts,
-        custom_env_vars={
-            "NVTE_NORM_FWD_USE_CUDNN": "1",
-            "NVTE_NORM_BWD_USE_CUDNN": "1",
-        },  # for properly overlapping normalization kernels with FSDP communication
+        custom_env_vars={},
         hf_token=args.hf_token,
         nemo_home=args.nemo_home,
         wandb_key=args.wandb_key,

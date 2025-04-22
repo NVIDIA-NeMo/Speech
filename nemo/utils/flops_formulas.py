@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional, Union
 
 from nemo.collections.common.parts.perf_metrics_utils import LLM_VOCAB_SIZE_MAP
 
@@ -42,6 +42,15 @@ class FLOPSConfig:
     vocab_size: Optional[int] = None
     model_channels: Optional[int] = None
     vec_in_dim: Optional[int] = None
+    q_lora_rank: Optional[int] = None
+    kv_lora_rank: Optional[int] = None
+    qk_head_dim: Optional[int] = None
+    qk_pos_emb_head_dim: Optional[int] = None
+    v_head_dim: Optional[int] = None
+    moe_layer_freq: Union[int, List[int]] = None
+    moe_shared_expert_intermediate_size: Optional[int] = None
+    moe_ffn_hidden_size: Optional[int] = None
+    mtp_num_layers: Optional[int] = None
     causal_self_attn: Optional[bool] = None
 
 
@@ -166,17 +175,17 @@ def transformer(config: FLOPSConfig):
 
     if vocab_size is None:
         raise ValueError("vocab_size is required for transformer FLOPs calculation")
-    
+
     # Handle optional parameters with reasonable defaults
     query_groups = config.query_groups if config.query_groups is not None else num_attention_heads
     causal_self_attn = config.causal_self_attn if config.causal_self_attn is not None else False
     moe_router_topk = config.moe_router_topk if config.moe_router_topk is not None else 0
     kv_channels = hidden_size // num_attention_heads  # Standard dimension per head
-    
+
     # Calculate query projection size and ratio
     query_projection_size = kv_channels * num_attention_heads
     query_projection_to_hidden_size_ratio = query_projection_size / hidden_size
-    
+
     # MoE parameters - simplified for NeMo config
     # In this implementation, we assume all layers are dense if num_experts is None
     if moe_router_topk == 0:
@@ -189,11 +198,11 @@ def transformer(config: FLOPSConfig):
         num_moe_layers = num_layers // 2  # Simplified assumption
         num_dense_layers = num_layers - num_moe_layers
         num_experts_routed_to = moe_router_topk
-    
+
     # Handle SwiGLU vs standard GELU/ReLU
     # Default to standard activation (no SwiGLU)
     gated_linear_multiplier = 1
-    
+
     # Define the expansion factor as described in the paper
     # 3x: Each GEMM needs forward pass, backward wgrad, and backward dgrad
     # 2x: GEMMs are stacked twice in standard Transformer architectures
@@ -202,22 +211,18 @@ def transformer(config: FLOPSConfig):
     # Attention
     if not causal_self_attn:
         attention_component = (
-                    (
-                        1
-                        + (query_groups / num_attention_heads)
-                        # Only half of the attention matrix is non-zero and needs to be multiplied with V
-                        + (seq_length / hidden_size) # If causal self attn -> divide by 2.
-                    ) * query_projection_to_hidden_size_ratio
-                ) 
+            1
+            + (query_groups / num_attention_heads)
+            # Only half of the attention matrix is non-zero and needs to be multiplied with V
+            + (seq_length / hidden_size)  # If causal self attn -> divide by 2.
+        ) * query_projection_to_hidden_size_ratio
     else:
         attention_component = (
-                (
-                    1
-                    + (query_groups / num_attention_heads)
-                    # Only half of the attention matrix is non-zero and needs to be multiplied with V
-                    + (seq_length / hidden_size / 2) # If causal self attn -> divide by 2.
-                ) * query_projection_to_hidden_size_ratio
-            ) 
+            1
+            + (query_groups / num_attention_heads)
+            # Only half of the attention matrix is non-zero and needs to be multiplied with V
+            + (seq_length / hidden_size / 2)  # If causal self attn -> divide by 2.
+        ) * query_projection_to_hidden_size_ratio
 
     # Calculate total FLOPs
     total_flops = (
@@ -228,29 +233,32 @@ def transformer(config: FLOPSConfig):
         * hidden_size
         * hidden_size
         * (
-            
             attention_component
             # MLP component
             + (
                 (
                     # Dense layers
-                    (ffn_hidden_size * num_dense_layers) +
+                    (ffn_hidden_size * num_dense_layers)
+                    +
                     # MoE layers
                     (
                         (
                             # Routed experts
-                            ffn_hidden_size * num_experts_routed_to
+                            ffn_hidden_size
+                            * num_experts_routed_to
                             # Note: Shared experts are not implemented in this version
                         )
                         * num_moe_layers
                     )
-                ) * gated_linear_multiplier / (num_layers * hidden_size)
+                )
+                * gated_linear_multiplier
+                / (num_layers * hidden_size)
             )
             # Logit component
             + (vocab_size / (2 * num_layers * hidden_size))
         )
     )
-    
+
     return total_flops
 
 
@@ -325,3 +333,58 @@ def flux(config: FLOPSConfig):
     )
 
     return joint_layer_flops + single_layer_flops + other_flops
+
+
+def deepseekv3(config: FLOPSConfig):
+    """Model FLOPs for DeepSeek V3"""
+
+    # self-attention flops
+    bmm1_flops = (
+        0.5 * (config.qk_head_dim + config.qk_pos_emb_head_dim) * config.attention_heads * (config.enc_seq_len**2)
+    )
+    bmm2_flops = 0.5 * config.v_head_dim * config.attention_heads * (config.enc_seq_len**2)
+    per_input_attention_flops = 6 * (bmm1_flops + bmm2_flops) * config.layers
+    if config.mtp_num_layers is not None:
+        per_input_attention_flops += 6 * (bmm1_flops + bmm2_flops) * config.mtp_num_layers
+
+    # linear layer flops
+    per_layer_mla_params = config.hs * config.q_lora_rank + config.q_lora_rank * (
+        (config.qk_head_dim + config.qk_pos_emb_head_dim) * config.attention_heads
+    )  # Q
+    per_layer_mla_params += config.hs * config.qk_pos_emb_head_dim  # K^R
+    per_layer_mla_params += config.hs * config.kv_lora_rank + config.kv_lora_rank * (
+        (config.qk_head_dim + config.v_head_dim) * config.attention_heads
+    )  # K^C and V^C
+    per_layer_mla_params += config.v_head_dim * config.attention_heads * config.hs  # Proj
+    mla_params = per_layer_mla_params * config.layers
+    if config.mtp_num_layers is not None:
+        mla_params += per_layer_mla_params * config.mtp_num_layers
+
+    dense_layer_ffn_params = config.hs * config.ffn_hs * 3  # gated linear unit
+    per_shared_expert_params = config.hs * config.moe_shared_expert_intermediate_size * 3
+    per_selected_expert_params = config.hs * config.moe_ffn_hidden_size * 3
+    ffn_params = 0
+
+    if isinstance(config.moe_layer_freq, int):
+        moe_layer_pattern = [1 if (i % config.moe_layer_freq == 0) else 0 for i in range(config.layers)]
+    else:
+        moe_layer_pattern = config.moe_layer_freq
+    for i in moe_layer_pattern:
+        if i == 0:
+            ffn_params += dense_layer_ffn_params
+        else:
+            ffn_params += per_shared_expert_params + (per_selected_expert_params * config.moe_router_topk)
+    if config.mtp_num_layers is not None:
+        for i in range(config.mtp_num_layers):
+            ffn_params += per_shared_expert_params + (per_selected_expert_params * config.moe_router_topk)
+    per_input_params = mla_params + ffn_params
+    per_input_linear_flops = 6 * per_input_params * config.enc_seq_len
+
+    # vocab flops
+    per_input_vocab_flops = 6 * config.vocab_size * config.hs * config.enc_seq_len
+    if config.mtp_num_layers is not None:
+        for i in range(config.mtp_num_layers):
+            per_input_vocab_flops += 6 * config.vocab_size * config.hs * config.enc_seq_len
+            per_input_vocab_flops += 6 * config.hs * 2 * config.hs * config.enc_seq_len
+
+    return (per_input_attention_flops + per_input_linear_flops + per_input_vocab_flops) * config.gbs

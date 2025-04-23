@@ -103,6 +103,7 @@ extras_require['nlp'] = list(
         extras_require['nlp'],
         extras_require['core'],
         extras_require['common'],
+        extras_require['eval'],
     )
 )
 extras_require['llm'] = extras_require['nlp']

@@ -14,18 +14,34 @@
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, Optional
+from typing import TYPE_CHECKING, Annotated, Callable, Optional, Union
 
 import torch
 from torch import nn
 
-from nemo.collections.llm.gpt.model.base import GPTModel, torch_dtype_from_mcore_config
-from nemo.collections.llm.gpt.model.llama import Llama31Config, Llama31Config8B, Llama31Config70B, LlamaConfig
+from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
+from nemo.collections.llm.gpt.model.llama import (
+    Llama31Config,
+    Llama31Config8B,
+    Llama31Config70B,
+    Llama31Config405B,
+    LlamaConfig,
+)
+from nemo.collections.llm.gpt.model.llama_nemotron_config import (
+    LLAMA_31_NEMOTRON_ULTRA_253B_HETEROGENEOUS_CONFIG,
+    LLAMA_33_NEMOTRON_SUPER_49B_HETEROGENEOUS_CONFIG,
+)
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.io.state import TransformFns
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
+from nemo.utils.import_utils import safe_import
+
+_, HAVE_TE = safe_import("transformer_engine")
+from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import get_gpt_heterogeneous_layer_spec
+from megatron.core.transformer.heterogeneous.heterogeneous_config import HeterogeneousTransformerConfig
+from megatron.core.transformer.spec_utils import ModuleSpec
 
 if TYPE_CHECKING:
     from transformers import LlamaConfig as HFLlamaConfig
@@ -46,6 +62,45 @@ class Llama31Nemotron70BConfig(Llama31Config70B):
     """Configuration for an Llama31-Nemotron-70B model."""
 
     kv_channels: int = 128
+
+
+# Llama-Nemotron Super/Ultra uses heterogeneous architecture
+def heterogeneous_layer_spec(config: "GPTConfig") -> ModuleSpec:
+    """Determine the most appropriate layer specification based on availability.
+
+    Uses Transformer Engine specs if available, otherwise falls back to local implementation.
+
+    Args:
+        config: GPT configuration object
+
+    Returns:
+        ModuleSpec: The selected module specification
+    """
+    return get_gpt_heterogeneous_layer_spec(config, use_te=HAVE_TE)
+
+
+@dataclass
+class Llama33NemotronSuper49BConfig(Llama31Config70B, HeterogeneousTransformerConfig):
+    """Configuration for an Llama31-Nemotron-Super model."""
+
+    hidden_size: int = 8192
+    num_attention_heads: int = 64
+    num_layers: int = 80
+    heterogeneous_layers_config_path: str = None
+    heterogeneous_layers_config_encoded_json: str = LLAMA_33_NEMOTRON_SUPER_49B_HETEROGENEOUS_CONFIG
+    transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = heterogeneous_layer_spec
+
+
+@dataclass
+class Llama33NemotronUltra253BConfig(Llama31Config405B, HeterogeneousTransformerConfig):
+    """Configuration for an Llama31-Nemotron-Ultra model."""
+
+    hidden_size: int = 8192
+    num_attention_heads: int = 64
+    num_layers: int = 126
+    heterogeneous_layers_config_path: str = None
+    heterogeneous_layers_config_encoded_json: str = LLAMA_31_NEMOTRON_ULTRA_253B_HETEROGENEOUS_CONFIG
+    transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = heterogeneous_layer_spec
 
 
 class LlamaNemotronModel(GPTModel):
@@ -93,9 +148,14 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         Returns:
             Path: Path to the saved NeMo model
         """
-        from transformers import LlamaForCausalLM
+        from transformers import AutoModelForCausalLM, LlamaForCausalLM
 
-        source = LlamaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
+        logging.info(f'Load HF model {str(self)}')
+        if 'Nano' in str(self):
+            source = LlamaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
+        else:
+            source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
+        logging.info('Initialize NeMo Nemotron-Llama model')
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -160,7 +220,7 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         """
         from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
 
-        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
+        return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)), trust_remote_code=True)
 
     @property
     def config(self) -> LlamaConfig:
@@ -172,12 +232,13 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
         Returns:
             LlamaConfig: NeMo configuration for Llama models
         """
-        from transformers import GenerationConfig
-        from transformers import LlamaConfig as HFLlamaConfig
+        from transformers import AutoConfig, GenerationConfig
 
-        source = HFLlamaConfig.from_pretrained(str(self))
-        generation_config = GenerationConfig.from_pretrained(str(self))
-        print(generation_config)
+        source = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        try:
+            generation_config = GenerationConfig.from_pretrained(str(self))
+        except Exception:
+            generation_config = None
 
         def make_vocab_size_divisible_by(vocab_size):
             base = 128
@@ -186,8 +247,26 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
             return base
 
         assert getattr(source, 'rope_scaling', None), 'Llama-Nemotron model should have rope scaling'
-        # Apply Llama3.1 customize rope scaling
-        cls = partial(Llama31Config, scale_factor=source.rope_scaling.get("factor", 8.0))
+        if getattr(source, 'block_configs') is not None:
+            # Convert heterogeneous model (Llama-Nemotron Super/Ultra)
+            target_class = (
+                Llama33NemotronSuper49BConfig if source.num_hidden_layers == 80 else Llama33NemotronUltra253BConfig
+            )
+            cls = partial(
+                target_class,
+                heterogeneous_layers_config_encoded_json=source.to_json_string(),
+                heterogeneous_layers_config_path=None,  # We directly load the block config as json
+                scale_factor=source.rope_scaling.get("factor", 8.0),
+                # For heterogeneous model, GQA is defined in each block config.
+                # Llama-Nemotron has the same GQA across all non no-op attention layers.
+                # We expose it to config.num_query_groups to make the merge_qkv work.
+                # Here we assume block 0 is non no-ops for the attention
+                num_query_groups=source.num_attention_heads // source.block_configs[0].attention.n_heads_in_group,
+            )
+        else:
+            # Convert homogeneous model (Llama-Nemotron Nano/70B)
+            target_class = Llama31NemotronNano8BConfig if source.num_hidden_layers == 32 else Llama31Nemotron70BConfig
+            cls = partial(target_class, num_query_groups=source.num_key_value_heads)
 
         output = cls(
             num_layers=source.num_hidden_layers,
@@ -195,9 +274,9 @@ class HFLlamaNemotronImporter(io.ModelConnector["LlamaForCausalLM", LlamaNemotro
             ffn_hidden_size=source.intermediate_size,
             num_attention_heads=source.num_attention_heads,
             kv_channels=getattr(source, "head_dim", None),
+            scale_factor=source.rope_scaling.get('factor', 8.0),
             init_method_std=source.initializer_range,
             layernorm_epsilon=source.rms_norm_eps,
-            num_query_groups=source.num_key_value_heads,
             seq_length=source.max_position_embeddings,
             rotary_base=source.rope_theta,
             gated_linear_unit=True,
@@ -218,48 +297,112 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
 
     This class handles the conversion of NeMo's LlamaNemotronModel to Hugging Face's
     LlamaForCausalLM format, including weight mapping and configuration translation.
+    It supports both homogeneous (Nano/70B) and heterogeneous (Super/Ultra) model architectures.
+
+    The exporter performs the following key operations:
+    1. Initializes a Hugging Face model with appropriate configuration
+    2. Maps weights from NeMo format to Hugging Face format
+    3. Handles special cases for heterogeneous architectures
+    4. Saves the converted model and tokenizer to the specified output path
+
+    Attributes:
+        tokenizer: The tokenizer associated with the NeMo model
+        config: The configuration for the Hugging Face model
+
+    Methods:
+        init: Initialize a Hugging Face model instance
+        apply: Convert and save the model to Hugging Face format
+        convert_state: Convert model weights from NeMo to Hugging Face format
     """
 
-    def init(self, dtype=torch.bfloat16) -> "LlamaForCausalLM":
-        """Initialize a HF LlamaForCausalLM instance.
+    def init(self, dtype=torch.bfloat16, from_config=False, model_name=None) -> "LlamaForCausalLM":
+        """Initialize a Hugging Face LlamaForCausalLM model instance.
+
+        This method creates a new Hugging Face model instance with the appropriate configuration
+        and data type. It handles both homogeneous and heterogeneous model architectures.
 
         Args:
-            dtype: Data type for model parameters
+            dtype (torch.dtype, optional): Data type for model parameters. Defaults to torch.bfloat16.
+            from_config (bool, optional): Whether to initialize from config or load from pretrained.
+                Set to True for homogeneous models (Nano/70B), False for heterogeneous models (Super/Ultra).
+                Defaults to False.
+            model_name (str, optional): Name of the pretrained model to load for heterogeneous architectures.
+                Required when from_config is False. Defaults to None.
 
         Returns:
-            LlamaForCausalLM: Initialized HF Llama model
+            LlamaForCausalLM: Initialized Hugging Face Llama model instance
+
+        Raises:
+            AssertionError: If model_name is not provided for heterogeneous models
         """
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights(True):
-            return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
+            if from_config:
+                # Llama-Nemotron Nano / Llama31Nemotron70BConfig
+                return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
+            # Llama-Nemotron Super/Ultra
+            assert model_name is not None
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+            )
+            # Register the AutoModel Hook so that the custom modeling files are saved during save_pretrained()
+            type(hf_model).register_for_auto_class("AutoModelForCausalLM")
+            return hf_model
 
-    def apply(self, output_path: Path) -> Path:
-        """Apply the conversion from NeMo to HF format.
+    def apply(self, output_path: Path, target_model_name=None) -> Path:
+        """Convert and save a NeMo Llama-Nemotron model to Hugging Face format.
+
+        This method performs the complete conversion process:
+        1. Loads the NeMo model checkpoint
+        2. Determines the appropriate target model configuration
+        3. Initializes the Hugging Face model
+        4. Converts and transfers the weights
+        5. Saves the converted model and tokenizer
 
         Args:
-            output_path: Path where the converted model will be saved
+            output_path (Path): Directory path where the converted model will be saved
+            target_model_name (str, optional): Name of the target Hugging Face model.
+                Required for heterogeneous models (Super/Ultra). For homogeneous models,
+                this is determined automatically. Defaults to None.
 
         Returns:
-            Path: Path to the saved HF model
+            Path: Path to the saved Hugging Face model directory
+
+        Raises:
+            ValueError: If the target model is not supported or if target_model_name is missing
+                      for heterogeneous models
         """
+        logging.info("Loading Llama-Nemotron NeMo checkpoint..")
         source, _ = self.nemo_load(str(self))
-        target = self.init(torch_dtype_from_mcore_config(source.config))
+        is_heterogeneous = isinstance(source.config, HeterogeneousTransformerConfig)
+        if target_model_name is None:
+            # Llama-Nemotron Super/Ultra uses customize modeling class
+            if is_heterogeneous:
+                num_layers = source.config.num_layers
+                if num_layers == 80:
+                    target_model_name = 'nvidia/Llama-3_3-Nemotron-Super-49B-v1'
+                elif num_layers == 162:
+                    target_model_name = 'nvidia/Llama-3_1-Nemotron-Ultra-253B-v1'
+                else:
+                    raise ValueError(
+                        'Unknown target model. '
+                        'Currently only support exporting Llama-Nemotron Nano/Super/Ultra models.'
+                    )
+
+        target = self.init(
+            torch_dtype_from_mcore_config(source.config),
+            from_config=not is_heterogeneous,
+            model_name=target_model_name,
+        )
         target = self.convert_state(source, target)
 
         target = target.cpu()
-        if self.config.tie_word_embeddings:
-            state_dict = target.state_dict()
-            state_dict.pop("lm_head.weight")
-            target.save_pretrained(output_path, state_dict=state_dict)
-        else:
-            target.save_pretrained(output_path)
-
-        try:
-            self.tokenizer.tokenizer.save_pretrained(output_path)
-        except Exception:
-            logging.warning("Failed to save tokenizer")
+        target.save_pretrained(output_path)
+        self.tokenizer.tokenizer.save_pretrained(output_path)
 
         return output_path
 
@@ -304,15 +447,12 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
                 target_key="model.embed_tokens.weight",
                 fn=TransformFns.prune_padding,
             ),
+            io.state_transform(
+                source_key="output_layer.weight",
+                target_key="lm_head.weight",
+                fn=TransformFns.prune_padding,
+            ),
         ]
-        if not self.config.tie_word_embeddings:
-            transforms.append(
-                io.state_transform(
-                    source_key="output_layer.weight",
-                    target_key="lm_head.weight",
-                    fn=TransformFns.prune_padding,
-                )
-            )
 
         return io.apply_transforms(
             source,
@@ -333,6 +473,7 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
     @property
     def config(self) -> "HFLlamaConfig":
         """Create a HF LlamaConfig from the NeMo model config.
+        This function should only be invoked for Non-heterogeneous transformers (i.e. Nano).
 
         Translates the NeMo configuration parameters to the equivalent HF
         configuration.
@@ -340,7 +481,9 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
         Returns:
             HFLlamaConfig: HF configuration for Llama models
         """
+
         source: LlamaConfig = io.load_context(str(self), subpath="model.config")
+        assert not isinstance(source, HeterogeneousTransformerConfig)
 
         from transformers import LlamaConfig as HFLlamaConfig
 
@@ -376,4 +519,7 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
 __all__ = [
     "LlamaNemotronModel",
     "Llama31NemotronNano8BConfig",
+    "Llama33NemotronSuper49BConfig",
+    "Llama33NemotronUltra253BConfig",
+    "Llama31Nemotron70BConfig",
 ]

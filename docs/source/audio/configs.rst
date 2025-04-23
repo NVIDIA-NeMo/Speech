@@ -6,7 +6,10 @@ For general information about how to set up and run experiments that is common t
 The model section of the NeMo audio configuration files generally requires information about the dataset(s) being used, parameters for any augmentation being performed, as well as the model architecture specification.
 
 Example configuration files for all of the NeMo audio models can be found in the
-`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/audio/conf>`_.
+`config directory of the examples <https://github.com/NVIDIA/NeMo/tree/main/examples/audio/conf>`_.
+
+
+.. _audio-configs-nemo-dataset-configuration:
 
 NeMo Dataset Configuration
 --------------------------
@@ -57,6 +60,8 @@ An example train, validation and test datasets can be configured as follows:
 
 More information about online augmentation can found in the `masking example configuration <https://github.com/NVIDIA/NeMo/blob/main/examples/audio/conf/masking.yaml>`_
 
+
+.. _audio-configs-lhotse-dataset-configuration:
 
 Lhotse Dataset Configuration
 ----------------------------

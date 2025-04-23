@@ -175,27 +175,11 @@
   "info": ""
 }
 {
-  "filename": "audio/datasets.rst",
-  "lineno": 33,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#lhotse-dataset-configuration",
-  "info": ""
-}
-{
   "filename": "asr/models.rst",
   "lineno": 441,
   "status": "broken",
   "code": 0,
   "uri": "./configs.html#lstm-transducer",
-  "info": ""
-}
-{
-  "filename": "audio/datasets.rst",
-  "lineno": 19,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#nemo-dataset-configuration",
   "info": ""
 }
 {
@@ -575,38 +559,6 @@
   "info": "Anchor 'L39' not found"
 }
 {
-  "filename": "audio/models.rst",
-  "lineno": 14,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/audio/modules/transforms.py#L34",
-  "info": "Anchor 'L34' not found"
-}
-{
-  "filename": "audio/models.rst",
-  "lineno": 14,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/audio/modules/transforms.py#L306",
-  "info": "Anchor 'L306' not found"
-}
-{
-  "filename": "audio/models.rst",
-  "lineno": 14,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/audio/modules/masking.py#L451",
-  "info": "Anchor 'L451' not found"
-}
-{
-  "filename": "audio/models.rst",
-  "lineno": 14,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/audio/modules/masking.py#L202",
-  "info": "Anchor 'L202' not found"
-}
-{
   "filename": "features/optimizations/communication_overlap.rst",
   "lineno": 52,
   "status": "broken",
@@ -743,30 +695,6 @@
   "info": "Anchor 'installation' not found"
 }
 {
-  "filename": "audio/models.rst",
-  "lineno": 5,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/examples/audio",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/tree/stable/examples/audio"
-}
-{
-  "filename": "audio/configs.rst",
-  "lineno": 8,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/examples/audio/conf",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/tree/stable/examples/audio/conf"
-}
-{
-  "filename": "audio/intro.rst",
-  "lineno": 6,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/audio",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/audio"
-}
-{
   "filename": "nlp/punctuation_and_capitalization_lexical_audio.rst",
   "lineno": 255,
   "status": "broken",
@@ -797,14 +725,6 @@
   "code": 0,
   "uri": "https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py#L41-L51",
   "info": "Anchor 'L41-L51' not found"
-}
-{
-  "filename": "audio/intro.rst",
-  "lineno": 4,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/tutorials/audio/",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/tree/stable/tutorials/audio/"
 }
 {
   "filename": "nlp/quantization.rst",

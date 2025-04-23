@@ -18,7 +18,7 @@ In most applications, such as speech restoration or enhancement, the model aims 
 
 The :code:`input_filepath` field should provide either an absolute path to the audio file corresponding to the utterance, or a relative path with respect to the directory containing the manifest.
 The :code:`target_filepath` field should provide either an absolute path to the audio file corresponding to the utterance, or a relative path with respect to the directory containing the manifest.
-Note that keys for input and target audio can be custom, and can be configured in the model configuration file, as described in `Configs <./configs.html#nemo-dataset-configuration>`_.
+Note that keys for input and target audio can be custom, and can be configured in the model configuration file, as described in :ref:`Configs <audio-configs-nemo-dataset-configuration>`.
 
 Each entry in the manifest (describing one audio file) should be bordered by ``"{"`` and ``"}"`` and must be placed on one line. The ``"key": value`` pairs should be separated by a commas as shown above. NeMo enforces no blank lines in the manifest so that the total number of lines indicates the total number of audio files in the dataset.
 
@@ -31,7 +31,7 @@ Lhotse Format
 -------------
 
 NeMo supports using `Lhotse`_, a speech data handling library, as a dataloading option.
-Lhotse can be easily enabled using `use_lhotse=True` in the dataset configuration file, as described in `Lhotse dataset configuration <./configs.html#lhotse-dataset-configuration>`_.
+Lhotse can be easily enabled using `use_lhotse=True` in the dataset configuration file, as described in :ref:`Lhotse dataset configuration <audio-configs-lhotse-dataset-configuration>`.
 
 Lhotse dataloading supports the following types of inputs:
 

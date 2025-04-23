@@ -14,7 +14,7 @@ import os
 import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings
 
 from nemo.deploy.nlp import NemoQueryLLMPyTorch
@@ -80,6 +80,14 @@ class CompletionRequest(BaseModel):
     top_p: float = 0.0
     top_k: int = 0
     logprobs: int = None
+
+    @model_validator(mode='after')
+    def set_greedy_params(self):
+        """Validate parameters for greedy decoding."""
+        if self.temperature == 0 and self.top_p == 0:
+            logging.warning("Both temperature and top_p are 0. Setting top_k to 1 to ensure greedy sampling.")
+            self.top_k = 1
+        return self
 
 
 @app.get("/v1/health")

@@ -41,13 +41,31 @@ TELayerNormColumnParallelLinear, HAVE_TE_LN_COL_LINEAR = safe_import_from(
     "megatron.core.extensions.transformer_engine",
     "TELayerNormColumnParallelLinear",
 )
+TEColumnParallelGroupedLinear, HAVE_TE_COL_GRP_LINEAR = safe_import_from(
+    "megatron.core.extensions.transformer_engine", "TEColumnParallelGroupedLinear"
+)
 TERowParallelLinear, HAVE_TE_ROW_LINEAR = safe_import_from(
     "megatron.core.extensions.transformer_engine", "TERowParallelLinear"
 )
+TERowParallelGroupedLinear, HAVE_TE_ROW_GRP_LINEAR = safe_import_from(
+    "megatron.core.extensions.transformer_engine", "TERowParallelGroupedLinear"
+)
 TELinear, HAVE_TE_LINEAR = safe_import_from("megatron.core.extensions.transformer_engine", "TELinear")
-HAVE_TE = all((HAVE_TE_COL_LINEAR, HAVE_TE_LN_COL_LINEAR, HAVE_TE_ROW_LINEAR, HAVE_TE_LINEAR))
+HAVE_TE = all(
+    (
+        HAVE_TE_COL_LINEAR,
+        HAVE_TE_LN_COL_LINEAR,
+        HAVE_TE_ROW_LINEAR,
+        HAVE_TE_LINEAR,
+        HAVE_TE_COL_GRP_LINEAR,
+        HAVE_TE_ROW_GRP_LINEAR,
+    )
+)
 
 MixedFusedLayerNorm, HAVE_APEX = safe_import_from("apex.normalization.fused_layer_norm", "MixedFusedLayerNorm")
+
+TECL = (TEColumnParallelLinear, TELayerNormColumnParallelLinear, TEColumnParallelGroupedLinear)
+TERL = (TERowParallelLinear, TERowParallelGroupedLinear)
 
 
 def get_adapter_attributes_from_linear(m: nn.Module):
@@ -56,7 +74,7 @@ def get_adapter_attributes_from_linear(m: nn.Module):
     """
     disable_sequence_parallel_comm = not m.config.sequence_parallel
 
-    if HAVE_TE and isinstance(m, TEColumnParallelLinear) or isinstance(m, TELayerNormColumnParallelLinear):
+    if HAVE_TE and any(isinstance(m, te_column_parallel) for te_column_parallel in TECL):
         input_is_parallel = False
         # m.in_features and m.out_features are divided by tp_size already,
         # but in_features and out_features passed to ParallelLinearAdapter are not.
@@ -85,7 +103,7 @@ def get_adapter_attributes_from_linear(m: nn.Module):
                     # in the forward method is not needed, so disable sp communications
                     # unless TP communication overlap is used
                     disable_sequence_parallel_comm = True
-    elif HAVE_TE and isinstance(m, TERowParallelLinear):
+    elif HAVE_TE and any(isinstance(m, te_row_parallel) for te_row_parallel in TERL):
         input_is_parallel = True
         tp_size = parallel_state.get_tensor_model_parallel_world_size()
         in_features = m.in_features * tp_size
@@ -113,7 +131,7 @@ def is_expert_linear(fqn):
     Return whether the current base module is an expert linear module.
     See ParallelLinearAdapter.is_expert for usage details.
     """
-    return re.match(r'.*mlp\.experts\.local_experts.[0-9]+\.linear_fc[1-2]$', fqn) is not None
+    return re.match(r'.*mlp\..*experts.*\.linear_fc[1-2]$', fqn) is not None
 
 
 def wildcard_match(pattern, key):

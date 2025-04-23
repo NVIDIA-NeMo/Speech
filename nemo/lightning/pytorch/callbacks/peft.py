@@ -360,7 +360,7 @@ class AdapterWrapper(nn.Module):
         self.to_wrap = to_wrap
         self.adapter = adapter
 
-    def base_linear_forward(self, x):
+    def base_linear_forward(self, x, *args, **kwargs):
         """
         Run the forward method of the linear module `to_wrap`.
         Return a tuple of three elements: linear_output, bias, layernorm_output
@@ -369,7 +369,7 @@ class AdapterWrapper(nn.Module):
 
         layernorm_output is different from input x only when linear layer is LayerNormColumnParallelLinear.
         """
-        linear_output = self.to_wrap(x)
+        linear_output = self.to_wrap(x, *args, **kwargs)
         assert isinstance(
             linear_output, tuple
         ), f"{self.to_wrap} should return a tuple but instead returns {linear_output}"

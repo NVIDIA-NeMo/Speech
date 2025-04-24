@@ -17,8 +17,6 @@
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 
 FROM ${BASE_IMAGE} AS trt-base
-ARG IMAGE_LABEL
-LABEL "nemo.library"=${IMAGE_LABEL}
 
 ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1
@@ -79,3 +77,8 @@ EOF
 ENV PYTHONPATH="${PYTHONPATH}:/workspace/Megatron-LM"
 ENV NEMO_HOME="/home/TestData/nemo_home"
 
+ARG IMAGE_LABEL
+LABEL "nemo.library"=${IMAGE_LABEL}
+
+ARG PR_NUMBER
+LABEL "nemo.pr_number"=${PR_NUMBER}

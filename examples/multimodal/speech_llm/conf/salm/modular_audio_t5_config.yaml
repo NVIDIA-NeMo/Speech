@@ -245,7 +245,6 @@ model:
       # bucketing params
       bucketing_strategy: "fully_randomized"
       bucketing_batch_size: null
-      # sample_alpha: 0.1
       use_lhotse: True
       text_field : "text"
       batch_duration : 80  # 0
@@ -255,7 +254,6 @@ model:
       buffer_size : 10000
       shuffle_buffer_size : 10000
       duration_bins: [2.92,3.474,3.924,4.335,4.728,5.11,5.487,5.872,6.288,6.696,7.128,7.62,8.208,8.934,9.883,10.56,11.22,11.88,12.51,13.05,13.59,14.13,14.64,15.17875,15.81,16.54,17.37,18.241,19.18]
-      # sample_alpha: 0.1
 
     validation_ds:
       global_batch_size: ${model.global_batch_size}

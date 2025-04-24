@@ -224,7 +224,6 @@ model:
       # bucketing params
       bucketing_strategy: "synced_randomized"
       bucketing_batch_size: null
-      sample_alpha: null
       audio_locator: null
 
     validation_ds:

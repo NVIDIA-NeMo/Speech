@@ -256,8 +256,11 @@ class Quantizer:
             enable_quant_kv_cache = "int8" not in self.quantization_config.algorithm and decoder_type != "gpt"
         else:
             enable_quant_kv_cache = self.quantization_config.enable_kv_cache
+        if self.quantization_config.enable_kv_cache is None and enable_quant_kv_cache:
+            logging.warning("Enabled KV cache quantization but enable_kv_cache is None in quantization_config")
+        else:
+            logging.info(f"{'Enabled' if enable_quant_kv_cache else 'Disabled'} KV cache quantization")
 
-        print(f"{'Enable' if enable_quant_kv_cache else 'Disable'} KV cache quantization")
         # Check if any bmm_quantizer is in the quant_cfg. If so, we need to enable the bmm_quantizer.
         if enable_quant_kv_cache:
             # Update KV cache related bmm quantizers

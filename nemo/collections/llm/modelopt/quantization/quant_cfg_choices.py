@@ -39,6 +39,7 @@ def get_quant_cfg_choices() -> Dict[str, Dict[str, Any]]:
         ("int8", "INT8_DEFAULT_CFG"),
         ("int8_sq", "INT8_SMOOTHQUANT_CFG"),
         ("fp8", "FP8_DEFAULT_CFG"),
+        ("block_fp8", "FP8_2D_BLOCKWISE_WEIGHT_ONLY_CFG"),
         ("int4_awq", "INT4_AWQ_CFG"),
         ("w4a8_awq", "W4A8_AWQ_BETA_CFG"),
         ("int4", "INT4_BLOCKWISE_WEIGHT_ONLY_CFG"),

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 # NOTE: This script is only an example of using NeMo with NeMo-Run's APIs and is subject to change without notice.
-# This script is used for evaluation on local and slurm executors.
-# It uses deploy method from nemo/llm/collections/api.py to deploy nemo2.0 ckpt on PyTriton server by converting to
-# trtllm, uses evaluate method from nemo/llm/collections/api.py to run evaluation on it and uses NeMo-Run
+# This script is used for evaluation on local and slurm executors using NeMo-Run.
+# It uses deploy method from nemo/llm/collections/api.py to deploy nemo2.0 ckpt on PyTriton server and uses evaluate
+# method from nemo/llm/collections/api.py to run evaluation on it.
 # (https://github.com/NVIDIA/NeMo-Run) to configure and execute the runs.
 
 import argparse
@@ -107,7 +107,7 @@ def get_parser():
     parser.add_argument(
         "--parallel_requests",
         type=int,
-        default=None,
+        default=1,
         help="Number of parallel requests to send to server. Default: use default for the task.",
     )
     parser.add_argument(

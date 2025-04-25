@@ -22,6 +22,8 @@ export TRTLLM_DIR="$INSTALL_DIR/TensorRT-LLM"
 
 trt() {
   local mode="$1"
+  local WHEELS_DIR=$WHEELS_DIR/trt/
+  mkdir -p $WHEELS_DIR
 
   curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash &&
     apt-get install git-lfs &&
@@ -53,6 +55,8 @@ trt() {
 
 trtllm() {
   local mode="$1"
+  local WHEELS_DIR=$WHEELS_DIR/trtllm/
+  mkdir -p $WHEELS_DIR
 
   curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash &&
     apt-get install git-lfs &&
@@ -69,11 +73,15 @@ trtllm() {
     git lfs pull &&
     popd
 
-  if [[ "$mode" == "build" ]]; then
+  build() {
     if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
       cd $TRTLLM_DIR &&
         python3 ./scripts/build_wheel.py --job_count $(nproc) --trt_root /usr/local/tensorrt --dist_dir $WHEELS_DIR/trtllm/ --python_bindings --benchmarks
     fi
+  }
+
+  if [[ "$mode" == "build" ]]; then
+    build
   else
     if [ -d "$WHEELS_DIR" ] && [ -z "$(ls -A "$WHEELS_DIR")" ]; then
       build
@@ -85,6 +93,8 @@ trtllm() {
 
 te() {
   local mode="$1"
+  local WHEELS_DIR=$WHEELS_DIR/te/
+  mkdir -p $WHEELS_DIR
 
   TE_REPO=${TE_REPO:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."transformer_engine".repo')}
   TE_TAG=${TE_TAG:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."transformer_engine".ref')}
@@ -96,14 +106,18 @@ te() {
   fi &&
     pushd $TE_DIR &&
     git checkout -f $TE_TAG &&
-    patch -p1 < /tmp/NeMo/external/patches/nemo_2.3.0_te.patch &&
+    patch -p1 </tmp/NeMo/external/patches/nemo_2.3.0_te.patch &&
     popd
 
-  if [[ "$mode" == "build" ]]; then
+  build() {
     if [[ -n "${NVIDIA_PYTORCH_VERSION}" ]]; then
       cd $TE_DIR && git submodule init && git submodule update &&
         pip wheel --wheel-dir $WHEELS_DIR/te/ $TE_DIR
     fi
+  }
+
+  if [[ "$mode" == "build" ]]; then
+    build
   else
     if [ -d "$WHEELS_DIR" ] && [ -z "$(ls -A "$WHEELS_DIR")" ]; then
       build
@@ -133,7 +147,7 @@ mcore() {
     popd
 
   export MAMBA_FORCE_BUILD=TRUE
-  export MAMBA_TAG=v2.2.0
+  export MAMBA_TAG=2e16fc3062cdcd4ebef27a9aa4442676e1c7edf4
   MAMBA_DIR="$INSTALL_DIR/mamba" &&
     if [ ! -d "$MAMBA_DIR/.git" ]; then
       rm -rf "$MAMBA_DIR" &&
@@ -143,6 +157,7 @@ mcore() {
     pushd $MAMBA_DIR &&
     git checkout -f $MAMBA_TAG &&
     perl -ni -e 'print unless /triton/' setup.py &&
+    perl -ni -e 'print unless /triton/' pyproject.toml &&
     popd
 
   MLM_REPO=${MLM_REPO:-$(cat "$CURR/requirements/manifest.json" | jq -r '."vcs-dependencies"."megatron-lm".repo')}

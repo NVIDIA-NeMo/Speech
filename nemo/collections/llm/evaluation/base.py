@@ -398,7 +398,7 @@ def find_framework(eval_task: str) -> str:
     }
 
     for framework_name, input_module in discovered_modules.items():
-        _, task_name_mapping = input_module.get_available_evaluations()
+        _, task_name_mapping, *_ = input_module.get_available_evaluations()
         if eval_task in task_name_mapping.keys():
             return framework_name
 

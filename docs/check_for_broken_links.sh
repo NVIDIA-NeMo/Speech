@@ -27,8 +27,7 @@ function check_environment {
 
 function check_links {
   local err=0
-  # If you know how to prevent the hack with using jq twice, lmk.
-  broken=$(jq 'select(.status == "broken")' "${LINKCHECK_JSON}" | jq -s)
+  broken=$(jq -s 'map(select(.status=="broken"))' "$LINKCHECK_JSON")
   count=$(echo "${broken}" | jq 'length')
   for i in $(seq 0 $(($count - 1)))
   do

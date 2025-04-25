@@ -41,8 +41,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
-      build_args: ${{ steps.manifest.outputs.BUILD_ARGS }}
-      cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
@@ -79,73 +77,18 @@ jobs:
           parsed_string=$(echo "$TESTS_TO_RUN" | jq -c --raw-input 'split(",")')
           echo "main=${parsed_string}" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Parse manifest.json
-        id: manifest
-        run: |
-          BUILD_ARGS=$(cat << EOF
-          BASE_IMAGE=$(cat requirements/manifest.json | jq -r '."ngc-pytorch"')
-          TRTLLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".repo')
-          TRTLLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".ref')
-          MLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".repo')
-          MLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".ref')
-          TE_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.repo')
-          TE_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.ref')
-          APEX_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.repo')
-          APEX_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.ref')
-          EOF
-          )
-
-          echo "BUILD_ARGS<<EOF" >> $GITHUB_OUTPUT
-          echo "$BUILD_ARGS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Get last merged PR
-        id: cache_from
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          LAST_PRS=$(gh api graphql -f query='
-            query {
-              repository(owner: "NVIDIA", name: "NeMo") {
-                pullRequests(states: MERGED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
-                  nodes {
-                    number
-                  }
-                }
-              }
-            }' | jq -r '.data.repository.pullRequests.nodes[].number' | while read -r number; do
-              echo "nemoci.azurecr.io/nemo_container-buildcache:$number"
-            done)
-
-          echo "LAST_PRS<<EOF" >> $GITHUB_OUTPUT
-          echo "$LAST_PRS" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
   code-linting:
     if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
     needs: [pre-flight]
     uses: ./.github/workflows/code-linting.yml
 
   cicd-test-container-build:
+    uses: ./.github/workflows/_build_container.yml
     if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
-    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.27.0
     needs: [pre-flight, code-linting]
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
-      image-label: nemo-core
-      build-args: |
-        IMAGE_LABEL=nemo-core
-        NEMO_TAG=${{ github.sha }}
-        NEMO_REPO=https://github.com/NVIDIA/NeMo
-        PR_NUMBER=${{ github.event.pull_request.number || 0 }}
-        ${{ needs.pre-flight.outputs.BUILD_ARGS }}
-      prune-filter-timerange: 24h
-      use-inline-cache: false
-      cache-from: |
-        nemoci.azurecr.io/nemo_container-buildcache:main
-        nemoci.azurecr.io/nemo_container-buildcache:${{ github.event.pull_request.number || 0 }}
-        ${{ needs.pre-flight.outputs.cache-from }}
 
   cicd-import-tests:
     if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
@@ -205,6 +148,12 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
+  cicd-main-export-deploy-tests:
+    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    uses: ./.github/workflows/cicd-main-export-deploy-tests.yml
+    with:
+      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+
   Nemo_CICD_Test:
     needs:
       - pre-flight
@@ -213,7 +162,7 @@ jobs:
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
       - cicd-main-e2e-tests
-
+      - cicd-main-export-deploy-tests
     if: always() && (github.event.label.name == 'Run CICD' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions: write-all

@@ -1,4 +1,4 @@
-name: Bump Megatron Tag Template
+name: ~Bump Megatron Tag template
 on:
   workflow_call:
     inputs:

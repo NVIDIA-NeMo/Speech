@@ -1,0 +1,89 @@
+name: ~Build container template
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+        description: "The name of the image to build"
+      dockerfile:
+        required: true
+        type: string
+      runner:
+        required: false
+        default: self-hosted-azure-builder
+        type: string
+        description: "The runner to use for the build"
+
+jobs:
+  pre-flight:
+    runs-on: ubuntu-latest
+    outputs:
+      build_args: ${{ steps.manifest.outputs.BUILD_ARGS }}
+      cache-from: ${{ steps.cache_from.outputs.LAST_PRS }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse manifest.json
+        id: manifest
+        run: |
+          BUILD_ARGS=$(cat << EOF
+          BASE_IMAGE=$(cat requirements/manifest.json | jq -r '."ngc-pytorch"')
+          TRTLLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".repo')
+          TRTLLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."trt-llm".ref')
+          MLM_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".repo')
+          MLM_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies"."megatron-lm".ref')
+          TE_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.repo')
+          TE_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".transformer_engine.ref')
+          APEX_REPO=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.repo')
+          APEX_TAG=$(cat requirements/manifest.json | jq -r '."vcs-dependencies".apex.ref')
+          EOF
+          )
+
+          echo "BUILD_ARGS<<EOF" >> $GITHUB_OUTPUT
+          echo "$BUILD_ARGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Get last merged PR
+        id: cache_from
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LAST_PRS=$(gh api graphql -f query='
+            query {
+              repository(owner: "NVIDIA", name: "NeMo") {
+                pullRequests(states: MERGED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                  nodes {
+                    number
+                  }
+                }
+              }
+            }' | jq -r '.data.repository.pullRequests.nodes[].number' | while read -r number; do
+              echo "nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:$number"
+            done)
+
+          echo "LAST_PRS<<EOF" >> $GITHUB_OUTPUT
+          echo "$LAST_PRS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+  build:
+    uses: NVIDIA/NeMo-FW-CI-templates/.github/workflows/_build_container.yml@v0.27.0
+    needs: [pre-flight]
+    with:
+      image-name: ${{ inputs.image-name }}
+      dockerfile: ${{ inputs.dockerfile }}
+      image-label: nemo-core
+      build-args: |
+        IMAGE_LABEL=nemo-core
+        NEMO_TAG=${{ github.sha }}
+        NEMO_REPO=https://github.com/NVIDIA/NeMo
+        PR_NUMBER=${{ github.event.pull_request.number || 0 }}
+        ${{ needs.pre-flight.outputs.build_args }}
+      prune-filter-timerange: 24h
+      use-inline-cache: false
+      cache-from: |
+        nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:main
+        nemoci.azurecr.io/${{ inputs.image-name }}-buildcache:${{ github.event.pull_request.number || 0 }}
+        ${{ needs.pre-flight.outputs.cache-from }}
+      runner: ${{ inputs.runner }}

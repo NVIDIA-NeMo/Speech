@@ -36,6 +36,11 @@ on:
         description: Tests to run
         required: false
         default: '["all"]'
+      IMAGE:
+        type: string
+        description: Image to use for test
+        required: false
+        default: "nemo_container"
     outputs:
       conclusion:
         description: Conclusion of main test step
@@ -61,13 +66,16 @@ jobs:
       SCRIPT: ${{ inputs.SCRIPT }}
       IS_UNIT_TEST: ${{ inputs.IS_UNIT_TEST }}
     steps:
+      - name: Noop
+        run: echo "noop"
+
       - name: Docker system cleanup
         run: |
           docker system prune -af --filter "until=24h" --filter "label!=nemo.pr_number=${{ github.event.pull_request.number || 0 }}" --force || true
 
       - name: Docker pull image
         run: |
-          docker pull nemoci.azurecr.io/nemo_container:${{ github.run_id }}
+          docker pull nemoci.azurecr.io/${{ inputs.IMAGE }}:${{ github.run_id }}
 
       - name: Clean repos
         run: |
@@ -94,7 +102,7 @@ jobs:
           # Map of runner names to GPU device configurations
           declare -A GPU_CONFIGS=(
             ["myVm-01"]="0,1"
-            ["myVm-02"]="2,3" 
+            ["myVm-02"]="2,3"
             ["myVm-03"]="4,5"
             ["myVm-04"]="6,7"
           )
@@ -119,7 +127,7 @@ jobs:
             --env HF_HOME=/home/TestData/HF_HOME \
             --env RUN_ID=${{ github.run_id }} \
             --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
-            --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/nemo_container:${{ github.run_id }} \
+            --volume /mnt/datadrive/TestData:/home/TestData nemoci.azurecr.io/${{ inputs.IMAGE }}:${{ github.run_id }} \
             bash -c "sleep $(( ${{ inputs.TIMEOUT }} * 60 + 60 ))"
           RUN_TEST_EOF
           )
@@ -140,7 +148,7 @@ jobs:
 
           cmd=$(cat <<RUN_TEST_EOF
           #!/bin/bash
-            
+
           (
             set -e
 
@@ -179,7 +187,7 @@ jobs:
 
           docker exec nemo_container_${{ github.run_id }}_${{ runner.name }} coverage combine
           docker exec nemo_container_${{ github.run_id }}_${{ runner.name }} coverage xml
-          docker cp nemo_container_${{ github.run_id }}_${{ runner.name }}:/workspace/.coverage $DIR/.coverage 
+          docker cp nemo_container_${{ github.run_id }}_${{ runner.name }}:/workspace/.coverage $DIR/.coverage
           docker cp nemo_container_${{ github.run_id }}_${{ runner.name }}:/workspace/coverage.xml $DIR/coverage.xml
 
           coverage_report=coverage-${{ steps.create.outputs.coverage-prefix }}-${{ github.run_id }}-$(uuidgen)

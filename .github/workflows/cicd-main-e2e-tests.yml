@@ -1006,23 +1006,11 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_Prune_Llama_TP1PP2
 
-  L2_NeMo_2_Export_In_Framework:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_Export_In_Framework
-
   L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING:
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_LLAVA_NEXT_MOCK_TRAINING
-
-  L2_NeMo_2_VLLM_VISION:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_VLLM_VISION
 
   L2_NeMo_2_LLAVA_NEXT_HF_CONVERSION:
     uses: ./.github/workflows/_test_template.yml
@@ -1053,12 +1041,6 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_CLIP_INFER
-
-  L2_NeMo_2_VLLM_EXPORT:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_VLLM_EXPORT
 
   Optional_L2_NeMo_2_EVAL:
     uses: ./.github/workflows/_test_template.yml
@@ -1180,27 +1162,3 @@ jobs:
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_Conversion_Test_T5
-
-  L2_NeMo_2_Export_HF_TRT_LLM:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_Export_HF_TRT_LLM
-
-  L2_NeMo_2_Export_Deploy_Query_In_Framework:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_Export_Deploy_Query_In_Framework
-
-  L2_ONNX_TRT_LLM_Embedding_Export:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_ONNX_TRT_LLM_Embedding_Export
-
-  L2_NeMo_2_Export_TRT_LLM:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L2_NeMo_2_Export_TRT_LLM

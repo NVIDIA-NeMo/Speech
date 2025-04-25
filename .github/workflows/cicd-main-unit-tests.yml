@@ -158,20 +158,6 @@ jobs:
       IS_UNIT_TEST: true
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
 
-  evaluation-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - script: L0_Unit_Tests_Eval
-            runner: self-hosted-azure
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
-
   other-tests:
     strategy:
       fail-fast: false

@@ -4,7 +4,6 @@ coverage
 isort>5.1.0,<6.0.0
 parameterized
 pytest
-pytest-coverage
 pytest-mock
 pytest-runner
 ruamel.yaml

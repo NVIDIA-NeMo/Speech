@@ -1081,6 +1081,7 @@ def generate(
     max_seq_length = inference_params.num_tokens_to_generate + max(len(mcore_tokenizer.tokenize(p)) for p in inputs)
     # set kv cache allocation to only num tokens in prompt + max tokens to generate
     inference_wrapped_model.inference_wrapper_config.inference_max_seq_length = max_seq_length
+    inference_wrapped_model.inference_context.max_sequence_length = max_seq_length
 
     dp_size = trainer.strategy.distributed_sampler_kwargs['num_replicas']
     dp_rank = trainer.strategy.distributed_sampler_kwargs['rank']

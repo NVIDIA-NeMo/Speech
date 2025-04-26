@@ -7,23 +7,6 @@ on:
         type: string
 
 jobs:
-  collections-asr-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - script: L0_Unit_Tests_GPU_ASR
-            runner: self-hosted-azure-gpus-1
-          - script: L0_Unit_Tests_CPU_ASR
-            runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      TIMEOUT: 20
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
-
   collections-audio-tests:
     strategy:
       fail-fast: false

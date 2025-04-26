@@ -154,6 +154,12 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
+  cicd-main-collections-asr:
+    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    uses: ./.github/workflows/cicd-main-collections-asr.yml
+    with:
+      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+
   Nemo_CICD_Test:
     needs:
       - pre-flight

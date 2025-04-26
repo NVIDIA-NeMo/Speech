@@ -14,52 +14,6 @@ jobs:
       RUNNER: self-hosted-azure-gpus-1
       SCRIPT: L2_Community_vita_Checkpoints_tests_Llama3
 
-  # L2: ASR dev run
-  ASR_dev_run_Speech_to_Text:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: ASR_dev_run_Speech_to_Text
-
-  ASR_dev_run_Speech_to_Text_WPE_CitriNet:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: ASR_dev_run_Speech_to_Text_WPE_CitriNet
-
-  ASR_dev_run_Speech_Pre-training_-_CitriNet:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: ASR_dev_run_Speech_Pre-training_-_CitriNet
-
-  Optional_ASR_dev_run_Speech_To_Text_Finetuning:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: Optional_ASR_dev_run_Speech_To_Text_Finetuning
-      IS_OPTIONAL: true
-
-  Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning
-      IS_OPTIONAL: true
-
-  ASR_dev_run_Speech_to_Text_WPE_-_Conformer:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
-
-  # L2: ASR dev run - part two
-  ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer:
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure-gpus-1
-      SCRIPT: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
-
   L2_Speech_to_Text_EMA:
     uses: ./.github/workflows/_test_template.yml
     with:

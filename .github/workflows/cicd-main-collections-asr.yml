@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: ${{ inputs.image-name }}
-      dockerfile: Dockerfile.ci]
+      dockerfile: Dockerfile.ci
 
   asr-unit-tests:
     strategy:

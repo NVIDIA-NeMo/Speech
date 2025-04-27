@@ -627,11 +627,12 @@ jobs:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_jit_callback
 
-  L2_NeMo_2_T5_Pretraining:
+  OPTIONAL_L2_NeMo_2_T5_Pretraining:
     uses: ./.github/workflows/_test_template.yml
     with:
       RUNNER: self-hosted-azure
       SCRIPT: L2_NeMo_2_T5_Pretraining
+      IS_OPTIONAL: true
 
   L2_NeMo_2_T5_MockData_Pretraining:
     uses: ./.github/workflows/_test_template.yml

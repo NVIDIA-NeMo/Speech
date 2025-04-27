@@ -16,7 +16,6 @@ import argparse
 import json
 import logging
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -467,6 +466,7 @@ def run_in_framework_inference(
     run_accuracy=False,
     debug=True,
     test_data_path=None,
+    legacy_ckpt=False,
 ) -> Tuple[Optional[FunctionalResult], Optional[AccuracyResult]]:
     if Path(checkpoint_path).exists():
         if debug:
@@ -479,7 +479,7 @@ def run_in_framework_inference(
 
             print("Path: {0} and model: {1} will be tested".format(checkpoint_path, model_name))
 
-        deployed_model = MegatronLLMDeploy.get_deployable(checkpoint_path, num_gpus)
+        deployed_model = MegatronLLMDeploy.get_deployable(checkpoint_path, num_gpus, legacy_ckpt=legacy_ckpt)
 
         nm = DeployPyTriton(
             model=deployed_model,
@@ -666,6 +666,12 @@ def get_args():
         default="False",
     )
     parser.add_argument(
+        "--legacy_ckpt",
+        type=str,
+        default="False",
+        help="Load checkpoint saved with TE < 1.14 (only for in-framework inference)",
+    )
+    parser.add_argument(
         "-gmu",
         '--gpu_memory_utilization',
         default=0.95,  # 0.95 is needed to run Mixtral-8x7B on 2x48GB GPUs
@@ -729,6 +735,7 @@ def get_args():
     args.in_framework = str_to_bool("in_framework", args.in_framework)
     args.export_fp8_quantized = str_to_bool("export_fp8_quantized", args.export_fp8_quantized, optional=True)
     args.use_fp8_kv_cache = str_to_bool("use_fp8_kv_cache", args.use_fp8_kv_cache, optional=True)
+    args.legacy_ckpt = str_to_bool("legacy_ckpt", args.legacy_ckpt)
 
     return args
 
@@ -787,6 +794,7 @@ def run_inference_tests(args):
                 run_accuracy=args.run_accuracy,
                 debug=args.debug,
                 test_data_path=args.test_data_path,
+                legacy_ckpt=args.legacy_ckpt,
             )
         else:
             result_dic[tps] = run_inference(

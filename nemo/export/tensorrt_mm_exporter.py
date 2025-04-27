@@ -54,7 +54,7 @@ def noop_decorator(func):
 use_pytriton = True
 batch = noop_decorator
 try:
-    from pytriton.decorators import batch
+    from pytriton.decorators import batch, first_value
     from pytriton.model_config import Tensor
 except Exception:
     use_pytriton = False
@@ -282,11 +282,12 @@ class TensorRTMMExporter(ITritonDeployable):
         return outputs
 
     @batch
+    @first_value("batch_size", "max_output_len", "top_k", "top_p", "temperature", "repetition_penalty", "num_beams")
     def triton_infer_fn(self, **inputs: np.ndarray):
         try:
             if self.runner is None:
                 raise Exception(
-                    "A nemo checkpoint should be exported and " "then it should be loaded first to run inference."
+                    "A nemo checkpoint should be exported and then it should be loaded first to run inference."
                 )
 
             infer_input = {"input_text": str_ndarray2list(inputs.pop("input_text")[0])}
@@ -299,19 +300,19 @@ class TensorRTMMExporter(ITritonDeployable):
                 infer_input["input_signal"] = inputs.pop("input_signal")
                 infer_input["input_signal_length"] = inputs.pop("input_signal_length")[:, 0]
             if "batch_size" in inputs:
-                infer_input["batch_size"] = inputs.pop("batch_size")[0][0]
+                infer_input["batch_size"] = inputs.pop("batch_size")
             if "max_output_len" in inputs:
-                infer_input["max_new_tokens"] = inputs.pop("max_output_len")[0][0]
+                infer_input["max_new_tokens"] = inputs.pop("max_output_len")
             if "top_k" in inputs:
-                infer_input["top_k"] = inputs.pop("top_k")[0][0]
+                infer_input["top_k"] = inputs.pop("top_k")
             if "top_p" in inputs:
-                infer_input["top_p"] = inputs.pop("top_p")[0][0]
+                infer_input["top_p"] = inputs.pop("top_p")
             if "temperature" in inputs:
-                infer_input["temperature"] = inputs.pop("temperature")[0][0]
+                infer_input["temperature"] = inputs.pop("temperature")
             if "repetition_penalty" in inputs:
-                infer_input["repetition_penalty"] = inputs.pop("repetition_penalty")[0][0]
+                infer_input["repetition_penalty"] = inputs.pop("repetition_penalty")
             if "num_beams" in inputs:
-                infer_input["num_beams"] = inputs.pop("num_beams")[0][0]
+                infer_input["num_beams"] = inputs.pop("num_beams")
             if "lora_uids" in inputs:
                 lora_uids = np.char.decode(inputs.pop("lora_uids").astype("bytes"), encoding="utf-8")
                 infer_input["lora_uids"] = lora_uids[0].tolist()

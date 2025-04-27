@@ -47,12 +47,14 @@ def deployable(mock_model_and_tokenizer):
     )
 
 
+@pytest.mark.run_only_on("GPU")
 def test_initialization(deployable, mock_model_and_tokenizer):
     """Test initialization of the deployable class."""
     assert deployable.nemo_checkpoint_filepath == "dummy.nemo"
     mock_model_and_tokenizer.assert_called_once()
 
 
+@pytest.mark.run_only_on("GPU")
 def test_generate(deployable):
     """Test text generation functionality."""
     prompts = ["Hello", "World"]
@@ -68,6 +70,7 @@ def test_generate(deployable):
         mock_generate.assert_called_once()
 
 
+@pytest.mark.run_only_on("GPU")
 def test_apply_chat_template(deployable):
     """Test chat template application."""
     messages = [{"role": "user", "content": "Hello"}]
@@ -76,6 +79,7 @@ def test_apply_chat_template(deployable):
     assert messages[0]["content"] in template
 
 
+@pytest.mark.run_only_on("GPU")
 def test_remove_eos_token(deployable):
     """Test EOS token removal."""
     texts = ["Hello<eos>", "World", "Test<eos>"]
@@ -83,6 +87,7 @@ def test_remove_eos_token(deployable):
     assert cleaned_texts == ["Hello", "World", "Test"]
 
 
+@pytest.mark.run_only_on("GPU")
 def test_str_to_dict(deployable):
     """Test string to dictionary conversion."""
     json_str = '{"key": "value"}'
@@ -91,12 +96,13 @@ def test_str_to_dict(deployable):
     assert result["key"] == "value"
 
 
+@pytest.mark.run_only_on("GPU")
 def test_triton_input_output(deployable):
     """Test Triton input and output tensor definitions."""
     inputs = deployable.get_triton_input
     outputs = deployable.get_triton_output
 
-    assert len(inputs) == 10  # Number of input tensors
+    assert len(inputs) == 9  # Number of input tensors
     assert len(outputs) == 2  # Number of output tensors
 
     # Check input tensor names

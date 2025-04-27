@@ -30,11 +30,12 @@ jobs:
     uses: ./.github/workflows/_test_template.yml
     needs: [asr-build]
     with:
-      runner: ${{ matrix.runner }}
-      script: ${{ matrix.script }}
+      RUNNER: ${{ matrix.runner }}
+      SCRIPT: ${{ matrix.script }}
       IS_UNIT_TEST: true
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       IMAGE: ${{ inputs.image-name }}
+      TIMEOUT: 20
 
   e2e-tests-asr-tests:
     strategy:

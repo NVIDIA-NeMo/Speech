@@ -22,6 +22,7 @@ import torch
 import torch.distributed
 import wrapt
 from jinja2 import Template
+from megatron.core.dist_checkpointing.validation import StrictHandling
 from megatron.core.inference.common_inference_params import CommonInferenceParams
 from megatron.core.inference.inference_request import InferenceRequest
 
@@ -56,7 +57,7 @@ def noop_decorator(func):
 use_pytriton = True
 batch = noop_decorator
 try:
-    from pytriton.decorators import batch
+    from pytriton.decorators import batch, first_value
     from pytriton.model_config import Tensor
 except Exception:
     use_pytriton = False
@@ -79,6 +80,7 @@ class MegatronLLMDeploy:
         tensor_model_parallel_size: int = 1,
         pipeline_model_parallel_size: int = 1,
         context_parallel_size: int = 1,
+        legacy_ckpt: bool = False,
     ):
         """
         Returns the appropriate deployable instance for the given NeMo checkpoint.
@@ -102,6 +104,7 @@ class MegatronLLMDeploy:
                 tensor_model_parallel_size=tensor_model_parallel_size,
                 pipeline_model_parallel_size=pipeline_model_parallel_size,
                 context_parallel_size=context_parallel_size,
+                legacy_ckpt=legacy_ckpt,
             )
         else:
             raise Exception("Only NeMo 2.0 checkpoint is supported.")
@@ -136,6 +139,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         params_dtype: torch.dtype = torch.bfloat16,
         inference_batch_times_seqlen_threshold: int = 1000,
         inference_max_seq_length: int = 4096,
+        legacy_ckpt: bool = False,
     ):
         self.nemo_checkpoint_filepath = nemo_checkpoint_filepath
 
@@ -147,7 +151,7 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             sequence_parallel=False,
             setup_optimizers=False,
             store_optimizer_states=False,
-            ckpt_load_strictness="log_all",
+            ckpt_load_strictness=StrictHandling.LOG_ALL if legacy_ckpt else None,
         )
 
         trainer = nl.Trainer(
@@ -280,7 +284,6 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
             Tensor(name="top_p", shape=(-1,), dtype=np.single, optional=True),
             Tensor(name="temperature", shape=(-1,), dtype=np.single, optional=True),
             Tensor(name="random_seed", shape=(-1,), dtype=np.int_, optional=True),
-            Tensor(name="max_length", shape=(-1,), dtype=np.int_, optional=True),
             Tensor(name="compute_logprob", shape=(-1,), dtype=np.bool_, optional=True),
             Tensor(name="apply_chat_template", shape=(-1,), dtype=np.bool_, optional=True),
         )
@@ -294,18 +297,29 @@ class MegatronLLMDeployableNemo2(ITritonDeployable):
         )
 
     @batch
+    @first_value(
+        "max_length",
+        "max_batch_size",
+        "top_k",
+        "top_p",
+        "temperature",
+        "random_seed",
+        "compute_logprob",
+        "apply_chat_template",
+    )
     def triton_infer_fn(self, **inputs: np.ndarray):
         output_infer = {}
         prompts = str_ndarray2list(inputs.pop("prompts"))
-        max_batch_size = inputs.pop("max_batch_size")[0][0] if "max_batch_size" in inputs else 32
-        random_seed = inputs.pop("random_seed")[0][0] if "random_seed" in inputs else None
-        temperature = inputs.pop("temperature")[0][0] if "temperature" in inputs else 1.0
-        top_k = inputs.pop("top_k")[0][0] if "top_k" in inputs else 1
-        top_p = inputs.pop("top_p")[0][0] if "top_p" in inputs else 0.0
-        num_tokens_to_generate = inputs.pop("max_length")[0][0] if "max_length" in inputs else 256
-        log_probs = inputs.pop("compute_logprob")[0][0] if "compute_logprob" in inputs else False
-        apply_chat_template = inputs.pop("apply_chat_template")[0][0] if "apply_chat_template" in inputs else False
+        max_batch_size = inputs.pop("max_batch_size", 32)
+        random_seed = inputs.pop("random_seed", None)
+        temperature = inputs.pop("temperature", 1.0)
+        top_k = inputs.pop("top_k", 1)
+        top_p = inputs.pop("top_p", 0.0)
+        num_tokens_to_generate = inputs.pop("max_length", 256)
+        log_probs = inputs.pop("compute_logprob", False)
+        apply_chat_template = inputs.pop("apply_chat_template", False)
         text_only = True
+
         if apply_chat_template:
             # Deserialize the JSON string back to a dictionary
             prompts = [self.str_to_dict(prompt) for prompt in prompts]

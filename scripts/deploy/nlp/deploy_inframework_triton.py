@@ -57,6 +57,7 @@ def get_args(argv):
     )
     parser.add_argument("-mbs", "--max_batch_size", default=8, type=int, help="Max batch size of the model")
     parser.add_argument("-dm", "--debug_mode", default=False, action='store_true', help="Enable debug mode")
+    parser.add_argument("-lc", "--legacy_ckpt", action="store_true", help="Load checkpoint saved with TE < 1.14")
     args = parser.parse_args(argv)
     return args
 
@@ -87,6 +88,7 @@ def nemo_deploy(argv):
         pipeline_model_parallel_size=args.pipeline_parallelism_size,
         context_parallel_size=args.context_parallel_size,
         expert_model_parallel_size=args.expert_model_parallel_size,
+        legacy_ckpt=args.legacy_ckpt,
     )
 
     if torch.distributed.is_initialized():

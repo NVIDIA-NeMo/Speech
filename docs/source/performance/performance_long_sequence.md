@@ -1,6 +1,25 @@
 # Long Sequence Performance
 
-## LLAMA2-7B (FP8)
+## LLAMA3-8B (FP8) - B200
+
+- The table below shows the pre-training performance (in TFLOPS/GPU) of the LLAMA3-8B on various sequence lengths (8K to 1024K tokens) on the DGX-B200 system.
+
+  - Container: [NeMo25.04.rc2](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/nemo/tags)
+  - System: DGX-B200
+
+| SeqLen (K) | # of GPUs | Batch Size  | TP | CP | DP | TFLOPS / GPU |
+|------------|-----------|-------------|----|----|----|--------------|
+| 8          | 2         | 512         | 1  | 1  | 2  | 1,671        |
+| 16         | 4         | 256         | 1  | 1  | 4  | 1,717        |
+| 32         | 8         | 128         | 1  | 2  | 4  | 1,624        |
+| 64         | 16        | 64          | 1  | 4  | 4  | 1,600        |
+| 128        | 32        | 32          | 2  | 4  | 4  | 1,588        |
+| 256        | 64        | 16          | 4  | 4  | 4  | 1,590        |
+| 512        | 128       | 8           | 4  | 8  | 4  | 1,619        |
+| 1024       | 256       | 4           | 4  | 16 | 4  | 1,608        |
+
+
+## LLAMA2-7B (FP8) - H100
 
 - The table below shows the pre-training performance of the LLAMA2-7B with CP (context parallelism) and compares it against the results without CP at various input sequence lengths. The detailed model-parallel configurations and the achieved performance are shown in the training results with CP. In non-CP training runs, we use the most performant model- and data-parallel configurations without CP given the memory capacity constraint of the H100 GPU system.
 

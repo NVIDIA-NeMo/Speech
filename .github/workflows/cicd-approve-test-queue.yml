@@ -113,8 +113,7 @@ jobs:
 
               workflow_id = workflow["id"]
               workflow_name = workflow["display_title"]
-              pull_request_number = workflow["pull_requests"][0]["number"]
-              print(f"Approving workflow {workflow_name} for PR #{pull_request_number}")
+              print(f"Approving workflow {workflow_name} with Run Id: {workflow_id}")
 
               deployment_url = f"actions/runs/{workflow_id}/pending_deployments"
               deployment = make_request(deployment_url)[0]

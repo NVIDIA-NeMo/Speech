@@ -172,12 +172,11 @@ def finetune_recipe(
 
     recipe = default_finetune_recipe(model(), resume_path, dir, name, num_nodes, num_gpus_per_node, packed_sequence)
     if peft_scheme is None or peft_scheme.lower() == 'none':
-        recipe.trainer.strategy.sequence_parallel = True
-        recipe.trainer.strategy.expert_model_parallel_size = 4
-        recipe.trainer.strategy.tensor_model_parallel_size = 16
-        recipe.trainer.strategy.pipeline_model_parallel_size = 7
-        recipe.trainer.strategy.num_layers_in_first_pipeline_stage = 8
-        recipe.trainer.strategy.num_layers_in_last_pipeline_stage = 8
+        recipe.trainer.strategy.expert_model_parallel_size = 64
+        recipe.trainer.strategy.tensor_model_parallel_size = 1
+        recipe.trainer.strategy.pipeline_model_parallel_size = 8
+        recipe.trainer.strategy.num_layers_in_first_pipeline_stage = 6
+        recipe.trainer.strategy.num_layers_in_last_pipeline_stage = 7
         recipe.optim.config.lr = 5e-6
     elif peft_scheme.lower() in ['lora', 'dora']:
         recipe.peft = run.Config(PEFT_STR2CLS[peft_scheme.lower()])

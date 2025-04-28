@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/llm/generate.py \
-  --model_path /home/TestData/nemo2_ckpt/llama_lora_ci_checkpoint_v2/ \
+  --model_path /home/TestData/nemo2_ckpt/llama_lora_ci_checkpoint_v4/ \
   --tp 1 \
   --pp 1 \
   --devices 1 \

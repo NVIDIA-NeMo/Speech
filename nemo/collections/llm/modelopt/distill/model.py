@@ -134,7 +134,7 @@ class DistillationGPTModel(llm.GPTModel):
 
     def __init__(
         self,
-        student_config: llm.GPTConfig,
+        config: llm.GPTConfig,
         teacher_config: llm.GPTConfig,
         teacher_ckpt_path: str,
         optim: Optional["OptimizerModule"] = None,
@@ -153,7 +153,7 @@ class DistillationGPTModel(llm.GPTModel):
         This allows one to continue using the model after distillation without this special class.
 
         Args:
-            student_config: Config of student model.
+            config: Config of student model.
             teacher_config: Config of teacher model.
             teacher_ckpt_path: Path to teacher checkpoint (to restore weights).
             optim: Optimizer.
@@ -162,12 +162,12 @@ class DistillationGPTModel(llm.GPTModel):
         """
         if not HAVE_MODELOPT:
             raise RuntimeError("nvidia-modelopt is needed to use DistillationGPTModel")
-        super().__init__(student_config, optim, tokenizer, model_transform)
+        super().__init__(config, optim, tokenizer, model_transform)
         self._teacher_config = teacher_config
         self._teacher_ckpt_path = teacher_ckpt_path
         self._train_called = False
 
-        if not isinstance(student_config, llm.GPTConfig) or not isinstance(teacher_config, llm.GPTConfig):
+        if not isinstance(config, llm.GPTConfig) or not isinstance(teacher_config, llm.GPTConfig):
             raise ValueError("Student and Teacher must both be subclasses of `llm.GPTModel`")
         if self.config.virtual_pipeline_model_parallel_size is not None:
             raise ValueError("ModelOpt Distillation incompatible with interleaved pipeline schedule.")

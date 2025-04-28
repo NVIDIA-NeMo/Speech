@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/llm/peft/lora_merge.py \
-    --lora_checkpoint_path=/home/TestData/nemo2_ckpt/llama_lora_ci_checkpoint_v2/ \
+    --lora_checkpoint_path=/home/TestData/nemo2_ckpt/llama_lora_ci_checkpoint_v4/ \
     --output_path=/tmp/nemo2_lora_merge/$RUN_ID \
     --legacy_ckpt

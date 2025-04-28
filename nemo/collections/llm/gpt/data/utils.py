@@ -756,7 +756,11 @@ def _preprocess(
 
     ids = []
     tokenized_lens = []
-    assert torch.equal(torch.tensor(target[:header_len]), torch.tensor(header_tokens))
+    if not torch.equal(torch.tensor(target[:header_len]), torch.tensor(header_tokens)):
+        logger.warning(
+            "First few tokens of the conversation are not the same as the header tokens. "
+            f"{target[:header_len]=}\n {header_tokens=}"
+        )
     for s in source['conversations']:
         # hack to remove the extra empty token in front
         id1 = tokenizer.text_to_ids(PREFIX_STR + s["value"])

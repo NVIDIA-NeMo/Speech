@@ -53,7 +53,7 @@ jobs:
           LAST_PRS=$(gh api graphql -f query='
             query {
               repository(owner: "NVIDIA", name: "NeMo") {
-                pullRequests(states: MERGED, first: 10, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                pullRequests(states: MERGED, first: 100, orderBy: {field: UPDATED_AT, direction: DESC}) {
                   nodes {
                     number
                   }

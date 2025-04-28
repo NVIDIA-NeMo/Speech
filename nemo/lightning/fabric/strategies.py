@@ -96,6 +96,8 @@ class FabricMegatronStrategy(DDPStrategy):
         pipeline_dtype: Optional[torch.dtype] = None,
         init_model_parallel: bool = True,
         use_tp_pp_dp_mapping: bool = False,
+        num_distributed_optimizer_instances: int = 1,
+        nccl_communicator_config_path: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -127,6 +129,8 @@ class FabricMegatronStrategy(DDPStrategy):
         self.pipeline_dtype = pipeline_dtype
         self._init_model_parallel = init_model_parallel
         self.use_tp_pp_dp_mapping = use_tp_pp_dp_mapping
+        self.num_distributed_optimizer_instances = num_distributed_optimizer_instances
+        self.nccl_communicator_config_path = nccl_communicator_config_path
         self.no_ddp_communication_hook = no_ddp_communication_hook
         self.megatron_callbacks = CallbackConnector()
         if megatron_callbacks:
@@ -461,6 +465,8 @@ class FabricMegatronStrategy(DDPStrategy):
             moe_extended_tp=self.moe_extended_tp,
             pipeline_dtype=self.pipeline_dtype,
             use_tp_pp_dp_mapping=self.use_tp_pp_dp_mapping,
+            num_distributed_optimizer_instances=self.num_distributed_optimizer_instances,
+            nccl_communicator_config_path=self.nccl_communicator_config_path,
         )
 
 

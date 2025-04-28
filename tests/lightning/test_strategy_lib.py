@@ -153,6 +153,8 @@ def test_init_model_parallel(mock_mpu, *args):
         expert_model_parallel_size=2,
         expert_tensor_parallel_size=1,
         order="tp-cp-ep-dp-pp",
+        num_distributed_optimizer_instances=1,
+        nccl_communicator_config_path=None,
     )
 
 
@@ -192,6 +194,8 @@ def test_init_model_parallel_with_tp_pp_dp(mock_mpu, *args):
         expert_model_parallel_size=2,
         expert_tensor_parallel_size=1,
         order="tp-cp-ep-pp-dp",
+        num_distributed_optimizer_instances=1,
+        nccl_communicator_config_path=None,
     )
 
 

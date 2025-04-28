@@ -132,6 +132,8 @@ class ParallelismConfig:
     use_te_rng_tracker: bool = False
     expert_tensor_parallel_size: int = None
     use_tp_pp_dp_mapping: bool = False
+    num_distributed_optimizer_instances: int = 1
+    nccl_communicator_config_path: str = None
 
 
 class MegatronStrategy(DDPStrategy, io.IOMixin):
@@ -216,6 +218,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             Note that setting the level to 1 or 2 might cause increase in iteration time.
         use_tp_pp_dp_mapping (bool): Whether to use TP-PP-DP mapping instead of TP-DP-PP mapping.
             Defaults to False.
+        num_distributed_optimizer_instances (int): The number of distributed optimizer replicas across
+            the data-parallel domain.
+        nccl_communicator_config_path (Optional[str]): Path to the yaml file of NCCL communicator configurations.
+            `min_ctas`, `max_ctas`, and `cga_cluster_size` can be set for each communicator.
         **kwargs: Additional keyword arguments.
 
     Note:
@@ -272,6 +278,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         restore_config: Optional[RestoreConfig] = None,
         megatron_log_level: int = 0,
         use_tp_pp_dp_mapping: bool = False,
+        num_distributed_optimizer_instances: int = 1,
+        nccl_communicator_config_path: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__(
@@ -324,10 +332,10 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
         self.parallel_load = ckpt_parallel_load
         self.parallel_save_optim = ckpt_parallel_save_optim
         self.load_directly_on_device = ckpt_load_directly_on_device
-
+        self.num_distributed_optimizer_instances = num_distributed_optimizer_instances
         self.replace_progress_bar = replace_progress_bar
         self.progress_interval = progress_interval
-
+        self.nccl_communicator_config_path = nccl_communicator_config_path
         self.restore_config = restore_config
         self.timers = Timers(megatron_log_level, "minmax")  ## could also set this for optimizer if we want
 
@@ -367,6 +375,9 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             self.no_ddp_communication_hook = False
         else:
             raise ValueError(f"Invalid DDP type: {ddp}")
+
+        if isinstance(self.ddp_config, DistributedDataParallelConfig):
+            self.ddp_config.num_distributed_optimizer_instances = self.num_distributed_optimizer_instances
 
         # used in NVIDIA NGC PyTorch containers
         _strategy_lib.enable_nvidia_optimizations()
@@ -1129,6 +1140,8 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             pipeline_dtype=self.pipeline_dtype,
             use_te_rng_tracker=self.use_te_rng_tracker,
             use_tp_pp_dp_mapping=self.use_tp_pp_dp_mapping,
+            num_distributed_optimizer_instances=self.num_distributed_optimizer_instances,
+            nccl_communicator_config_path=self.nccl_communicator_config_path,
         )
 
     @contextmanager

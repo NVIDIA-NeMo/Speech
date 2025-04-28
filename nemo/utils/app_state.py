@@ -74,6 +74,7 @@ class AppState(metaclass=Singleton):
         self._use_fp8 = False
         self._context_parallel_size = None
         self._init_mpi_proc_gruop = False
+        self._nccl_communicator_config_path = None
 
         self._random_seed = None
 
@@ -602,6 +603,22 @@ class AppState(metaclass=Singleton):
             init_mpi_proc_group:  Initialize mpi process group.
         """
         self._init_mpi_proc_group = init_mpi_proc_group
+
+    @property
+    def nccl_communicator_config_path(self):
+        """Property returns the path to the nccl communicator config.
+        Returns:
+            Path to the nccl communicator config.
+        """
+        return self._nccl_communicator_config_path
+
+    @nccl_communicator_config_path.setter
+    def nccl_communicator_config_path(self, path):
+        """Property sets the path to the nccl communicator config.
+        Args:
+            path (str):  Path to the nccl communicator config.
+        """
+        self._nccl_communicator_config_path = path
 
     @property
     def random_seed(self):

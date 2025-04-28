@@ -1223,12 +1223,13 @@ def _validate_config(
 
     # Data validation
     assert data.micro_batch_size > 0
-    assert data.global_batch_size > 0
-    assert data.seq_length > 0
+    if isinstance(trainer.strategy, nl.MegatronStrategy):
+        assert data.global_batch_size > 0
+        assert data.seq_length > 0
 
-    assert (
-        data.global_batch_size % data.micro_batch_size == 0
-    ), "Global batch size must be divisible by micro batch size in data module."
+        assert (
+            data.global_batch_size % data.micro_batch_size == 0
+        ), "Global batch size must be divisible by micro batch size in data module."
 
     # Trainer validation
 

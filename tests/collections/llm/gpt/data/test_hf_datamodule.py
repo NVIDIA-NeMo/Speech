@@ -38,7 +38,6 @@ def test_load_single_split():
         split='train',
         seq_length=512,
         micro_batch_size=2,
-        global_batch_size=2,
     )
     from datasets.arrow_dataset import Dataset
 
@@ -62,7 +61,6 @@ def test_load_single_split_with_subset():
         split='train[:10]',
         seq_length=512,
         micro_batch_size=2,
-        global_batch_size=2,
     )
     from datasets.arrow_dataset import Dataset
 
@@ -89,7 +87,6 @@ def test_load_nonexistent_split():
             split='this_split_name_should_not_exist',
             seq_length=512,
             micro_batch_size=2,
-            global_batch_size=2,
         )
     except ValueError as e:
         exception_msg = str(e)
@@ -102,7 +99,6 @@ def test_load_multiple_split():
         split=['train', 'validation'],
         seq_length=512,
         micro_batch_size=2,
-        global_batch_size=2,
     )
     from datasets.arrow_dataset import Dataset
 
@@ -129,7 +125,6 @@ def test_load_multiple_split_with_subset():
         split=['train[:100]', 'validation'],
         seq_length=512,
         micro_batch_size=2,
-        global_batch_size=2,
     )
     from datasets.arrow_dataset import Dataset
 
@@ -157,7 +152,6 @@ def test_validate_dataset_asset_accessibility_file_does_not_exist():
             path_or_dataset="/this/path/should/not/exist/",
             seq_length=512,
             micro_batch_size=2,
-            global_batch_size=2,
         )
     except FileNotFoundError:
         raised_exception = True
@@ -173,7 +167,6 @@ def test_validate_dataset_asset_accessibility_file_is_none():
             path_or_dataset=None,
             seq_length=512,
             micro_batch_size=2,
-            global_batch_size=2,
         )
     except ValueError as e:
         exception_msg = str(e)
@@ -406,7 +399,6 @@ def test_squad_data_module_with_pth_dataloader_init(mock_tokenizer, mock_trainer
         tokenizer=mock_tokenizer,
         seq_length=512,
         micro_batch_size=4,
-        global_batch_size=128,
         num_workers=0,
         force_redownload=False,
         delete_raw=False,

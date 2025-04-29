@@ -11,25 +11,36 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, List, Optional, Union
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
+import yaml
 from torch import nn
 
 from nemo.collections.llm.gpt.model.base import GPTConfig, GPTModel, torch_dtype_from_mcore_config
+from nemo.collections.llm.gpt.model.llama4_utils import get_llama4_layer_spec
 from nemo.collections.llm.utils import Config
+from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_model_weights
 from nemo.lightning import OptimizerModule, io, teardown
 from nemo.lightning.ckpt_utils import ADAPTER_META_FILENAME
 from nemo.lightning.io.pl import ckpt_to_weights_subdir
-from nemo.lightning.io.state import TransformFns
+from nemo.lightning.io.state import TransformCTX, TransformFns, _ModelState
 from nemo.lightning.pytorch.utils import dtype_from_hf
 from nemo.utils import logging
+
+try:
+    from megatron.core.transformer.spec_utils import ModuleSpec
+
+    HAVE_TE = True
+except ImportError:
+    HAVE_TE = False
 
 if TYPE_CHECKING:
     from megatron.core.models.gpt.gpt_model import GPTModel as MCoreGPTModel
@@ -359,6 +370,68 @@ class CodeLlamaConfig70B(Llama2Config70B):
     pass
 
 
+@dataclass
+class Llama4Config(Llama3Config):
+    """
+    Configuration for Llama4 language model.
+    """
+
+    rotary_base: int = 500_000
+    seq_length: int = 8192
+    num_layers: int = 48
+    hidden_size: int = 5120
+    ffn_hidden_size: int = 16384
+    num_attention_heads: int = 40
+    vocab_size: int = 25256 * 8
+    add_bias_linear: bool = False
+    gated_linear_unit: bool = True
+    rotary_interleaved: bool = True
+    apply_rope_fusion: bool = False
+    nope_layer_interval: int = 4
+    transformer_layer_spec: Union[ModuleSpec, Callable[["LlamaConfig"], ModuleSpec]] = field(
+        default_factory=lambda: get_llama4_layer_spec
+    )
+    # MOE
+    moe_grouped_gemm: bool = True
+    moe_shared_expert_intermediate_size: int = 8192
+    moe_ffn_hidden_size: int = 8192
+    moe_router_topk: int = 1
+    moe_router_pre_softmax: bool = False
+    moe_router_score_function: str = "sigmoid"
+    moe_token_dispatcher_type: str = "alltoall"
+    moe_router_dtype: Optional[str] = None
+    moe_apply_probs_on_input: bool = True
+    # Configs that are overwritten in subclass models
+    qk_l2_norm: bool = True
+    rope_scaling: bool = True
+    rope_scaling_factor: float = 8.0
+    attention_chunk_size: int = 8192
+
+
+@dataclass
+class Llama4Experts16Config(Llama4Config):
+    """
+    Configuration for llama4 16-experts model.
+    """
+
+    num_moe_experts: int = 16
+    rope_scaling: bool = True
+    rope_scaling_factor: float = 8.0
+    qk_l2_norm: bool = True
+
+
+@dataclass
+class Llama4Experts128Config(Llama4Config):
+    """
+    Configuration for llama4 128-experts model.
+    """
+
+    num_moe_experts: int = 128
+    rope_scaling: bool = False
+    moe_layer_freq: Union[int, List[int]] = field(default_factory=lambda: [0, 1] * 24)
+    qk_l2_norm: bool = False
+
+
 class LlamaModel(GPTModel):
     """Llama model implementation based on the GPT model architecture.
 
@@ -437,9 +510,18 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
         Returns:
             Path: Path to the saved NeMo model
         """
-        from transformers import LlamaForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM
 
-        source = LlamaForCausalLM.from_pretrained(str(self), torch_dtype='auto')
+        hf_config = AutoConfig.from_pretrained(str(self))
+        if getattr(hf_config, 'model_type') == 'llama4':
+            # Llama4 is a VL model, only init the language part here
+            from transformers import Llama4ForConditionalGeneration
+
+            source = Llama4ForConditionalGeneration.from_pretrained(str(self), torch_dtype='auto')
+            source = source.language_model
+        else:
+            source = AutoModelForCausalLM.from_pretrained(str(self), torch_dtype='auto')
+
         target = self.init()
         trainer = self.nemo_setup(target)
         self.convert_state(source, target)
@@ -468,9 +550,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
         mapping = {
             "model.embed_tokens.weight": "embedding.word_embeddings.weight",
             "model.layers.*.self_attn.o_proj.weight": "decoder.layers.*.self_attention.linear_proj.weight",
-            "model.layers.*.mlp.down_proj.weight": "decoder.layers.*.mlp.linear_fc2.weight",
             "model.layers.*.input_layernorm.weight": "decoder.layers.*.self_attention.linear_qkv.layer_norm_weight",
-            "model.layers.*.post_attention_layernorm.weight": "decoder.layers.*.mlp.linear_fc1.layer_norm_weight",
             "model.norm.weight": "decoder.final_layernorm.weight",
             "lm_head.weight": "output_layer.weight",
         }
@@ -487,13 +567,73 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
                 ),
                 target_key="decoder.layers.*.self_attention.linear_qkv.weight",
                 fn=TransformFns.merge_qkv,
-            ),
-            io.state_transform(
-                source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
-                target_key="decoder.layers.*.mlp.linear_fc1.weight",
-                fn=TransformFns.merge_fc1,
-            ),
+            )
         ]
+        if 'llama4' in getattr(source.config, "model_type"):
+            source = self._modify_llama4_source_state(source)
+            # Update mapping for Llama4 model
+            llama4_mapping = {
+                # Post Attention LayerNorm
+                "model.layers.*.post_attention_layernorm.weight": "decoder.layers.*.pre_mlp_layernorm.weight",
+                "model.layers.*.dense-post_attention_layernorm.weight": (
+                    "decoder.layers.*.mlp.linear_fc1.layer_norm_weight"
+                ),
+                # MoE Router
+                "model.layers.*.feed_forward.router.weight": "decoder.layers.*.mlp.router.weight",
+                # MoE Shared Experts
+                "model.layers.*.feed_forward.shared_expert.down_proj.weight": (
+                    "decoder.layers.*.mlp.shared_experts.linear_fc2.weight"
+                ),
+                # MoE Experts
+                "model.layers.*.feed_forward.experts.*.down_proj": ("decoder.layers.*.mlp.experts.linear_fc2.weight*"),
+                "model.layers.*.feed_forward.experts.*.gate_up_proj": (
+                    "decoder.layers.*.mlp.experts.linear_fc1.weight*"
+                ),
+                # Dense MLP (for moe_layer_freq != 1)
+                "model.layers.*.feed_forward.down_proj.weight": "decoder.layers.*.mlp.linear_fc2.weight",
+            }
+
+            # Update the main mapping dictionary with Llama4-specific mappings
+            mapping.update(llama4_mapping)
+
+            transforms.extend(
+                [
+                    io.state_transform(
+                        source_key=(
+                            "model.layers.*.feed_forward.shared_expert.gate_proj.weight",
+                            "model.layers.*.feed_forward.shared_expert.up_proj.weight",
+                        ),
+                        target_key="decoder.layers.*.mlp.shared_experts.linear_fc1.weight",
+                        fn=TransformFns.merge_fc1,
+                    ),
+                    io.state_transform(
+                        source_key=(
+                            "model.layers.*.feed_forward.gate_proj.weight",
+                            "model.layers.*.feed_forward.up_proj.weight",
+                        ),
+                        target_key="decoder.layers.*.mlp.linear_fc1.weight",
+                        fn=TransformFns.merge_fc1,
+                    ),
+                ]
+            )
+        else:
+            # Dense Mapping
+            mapping.update(
+                {
+                    "model.layers.*.post_attention_layernorm.weight": (
+                        "decoder.layers.*.mlp.linear_fc1.layer_norm_weight"
+                    ),
+                    "model.layers.*.mlp.down_proj.weight": "decoder.layers.*.mlp.linear_fc2.weight",
+                }
+            )
+            transforms.append(
+                io.state_transform(
+                    source_key=("model.layers.*.mlp.gate_proj.weight", "model.layers.*.mlp.up_proj.weight"),
+                    target_key="decoder.layers.*.mlp.linear_fc1.weight",
+                    fn=TransformFns.merge_fc1,
+                )
+            )
+
         return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
 
     @property
@@ -507,6 +647,42 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
 
         return AutoTokenizer(self.save_hf_tokenizer_assets(str(self)))
 
+    def _modify_llama4_source_state(self, source: nn.Module) -> _ModelState:
+        """
+        In Llama4, HF weight for local experts are mapped with a single tensor.
+        Pre-chunk it before convert_state.
+        For dense layer, we change the name for the post attention layer norm to
+        avoid the many-to-one mapping in the conversion.
+        """
+        state_dict = source.state_dict()
+        num_experts = source.config.num_local_experts
+        for layer_i in range(self.config.num_layers):
+            is_moe_layer = True
+            if isinstance(self.config.moe_layer_freq, list):
+                assert len(self.config.moe_layer_freq) == self.config.num_layers
+                is_moe_layer = self.config.moe_layer_freq[layer_i]
+            if is_moe_layer:
+                # gate_up_proj
+                weight = state_dict.pop(f"model.layers.{layer_i}.feed_forward.experts.gate_up_proj")
+                weights = torch.chunk(weight, num_experts, dim=0)
+                for expert_i, expert_weight in enumerate(weights):
+                    state_dict[f"model.layers.{layer_i}.feed_forward.experts.{expert_i}.gate_up_proj"] = (
+                        expert_weight.squeeze().transpose(0, 1)
+                    )
+                # down_proj
+                weight = state_dict.pop(f"model.layers.{layer_i}.feed_forward.experts.down_proj")
+                weights = torch.chunk(weight, num_experts, dim=0)
+                for expert_i, expert_weight in enumerate(weights):
+                    state_dict[f"model.layers.{layer_i}.feed_forward.experts.{expert_i}.down_proj"] = (
+                        expert_weight.squeeze().transpose(0, 1)
+                    )
+            else:
+                weight = state_dict.pop(f"model.layers.{layer_i}.post_attention_layernorm.weight")
+                state_dict[f"model.layers.{layer_i}.dense-post_attention_layernorm.weight"] = weight
+
+        source = _ModelState(state_dict)
+        return source
+
     @property
     def config(self) -> LlamaConfig:
         """Create a NeMo LlamaConfig from the HF model config.
@@ -517,12 +693,13 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
         Returns:
             LlamaConfig: NeMo configuration for Llama models
         """
-        from transformers import GenerationConfig
-        from transformers import LlamaConfig as HFLlamaConfig
+        from transformers import AutoConfig, GenerationConfig
 
-        source = HFLlamaConfig.from_pretrained(str(self))
-        generation_config = GenerationConfig.from_pretrained(str(self))
-        print(generation_config)
+        source = AutoConfig.from_pretrained(str(self))
+        try:
+            generation_config = GenerationConfig.from_pretrained(str(self))
+        except Exception:
+            generation_config = None
 
         def make_vocab_size_divisible_by(vocab_size):
             base = 128
@@ -535,10 +712,43 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             cls = partial(Llama31Config, scale_factor=source.rope_scaling.get("factor", 8.0))
         else:
             cls = LlamaConfig
+
+        args = {}
+        if 'llama4' in getattr(source, 'model_type', None):
+            # Llama4 Uses MoE Arch
+            cls = Llama4Config
+            # Parse Llama4 related args
+            if getattr(source, 'model_type', None) == 'llama4':
+                # Passing in a VL Llama4 Config
+                # Only need to keep the text component
+                source = source.text_config
+            # for_llm_compressor
+            # no_rope_layers
+            args = {
+                'moe_router_topk': source.num_experts_per_tok,
+                'num_moe_experts': source.num_local_experts,
+                'qk_l2_norm': source.use_qk_norm,
+                'moe_shared_expert_intermediate_size': source.intermediate_size,
+                'moe_ffn_hidden_size': source.intermediate_size,
+            }
+            if getattr(source, 'rope_scaling', None) is not None and source.rope_scaling.get('rope_type') == 'llama3':
+                args.update({'rope_scaling': True, 'rope_scaling_factor': source.rope_scaling.get("factor", 8.0)})
+            else:
+                args.update({'rope_scaling': False})
+            if getattr(source, 'interleave_moe_layer_step', 1) != 1:
+                assert source.num_hidden_layers % source.interleave_moe_layer_step == 0
+                pattern = [0] * (source.interleave_moe_layer_step - 1) + [1]
+                num_patterns = source.num_hidden_layers // source.interleave_moe_layer_step
+                args.update({'moe_layer_freq': pattern * num_patterns})
+
         output = cls(
             num_layers=source.num_hidden_layers,
             hidden_size=source.hidden_size,
-            ffn_hidden_size=source.intermediate_size,
+            ffn_hidden_size=(
+                source.intermediate_size
+                if not getattr(source, 'intermediate_size_mlp', None)
+                else source.intermediate_size_mlp
+            ),
             num_attention_heads=source.num_attention_heads,
             init_method_std=source.initializer_range,
             layernorm_epsilon=source.rms_norm_eps,
@@ -552,6 +762,9 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             bf16=(dtype_from_hf(source) == torch.bfloat16),
             params_dtype=dtype_from_hf(source),
             generation_config=generation_config,
+            vocab_size=source.vocab_size,
+            kv_channels=getattr(source, "head_dim"),
+            **args,
         )
 
         return output
@@ -577,7 +790,7 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
-        with no_init_weights(True):
+        with no_init_weights():
             return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:
@@ -589,9 +802,15 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         Returns:
             Path: Path to the saved HF model
         """
-        source, _ = self.nemo_load(str(self))
-        target = self.init(torch_dtype_from_mcore_config(source.config))
-        target = self.convert_state(source, target)
+        if self.is_llama4():
+            # We need to modify the state dict before conversion for Llama4
+            # Load dist checkpoint directly
+            source, source_config = self.ckpt_load(self)
+        else:
+            source, _ = self.nemo_load(str(self))
+            source_config = source.config
+        target = self.init(torch_dtype_from_mcore_config(source_config))
+        target = self.convert_state(source, target, source_config)
 
         target = target.cpu()
         if self.config.tie_word_embeddings:
@@ -608,7 +827,8 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
 
         return output_path
 
-    def convert_state(self, source, target):
+    def convert_state(self, source, target, source_config=None):
+        # pylint: disable=C0301
         """Convert state dict from NeMo format to HF format.
 
         Maps the weights from the NeMo model to the HF model according to
@@ -617,10 +837,16 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
         Args:
             source: Source NeMo model
             target: Target HF model
+            source_config: Source NeMo config (optional, used for Llama4)
 
         Returns:
             The target model with weights transferred from source
         """
+        is_llama4 = self.is_llama4()
+        if is_llama4:
+            assert source_config is not None
+            source = self._modify_llama4_source_state(source, source_config)
+
         mapping = {
             "decoder.layers.*.self_attention.linear_proj.weight": "model.layers.*.self_attn.o_proj.weight",
             "decoder.layers.*.mlp.linear_fc2.weight": "model.layers.*.mlp.down_proj.weight",
@@ -659,6 +885,40 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
                 )
             )
 
+        if is_llama4:
+            # Llama4's Pre MLP LayerNorm is at decoder.layers.*.pre_mlp_layernorm.weight
+            # instead of mlp.linear_fc1.layer_norm_weight
+            mapping.pop("decoder.layers.*.mlp.linear_fc1.layer_norm_weight")
+            mapping.update(
+                {
+                    "decoder.layers.*.pre_mlp_layernorm.weight": "model.layers.*.post_attention_layernorm.weight",
+                    "decoder.layers.*.mlp.router.weight": "model.layers.*.feed_forward.router.weight",
+                    "decoder.layers.*.mlp.shared_experts.linear_fc2.weight": "model.layers.*.feed_forward.shared_expert.down_proj.weight",
+                    "decoder.layers.*.mlp.experts.linear_fc2.weight": "model.layers.*.feed_forward.experts.down_proj",
+                    "decoder.layers.*.mlp.experts.linear_fc1.weight": "model.layers.*.feed_forward.experts.gate_up_proj",
+                }
+            )
+            transforms.extend(
+                [
+                    io.state_transform(
+                        source_key="decoder.layers.*.mlp.shared_experts.linear_fc1.weight",
+                        target_key=(
+                            "model.layers.*.feed_forward.shared_expert.gate_proj.weight",
+                            "model.layers.*.feed_forward.shared_expert.up_proj.weight",
+                        ),
+                        fn=TransformFns.split_fc1,
+                    ),
+                    io.state_transform(
+                        source_key="decoder.layers.*.mlp.linear_fc1.weight",
+                        target_key=(
+                            "model.layers.*.feed_forward.gate_proj.weight",
+                            "model.layers.*.feed_forward.up_proj.weight",
+                        ),
+                        fn=TransformFns.split_fc1,
+                    ),
+                ]
+            )
+
         return io.apply_transforms(
             source,
             target,
@@ -686,6 +946,10 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             HFLlamaConfig: HF configuration for Llama models
         """
         source: LlamaConfig = io.load_context(str(self), subpath="model.config")
+
+        if isinstance(source, Llama4Config):
+            # Separate Llama4 from Llama2/3 for clarity
+            return self.create_llama4_config(source)
 
         from transformers import LlamaConfig as HFLlamaConfig
 
@@ -721,6 +985,137 @@ class HFLlamaExporter(io.ModelConnector[LlamaModel, "LlamaForCausalLM"]):
             bos_token_id=self.tokenizer.bos_id,
             eos_token_id=self.tokenizer.eos_id,
         )
+
+    def is_llama4(self):
+        """Check if the model config is for Llama4."""
+        source: LlamaConfig = io.load_context(str(self), subpath="model.config")
+        return isinstance(source, Llama4Config)
+
+    def create_llama4_config(self, source):
+        """Create a HF Llama4TextConfig from the NeMo Llama4Config."""
+        from transformers import Llama4TextConfig as HFLlama4TextConfig
+
+        assert isinstance(source, Llama4Config)
+
+        rope_scaling = (
+            {
+                'factor': source.rope_scaling_factor,
+                'low_freq_factor': 1.0,
+                'high_freq_factor': 4.0,
+                'original_max_position_embeddings': 8192,
+                'rope_type': 'llama3',
+            }
+            if source.rope_scaling
+            else None
+        )
+
+        # MoE config
+        moe_layer_freq = getattr(source, 'moe_layer_freq', None)
+        interleave_moe_layer_step = None
+        if moe_layer_freq is not None:
+            if isinstance(moe_layer_freq, int):
+                interleave_moe_layer_step = moe_layer_freq
+            elif isinstance(moe_layer_freq, list):
+                interleave_moe_layer_step = source.num_layers // sum(moe_layer_freq)
+            else:
+                raise ValueError(f'Unexpected moe_layer_freq {moe_layer_freq}')
+
+        config = HFLlama4TextConfig(
+            head_dim=source.kv_channels,
+            num_hidden_layers=source.num_layers,
+            hidden_size=source.hidden_size,
+            intermediate_size=source.moe_ffn_hidden_size,
+            intermediate_size_mlp=source.ffn_hidden_size,
+            num_attention_heads=source.num_attention_heads,
+            num_experts_per_tok=source.moe_router_topk,
+            num_local_experts=source.num_moe_experts,
+            max_position_embeddings=source.seq_length,
+            initializer_range=source.init_method_std,
+            rms_norm_eps=source.layernorm_epsilon,
+            num_key_value_heads=source.num_query_groups,
+            use_qk_norm=source.qk_l2_norm,
+            rope_theta=source.rotary_base,
+            vocab_size=source.vocab_size,
+            rope_scaling=rope_scaling,
+            interleave_moe_layer_step=interleave_moe_layer_step,
+            pad_token_id=self.tokenizer.tokens_to_ids(['<|finetune_right_pad|>'])[0],
+            bos_token_id=self.tokenizer.bos_id,
+            eos_token_id=self.tokenizer.eos_id,
+            # no rope
+        )
+        return config
+
+    def ckpt_load(self, path: Path) -> Tuple[Dict, Any]:
+        """
+        This function loads the state dict directly from a distributed checkpoint, and modify the state dict
+        so that it is consistent with the key names you would get from loading the checkpoint into a model.
+        This is a more memory-efficient method to obtain a state dict without initializing the nemo model.
+
+        Args:
+            path (Path): The path from which the model will be loaded.
+
+        Returns
+        -------
+            Tuple[Dict, Any]: The loaded state dict and the yaml config object.
+        """
+        model_yaml = path / "context" / "model.yaml"
+        if not model_yaml.exists():
+            raise FileNotFoundError("model.yaml is not found in the context folder of the checkpoint.")
+        with open(model_yaml, 'r') as stream:
+            config = yaml.safe_load(stream)
+
+        dist_ckpt_folder = path / "weights"
+        state_dict = {}
+
+        dict_to_obj = lambda d: (
+            type('Config', (), {kk: dict_to_obj(vv) for kk, vv in d.items()}) if isinstance(d, dict) else d
+        )
+        config_obj = dict_to_obj(config['config'])
+        langauge_layers = config_obj.num_layers
+        distributed_model_weights = load_distributed_model_weights(dist_ckpt_folder, True).items()
+        for k, v in distributed_model_weights:
+            if '_extra_state' in k:
+                continue
+            new_k = k.replace("module.", "")
+            if 'layers' in new_k and v.size(0) == langauge_layers:
+                # Only split layers
+                for i in range(v.size(0)):
+                    state_dict[new_k.replace('layers', f'layers.{str(i)}')] = v[i]
+            state_dict[new_k] = v
+
+        return state_dict, config_obj
+
+    def _modify_llama4_source_state(self, state_dict, source_config):
+        """
+        For MoE layer, we transpose the gate_up_proj and down_proj to match HF implementation.
+        For dense layer, we change the name for the post attention layer norm to
+        avoid the many-to-one mapping in the conversion confi.
+        """
+        for layer_i in range(source_config.num_layers):
+            is_moe_layer = True
+            if isinstance(source_config.moe_layer_freq, list):
+                assert len(source_config.moe_layer_freq) == source_config.num_layers
+                is_moe_layer = source_config.moe_layer_freq[layer_i]
+            if is_moe_layer:
+                # gate_up_proj
+                weight = state_dict.pop(f"decoder.layers.{layer_i}.mlp.experts.experts.linear_fc1.weight")
+                state_dict[f"decoder.layers.{layer_i}.mlp.experts.linear_fc1.weight"] = weight.permute(
+                    0, 2, 1
+                ).contiguous()
+
+                # down_proj
+                weight = state_dict.pop(f"decoder.layers.{layer_i}.mlp.experts.experts.linear_fc2.weight")
+                state_dict[f"decoder.layers.{layer_i}.mlp.experts.linear_fc2.weight"] = weight.permute(
+                    0, 2, 1
+                ).contiguous()
+
+            else:
+                assert f"decoder.layers.{layer_i}.mlp.linear_fc1.layer_norm_weight" in state_dict
+                weight = state_dict.pop(f"decoder.layers.{layer_i}.mlp.linear_fc1.layer_norm_weight")
+                state_dict[f"decoder.layers.{layer_i}.pre_mlp_layernorm.weight"] = weight
+
+        source = _ModelState(state_dict, source_config)
+        return source
 
 
 @io.model_exporter(LlamaModel, "hf-peft")
@@ -963,6 +1358,26 @@ def apply_rope_scaling(
     return inv_freq_llama
 
 
+@staticmethod
+def split_moe(ctx: TransformCTX, tensor: torch.Tensor):
+    """
+    Split interleave-concatenated MoE expert weights.
+
+    Args:
+        ctx: Transformation context containing model configuration.
+        tensor: The tensor containing concatenated expert weights.
+
+    Returns:
+        A list of tensors, each corresponding to an expert's weights.
+    """
+    megatron_config = ctx.source.config
+
+    num_experts = megatron_config.num_local_experts
+    expert_tensors = torch.chunk(tensor, num_experts, dim=1)
+
+    return expert_tensors
+
+
 __all__ = [
     "LlamaConfig",
     "Llama2Config7B",
@@ -975,6 +1390,9 @@ __all__ = [
     "Llama31Config405B",
     "Llama32Config1B",
     "Llama32Config3B",
+    "Llama4Experts16Config",
+    "Llama4Experts128Config",
+    "Llama4Config",
     "CodeLlamaConfig7B",
     "CodeLlamaConfig13B",
     "CodeLlamaConfig34B",

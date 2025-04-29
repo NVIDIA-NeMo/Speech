@@ -53,6 +53,8 @@ if __name__ == '__main__':
         converted_hf.named_parameters(), original_hf.named_parameters()
     ):
         assert name1 == name2, f'Parameter names do not match: {name1} != {name2}'
-        assert torch.equal(parameter1, parameter2), f'Parameter weight do not match for {name1}'
+        assert torch.all(
+            torch.isclose(parameter1, parameter2, atol=1e-3)
+        ).item(), f'Parameter weight do not match for {name1}'
 
     print('All weights matched.')

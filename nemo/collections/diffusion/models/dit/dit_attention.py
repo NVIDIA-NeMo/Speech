@@ -257,7 +257,7 @@ class JointSelfAttention(Attention):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+        query, key, value, rotary_pos_emb, attn_mask_type, *_ = self._adjust_key_value_for_inference(
             inference_params, query, key, value, rotary_pos_emb
         )
 
@@ -402,7 +402,7 @@ class FluxSingleAttention(SelfAttention):
         # ===================================================
         # Adjust key, value, and rotary_pos_emb for inference
         # ===================================================
-        query, key, value, rotary_pos_emb, attn_mask_type = self._adjust_key_value_for_inference(
+        query, key, value, rotary_pos_emb, attn_mask_type, *_ = self._adjust_key_value_for_inference(
             inference_params, query, key, value, rotary_pos_emb
         )
 

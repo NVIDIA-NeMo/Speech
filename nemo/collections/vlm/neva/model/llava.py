@@ -266,6 +266,53 @@ def import_qkv(q, k, v, head_num, num_query_groups, heads_per_group, hidden_size
     return qkv_weights
 
 
+def export_qkv(linear_qkv, head_num, num_query_groups, heads_per_group, hidden_size, head_size):
+    # pylint: disable=C0115,C0116
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    linear_qkv = linear_qkv.reshape([qkv_total_dim, head_size, -1])
+    hidden_size = linear_qkv.size(-1)
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_proj = linear_qkv[q_slice].reshape(-1, hidden_size).cpu()
+    k_proj = linear_qkv[k_slice].reshape(-1, hidden_size).cpu()
+    v_proj = linear_qkv[v_slice].reshape(-1, hidden_size).cpu()
+
+    return q_proj, k_proj, v_proj
+
+
+def export_qkv_bias(qkv_bias: torch.Tensor, head_num, num_query_groups, heads_per_group, head_size):
+    """
+    Split interleave-concatenated qkv bias to separate q, k, v bias
+
+    Example: export layer linear_qkv bias to HF {q|k|v}_proj bias
+    """
+    qkv_total_dim = head_num + 2 * num_query_groups
+
+    qkv_bias = qkv_bias.reshape([qkv_total_dim, head_size])
+    q_slice = torch.cat(
+        [
+            torch.arange((heads_per_group + 2) * i, (heads_per_group + 2) * i + heads_per_group)
+            for i in range(num_query_groups)
+        ]
+    )
+    k_slice = torch.arange(heads_per_group, qkv_total_dim, (heads_per_group + 2))
+    v_slice = torch.arange(heads_per_group + 1, qkv_total_dim, (heads_per_group + 2))
+
+    q_bias = qkv_bias[q_slice].reshape(-1).cpu()
+    k_bias = qkv_bias[k_slice].reshape(-1).cpu()
+    v_bias = qkv_bias[v_slice].reshape(-1).cpu()
+
+    return q_bias, k_bias, v_bias
+
+
 @io.state_transform(
     source_key=(
         "language_model.model.layers.*.self_attn.q_proj.weight",

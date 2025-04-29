@@ -224,7 +224,7 @@ class HFChatGLMExporter(io.ModelConnector[ChatGLMModel, "AutoModelForCausalLM"])
 
         if model_name is None:
             model_name = "THUDM/chatglm3-6b"
-        with no_init_weights(True):
+        with no_init_weights():
             # Since ChatGLM is not importable from transformers, we can only initialize the HF model
             # from a known checkpoint. The model_name will need to be passed in.
             hf_model = AutoModelForCausalLM.from_pretrained(

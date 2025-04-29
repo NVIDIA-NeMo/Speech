@@ -342,7 +342,7 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
-        with no_init_weights(True):
+        with no_init_weights():
             if from_config:
                 # Llama-Nemotron Nano / Llama31Nemotron70BConfig
                 return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)

@@ -296,7 +296,7 @@ class HFLlavaNextExporter(io.ModelConnector[LlavaNextModel, "LlavaNextForConditi
         """
         from transformers.modeling_utils import no_init_weights
 
-        with no_init_weights(True):
+        with no_init_weights():
             return LlavaNextForConditionalGeneration(self.config)
 
     def apply(self, output_path: Path) -> Path:

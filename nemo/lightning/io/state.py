@@ -44,8 +44,9 @@ class _ModelState:
     Helper class for used for to modify state dict of a source model during model conversion.
     """
 
-    def __init__(self, state_dict):
+    def __init__(self, state_dict, config=None):
         self._state_dict = state_dict
+        self.config = config
 
     def state_dict(self):
         # pylint: disable=C0115,C0116

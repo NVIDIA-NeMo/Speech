@@ -615,7 +615,7 @@ class HFT5Exporter(io.ModelConnector[T5Model, "T5ForConditionalGeneration"]):
     def init(self) -> "T5ForConditionalGeneration":
         from transformers.modeling_utils import no_init_weights
 
-        with no_init_weights(True):
+        with no_init_weights():
             return T5ForConditionalGeneration(config=self.config)
 
     def apply(self, output_path: Path) -> Path:

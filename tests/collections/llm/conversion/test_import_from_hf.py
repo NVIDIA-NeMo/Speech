@@ -18,13 +18,14 @@ from pathlib import Path
 from prettytable import PrettyTable
 
 import nemo.lightning as nl
-from nemo.collections import llm
+from nemo.collections import llm, vlm
 from nemo.collections.llm.inference.base import _setup_trainer_and_restore_model
 
 
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--hf-path", type=str, default="models/llama_31_toy")
+    parser.add_argument('--collection', type=str, default='llm')
     parser.add_argument("--model-type", type=str, help="Name of the model", default="LlamaModel")
     parser.add_argument("--model-config", type=str, help="Model config", default="Llama31Config8B")
     parser.add_argument("--output-path", type=str, help="Output NeMo2 model")
@@ -51,8 +52,14 @@ def count_parameters(model, ignore_keys=None):
 if __name__ == '__main__':
     args = get_parser().parse_args()
 
-    config = getattr(llm, args.model_config)()
-    model = getattr(llm, args.model_type)(config=config)
+    if args.collection == 'llm':
+        collection = llm
+    elif args.collection == 'vlm':
+        collection = vlm
+    else:
+        raise ValueError(f'Unrecognized collection {args.collection}')
+    config = getattr(collection, args.model_config)()
+    model = getattr(collection, args.model_type)(config=config)
     output_path = llm.import_ckpt(
         model=model,
         source=f"hf://{args.hf_path}",

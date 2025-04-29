@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,3 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/vlm/llama4/llama4_finetune.py \
+    --devices=2 --data_type=mock --use_toy_model \
+    --mbs=2 --gbs=4 --max_steps=4 \
+    --pp=2 \
+    --log_dir=/tmp/nemo2_neva_results/$RUN_ID

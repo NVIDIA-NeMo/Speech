@@ -273,6 +273,9 @@ class VQASampleEncoder(BaseSampleEncoder):
         Returns:
         torch.Tensor: A tensor containing the labels for the tokenized prompt.
         """
+        # Import moved here to break circular dependency
+        from nemo.collections.vlm.data.utils import _find_pattern_indices
+
         # Initialize labels with ignore index
         labels = torch.ones_like(tokens) * self.ignore_place_holder
         search_start_index = 0  # Initialize search index to start labeling answers sequentially
@@ -552,13 +555,3 @@ class SimilarityInterleavedEncoder(InterleavedSampleEncoder):
         )
         image_tensor = torch.concatenate(sorted_images, dim=1)  # T F(no of images) c h w
         return tokens, image_tensor
-
-
-def _find_pattern_indices(template, pattern, search_start_index=0, allow_first_token_mismatch=False):
-    template_len = len(template)
-    pattern_len = len(pattern)
-    for i in range(search_start_index, template_len - pattern_len + 1):
-        match = template[i : i + pattern_len] == pattern
-        if torch.all(match) or (allow_first_token_mismatch and torch.all(match[1:])):
-            return i, i + pattern_len
-    return -1, -1

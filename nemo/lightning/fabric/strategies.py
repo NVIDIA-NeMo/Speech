@@ -80,6 +80,9 @@ class FabricMegatronStrategy(DDPStrategy):
         sequence_parallel: bool = False,
         expert_model_parallel_size: int = 1,
         moe_extended_tp: bool = False,
+        expert_tensor_parallel_size: int = None,
+        encoder_tensor_model_parallel_size: Optional[int] = 0,
+        encoder_pipeline_model_parallel_size: Optional[int] = 0,
         data_sampler: Optional["DataSampler"] = None,
         accelerator: Optional[Accelerator] = None,
         parallel_devices: Optional[List[torch.device]] = None,
@@ -123,9 +126,12 @@ class FabricMegatronStrategy(DDPStrategy):
         )
         self.context_parallel_size = context_parallel_size
         self.expert_model_parallel_size = expert_model_parallel_size
+        self.expert_tensor_parallel_size = expert_tensor_parallel_size
         self.moe_extended_tp = moe_extended_tp
         self.virtual_pipeline_model_parallel_size = virtual_pipeline_model_parallel_size
         self.sequence_parallel = sequence_parallel
+        self.encoder_tensor_model_parallel_size = encoder_tensor_model_parallel_size
+        self.encoder_pipeline_model_parallel_size = encoder_pipeline_model_parallel_size
         self.pipeline_dtype = pipeline_dtype
         self._init_model_parallel = init_model_parallel
         self.use_tp_pp_dp_mapping = use_tp_pp_dp_mapping
@@ -462,7 +468,10 @@ class FabricMegatronStrategy(DDPStrategy):
             context_parallel_size=self.context_parallel_size,
             sequence_parallel=self.sequence_parallel,
             expert_model_parallel_size=self.expert_model_parallel_size,
+            expert_tensor_parallel_size=self.expert_tensor_parallel_size,
             moe_extended_tp=self.moe_extended_tp,
+            encoder_tensor_model_parallel_size=self.encoder_tensor_model_parallel_size,
+            encoder_pipeline_model_parallel_size=self.encoder_pipeline_model_parallel_size,
             pipeline_dtype=self.pipeline_dtype,
             use_tp_pp_dp_mapping=self.use_tp_pp_dp_mapping,
             num_distributed_optimizer_instances=self.num_distributed_optimizer_instances,
@@ -562,10 +571,14 @@ def convert_megatron_strategy(strategy: MegatronStrategy) -> FabricMegatronStrat
         pipeline_model_parallel_size=strategy.pipeline_model_parallel_size,
         pipeline_model_parallel_comm_backend=strategy.pipeline_model_parallel_comm_backend,
         virtual_pipeline_model_parallel_size=strategy.virtual_pipeline_model_parallel_size,
+        microbatch_group_size_per_vp_stage=strategy.microbatch_group_size_per_vp_stage,
         context_parallel_size=strategy.context_parallel_size,
         sequence_parallel=strategy.sequence_parallel,
         expert_model_parallel_size=strategy.expert_model_parallel_size,
+        expert_tensor_parallel_size=strategy.expert_tensor_parallel_size,
         moe_extended_tp=strategy.moe_extended_tp,
+        encoder_tensor_model_parallel_size=strategy.encoder_tensor_model_parallel_size,
+        encoder_pipeline_model_parallel_size=strategy.encoder_pipeline_model_parallel_size,
         pipeline_dtype=strategy.pipeline_dtype,
         use_tp_pp_dp_mapping=strategy.use_tp_pp_dp_mapping,
         ddp=strategy._ddp,

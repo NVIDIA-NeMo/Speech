@@ -47,10 +47,10 @@ class MCoreTokenizerWrappper:
     tokenizer.detokenize, tokenizer.tokenize, tokenizer.bos, tokenizer.pad, etc. to encode and decode prompts
     """
 
-    def __init__(self, tokenizer):
+    def __init__(self, tokenizer, vocab_size=None):
         self.tokenizer = tokenizer
         self.eod = tokenizer.eod
-        self.vocab_size = tokenizer.vocab_size
+        self.vocab_size = vocab_size or tokenizer.vocab_size
 
     def detokenize(self, tokens, remove_special_tokens=False):
         """
@@ -220,7 +220,10 @@ def setup_model_and_tokenizer(
     inference_wrapped_model = model.get_inference_wrapper(
         params_dtype, inference_batch_times_seqlen_threshold, inference_max_seq_length
     )
-    return inference_wrapped_model, MCoreTokenizerWrappper(model.tokenizer)
+    return (
+        inference_wrapped_model,
+        MCoreTokenizerWrappper(model.tokenizer, getattr(model.config, "vocab_size", None)),
+    )
 
 
 def generate(

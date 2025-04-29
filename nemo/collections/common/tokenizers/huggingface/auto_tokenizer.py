@@ -70,11 +70,13 @@ class AutoTokenizer(TokenizerSpec):
         """
         try:
             self._initialize_tokenizer(pretrained_model_name, vocab_file, merges_file, use_fast, trust_remote_code)
+            assert self.tokenizer, "tokenizer not initialized"
         except Exception:
             try:
                 self._initialize_tokenizer(
                     pretrained_model_name, vocab_file, merges_file, not use_fast, trust_remote_code
                 )
+                assert self.tokenizer, "tokenizer not initialized"
             except Exception as e:
                 raise ValueError(
                     f'Unable to instantiate HuggingFace AUTOTOKENIZER for {pretrained_model_name}. Exception: {e}'

@@ -440,7 +440,7 @@ class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"
         from transformers import AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
-        with no_init_weights(True):
+        with no_init_weights():
             # Since DeepSeek is not importable from transformers, we can only initialize the HF model
             # from a known checkpoint. The model_name will need to be passed in.
             hf_model = AutoModelForCausalLM.from_pretrained(

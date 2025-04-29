@@ -315,7 +315,7 @@ class LlamaEmbeddingExporter(io.ModelConnector[LlamaEmbeddingModel, "LlamaBidire
         from nemo.collections.llm.gpt.model.hf_llama_embedding import LlamaBidirectionalModel
 
         LlamaBidirectionalModel.register_for_auto_class("AutoModel")
-        with no_init_weights(True):
+        with no_init_weights():
             return LlamaBidirectionalModel._from_config(self.config, torch_dtype=dtype)
 
     def apply(self, output_path: Path) -> Path:

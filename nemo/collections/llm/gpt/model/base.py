@@ -685,10 +685,10 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             raise ValueError("Exact McoreGPTModel instance not found in the model structure.")
 
         vocab_size = None
-        if self.tokenizer is not None:
-            vocab_size = self.tokenizer.vocab_size
-        elif hasattr(self.config, "vocab_size"):
+        if hasattr(self.config, "vocab_size"):
             vocab_size = self.config.vocab_size
+        elif self.tokenizer is not None:
+            vocab_size = self.tokenizer.vocab_size
         else:
             raise ValueError(
                 "Unable to find vocab size."

@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2021, NVIDIA CORPORATION.
+# Copyright (c) 2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -139,11 +139,19 @@ jobs:
 
   L0_Setup_Test_Data_And_Models:
     needs: [pre-flight, cicd-test-container-build]
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: self-hosted-azure
-      SCRIPT: L0_Setup_Test_Data_And_Models
-      TESTS_TO_RUN: '["L0_Setup_Test_Data_And_Models"]'
+    runs-on: self-hosted-azure
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: L0_Setup_Test_Data_And_Models
+          tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
 
   cicd-main-unit-tests:
     needs: [pre-flight, cicd-test-container-build]
@@ -151,21 +159,27 @@ jobs:
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-e2e-tests:
+  cicd-main-export-deploy:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-e2e-tests.yml
+    uses: ./.github/workflows/cicd-main-export-deploy.yml
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-export-deploy-tests:
+  cicd-main-speech:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-export-deploy-tests.yml
+    uses: ./.github/workflows/cicd-main-speech.yml
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-collections-asr:
+  cicd-main-automodel:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-collections-asr.yml
+    uses: ./.github/workflows/cicd-main-automodel.yml
+    with:
+      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+
+  cicd-main-nemo2:
+    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+    uses: ./.github/workflows/cicd-main-nemo2.yml
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -176,8 +190,10 @@ jobs:
       - cicd-import-tests
       - L0_Setup_Test_Data_And_Models
       - cicd-main-unit-tests
-      - cicd-main-e2e-tests
-      - cicd-main-export-deploy-tests
+      - cicd-main-nemo2
+      - cicd-main-export-deploy
+      - cicd-main-automodel
+      - cicd-main-speech
     if: always() && (github.event.label.name == 'Run CICD' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions: write-all

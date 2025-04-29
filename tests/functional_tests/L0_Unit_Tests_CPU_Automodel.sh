@@ -11,10 +11,4 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest \
-    tests/collections/llm \
-    -m "not pleasefixme" \
-    --cpu \
-    --with_downloads \
-    --relax_numba_compat \
-    --ignore=tests/collections/llm/hf/
+CUDA_VISIBLE_DEVICES="" NEMO_NUMBA_MINVER=0.53 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest tests/automodel tests/collections/llm/hf/ tests/collections/vlm/hf/ -m "not pleasefixme" --cpu --with_downloads --relax_numba_compat

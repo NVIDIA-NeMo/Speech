@@ -1,3 +1,16 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 name: NeMo Unit Tests
 on:
   workflow_call:
@@ -7,23 +20,6 @@ on:
         type: string
 
 jobs:
-  collections-audio-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - script: L0_Unit_Tests_GPU_Audio
-            runner: self-hosted-azure-gpus-1
-          - script: L0_Unit_Tests_CPU_Audio
-            runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      TIMEOUT: 20
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
-
   collections-common-tests:
     strategy:
       fail-fast: false
@@ -33,13 +29,22 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Common
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      TIMEOUT: 20
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   collections-llm-tests:
     strategy:
@@ -50,12 +55,22 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_LLM
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   collections-multimodal-tests:
     strategy:
@@ -66,28 +81,22 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Multimodal
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
-
-  collections-tts-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - script: L0_Unit_Tests_GPU_TTS
-            runner: self-hosted-azure-gpus-1
-          - script: L0_Unit_Tests_CPU_TTS
-            runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   collections-vlm-tests:
     strategy:
@@ -98,12 +107,21 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_VLM
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
 
   core-tests:
     strategy:
@@ -114,16 +132,27 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Core
             runner: self-hosted-azure-cpu
+            cpu-only: true
           - script: L0_Unit_Tests_GPU_Hydra
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Hydra
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   lightning-tests:
     strategy:
@@ -134,12 +163,22 @@ jobs:
             runner: self-hosted-azure
           - script: L0_Unit_Tests_CPU_Lightning
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   other-tests:
     strategy:
@@ -150,9 +189,19 @@ jobs:
             runner: self-hosted-azure-gpus-1
           - script: L0_Unit_Tests_CPU_Others
             runner: self-hosted-azure-cpu
-    uses: ./.github/workflows/_test_template.yml
-    with:
-      RUNNER: ${{ matrix.runner }}
-      SCRIPT: ${{ matrix.script }}
-      IS_UNIT_TEST: true
-      TESTS_TO_RUN: ${{ inputs.test_to_run }}
+            cpu-only: true
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}

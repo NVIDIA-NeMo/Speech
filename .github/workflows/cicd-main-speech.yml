@@ -1,0 +1,186 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+name: NeMo E2E Speech Tests
+on:
+  workflow_call:
+    inputs:
+      test_to_run:
+        required: true
+        type: string
+      image-name:
+        required: false
+        default: nemo_container_speech
+        type: string
+
+jobs:
+  build:
+    uses: ./.github/workflows/_build_container.yml
+    with:
+      image-name: ${{ inputs.image-name }}
+      dockerfile: Dockerfile.ci
+
+  unit-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - script: L0_Unit_Tests_GPU_ASR
+            runner: self-hosted-azure-gpus-1
+            timeout: 20
+          - script: L0_Unit_Tests_CPU_ASR
+            runner: self-hosted-azure-cpu
+            cpu-only: true
+            timeout: 20
+          - script: L0_Unit_Tests_GPU_TTS
+            runner: self-hosted-azure-gpus-1
+          - script: L0_Unit_Tests_CPU_TTS
+            runner: self-hosted-azure-cpu
+            cpu-only: true
+          - script: L0_Unit_Tests_GPU_Audio
+            runner: self-hosted-azure-gpus-1
+          - script: L0_Unit_Tests_CPU_Audio
+            runner: self-hosted-azure-cpu
+            cpu-only: true
+    needs: [build]
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          is_unit_test: true
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.image-name }}
+          timeout: ${{ matrix.timeout || 10 }}
+          cpu-only: ${{ matrix.cpu-only || false }}
+
+  e2e-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text
+          - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text_WPE_CitriNet
+          - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_Pre-training_-_CitriNet
+          - runner: self-hosted-azure-gpus-1
+            script: Optional_ASR_dev_run_Speech_To_Text_Finetuning
+            is_optional: true
+          - runner: self-hosted-azure-gpus-1
+            script: Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning
+            is_optional: true
+          - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
+          - runner: self-hosted-azure-gpus-1
+            script: ASR_dev_run-part_two_Speech_to_Text_WPE_-_Squeezeformer
+          - runner: self-hosted-azure-gpus-1
+            script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Text_multi-dataloader
+          - runner: self-hosted-azure-gpus-1
+            script: L2_ASR_Multi-dataloader_dev_run_Speech_to_Label_multi-dataloader
+          - runner: self-hosted-azure-gpus-1
+            script: L2_ASR_Adapters_Linear_Adapters
+          - runner: self-hosted-azure-gpus-1
+            script: L2_ASR_Adapters_RelPos_MHA_Adapters
+          - runner: self-hosted-azure
+            script: L2_Speech_to_Text_EMA
+          - runner: self-hosted-azure-gpus-1
+            script: L2_Speech_to_Text_AED
+          - runner: self-hosted-azure-gpus-1
+            script: L2_Speaker_dev_run_Speech_to_Label
+          - runner: self-hosted-azure
+            script: L2_Speech_Estimate_Duration_Bins
+          - runner: self-hosted-azure
+            script: L2_Speech_Batch_Size_OOMptimizer
+          - runner: self-hosted-azure
+            script: Optional_L2_Speech_Batch_Size_OOMptimizer_Canary
+            is_optional: true
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Speech_to_Text_Transcribe
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Canary_Transcribe_Full_Manifest
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Canary_Transcribe_With_Prompt
+          - runner: self-hosted-azure
+            script: L2_Speech_Transcription_Canary_Transcribe_Audio_Dir
+            IS_OPTIONAL: true
+          - runner: self-hosted-azure
+            script: L2_Longform_Speech_Transcription_Canary_Chunked_Infer_from_Audio_Dir
+          - runner: self-hosted-azure
+            script: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Audio_Dir
+          - runner: self-hosted-azure
+            script: L2_Longform_Speech_Transcription_with_TimeStamps_Canary_Chunked_Infer_from_Manifest
+          - runner: self-hosted-azure-gpus-1
+            script: Speech_Checkpoints_tests
+            timeout: 20
+          - runner: self-hosted-azure-gpus-1
+            script: L2_Speaker_dev_run_Speaker_Recognition
+          - runner: self-hosted-azure-gpus-1
+            script: L2_Speaker_dev_run_Speaker_Diarization
+          - runner: self-hosted-azure-gpus-1
+            script: L2_Speaker_dev_run_EndtoEnd_Speaker_Diarization_Sortformer
+          - runner: self-hosted-azure
+            script: L2_Speaker_dev_run_EndtoEnd_Diarizer_Inference
+          - runner: self-hosted-azure
+            script: L2_Speaker_dev_run_Speaker_Diarization_with_ASR_Inference
+          - runner: self-hosted-azure
+            script: L2_Speaker_dev_run_Clustering_Diarizer_Inference
+          - runner: self-hosted-azure
+            script: L2_Speaker_dev_run_Neural_Diarizer_Inference
+          - runner: self-hosted-azure
+            script: L2_Speaker_dev_run_Multispeaker_ASR_Data_Simulation
+          - runner: self-hosted-azure
+            script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav
+          - runner: self-hosted-azure
+            script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
+            is_optional: true
+          - script: L2_HF_Transformer_SpeechLM_SFT_2gpu
+            runner: self-hosted-azure
+          - script: L2_SpeechLM_LoRA_TP1PP1_MBS2
+            runner: self-hosted-azure
+          - runner: self-hosted-azure-gpus-1
+            script: L2_TTS_Fast_dev_runs_1_Tacotron_2
+          - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_1_WaveGlow
+          - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_1_FastPitch
+          - runner: self-hosted-azure
+            script: L2_TTS_Fast_dev_runs_1_Hifigan
+          - runner: self-hosted-azure
+            script: L2_G2P_Models_G2P_Conformer_training_evaluation_and_inference
+          - runner: self-hosted-azure
+            script: L2_G2P_Models_HeteronymClassificationModel_training_evaluation_and_inference
+    needs: [unit-tests]
+    runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.script }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: ${{ github.run_id }}
+      - name: main
+        uses: NVIDIA/NeMo/.github/actions/test-template@main
+        with:
+          runner: ${{ runner.name }}
+          script: ${{ matrix.script }}
+          tests_to_run: ${{ inputs.test_to_run }}
+          image: ${{ inputs.image-name }}
+          is_optional: ${{ matrix.is_optional || false }}

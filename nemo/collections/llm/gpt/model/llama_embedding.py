@@ -27,7 +27,13 @@ from torch import Tensor, nn
 import nemo.collections.llm.gpt.model.base as GPTBase
 from nemo.collections.llm.bert.loss import BERTInBatchExclusiveHardNegativesRankingLoss, HardNegativeRankingLoss
 from nemo.collections.llm.gpt.model import GPTConfig
-from nemo.collections.llm.gpt.model.llama import HFLlamaImporter, Llama32Config1B, LlamaConfig, LlamaModel
+from nemo.collections.llm.gpt.model.llama import (
+    HFLlamaImporter,
+    Llama32Config1B,
+    Llama32Config3B,
+    LlamaConfig,
+    LlamaModel,
+)
 from nemo.collections.llm.utils import Config
 from nemo.lightning import OptimizerModule, io
 from nemo.lightning.io.state import TransformFns
@@ -125,6 +131,34 @@ class Llama32EmbeddingConfig1B(Llama32Config1B):
 
     def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreGPTModel":
         """Configure the NV Embedding Llama3.2 1B Model"""
+        model = super().configure_model(tokenizer, pre_process, post_process)
+        # post_process need to be overwritten to False after model init because
+        # final_layernorm is still needed and it will only be initialized when post_process is True in Mcore.
+        # And for forward(), we do not want to run through output_layer thus setting post_process to False.
+        model.post_process = False
+        return model
+
+
+@dataclass
+class Llama32EmbeddingConfig3B(Llama32Config3B):
+    """Llama3.2 Embedding 3B Config"""
+
+    transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = get_nv_embedding_layer_spec
+    forward_step_fn: Callable = nv_embedding_forward_step
+    data_step_fn: Callable = nv_embedding_data_step
+
+    # Training Configs
+    truncation_method: Literal["left", "right"] = 'right'
+    num_hard_negatives: int = 4
+    ce_loss_scale: float = 50
+    label_smoothing: float = 0.0
+    in_batch_negatives: bool = False
+    negative_sample_strategy: Literal["random", "first"] = 'first'
+    add_bos: bool = True
+    add_eos: bool = False
+
+    def configure_model(self, tokenizer, pre_process=None, post_process=None) -> "MCoreGPTModel":
+        """Configure the NV Embedding Llama3.2 3B Model"""
         model = super().configure_model(tokenizer, pre_process, post_process)
         # post_process need to be overwritten to False after model init because
         # final_layernorm is still needed and it will only be initialized when post_process is True in Mcore.

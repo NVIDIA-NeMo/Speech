@@ -45,6 +45,7 @@ def main(args):
     mbs = args.mbs
     max_steps = args.max_steps
     num_workers = args.num_workers
+    val_check_interval = 500
 
     decoder_seq_length = args.decoder_seq_length
 
@@ -53,6 +54,7 @@ def main(args):
     llama4_config = vlm.Llama4ScoutExperts16Config()
     if args.use_toy_model:
         decoder_seq_length = 4096
+        val_check_interval = 50
         llama4_config.vision_transformer_config.num_layers = 2
         llama4_config.language_transformer_config.num_layers = 2
         llama4_config.language_transformer_config.num_moe_experts = 2
@@ -139,7 +141,7 @@ def main(args):
             MegatronCommOverlapCallback(tp_comm_overlap=False),
             NsysCallback(start_step=10, end_step=12, ranks=[0], gen_shape=True),
         ],
-        val_check_interval=500,
+        val_check_interval=val_check_interval,
         limit_val_batches=gbs,
         log_every_n_steps=1,
         num_sanity_val_steps=0,

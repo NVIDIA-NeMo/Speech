@@ -25,6 +25,18 @@ from nemo.collections.audio.losses.audio import (
     convolution_invariant_target,
     scale_invariant_target,
 )
+
+try:
+    import importlib
+
+    importlib.import_module('torchaudio')
+
+    HAVE_TORCHAUDIO = True
+except ModuleNotFoundError:
+    HAVE_TORCHAUDIO = False
+
+from nemo.collections.audio.losses.maxine import CombinedLoss
+
 from nemo.collections.audio.parts.utils.audio import (
     calculate_sdr_numpy,
     convolution_invariant_target_numpy,
@@ -826,3 +838,45 @@ class TestAudioLosses:
             assert np.allclose(
                 uut_mae_loss.cpu().detach().numpy(), golden_mae, atol=atol
             ), f'MAELoss not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
+    def test_maxine_combined_loss(self):
+        INPUT_LOCATION = "/home/TestData/collections/audio/maxine/input.bin"
+        ATOL = 1e-2
+
+        GOLDEN_VALUES = [
+            ((1, 0, 0, True, True), 80.0),
+            ((0, 1, 0, True, True), 1.9749),
+            ((0, 0, 1, True, True), 19.2192),
+            ((1, 1, 1, True, True), 101.1941),
+        ]
+        batch_size = 16
+
+        for value in GOLDEN_VALUES:
+            config, golden = value
+            sisnr_wt, asr_wt, spec_wt, use_asr, use_spec = config
+
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+            loss_instance = CombinedLoss(
+                sample_rate=16000,
+                fft_length=1920,
+                hop_length=480,
+                num_mels=320,
+                sisnr_loss_weight=sisnr_wt,
+                asr_loss_weight=asr_wt,
+                spectral_loss_weight=spec_wt,
+                use_asr_loss=use_asr,
+                use_mel_spec=use_spec,
+            ).to(device)
+
+            input_data = torch.tensor(np.fromfile(INPUT_LOCATION, np.float32))
+            input_data = input_data.repeat(batch_size).reshape((batch_size, 1, -1))
+            input_data = input_data.to(device)
+
+            estimate = torch.tensor(np.zeros(input_data.shape, np.float32)).reshape((batch_size, 1, -1)).to(device)
+
+            loss = loss_instance.forward(estimate=estimate, target=input_data).cpu()
+
+            assert np.allclose(loss, golden, atol=ATOL)

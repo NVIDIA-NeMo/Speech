@@ -18,7 +18,7 @@ from pathlib import Path
 from sentencepiece import SentencePieceProcessor
 from transformers import PreTrainedTokenizerBase
 from vllm import LLMEngine
-from vllm.transformers_utils.tokenizer_group.tokenizer_group import TokenizerGroup
+from vllm.transformers_utils.tokenizer_group import TokenizerGroup
 
 from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
 from nemo.export.tarutils import TarPath

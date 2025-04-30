@@ -16,12 +16,12 @@ from typing import List, Optional
 
 from vllm.config import TokenizerPoolConfig
 from vllm.lora.request import LoRARequest
-from vllm.transformers_utils.tokenizer_group.base_tokenizer_group import BaseTokenizerGroup
+from vllm.transformers_utils.tokenizer_group import TokenizerGroup
 
 from nemo.export.sentencepiece_tokenizer import SentencePieceTokenizer
 
 
-class NemoTokenizerGroup(BaseTokenizerGroup):
+class NemoTokenizerGroup(TokenizerGroup):
     """
     Implements a custom tokenizer for vLLM, based on SentencePieceTokenizer.
     """

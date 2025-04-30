@@ -122,6 +122,7 @@ jobs:
           script: ${{ matrix.script }}
           is_unit_test: true
           tests_to_run: ${{ inputs.test_to_run }}
+          cpu-only: ${{ matrix.cpu-only || false }}
 
   core-tests:
     strategy:

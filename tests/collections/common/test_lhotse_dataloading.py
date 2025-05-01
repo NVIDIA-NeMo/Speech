@@ -2549,3 +2549,46 @@ def test_dataloader_from_tarred_nemo_manifest_with_skipme(nemo_tarred_manifest_w
 
     assert len(batches) == 8
     assert not any(skipme_s)
+
+
+def test_dataloader_from_data_input_cfg_yaml_path_with_skipme(cutset_shar_path, nemo_tarred_manifest_with_skipme_path):
+    config = OmegaConf.create(
+        {
+            "input_cfg": [
+                {
+                    "type": "nemo_tarred",
+                    "manifest_filepath": nemo_tarred_manifest_with_skipme_path[0],
+                    "tarred_audio_filepaths": nemo_tarred_manifest_with_skipme_path[1],
+                    "weight": 0.5,
+                    "tags": {
+                        "language": "en",
+                        "modality": "audio",
+                        "dataset_name": "D1",
+                    },
+                },
+                {
+                    "type": "lhotse_shar",
+                    "shar_path": cutset_shar_path,
+                    "weight": 0.5,
+                    "tags": {
+                        "language": "en",
+                        "modality": "audio",
+                        "dataset_name": "D2",
+                    },
+                },
+            ],
+            "sample_rate": 16000,
+            "shuffle": True,
+            "num_workers": 0,
+            "batch_size": 4,
+            "seed": 0,
+            "shard_seed": 0,
+            "force_finite": True,
+        }
+    )
+
+    dl = get_lhotse_dataloader_from_config(config=config, global_rank=0, world_size=1, dataset=Identity())
+    batches = [batch for batch in dl]
+    skipme_s = [cut.custom.get('_skipme', 0) for batch in batches for cut in batch]
+
+    assert not any(skipme_s)

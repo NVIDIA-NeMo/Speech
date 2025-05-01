@@ -117,8 +117,10 @@ jobs:
       - name: Check if no-fail-fast is set
         shell: bash
         id: no_fail_fast
+        env:
+          HAS_FAIL_FAST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}
         run: |
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}" == "true" ]]; then
+          if [[ "$HAS_FAIL_FAST_LABEL" == "true" || "$EVENT_NAME" == "schedule" ]]; then
             no_fail_fast=true
           else
             no_fail_fast=false

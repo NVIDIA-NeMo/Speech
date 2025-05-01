@@ -27,11 +27,6 @@ on:
         type: string
         description: Comma-separated list of tests to run. Use "all" to run the full test suite.
 
-concurrency:
-  # group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
-
 jobs:
   pre-flight:
     runs-on: ubuntu-latest
@@ -112,8 +107,10 @@ jobs:
       - name: Check if no-fail-fast is set
         shell: bash
         id: no_fail_fast
+        env:
+          HAS_FAIL_FAST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}
         run: |
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}" == "true" ]]; then
+          if [[ "$HAS_FAIL_FAST_LABEL" == "true" || "$EVENT_NAME" == "schedule" ]]; then
             no_fail_fast=true
           else
             no_fail_fast=false

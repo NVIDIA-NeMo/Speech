@@ -33,7 +33,7 @@ on:
         description: Comma-separated list of tests to run. Use "all" to run the full test suite.
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || 'main' }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.event.pull_request.number || github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -41,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
+      components_to_run: ${{ steps.components_to_run.outputs.main }}
       branch_name: ${{ steps.branch_name.outputs.main }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
@@ -49,6 +50,19 @@ jobs:
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select components to run
+        id: components_to_run
+        run: |
+          pip install -U pip
+          pip install git-python
+          python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
+
+          components_to_run=$(cat test_modules.json)
+
+          echo "main=${components_to_run}" | tee -a "$GITHUB_OUTPUT"
 
       - name: Select tests to run
         id: test_to_run
@@ -176,7 +190,7 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-export-deploy.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy') || needs.pre-flight.outputs.components_to_run == '["all"]')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -184,7 +198,7 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech') || needs.pre-flight.outputs.components_to_run == '["all"]')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -192,7 +206,7 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-automodel.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      (success() || needs.cicd-wait-in-queue.result == 'skipped') && ( contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel') || needs.pre-flight.outputs.components_to_run == '["all"]')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -200,7 +214,7 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-nemo2.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2') || needs.pre-flight.outputs.components_to_run == '["all"]')
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -227,16 +241,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
+
         run: |
           # Get workflow run details and check job conclusions
           NUM_FAILED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "failure") | .name] | length')
           NUM_CANCELLED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "cancelled") | .name] | length')
-          NUM_SKIPPED=$(gh run view $RUN_ID --json jobs -q '[.jobs[] | select(.conclusion == "skipped") | .name] | length')
 
-          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 && $NUM_SKIPPED -eq 0 ]]; then
+          if [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -eq 0 ]]; then
             RESULT="success"
-          elif [[ $NUM_FAILED -eq 0 && $NUM_CANCELLED -gt 0 && $NUM_SKIPPED -eq 0 ]]; then
-            RESULT="cancelled"
           else
             RESULT="failure"
           fi
@@ -266,13 +278,14 @@ jobs:
           body: |
             [🤖]: Hi @${{ github.event.pull_request.user.login }} 👋,
 
-            We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully
+            We wanted to let you know that a [CICD pipeline](https://github.com/${{ env.REPOSITORY }}/actions/runs/${{ env.RUN_ID }}) for this PR just finished successfully.
 
-            So it might be time to merge this PR or get some approvals
+            So it might be time to merge this PR or get some approvals.
 
-            I'm just a bot so I'll leave it you what to do next.
+            Due to a major CI change, merges are currently handled by the automation team.  
+            We will reach out to you quickly to merge this PR, but you can always reach us with the following handles:
 
-            //cc @pablo-garay @ko3n1g
+            //cc @chtruong814 @ko3n1g @pablo-garay @thomasdhc
 
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"
         if: ${{ always() && steps.result.outputs.code == 'failure' && env.SLACK_WEBHOOK != '' }}

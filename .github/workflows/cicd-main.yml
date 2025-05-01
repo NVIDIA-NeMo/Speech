@@ -435,6 +435,12 @@ jobs:
   Coverage:
     runs-on: ubuntu-latest
     needs: [Nemo_CICD_Test]
+    if: |
+      (
+        success() 
+        || needs.Nemo_CICD_Test.result == 'success'
+      )
+      && !cancelled()
     strategy:
       matrix:
         flag: [unit-test, e2e]

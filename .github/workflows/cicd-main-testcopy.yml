@@ -428,6 +428,12 @@ jobs:
     strategy:
       matrix:
         flag: [unit-test, e2e]
+    if: |
+      (
+        success() 
+        || needs.Nemo_CICD_Test.result == 'success'
+      )
+      && !cancelled()
     steps:
       - name: Checkout
         uses: actions/checkout@v4

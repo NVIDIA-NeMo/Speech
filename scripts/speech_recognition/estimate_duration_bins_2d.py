@@ -264,7 +264,7 @@ def estimate_duration_buckets(
     # Here, we'd end up making token subbuckets for: [5, 20, 40]
     # where [20, 40] bucket will have 4 times more subbuckets (as we combined 4 buckets into 1) than usual bucket in that settings.
 
-    for i, (duration_bin, bin_idx) in enumerate(zip(duration_bins, bin_indexes[1:])):
+    for i, (duration_bin, binidx) in enumerate(zip(duration_bins, bin_indexes[1:])):
         if (i != len(duration_bins) - 1 and duration_bins[i + 1] == duration_bin) or (
             i == len(duration_bins) - 1 and max_duration == duration_bin
         ):
@@ -276,7 +276,7 @@ def estimate_duration_buckets(
             end_idx=binidx,
             corr_subbuckets=num_subbuckets * skipped_buckets,
         )
-        start_idx = bin_idx
+        start_idx = binidx
         skipped_buckets = 1
 
     # Estimate an extra 2D bin set for global max duration.
@@ -285,7 +285,7 @@ def estimate_duration_buckets(
     _estimate_token_buckets(
         max_bucket_duration=max_duration,
         start_idx=start_idx,
-        end_idx=binidx,
+        end_idx=len(sizes),
         corr_subbuckets=num_subbuckets * skipped_buckets,
     )
     return bins, tps_thresholds

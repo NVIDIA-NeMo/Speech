@@ -157,6 +157,10 @@ class Llama4OmniConfig(NevaConfig):
                 self.vision_transformer_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
                 self.vision_projection_config.tensor_model_parallel_size = self.encoder_tensor_model_parallel_size
 
+        # set token_drop setting from config
+        self.language_transformer_config.moe_pad_expert_input_to_capacity = self.moe_pad_expert_input_to_capacity
+        self.language_transformer_config.moe_expert_capacity_factor = self.moe_expert_capacity_factor
+
         model = Llama4OmniBaseModel(
             config=self,
             tokenizer=tokenizer,

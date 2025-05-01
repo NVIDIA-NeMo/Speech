@@ -68,6 +68,8 @@ MODEL_CONFIG_ATTR = [
     'calculate_per_token_loss',
     'seq_length',
     'share_embeddings_and_output_weights',
+    'moe_token_dispatcher_type',
+    'moe_router_load_balancing_type',
 ]
 
 

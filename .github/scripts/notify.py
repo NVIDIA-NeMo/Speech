@@ -24,26 +24,36 @@ def send_slack_notification():
     repository = os.environ.get('REPOSITORY')
     run_id = os.environ.get('RUN_ID')
     server_url = os.environ.get('SERVER_URL', 'https://github.com')
-    pr_number = int(os.environ.get('PR_NUMBER'))
+    pr_number = int(os.environ.get('PR_NUMBER', 0))
+    branch_name = os.environ.get('BRANCH_NAME')
 
     # Get failure info from GitHub API
     gh = Github(gh_token)
     repo = gh.get_repo(repository)
-    pr = repo.get_pull(pr_number)
 
     # Get failed jobs
     failed_jobs = [job.name for job in repo.get_workflow_run(int(run_id)).jobs() if job.conclusion == 'failure']
 
-    # Build message blocks
+    if pr_number != 0:
+        pr = repo.get_pull(pr_number)
+
+        title = f"*<{server_url}/{repository}/pull/{pr_number}|PR#{pr_number}>: {pr.title.replace('`', '')}*"
+        author = f"<{server_url}/{pr.user.login}|{pr.user.login}>"
+        branch = f"<{server_url}/{pr.head.repo.full_name}/tree/{pr.head.ref}|{pr.head.ref}>"
+    else:
+        title = f"*Run on <{server_url}/{repository}/tree/{branch_name}|{branch_name}>*"
+        author = "No author"
+        branch = f"<{server_url}/{repository}/tree/{branch_name}|{branch_name}>"
+
     blocks = [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*<{server_url}/{repository}/pull/{pr_number}|PR#{pr_number}: {pr.title.replace('`', '')}>*\n"
-                    f"• Author: <{server_url}/{pr.user.login}|{pr.user.login}>\n"
-                    f"• Branch: <{server_url}/{pr.head.repo.full_name}/tree/{pr.head.ref}|{pr.head.ref}>\n"
+                    f"{title}\n"
+                    f"• Author: {author}\n"
+                    f"• Branch: {branch}\n"
                     f"• Pipeline: <{server_url}/{repository}/actions/runs/{run_id}|View Run>\n"
                     f"• Failed Jobs:\n"
                     + "\n".join(

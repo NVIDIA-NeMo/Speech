@@ -11,16 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-name: CICD NeMo
+name: "[debug] CICD NeMo"
 on:
   schedule:
     - cron: 0 0 * * *
-  pull_request:
-    branches:
-      - main
-      - r**
-      - weekly-bump*
-    types: [labeled]
+    - cron: "*/5 * * * *" # Runs every 5 minutes
   push:
     branches:
       - main
@@ -160,191 +155,191 @@ jobs:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
 
-  cicd-import-tests:
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    needs: [cicd-test-container-build, pre-flight]
-    runs-on: self-hosted-azure-gpus-1
-    steps:
-      - name: Create UUID
-        id: uuid
-        run: |
-          echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
+  # cicd-import-tests:
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   needs: [cicd-test-container-build, pre-flight]
+  #   runs-on: self-hosted-azure-gpus-1
+  #   steps:
+  #     - name: Create UUID
+  #       id: uuid
+  #       run: |
+  #         echo "id=$(uuidgen)" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout NeMo
-        uses: actions/checkout@v2
-        with:
-          repository: NVIDIA/NeMo
-          path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
+  #     - name: Checkout NeMo
+  #       uses: actions/checkout@v2
+  #       with:
+  #         repository: NVIDIA/NeMo
+  #         path: ${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo
 
-      - name: Run some checks
-        run: |
-          docker run \
-              --rm \
-            --device=/dev/nvidia0 \
-            --gpus all \
-            --shm-size=8g \
-            --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
-            --env TRANSFORMERS_OFFLINE=0 \
-            --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
-            # PyTorch Lightning version
-            python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
+  #     - name: Run some checks
+  #       run: |
+  #         docker run \
+  #             --rm \
+  #           --device=/dev/nvidia0 \
+  #           --gpus all \
+  #           --shm-size=8g \
+  #           --volume $(pwd)/${{ github.run_id }}/${{steps.uuid.outputs.id }}/NeMo:/workspace \
+  #           --env TRANSFORMERS_OFFLINE=0 \
+  #           --env HYDRA_FULL_ERROR=1 --env PYTHONUNBUFFERED=1 nemoci.azurecr.io/nemo_container:${{ github.run_id }} bash -c '\
+  #           # PyTorch Lightning version
+  #           python -c "import lightning.pytorch; print(lightning.pytorch.__version__)"
 
-            # PyTorch Lightning DDP Checks
-            CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
+  #           # PyTorch Lightning DDP Checks
+  #           CUDA_VISIBLE_DEVICES="0,1" python "tests/core_ptl/check_for_ranks.py"
 
-            # Basic Import Checks
-            python tests/core_ptl/check_imports.py --domain asr
-            python tests/core_ptl/check_imports.py --domain nlp
-            python tests/core_ptl/check_imports.py --domain tts
-          '
+  #           # Basic Import Checks
+  #           python tests/core_ptl/check_imports.py --domain asr
+  #           python tests/core_ptl/check_imports.py --domain nlp
+  #           python tests/core_ptl/check_imports.py --domain tts
+  #         '
 
-  L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
-    runs-on: self-hosted-azure
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          path: ${{ github.run_id }}
+  # L0_Setup_Test_Data_And_Models:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
+  #   runs-on: self-hosted-azure
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #       with:
+  #         path: ${{ github.run_id }}
 
-      - name: main
-        uses: NVIDIA/NeMo/.github/actions/test-template@main
-        with:
-          runner: ${{ runner.name }}
-          script: L0_Setup_Test_Data_And_Models
-          tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
+  #     - name: main
+  #       uses: NVIDIA/NeMo/.github/actions/test-template@main
+  #       with:
+  #         runner: ${{ runner.name }}
+  #         script: L0_Setup_Test_Data_And_Models
+  #         tests_to_run: '["L0_Setup_Test_Data_And_Models"]'
 
-  cicd-main-unit-tests:
-    needs: [pre-flight, cicd-test-container-build]
-    uses: ./.github/workflows/cicd-main-unit-tests.yml
-    if: |
-      needs.pre-flight.outputs.test_to_run != '[]'
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-unit-tests:
+  #   needs: [pre-flight, cicd-test-container-build]
+  #   uses: ./.github/workflows/cicd-main-unit-tests.yml
+  #   if: |
+  #     needs.pre-flight.outputs.test_to_run != '[]'
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-export-deploy:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-export-deploy.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-export-deploy:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-export-deploy.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy')
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-speech:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-speech.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-speech:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-speech.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech')
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-automodel:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-automodel.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel')
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-automodel:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-automodel.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel')
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  cicd-main-nemo2:
-    needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
-    uses: ./.github/workflows/cicd-main-nemo2.yml
-    if: |
-      (
-        needs.pre-flight.outputs.test_to_run != '[]'
-        && (
-          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
-          || needs.pre-flight.outputs.components_to_run == '["all"]'
-        )
-      )
-      && (
-        success()
-        || (
-          needs.cicd-wait-in-queue.result == 'skipped'
-          && needs.pre-flight.outputs.is_ci_workload == 'true'
-        )
-      )
-      && !cancelled()
-    with:
-      test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
+  # cicd-main-nemo2:
+  #   needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
+  #   uses: ./.github/workflows/cicd-main-nemo2.yml
+  #   if: |
+  #     (
+  #       needs.pre-flight.outputs.test_to_run != '[]'
+  #       && (
+  #         contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2')
+  #         || needs.pre-flight.outputs.components_to_run == '["all"]'
+  #       )
+  #     )
+  #     && (
+  #       success()
+  #       || (
+  #         needs.cicd-wait-in-queue.result == 'skipped'
+  #         && needs.pre-flight.outputs.is_ci_workload == 'true'
+  #       )
+  #     )
+  #     && !cancelled()
+  #   with:
+  #     test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
-  Nemo_CICD_Test:
+  Nemo_CICD_Test_Debug:
     needs:
       - pre-flight
       - cicd-test-container-build
-      - cicd-import-tests
-      - L0_Setup_Test_Data_And_Models
-      - cicd-main-unit-tests
-      - cicd-main-nemo2
-      - cicd-main-export-deploy
-      - cicd-main-automodel
-      - cicd-main-speech
+      # - cicd-import-tests
+      # - L0_Setup_Test_Data_And_Models
+      # - cicd-main-unit-tests
+      # - cicd-main-nemo2
+      # - cicd-main-export-deploy
+      # - cicd-main-automodel
+      # - cicd-main-speech
     if: always()
     runs-on: ubuntu-latest
     permissions: write-all

@@ -83,7 +83,7 @@ jobs:
 
           # For push events, run all tests. This is so that we can generate coverage
           # on branch `main`.
-          elif [[ "$EVENT_NAME" == "push" ]]; then
+          elif [[ "$EVENT_NAME" == "push" || "$EVENT_NAME" == "schedule" ]]; then
             TESTS_TO_RUN=all
 
           else

@@ -103,9 +103,7 @@ def main(args):
 
     # Submodules configurations
     language_transformer_config = llm.Llama2Config7B(seq_length=decoder_seq_length)
-    vision_transformer_config = vlm.HFCLIPVisionConfig(
-        pretrained_model_name_or_path="openai/clip-vit-large-patch14-336"
-    )
+    vision_transformer_config = vlm.HFCLIPVisionConfig(pretrained_model_name_or_path=args.vision_encoder_model_path)
     vision_projection_config = vlm.MultimodalProjectorConfig(
         projector_type=args.projector_type,
         input_size=vision_transformer_config.hidden_size,
@@ -133,12 +131,12 @@ def main(args):
         context_parallel_size=args.cp_size,
         encoder_pipeline_model_parallel_size=args.encoder_pp_size,
         pipeline_dtype=torch.bfloat16,
-        sequence_parallel=True,
+        sequence_parallel=True if args.tp_size > 1 else False,
     )
 
     # Checkpoint callback setup
     checkpoint_callback = nl.ModelCheckpoint(
-        save_last="link",
+        save_last=True,
         monitor="reduced_train_loss",
         save_top_k=2,
         every_n_train_steps=1000,
@@ -218,6 +216,13 @@ if __name__ == "__main__":
         "--language_model_path", type=str, required=False, default=None, help="Path to the pretrained language model"
     )
     parser.add_argument(
+        "--vision_encoder_model_path",
+        type=str,
+        required=False,
+        default="openai/clip-vit-large-patch14-336",
+        help="Path to the pretrained vision encoder model",
+    )
+    parser.add_argument(
         "--restore_path", type=str, required=False, default=None, help="Path to restore model from checkpoint"
     )
     parser.add_argument("--devices", type=int, required=False, default=1)
@@ -233,9 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--gbs", type=int, required=False, default=32, help="Global batch size")
     parser.add_argument("--mbs", type=int, required=False, default=4, help="Micro batch size")
     parser.add_argument("--lr", type=float, required=False, default=0.001, help="Learning rate")
-    parser.add_argument(
-        "--use_packed_sequence",
-        action="store_true",
-    )
+    parser.add_argument("--use_packed_sequence", action="store_true")
+
     args = parser.parse_args()
     main(args)

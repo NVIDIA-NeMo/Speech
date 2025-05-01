@@ -71,8 +71,8 @@ class Llama4VisionConfig(CLIPViTConfig):
     activation_func: Callable = torch.nn.functional.gelu
     layernorm_zero_centered_gamma: bool = False
     apply_query_key_layer_scaling: bool = False
-    bias_activation_fusion: bool = False
-    bias_dropout_fusion: bool = False
+    bias_activation_fusion: bool = True
+    bias_dropout_fusion: bool = True
     attention_softmax_in_fp32: bool = True
     normalization: str = 'LayerNorm'
     layernorm_epsilon: float = 1e-6

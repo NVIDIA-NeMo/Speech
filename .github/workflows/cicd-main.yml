@@ -42,8 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       test_to_run: ${{ steps.test_to_run.outputs.main }}
+      is_ci_workload: ${{ steps.is_ci_workload.outputs.main }}
+      no_fail_fast: ${{ steps.no_fail_fast.outputs.main }}
       components_to_run: ${{ steps.components_to_run.outputs.main }}
-      branch_name: ${{ steps.branch_name.outputs.main }}
     env:
       TESTS_TO_RUN: ${{ inputs.test_to_run }}
       EVENT_NAME: ${{ github.event_name }}
@@ -63,7 +64,7 @@ jobs:
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             python .github/scripts/components_to_run.py --source-sha ${{ github.event.pull_request.head.sha }} --target-sha ${{ github.event.pull_request.base.sha }}
           else
-            echo '["all"]' | tee -a test_modules.json
+            echo '["nemo2", "automodel", "export-deploy", "speech"]' | tee -a test_modules.json
           fi
 
           components_to_run=$(cat test_modules.json)
@@ -98,13 +99,35 @@ jobs:
           parsed_string=$(echo "$TESTS_TO_RUN" | jq -c --raw-input 'split(",")')
           echo "main=${parsed_string}" | tee -a "$GITHUB_OUTPUT"
 
-      - name: Extract branch name
+      - name: Check if this is a CI workload
         shell: bash
-        run: echo "main=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" | tee -a "$GITHUB_OUTPUT"
-        id: branch_name
+        id: is_ci_workload
+        run: |
+          branch_name=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}
+
+          if [[ "$branch_name" =~ ^bump-ci-container ]]; then
+            is_ci_workload=true
+            echo "main=true" | tee -a "$GITHUB_OUTPUT"
+          else
+            is_ci_workload=false
+          fi
+
+          echo "main=$is_ci_workload" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Check if no-fail-fast is set
+        shell: bash
+        id: no_fail_fast
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'no-fail-fast') }}" == "true" ]]; then
+            no_fail_fast=true
+          else
+            no_fail_fast=false
+          fi
+
+          echo "main=$no_fail_fast" | tee -a "$GITHUB_OUTPUT"
 
   code-linting:
-    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' }}
+    if: needs.pre-flight.outputs.test_to_run != '[]'
     needs: [pre-flight]
     uses: ./.github/workflows/code-linting.yml
 
@@ -112,7 +135,9 @@ jobs:
     needs: [pre-flight]
     runs-on: ubuntu-latest
     environment: test
-    if: ${{ needs.pre-flight.outputs.test_to_run != '[]' && !startsWith(needs.pre-flight.outputs.branch_name, 'bump-ci-container') }}
+    if: |
+      needs.pre-flight.outputs.test_to_run != '[]' 
+      && needs.pre-flight.outputs.is_ci_workload == 'false'
     steps:
       - name: Running CI tests
         run: |
@@ -122,14 +147,30 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     needs: [pre-flight, code-linting, cicd-wait-in-queue]
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]' && (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      needs.pre-flight.outputs.test_to_run != '[]' 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       image-name: nemo_container
       dockerfile: Dockerfile.ci
 
   cicd-import-tests:
     if: |
-      needs.pre-flight.outputs.test_to_run != '[]' && (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      needs.pre-flight.outputs.test_to_run != '[]' 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     needs: [cicd-test-container-build, pre-flight]
     runs-on: self-hosted-azure-gpus-1
     steps:
@@ -167,10 +208,18 @@ jobs:
           '
 
   L0_Setup_Test_Data_And_Models:
-    needs: [pre-flight, cicd-test-container-build]
+    needs: [pre-flight, cicd-test-container-build, cicd-wait-in-queue]
     runs-on: self-hosted-azure
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      needs.pre-flight.outputs.test_to_run != '[]' 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -188,7 +237,15 @@ jobs:
     needs: [pre-flight, cicd-test-container-build]
     uses: ./.github/workflows/cicd-main-unit-tests.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped')
+      needs.pre-flight.outputs.test_to_run != '[]'
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -196,7 +253,20 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-export-deploy.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy') || needs.pre-flight.outputs.components_to_run == '["all"]')
+      (
+        needs.pre-flight.outputs.test_to_run != '[]'
+        && (
+          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'export-deploy')
+        )
+      ) 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -204,7 +274,20 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-speech.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech') || needs.pre-flight.outputs.components_to_run == '["all"]')
+      (
+        needs.pre-flight.outputs.test_to_run != '[]'
+        && (
+          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'speech') 
+        )
+      ) 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -212,7 +295,20 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-automodel.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped') && ( contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel') || needs.pre-flight.outputs.components_to_run == '["all"]')
+      (
+        needs.pre-flight.outputs.test_to_run != '[]'
+        && (
+          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'automodel')
+        )
+      ) 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 
@@ -220,7 +316,21 @@ jobs:
     needs: [pre-flight, cicd-test-container-build, cicd-main-unit-tests]
     uses: ./.github/workflows/cicd-main-nemo2.yml
     if: |
-      (success() || needs.cicd-wait-in-queue.result == 'skipped') && (contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2') || needs.pre-flight.outputs.components_to_run == '["all"]')
+      (
+        needs.pre-flight.outputs.test_to_run != '[]'
+        && (
+          contains(fromJson(needs.pre-flight.outputs.components_to_run), 'nemo2') 
+          || needs.pre-flight.outputs.components_to_run == '["all"]'
+        )
+      ) 
+      && (
+        success() 
+        || (
+          needs.cicd-wait-in-queue.result == 'skipped'
+          && needs.pre-flight.outputs.is_ci_workload == 'true'
+        )
+      )
+      && !cancelled()
     with:
       test_to_run: ${{ needs.pre-flight.outputs.test_to_run }}
 

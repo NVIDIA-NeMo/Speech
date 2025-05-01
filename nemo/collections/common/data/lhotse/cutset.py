@@ -341,11 +341,14 @@ def parse_and_combine_datasets(
     if not all_same_tarred_status:
         if propagate_attrs["force_map_dataset"] or propagate_attrs["force_iterable_dataset"]:
             logging.warning(
-                f"Not all datasets in the group have the same tarred status, using provided force_map_dataset ({propagate_attrs['force_map_dataset']}) and force_iterable_dataset ({propagate_attrs['force_iterable_dataset']}) to determine the final tarred status."
+                f"Not all datasets in the group have the same tarred status, using provided force_map_dataset "
+                f"({propagate_attrs['force_map_dataset']}) and force_iterable_dataset "
+                f"({propagate_attrs['force_iterable_dataset']}) to determine the final tarred status."
             )
         else:
             raise ValueError(
-                "Mixing tarred and non-tarred datasets is not supported when neither force_map_dataset nor force_iterable_dataset is True."
+                "Mixing tarred and non-tarred datasets is not supported when neither force_map_dataset "
+                "nor force_iterable_dataset is True."
             )
 
     assert len(weights) == 0 or len(cuts) == len(
@@ -383,9 +386,9 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
         #   to observe different data examples than in the previous run.
         # - integer means we'll set a specific seed in every worker, and data would be duplicated across them.
         #   This is mostly useful for unit testing or debugging.
-        shard_seed = config.shard_seed
-        metadata_only = config.metadata_only
-        force_finite = config.force_finite
+        shard_seed = config.get("shard_seed", "trng")
+        metadata_only = config.get("metadata_only", False)
+        force_finite = config.get("force_finite", False)
         if config.get("cuts_path") is not None:
             warnings.warn("Note: lhotse.cuts_path will be ignored because lhotse.shar_path was provided.")
         if isinstance(config.shar_path, (str, Path)):
@@ -430,8 +433,8 @@ def read_lhotse_manifest(config) -> tuple[CutSet, bool]:
             cuts = mux(
                 *cutsets,
                 weights=weights,
-                max_open_streams=config.max_open_streams,
-                seed=config.shard_seed,
+                max_open_streams=config.get("max_open_streams", None),
+                seed=shard_seed,
                 force_finite=force_finite,
             )
         elif isinstance(config.shar_path, Mapping):
@@ -517,22 +520,22 @@ def resolve_relative_paths(cut: Cut, manifest_path: str) -> Cut:
 @data_type_parser(["nemo", "nemo_tarred"])
 def read_nemo_manifest(config) -> tuple[CutSet, bool]:
     """Read NeMo manifest and return a Lhotse CutSet."""
-    common_kwargs = {
-        "text_field": config.text_field,
-        "lang_field": config.lang_field,
-        "shuffle_shards": config.shuffle,
-        "shard_seed": config.shard_seed,
-        "extra_fields": config.get("extra_fields", None),
-    }
+    common_kwargs = {}
+    for key in ("text_field", "lang_field", "shuffle", "shard_seed", "extra_fields"):
+        if key in config:
+            if key == "shuffle":
+                common_kwargs["shuffle_shards"] = config[key]
+            else:
+                common_kwargs[key] = config[key]
     # The option below is to allow a special case of NeMo manifest iteration as Lhotse CutSet
     # without performing any I/O. NeMo manifests typically don't have sampling_rate information required by Lhotse,
     # so lhotse has to look up the headers of audio files to fill it on-the-fly.
     # (this only has an impact on non-tarred data; tarred data is read into memory anyway).
     # This is useful for utility scripts that iterate metadata and estimate optimal batching settings
     # and other data statistics.
-    notar_kwargs = {"metadata_only": config.metadata_only}
-    metadata_only = config.metadata_only
-    force_finite = config.force_finite
+    metadata_only = config.get("metadata_only", False)
+    force_finite = config.get("force_finite", False)
+    notar_kwargs = {"metadata_only": metadata_only}
     is_tarred = config.get("tarred_audio_filepaths") is not None
     if isinstance(config.manifest_filepath, (str, Path)):
         logging.info(
@@ -544,7 +547,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 LazyNeMoTarredIterator(
                     config.manifest_filepath,
                     tar_paths=config.tarred_audio_filepaths,
-                    skip_missing_manifest_entries=config.skip_missing_manifest_entries,
+                    skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     **common_kwargs,
                 )
             )
@@ -588,7 +591,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
                 nemo_iter = LazyNeMoTarredIterator(
                     manifest_path=manifest_path,
                     tar_paths=tar_path,
-                    skip_missing_manifest_entries=config.skip_missing_manifest_entries,
+                    skip_missing_manifest_entries=config.get("skip_missing_manifest_entries", False),
                     **common_kwargs,
                 )
             else:
@@ -613,7 +616,7 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
             #   split the manifest to individual shards if applicable.
             #   This helps the multiplexing achieve closer data distribution
             #   to the one desired in spite of the limit.
-            if config.max_open_streams is not None:
+            if config.get("max_open_streams") is not None:
                 for subiter in nemo_iter.to_shards():
                     cutsets.append(CutSet(subiter))
                     weights.append(weight)
@@ -626,8 +629,8 @@ def read_nemo_manifest(config) -> tuple[CutSet, bool]:
         cuts = mux(
             *cutsets,
             weights=weights,
-            max_open_streams=config.max_open_streams,
-            seed=config.shard_seed,
+            max_open_streams=config.get("max_open_streams"),
+            seed=config.get("shard_seed", "trng"),
             force_finite=force_finite or metadata_only,
         )
     return cuts, is_tarred

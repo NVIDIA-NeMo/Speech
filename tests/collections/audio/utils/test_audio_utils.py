@@ -25,6 +25,7 @@ from nemo.collections.audio.parts.utils.audio import SOUND_VELOCITY as sound_vel
 from nemo.collections.audio.parts.utils.audio import (
     calculate_sdr_numpy,
     convmtx_mc_numpy,
+    covariance_matrix,
     db2mag,
     estimated_coherence,
     generate_approximate_noise_field,
@@ -35,6 +36,14 @@ from nemo.collections.audio.parts.utils.audio import (
     theoretical_coherence,
     toeplitz,
 )
+
+
+try:
+    import torchaudio
+
+    HAVE_TORCHAUDIO = True
+except ModuleNotFoundError:
+    HAVE_TORCHAUDIO = False
 
 
 class TestGenerateApproximateNoiseField:
@@ -356,3 +365,146 @@ class TestAudioUtilsElements:
                     assert np.allclose(
                         Tx[b, m, ...].cpu().numpy(), T_ref, atol=atol
                     ), f'Example {n}: not matching the reference for (b={b}, m={m}), .'
+
+
+class TestCovarianceMatrix:
+    @pytest.mark.unit
+    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('num_freq', [17, 33])
+    @pytest.mark.parametrize('use_mask', [True, False])
+    @pytest.mark.parametrize('normalize_mask', [True, False])
+    @pytest.mark.parametrize('mask_type', ['real', 'complex', 'bool'])
+    def test_calculate_covariance_matrix_vs_psd(
+        self, num_channels: int, num_freq: int, use_mask: bool, normalize_mask: bool, mask_type: str
+    ):
+        """Test against reference calculation using torchaudio."""
+        # Element-wise relative tolerance
+        atol = 1e-5
+
+        # Random generator
+        random_seed = 42
+        rng = torch.Generator()
+        rng.manual_seed(random_seed)
+
+        num_examples = 10
+        batch_size, num_steps = 8, 100
+
+        # Reference calculation of multichannel covariance matrix
+        psd_ref = torchaudio.transforms.PSD(multi_mask=False, normalize=normalize_mask, eps=1e-8)
+
+        for n in range(num_examples):
+
+            input = torch.randn(batch_size, num_channels, num_freq, num_steps, dtype=torch.cfloat, generator=rng)
+
+            if mask_type == 'real':
+                mask = torch.rand(batch_size, num_freq, num_steps, dtype=torch.float, generator=rng)
+            elif mask_type == 'complex':
+                mask = torch.rand(batch_size, num_freq, num_steps, dtype=torch.cfloat, generator=rng)
+            elif mask_type == 'bool':
+                mask = torch.randint(0, 2, (batch_size, num_freq, num_steps), dtype=torch.bool, generator=rng)
+            else:
+                raise ValueError(f'Mask type {mask_type} not supported.')
+
+            # UUT
+            uut = covariance_matrix(x=input, mask=mask if use_mask else None, normalize_mask=normalize_mask)
+
+            # Reference
+            ref = psd_ref(specgram=input, mask=mask if use_mask else None)
+            if not use_mask:
+                # torchaudio is summing over time, divide by num_steps to have an average over time
+                ref = ref / num_steps
+
+            # Check if the UUT matches the reference
+            assert torch.allclose(uut, ref, atol=atol), f'Example {n}: UUT not matching the reference.'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('num_freq', [3, 10])
+    @pytest.mark.parametrize('use_mask', [True, False])
+    @pytest.mark.parametrize('normalize_mask', [True, False])
+    @pytest.mark.parametrize('mask_type', ['real', 'complex', 'bool'])
+    def test_calculate_covariance_matrix(
+        self, num_channels: int, num_freq: int, use_mask: bool, normalize_mask: bool, mask_type: str
+    ):
+        """Test against simple reference calculation."""
+        # Element-wise relative tolerance
+        atol = 1e-5
+
+        # Random generator
+        random_seed = 42
+        rng = torch.Generator()
+        rng.manual_seed(random_seed)
+
+        num_examples = 10
+        batch_size, num_steps = 8, 10
+
+        for n in range(num_examples):
+
+            input = torch.randn(batch_size, num_channels, num_freq, num_steps, dtype=torch.cfloat, generator=rng)
+
+            if mask_type == 'real':
+                mask = torch.rand(batch_size, num_freq, num_steps, dtype=torch.float, generator=rng)
+            elif mask_type == 'complex':
+                mask = torch.rand(batch_size, num_freq, num_steps, dtype=torch.cfloat, generator=rng)
+            elif mask_type == 'bool':
+                mask = torch.randint(0, 2, (batch_size, num_freq, num_steps), dtype=torch.bool, generator=rng)
+            else:
+                raise ValueError(f'Mask type {mask_type} not supported.')
+
+            # UUT
+            uut = covariance_matrix(x=input, mask=mask if use_mask else None, normalize_mask=normalize_mask)
+
+            # Reference calculation
+            ref = torch.zeros(batch_size, num_freq, num_channels, num_channels, num_steps, dtype=torch.cfloat)
+
+            # calculate x(t) x(t)^H for each time step
+            for b in range(batch_size):
+                for f in range(num_freq):
+                    for t in range(num_steps):
+                        ref[b, f, :, :, t] = torch.outer(input[b, :, f, t], input[b, :, f, t].conj())
+
+            # aggregate over time
+            if use_mask:
+                # mask: weighted sum over time
+                if normalize_mask:
+                    # normalize the mask
+                    mask = mask / (mask.sum(dim=-1, keepdim=True) + 1e-8)
+                # apply the mask
+                ref = ref * mask[..., None, None, :]
+
+                # aggregate over time
+                ref = ref.sum(dim=-1)
+            else:
+                # no mask: average over time
+                ref = ref.mean(dim=-1)
+
+            # Check if the UUT matches the reference
+            assert torch.allclose(uut, ref, atol=atol), f'Example {n}: UUT not matching the reference.'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('num_freq', [17, 33])
+    def test_mismatch_dimensions(self, num_channels: int, num_freq: int):
+        """Test that the covariance matrix is not calculated if the mask has a different number of dimensions than the input."""
+        batch_size, num_steps = 8, 100
+
+        # Typically-shaped inputs
+        input = torch.randn(batch_size, num_channels, num_freq, num_steps, dtype=torch.cfloat)
+        mask = torch.rand(batch_size, num_freq, num_steps, dtype=torch.float)
+
+        # Input has only (freq, time) dimensions -- missing at least one channel dimension
+        with pytest.raises(ValueError):
+            covariance_matrix(x=input[0, 0, ...])
+
+        # Mask has only (freq, time) dimensions -- missing batch dimension
+        with pytest.raises(ValueError):
+            covariance_matrix(x=input, mask=mask[0, ...])
+
+        # Mask has wrong number of time steps
+        with pytest.raises(ValueError):
+            covariance_matrix(x=input, mask=mask[..., :-1])
+
+        # Mask has wrong number of frequency bins
+        with pytest.raises(ValueError):
+            covariance_matrix(x=input, mask=mask[..., :-1, :])

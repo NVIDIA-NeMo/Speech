@@ -16,6 +16,7 @@ import contextlib
 import io
 import signal
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Generator, Iterable, List, Optional, Set, Tuple, Union, cast
 
@@ -453,6 +454,7 @@ def fsdp2_strategy_parallelize(
     model,
     device_mesh: DeviceMesh = None,
     mp_policy: MixedPrecisionPolicy = None,
+    use_hf_tp_plan: bool = False,
     tp_shard_plan: Optional[Dict[str, Union[RowwiseParallel, ColwiseParallel, SequenceParallel]]] = None,
     offload_policy: 'CPUOffloadPolicy' = None,
 ):
@@ -501,11 +503,14 @@ def fsdp2_strategy_parallelize(
     # Set FSDP sharding mesh to context parallel mesh if CP > 1, else default to the data parallel mesh.
     dp_mesh = device_mesh["context_parallel" if device_mesh["context_parallel"].size() > 1 else "data_parallel"]
     tp_mesh = device_mesh["tensor_parallel"]
+
     if dp_mesh.size() > 1:
         assert dp_mesh.ndim == 1, "Hybrid-sharding not supported"
 
     # TP sharding
     if tp_mesh.size() > 1:
+        if tp_shard_plan is None and use_hf_tp_plan:
+            tp_shard_plan = get_hf_tp_shard_plan(model)
         parallelize_module(model, tp_mesh, tp_shard_plan)
 
     # FSDP sharding
@@ -522,6 +527,44 @@ def fsdp2_strategy_parallelize(
     )
 
     return model
+
+
+def get_hf_tp_shard_plan(model):
+    """
+    Get the tensor parallel sharding plan from the model.
+    """
+    hf_tp_shard_plan = {}
+    if hasattr(model, '_tp_plan') and model._tp_plan is not None:
+        hf_tp_shard_plan.update(model._tp_plan)
+    if hasattr(model.model, '_tp_plan') and model.model._tp_plan is not None:
+        hf_tp_shard_plan.update({f"model.{k}": v for k, v in model.model._tp_plan.items()})
+
+    hf_tp_shard_plan = {k: translate_to_torch_parallel_style(v) for k, v in hf_tp_shard_plan.items()}
+    return hf_tp_shard_plan
+
+
+@lru_cache
+def translate_to_torch_parallel_style(style: str):
+    """
+    In model configurations, we use a neutral type (string) to specify parallel
+    styles, here we translate them into torch.distributed tensor-parallel
+    types.
+    """
+    if not isinstance(style, str):
+        raise ValueError(f"Unsupported parallel style type {type(style)}, expected str")
+
+    if style == "colwise":
+        return ColwiseParallel()
+    elif style == "rowwise":
+        return RowwiseParallel()
+    elif style == "colwise_rep":
+        return ColwiseParallel(output_layouts=Replicate())
+    elif style == "rowwise_rep":
+        return RowwiseParallel(input_layouts=Replicate())
+    elif style == "sequence_parallel":
+        return SequenceParallel()
+    else:
+        raise ValueError(f"Unsupported parallel style value: {style}")
 
 
 def to_cpu(v):

@@ -78,6 +78,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         checkpoint_io=None,
         mp_policy=None,
         parallelize_fn=fsdp2_strategy_parallelize,
+        use_hf_tp_plan: bool = True,
         custom_tp_plan: Optional[Dict[str, Union[RowwiseParallel, ColwiseParallel, SequenceParallel]]] = None,
         **kwargs,
     ):
@@ -87,8 +88,8 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
             data_parallel_size (Union[Literal["auto"], int]): Size of data parallel. Defaults to "auto".
             tensor_parallel_size (Union[Literal["auto"], int]): Size of tensor parallel. Defaults to "auto".
             context_parallel_size (optional): Number of context-parallel groups. Defaults to 1.
-            sequence_parallel (bool): Whether to enable sequence parallelism. Defaults to False.
-                Only effective when tensor_parallel_size > 1.
+            sequence_parallel (bool): Whether to enable sequence parallelism when use_hf_tp_plan is False and
+                custom_tp_plan is not provided. Defaults to False. Only effective when tensor_parallel_size > 1.
             data_sampler (optional): Custom data sampler to process dataloaders.
             mp_policy (optional): Mixed precision policy for parameter and operation casting.
                 Defaults to:
@@ -101,7 +102,10 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
                 )
                 ```
             parallelize_fn (callable, optional): Function for parallelizing the model. Defaults to None.
-            custom_tp_plan (Optional[Dict[str, Any]]): Custom tensor parallel plan for the model.
+            use_hf_tp_plan (bool, optional): Whether to use the huggingface TP plan. This will be used if
+                custom_tp_plan is not provided. Also, sequence_parallel option will be ignored if use_hf_tp_plan
+                is set to True. Defaults to True.
+            custom_tp_plan (Optional[Dict[str, Any]], optional): Custom tensor parallel plan for the model.
                 tensor_parallel_size need to be > 1 to use this option. If provided, it overrides the
                 default tensor parallel plan. sequence_parallel option will be ignored if custom_tp_plan
                 is provided.
@@ -125,12 +129,19 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         self.parallelize_fn = parallelize_fn
         self.offload_policy = offload_policy
         self.sequence_parallel = sequence_parallel
+        self.use_hf_tp_plan = use_hf_tp_plan
 
+        self.tp_shard_plan = None
         if custom_tp_plan is not None:
             self.tp_shard_plan = custom_tp_plan
-            logging.warning(
+            logging.info(
                 "You are using a custom TP plan. Make sure it is compatible with the model. Parallelization would ",
                 "not raise errors if the custom TP plan is not compatible. SP option will also be ignored.",
+            )
+        elif self.use_hf_tp_plan:
+            logging.info(
+                "You are using a huggingface TP plan. Make sure your model is a huggingface model. Certain ",
+                "parallelizations might not be supported. SP option will also be ignored.",
             )
         else:
             # Parallelize the first embedding and the last linear out projection
@@ -162,7 +173,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
 
             self.tp_shard_plan = base_model_tp_plan
             logging.info(
-                "Using default TP plan for parallelization. It is compatible with huggingface llama-style models."
+                "Using default TP plan for parallelization. It is compatible with huggingface llama3-style models."
             )
 
     @property
@@ -225,12 +236,12 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
         if self._tensor_parallel_size == "auto":
             self._tensor_parallel_size = self.num_processes
 
-        # No TP currently
         mesh_shape = []
         mesh_dim_names = []
+        # TP needs to be the last dimension as innermost dimension, DP-CP-TP
         for dim, name in zip(
-            [self._data_parallel_size, self._tensor_parallel_size, self.context_parallel_size],
-            ["data_parallel", "tensor_parallel", "context_parallel"],
+            [self._data_parallel_size, self.context_parallel_size, self._tensor_parallel_size],
+            ["data_parallel", "context_parallel", "tensor_parallel"],
         ):
             mesh_shape.append(dim)
             mesh_dim_names.append(name)
@@ -280,6 +291,7 @@ class FSDP2Strategy(PLModelParallelStrategy, io.IOMixin):
                 self.lightning_module.model,
                 device_mesh=self._device_mesh,
                 mp_policy=self.mp_policy,
+                use_hf_tp_plan=self.use_hf_tp_plan,
                 tp_shard_plan=self.tp_shard_plan,
                 offload_policy=self.offload_policy,
             )

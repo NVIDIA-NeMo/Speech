@@ -100,6 +100,7 @@ def pytorch_adam_with_cosine_annealing(
 def pytorch_adam_with_flat_lr(
     lr: float = 1e-5,
     weight_decay: float = 0.01,
+    foreach: bool = True,
 ) -> run.Config[PytorchOptimizerModule]:
     """
     Creates a PyTorch Adam optimizer with a flat learning rate.
@@ -114,7 +115,7 @@ def pytorch_adam_with_flat_lr(
             weight_decay=weight_decay,
             betas=(0.9, 0.999),
             eps=1e-8,
-            foreach=True,
+            foreach=foreach,
         ),
     )
 

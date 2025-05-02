@@ -581,6 +581,7 @@ def deploy(
     max_batch_size: int = 8,
     output_context_logits: bool = True,
     output_generation_logits: bool = True,
+    enable_flash_decode: bool = True,
 ):
     """
     Deploys nemo model on a PyTriton server either "in-framework" or by converting to trtllm depending on the backend.
@@ -624,6 +625,8 @@ def deploy(
         output_generation_logits (bool): If True builds trtllm engine with gather_generation_logits set to True.
         generation_logits are used to compute the logProb of the output token in case of single token prediction
         benchmarks (like MMLU, lambada). Default: True. Used only with "trtllm" backend.
+        enable_flash_decode (bool): If True runs in-framework deployment with flash decode enabled(Not supported for
+        trtllm backend).
     """
     import os
     import uvicorn
@@ -660,6 +663,8 @@ def deploy(
             expert_model_parallel_size=expert_model_parallel_size,
             expert_tensor_parallel_size=expert_tensor_parallel_size,
             inference_max_seq_length=max_input_len,
+            enable_flash_decode=enable_flash_decode,
+            max_batch_size=max_batch_size,
         )
 
         if torch.distributed.is_initialized():
@@ -990,6 +995,7 @@ def generate(
     inference_params: Optional["CommonInferenceParams"] = None,
     text_only: bool = False,
     output_path: Optional[AnyPath] = None,
+    enable_flash_decode: bool = True,
 ) -> list[Union["InferenceRequest", str]]:
     """
     Generates text using a NeMo LLM model.
@@ -1056,6 +1062,7 @@ def generate(
         text_only (bool, optional): Whether to return only the generated text as a string. Defaults to False.
         output_path (Optional[Union[Path, str]], optional): The path to save the generated text or test dataset
             predictions. Defaults to None.
+        enable_flash_decode (bool, optional): Whether to enable flash decode. Defaults to True.
 
     Returns:
         list[Union["InferenceRequest", str]]: A list of generated text,
@@ -1078,6 +1085,7 @@ def generate(
         trainer=trainer,
         params_dtype=params_dtype,
         inference_batch_times_seqlen_threshold=inference_batch_times_seqlen_threshold,
+        enable_flash_decode=enable_flash_decode,
     )
 
     max_seq_length = inference_params.num_tokens_to_generate + max(len(mcore_tokenizer.tokenize(p)) for p in inputs)

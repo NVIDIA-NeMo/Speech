@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from unittest.mock import MagicMock, patch
 
 import pytest
+from megatron.core.inference.common_inference_params import CommonInferenceParams
 
 from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployableNemo2
 
@@ -23,14 +23,15 @@ from nemo.deploy.nlp.megatronllm_deployable import MegatronLLMDeployableNemo2
 @pytest.fixture
 def mock_model_and_tokenizer():
     """Fixture to mock the model and tokenizer setup."""
-    with patch('nemo.collections.llm.inference.setup_model_and_tokenizer') as mock_setup:
+    with patch('nemo.collections.llm.inference.setup_mcore_engine') as mock_setup:
+        mock_engine = MagicMock()
         mock_model = MagicMock()
         mock_tokenizer = MagicMock()
         mock_tokenizer.tokenizer.tokenizer = MagicMock()
         mock_tokenizer.tokenizer.tokenizer.chat_template = "{{messages}}"
         mock_tokenizer.tokenizer.tokenizer.bos_token = "<bos>"
         mock_tokenizer.tokenizer.tokenizer.eos_token = "<eos>"
-        mock_setup.return_value = (mock_model, mock_tokenizer)
+        mock_setup.return_value = (mock_engine, mock_model, mock_tokenizer)
         yield mock_setup
 
 
@@ -44,6 +45,14 @@ def deployable(mock_model_and_tokenizer):
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
+        expert_model_parallel_size=1,
+        params_dtype="bfloat16",
+        inference_batch_times_seqlen_threshold=1000,
+        inference_max_seq_length=4096,
+        max_batch_size=32,
+        random_seed=42,
+        enable_flash_decode=True,
+        legacy_ckpt=False,
     )
 
 
@@ -58,14 +67,21 @@ def test_initialization(deployable, mock_model_and_tokenizer):
 def test_generate(deployable):
     """Test text generation functionality."""
     prompts = ["Hello", "World"]
-    max_batch_size = 4
-    random_seed = 42
+    inference_params = CommonInferenceParams(
+        temperature=1.0,
+        top_k=1,
+        top_p=0.0,
+        num_tokens_to_generate=256,
+        return_log_probs=False,
+    )
 
-    # Mock the inference.generate function
-    with patch('nemo.collections.llm.inference.generate') as mock_generate:
-        mock_generate.return_value = [MagicMock(generated_text="Generated text")]
-        results = deployable.generate(prompts, max_batch_size, random_seed=random_seed)
+    # Mock the generate method
+    with patch.object(deployable.mcore_engine, 'generate') as mock_generate:
+        mock_result = MagicMock()
+        mock_result.generated_text = "Generated text"
+        mock_generate.return_value = [mock_result]
 
+        results = deployable.generate(prompts, inference_params)
         assert len(results) == 1
         mock_generate.assert_called_once()
 
@@ -110,6 +126,12 @@ def test_triton_input_output(deployable):
     assert "prompts" in input_names
     assert "max_length" in input_names
     assert "max_batch_size" in input_names
+    assert "top_k" in input_names
+    assert "top_p" in input_names
+    assert "temperature" in input_names
+    assert "random_seed" in input_names
+    assert "compute_logprob" in input_names
+    assert "apply_chat_template" in input_names
 
     # Check output tensor names
     output_names = [tensor.name for tensor in outputs]

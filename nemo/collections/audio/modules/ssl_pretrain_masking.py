@@ -59,11 +59,14 @@ class SSLPretrainWithMaskedPatch(NeuralModule):
         mask_fraction: float = 0.7,
     ):
         super().__init__()
-        self.patch_size = patch_size
+        if patch_size <= 0:
+            raise ValueError(f'patch_size must be positive, got patch_size={patch_size}')
+
         if mask_fraction > 1.0 or mask_fraction < 0.0:
-            raise ValueError('mask_patches cannot be negative')
-        else:
-            self.mask_fraction = mask_fraction
+            raise ValueError(f'mask_fraction must be in the range [0.0, 1.0], got mask_fraction={mask_fraction}')
+
+        self.patch_size = patch_size
+        self.mask_fraction = mask_fraction
 
     @typecheck()
     def forward(self, input_spec, length):
@@ -83,17 +86,20 @@ class SSLPretrainWithMaskedPatch(NeuralModule):
         """
         augmented_spec = input_spec
 
-        min_len = torch.min(length)
         if self.training:
-            len_fraction = int(min_len * self.mask_fraction)
-            mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
-
-            if min_len < self.patch_size * mask_patches:
-                mask_patches = min_len // self.patch_size
-
             for idx, cur_len in enumerate(length.tolist()):
+                # patch indices
                 patches = range(cur_len // self.patch_size)
+                # fraction of samples to mask
+                len_fraction = int(cur_len * self.mask_fraction)
+                # number of patches to mask
+                mask_patches = len_fraction // self.patch_size + int(len_fraction % self.patch_size != 0)
+                # if the number of patches to mask is greater than the number of patches, reduce the number of patches to mask
+                if cur_len < self.patch_size * mask_patches:
+                    mask_patches = cur_len // self.patch_size
+                # sample random patches to mask
                 masked_patches = random.sample(patches, mask_patches)
+                # mask the sampled patches
                 for mp in masked_patches:
                     augmented_spec[idx, :, :, mp * self.patch_size : (mp + 1) * self.patch_size] = 0.0
         else:

@@ -290,8 +290,6 @@ class TestAudioUtilsElements:
                 estimate=estimate, target=target, scale_invariant=True, remove_mean=False
             )
 
-            print(golden_sdr, estimated_sdr)
-
             assert np.isclose(
                 estimated_sdr, golden_sdr, atol=atol
             ), f'Example {n}: estimated ({estimated_sdr}) not matching the actual value ({golden_sdr})'

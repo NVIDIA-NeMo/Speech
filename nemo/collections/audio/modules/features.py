@@ -231,6 +231,8 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
         Returns:
             num_feat_channels channels with num_feat features, shape (B, num_feat_channels, num_feat, N)
         """
+        num_input_channels = input.size(1)
+
         # Magnitude spectrum
         if self.mag_reduction is None:
             mag = torch.abs(input)
@@ -250,23 +252,28 @@ class SpectrogramToMultichannelFeatures(NeuralModule):
             # normalize mean across channels and time steps
             mag = self.normalize_mean(input=mag, input_length=input_length)
         elif self.mag_normalization == 'mean_var':
+            # normalize mean and variance across channels and time steps
             mag = self.normalize_mean_var(input=mag, input_length=input_length)
 
         features = mag
 
         if self.use_ipd:
-            # Calculate IPD relative to the average spec
-            spec_mean = torch.mean(input, axis=1, keepdim=True)  # channel average
-            ipd = torch.angle(input) - torch.angle(spec_mean)
-            # Modulo to [-pi, pi]
-            ipd = wrap_to_pi(ipd)
+            if num_input_channels == 1:
+                # no IPD for single-channel input
+                ipd = torch.zeros_like(input, dtype=features.dtype, device=features.device)
+            else:
+                # Calculate IPD relative to the average spec
+                spec_mean = torch.mean(input, axis=1, keepdim=True)  # channel average
+                ipd = torch.angle(input) - torch.angle(spec_mean)
+                # Modulo to [-pi, pi]
+                ipd = wrap_to_pi(ipd)
 
-            if self.ipd_normalization == 'mean':
-                # normalize mean across channels and time steps
-                # mean across time
-                ipd = self.normalize_mean(input=ipd, input_length=input_length)
-            elif self.ipd_normalization == 'mean_var':
-                ipd = self.normalize_mean_var(input=ipd, input_length=input_length)
+                if self.ipd_normalization == 'mean':
+                    # normalize mean across channels and time steps
+                    # mean across time
+                    ipd = self.normalize_mean(input=ipd, input_length=input_length)
+                elif self.ipd_normalization == 'mean_var':
+                    ipd = self.normalize_mean_var(input=ipd, input_length=input_length)
 
             # Concatenate to existing features
             features = torch.cat([features.expand(ipd.shape), ipd], axis=2)

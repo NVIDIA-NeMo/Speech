@@ -26,6 +26,7 @@ from nemo.collections.audio.modules.masking import (
     MaskEstimatorGSS,
     MaskReferenceChannel,
 )
+from nemo.collections.audio.modules.ssl_pretrain_masking import SSLPretrainWithMaskedPatch
 from nemo.collections.audio.modules.transforms import AudioToSpectrogram
 from nemo.collections.audio.parts.submodules.multichannel import WPEFilter
 from nemo.collections.audio.parts.utils.audio import convmtx_mc_numpy
@@ -41,16 +42,24 @@ except ModuleNotFoundError:
 
 class TestSpectrogramToMultichannelFeatures:
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
-    @pytest.mark.parametrize('fft_length', [256])
-    @pytest.mark.parametrize('num_channels', [1, 4])
+    @pytest.mark.parametrize('fft_length', [128])
+    @pytest.mark.parametrize('num_channels', [1, 3])
     @pytest.mark.parametrize('mag_reduction', [None, 'rms', 'abs_mean', 'mean_abs'])
-    def test_magnitude(self, fft_length: int, num_channels: int, mag_reduction: Optional[str]):
+    @pytest.mark.parametrize('mag_power', [None, 2])
+    @pytest.mark.parametrize('mag_normalization', [None, 'mean', 'mean_var'])
+    def test_magnitude(
+        self,
+        fft_length: int,
+        num_channels: int,
+        mag_reduction: Optional[str],
+        mag_power: Optional[float],
+        mag_normalization: Optional[str],
+    ):
         """Test calculation of spatial features for multi-channel audio."""
-        atol = 1e-6
+        atol = 5e-5
         batch_size = 8
         num_samples = fft_length * 50
-        num_examples = 25
+        num_examples = 10
         random_seed = 42
 
         _rng = np.random.default_rng(seed=random_seed)
@@ -61,13 +70,15 @@ class TestSpectrogramToMultichannelFeatures:
         spec2feat = SpectrogramToMultichannelFeatures(
             num_subbands=audio2spec.num_subbands,
             mag_reduction=mag_reduction,
+            mag_power=mag_power,
+            mag_normalization=mag_normalization,
             use_ipd=False,
-            mag_normalization=None,
         )
 
         for n in range(num_examples):
             x = _rng.normal(size=(batch_size, num_channels, num_samples))
 
+            # convert to spectrogram
             spec, spec_len = audio2spec(input=torch.Tensor(x), input_length=torch.Tensor([num_samples] * batch_size))
 
             # UUT output
@@ -85,7 +96,16 @@ class TestSpectrogramToMultichannelFeatures:
             elif mag_reduction == 'abs_mean':
                 feat_golden = np.abs(np.mean(spec_np, axis=1, keepdims=True))
             else:
-                raise NotImplementedError()
+                raise NotImplementedError(f'Magnitude reduction {mag_reduction} not implemented')
+
+            if mag_power is not None:
+                feat_golden = np.power(feat_golden, mag_power)
+
+            if mag_normalization == 'mean':
+                feat_golden = feat_golden - np.mean(feat_golden, axis=(1, 3), keepdims=True)
+            elif mag_normalization == 'mean_var':
+                feat_golden = feat_golden - np.mean(feat_golden, axis=(1, 3), keepdims=True)
+                feat_golden = feat_golden / np.sqrt(np.mean(feat_golden**2, axis=(1, 3), keepdims=True))
 
             # Compare shape
             assert feat_np.shape == feat_golden.shape, f'Feature shape not matching for example {n}'
@@ -94,12 +114,13 @@ class TestSpectrogramToMultichannelFeatures:
             assert np.allclose(feat_np, feat_golden, atol=atol), f'Features not matching for example {n}'
 
     @pytest.mark.unit
-    @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
-    @pytest.mark.parametrize('fft_length', [256])
-    @pytest.mark.parametrize('num_channels', [1, 4])
-    def test_ipd(self, fft_length: int, num_channels: int):
+    @pytest.mark.parametrize('fft_length', [128])
+    @pytest.mark.parametrize('num_channels', [1, 3])
+    @pytest.mark.parametrize('ipd_normalization', [None, 'mean', 'mean_var'])
+    @pytest.mark.parametrize('use_input_length', [True, False])
+    def test_ipd(self, fft_length: int, num_channels: int, ipd_normalization: Optional[str], use_input_length: bool):
         """Test calculation of IPD spatial features for multi-channel audio."""
-        atol = 1e-5
+        atol = 5e-5
         batch_size = 8
         num_samples = fft_length * 50
         num_examples = 10
@@ -115,7 +136,7 @@ class TestSpectrogramToMultichannelFeatures:
             mag_reduction='rms',
             use_ipd=True,
             mag_normalization=None,
-            ipd_normalization=None,
+            ipd_normalization=ipd_normalization,
         )
 
         for n in range(num_examples):
@@ -124,7 +145,7 @@ class TestSpectrogramToMultichannelFeatures:
             spec, spec_len = audio2spec(input=torch.Tensor(x), input_length=torch.Tensor([num_samples] * batch_size))
 
             # UUT output
-            feat, _ = spec2feat(input=spec, input_length=spec_len)
+            feat, _ = spec2feat(input=spec, input_length=spec_len if use_input_length else None)
             feat_np = feat.cpu().detach().numpy()
             ipd = feat_np[..., audio2spec.num_subbands :, :]
 
@@ -134,11 +155,78 @@ class TestSpectrogramToMultichannelFeatures:
             ipd_golden = np.angle(spec_np) - np.angle(spec_mean)
             ipd_golden = np.remainder(ipd_golden + np.pi, 2 * np.pi) - np.pi
 
+            if ipd_normalization == 'mean':
+                ipd_golden = ipd_golden - np.mean(ipd_golden, axis=(1, 3), keepdims=True)
+            elif ipd_normalization == 'mean_var':
+                ipd_golden = ipd_golden - np.mean(ipd_golden, axis=(1, 3), keepdims=True)
+                ipd_golden = ipd_golden / np.sqrt(
+                    np.maximum(np.mean(ipd_golden**2, axis=(1, 3), keepdims=True), spec2feat.eps)
+                )
+
             # Compare shape
             assert ipd.shape == ipd_golden.shape, f'Feature shape not matching for example {n}'
 
             # Compare values
             assert np.allclose(ipd, ipd_golden, atol=atol), f'Features not matching for example {n}'
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('use_ipd', [False, True])
+    def test_num_channels(self, use_ipd: bool):
+        """Test num channels property."""
+        uut = SpectrogramToMultichannelFeatures(num_subbands=32, use_ipd=use_ipd)
+        with pytest.raises(ValueError):
+            # num_input_channels is not set
+            uut.num_channels
+
+        for num_channels in [1, 2, 3, 4]:
+            # num_input_channels is set
+            uut = SpectrogramToMultichannelFeatures(num_subbands=32, num_input_channels=num_channels, use_ipd=use_ipd)
+            assert uut.num_channels == num_channels
+
+        for num_channels in [1, 2, 3, 4]:
+            # num_input_channels is set, but magnitude will be reduced
+            uut = SpectrogramToMultichannelFeatures(
+                num_subbands=32, num_input_channels=num_channels, use_ipd=use_ipd, mag_reduction='rms'
+            )
+            if use_ipd:
+                assert uut.num_channels == num_channels
+            else:
+                assert uut.num_channels == 1
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('use_ipd', [False, True])
+    def test_num_features(self, use_ipd: bool):
+        """Test num features property."""
+        for num_subbands in [5, 10]:
+            uut = SpectrogramToMultichannelFeatures(num_subbands=num_subbands, use_ipd=use_ipd)
+            assert uut.num_features == 2 * num_subbands if use_ipd else num_subbands
+
+    @pytest.mark.unit
+    def test_unsupported_norm(self):
+        """Test initialization with unsupported normalization."""
+        # test magnitude normalization
+        with pytest.raises(NotImplementedError):
+            SpectrogramToMultichannelFeatures(
+                num_subbands=32,
+                mag_reduction='rms',
+                use_ipd=False,
+                mag_normalization='not-implemented',
+            )
+        # test phase normalization
+        with pytest.raises(NotImplementedError):
+            SpectrogramToMultichannelFeatures(
+                num_subbands=32,
+                use_ipd=True,
+                ipd_normalization='not-implemented',
+            )
+        # test magnitude reduction
+        uut = SpectrogramToMultichannelFeatures(
+            num_subbands=32,
+            mag_reduction='not-implemented',
+        )
+        input = torch.randn(1, 3, 100, 100)
+        with pytest.raises(ValueError):
+            uut(input=input, input_length=torch.Tensor([100]))
 
 
 class TestMaskBasedProcessor:
@@ -445,3 +533,64 @@ class TestMaskEstimator:
         assert (
             mask.shape == expected_mask_shape
         ), f'Output shape mismatch: expected {expected_mask_shape}, got {mask.shape}'
+
+
+class TestSSLPretrainMaskingWithPatch:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('patch_size', [1, 5, 10])
+    @pytest.mark.parametrize('mask_fraction', [0.5, 1.0])
+    @pytest.mark.parametrize('training', [True, False])
+    def test_masking(self, patch_size: int, mask_fraction: float, training: bool):
+        """Test SSL pretrain masking."""
+        num_subbands = 32
+        num_frames = 5000
+        num_channels = 1
+        batch_size = 8
+        abs_tol = 1e-2
+
+        # Instantiate
+        uut = SSLPretrainWithMaskedPatch(patch_size=patch_size, mask_fraction=mask_fraction)
+
+        # Set training mode
+        if training:
+            uut.train()
+        else:
+            uut.eval()
+
+        # Generate random input spec and length
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_spec = torch.randn(batch_size, num_channels, num_subbands, num_frames, dtype=torch.cfloat, generator=rng)
+        input_length = torch.randint(num_frames // 2, num_frames, (batch_size,), generator=rng)
+        for b in range(batch_size):
+            input_spec[b, :, :, input_length[b] :] = 0.0
+
+        # Apply masking
+        masked_spec = uut(input_spec=input_spec, length=input_length)
+
+        # Check output dimensions match
+        assert masked_spec.shape == input_spec.shape
+
+        # Check output values are masked for each example in the batch
+        for b in range(batch_size):
+            # Estimate mask fraction
+            est_mask_fraction = torch.sum(masked_spec[b, :, :, : input_length[b]].abs() == 0.0) / (
+                num_channels * num_subbands * input_length[b]
+            )
+
+            # Check if the estimated mask fraction is close to the expected mask fraction
+            assert (
+                abs(est_mask_fraction - mask_fraction) < abs_tol
+            ), f'Example {b}: est_mask_fraction = {est_mask_fraction}, mask_fraction = {mask_fraction}'
+
+    @pytest.mark.unit
+    def test_unsupported_initialization(self):
+        """Test SSL pretrain masking."""
+        with pytest.raises(ValueError):
+            SSLPretrainWithMaskedPatch(patch_size=0)
+        with pytest.raises(ValueError):
+            SSLPretrainWithMaskedPatch(patch_size=-1)
+        with pytest.raises(ValueError):
+            SSLPretrainWithMaskedPatch(mask_fraction=1.1)
+        with pytest.raises(ValueError):
+            SSLPretrainWithMaskedPatch(mask_fraction=-0.1)

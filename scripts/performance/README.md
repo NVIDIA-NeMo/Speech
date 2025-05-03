@@ -43,7 +43,11 @@ The following line shows an example of how you can launch a pre-training experim
   - -ng/--num_gpus: Number of gpus.
   - -gn/--gpus_per_node: Number of gpus per node. Defaults to 8.
   - -ms/--max_steps: Number of train steps. Defaults to 100.
-  - -cg/--cuda_graphs: Enable CUDA graphs. Disabled by default.
+  - -cg/--cuda_graphs: Enable CUDA graphs. Options: 'true', '1', 't', 'yes', 'y' to set it to True, 'false', '0', 'f', 'n', 'no' to set it to False. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to false.
+  - -fsdp/--use_mcore_fsdp: Enable megatron-core FSDP.  Options: 'true', '1', 't', 'yes', 'y' to set it to True, 'false', '0', 'f', 'n', 'no' to set it to False. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to false.
+  - -rl/--recompute_layers: Number of transformer layers to recompute activations during training. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to 0.
+  - -ol/--activation_offload_layers: Number of transformer layers to offload activations to CPU during training. Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to 0.
+  - -rm/--recompute_modules: Comma separated string of modules in a transformer layer to recompute. If set, program will use selective recompute for all layers. Users should provide zero, one or more than one values. Options are "core_attn", "moe_act", "layernorm", "mla_up_proj", "mlp", "moe". Defaults to None, in which case the program tries to load default values from recommended model configs, if failed defaults to None, which mean no selective recompute. 
   - -cm/--custom_mounts: Comma separated string of mounts.
-- You don't need to set any value for `--enable_nsys`, `--tensorboard` and `--dryrun`. See the below example for reference-
+- You don't need to set any value for `--enable_nsys`, `--tensorboard`, `--wandb`, and `--dryrun`. See the below example for reference-
   `python -m scripts.performance.llm.llama3_8b --account <your_slurm_account> -p <your_slurm_partition> -en --tensorboard -d`

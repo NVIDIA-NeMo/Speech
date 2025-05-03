@@ -254,6 +254,27 @@ def set_primary_perf_configs(
     recompute_modules: Optional[List[str]] = None,
 ):
     """Set experiment configs we usually tune for performance of all models."""
+
+    # print the received arguments for users to debug
+    logging.info("Received model parallel configs: ")
+    logging.info(f"num_nodes: {num_nodes}")
+    logging.info(f"num_gpus_per_node: {num_gpus_per_node}")
+    logging.info(f"mbs: {mbs}")
+    logging.info(f"gbs: {gbs}")
+    logging.info(f"tp_size: {tp_size}")
+    logging.info(f"pp_size: {pp_size}")
+    logging.info(f"cp_size: {cp_size}")
+    logging.info(f"vp_size: {vp_size}")
+    logging.info(f"ep_size: {ep_size}")
+    logging.info(f"etp_size: {etp_size}")
+    logging.info(f"enable_cuda_graphs: {enable_cuda_graphs}")
+    logging.info(f"use_mcore_fsdp: {use_mcore_fsdp}")
+    logging.info(f"recompute_layers: {recompute_layers}")
+    logging.info(f"activation_offload_layers: {activation_offload_layers}")
+    logging.info(f"compute_dtype: {compute_dtype}")
+    logging.info(f"fp8_recipe: {fp8_recipe}")
+    logging.info(f"recompute_modules: {recompute_modules}")
+
     # nemo.lightning.Trainer configs
     recipe.trainer.num_nodes = num_nodes
     recipe.trainer.devices = num_gpus_per_node

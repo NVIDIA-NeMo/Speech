@@ -22,6 +22,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 import braceexpand
 import numpy as np
 import torch
+import webdataset as wds
 from torch.utils.data import ChainDataset
 from tqdm import tqdm
 
@@ -33,8 +34,14 @@ from nemo.collections.common.parts.preprocessing import collections, parsers
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import *
 from nemo.utils import logging
-from nemo.utils import webdataset as wds
-from nemo.utils.data_utils import DataStoreObject, datastore_object_get, is_datastore_cache_shared, is_datastore_path
+from nemo.utils.data_utils import (
+    DataStoreObject,
+    datastore_object_get,
+    datastore_path_to_webdataset_url,
+    is_datastore_cache_shared,
+    is_datastore_path,
+    is_tarred_path,
+)
 from nemo.utils.decorators import deprecated
 from nemo.utils.distributed import webdataset_split_by_workers
 from nemo.utils.get_rank import is_global_rank_zero
@@ -201,6 +208,12 @@ def expand_sharded_filepaths(sharded_filepaths, shard_strategy: str, world_size:
     if isinstance(sharded_filepaths, str):
         # Brace expand, set escape=False for Windows compatibility
         sharded_filepaths = list(braceexpand.braceexpand(sharded_filepaths, escape=False))
+
+    # Expand store paths into WebDataset URLs
+    sharded_filepaths = [
+        datastore_path_to_webdataset_url(p) if is_datastore_path(p) and is_tarred_path(p) else p
+        for p in sharded_filepaths
+    ]
 
     # Check for distributed and partition shards accordingly
     if world_size > 1:

@@ -20,9 +20,9 @@ from typing import List, Optional, Union
 
 import numpy as np
 import torch
+import webdataset as wd
 from omegaconf import OmegaConf
 
-import nemo.utils.webdataset as wd
 from nemo.collections.asr.data.audio_to_text import (
     _speech_collate_fn,
     cache_datastore_manifests,

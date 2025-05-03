@@ -22,6 +22,7 @@ from nemo.utils.data_utils import (
     ais_binary,
     ais_endpoint_to_dir,
     bucket_and_object_from_uri,
+    datastore_path_to_webdataset_url,
     is_datastore_path,
     resolve_cache_dir,
 )
@@ -90,3 +91,8 @@ class TestDataUtils:
         with mock.patch('shutil.which', lambda x: None), mock.patch('os.path.isfile', lambda x: None):
             with pytest.raises(RuntimeError):
                 ais_binary()
+
+    @pytest.mark.unit
+    def test_datastore_path_to_webdataset_url(self):
+        """Test conversion of data store path to an URL for WebDataset."""
+        assert datastore_path_to_webdataset_url('ais://test/path') == 'pipe:ais get ais://test/path - || true'

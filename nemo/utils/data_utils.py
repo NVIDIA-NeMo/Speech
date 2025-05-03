@@ -16,15 +16,13 @@ import os
 import pathlib
 import shutil
 import subprocess
-from typing import Any, Callable, Dict, Iterable, Tuple
+from typing import Tuple
 from urllib.parse import urlparse
 
 try:
     from nemo import __version__ as NEMO_VERSION
 except ImportError:
     NEMO_VERSION = 'git'
-from lhotse.serialization import open_best
-
 from nemo import constants
 from nemo.utils import logging
 
@@ -197,8 +195,27 @@ def get_datastore_object(path: str, force: bool = False, num_retries: int = 5) -
             if not os.path.isdir(local_dir):
                 os.makedirs(local_dir, exist_ok=True)
 
-            with open(local_path, 'wb') as f:
-                f.write(open_best(path, mode='rb').read())
+            cmd = [ais_binary(), 'get', path, local_path]
+
+            # for now info, later debug
+            logging.debug('Downloading from AIS')
+            logging.debug('\tendpoint    %s', endpoint)
+            logging.debug('\tpath:       %s', path)
+            logging.debug('\tlocal path: %s', local_path)
+            logging.debug('\tcmd:        %s', subprocess.list2cmdline(cmd))
+
+            done = False
+            for n in range(num_retries):
+                if not done:
+                    try:
+                        # Use stdout=subprocess.DEVNULL to prevent showing AIS command on each line
+                        subprocess.check_call(cmd, stdout=subprocess.DEVNULL)
+                        done = True
+                    except subprocess.CalledProcessError as err:
+                        logging.warning('Attempt %d of %d failed with: %s', n + 1, num_retries, str(err))
+
+            if not done:
+                raise RuntimeError('Download failed: %s', subprocess.list2cmdline(cmd))
 
         return local_path
 
@@ -268,6 +285,23 @@ class DataStoreObject:
         return description
 
 
+def datastore_path_to_webdataset_url(store_path: str):
+    """Convert store_path to a WebDataset URL.
+
+    Args:
+        store_path: path to buckets on store
+
+    Returns:
+        URL which can be directly used with WebDataset.
+    """
+    if is_datastore_path(store_path):
+        url = f'pipe:ais get {store_path} - || true'
+    else:
+        raise ValueError(f'Unknown store path format: {store_path}')
+
+    return url
+
+
 def datastore_object_get(store_object: DataStoreObject) -> bool:
     """A convenience wrapper for multiprocessing.imap.
 
@@ -278,37 +312,3 @@ def datastore_object_get(store_object: DataStoreObject) -> bool:
         True if get() returned a path.
     """
     return store_object.get() is not None
-
-
-def wds_lhotse_url_opener(
-    data: Iterable[Dict[str, Any]],
-    handler: Callable[[Exception], bool],
-    **kw: Dict[str, Any],
-):
-    """
-    Open URLs and yield a stream of url+stream pairs.
-    This is a workaround to use lhotse's open_best instead of webdataset's default url_opener.
-    webdataset's default url_opener uses gopen, which does not support opening datastore paths.
-
-    Args:
-        data: Iterator over dict(url=...).
-        handler: Exception handler.
-        **kw: Keyword arguments for gopen.gopen.
-
-    Yields:
-        A stream of url+stream pairs.
-    """
-    for sample in data:
-        assert isinstance(sample, dict), sample
-        assert "url" in sample
-        url = sample["url"]
-        try:
-            stream = open_best(url, mode="rb")
-            sample.update(stream=stream)
-            yield sample
-        except Exception as exn:
-            exn.args = exn.args + (url,)
-            if handler(exn):
-                continue
-            else:
-                break

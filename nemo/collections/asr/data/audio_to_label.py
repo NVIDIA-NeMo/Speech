@@ -16,7 +16,6 @@ import os
 from typing import Dict, List, Optional, Union
 
 import torch
-import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import cache_datastore_manifests, expand_sharded_filepaths
 from nemo.collections.asr.parts.preprocessing.features import WaveformFeaturizer
@@ -25,6 +24,7 @@ from nemo.collections.common.parts.preprocessing import collections
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.core.neural_types import AudioSignal, LabelsType, LengthsType, NeuralType, RegressionValuesType
 from nemo.utils import logging
+from nemo.utils import webdataset as wds
 from nemo.utils.distributed import webdataset_split_by_workers
 
 # List of valid file formats (prioritized by order of importance)
@@ -587,6 +587,7 @@ class _TarredAudioLabelDataset(IterableDataset):
             world_size=world_size,
             global_rank=global_rank,
         )
+
         # Put together WebDataset
         self._dataset = wds.DataPipeline(
             wds.SimpleShardList(urls=audio_tar_filepaths),
@@ -1193,6 +1194,7 @@ class TarredAudioToMultiLabelDataset(IterableDataset):
             world_size=world_size,
             global_rank=global_rank,
         )
+
         # Put together WebDataset
         self._dataset = wds.DataPipeline(
             wds.SimpleShardList(urls=audio_tar_filepaths),

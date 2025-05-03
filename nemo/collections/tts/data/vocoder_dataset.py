@@ -21,7 +21,6 @@ from typing import Dict, List, Optional
 import librosa
 import soundfile as sf
 import torch.utils.data
-import webdataset as wds
 
 from nemo.collections.asr.data.audio_to_text import expand_sharded_filepaths
 from nemo.collections.asr.parts.preprocessing.segment import available_formats as valid_sf_formats
@@ -36,6 +35,7 @@ from nemo.collections.tts.parts.utils.tts_dataset_utils import (
 )
 from nemo.core.classes import Dataset, IterableDataset
 from nemo.utils import logging
+from nemo.utils import webdataset as wds
 from nemo.utils.decorators import experimental
 from nemo.utils.distributed import webdataset_split_by_workers
 
@@ -85,7 +85,10 @@ def audio_collate_fn(batch: List[dict]):
 
 
 def preprocess_manifest(
-    dataset_name: str, dataset: DatasetMeta, min_duration: float, max_duration: float,
+    dataset_name: str,
+    dataset: DatasetMeta,
+    min_duration: float,
+    max_duration: float,
 ):
     entries = read_manifest(dataset.manifest_path)
     filtered_entries, total_hours, filtered_hours = filter_dataset_by_duration(
@@ -162,7 +165,10 @@ class VocoderDataset(Dataset):
         for dataset_name, dataset_info in dataset_meta.items():
             dataset = DatasetMeta(**dataset_info)
             samples, weights = preprocess_manifest(
-                dataset_name=dataset_name, dataset=dataset, min_duration=min_duration, max_duration=max_duration,
+                dataset_name=dataset_name,
+                dataset=dataset,
+                min_duration=min_duration,
+                max_duration=max_duration,
             )
             self.data_samples += samples
             self.sample_weights += weights
@@ -242,7 +248,7 @@ class TarredVocoderDataset(IterableDataset):
     Additionally, please note that the len() of this DataLayer is assumed to be the length of the manifest
     after filtering. An incorrect manifest length may lead to some DataLoader issues down the line.
 
-    Args:        
+    Args:
         dataset_meta: Dict of dataset names (string) to dataset metadata.
         audio_tar_filepaths: Either a list of audio tarball filepaths, or a
             string (can be brace-expandable).
@@ -322,7 +328,10 @@ class TarredVocoderDataset(IterableDataset):
             self.audio_tar_filepaths += [audio_tar_filepaths]
             dataset = DatasetMeta(**dataset_info)
             samples, _ = preprocess_manifest(
-                dataset_name=dataset_name, dataset=dataset, min_duration=min_duration, max_duration=max_duration,
+                dataset_name=dataset_name,
+                dataset=dataset,
+                min_duration=min_duration,
+                max_duration=max_duration,
             )
             self.data_samples += samples
 

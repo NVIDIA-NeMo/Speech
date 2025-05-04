@@ -26,6 +26,7 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 
 from nemo import lightning as nl
+from nemo.automodel.dist_utils import FirstRankPerNode
 from nemo.collections import llm, vlm
 from nemo.collections.vlm.hf.data.automodel_datasets import (
     mk_hf_vlm_dataset_cord_v2,
@@ -98,6 +99,9 @@ if __name__ == '__main__':
 
     processor = vlm.HFAutoModelForImageTextToText.configure_processor(args.model)
 
+    with FirstRankPerNode():
+        dataset = dataset_fn(args.data_path, processor, args.mbs, args.gbs)
+
     model_kwargs = {}
 
     # Gemma-3 recommends eager attention implementation
@@ -133,7 +137,7 @@ if __name__ == '__main__':
 
     llm.finetune(
         model=model,
-        data=dataset_fn(args.data_path, processor, args.mbs, args.gbs),
+        data=dataset,
         trainer=nl.Trainer(
             devices=args.devices,
             max_steps=args.max_steps,

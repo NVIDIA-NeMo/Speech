@@ -18,6 +18,7 @@ import fiddle as fdl
 import lightning.pytorch as pl
 
 from nemo import lightning as nl
+from nemo.automodel.dist_utils import FirstRankPerNode
 from nemo.automodel.loss import chunked_cross_entropy, masked_cross_entropy
 from nemo.automodel.misc_utils import calculate_valid_accumulate_grad_batches
 from nemo.collections import llm
@@ -35,6 +36,7 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
+@FirstRankPerNode()
 def make_squad_hf_dataset(
     tokenizer,
     micro_batch_size,

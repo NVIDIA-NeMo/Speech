@@ -18,10 +18,10 @@ import fiddle as fdl
 import lightning.pytorch as pl
 
 from nemo import lightning as nl
+from nemo.automodel.dist_utils import FirstRankPerNode
 from nemo.collections import llm
 from nemo.collections.llm.recipes.optim.adam import pytorch_adam_with_cosine_annealing
 from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
-
 
 # Run this example with torchrun, for example:
 # torchrun --nproc-per-node=8 \
@@ -34,6 +34,7 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
+@FirstRankPerNode()
 def make_squad_hf_dataset(tokenizer, batch_size, fp8=False):
     def formatting_prompts_func(example):
         formatted_text = [

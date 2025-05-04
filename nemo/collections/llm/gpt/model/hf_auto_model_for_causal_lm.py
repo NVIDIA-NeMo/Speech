@@ -21,6 +21,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
+from nemo.automodel.dist_utils import FirstRankPerNode
 from nemo.automodel.loss import masked_cross_entropy
 from nemo.automodel.loss.linear_ce import HAVE_LINEAR_LOSS_CE, fused_linear_cross_entropy
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
@@ -195,6 +196,7 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
                 attn_implementation=attn_implementation,
             )
 
+    @FirstRankPerNode()
     def configure_model(self):
         """
         Configure and initialize the Hugging Face model.

@@ -36,6 +36,7 @@ from megatron.core.optimizer import OptimizerConfig
 from megatron.core.transformer import MegatronModule
 from megatron.core.transformer.enums import ModelType
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.utils import get_batch_on_this_cp_rank
 from omegaconf import DictConfig, ListConfig
 
 from nemo.collections.asr.models import ASRModel
@@ -44,11 +45,7 @@ from nemo.collections.common.data.utils import move_data_to_device
 from nemo.collections.common.metrics import MetricStringToTorchMetric, TextMetricsSet
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
-from nemo.collections.llm.gpt.model.base import (
-    GPTConfig,
-    get_batch_on_this_context_parallel_rank,
-    get_packed_seq_params,
-)
+from nemo.collections.llm.gpt.model.base import GPTConfig, get_packed_seq_params
 from nemo.collections.speechlm.data.dataset.data_utils import build_position_ids, pad_or_trim_to_max_length
 from nemo.collections.speechlm.models.base import SpeechLanguageModel
 from nemo.collections.speechlm.modules.asr_module import ASRModuleConfig, HFWrappedEncoder
@@ -575,7 +572,7 @@ class MCoreSpeechToTextLLM(MegatronModule, fn.FNMixin):
         }
 
         # Split the batch for context parallelism
-        batch_cp = get_batch_on_this_context_parallel_rank(batch)
+        batch_cp = get_batch_on_this_cp_rank(batch)
         attention_mask_cp = batch_cp["attention_mask"]
         decoder_input_cp = batch_cp["decoder_input"].transpose(0, 1).contiguous()  # [b, t, h] -> [t, b, h]
         labels_cp = batch_cp["labels"]
@@ -882,7 +879,8 @@ class SpeechToTextLLM(SpeechLanguageModel):
 
         if isinstance(forward_output, tuple):
             # reduce validation loss
-            loss = self.validation_loss_reduction.forward(batch=batch, forward_out=forward_output)[-1]['avg']
+            loss = self.validation_loss_reduction.forward(batch=batch, forward_out=forward_output)[-1]
+            loss = self.validation_loss_reduction.reduce([loss])
         else:
             # no labels provided, use a dummy loss value
             loss = 0.0

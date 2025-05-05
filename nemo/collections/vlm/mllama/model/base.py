@@ -30,13 +30,14 @@ from megatron.core.transformer import MegatronModule
 from megatron.core.transformer.mlp import MLPSubmodules
 from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.utils import get_batch_on_this_cp_rank
 from PIL import Image as PIL_Image
 from torch import nn
 
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.llm import fn
 from nemo.collections.llm.gpt.model import local_layer_spec, transformer_engine_layer_spec
-from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank, get_packed_seq_params
+from nemo.collections.llm.gpt.model.base import get_packed_seq_params
 from nemo.collections.llm.gpt.model.llama import Llama31Config, apply_rope_scaling
 from nemo.collections.vlm.mllama.model.language import CrossAttentionTextModel
 from nemo.collections.vlm.mllama.model.utils import _generate_cross_attention_mask, _pad_attention_masks
@@ -93,7 +94,7 @@ def mllama_data_step(dataloader_iter) -> Dict[str, torch.Tensor]:
         for key, val in _batch.items()
     }
     # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_context_parallel_rank(_batch)
+    output = get_batch_on_this_cp_rank(_batch)
 
     return output
 

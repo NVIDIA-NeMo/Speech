@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List, Literal, Tuple
+from typing import Dict, Literal, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -68,30 +68,35 @@ class BERTLossReduction(MegatronLossReduction):
 
         loss_for_ub = sop_loss_for_ub + lm_loss_for_ub
         reduced_loss = average_losses_across_data_parallel_group([loss_for_ub])
-        return loss_for_ub * cp_size, {"avg": reduced_loss}
+        return loss_for_ub, {"avg": reduced_loss}
 
     def reduce(self, losses_reduced_per_micro_batch) -> torch.Tensor:
         """Taken from: https://github.com/NVIDIA/NeMo/blob/main
         /nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""
         if losses_reduced_per_micro_batch:
             if "avg" in losses_reduced_per_micro_batch[0]:
-                loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]
-                loss_tensor = torch.concat(loss_tensors_list)
+                # legacy behavior, average over the number of microbatches
+                avg = [x["avg"] for x in losses_reduced_per_micro_batch]
+                loss = torch.cat(avg).mean()
+                return loss
 
-                return loss_tensor.mean()
+            from megatron.core import parallel_state
 
-            # Get the total loss since micro batches sizes are not uniform
-            loss_sum_tensors_list: List[torch.Tensor] = [
-                loss_sum["loss_sum_and_ub_size"]
-                for loss_sum in losses_reduced_per_micro_batch
-                if loss_sum["loss_sum_and_ub_size"][1] > 0
+            loss_sum_and_ub_size = [
+                x["loss_sum_and_ub_size"] for x in losses_reduced_per_micro_batch if x["loss_sum_and_ub_size"][1] > 0
             ]
-            loss_sum = (
-                torch.vstack(loss_sum_tensors_list).sum(dim=0)
-                if len(loss_sum_tensors_list) > 0
+            loss = (
+                torch.vstack(loss_sum_and_ub_size).sum(dim=0)
+                if len(loss_sum_and_ub_size) > 0
                 else torch.tensor([0.0, 0.0], device=torch.cuda.current_device())
             )
-            return loss_sum
+            torch.distributed.all_reduce(
+                loss,
+                group=parallel_state.get_data_parallel_group(with_context_parallel=True),
+            )
+            # average over the total number of tokens across the global batch.
+            loss = loss[0] / loss[1]
+            return loss
 
         return torch.tensor(0.0, device=torch.cuda.current_device())
 
@@ -158,23 +163,28 @@ class HardNegativeRankingLoss(MegatronLossReduction):
         /nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""
         if losses_reduced_per_micro_batch:
             if "avg" in losses_reduced_per_micro_batch[0]:
-                loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]
-                loss_tensor = torch.concat(loss_tensors_list)
+                # legacy behavior, average over the number of microbatches
+                avg = [x["avg"] for x in losses_reduced_per_micro_batch]
+                loss = torch.cat(avg).mean()
+                return loss
 
-                return loss_tensor.mean()
+            from megatron.core import parallel_state
 
-            # Get the total loss since micro batches sizes are not uniform
-            loss_sum_tensors_list: List[torch.Tensor] = [
-                loss_sum["loss_sum_and_ub_size"]
-                for loss_sum in losses_reduced_per_micro_batch
-                if loss_sum["loss_sum_and_ub_size"][1] > 0
+            loss_sum_and_ub_size = [
+                x["loss_sum_and_ub_size"] for x in losses_reduced_per_micro_batch if x["loss_sum_and_ub_size"][1] > 0
             ]
-            loss_sum = (
-                torch.vstack(loss_sum_tensors_list).sum(dim=0)
-                if len(loss_sum_tensors_list) > 0
+            loss = (
+                torch.vstack(loss_sum_and_ub_size).sum(dim=0)
+                if len(loss_sum_and_ub_size) > 0
                 else torch.tensor([0.0, 0.0], device=torch.cuda.current_device())
             )
-            return loss_sum
+            torch.distributed.all_reduce(
+                loss,
+                group=parallel_state.get_data_parallel_group(with_context_parallel=True),
+            )
+            # average over the total number of tokens across the global batch.
+            loss = loss[0] / loss[1]
+            return loss
 
         return torch.tensor(0.0, device=torch.cuda.current_device())
 
@@ -277,23 +287,28 @@ class BERTInBatchExclusiveHardNegativesRankingLoss(MegatronLossReduction):
         /nemo/collections/nlp/models/language_modeling/megatron_gpt_model.py#L535-L552 ."""
         if losses_reduced_per_micro_batch:
             if "avg" in losses_reduced_per_micro_batch[0]:
-                loss_tensors_list = [loss_reduced["avg"] for loss_reduced in losses_reduced_per_micro_batch]
-                loss_tensor = torch.concat(loss_tensors_list)
+                # legacy behavior, average over the number of microbatches
+                avg = [x["avg"] for x in losses_reduced_per_micro_batch]
+                loss = torch.cat(avg).mean()
+                return loss
 
-                return loss_tensor.mean()
+            from megatron.core import parallel_state
 
-            # Get the total loss since micro batches sizes are not uniform
-            loss_sum_tensors_list: List[torch.Tensor] = [
-                loss_sum["loss_sum_and_ub_size"]
-                for loss_sum in losses_reduced_per_micro_batch
-                if loss_sum["loss_sum_and_ub_size"][1] > 0
+            loss_sum_and_ub_size = [
+                x["loss_sum_and_ub_size"] for x in losses_reduced_per_micro_batch if x["loss_sum_and_ub_size"][1] > 0
             ]
-            loss_sum = (
-                torch.vstack(loss_sum_tensors_list).sum(dim=0)
-                if len(loss_sum_tensors_list) > 0
+            loss = (
+                torch.vstack(loss_sum_and_ub_size).sum(dim=0)
+                if len(loss_sum_and_ub_size) > 0
                 else torch.tensor([0.0, 0.0], device=torch.cuda.current_device())
             )
-            return loss_sum
+            torch.distributed.all_reduce(
+                loss,
+                group=parallel_state.get_data_parallel_group(with_context_parallel=True),
+            )
+            # average over the total number of tokens across the global batch.
+            loss = loss[0] / loss[1]
+            return loss
 
         return torch.tensor(0.0, device=torch.cuda.current_device())
 

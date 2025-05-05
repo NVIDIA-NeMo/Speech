@@ -29,7 +29,7 @@ from megatron.core.transformer.transformer_block import TransformerBlock
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.transformer_layer import TransformerLayer, TransformerLayerSubmodules
 from megatron.core.transformer.utils import get_linear_layer as mcore_get_linear_layer
-from megatron.core.utils import make_viewless_tensor
+from megatron.core.utils import get_batch_on_this_cp_rank, make_viewless_tensor
 from torch import Tensor, nn
 
 from nemo.collections.llm import fn
@@ -73,7 +73,7 @@ def bert_data_step(dataloder_iter) -> Dict[str, torch.Tensor]:
 
     _batch = {key: val.cuda(non_blocking=True) if key in required_keys else None for key, val in _batch.items()}
     # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_context_parallel_rank(_batch)
+    output = get_batch_on_this_cp_rank(_batch)
 
     return output
 
@@ -626,42 +626,6 @@ class BertModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             )
 
         return self._validation_loss_reduction
-
-
-def get_batch_on_this_context_parallel_rank(batch: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-    """
-    Modifies the batch data based on the context parallel rank,
-    if the context parallel world size is greater than 1. Otherwise the batch is returned as-is.
-
-    Args:
-        batch (dict): The input batch data.
-
-    Returns:
-        dict: The modified batch data based on the context parallel rank.
-    """
-    if cp_size := parallel_state.get_context_parallel_world_size() > 1:
-        num_valid_tokens_in_ub = None
-        if "loss_mask" in batch and batch["loss_mask"] is not None:
-            num_valid_tokens_in_ub = batch["loss_mask"].sum()
-
-        cp_rank = parallel_state.get_context_parallel_rank()
-        for key, val in batch.items():
-            if val is not None:
-                seq_dim = 1 if key != "attention_mask" else 2
-                _val = val.view(
-                    *val.shape[0:seq_dim],
-                    2 * cp_size,
-                    val.shape[seq_dim] // (2 * cp_size),
-                    *val.shape[(seq_dim + 1) :],
-                )
-                index = torch.tensor([cp_rank, (2 * cp_size - cp_rank - 1)], device="cpu", pin_memory=True).cuda(
-                    non_blocking=True
-                )
-                _val = _val.index_select(seq_dim, index)
-                _val = _val.view(*val.shape[0:seq_dim], -1, *_val.shape[(seq_dim + 2) :])
-                batch[key] = _val
-        batch["num_valid_tokens_in_ub"] = num_valid_tokens_in_ub
-    return batch
 
 
 def get_packed_seq_params(batch: Dict[str, torch.Tensor]) -> PackedSeqParams:

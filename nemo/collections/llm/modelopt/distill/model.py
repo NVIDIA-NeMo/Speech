@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 import torch
 from megatron.core import parallel_state
+from megatron.core.utils import get_batch_on_this_cp_rank
 from torch import Tensor, nn
 
 from nemo.collections import llm
-from nemo.collections.llm.gpt.model.base import get_batch_on_this_context_parallel_rank
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
 from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.utils.import_utils import safe_import
@@ -75,7 +75,7 @@ def gpt_distillation_data_step(dataloader_iter, attn_mask_cpu=False) -> Dict[str
             batch_required_keys[key] = None
 
     # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_context_parallel_rank(batch_required_keys)
+    output = get_batch_on_this_cp_rank(batch_required_keys)
 
     return output
 
@@ -95,33 +95,31 @@ class _DistillationLossReduction(MaskedTokenLossReduction):
 
         # [ModelOpt]: KD loss calculation.
         loss_for_ub = self._distillation_loss_fn(
-            loss_reduction_fn=lambda x: self._masked_token_loss(
-                x, batch["loss_mask"], batch.get("num_valid_tokens_in_ub")
-            )
+            loss_reduction_fn=lambda x: self._masked_token_loss(x, batch["loss_mask"])
         )
 
         reduced_loss = average_losses_across_data_parallel_group([loss_for_ub])
-        return loss_for_ub * self._cp_size, {"avg": reduced_loss}
+        return loss_for_ub, {"avg": reduced_loss}
 
-    def _masked_token_loss(self, loss_output: Tensor, mask: Tensor, num_valid_tokens_in_ub: Optional[int] = None):
+    def _masked_token_loss(self, loss_output: Tensor, mask: Tensor):
         """The function takes as input per-token loss and masks non-required values."""
         if isinstance(loss_output, tuple):
             # [ModelOpt]: Losses can return extra flag to indicate additional TP-reduction (often required)
             loss_output, tp_reduce = loss_output
         else:
             tp_reduce = False
-        losses = loss_output.float()
+
+        losses = loss_output.view(-1).float()
         loss_mask = mask.view(-1).float()
+        loss_sum = torch.sum(losses * loss_mask)
+        num_valid_tokens = loss_mask.sum()
 
         if self._cp_size > 1:
-            if num_valid_tokens_in_ub is None:
-                num_valid_tokens_in_ub = loss_mask.sum()
-            if num_valid_tokens_in_ub < 0.5:  # no valid tokens
-                num_valid_tokens_in_ub += 1.0
-            loss = torch.sum(losses.view(-1) * loss_mask) / num_valid_tokens_in_ub  # sequence level nll
+            loss = torch.cat([loss_sum.view(1), num_valid_tokens.view(1)])
             torch.distributed.all_reduce(loss, group=parallel_state.get_context_parallel_group())
+            loss = loss[0] / loss[1]  # sequence level nll
         else:
-            loss = torch.sum(losses.view(-1) * loss_mask) / loss_mask.sum()  # sequence level nll
+            loss = loss_sum / num_valid_tokens  # sequence level nll
 
         if tp_reduce is True:
             torch.distributed.all_reduce(loss, group=parallel_state.get_tensor_model_parallel_group())

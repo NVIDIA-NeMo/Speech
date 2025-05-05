@@ -437,14 +437,16 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
 class HFDeepSeekExporter(io.ModelConnector[DeepSeekModel, "AutoModelForCausalLM"]):
     # pylint: disable=C0115,C0116
     def init(self, dtype=torch.bfloat16, model_name="deepseek-ai/DeepSeek-V3") -> "AutoModelForCausalLM":
-        from transformers import AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
             # Since DeepSeek is not importable from transformers, we can only initialize the HF model
-            # from a known checkpoint. The model_name will need to be passed in.
-            hf_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
+            # from a known checkpoint folder containing the config file and modeling files.
+            # The model_name will need to be passed in.
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            hf_model = AutoModelForCausalLM.from_config(
+                config,
                 trust_remote_code=True,
                 torch_dtype=dtype,
             )

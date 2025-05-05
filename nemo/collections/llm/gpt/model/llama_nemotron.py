@@ -339,7 +339,7 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
         Raises:
             AssertionError: If model_name is not provided for heterogeneous models
         """
-        from transformers import AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM
         from transformers.modeling_utils import no_init_weights
 
         with no_init_weights():
@@ -348,8 +348,12 @@ class HFLlamaNemotronExporter(io.ModelConnector[LlamaNemotronModel, "LlamaForCau
                 return AutoModelForCausalLM.from_config(self.config, torch_dtype=dtype)
             # Llama-Nemotron Super/Ultra
             assert model_name is not None
-            hf_model = AutoModelForCausalLM.from_pretrained(
-                model_name,
+            # Since Llama-Nemotron Super/Ultra is not importable from transformers, we can only initialize the HF model
+            # from a known checkpoint folder containing the config file and modeling files.
+            # The model_name will need to be passed in.
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            hf_model = AutoModelForCausalLM.from_config(
+                config,
                 trust_remote_code=True,
                 torch_dtype=dtype,
             )

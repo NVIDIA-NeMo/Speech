@@ -87,12 +87,16 @@ def find_top_level_packages(nemo_root: str) -> List[str]:
     """Find all top-level packages under nemo directory."""
     packages: List[str] = []
     nemo_dir = os.path.join(nemo_root, 'nemo')
+    tests_dir = os.path.join(nemo_root, 'tests')
 
     if not os.path.exists(nemo_dir):
         print(f"Warning: nemo directory not found at {nemo_dir}")
         return packages
+    if not os.path.exists(tests_dir):
+        print(f"Warning: nemo directory not found at {nemo_dir}")
+        return packages
 
-    for item in os.listdir(nemo_dir):
+    for item in os.listdir(nemo_dir) + os.listdir(tests_dir):
         item_path = os.path.join(nemo_dir, item)
         if os.path.isdir(item_path) and not item.startswith('__'):
             packages.append(item)
@@ -125,17 +129,18 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
 
     dependencies: Dict[str, List[str]] = {}
 
-    # Second pass: analyze imports and build reverse dependencies
     for file_path in find_python_files(nemo_root):
         relative_path = os.path.relpath(file_path, nemo_root)
         parts = relative_path.split(os.sep)
 
-        if len(parts) == 1 or parts[-1] == "__init__.py" or parts[0] != "nemo":
+        if len(parts) == 1 or parts[-1] == "__init__.py" or (parts[0] != "nemo" and parts[0] != "tests"):
             continue
 
         module_path = relative_path.replace(".py", "").replace("/", ".")
         if parts[1] in top_level_packages and parts[1] != 'collections':
             dependencies[module_path] = list(set(analyze_imports(nemo_root, file_path)))
+        elif parts[0] == 'tests':
+            dependencies[module_path] = [relative_path]
         elif parts[1] == 'collections':
             dependencies[module_path] = list(set(analyze_imports(nemo_root, file_path)))
 
@@ -181,7 +186,7 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
     simplified_dependencies: Dict[str, List[str]] = {}
     for package, deps in dependencies.items():
         package_parts = package.split('.')
-        print(f"{os.path.join(*package_parts[:-1])}.py")
+
         if os.path.isfile((file_path := f"{os.path.join(*package_parts[:-1])}.py")):
             simplified_package_path = file_path
         elif os.path.isdir((file_path := f"{os.path.join(*package_parts[:-1])}")):
@@ -221,13 +226,17 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
             if "asr" in dep or "tts" in dep or "speechlm" in dep or "audio" in dep:
                 new_deps.append("speech")
 
-            if "export" in dep or "deploy" in dep:
+            elif "export" in dep or "deploy" in dep:
                 new_deps.append("export-deploy")
 
-            if "llm" in dep or "vlm" in dep or "automodel" in dep:
+            elif "llm" in dep or "vlm" in dep or "automodel" in dep:
                 new_deps.append("automodel")
 
-            if "collections" in dep and not ("asr" in dep or "tts" in dep or "speechlm" in dep or "audio" in dep):
+            elif "tests/collections" in dep:
+                new_deps.append("unit-tests")
+                continue
+
+            else:
                 new_deps.append("nemo2")
 
         bucket_deps[package] = sorted(list(set(new_deps)))

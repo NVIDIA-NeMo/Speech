@@ -82,12 +82,12 @@ def test_mock_gpt_dataset_item_shapes(mock_tokenizer):
         create_attention_mask=True,
     )
     sample = ds[0]
-    assert "tokens" in sample
+    assert "input_ids" in sample
     assert "labels" in sample
     assert "loss_mask" in sample
     assert "position_ids" in sample
     assert "attention_mask" in sample
-    assert len(sample["tokens"]) == seq_length
+    assert len(sample["input_ids"]) == seq_length
     assert len(sample["labels"]) == seq_length
     assert len(sample["loss_mask"]) == seq_length
     assert len(sample["position_ids"]) == seq_length
@@ -102,8 +102,8 @@ def test_data_module_train_dataloader(mock_data_module):
     train_dl = mock_data_module.train_dataloader()
     batch = next(iter(train_dl))
     assert isinstance(batch, dict)
-    assert set(["tokens", "labels", "loss_mask", "position_ids"]).issubset(batch.keys())
-    assert batch["tokens"].shape == torch.Size([2, 16])
+    assert set(["input_ids", "labels", "loss_mask", "position_ids"]).issubset(batch.keys())
+    assert batch["input_ids"].shape == torch.Size([2, 16])
     assert batch["labels"].shape == torch.Size([2, 16])
     # Attention mask may be optional, check if included
     if "attention_mask" in batch:
@@ -115,11 +115,11 @@ def test_data_module_val_dataloader(mock_data_module):
     """Check the val dataloader returns a non-empty dataset."""
     val_dl = mock_data_module.val_dataloader()
     val_batch = next(iter(val_dl))
-    assert val_batch["tokens"].shape == torch.Size([2, 16])
+    assert val_batch["input_ids"].shape == torch.Size([2, 16])
 
 
 def test_data_module_test_dataloader(mock_data_module):
     """Check the test dataloader returns a non-empty dataset."""
     test_dl = mock_data_module.test_dataloader()
     test_batch = next(iter(test_dl))
-    assert test_batch["tokens"].shape == torch.Size([2, 16])
+    assert test_batch["input_ids"].shape == torch.Size([2, 16])

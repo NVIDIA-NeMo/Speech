@@ -72,11 +72,6 @@ runs:
       shell: bash
       run: |
 
-    - name: Install jq
-      shell: bash
-      run: |
-        curl -sS https://webi.sh/jq | sh
-
     - name: Create UUID
       id: uuid
       shell: bash

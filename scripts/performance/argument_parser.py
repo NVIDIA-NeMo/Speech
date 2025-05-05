@@ -303,6 +303,13 @@ def parse_cli_args():
         required=False,
         default=None,
     )
+    parser.add_argument(
+        "--nccl_communicator_config_path",
+        type=str,
+        help="Path to NCCL communicator config yaml file",
+        required=False,
+        default=None,
+    )
 
     def list_of_strings(arg):
         return arg.split(',')

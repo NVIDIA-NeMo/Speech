@@ -252,6 +252,7 @@ def set_primary_perf_configs(
     compute_dtype: str = None,
     fp8_recipe: str = None,
     recompute_modules: Optional[List[str]] = None,
+    nccl_communicator_config_path: str = None,
 ):
     """Set experiment configs we usually tune for performance of all models."""
 
@@ -298,6 +299,8 @@ def set_primary_perf_configs(
     recipe.trainer.strategy.expert_tensor_parallel_size = etp_size
 
     recipe.trainer.strategy.sequence_parallel = bool(tp_size > 1)
+    if nccl_communicator_config_path is not None:
+        recipe.trainer.strategy.nccl_communicator_config_path = nccl_communicator_config_path
 
     # callback configs
     comm_overlap_callback_idx = get_comm_overlap_callback_idx(recipe.trainer.callbacks)

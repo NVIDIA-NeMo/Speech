@@ -9,7 +9,7 @@ Dataset Configuration
 ---------------------
 
 Dataset configuration for self-supervised model is mostly the same as for standard ASR training,
-covered `here <../configs.html#Dataset Configuration>`__. The main difference is that in order to perform contrastive loss,
+covered :ref:`here <asr-configs-dataset-configuration>`. The main difference is that in order to perform contrastive loss,
 we will need to mask an equivalent amount of patches for all utterances in a batch. This means that we want to avoid
 the durations varying too significantly within a single batch. There are several ways you can achieve this in NeMo:
 
@@ -30,7 +30,7 @@ dataset config:
       duration_sec: 16 # specify the duration you want
 
 3) You can also use bucketing to ensure similar utterance lengths within batches.
-See `Bucketing documentation <../datasets.html#bucketing-datasets>`__.
+See :ref:`Bucketing documentation <Bucketing_Datasets>`.
 
 An example of SSL train and validation configuration should look similar to the following:
 
@@ -71,7 +71,7 @@ Preprocessor Configuration
 --------------------------
 
 Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model.
-For details on how to write this section, refer to `Preprocessor Configuration <../configs.html#preprocessor-configuration>`__
+For details on how to write this section, refer to :ref:`Preprocessor Configuration <asr-configs-preprocessor-configuration>`
 
 Augmentation Configurations
 ---------------------------
@@ -103,7 +103,7 @@ Model Architecture Configurations
 Each configuration file should describe the model architecture being used for the experiment. For self-supervised pre-training,
 we will typically train the encoder of the model and then re-use it for fine-tuning, so the encoder can be configured in the same way
 as you would for an ASR model. Note that any ASR model encoder can be used with any of the available pre-training methods,
-though, given the same model sizes, we find the best downstream results when using `Conformer <./models.html#Conformer-Transducer>`__.
+though, given the same model sizes, we find the best downstream results when using :ref:`Conformer <Conformer-Transducer_model>`.
 
 Unlike the encoders, the decoders and corresponding losses will be specific to the self-supervised pre-training, and are small enough that
 you can discard them when transferring the model to fine-tuning.

@@ -22,11 +22,13 @@ __all__ = ['Perplexity']
 class Perplexity(Metric):
     """
     This class computes mean perplexity of distributions in the last dimension of inputs. It is a wrapper around
-    :doc:`torch.distributions.Categorical.perplexity<pytorch:distributions>` method. You have to provide either 
-    ``probs`` or ``logits`` to the :meth:`update` method. The class computes perplexities for distributions passed to 
+    :doc:`torch.distributions.Categorical.perplexity<pytorch:distributions>` method. You have to provide either
+    ``probs`` or ``logits`` to the :meth:`update` method. The class computes perplexities for distributions passed to
     :meth:`update` method in ``probs`` or ``logits`` arguments and averages the perplexities. Reducing results between
     all workers is done via SUM operations.
-    See `PyTorch Lightning Metrics <https://pytorch-lightning.readthedocs.io/en/stable/ecosystem/metrics.html>`_ for the metric usage instructions.
+    See the `TorchMetrics in PyTorch Lightning guide
+    <https://lightning.ai/docs/torchmetrics/stable/pages/lightning.html>`_
+    for the metric usage instructions.
 
     Args:
         dist_sync_on_step:

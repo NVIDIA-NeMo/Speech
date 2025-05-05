@@ -12,6 +12,7 @@ this page cover each of these in more detail.
 Example configuration files for all of the NeMo ASR scripts can be found in the
 `config directory of the examples <https://github.com/NVIDIA/NeMo/tree/stable/examples/asr/conf>`_.
 
+.. _asr-configs-dataset-configuration:
 
 Dataset Configuration
 ---------------------
@@ -22,7 +23,7 @@ of the audio files, the vocabulary of the dataset (for character prediction), wh
 also decide to leave fields such as the ``manifest_filepath`` blank, to be specified via the command-line at runtime.
 
 Any initialization parameter that is accepted for the Dataset class used in the experiment can be set in the config file.
-Refer to the `Datasets <./api.html#Datasets>`__ section of the API for a list of Datasets and their respective parameters.
+Refer to the :ref:`Datasets <asr-api-datasets>` section of the API for a list of Datasets and their respective parameters.
 
 An example ASR train and validation configuration should look similar to the following:
 
@@ -95,6 +96,8 @@ For example, training data setup can be deferred as follows:
       defer_setup: true
 
 
+.. _asr-configs-preprocessor-configuration:
+
 Preprocessor Configuration
 --------------------------
 
@@ -116,8 +119,10 @@ An example of specifying a preprocessor is as follows:
       ...
       # Other parameters for the preprocessor
 
-Refer to the `Audio Preprocessors <./api.html#Audio Preprocessors>`__ API section for the preprocessor options, expected arguments,
+Refer to the :ref:`Audio Preprocessors <asr-audio-preprocessors>` API section for the preprocessor options, expected arguments,
 and defaults.
+
+.. _asr-configs-augmentation-configurations:
 
 Augmentation Configurations
 ---------------------------
@@ -171,7 +176,7 @@ picked from the manifest file provided for ``impulse`` augmentation in the confi
                 prob: 0.3
                 manifest_path: /path/to/impulse_manifest.json
 
-Refer to the `Audio Augmentors <./api.html#Audio Augmentors>`__ API section for more details.
+Refer to the :ref:`Audio Augmentors <asr-api-audio-augmentors>` API section for more details.
 
 Tokenizer Configurations
 ------------------------
@@ -301,7 +306,7 @@ For more information about the ASR models, refer to the :doc:`Models <./models>`
 Jasper and QuartzNet
 ~~~~~~~~~~~~~~~~~~~~
 
-The `Jasper <./models.html#Jasper>`__ and `QuartzNet <./models.html#QuartzNet>`__ models are very similar, and as such the components in their
+The :ref:`Jasper <Jasper_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the components in their
 configs are very similar as well.
 
 Both architectures use the ``ConvASREncoder`` for the ``encoder``, with parameters detailed in the table below. The encoder parameters
@@ -431,7 +436,7 @@ For example, a decoder config corresponding to the encoder above should look sim
 Citrinet
 ~~~~~~~~
 
-The `Citrinet <./models.html#Citrinet>`__ and `QuartzNet <./models.html#QuartzNet>`__ models are very similar, and as such the
+The :ref:`Citrinet <Citrinet_model>` and :ref:`QuartzNet <Quartznet_model>` models are very similar, and as such the
 components in their configs are very similar as well. Citrinet utilizes Squeeze and Excitation, as well as sub-word tokenization, in
 contrast to QuartzNet. Depending on the dataset, we utilize different tokenizers. For Librispeech, we utilize the HuggingFace WordPiece
 tokenizer, and for all other datasets we utilize the Google Sentencepiece tokenizer - usually the ``unigram`` tokenizer type.
@@ -554,12 +559,15 @@ The ``SqueezeExcite`` block within a :class:`~nemo.collections.asr.modules.conv_
     # This is equivalent to 128 * 0.01s context window for `SqueezeExcite`
     model.change_conv_asr_se_context_window(context_window=128, update_config=True)
 
+
+.. asr-configs-conformer-ctc
+
 Conformer-CTC
 ~~~~~~~~~~~~~
 
 The config files for Conformer-CTC model contain character-based encoding and sub-word encoding at
 ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/conformer/conformer_ctc_bpe.yaml``
-respectively. Some components of the configs of `Conformer-CTC <./models.html#Conformer-CTC>`__ include the following datasets:
+respectively. Some components of the configs of :ref:`Conformer-CTC <Conformer-CTC_model>` include the following datasets:
 
 * ``train_ds``, ``validation_ds``, and ``test_ds``
 * opimizer (``optim``)
@@ -568,19 +576,21 @@ respectively. Some components of the configs of `Conformer-CTC <./models.html#Co
 * ``trainer``
 * ``exp_manager``
 
-These datasets are similar to other ASR models like `QuartzNet <./models.html#QuartzNet>`__. There should be a tokenizer section where you can
+These datasets are similar to other ASR models like :ref:`QuartzNet <Quartznet_model>`. There should be a tokenizer section where you can
 specify the tokenizer if you want to use sub-word encoding instead of character-based encoding.
 
 
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
+.. _asr-configs-squeezeformer-ctc
+
 Squeezeformer-CTC
 ~~~~~~~~~~~~~~~~~
 
 The config files for Squeezeformer-CTC model contain character-based encoding and sub-word encoding at
 ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_char.yaml`` and ``<NeMo_git_root>/examples/asr/conf/squeezeformer/squeezeformer_ctc_bpe.yaml``
-respectively. Components of the configs of `Squeezeformer-CTC <./models.html#Squeezeformer-CTC>`__ are similar to Conformer config - `QuartzNet <./configs.html#Conformer-CTC>`__.
+respectively. Components of the configs of :ref:`Squeezeformer-CTC <Squeezeformer-CTC_model>` are similar to :ref:`Conformer config <asr-configs-conformer-ctc>`.
 
 The encoder section includes the details about the Squeezeformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.SqueezeformerEncoder <squeezeformer-encoder-api>`.
@@ -589,12 +599,14 @@ config files and also :ref:`nemo.collections.asr.modules.SqueezeformerEncoder <s
 ContextNet
 ~~~~~~~~~~
 
-Please refer to the model page of `ContextNet <./models.html#ContextNet>`__ for more information on this model.
+Please refer to the model page of :ref:`ContextNet <ContextNet_model>` for more information on this model.
 
 Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~
 
-Please refer to the model page of `Conformer-Transducer <./models.html#Conformer-Transducer>`__ for more information on this model.
+Please refer to the model page of :ref:`Conformer-Transducer <Conformer-Transducer_model>` for more information on this model.
+
+.. _asr-configs-lstm-transducer-and-ctc
 
 LSTM-Transducer and LSTM-CTC
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -699,7 +711,7 @@ The only condition that needs to be met is that **the final layer of the acousti
 Decoder / Prediction Model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the the ``decoder`` section of `ContextNet <./models.html#ContextNet>`__ or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Prediction model is generally an autoregressive, causal model that consumes text tokens and returns embeddings that will be used by the Joint model. The base config for an LSTM based Prediction network can be found in the the ``decoder`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -726,7 +738,7 @@ Let us discuss some of the important arguments:
 Joint Model
 ~~~~~~~~~~~
 
-The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the the ``joint`` section of `ContextNet <./models.html#ContextNet>`__ or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+The Joint model is a simple feed-forward Multi-Layer Perceptron network. This MLP accepts the output of the Acoustic and Prediction models and computes a joint probability distribution over the entire vocabulary space. The base config for the Joint network can be found in the the ``joint`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -842,7 +854,7 @@ The fused operation goes as follows :
 Transducer Decoding
 ~~~~~~~~~~~~~~~~~~~
 
-Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the the ``decoding`` section of `ContextNet <./models.html#ContextNet>`__ or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+Models which have been trained with CTC can transcribe text simply by performing a regular argmax over the output of their decoder. For transducer-based models, the three networks must operate in a synchronized manner in order to transcribe the acoustic features. The base config for the Transducer decoding step can be found in the the ``decoding`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 
@@ -891,7 +903,7 @@ The most important component at the top level is the ``strategy``. It can take o
 Transducer Loss
 ~~~~~~~~~~~~~~~
 
-This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the the ``loss`` section of `ContextNet <./models.html#ContextNet>`__ or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
+This section configures the type of Transducer loss itself, along with possible sub-sections. By default, an optimized implementation of Transducer loss will be used which depends on Numba for CUDA acceleration. The base config for the Transducer loss section can be found in the the ``loss`` section of :ref:`ContextNet <ContextNet_model>` or other Transducer architectures. For further information refer to the ``Intro to Transducers`` tutorial in the ASR tutorial section.
 
 **This config can be copy-pasted into any custom transducer model with no modification.**
 

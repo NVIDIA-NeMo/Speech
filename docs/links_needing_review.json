@@ -7,187 +7,11 @@
   "info": ""
 }
 {
-  "filename": "asr/speech_intent_slot/configs.rst",
-  "lineno": 11,
-  "status": "broken",
-  "code": 0,
-  "uri": "../configs.html#DatasetConfiguration",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/configs.rst",
-  "lineno": 71,
-  "status": "broken",
-  "code": 0,
-  "uri": "../configs.html#augmentation-configurations",
-  "info": ""
-}
-{
-  "filename": "tts/configs.rst",
-  "lineno": 62,
-  "status": "broken",
-  "code": 0,
-  "uri": "../asr/api.html#AudioPreprocessors",
-  "info": ""
-}
-{
-  "filename": "core/adapters/intro.rst",
-  "lineno": 8,
-  "status": "broken",
-  "code": 0,
-  "uri": "../../starthere/tutorials.html",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/configs.rst",
-  "lineno": 26,
-  "status": "broken",
-  "code": 0,
-  "uri": "../api.html#Datasets",
-  "info": ""
-}
-{
-  "filename": "asr/speaker_recognition/configs.rst",
-  "lineno": 50,
-  "status": "broken",
-  "code": 0,
-  "uri": "../configs.html#dataset-configuration",
-  "info": ""
-}
-{
-  "filename": "asr/speaker_recognition/datasets.rst",
-  "lineno": 62,
-  "status": "broken",
-  "code": 0,
-  "uri": "../datasets.html#tarred-datasets",
-  "info": ""
-}
-{
-  "filename": "asr/ssl/intro.rst",
-  "lineno": 10,
-  "status": "broken",
-  "code": 0,
-  "uri": "../models.html",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/models.rst",
-  "lineno": 22,
-  "status": "broken",
-  "code": 0,
-  "uri": "../models.html#QuartzNet",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/configs.rst",
-  "lineno": 87,
-  "status": "broken",
-  "code": 0,
-  "uri": "../models.html#quartznet",
-  "info": ""
-}
-{
-  "filename": "asr/speaker_diarization/results.rst",
-  "lineno": 4,
-  "status": "broken",
-  "code": 0,
-  "uri": "../results.html#checkpoints",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/models.rst",
-  "lineno": 71,
-  "status": "broken",
-  "code": 0,
-  "uri": "../speaker_recognition/models.html#titanet",
-  "info": ""
-}
-{
-  "filename": "asr/models.rst",
-  "lineno": 89,
-  "status": "broken",
-  "code": 0,
-  "uri": "../starthere/tutorials.html",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 174,
-  "status": "broken",
-  "code": 0,
-  "uri": "./api.html#AudioAugmentors",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 119,
-  "status": "broken",
-  "code": 0,
-  "uri": "./api.html#AudioPreprocessors",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 24,
-  "status": "broken",
-  "code": 0,
-  "uri": "./api.html#Datasets",
-  "info": ""
-}
-{
-  "filename": "asr/results.rst",
-  "lineno": 136,
-  "status": "broken",
-  "code": 0,
-  "uri": "./api.html#modules",
-  "info": ""
-}
-{
   "filename": "multimodal/vlm/configs.rst",
   "lineno": 160,
   "status": "broken",
   "code": 0,
   "uri": "./clip.html#clip",
-  "info": ""
-}
-{
-  "filename": "asr/speech_intent_slot/intro.rst",
-  "lineno": 10,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 581,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#Conformer-CTC",
-  "info": ""
-}
-{
-  "filename": "asr/models.rst",
-  "lineno": 72,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#conformer-ctc",
-  "info": ""
-}
-{
-  "filename": "asr/models.rst",
-  "lineno": 441,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#lstm-transducer",
-  "info": ""
-}
-{
-  "filename": "asr/models.rst",
-  "lineno": 422,
-  "status": "broken",
-  "code": 0,
-  "uri": "./configs.html#squeezeformer-ctc",
   "info": ""
 }
 {
@@ -215,110 +39,6 @@
   "info": ""
 }
 {
-  "filename": "tts/api.rst",
-  "lineno": 84,
-  "status": "broken",
-  "code": 0,
-  "uri": "./intro.html#BaseClasses",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 434,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#Citrinet",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 560,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#Conformer-CTC",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 597,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#Conformer-Transducer",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 592,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#ContextNet",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 304,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#Jasper",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 304,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#QuartzNet",
-  "info": ""
-}
-{
-  "filename": "asr/configs.rst",
-  "lineno": 581,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#Squeezeformer-CTC",
-  "info": ""
-}
-{
-  "filename": "asr/models.rst",
-  "lineno": 406,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#conformer-ctc",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/configs.rst",
-  "lineno": 87,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#marblenet-vad",
-  "info": ""
-}
-{
-  "filename": "asr/speech_classification/configs.rst",
-  "lineno": 87,
-  "status": "broken",
-  "code": 0,
-  "uri": "./models.html#matchboxnet-speech-commands",
-  "info": ""
-}
-{
-  "filename": "asr/ssl/configs.rst",
-  "lineno": 32,
-  "status": "broken",
-  "code": 0,
-  "uri": "../datasets.html#bucketing-datasets",
-  "info": ""
-}
-{
-  "filename": "asr/speech_intent_slot/intro.rst",
-  "lineno": 6,
-  "status": "broken",
-  "code": 0,
-  "uri": "./results.html",
-  "info": ""
-}
-{
   "filename": "vision/configs.rst",
   "lineno": 133,
   "status": "broken",
@@ -343,30 +63,6 @@
   "info": ""
 }
 {
-  "filename": "asr/speech_classification/datasets.rst",
-  "lineno": 139,
-  "status": "broken",
-  "code": 0,
-  "uri": "../datasets.html#preparing-custom-asr-data",
-  "info": ""
-}
-{
-  "filename": "asr/speaker_recognition/configs.rst",
-  "lineno": 55,
-  "status": "broken",
-  "code": 0,
-  "uri": "../configs.html#preprocessor-configuration",
-  "info": ""
-}
-{
-  "filename": "asr/ssl/datasets.rst",
-  "lineno": 4,
-  "status": "broken",
-  "code": 0,
-  "uri": "../datasets.html",
-  "info": ""
-}
-{
   "filename": "multimodal/text2img/datasets.rst",
   "lineno": 32,
   "status": "broken",
@@ -375,44 +71,12 @@
   "info": "HTTPConnectionPool(host='todourl', port=80): Max retries exceeded with url: / (Caused by NameResolutionError(\"<urllib3.connection.HTTPConnection object at 0x10fe3a270>: Failed to resolve 'todourl' ([Errno 8] nodename nor servname provided, or not known)\"))"
 }
 {
-  "filename": "asr/speech_classification/datasets.rst",
-  "lineno": 126,
-  "status": "broken",
-  "code": 0,
-  "uri": "http://bark.phon.ioc.ee/voxlingua107/",
-  "info": "HTTPSConnectionPool(host='bark.phon.ioc.ee', port=443): Max retries exceeded with url: /voxlingua107/ (Caused by SSLError(SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1000)')))"
-}
-{
-  "filename": "asr/api.rst",
-  "lineno": 7,
-  "status": "broken",
-  "code": 0,
-  "uri": "http://www.ee.columbia.edu/~dpwe/resources/matlab/pvoc/",
-  "info": "403 Client Error: Forbidden for url: https://www.ee.columbia.edu/~dpwe/resources/matlab/pvoc/"
-}
-{
-  "filename": "asr/datasets.rst",
-  "lineno": 126,
-  "status": "broken",
-  "code": 0,
-  "uri": "http://www.speech.cs.cmu.edu/databases/an4/",
-  "info": "404 Client Error: Not Found for url: http://www.speech.cs.cmu.edu/databases/an4/"
-}
-{
   "filename": "nlp/megatron.rst",
   "lineno": 170,
   "status": "broken",
   "code": 0,
   "uri": "https://catalog.data.gov/dataset/pubmed",
   "info": "404 Client Error: Not Found for url: https://catalog.data.gov/dataset/pubmed"
-}
-{
-  "filename": "asr/examples/kinyarwanda_asr.rst",
-  "lineno": 534,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models",
-  "info": "404 Client Error: Not Found for url: https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models"
 }
 {
   "filename": "multimodal/mllm/datasets.rst",
@@ -551,14 +215,6 @@
   "info": "Anchor 'L68' not found"
 }
 {
-  "filename": "asr/models.rst",
-  "lineno": 113,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39",
-  "info": "Anchor 'L39' not found"
-}
-{
   "filename": "features/optimizations/communication_overlap.rst",
   "lineno": 52,
   "status": "broken",
@@ -581,22 +237,6 @@
   "code": 0,
   "uri": "https://github.com/NVIDIA/NeMo/blob/stable/docs/source/nlp/nlp_model.rst#model-nlp",
   "info": "Anchor 'model-nlp' not found"
-}
-{
-  "filename": "asr/asr_language_modeling_and_customization.rst",
-  "lineno": 539,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/blob/stable/scripts/asr_language_modeling/ngram_lm/eval_wfst_decoding_ctc.py"
-}
-{
-  "filename": "tts/datasets.rst",
-  "lineno": 4,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/nemo/collections/asr/parts/preprocessing/features.py#L124",
-  "info": "Anchor 'L124' not found"
 }
 {
   "filename": "nlp/glue_benchmark.rst",
@@ -623,14 +263,6 @@
   "info": "Anchor 'L64' not found"
 }
 {
-  "filename": "tts/g2p.rst",
-  "lineno": 237,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/docs/source/starthere/intro.rst#installation",
-  "info": "Anchor 'installation' not found"
-}
-{
   "filename": "nlp/punctuation_and_capitalization_lexical_audio.rst",
   "lineno": 255,
   "status": "broken",
@@ -645,22 +277,6 @@
   "code": 0,
   "uri": "https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/nlp/data/language_modeling/sentence_dataset.py#L34",
   "info": "Anchor 'L34' not found"
-}
-{
-  "filename": "tts/configs.rst",
-  "lineno": 19,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/dataset.py#L80",
-  "info": "Anchor 'L80' not found"
-}
-{
-  "filename": "tts/datasets.rst",
-  "lineno": 91,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py#L41-L51",
-  "info": "Anchor 'L41-L51' not found"
 }
 {
   "filename": "nlp/quantization.rst",
@@ -695,62 +311,6 @@
   "info": "Anchor 'L728' not found"
 }
 {
-  "filename": "asr/models.rst",
-  "lineno": 45,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://huggingface.co/spaces/nvidia/parakeet-rnnt-1.1b",
-  "info": "unauthorized"
-}
-{
-  "filename": "common/tokenizers.rst",
-  "lineno": 1,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://huggingface.co/transformers/model_doc/auto.html#autotokenizer",
-  "info": "Anchor 'autotokenizer' not found"
-}
-{
-  "filename": "starthere/migration-guide.rst",
-  "lineno": 11,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://lightning.ai/docs/pytorch/stable/common/trainer.html#:~:text=strategy%20(Union%5Bstr%2C%20Strategy%5D)%20%E2%80%93%20Supports%20different%20training%20strategies%20with%20aliases%20as%20well%20custom%20strategies.%20Default%3A%20%22auto%22.",
-  "info": "Anchor '%3A~%3Atext%3Dstrategy%20%28Union%5Bstr%2C%20Strategy%5D%29%20%E2%80%93%20Supports%20different%20training%20strategies%20with%20aliases%20as%20well%20custom%20strategies.%20Default%3A%20%22auto%22.' not found"
-}
-{
-  "filename": "starthere/migration-guide.rst",
-  "lineno": 20,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://lightning.ai/docs/pytorch/stable/upgrade/from_1_9.html#:~:text=use%20use_distributed_sampler%3B%20the%20sampler%20gets%20created%20not%20only%20for%20the%20DDP%20strategies",
-  "info": "Anchor '%3A~%3Atext%3Duse%20use_distributed_sampler%3B%20the%20sampler%20gets%20created%20not%20only%20for%20the%20DDP%20strategies' not found"
-}
-{
-  "filename": "starthere/migration-guide.rst",
-  "lineno": 13,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://lightning.ai/docs/pytorch/stable/upgrade/from_1_9.html#:~:text=used%20Trainer%E2%80%99s%20flag%20resume_from_checkpoint",
-  "info": "Anchor '%3A~%3Atext%3Dused%20Trainer%E2%80%99s%20flag%20resume_from_checkpoint' not found"
-}
-{
-  "filename": "starthere/migration-guide.rst",
-  "lineno": 28,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://lightning.ai/docs/pytorch/stable/upgrade/from_1_9.html#:~:text=used%20the%20pl.plugins.NativeMixedPrecisionPlugin%20plugin",
-  "info": "Anchor '%3A~%3Atext%3Dused%20the%20pl.plugins.NativeMixedPrecisionPlugin%20plugin' not found"
-}
-{
-  "filename": "asr/api.rst",
-  "lineno": 7,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://librosa.github.io/librosa/generated/librosa.effects.time_stretch.html",
-  "info": "404 Client Error: Not Found for url: https://librosa.org/librosa/generated/librosa.effects.time_stretch.html"
-}
-{
   "filename": "nlp/question_answering.rst",
   "lineno": 196,
   "status": "broken",
@@ -767,78 +327,6 @@
   "info": "409 Client Error: Public access is not permitted on this storage account. for url: https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz"
 }
 {
-  "filename": "asr/speaker_diarization/results.rst",
-  "lineno": 1,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://ngc.nvidia.com/catalog/models/nvidia:diar_msdd_telephonic",
-  "info": "404 Client Error: Not Found for url: https://catalog.ngc.nvidia.com/orgs/nvidia/models/diar_msdd_telephonic"
-}
-{
-  "filename": "tts/datasets.rst",
-  "lineno": 1,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://opendata.iisys.de/datasets.html",
-  "info": "404 Client Error: Not Found for url: https://opendata.iisys.de/datasets.html"
-}
-{
-  "filename": "common/metrics.rst",
-  "lineno": 1,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch-lightning.readthedocs.io/en/stable/ecosystem/metrics.html",
-  "info": "404 Client Error: Not Found for url: https://lightning.ai/docs/pytorch/stable/ecosystem/metrics.html"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 226,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#example-end-to-end-alexnet-from-pytorch-to-onnx",
-  "info": "Anchor 'example-end-to-end-alexnet-from-pytorch-to-onnx' not found"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 45,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#functions",
-  "info": "Anchor 'functions' not found"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 224,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#supported-operators",
-  "info": "Anchor 'supported-operators' not found"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 225,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#tracing-vs-scripting",
-  "info": "Anchor 'tracing-vs-scripting' not found"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 218,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#write-pytorch-model-in-torch-way",
-  "info": "Anchor 'write-pytorch-model-in-torch-way' not found"
-}
-{
-  "filename": "core/export.rst",
-  "lineno": 81,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://pytorch.org/docs/stable/onnx.html#using-dictionaries-to-handle-named-arguments-as-model-inputs",
-  "info": "Anchor 'using-dictionaries-to-handle-named-arguments-as-model-inputs' not found"
-}
-{
   "filename": "checkpoints/intro.rst",
   "lineno": 28,
   "status": "broken",
@@ -847,10 +335,18 @@
   "info": "404 Client Error: Not Found for url: https://nvidia.github.io/TensorRT-LLM/architecture/checkpoint.html"
 }
 {
-  "filename": "asr/models.rst",
-  "lineno": 46,
+  "filename": "multimodal/text2img/configs.rst",
+  "lineno": 23,
   "status": "broken",
   "code": 0,
-  "uri": "https://huggingface.co/spaces/nvidia/parakeet-tdt-1.1b",
-  "info": "unauthorized"
+  "uri": "../api.html#Datasets",
+  "info": ""
+}
+{
+  "filename": "audio/configs.rst",
+  "lineno": 17,
+  "status": "broken",
+  "code": 0,
+  "uri": "./api.html#Datasets",
+  "info": ""
 }

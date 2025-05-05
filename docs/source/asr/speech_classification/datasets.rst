@@ -123,7 +123,7 @@ VoxLingua107 consists of short speech segments automatically extracted from YouT
 It contains 107 languages. The total amount of speech in the training set is 6628 hours, and 62 hours per language on average but it's highly imbalanced. 
 It also includes separate evaluation set containing 1609 speech segments from 33 languages, validated by at least two volunteers.
 
-You could download dataset from its `official website <http://bark.phon.ioc.ee/voxlingua107/>`_.
+You could download dataset from its `website <https://cs.taltech.ee/staff/tanel.alumae/data/voxlingua107/>`__.
 
 Each line is a training example.
 
@@ -136,9 +136,9 @@ Each line is a training example.
 Preparing Custom Speech Classification Data
 --------------------------------------------
 
-Preparing Custom Speech Classification Data is almost identical to `Preparing Custom ASR Data <../datasets.html#preparing-custom-asr-data>`__.
+Preparing Custom Speech Classification Data is almost identical to :ref:`Preparing Custom ASR Data <section-with-manifest-format-explanation>`.
 
-Instead of :code:`text` entry in manifest, you need :code:`label` to determine class of this sample
+Instead of a :code:`text` entry in the manifest, you need a :code:`label` to determine the class of this sample.
 
 
 Tarred Datasets
@@ -146,4 +146,4 @@ Tarred Datasets
 
 Similarly to ASR, you can tar your audio files and use ASR Dataset class ``TarredAudioToClassificationLabelDataset`` (corresponding to the ``AudioToClassificationLabelDataset``) for this case.
 
-If you would like to use tarred dataset, have a look at `ASR Tarred Datasets <../datasets.html#tarred-datasets>`__.
+If you would like to use tarred dataset, have a look at :ref:`ASR Tarred Datasets <Tarred_Datasets>`.

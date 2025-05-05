@@ -47,13 +47,13 @@ An example TitaNet train and validation configuration could look like (``{NEMO_R
       shuffle: False    # No need to shuffle the validation data
 
       
-If you would like to use tarred dataset, have a look at `Datasets Configuration <../configs.html#dataset-configuration>`__.
+If you would like to use tarred dataset, have a look at the ASR :ref:`Tarred Datasets <asr-datasets-tarred>` section.
 
 
 Preprocessor Configuration
 --------------------------
 Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model. 
-For details on how to write this section, refer to `Preprocessor Configuration <../configs.html#preprocessor-configuration>`__
+For details on how to write this section, refer to :ref:`Preprocessor Configuration <asr-configs-preprocessor-configuration>`.
 
 
 Augmentation Configurations

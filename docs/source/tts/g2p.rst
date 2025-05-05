@@ -234,7 +234,7 @@ To train a model with `Chinese Polyphones with Pinyin (CPP) <https://github.com/
 Requirements
 ------------
 
-G2P requires NeMo NLP and ASR collections installed. See `Installation instructions <https://github.com/NVIDIA/NeMo/tree/stable/docs/source/starthere/intro.rst#installation>`__ for more details.
+G2P requires NeMo NLP and ASR collections installed. See `Installation instructions <https://docs.nvidia.com/nemo-framework/user-guide/latest/installation.html>`__ for more details.
 
 
 References

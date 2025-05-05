@@ -6,3 +6,19 @@
   "uri": "https://research.fb.com/wp-content/uploads/2019/03/Neural-Models-of-Text-Normalization-for-Speech-Applications.pdf",
   "info": "400 Client Error: Bad Request for url: https://research.facebook.com/wp-content/uploads/2019/03/Neural-Models-of-Text-Normalization-for-Speech-Applications.pdf"
 }
+{
+  "filename": "asr/api.rst",
+  "lineno": 7,
+  "status": "broken",
+  "code": 0,
+  "uri": "http://www.ee.columbia.edu/~dpwe/resources/matlab/pvoc/",
+  "info": "403 Client Error: Forbidden for url: https://www.ee.columbia.edu/~dpwe/resources/matlab/pvoc/"
+}
+{
+  "filename": "asr/models.rst",
+  "lineno": 113,
+  "status": "broken",
+  "code": 0,
+  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/asr/modules/hybrid_autoregressive_transducer.py#L39",
+  "info": "Anchor 'L39' not found"
+}

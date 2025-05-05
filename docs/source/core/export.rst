@@ -43,7 +43,7 @@ The following arguments are for :meth:`~nemo.core.classes.exportable.Exportable.
     ):
 
 The ``output``, ``input_example``, ``verbose``, ``do_constant_folding``, ``onnx_opset_version`` options have the same semantics as in Pytorch ``onnx.export()`` and ``jit.trace()`` functions and are passed through. For more information about Pytorch's``onnx.export()``, refer to the `torch.onnx functions documentation
-<https://pytorch.org/docs/stable/onnx.html#functions>`_. Note that if ``input_example`` is None, ``Exportable.input_example()`` is called.
+<https://pytorch.org/docs/stable/onnx_torchscript.html#functions>`_. Note that if ``input_example`` is None, ``Exportable.input_example()`` is called.
 
 The file extension of the ``output`` parameter determines export format:
 
@@ -78,8 +78,8 @@ You should not normally need to override ``Exportable`` default methods. However
             A tuple of input examples. 
 	 """
 
-This function should return a tuple of (normally) Tensors - one per each of model inputs (args to ``forward()``). The last element may be a ``Dict`` to specify non-positional arguments by name, as per Torch ``export()`` convention. For more information, refer to the `Using dictionaries to handle Named Arguments as model inputs
-<https://pytorch.org/docs/stable/onnx.html#using-dictionaries-to-handle-named-arguments-as-model-inputs>`_.
+This function should return a tuple of (normally) Tensors - one per each of model inputs (args to ``forward()``). The last element may be a ``Dict`` to specify non-positional arguments by name, as per Torch ``export()`` convention. For more information, refer to this explainer of `types
+<https://pytorch.org/docs/stable/onnx_torchscript.html#types>`_ that are supported as model inputs or outputs.
 
 .. Note: ``Dict`` currently does not work with Torchscript ``trace()``.
 
@@ -216,12 +216,12 @@ Exportable Model Code
 ~~~~~~~~~~~~~~~~~~~~~
 
 Most importantly, the actual Torch code in your model should be ONNX or TorchScript - compatible (ideally, both).
-#. Ensure the code is written in Torch - avoid bare `Numpy or Python operands <https://pytorch.org/docs/stable/onnx.html#write-pytorch-model-in-torch-way>`_.
+#. Ensure the code is written in Torch - avoid bare `Numpy or Python operands <https://pytorch.org/docs/stable/onnx_torchscript.html#avoid-numpy-and-built-in-python-types>`_.
 #. Create your model ``Exportable`` and add an export unit test, to catch any operation/construct not supported in ONNX/TorchScript, immediately.
 
 For more information, refer to the PyTorch documentation:
 
-       - `List of supported operators <https://pytorch.org/docs/stable/onnx.html#supported-operators>`_
-       - `Tracing vs. scripting <https://pytorch.org/docs/stable/onnx.html#tracing-vs-scripting>`_ 
-       - `AlexNet example <https://pytorch.org/docs/stable/onnx.html#example-end-to-end-alexnet-from-pytorch-to-onnx>`_
+- `List of supported operators <https://pytorch.org/docs/stable/onnx_torchscript.html#list-of-supported-operators>`_
+- `Tracing vs. scripting <https://pytorch.org/docs/stable/onnx_torchscript.html#tracing-vs-scripting>`_ 
+- `AlexNet example <https://pytorch.org/docs/stable/onnx_torchscript.html#example-alexnet-from-pytorch-to-onnx>`_
 

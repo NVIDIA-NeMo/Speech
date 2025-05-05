@@ -5,7 +5,7 @@ In NeMo, we often train models and fine-tune them for a specific task. This is a
 
 .. note::
 
-    For a detailed tutorial on adding ``Adapter`` support to any PyTorch module, please refer to the `Tutorials for NeMo Adapters <../../starthere/tutorials.html>`_.
+    For a detailed tutorial on adding ``Adapter`` support to any PyTorch module, please refer to the NeMo Adapter :doc:`Tutorials <../../starthere/tutorials>`.
 
 
 What are Adapters?
@@ -117,7 +117,8 @@ build large composite models out of multiple modules and combine them to build a
 
 .. note::
 
-    For an in-depth guide to supporting hierarchical adapter modules, please refer to the `Tutorials for NeMo Adapters <../../starthere/tutorials.html>`_.
+    For an in-depth guide to supporting hierarchical adapter modules, please refer to the NeMo Adapter :doc:`Tutorials <../../starthere/tutorials>`.
+
 
 .. autoclass:: nemo.core.adapter_mixins.AdapterModelPTMixin
     :show-inheritance:

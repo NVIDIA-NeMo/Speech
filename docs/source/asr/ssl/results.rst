@@ -79,7 +79,7 @@ For example, to load a SSL checkpoint for ASR down-stream task using ``EncDecRNN
   # discard ssl model
   del ssl model
 
-Refer to `SSL configs <./configs.html>`__ to do this automatically via config files. 
+Refer to :doc:`SSL configs <./configs>` to do this automatically via config files. 
 
 
 Fine-tuning on Downstream Datasets

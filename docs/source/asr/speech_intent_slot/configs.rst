@@ -9,7 +9,7 @@ Dataset Configuration
 ---------------------
 
 Dataset configuration for Speech Intent Classification and Slot Filling model is mostly the same as for standard ASR training,
-covered `here <../configs.html#Dataset Configuration>`__. One exception is that ``use_start_end_token`` must be set to ``True``.
+covered :ref:`here <asr-configs-dataset-configuration>`. One exception is that ``use_start_end_token`` must be set to ``True``.
 
 An example of train and validation configuration should look similar to the following:
 
@@ -50,7 +50,7 @@ Preprocessor Configuration
 --------------------------
 
 Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model.
-For details on how to write this section, refer to `Preprocessor Configuration <../configs.html#preprocessor-configuration>`__
+For details on how to write this section, refer to :ref:`Preprocessor Configuration <asr-configs-preprocessor-configuration>`
 
 Augmentation Configurations
 ---------------------------
@@ -58,13 +58,13 @@ Augmentation Configurations
 
 There are a few on-the-fly spectrogram augmentation options for NeMo ASR, which can be specified by the
 configuration file using the ``augmentor`` and ``spec_augment`` section.
-For details on how to write this section, refer to `Augmentation Configuration <../configs.html#augmentation-configurations>`__
+For details on how to write this section, refer to :ref:`Augmentation Configuration <asr-configs-augmentation-configurations>`
 
 
 Model Architecture Configurations
 ---------------------------------
 
-The ``encoder`` of the model is a `Conformer-large <./models.html#Conformer-CTC>`__ model without the text decoder, and can be initialized with pretrained checkpoints. The ``decoder`` is a Transforemr model, with additional ``embedding`` and ``classifier`` modules.
+The ``encoder`` of the model is a :ref:`Conformer-large <Conformer-CTC_model>` model without the text decoder, and can be initialized with pretrained checkpoints. The ``decoder`` is a Transforemr model, with additional ``embedding`` and ``classifier`` modules.
 
 An example config for the model can be:
 

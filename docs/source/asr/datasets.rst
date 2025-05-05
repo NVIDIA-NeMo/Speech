@@ -124,7 +124,7 @@ AN4 Dataset
 -----------
 
 This is a small dataset recorded and distributed by Carnegie Mellon University. It consists of recordings of people spelling out
-addresses, names, etc. Information about this dataset can be found on the `official CMU site <http://www.speech.cs.cmu.edu/databases/an4/>`_.
+addresses, names, etc.
 
 #. `Download and extract the dataset <https://dldata-public.s3.us-east-2.amazonaws.com/an4_sphere.tar.gz>`_ (which is labeled "NIST's Sphere audio (.sph) format (64M)".
 
@@ -232,7 +232,7 @@ As such, there is no assured guarantee that all samples in the dataset will be s
 for these reasons it is not advisable to use tarred datasets as validation and test datasets.
 
 For more information about the individual tarred datasets and the parameters available, including shuffling options,
-see the corresponding class APIs in the `Datasets <./api.html#Datasets>`__ section.
+see the corresponding class APIs in the :ref:`Datasets <asr-api-datasets>` section.
 
 .. warning::
   If using multiple workers, the number of shards should be divisible by the world size to ensure an even

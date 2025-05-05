@@ -4,4 +4,4 @@ vad_marblenet,EncDecClassificationModel,"https://ngc.nvidia.com/catalog/models/n
 vad_telephony_marblenet,EncDecClassificationModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_telephony_marblenet"
 titanet_large,EncDecSpeakerLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:titanet_large"
 ecapa_tdnn,EncDecSpeakerLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:ecapa_tdnn"
-diar_msdd_telephonic,EncDecDiarLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:diar_msdd_telephonic"
+diar_msdd_telephonic,EncDecDiarLabelModel,"https://ngc.nvidia.com/catalog/models/nvidia:nemo:diar_msdd_telephonic"

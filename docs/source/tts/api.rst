@@ -82,7 +82,6 @@ Base Classes
 ----------------
 
 The classes below are the base of the TTS pipeline.
-To read more about them, see the `Base Classes <./intro.html#Base Classes>`__ section of the intro page.
 
 .. autoclass:: nemo.collections.tts.models.base.MelToSpec
     :show-inheritance:

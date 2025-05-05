@@ -13,6 +13,7 @@ Speech Intent Classification and Slot Filling
 Different from its counterpart in Natural Language Understanding (NLU) that takes text as input, here the model predicts the semantics directly from audio input. 
 
 
+.. include:: resources.rst
 
 The full documentation tree is as follows:
 
@@ -26,4 +27,3 @@ The full documentation tree is as follows:
    api
    resources
 
-.. include:: resources.rst

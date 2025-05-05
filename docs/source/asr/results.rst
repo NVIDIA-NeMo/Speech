@@ -133,7 +133,7 @@ Often times, we want to transcribe a large number of files at once (maybe from a
         # process a batch of 32 results (or less if last batch does not contain 32 elements)
         ....
 
-For more information, see `nemo.collections.asr.modules <./api.html#modules>`__. For more information on the general ``Transcription API``, please take a look at :class:`~nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin`. The audio files should be 16KHz mono-channel wav files.
+For more information, see :ref:`nemo.collections.asr.modules <asr-api-modules>`. For more information on the general ``Transcription API``, please take a look at :class:`~nemo.collections.asr.parts.mixins.transcription.TranscriptionMixin`. The audio files should be 16KHz mono-channel wav files.
 
 -----
 

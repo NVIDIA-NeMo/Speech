@@ -137,6 +137,8 @@ Mixins
     :show-inheritance:
     :members:
 
+.. _asr-api-datasets:
+
 Datasets
 --------
 
@@ -175,6 +177,8 @@ Subword Encoding Datasets
     :show-inheritance:
     :members:
 
+.. _asr-audio-preprocessors:
+
 Audio Preprocessors
 -------------------
 
@@ -185,6 +189,8 @@ Audio Preprocessors
 .. autoclass:: nemo.collections.asr.modules.AudioToMFCCPreprocessor
     :show-inheritance:
     :members:
+
+.. _asr-api-audio-augmentors:
 
 Audio Augmentors
 ----------------

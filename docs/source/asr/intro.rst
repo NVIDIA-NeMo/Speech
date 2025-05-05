@@ -186,18 +186,17 @@ Try out NeMo ASR transcription in your browser
 ----------------------------------------------
 You can try out transcription with a NeMo ASR model without leaving your browser, by using the HuggingFace Space embedded below.
 
-This HuggingFace Space uses `Canary-1B <https://huggingface.co/nvidia/canary-1b>`__, the latest ASR model from NVIDIA NeMo. It sits at the top of the `HuggingFace OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__ at time of publishing.
-
-Canary-1B is a multi-lingual, multi-task model, supporting automatic speech-to-text recognition (ASR) in 4 languages (English, German, French, Spanish) as well as translation between English and the 3 other supported languages.
+This HuggingFace Space uses `Parakeet TDT 0.6B V2 <https://huggingface.co/spaces/nvidia/parakeet-tdt-0.6b-v2>`__, the latest ASR model from NVIDIA NeMo. It sits at the top of the `HuggingFace OpenASR Leaderboard <https://huggingface.co/spaces/hf-audio/open_asr_leaderboard>`__ at time of writing (May 2nd 2025).
 
 .. raw:: html
 
-    <iframe src="https://nvidia-canary-1b.hf.space"
-    width="100%" class="gradio-asr" allow="microphone *"></iframe>
+    <script
+        type="module"
+        src="https://gradio.s3-us-west-2.amazonaws.com/5.27.1/gradio.js"
+    ></script>
 
-    <script type="text/javascript" language="javascript">
-        $('.gradio-asr').css('height', $(window).height() * 0.8+'px');
-    </script>
+    <gradio-app src="https://nvidia-parakeet-tdt-0-6b-v2.hf.space"></gradio-app>
+
 
 
 ASR tutorial notebooks

@@ -531,7 +531,7 @@ Inference and evaluation
 Running the inference
 #####################
 
-To run the inference we need a pretrained model. This can be either a `.nemo` file that we get after the training is finished, or any published model from `NGC <https://catalog.ngc.nvidia.com/orgs/nvidia/teams/nemo/models>`_.
+To run the inference we need a pretrained model. This can be either a `.nemo` file that we get after the training is finished, or any published ASR model from `HF <https://huggingface.co/nvidia>`__ or `NGC <https://catalog.ngc.nvidia.com/?filters=application%7CAutomatic+Speech+Recognition%7Cuscs_automatic_speech_recognition&query=nemo>`__.
 We run the inference using the following script:
 
 .. code-block:: bash

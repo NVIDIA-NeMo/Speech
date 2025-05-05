@@ -25,7 +25,7 @@ at runtime.
 
 Any initialization parameters that are accepted for the Dataset class used in your experiment
 can be set in the config file.
-See the `Datasets <../api.html#Datasets>`__ section of the API for a list of Datasets and their respective parameters.
+See the :ref:`Datasets <asr-api-datasets>` section of the API for a list of Datasets and their respective parameters.
 
 An example Speech Classification train and validation configuration could look like: 
 
@@ -54,13 +54,13 @@ An example Speech Classification train and validation configuration could look l
       batch_size: 128
       shuffle: False # No need to shuffle the validation data
 
-If you would like to use tarred dataset, have a look at `Datasets Configuration <../configs.html#dataset-configuration>`__.
+If you would like to use tarred dataset, have a look at :ref:`Datasets Configuration <asr-configs-dataset-configuration>`.
 
 
 Preprocessor Configuration
 --------------------------
 Preprocessor helps to compute MFCC or mel spectrogram features that are given as inputs to model. 
-For details on how to write this section, refer to `Preprocessor Configuration <../configs.html#preprocessor-configuration>`__
+For details on how to write this section, refer to :ref:`Preprocessor Configuration <asr-configs-preprocessor-configuration>`
 
 Check config yaml files in ``<NeMo_git_root>/examples/asr/conf`` to find the processors been used by speech classification models.
 
@@ -70,7 +70,7 @@ Augmentation Configurations
 
 There are a few on-the-fly spectrogram augmentation options for NeMo ASR, which can be specified by the
 configuration file using the ``augmentor`` and ``spec_augment`` section.
-For details on how to write this section, refer to `Augmentation Configuration <../configs.html#augmentation-configurations>`__
+For details on how to write this section, refer to the ASR :ref:`Augmentation Configuration <asr-configs-augmentation-configurations>` section.
 
 Check config yaml files in ``<NeMo_git_root>/tutorials/asr/conf`` to find the processors been used by speech classification models. 
 
@@ -84,8 +84,8 @@ specifying the module to use for each.
 
 The following sections go into more detail about the specific configurations of each model architecture.
 
-The `MatchboxNet <./models.html#matchboxnet-speech-commands>`__ and `MarbleNet <./models.html#marblenet-vad>`__ models are very similar, and they are based on `QuartzNet <../models.html#quartznet>`__  and as such the components in their
-configs are very similar as well.
+The :ref:`MatchboxNet <MarbleNet_model>` and :ref:`MarbleNet <MarbleNet_model>` models are very similar, and they are based on :ref:`QuartzNet <QuartzNet_model>`  and as 
+such the components in their configs are very similar as well.
 
 Decoder Configurations
 ------------------------

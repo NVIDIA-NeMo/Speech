@@ -4,7 +4,7 @@ English,en-US,LibriTTS (clean),1230,592,638,262.62,133.97,128.65,"24,000Hz",http
 English,en-US,HiFiTTS,10,6,4,291.60,158.30,133.30,"44,100Hz",http://www.openslr.org/109/
 German,de-DE,Thorsten Müller Neutral 21.02 dataset,1,0,1,20.91,0.00,20.91,"22,050Hz",https://zenodo.org/record/5525342/files/thorsten-neutral_v03.tgz?download=1
 German,de-DE,Thorsten Müller Neutral 22.10 dataset,1,0,1,11.21,0.00,11.21,"22,050Hz",https://zenodo.org/record/7265581/files/ThorstenVoice-Dataset_2022.10.zip?download=1
-German,de-DE,HUI-Audio-Corpus-German (clean),118,n/a,n/a,253.85,0.00,0.00,"44,100Hz",https://opendata.iisys.de/datasets.html
+German,de-DE,HUI-Audio-Corpus-German (clean),118,n/a,n/a,253.85,0.00,0.00,"44,100Hz",https://github.com/iisys-hof/HUI-Audio-Corpus-German
 Spanish,es-AR,Crowdsourced high-quality Argentinian Spanish,44,31,13,8.03,5.61,2.42,"48,000Hz",https://www.openslr.org/61/
 Spanish,es-CL,Crowdsourced high-quality Chilean Spanish,31,13,18,7.15,2.84,4.31,"48,000Hz",https://www.openslr.org/71/
 Spanish,es-CO,Crowdsourced high-quality Colombian Spanish,33,16,17,7.58,3.74,3.84,"48,000Hz",https://www.openslr.org/72/

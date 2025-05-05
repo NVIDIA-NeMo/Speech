@@ -44,6 +44,53 @@ def find_python_files(directory: str) -> List[str]:
 def analyze_imports(nemo_root: str, file_path: str) -> Set[str]:
     """Analyze a Python file and return its NeMo package dependencies using AST parsing."""
     imports = set()
+    visited = set()  # Track visited modules to prevent circular imports
+
+    def get_init_imports(module_path: str, depth: int = 0) -> Dict[str, str]:
+        """Recursively analyze imports from __init__.py files and map them to their final destinations."""
+        # Prevent infinite recursion
+        if depth > 10 or module_path in visited:  # Limit depth to 10 levels
+            return {}
+
+        visited.add(module_path)
+        init_path = os.path.join(module_path, '__init__.py')
+        if not os.path.exists(init_path):
+            return {}
+
+        try:
+            with open(init_path, 'r', encoding='utf-8') as f:
+                init_tree = ast.parse(f.read(), filename=init_path)
+
+            import_map = {}
+            for node in ast.walk(init_tree):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('nemo.'):
+                    if node.names:
+                        for name in node.names:
+                            if name.name == '*':
+                                continue
+
+                            # Get the full module path for the import
+                            module_parts = node.module.split('.')
+                            module_dir = os.path.join(nemo_root, *module_parts)
+
+                            # If the imported module has an __init__.py, recursively analyze it
+                            if os.path.exists(os.path.join(module_dir, '__init__.py')):
+                                sub_imports = get_init_imports(module_dir, depth + 1)
+                                if name.name in sub_imports:
+                                    import_map[name.name] = sub_imports[name.name]
+                                else:
+                                    # If not found in sub-imports, it might be from the module itself
+                                    module_file = os.path.join(module_dir, f"{module_parts[-1]}.py")
+                                    if os.path.exists(module_file):
+                                        import_map[name.name] = f"{node.module}.{name.name}"
+                            else:
+                                # Direct module import
+                                import_map[name.name] = f"{node.module}.{name.name}"
+
+            return import_map
+        except Exception as e:
+            print(f"Error analyzing {init_path}: {e}")
+            return {}
 
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -68,14 +115,31 @@ def analyze_imports(nemo_root: str, file_path: str) -> Set[str]:
                                 if name.name == '*':
                                     continue
 
-                                imports.add(f"{node.module}.{name.name}")
+                                # Check if this is an __init__ import
+                                module_path = os.path.join(nemo_root, *parts)
+                                init_imports = get_init_imports(module_path)
+
+                                if name.name in init_imports:
+                                    # Use the mapped import path
+                                    imports.add(init_imports[name.name])
+                                else:
+                                    imports.add(f"{node.module}.{name.name}")
 
                     elif module_type in find_top_level_packages(nemo_root):
                         if node.names:
                             for name in node.names:
                                 if name.name == '*':
                                     continue
-                                imports.add(f"{node.module}.{name.name}")
+
+                                # Check if this is an __init__ import
+                                module_path = os.path.join(nemo_root, *parts)
+                                init_imports = get_init_imports(module_path)
+
+                                if name.name in init_imports:
+                                    # Use the mapped import path
+                                    imports.add(init_imports[name.name])
+                                else:
+                                    imports.add(f"{node.module}.{name.name}")
 
     except Exception as e:
         print(f"Error analyzing {file_path}: {e}")
@@ -256,7 +320,7 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
                 new_deps.append("unit-tests")
 
             if (
-                "nemo.collections" in deps
+                "nemo.collections" in dep
                 and "nemo.collections.asr" not in dep
                 and "nemo.collections.tts" not in dep
                 and "nemo.collections.speechlm" not in dep

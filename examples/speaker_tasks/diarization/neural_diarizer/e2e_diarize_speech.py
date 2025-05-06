@@ -36,10 +36,12 @@ python $BASEPATH/neural_diarizer/e2e_diarize_speech.py \
     dataset_manifest=/path/to/diarization_manifest.json
 
 """
+import json
 import logging
 import os
 import tempfile
 from dataclasses import dataclass, is_dataclass
+from tempfile import NamedTemporaryFile
 from typing import Dict, List, Optional, Union
 
 import lightning.pytorch as pl
@@ -55,11 +57,13 @@ from nemo.collections.asr.parts.utils.speaker_utils import (
     get_uniqname_from_filepath,
     timestamps_to_pyannote_object,
 )
+from nemo.collections.asr.parts.utils.transcribe_utils import read_and_maybe_sort_manifest
 from nemo.collections.asr.parts.utils.vad_utils import (
     PostProcessingParams,
     load_postprocessing_from_yaml,
     predlist_to_timestamps,
 )
+from nemo.collections.common.parts.preprocessing.manifest import get_full_path
 from nemo.core.config import hydra_runner
 
 seed_everything(42)
@@ -72,10 +76,12 @@ class DiarizationConfig:
 
     model_path: Optional[str] = None  # Path to a .nemo file
     dataset_manifest: Optional[str] = None  # Path to dataset's JSON manifest
+    presort_manifest: Optional[bool] = True
 
     postprocessing_yaml: Optional[str] = None  # Path to a yaml file for postprocessing configurations
     no_der: bool = False
     out_rttm_dir: Optional[str] = None
+    save_preds_tensors: bool = False
 
     # General configs
     session_len_sec: float = -1  # End-to-end diarization session length in seconds
@@ -83,10 +89,22 @@ class DiarizationConfig:
     num_workers: int = 0
     random_seed: Optional[int] = None  # seed number going to be used in seed_everything()
     bypass_postprocessing: bool = True  # If True, postprocessing will be bypassed
+    log: bool = False  # If True, log will be printed
+
+    use_lhotse: bool = True
+    batch_duration: int = 33000
 
     # Eval Settings: (0.25, False) should be default setting for sortformer eval.
     collar: float = 0.25  # Collar in seconds for DER calculation
     ignore_overlap: bool = False  # If True, DER will be calculated only for non-overlapping segments
+
+    # Streaming diarization configs
+    spkcache_len: int = 188
+    spkcache_refresh_rate: int = 144
+    fifo_len: int = 188
+    chunk_len: int = 6
+    chunk_left_context: int = 1
+    chunk_right_context: int = 7
 
     # If `cuda` is a negative number, inference will be on CPU only.
     cuda: Optional[int] = None
@@ -140,7 +158,7 @@ def get_tensor_path(cfg: DiarizationConfig) -> str:
     if not os.path.exists(bpath):
         os.makedirs(bpath)
     tensor_path = f"{bpath}/__{model_id}__{tensor_filename}.pt"
-    return tensor_path
+    return tensor_path, model_id, tensor_filename
 
 
 def diarization_objective(
@@ -175,7 +193,7 @@ def diarization_objective(
     Returns:
         float: The Diarization Error Rate (DER) for the given set of postprocessing parameters.
     """
-    with tempfile.TemporaryDirectory(dir=temp_out_dir, prefix="Diar_PostProcessing_") as local_temp_out_dir:
+    with tempfile.TemporaryDirectory(dir=temp_out_dir, prefix="Diar_PostProcessing_") as _:
         if trial is not None:
             postprocessing_cfg = optuna_suggest_params(postprocessing_cfg, trial)
         all_hyps, all_refs, all_uems = convert_pred_mat_to_segments(
@@ -185,7 +203,7 @@ def diarization_objective(
             unit_10ms_frame_count=8,
             bypass_postprocessing=False,
         )
-        metric, mapping_dict, itemized_errors = score_labels(
+        metric, _, _ = score_labels(
             AUDIO_RTTM_MAP=infer_audio_rttm_dict,
             all_reference=all_refs,
             all_hypothesis=all_hyps,
@@ -258,7 +276,7 @@ def convert_pred_mat_to_segments(
        all_reference (list): list of pyannote objects for each audio file.
        all_uems (list): list of pyannote objects for each audio file.
     """
-    batch_pred_ts_segs, all_hypothesis, all_reference, all_uems = [], [], [], []
+    all_hypothesis, all_reference, all_uems = [], [], []
     cfg_vad_params = OmegaConf.structured(postprocessing_cfg)
     total_speaker_timestamps = predlist_to_timestamps(
         batch_preds_list=batch_preds_list,
@@ -269,10 +287,11 @@ def convert_pred_mat_to_segments(
     )
     for sample_idx, (uniq_id, audio_rttm_values) in enumerate(audio_rttm_map_dict.items()):
         speaker_timestamps = total_speaker_timestamps[sample_idx]
-        if audio_rttm_values.get("uniq_id", None) is not None:
-            uniq_id = audio_rttm_values["uniq_id"]
-        else:
-            uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
+        if uniq_id is None:
+            if audio_rttm_values.get("uniq_id", None) is not None:
+                uniq_id = audio_rttm_values["uniq_id"]
+            else:
+                uniq_id = get_uniqname_from_filepath(audio_rttm_values["audio_filepath"])
         all_hypothesis, all_reference, all_uems = timestamps_to_pyannote_object(
             speaker_timestamps,
             uniq_id,
@@ -330,28 +349,62 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
     diar_model.set_trainer(trainer)
 
     diar_model = diar_model.eval()
-    diar_model._cfg.test_ds.manifest_filepath = cfg.dataset_manifest
-    infer_audio_rttm_dict = audio_rttm_map(cfg.dataset_manifest)
+
+    if cfg.presort_manifest:
+        audio_key = cfg.get('audio_key', 'audio_filepath')
+        with NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            for item in read_and_maybe_sort_manifest(cfg.dataset_manifest, try_sort=cfg.presort_manifest):
+                audio_file = get_full_path(audio_file=item[audio_key], manifest_file=cfg.dataset_manifest)
+                item[audio_key] = audio_file
+                f.write(json.dumps(item) + "\n")
+            sorted_manifest_path = f.name
+        diar_model._cfg.test_ds.manifest_filepath = sorted_manifest_path
+        infer_audio_rttm_dict = audio_rttm_map(sorted_manifest_path)
+    else:
+        diar_model._cfg.test_ds.manifest_filepath = cfg.dataset_manifest
+        infer_audio_rttm_dict = audio_rttm_map(cfg.dataset_manifest)
+    remove_path_after_done = sorted_manifest_path if sorted_manifest_path is not None else None
+
     diar_model._cfg.test_ds.batch_size = cfg.batch_size
     diar_model._cfg.test_ds.pin_memory = False
+
+    OmegaConf.set_struct(diar_model._cfg, False)
+    diar_model._cfg.test_ds.use_lhotse = cfg.use_lhotse
+    diar_model._cfg.test_ds.use_bucketing = False
+    diar_model._cfg.test_ds.drop_last = False
+    diar_model._cfg.test_ds.batch_duration = cfg.batch_duration
+    OmegaConf.set_struct(diar_model._cfg, True)
 
     # Model setup for inference
     diar_model._cfg.test_ds.num_workers = cfg.num_workers
     diar_model.setup_test_data(test_data_config=diar_model._cfg.test_ds)
 
-    postprocessing_cfg = load_postprocessing_from_yaml(cfg.postprocessing_yaml)
-    tensor_path = get_tensor_path(cfg)
+    # Steaming mode setup
+    diar_model.sortformer_modules.chunk_len = cfg.chunk_len
+    diar_model.sortformer_modules.spkcache_len = cfg.spkcache_len
+    diar_model.sortformer_modules.chunk_left_context = cfg.chunk_left_context
+    diar_model.sortformer_modules.chunk_right_context = cfg.chunk_right_context
+    diar_model.sortformer_modules.fifo_len = cfg.fifo_len
+    diar_model.sortformer_modules.log = cfg.log
+    diar_model.sortformer_modules.spkcache_refresh_rate = cfg.spkcache_refresh_rate
 
-    if os.path.exists(tensor_path):
+    postprocessing_cfg = load_postprocessing_from_yaml(cfg.postprocessing_yaml)
+    tensor_path, model_id, tensor_filename = get_tensor_path(cfg)
+    cfg.optuna_study_name = f"__{model_id}_{tensor_filename}"
+    cfg.optuna_storage: str = f"sqlite:///{cfg.optuna_temp_dir}/{cfg.optuna_study_name}.db"
+    cfg.optuna_log_file: str = f"{cfg.optuna_temp_dir}/{cfg.optuna_study_name}.log"
+
+    if os.path.exists(tensor_path) and cfg.save_preds_tensors:
         logging.info(
             f"A saved prediction tensor has been found. Loading the saved prediction tensors from {tensor_path}..."
         )
         diar_model_preds_total_list = torch.load(tensor_path)
     else:
-        logging.info(f"No saved prediction tensors found. Running inference on the dataset...")
+        logging.info("No saved prediction tensors found. Running inference on the dataset...")
         diar_model.test_batch()
         diar_model_preds_total_list = diar_model.preds_total_list
-        torch.save(diar_model.preds_total_list, tensor_path)
+        if cfg.save_preds_tensors:
+            torch.save(diar_model.preds_total_list, tensor_path)
 
     if cfg.launch_pp_optim:
         # Launch a hyperparameter optimization process if launch_pp_optim is True
@@ -367,6 +420,8 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
     if not cfg.no_der:
         if cfg.out_rttm_dir is not None and not os.path.exists(cfg.out_rttm_dir):
             os.mkdir(cfg.out_rttm_dir)
+
+        logging.info("Running offline diarization evaluation...")
         all_hyps, all_refs, all_uems = convert_pred_mat_to_segments(
             infer_audio_rttm_dict,
             postprocessing_cfg=postprocessing_cfg,
@@ -385,6 +440,11 @@ def main(cfg: DiarizationConfig) -> Union[DiarizationConfig]:
             ignore_overlap=cfg.ignore_overlap,
         )
         logging.info(f"PostProcessingParams: {postprocessing_cfg}")
+
+    # clean-up
+    if cfg.presort_manifest is not None:
+        if remove_path_after_done is not None:
+            os.unlink(remove_path_after_done)
 
 
 if __name__ == '__main__':

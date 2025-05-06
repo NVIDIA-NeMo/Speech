@@ -17,13 +17,13 @@ from itertools import permutations
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 from pyannote.core import Segment, Timeline
 from pyannote.metrics.diarization import DiarizationErrorRate
 
 from nemo.collections.asr.metrics.wer import word_error_rate
 from nemo.collections.asr.parts.utils.optimization_utils import linear_sum_assignment
-
 from nemo.utils import logging
 
 __all__ = [
@@ -205,6 +205,10 @@ def score_labels(
         itemized_errors = (DER, CER, FA, MISS)
 
         if verbose:
+            pd.set_option('display.max_rows', None)  # Show all rows
+            pd.set_option('display.max_columns', None)  # Show all columns
+            pd.set_option('display.width', None)  # Adjust width to avoid line wrapping
+            pd.set_option('display.max_colwidth', None)  # Show full content of each cell
             logging.info(f"\n{metric.report()}")
         logging.info(
             f"Cumulative Results for collar {collar} sec and ignore_overlap {ignore_overlap}: \n"

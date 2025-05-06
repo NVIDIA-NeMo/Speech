@@ -135,7 +135,11 @@ class PreTrainingDataModule(pl.LightningDataModule, IOMixin):
         pin_memory (bool): See ``torch.utils.data.DataLoader`` documentation.
         persistent_workers (bool): See ``torch.utils.data.DataLoader`` documentation.
         reset_position_ids (bool): Option to reset the position IDs in the dataset at an interval.
+            Not supported with fused and flash attention.
+        create_attention_mask (bool): Option to enable the attention masks generation.
+            Not supported with fused and flash attention.
         reset_attention_mask (bool): Option to reset the attention mask from the dataset.
+            Not supported with fused and flash attention.
         eod_mask_loss (int): Option to enable the EOD mask loss.
         seed (int): Seed for generating the GPT dataset.
         split (str): A string of 3 comma-separated integers denoting how much of the distribution

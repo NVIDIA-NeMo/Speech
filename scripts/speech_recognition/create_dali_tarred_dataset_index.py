@@ -68,7 +68,7 @@ def build_index(tarpath, indexfile):
         index.create_index()
 
 
-@hydra.main(config_path=None, config_name='index_config')
+@hydra.main(config_path=None, config_name='index_config', version_base="1.1")
 def main(cfg: DALITarredIndexConfig):
     if not INDEX_CREATOR_AVAILABLE:
         logging.error("`wds2idx` is not installed. Please install NVIDIA DALI >= 1.11")

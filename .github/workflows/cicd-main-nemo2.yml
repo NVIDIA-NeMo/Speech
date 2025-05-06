@@ -47,6 +47,8 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_llama3_straggler_detection
             runner: self-hosted-azure
+          - script: L2_NeMo_2_llama3_local_ckpt
+            runner: self-hosted-azure
           - script: L2_NeMo_2_GPT_DDP_Param_Parity_check
             runner: self-hosted-azure
           - script: L2_NeMo_2_Hyena_Conversion_from_HF

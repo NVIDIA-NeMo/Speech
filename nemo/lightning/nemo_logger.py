@@ -22,6 +22,7 @@ import lightning.fabric as fl
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint as PTLModelCheckpoint
 from lightning.pytorch.loggers import Logger, TensorBoardLogger, WandbLogger
+from nvidia_resiliency_ext.ptl_resiliency.local_checkpoint_callback import LocalCheckpointCallback
 
 from nemo.lightning.io.mixin import IOMixin
 from nemo.lightning.pytorch.callbacks import ModelCheckpoint
@@ -202,7 +203,7 @@ class NeMoLogger(IOMixin):
         if ckpt:
             _overwrite_i = None
             for i, callback in enumerate(trainer.callbacks):
-                if isinstance(callback, PTLModelCheckpoint):
+                if isinstance(callback, PTLModelCheckpoint) and not isinstance(callback, LocalCheckpointCallback):
                     logging.warning(
                         "The Trainer already contains a ModelCheckpoint callback. " "This will be overwritten."
                     )
@@ -247,7 +248,7 @@ class NeMoLogger(IOMixin):
         from nemo.lightning import MegatronStrategy
 
         for callback in trainer.callbacks:
-            if isinstance(callback, PTLModelCheckpoint):
+            if isinstance(callback, PTLModelCheckpoint) and not isinstance(callback, LocalCheckpointCallback):
                 if callback.dirpath is None:
                     callback.dirpath = Path(log_dir / "checkpoints")
                 if callback.filename is None:

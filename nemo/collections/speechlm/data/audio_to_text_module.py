@@ -100,18 +100,21 @@ class AudioToTextDataModule(pl.LightningDataModule, IOMixin):
         data_cfg = self.data_cfg
 
         if data_cfg.get('prompt_format', None):
-            # Text processor for lhotse datasets
-            text_processor = MultimodalConversationTextProcessor(
-                self.tokenizer,
-                prompt_format=data_cfg['prompt_format'],
-                max_seq_length=data_cfg["max_seq_length"],
-                add_boa_eoa=data_cfg.get("add_boa_eoa", False),
-                boa_string=data_cfg.get("boa_string", "<BOA>"),
-                eoa_string=data_cfg.get("eoa_string", "<EOA>"),
-            )
+            prompt_format = data_cfg['prompt_format']
         else:
-            # Legacy text processor for non-lhotse datasets
-            text_processor = get_text_processor_from_cfg(cfg=data_cfg, tokenizer=self.tokenizer)
+            logging.warning(f"Prompt format is not specified in the data config. Using default prompt format `plain`.")
+            prompt_format = "plain"
+
+        # Text processor for lhotse datasets
+        text_processor = MultimodalConversationTextProcessor(
+            self.tokenizer,
+            prompt_format=prompt_format,
+            max_seq_length=data_cfg["max_seq_length"],
+            add_boa_eoa=data_cfg.get("add_boa_eoa", False),
+            boa_string=data_cfg.get("boa_string", "<BOA>"),
+            eoa_string=data_cfg.get("eoa_string", "<EOA>"),
+        )
+
         return text_processor
 
     def prepare_data(self):
@@ -198,7 +201,7 @@ class AudioToTextDataModule(pl.LightningDataModule, IOMixin):
         if data_cfg.get('is_tarred', False):
             dataset = get_tarred_audio_text_dataset_from_config(
                 config=data_cfg,
-                text_processor=self.text_processor,
+                text_processor=get_text_processor_from_cfg(cfg=self.data_cfg, tokenizer=self.tokenizer),
                 augmentor=augmentor,
                 global_rank=parallel_state.get_data_parallel_rank(),
                 world_size=parallel_state.get_data_parallel_world_size(),
@@ -207,7 +210,7 @@ class AudioToTextDataModule(pl.LightningDataModule, IOMixin):
             dataset = get_audio_text_dataset_from_config(
                 manifest_filepath=data_cfg.manifest_filepath,
                 config=data_cfg,
-                text_processor=self.text_processor,
+                text_processor=get_text_processor_from_cfg(cfg=self.data_cfg, tokenizer=self.tokenizer),
                 augmentor=augmentor,
                 is_train=(mode == 'train'),
             )

@@ -47,7 +47,7 @@ An example TitaNet train and validation configuration could look like (``{NEMO_R
       shuffle: False    # No need to shuffle the validation data
 
       
-If you would like to use tarred dataset, have a look at the ASR :ref:`Tarred Datasets <asr-datasets-tarred>` section.
+If you would like to use tarred dataset, have a look at the ASR :ref:`Tarred Datasets <Tarred_Datasets>` section.
 
 
 Preprocessor Configuration

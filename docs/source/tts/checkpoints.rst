@@ -115,8 +115,11 @@ There are multiple TTS tutorials provided in the directory of `tutorials/tts/ <h
 * **cross-lingual fine-tuning**: https://github.com/NVIDIA/NeMo/tree/stable/tutorials/tts/FastPitch_GermanTTS_Training.ipynb
 * **cross-speaker fine-tuning**: https://github.com/NVIDIA/NeMo/tree/stable/tutorials/tts/FastPitch_Finetuning.ipynb
 
+
+.. _NGC TTS Models:
+
 NGC TTS Models
------------------------------------
+--------------
 
 This section summarizes a full list of available NeMo TTS models that have been released in `NGC NeMo Text to Speech Collection <https://catalog.ngc.nvidia.com/orgs/nvidia/collections/nemo_tts/entities>`_. You can download model checkpoints of your interest via either way below,
 

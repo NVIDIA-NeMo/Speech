@@ -1,0 +1,64 @@
+/*
+ * Code imported via patch from https://github.com/triton-lang/triton/pull/6570, commit 2afae45951b74785b144151b31e91e6c82b0b02f.
+ * Copyright (c) 2018-2022 Philippe Tillet, OpenAI.
+ * Licensed under the MIT License.
+ */
+
+From 2afae45951b74785b144151b31e91e6c82b0b02f Mon Sep 17 00:00:00 2001
+From: Han Zhu <zhuhan7737@gmail.com>
+Date: Tue, 22 Apr 2025 18:42:23 -0700
+Subject: [PATCH] [autotuner] Lazily initiailize do_bench
+
+---
+--- a/triton/runtime/autotuner.py	2025-04-28 20:28:01
++++ b/triton/runtime/autotuner.py	2025-04-28 20:39:42
+@@ -4,6 +4,7 @@
+ import os
+ import time
+ import inspect
++from functools import cached_property
+ from typing import Dict
+
+ from .jit import KernelInterface
+@@ -97,6 +98,7 @@
+         while not inspect.isfunction(self.base_fn):
+             self.base_fn = self.base_fn.fn
+
++        self._do_bench = do_bench
+         self.num_warmups = warmup
+         self.num_reps = rep
+         self.use_cuda_graph = use_cuda_graph
+@@ -110,7 +112,7 @@
+                           stacklevel=1)
+             if use_cuda_graph:
+                 from ..testing import do_bench_cudagraph
+-                self.do_bench = lambda kernel_call, quantiles: do_bench_cudagraph(
++                self._do_bench = lambda kernel_call, quantiles: do_bench_cudagraph(
+                     kernel_call,
+                     rep=rep if rep is not None else 100,
+                     quantiles=quantiles,
+@@ -118,7 +120,7 @@
+                 return
+
+             import triton.testing
+-            self.do_bench = lambda kernel_call, quantiles: triton.testing.do_bench(
++            self._do_bench = lambda kernel_call, quantiles: triton.testing.do_bench(
+                 kernel_call,
+                 warmup=warmup if warmup is not None else 25,
+                 rep=rep if rep is not None else 100,
+@@ -126,10 +128,11 @@
+             )
+             return
+
+-        if do_bench is None:
+-            self.do_bench = driver.active.get_benchmarker()
+-        else:
+-            self.do_bench = do_bench
++    @cached_property
++    def do_bench(self):
++        if self._do_bench is None:
++            return driver.active.get_benchmarker()
++        return self._do_bench
+
+     def _bench(self, *args, config, **meta):
+         from ..compiler.errors import CompileTimeAssertionFailure

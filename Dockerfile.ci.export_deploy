@@ -16,7 +16,8 @@
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 
-FROM ${BASE_IMAGE} AS trt-base
+FROM ${BASE_IMAGE} AS base-image
+ENV PIP_CONSTRAINT="" 
 ARG IMAGE_LABEL
 LABEL "nemo.library"=${IMAGE_LABEL}
 
@@ -39,8 +40,7 @@ RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" 
 EOF
 
 
-FROM trt-base AS trt-llm-wheel
-
+FROM base-image AS trt-llm-wheel
 ARG TRTLLM_REPO
 ARG TRTLLM_TAG
 RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
@@ -48,9 +48,17 @@ RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" 
   bash /tmp/NeMo/reinstall.sh --library trtllm --mode build
 EOF
 
+FROM base-image as te-wheel
+ARG TE_REPO
+ARG TE_TAG
+RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh \
+  --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches <<"EOF" bash -ex
+  
+  bash /tmp/NeMo/reinstall.sh --library te --mode build
+  ls -al /tmp/Megatron-LM || true
+EOF
 
-FROM trt-base as final
-
+FROM base-image as mcore-wheel
 ARG MLM_REPO
 ARG MLM_TAG
 RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
@@ -59,9 +67,13 @@ RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" 
   ls -al /tmp/Megatron-LM || true
 EOF
 
+
+FROM base-image
 WORKDIR /workspace
 RUN \
   --mount=type=bind,from=trt-llm-wheel,source=/opt/wheels/trtllm,target=/opt/wheels/trtllm \
+  --mount=type=bind,from=te-wheel,source=/opt/wheels/te,target=/opt/wheels/te \
+  --mount=type=bind,from=mcore-wheel,source=/opt/wheels/mcore,target=/opt/wheels/mcore \
   --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
   --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh \

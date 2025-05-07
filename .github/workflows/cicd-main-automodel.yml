@@ -57,6 +57,7 @@ jobs:
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
           cpu-only: ${{ matrix.cpu-only || false }}
+          is_optional: ${{ matrix.is-optional || false }}
 
   e2e-tests:
     strategy:

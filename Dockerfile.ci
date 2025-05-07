@@ -16,12 +16,23 @@
 
 ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:24.07-py3
 
-FROM ${BASE_IMAGE}
-
+FROM ${BASE_IMAGE} as base-image
+ENV PIP_CONSTRAINT="" 
 ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1
 ENV PYTHONUNBUFFERED=1
 
+FROM base-image as te-wheel
+ARG TE_REPO
+ARG TE_TAG
+RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh \
+  --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches <<"EOF" bash -ex
+  
+  bash /tmp/NeMo/reinstall.sh --library te --mode build
+  ls -al /tmp/Megatron-LM || true
+EOF
+
+FROM base-image as mcore-wheel
 ARG MLM_REPO
 ARG MLM_TAG
 RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" bash -ex
@@ -30,8 +41,11 @@ RUN --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh <<"EOF" 
   ls -al /tmp/Megatron-LM || true
 EOF
 
+FROM base-image 
 WORKDIR /workspace
-RUN \
+RUN \  
+  --mount=type=bind,from=te-wheel,source=/opt/wheels/te,target=/opt/wheels/te \
+  --mount=type=bind,from=mcore-wheel,source=/opt/wheels/mcore,target=/opt/wheels/mcore \
   --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
   --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,source=reinstall.sh,target=/tmp/NeMo/reinstall.sh \
@@ -41,6 +55,7 @@ RUN \
   --mount=type=bind,source=nemo/package_info.py,target=/tmp/NeMo/nemo/package_info.py \
   --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
     
+  bash /tmp/NeMo/reinstall.sh --library te --mode install
   bash /tmp/NeMo/reinstall.sh --library mcore --mode install
   bash /tmp/NeMo/reinstall.sh --library nemo --mode install
   rm -rf $NEMO_DIR || true

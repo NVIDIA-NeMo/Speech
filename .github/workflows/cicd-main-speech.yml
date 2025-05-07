@@ -70,6 +70,7 @@ jobs:
           image: ${{ inputs.image-name }}
           timeout: ${{ matrix.timeout || 10 }}
           cpu-only: ${{ matrix.cpu-only || false }}
+          is_optional: ${{ matrix.is-optional || false }}
 
   e2e-tests:
     strategy:

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+
 import numpy as np
 import pytest
 import torch
@@ -36,7 +38,6 @@ except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
 from nemo.collections.audio.losses.maxine import CombinedLoss
-
 from nemo.collections.audio.parts.utils.audio import (
     calculate_sdr_numpy,
     convolution_invariant_target_numpy,
@@ -839,11 +840,10 @@ class TestAudioLosses:
                 uut_mae_loss.cpu().detach().numpy(), golden_mae, atol=atol
             ), f'MAELoss not matching for example {n}'
 
-    @pytest.mark.pleasefixme
     @pytest.mark.unit
     @pytest.mark.skipif(not HAVE_TORCHAUDIO, reason="Modules in this test require torchaudio")
-    def test_maxine_combined_loss(self):
-        INPUT_LOCATION = "/home/TestData/collections/audio/maxine/input.bin"
+    def test_maxine_combined_loss(self, test_data_dir):
+        INPUT_LOCATION = os.path.join(test_data_dir, 'audio', 'maxine', 'input.bin')
         ATOL = 1e-2
 
         GOLDEN_VALUES = [

@@ -236,13 +236,13 @@ class HyenaMixer(MegatronModule):
                 return func(*args, **kwargs)
         return func(*args, **kwargs)
 
-    def forward(self, x, layer_past=None, inference_params=None, _hyena_use_cp=True):
+    def forward(self, x, layer_past=None, inference_context=None, _hyena_use_cp=True):
         """Applies the Hyena sequence mixing operation to input embeddings.
 
         Args:
             x: Input tensor of shape [L, B, D] (seq_len, batch_size, hidden_dim)
             layer_past: Past layer state for inference (default: None)
-            inference_params: Parameters for inference (default: None)
+            inference_context: Parameters for inference (default: None)
             _hyena_use_cp: Whether to use context parallelism (default: True)
 
         Returns:

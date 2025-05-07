@@ -579,7 +579,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         decoder_input: Optional[torch.Tensor] = None,
-        inference_params=None,
+        inference_context=None,
         packed_seq_params=None,
     ) -> torch.Tensor:
         """Forward pass through the GPT model.
@@ -590,7 +590,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             attention_mask: Optional attention mask
             labels: Optional labels for computing loss
             decoder_input: Optional decoder input
-            inference_params: Optional parameters for inference
+            inference_context: Optional parameters for inference
             packed_seq_params: Optional parameters for packed sequence processing
 
         Returns:
@@ -603,7 +603,7 @@ class GPTModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNMixin):
             attention_mask,
             decoder_input=decoder_input,
             labels=labels,
-            inference_params=inference_params,
+            inference_context=inference_context,
             **extra_kwargs,
         )
 

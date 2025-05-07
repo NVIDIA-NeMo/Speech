@@ -966,11 +966,15 @@ def export_ckpt(
     Raises:
         ValueError: If the model does not implement ConnectorMixin, indicating a lack of
             necessary exporter functionality.
+        FileExistsError: If the output path is provided (that is, when not using models cache)
+            and it exists and overwrite is not set to True.
     """
     if not isinstance(path, Path):
         path = Path(path)
     if output_path and not isinstance(output_path, Path):
         output_path = Path(output_path)
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(f"Output path {output_path} exists. Use overwrite=True to force overwrite.")
 
     output = io.export_ckpt(path, target, output_path, overwrite, load_connector, **kwargs)
 

@@ -167,7 +167,7 @@ The following is the list of the important arguments for the evaluation script:
 | decoding_strategy                    | str      | beam             | String argument for type of decoding strategy for the model.            |
 +--------------------------------------+----------+------------------+-------------------------------------------------------------------------+
 | decoding                             | Dict     | BeamCTC          | Subdict of beam search configs. Values found via                        |
-|                                      | Config   | InferConfig      | python eval_beamsearch_ngram_ctc.py --help                                  |
+|                                      | Config   | InferConfig      | python eval_beamsearch_ngram_ctc.py --help                              |
 +--------------------------------------+----------+------------------+-------------------------------------------------------------------------+
 | text_processing.do_lowercase         | bool     | ``False``        | Whether to make the training text all lower case.                       |
 +--------------------------------------+----------+------------------+-------------------------------------------------------------------------+

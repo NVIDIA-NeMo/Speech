@@ -7,7 +7,7 @@
 
 The following line shows an example of how you can launch a pre-training experiment-
 
-`python -m scripts.performance.llm.llama3_8b --account <your_slurm_account> -partition <your_slurm_partition>`
+`python -m scripts.performance.llm.pretrain_llama3_8b --account <your_slurm_account> -partition <your_slurm_partition>`
 
 ## Configuration Options
 

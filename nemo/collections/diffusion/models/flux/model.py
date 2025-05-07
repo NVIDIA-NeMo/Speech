@@ -118,6 +118,7 @@ class T5Config:
 
     version: Optional[str] = field(default_factory=lambda: "google/t5-v1_1-xxl")
     max_length: Optional[int] = field(default_factory=lambda: 512)
+    load_config_only: bool = False
 
 
 @dataclass
@@ -486,7 +487,10 @@ class MegatronFluxModel(L.LightningModule, io.IOMixin, io.ConnectorMixin, fn.FNM
             self.t5 = t5
         elif isinstance(t5, T5Config):
             self.t5 = FrozenT5Embedder(
-                self.t5_params.version, max_length=self.t5_params.max_length, device=torch.cuda.current_device()
+                self.t5_params.version,
+                max_length=self.t5_params.max_length,
+                device=torch.cuda.current_device(),
+                load_config_only=self.t5_params.load_config_only,
             )
         else:
             logging.info("T5 encoder not provided, assuming the text embeddings is precached...")

@@ -16,11 +16,15 @@ from typing import List, Optional, Union
 
 import torch
 import torch.nn as nn
-from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, T5Config, T5EncoderModel, T5Tokenizer
 
 
 # pylint: disable=C0116
 class AbstractEmbModel(nn.Module):
+    """
+    Abstract encoder model
+    """
+
     def __init__(
         self,
         enable_lora_finetune: bool = False,
@@ -77,25 +81,7 @@ class AbstractEmbModel(nn.Module):
         raise NotImplementedError
 
     def _enable_lora(self, lora_model):
-        for module_name, module in lora_model.named_modules():
-            if module.__class__.__name__ in self.TARGET_BLOCK:
-                tmp = {}
-                for sub_name, sub_module in module.named_modules():
-                    if sub_module.__class__.__name__ in self.TARGET_MODULE:
-                        if hasattr(sub_module, "input_size") and hasattr(
-                            sub_module, "output_size"
-                        ):  # for megatron ParallelLinear
-                            lora = LoraWrapper(sub_module, sub_module.input_size, sub_module.output_size)
-                        else:  # for nn.Linear
-                            lora = LoraWrapper(sub_module, sub_module.in_features, sub_module.out_features)
-                        self.lora_layers.append(lora)
-                        if sub_name not in tmp.keys():
-                            tmp.update({sub_name: lora})
-                        else:
-                            print(f"Duplicate subnames are found in module {module_name}")
-                for sub_name, lora_layer in tmp.items():
-                    lora_name = f'{sub_name}_lora'
-                    module.add_module(lora_name, lora_layer)
+        raise NotImplementedError
 
 
 class FrozenCLIPEmbedder(AbstractEmbModel):
@@ -168,16 +154,22 @@ class FrozenCLIPEmbedder(AbstractEmbModel):
 
 
 class FrozenT5Embedder(AbstractEmbModel):
+    '''
+    FrozenT5 encoder model from HF
+    '''
+
     def __init__(
-        self,
-        version="google/t5-v1_1-xxl",
-        max_length=512,
-        device="cuda",
-        dtype=torch.float,
+        self, version="google/t5-v1_1-xxl", max_length=512, device="cuda", dtype=torch.float, load_config_only=False
     ):
         super().__init__()
         self.tokenizer = T5Tokenizer.from_pretrained("google/t5-v1_1-xxl", max_length=max_length)
-        self.transformer = T5EncoderModel.from_pretrained(version, torch_dtype=dtype).to(device)
+        if load_config_only:
+            print("T5 will be randomly initialized for testing purpose only!")
+
+            config = T5Config.from_pretrained(version)
+            self.transformer = T5EncoderModel(config)
+        else:
+            self.transformer = T5EncoderModel.from_pretrained(version, torch_dtype=dtype).to(device)
         self.max_length = max_length
         self.freeze()
         self.device = device

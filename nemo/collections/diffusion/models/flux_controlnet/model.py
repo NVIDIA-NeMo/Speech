@@ -281,7 +281,7 @@ class FluxControlNet(VisionModule):
 
         single_block_samples = ()
         for id_block, block in enumerate(self.single_blocks):
-            hidden_states = block(
+            hidden_states, _ = block(
                 hidden_states=hidden_states,
                 rotary_pos_emb=rotary_pos_emb,
                 emb=vec_emb,

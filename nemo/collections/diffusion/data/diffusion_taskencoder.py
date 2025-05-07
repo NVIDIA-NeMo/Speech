@@ -445,7 +445,7 @@ def concat_pad(tensor_list, max_seq_length):
 pos_id_3d = PosID3D()
 
 
-def cook_raw_iamges(sample: dict) -> dict:
+def cook_raw_images(sample: dict) -> dict:
     """
     Processes a raw sample dictionary from energon dataset and returns a new dictionary with specific keys.
 
@@ -474,5 +474,5 @@ class RawImageDiffusionTaskEncoder(DefaultTaskEncoder, IOMixin):
 
     cookers = [
         # Cooker(cook),
-        Cooker(cook_raw_iamges),
+        Cooker(cook_raw_images),
     ]

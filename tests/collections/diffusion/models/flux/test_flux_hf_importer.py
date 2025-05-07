@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from nemo import lightning as nl
+from nemo.collections import llm
+from nemo.collections.diffusion.models.flux.model import FluxModelParams, MegatronFluxModel
 
-from nemo.collections.diffusion.recipes import flux_12b, flux_535m
-from nemo.collections.llm.recipes.log.default import default_log, default_resume
-from nemo.collections.llm.recipes.optim import adam, sgd
-from nemo.collections.llm.recipes.run.executor import torchrun
 
-__all__ = [
-    "adam",
-    "sgd",
-    "default_log",
-    "default_resume",
-    "flux_535m",
-    "flux_12b",
-    "torchrun",
-]
+if __name__ == '__main__':
+    params = FluxModelParams()
+    model = MegatronFluxModel(flux_params=params)
+
+    llm.import_ckpt(model, "hf://black-forest-labs/FLUX.1-dev", "/tmp_flux_dist_ckpt", overwrite=True)

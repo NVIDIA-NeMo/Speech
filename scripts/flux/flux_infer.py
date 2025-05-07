@@ -44,6 +44,12 @@ def parse_args():
         help="Clip version, provide either ckpt dir or clip version like google/t5-v1_1-xxl",
     )
     parser.add_argument(
+        "--t5_load_config_only",
+        action='store_true',
+        default=False,
+        help="randomly initialize T5 weights for testing purpose",
+    )
+    parser.add_argument(
         "--do_convert_from_hf",
         action='store_true',
         default=False,
@@ -83,6 +89,7 @@ def parse_args():
         default="A cat holding a sign that says hello world",
         help="Inference prompts, use \',\' to separate if multiple prompts are provided.",
     )
+    parser.add_argument("--output_path", type=str, default="/tmp/flux_output", help="Path to save inference output.")
     args = parser.parse_args()
     return args
 
@@ -99,6 +106,8 @@ if __name__ == '__main__':
         args.clip_version if os.path.exists(args.clip_version) else "openai/clip-vit-large-patch14"
     )
     params.t5_params.version = args.t5_version if os.path.exists(args.t5_version) else "google/t5-v1_1-xxl"
+    params.t5_params.load_config_only = args.t5_load_config_only
+
     params.flux_config.num_joint_layers = args.num_joint_layers
     params.flux_config.num_single_layers = args.num_single_layers
     pipe = FluxInferencePipeline(params)
@@ -122,4 +131,5 @@ if __name__ == '__main__':
         offload=args.offload,
         guidance_scale=args.guidance,
         dtype=dtype,
+        output_path=args.output_path,
     )

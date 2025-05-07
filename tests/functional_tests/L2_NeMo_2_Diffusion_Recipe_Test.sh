@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-from nemo.collections.diffusion.recipes import flux_12b, flux_535m
-from nemo.collections.llm.recipes.log.default import default_log, default_resume
-from nemo.collections.llm.recipes.optim import adam, sgd
-from nemo.collections.llm.recipes.run.executor import torchrun
-
-__all__ = [
-    "adam",
-    "sgd",
-    "default_log",
-    "default_resume",
-    "flux_535m",
-    "flux_12b",
-    "torchrun",
-]
+CUDA_VISIBLE_DEVICES=0 coverage run -a --data-file=/workspace/.coverage --source=/workspace/ -m pytest tests/collections/diffusion/models/flux/test_flux_recipe.py --with_downloads

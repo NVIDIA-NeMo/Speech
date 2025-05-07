@@ -53,6 +53,12 @@ def parse_args():
         help="Clip version, provide either ckpt dir or clip version like google/t5-v1_1-xxl",
     )
     parser.add_argument(
+        "--t5_load_config_only",
+        action='store_true',
+        default=False,
+        help="randomly initialize T5 weights for testing purpose",
+    )
+    parser.add_argument(
         "--do_convert_from_hf",
         action='store_true',
         default=False,
@@ -79,6 +85,12 @@ def parse_args():
     parser.add_argument(
         "--num_single_layers", type=int, default=1, help="Number of single transformer layers in controlnet."
     )
+    parser.add_argument(
+        "--flux_num_joint_layers", type=int, default=1, help="Number of joint transformer layers in controlnet."
+    )
+    parser.add_argument(
+        "--flux_num_single_layers", type=int, default=1, help="Number of single transformer layers in controlnet."
+    )
     parser.add_argument("--inference_steps", type=int, default=10, help="Number of inference steps to run.")
     parser.add_argument(
         "--num_images_per_prompt", type=int, default=1, help="Number of images to generate for each prompt."
@@ -94,6 +106,9 @@ def parse_args():
         default="A cat holding a sign that says hello world",
         help="Inference prompts, use \',\' to separate if multiple prompts are provided.",
     )
+    parser.add_argument(
+        "--output_path", type=str, default="/tmp/flux_controlnet_output", help="Path to save inference output."
+    )
     args = parser.parse_args()
     return args
 
@@ -105,11 +120,14 @@ if __name__ == '__main__':
 
     print('Initializing flux inference pipeline')
     params = configs[args.version]
+    params.flux_config.num_joint_layers = args.flux_num_joint_layers
+    params.flux_config.num_single_layers = args.flux_num_single_layers
     params.vae_config.ckpt = args.vae_ckpt if os.path.exists(args.vae_ckpt) else None
     params.clip_params.version = (
         args.clip_version if os.path.exists(args.clip_version) else "openai/clip-vit-large-patch14"
     )
     params.t5_params.version = args.t5_version if os.path.exists(args.t5_version) else "google/t5-v1_1-xxl"
+    params.t5_params.load_config_only = args.t5_load_config_only
 
     controlnet_config = FluxControlNetConfig(
         num_joint_layers=args.num_joint_layers,
@@ -142,4 +160,5 @@ if __name__ == '__main__':
         dtype=dtype,
         control_image=control_images,
         controlnet_conditioning_scale=args.conditioning_scale,
+        output_path=args.output_path,
     )

@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,18 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+TRANSFORMER_OFFLINE=1 HF_HOME=/home/TestData/diffusion/ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/diffusion/models/flux/test_flux_controlnet_training.py --yes -v
 
-from nemo.collections.diffusion.recipes import flux_12b, flux_535m
-from nemo.collections.llm.recipes.log.default import default_log, default_resume
-from nemo.collections.llm.recipes.optim import adam, sgd
-from nemo.collections.llm.recipes.run.executor import torchrun
 
-__all__ = [
-    "adam",
-    "sgd",
-    "default_log",
-    "default_resume",
-    "flux_535m",
-    "flux_12b",
-    "torchrun",
-]
+TRANSFORMER_OFFLINE=1 HF_HOME=/home/TestData/diffusion/ coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo tests/collections/diffusion/models/flux/test_flux_controlnet_training.py --yes -v --factory flux_training

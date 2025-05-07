@@ -53,6 +53,7 @@ class JointSelfAttention(Attention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         context_pre_only: bool = False,
+        **kwargs,
     ):
         # Use RMSnorm in for qk norm
         config.normalization = "RMSNorm"
@@ -62,6 +63,7 @@ class JointSelfAttention(Attention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             attention_type="self",
+            **kwargs,
         )
 
         self.linear_qkv = build_module(
@@ -353,6 +355,7 @@ class FluxSingleAttention(SelfAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         cp_comm_type: str = None,
+        **kwargs,
     ):
         # Use RMSnorm in for qk norm
         config.normalization = "RMSNorm"
@@ -362,6 +365,7 @@ class FluxSingleAttention(SelfAttention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             cp_comm_type=cp_comm_type,
+            **kwargs,
         )
         self.linear_proj = build_module(
             submodules.linear_proj,

@@ -113,12 +113,12 @@ def trainer(
         gradient_accumulation_fusion=True,
         ddp=run.Config(
             DistributedDataParallelConfig,
-            use_custom_fsdp=True,
-            data_parallel_sharding_strategy='optim_grads_params',
+            # use_custom_fsdp=True,
+            # data_parallel_sharding_strategy='optim_grads_params',
             check_for_nan_in_grad=True,
             grad_reduce_in_fp32=True,
-            overlap_grad_reduce=True,
-            overlap_param_gather=True,
+            # overlap_grad_reduce=True,
+            # overlap_param_gather=True,
         ),
     )
 
@@ -204,7 +204,7 @@ def pretrain_recipe(
             resume_ignore_no_checkpoint=True,
             resume_past_end=True,
         ),
-        model_transform=None,
+        # model_transform=None,
     )
 
     return recipe

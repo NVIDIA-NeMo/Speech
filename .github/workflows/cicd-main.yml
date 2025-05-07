@@ -21,9 +21,6 @@ on:
       - r**
       - weekly-bump*
     types: [labeled]
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       test_to_run:

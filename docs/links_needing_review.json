@@ -103,14 +103,6 @@
   "info": "404 Client Error: Not Found for url: https://docs.nvidia.com/nemo-framework/user-guide/latest/multimodalmodels/index.html"
 }
 {
-  "filename": "core/api.rst",
-  "lineno": 2,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/Lightning-AI/lightning/blob/master/src/pytorch_lightning/core/mixins/device_dtype_mixin.py#L113",
-  "info": "404 Client Error: Not Found for url: https://github.com/Lightning-AI/pytorch-lightning/blob/master/src/pytorch_lightning/core/mixins/device_dtype_mixin.py"
-}
-{
   "filename": "multimodal/vlm/clip.rst",
   "lineno": 140,
   "status": "broken",
@@ -301,14 +293,6 @@
   "code": 0,
   "uri": "https://github.com/webdataset/webdataset#multinode-training",
   "info": "Anchor 'multinode-training' not found"
-}
-{
-  "filename": "core/api.rst",
-  "lineno": 6,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/pytorch/pytorch/blob/master/torch/nn/modules/module.py#L728",
-  "info": "Anchor 'L728' not found"
 }
 {
   "filename": "nlp/question_answering.rst",

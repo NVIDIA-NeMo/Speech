@@ -2078,38 +2078,6 @@ class ModelPT(LightningModule, Model):
 
         self._cleanup_on_execution_end()
 
-    # TODO: Remove in PTL 1.7.2
-    def cuda(self, device=None):
-        """PTL is overriding this method and changing the pytorch behavior of a module.
-            The PTL LightingModule override will move the module to device 0 if device is None.
-            See the PTL method here:
-            https://github.com/Lightning-AI/lightning/blob/master/src/pytorch_lightning/core/mixins/device_dtype_mixin.py#L113
-
-            Here we are overriding this to maintain the default Pytorch nn.module behavior:
-            https://github.com/pytorch/pytorch/blob/master/torch/nn/modules/module.py#L728
-
-        Moves all model parameters and buffers to the GPU.
-
-        This also makes associated parameters and buffers different objects. So
-        it should be called before constructing optimizer if the module will
-        live on GPU while being optimized.
-
-        .. note::
-            This method modifies the module in-place.
-
-        Args:
-            device (int, optional): if specified, all parameters will be
-                copied to that device
-
-        Returns:
-            Module: self
-        """
-        if device is None:
-            device = torch.device("cuda", torch.cuda.current_device())
-        elif isinstance(device, int):
-            device = torch.device("cuda", index=device)
-        return super().cuda(device=device)
-
     def _optim_config_copy(self, optim_config: Optional[Union[DictConfig, Dict]]) -> Optional[DictConfig]:
         """
         Return a copy of `optim_config` if provided (and otherwise of the internal optim config, if available).

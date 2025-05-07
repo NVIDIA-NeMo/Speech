@@ -450,9 +450,11 @@ jobs:
 
   Coverage:
     runs-on: ubuntu-latest
-    needs: [Nemo_CICD_Test]
+    needs: [pre-flight, Nemo_CICD_Test]
     if: |
-      (
+      needs.pre-flight.outputs.test_to_run != '[]'
+      && needs.pre-flight.outputs.components_to_run != '[]'
+      && (
         success() 
         || needs.Nemo_CICD_Test.result == 'success'
       )

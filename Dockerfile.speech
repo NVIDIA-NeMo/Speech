@@ -37,6 +37,7 @@ RUN apt-get update && \
   apt-get install -y \
   libsndfile1 sox \
   libfreetype6 \
+  libsox-fmt-all \
   swig \
   ffmpeg \
   libavdevice-dev && \

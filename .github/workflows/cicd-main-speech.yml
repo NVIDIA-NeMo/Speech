@@ -152,7 +152,6 @@ jobs:
             script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Eng_CitriNet_with_wav
           - runner: self-hosted-azure
             script: L2_Segmentation_Tool_Parallel_ctc_segmentation_test_L2_Ru_QN_with_mp3
-            is_optional: true
           - script: L2_HF_Transformer_SpeechLM_SFT_2gpu
             runner: self-hosted-azure
           - script: L2_SpeechLM_LoRA_TP1PP1_MBS2

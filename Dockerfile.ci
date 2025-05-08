@@ -22,6 +22,13 @@ ENV TRANSFORMERS_OFFLINE=0
 ENV HYDRA_FULL_ERROR=1
 ENV PYTHONUNBUFFERED=1
 
+# APT packages
+RUN <<"EOF" bash -ex
+apt-get update
+apt-get install -y bc libsox-fmt-all
+apt-get clean
+EOF
+
 FROM base-image as te-wheel
 ARG TE_REPO
 ARG TE_TAG

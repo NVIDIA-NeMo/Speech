@@ -32,11 +32,11 @@
     - DeepSeek V3 Pretraining
     - Evo2
     - Qwen 2.5
+    - LoRA for Qwen3-32B and Qwen3-30B-A3B
   - MultiModal
     - FLUX
     - Gemma 3
     - Qwen2-VL
-    - Qwen 2.5
   - ASR
     - NeMo Run support for ASR training
     - N-Gram LM on GPU for AED

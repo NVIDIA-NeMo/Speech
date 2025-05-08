@@ -265,6 +265,14 @@ class HFAutoModelForCausalLM(pl.LightningModule, io.IOMixin, fn.FNMixin):
 
             te_accelerate(self.model, self.model_accelerator.fp8_autocast)
 
+        if self.use_linear_ce_loss:
+            # scan the model for fp8 layers, if found disable lce
+            for module in self.model.modules():
+                if hasattr(module, 'fp8'):
+                    logging.warning("LCE does not support FP8, switching to regular CE.")
+                    self.use_linear_ce_loss = False
+                    break
+
         if self.enable_grad_ckpt:
             if getattr(self.model, 'supports_gradient_checkpointing', False):
                 self.model.gradient_checkpointing_enable()

@@ -84,7 +84,6 @@ jobs:
             script: L2_HF_Transformer_PEFT_2gpu_FSDP2_liger
           - runner: azure-gpu-vm-runner1-h100
             script: L2_HF_Transformer_PEFT_2gpu_FSDP2_fp8
-            is_optional: true
           - runner: self-hosted-azure
             script: L2_HF_Transformer_PEFT_2gpu_FSDP2
           - runner: self-hosted-azure
@@ -95,7 +94,6 @@ jobs:
             script: L2_HF_Transformer_SFT_2gpu_FSDP2
           - runner: azure-gpu-vm-runner1-h100
             script: L2_HF_Transformer_SFT_2gpu_FSDP2_fp8
-            is_optional: true
           - runner: self-hosted-azure
             script: L2_HF_Transformer_SFT_2gpu_nemorun
           - runner: self-hosted-azure

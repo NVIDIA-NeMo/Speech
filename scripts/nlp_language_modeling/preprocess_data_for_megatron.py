@@ -140,6 +140,7 @@ def get_tokenizer(args):
         vocab_file=args.vocab_file,
         merges_file=args.merge_file,
         delimiter=args.delimiter,
+        use_fast=args.use_fast,
     )
     if args.need_pad_id:
         if not hasattr(tokenizer, "pad_id"):
@@ -240,6 +241,11 @@ def get_args():
         type=str,
         default=None,
         help='Path to tokenizer model.',
+    )
+    group.add_argument(
+        '--use-fast',
+        action='store_true',
+        help='Use fast tokenizer.',
     )
     group.add_argument('--vocab-file', type=str, default=None, help='Path to the vocab file')
     group.add_argument('--files-filter', type=str, default='**/*.json*', help='files filter str')

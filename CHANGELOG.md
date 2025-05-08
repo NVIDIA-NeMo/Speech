@@ -10,7 +10,7 @@
   - ONNX and TensorRT Export for NIM Embedding Container
   - In-framework deployment for HF Models
   - TRT-LLM deployment for HF Models in NeMo Framework
-- Evaluations
+- Evaluation
   - Integrate nvidia-lm-eval to NeMo FW for evaluations with OpenAI API compatible in-framework deployment
 - AutoModel
   - VLM AutoModelForImageForTextToText
@@ -18,7 +18,7 @@
   - Support CP with FSDP2
   - Support TP with FSDP2
   - Performance Optimization
-    - add support for cut cross entropy
+    - add support for cut cross entropy & liger kernel
     - Gradient Checkpointing
 - Fault Tolerance
   - Integrate NVRx v0.3 Local checkpointing
@@ -29,8 +29,9 @@
     - Llama Nemotron Super
     - Llama Nemotron Nano
     - Nemotron-h/5
-    - Deep Seek V3 Pretraining
-    - Hyena
+    - DeepSeek V3 Pretraining
+    - Evo2
+    - Qwen 2.5
   - MultiModal
     - FLUX
     - Gemma 3

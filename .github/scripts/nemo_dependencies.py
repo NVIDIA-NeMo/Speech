@@ -357,9 +357,23 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
             ]
 
     # Add all Dockerfile files
-    for file_path in os.listdir(nemo_root):
-        if "Dockerfile" in file_path:
-            dependencies[file_path] = ["nemo2", "unit-tests", "speech", "automodel", "export-deploy"]
+    for root, _, files in os.walk(nemo_root):
+        for file_path in files:
+            full_path = os.path.join(root, file_path)
+            relative_path = os.path.relpath(full_path, nemo_root)
+
+            if "cicd-main-export-deploy" in file_path:
+                dependencies[relative_path] = ["export-deploy"]
+            if "cicd-main-nemo2" in file_path:
+                dependencies[relative_path] = ["nemo2"]
+            if "cicd-main-speech" in file_path:
+                dependencies[relative_path] = ["speech"]
+            if "cicd-main-automodel" in file_path:
+                dependencies[relative_path] = ["automodel"]
+            if "cicd-main-unit-tests" in file_path:
+                dependencies[relative_path] = ["unit-tests"]
+            if "Dockerfile" in file_path:
+                dependencies[relative_path] = ["nemo2", "unit-tests", "speech", "automodel", "export-deploy"]
 
     # Sort dependencies by length of values (number of dependencies)
     dependencies = dict(sorted(dependencies.items(), key=lambda x: len(x[1]), reverse=True))

@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union
 import lightning.pytorch as pl
 import torch
 import torch.distributed as dist
+from huggingface_hub.errors import HFValidationError
 from lightning.fabric.plugins import CheckpointIO
 from lightning.fabric.utilities.cloud_io import get_filesystem
 from lightning.fabric.utilities.types import _PATH
@@ -261,7 +262,13 @@ class HFCheckpointIO(CheckpointIO, IOMixin):
             adapter_path = path / HF_ADAPTER_PATH
             trainer_state |= HFCheckpointIO._load_adapter_weights_only(adapter_path)
         elif callable(getattr(self.model, 'load_pretrained', None)):
-            trainer_state['state_dict'] = self.model.load_pretrained(path / HF_WEIGHTS_PATH)
+            try:
+                trainer_state['state_dict'] = self.model.load_pretrained(path / HF_WEIGHTS_PATH)
+            except (EnvironmentError, HFValidationError):
+                raise EnvironmentError(
+                    f"Failed to load weights from {path}. If this is a local checkpoint, please make sure the path exists and has the correct format. "
+                    f"If this is a model from the HuggingFace Hub, please provide a valid repo_id of a model on the Hub."
+                )
         else:
             raise RuntimeError(
                 "Checkpoint load has failed: 'load_pretrained' is not defined for "

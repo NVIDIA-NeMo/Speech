@@ -15,8 +15,11 @@
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional, Union
 
 from nemo.utils import logging
+
+AnyPath = Union[Path, str]
 
 
 def unset_environment_variables() -> None:
@@ -53,18 +56,18 @@ def unset_environment_variables() -> None:
 
 
 def get_trtllm_deployable(
-    nemo_checkpoint,
-    model_type,
-    triton_model_repository,
-    num_gpus,
-    tensor_parallelism_size,
-    pipeline_parallelism_size,
-    max_input_len,
-    max_output_len,
-    max_batch_size,
-    dtype,
-    output_context_logits,
-    output_generation_logits,
+    nemo_checkpoint: Optional[AnyPath],
+    model_type: Optional[str],
+    triton_model_repository: Optional[AnyPath],
+    num_gpus: int,
+    tensor_parallelism_size: int,
+    pipeline_parallelism_size: int,
+    max_input_len: int,
+    max_output_len: int,
+    max_batch_size: int,
+    dtype: Optional[str],
+    output_context_logits: bool,
+    output_generation_logits: bool,
 ):
     """
     Exports the nemo checkpoint to trtllm and returns trt_llm_exporter that is used to deploy on PyTriton.
@@ -88,9 +91,6 @@ def get_trtllm_deployable(
             "The provided model repository is not a valid TensorRT-LLM model "
             "directory. Please provide a --nemo_checkpoint or a valid TensorRT-LLM engine."
         )
-
-    if nemo_checkpoint is not None and model_type is None:
-        raise ValueError("Model type is required to be defined if a nemo checkpoint is provided.")
 
     trt_llm_exporter = TensorRTLLM(
         model_dir=trt_llm_path,

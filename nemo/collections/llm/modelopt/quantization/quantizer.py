@@ -126,9 +126,10 @@ class Quantizer:
         dtype = export_config.dtype
         # Export and Quantization config sanity checks
         assert algorithm is None or algorithm in QUANT_CFG_CHOICES, f"Unsupported quantization algorithm: {algorithm}"
-        assert (
-            quantization_config.kv_cache_qformat in KV_QUANT_CFG_CHOICES
-        ), f"Unsupported kv cache quantization format: {quantization_config.kv_cache_qformat}"
+        if quantization_config.enable_kv_cache:
+            assert (
+                quantization_config.kv_cache_qformat in KV_QUANT_CFG_CHOICES
+            ), f"Unsupported kv cache quantization format: {quantization_config.kv_cache_qformat}"
         if export_config is not None:
             assert dtype in SUPPORTED_DTYPE, f"Unsupported export dtype: {dtype}"
         self.torch_dtype = torch_dtype_from_precision(dtype)

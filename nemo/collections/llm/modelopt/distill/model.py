@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Callable, Dict, Optional, Tuple
 
 import torch
 from megatron.core import parallel_state
-from megatron.core.utils import get_batch_on_this_cp_rank
 from torch import Tensor, nn
 
 from nemo.collections import llm
@@ -25,59 +24,13 @@ from nemo.lightning.megatron_parallel import MaskedTokenLossReduction
 from nemo.utils.import_utils import safe_import
 from nemo.utils.model_utils import unwrap_model
 
-from .utils import (
-    LoopingCachedDataIterator,
-    adjust_distillation_model_for_mcore,
-    load_distillation_config,
-    teacher_provider,
-)
+from .utils import adjust_distillation_model_for_mcore, load_distillation_config, teacher_provider
 
 if TYPE_CHECKING:
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
     from nemo.lightning.pytorch.optim import OptimizerModule
 
 mtd, HAVE_MODELOPT = safe_import("modelopt.torch.distill")
-
-
-def gpt_distillation_data_step(dataloader_iter, attn_mask_cpu=False) -> Dict[str, Tensor]:
-    """Same as base GPT's data step but with ability to move attention mask to CPU."""
-    batch = next(dataloader_iter)
-
-    if isinstance(batch, tuple) and len(batch) == 3:
-        batch = batch[0]
-
-    required_device_keys = set()
-    required_host_keys = set()
-
-    if attn_mask_cpu:
-        # [ModelOpt]: We cache data for PP distillation, and save GPU mem by storing masks on CPU mem.
-        required_host_keys.add("attention_mask")
-    else:
-        required_device_keys.add("attention_mask")
-
-    if "cu_seqlens" in batch:
-        required_device_keys.add("cu_seqlens")
-        required_host_keys.add("cu_seqlens_argmin")
-        required_host_keys.add("max_seqlen")
-
-    if parallel_state.is_pipeline_first_stage(ignore_virtual=False):
-        required_device_keys.update(("tokens", "position_ids"))
-    if parallel_state.is_pipeline_last_stage(ignore_virtual=False):
-        required_device_keys.update(("labels", "loss_mask"))
-
-    batch_required_keys = {}
-    for key, val in batch.items():
-        if key in required_device_keys:
-            batch_required_keys[key] = val.cuda(non_blocking=True)
-        elif key in required_host_keys:
-            batch_required_keys[key] = val.cpu()
-        else:
-            batch_required_keys[key] = None
-
-    # slice batch along sequence dimension for context parallelism
-    output = get_batch_on_this_cp_rank(batch_required_keys)
-
-    return output
 
 
 class _DistillationLossReduction(MaskedTokenLossReduction):
@@ -203,21 +156,6 @@ class DistillationGPTModel(llm.GPTModel):
         adjust_distillation_model_for_mcore(distillation_model, model_cfg=self.config, distill_cfg=distill_cfg)
 
         self.module = distillation_model
-
-    def data_step(self, dataloader_iter, cache_num_batches: Optional[int] = None) -> Dict[str, Tensor]:
-        # NOTE: Ignores `self.config.data_step_fn`
-        if cache_num_batches:
-            batches = [
-                gpt_distillation_data_step(dataloader_iter, attn_mask_cpu=True) for _ in range(cache_num_batches)
-            ]
-            return LoopingCachedDataIterator(batches)
-        elif isinstance(dataloader_iter, LoopingCachedDataIterator):
-            batch = next(dataloader_iter)
-            if "attention_mask" in batch:
-                batch["attention_mask"] = batch["attention_mask"].cuda(non_blocking=True)  # move back to GPU
-            return batch
-        else:
-            return gpt_distillation_data_step(dataloader_iter)
 
     def get_inference_wrapper(self, *args, **kwargs) -> Tensor:
         raise NotImplementedError(

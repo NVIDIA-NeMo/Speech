@@ -18,6 +18,7 @@ from argparse import ArgumentParser
 import torch
 from lightning.pytorch.loggers import TensorBoardLogger
 from megatron.core.dist_checkpointing.validation import StrictHandling
+from megatron.core.distributed import DistributedDataParallelConfig
 from megatron.core.optimizer import OptimizerConfig
 
 from nemo import lightning as nl
@@ -72,6 +73,13 @@ if __name__ == "__main__":
         pipeline_model_parallel_size=args.pp_size,
         context_parallel_size=args.cp_size,
         sequence_parallel=(args.tp_size > 1),
+        ddp=DistributedDataParallelConfig(
+            grad_reduce_in_fp32=True,
+            overlap_grad_reduce=True,
+            overlap_param_gather=True,
+            check_for_nan_in_grad=True,
+            average_in_collective=True,
+        ),
         ckpt_load_strictness=StrictHandling.LOG_ALL if args.legacy_ckpt else None,
     )
     trainer = nl.Trainer(

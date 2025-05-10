@@ -30,6 +30,7 @@ from nemo.lightning.pytorch.plugins.mixed_precision import (
     get_optim_config,
     update_config_with_dtype_overrides,
 )
+from nemo.utils import logging
 
 if TYPE_CHECKING:
     from megatron.core.model_parallel_config import ModelParallelConfig
@@ -65,13 +66,26 @@ class FabricMegatronMixedPrecision(MixedPrecision):
         fp8_wgrad: bool = True,
         fp8_dot_product_attention: bool = False,
         fp8_multi_head_attention: bool = False,
-        fp8_param_gather: bool = False,
+        fp8_params: bool = None,
+        fp8_param_gather: bool = None,
         fp16_loss_scale: float = None,
         fp16_initial_loss_scale: float = 4294967296,
         fp16_min_loss_scale: float = 1.0,
         fp16_loss_scale_window: int = 1000,
         fp16_hysteresis: int = 2,
     ) -> None:
+        if fp8_params is not None:
+            logging.warning(
+                "fp8_params is deprecated and will be removed in a future release, use fp8_param_gather instead"
+            )
+            if fp8_param_gather is not None and fp8_param_gather != fp8_params:
+                raise ValueError(
+                    "Getting conflicting values for fp8_params and fp8_param_gather. Please only set fp8_param_gather."
+                )
+            fp8_param_gather = fp8_params
+        elif fp8_param_gather is None:
+            fp8_param_gather = False
+
         if isinstance(precision, int):
             precision = str(precision)
 

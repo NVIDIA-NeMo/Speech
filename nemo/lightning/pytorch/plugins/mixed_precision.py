@@ -113,7 +113,8 @@ class MegatronMixedPrecision(Precision):
         fp8_wgrad: bool = True,
         fp8_dot_product_attention: bool = False,
         fp8_multi_head_attention: bool = False,
-        fp8_param_gather: bool = False,
+        fp8_params: bool = None,
+        fp8_param_gather: bool = None,
         fp16_loss_scale: float = None,
         fp16_initial_loss_scale: float = 4294967296,
         fp16_min_loss_scale: float = 1.0,
@@ -122,6 +123,17 @@ class MegatronMixedPrecision(Precision):
         num_layers_at_start_in_bf16: int = 0,
         num_layers_at_end_in_bf16: int = 0,
     ) -> None:
+        if fp8_params is not None:
+            logging.warning(
+                "fp8_params is deprecated and will be removed in a future release, use fp8_param_gather instead"
+            )
+            if fp8_param_gather is not None and fp8_param_gather != fp8_params:
+                raise ValueError(
+                    "Getting conflicting values for fp8_params and fp8_param_gather. Please only set fp8_param_gather."
+                )
+            fp8_param_gather = fp8_params
+        elif fp8_param_gather is None:
+            fp8_param_gather = False
 
         if isinstance(precision, int):
             precision = str(precision)

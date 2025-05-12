@@ -295,7 +295,10 @@ def datastore_path_to_webdataset_url(store_path: str):
         URL which can be directly used with WebDataset.
     """
     if is_datastore_path(store_path):
-        url = f'pipe:ais get {store_path} - || true'
+        if not store_path.startswith("msc://"):
+            url = f'pipe:ais get {store_path} - || true'
+        else:
+            return store_path
     else:
         raise ValueError(f'Unknown store path format: {store_path}')
 

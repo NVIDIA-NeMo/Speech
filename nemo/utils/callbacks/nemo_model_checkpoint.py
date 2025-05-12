@@ -26,6 +26,7 @@ from lightning.fabric.utilities.cloud_io import get_filesystem
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint, _is_local_file_protocol
 from lightning.pytorch.trainer import call
 from lightning.pytorch.utilities import rank_zero_info
+from torch import Tensor
 
 from nemo.collections.common.callbacks import EMA
 from nemo.utils import logging
@@ -33,6 +34,14 @@ from nemo.utils.app_state import AppState
 from nemo.utils.callbacks.dist_ckpt_io import AsyncFinalizableCheckpointIO
 from nemo.utils.get_rank import is_global_rank_zero
 from nemo.utils.model_utils import ckpt_to_dir, inject_model_parallel_rank, uninject_model_parallel_rank
+
+try:
+    import multistorageclient
+    from multistorageclient.types import MSC_PROTOCOL as MULTISTORAGECLIENT_PROTOCOL
+
+    MULTISTORAGECLIENT_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    MULTISTORAGECLIENT_AVAILABLE = False
 
 
 class NeMoModelCheckpoint(ModelCheckpoint):
@@ -84,6 +93,10 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             self.prefix = kwargs.pop('prefix')
         else:
             self.prefix = ""
+
+        # flag for enabling multistorageclient checkpointing
+        if 'multistorageclient_enabled' in kwargs:
+            self.multistorageclient_enabled = MULTISTORAGECLIENT_AVAILABLE and kwargs.pop('multistorageclient_enabled')
 
         # Call the parent class constructor with the remaining kwargs.
         super().__init__(**kwargs)
@@ -314,12 +327,18 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             return None
         if trainer.is_global_zero:
             logging.info(f'{base_path} already exists, moving existing checkpoint to {available_path}')
-            shutil.move(base_path, available_path)
+            if self.multistorageclient_enabled:
+                # TODO: multistorageclient doesn't have "rename" function, therefore no-op but we should refactor this once multistorageclient have rename function supported.
+                pass
+            else:
+                shutil.move(base_path, available_path)
         trainer.strategy.barrier()
         return available_path
 
     def _format_nemo_checkpoint_name(self, ver: Optional[int] = None) -> str:
         version_infix = '' if ver is None else f'{self.CHECKPOINT_JOIN_CHAR}v{ver}'
+        if self.multistorageclient_enabled:
+            return f"{self.dirpath}/{self.prefix + version_infix + self.postfix}"
         return os.path.abspath(
             os.path.expanduser(os.path.join(self.dirpath, self.prefix + version_infix + self.postfix))
         )
@@ -509,7 +528,11 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         self, filepath: str, trainer: "lightning.pytorch.Trainer", check_dist_ckpt: bool = True  # noqa: F821
     ) -> bool:
         """Checks if a file or a file without a suffix (distributed checkpoint) exists."""
-        exists = self._fs.exists(filepath) or (check_dist_ckpt and self._fs.exists(ckpt_to_dir(filepath)))
+        if self.multistorageclient_enabled:
+            exists = self._fs.exists(filepath)
+        else:
+            exists = self._fs.exists(filepath) or (check_dist_ckpt and self._fs.exists(ckpt_to_dir(filepath)))
+
         return trainer.strategy.broadcast(exists)
 
     def _save_checkpoint(self, trainer: 'lightning.pytorch.Trainer', filepath: str) -> None:  # noqa: F821
@@ -628,12 +651,21 @@ class NeMoModelCheckpoint(ModelCheckpoint):
     def _saved_checkpoint_paths(self) -> Iterable[Path]:
         # distributed checkpoints are directories so we check for them here
         # we filter out unfinished checkpoints, these should be deleted during next cleanup
-        dist_checkpoints = [d for d in Path(self.dirpath).glob("*") if d.is_dir()]
+
+        if self.multistorageclient_enabled:
+            # TODO: support multistorageclient distributed checkpointing
+            return NeMoModelCheckpoint._derive_saved_checkpoint_paths_with_multistorageclient(self.dirpath)
+        else:
+            dist_checkpoints = [d for d in Path(self.dirpath).glob("*") if d.is_dir()]
         if dist_checkpoints:
             return filter(lambda p: not self.is_checkpoint_unfinished(p), dist_checkpoints)
         else:
             checkpoint_files = [f for f in Path(self.dirpath).rglob("*.ckpt")]
             return filter(lambda p: not self.is_checkpoint_unfinished(p), checkpoint_files)
+
+    @staticmethod
+    def _derive_saved_checkpoint_paths_with_multistorageclient(dirpath: str) -> Iterable[Path]:
+        return multistorageclient.glob(f"{dirpath}/*.ckpt")
 
     @staticmethod
     def _remove_unfinished_checkpoints(checkpoint_dir: Union[Path, str]) -> None:
@@ -644,32 +676,44 @@ class NeMoModelCheckpoint(ModelCheckpoint):
         if not is_global_rank_zero():
             raise AssertionError("_remove_unfinished_checkpoints should run only on rank 0")
 
-        checkpoint_dir = Path(checkpoint_dir)
+        multistorageclient_enabled = MULTISTORAGECLIENT_AVAILABLE and str(checkpoint_dir).startswith(
+            MULTISTORAGECLIENT_PROTOCOL
+        )
 
-        existing_marker_filepaths = {
-            f.resolve()
-            for f in checkpoint_dir.glob(f"*{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}")
-            if f.is_file()
-        }
+        if multistorageclient_enabled:
+            existing_marker_filepaths = multistorageclient.glob(
+                f"{checkpoint_dir}*{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}"
+            )
+            fs = get_filesystem(checkpoint_dir)
+            for ckpt_filepath in existing_marker_filepaths:
+                fs.rm(ckpt_filepath)
+        else:
+            checkpoint_dir = Path(checkpoint_dir)
 
-        checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt")}
-        for ckpt_filepath in checkpoint_filepaths:
-            possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_filepath)
-            if possible_marker_path in existing_marker_filepaths:
-                logging.warning(f'Removing unfinished checkpoint: {ckpt_filepath}')
-                os.remove(ckpt_filepath)
+            existing_marker_filepaths = {
+                f.resolve()
+                for f in checkpoint_dir.glob(f"*{NeMoModelCheckpoint.UNFINISHED_CHECKPOINT_SUFFIX}")
+                if f.is_file()
+            }
 
-        # some directories might be distributed checkpoints, we remove these if they have a unfinished marker
-        all_dirpaths = {d.resolve() for d in checkpoint_dir.glob("*") if d.is_dir()}
-        for ckpt_dirpath in all_dirpaths:
-            possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_dirpath)
-            if possible_marker_path in existing_marker_filepaths:
-                logging.warning(f'Removing unfinished dist checkpoint: {ckpt_dirpath}')
-                shutil.rmtree(ckpt_dirpath)
+            checkpoint_filepaths = {f.resolve() for f in checkpoint_dir.rglob("*.ckpt")}
+            for ckpt_filepath in checkpoint_filepaths:
+                possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_filepath)
+                if possible_marker_path in existing_marker_filepaths:
+                    logging.warning(f'Removing unfinished checkpoint: {ckpt_filepath}')
+                    os.remove(ckpt_filepath)
 
-        # delete markers
-        for marker_path in existing_marker_filepaths:
-            os.remove(marker_path)
+            # some directories might be distributed checkpoints, we remove these if they have a unfinished marker
+            all_dirpaths = {d.resolve() for d in checkpoint_dir.glob("*") if d.is_dir()}
+            for ckpt_dirpath in all_dirpaths:
+                possible_marker_path = NeMoModelCheckpoint.format_checkpoint_unfinished_marker_path(ckpt_dirpath)
+                if possible_marker_path in existing_marker_filepaths:
+                    logging.warning(f'Removing unfinished dist checkpoint: {ckpt_dirpath}')
+                    shutil.rmtree(ckpt_dirpath)
+
+            # delete markers
+            for marker_path in existing_marker_filepaths:
+                os.remove(marker_path)
 
     def _should_remove_checkpoint(self, trainer: "pl.Trainer", previous: str, current: str) -> bool:  # noqa: F821
         """Checks if the previous checkpoint should be deleted.
@@ -697,3 +741,26 @@ class NeMoModelCheckpoint(ModelCheckpoint):
             raise ValueError(f"{self.__class__}.dirpath is None.")
         dirpath = Path(self.dirpath).absolute()
         return dirpath in previous.parents
+
+    def format_checkpoint_name(
+        self, metrics: Dict[str, Tensor], filename: Optional[str] = None, ver: Optional[int] = None
+    ) -> str:
+        """
+        Override the format_checkpoint_name behavior from lightning's ModelCheckpoint to support multistorageclient.
+        Specifically, if multistorageclient_enabled = true, use string formatting to construct the full path;
+        Otherwise, reuse the original logic of os.path.join to construct the full path
+        """
+
+        filename = filename or self.filename
+        filename = self._format_checkpoint_name(
+            filename, metrics, auto_insert_metric_name=self.auto_insert_metric_name
+        )
+
+        if ver is not None:
+            filename = self.CHECKPOINT_JOIN_CHAR.join((filename, f"v{ver}"))
+
+        ckpt_name = f"{filename}{self.FILE_EXTENSION}"
+        if self.multistorageclient_enabled:
+            return f"{self.dirpath}/{ckpt_name}" if self.dirpath else ckpt_name
+        else:
+            return os.path.join(self.dirpath, ckpt_name) if self.dirpath else ckpt_name

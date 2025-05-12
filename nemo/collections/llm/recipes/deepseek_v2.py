@@ -20,6 +20,7 @@ import nemo_run as run
 
 from nemo.collections.llm.api import finetune, pretrain
 from nemo.collections.llm.gpt.data.mock import MockDataModule
+from nemo.collections.llm.gpt.data.packed_sequence import PackedSequenceSpecs
 from nemo.collections.llm.gpt.model.deepseek import DeepSeekModel, DeepSeekV2Config
 from nemo.collections.llm.peft import PEFT_STR2CLS
 from nemo.collections.llm.recipes.deepseek import trainer
@@ -107,6 +108,11 @@ def pretrain_recipe(
     recipe.model.config.recompute_method = "uniform"
     recipe.model.config.recompute_num_layers = 1
 
+    # Use DeepEP
+    recipe.model.config.moe_token_dispatcher_type = "flex"
+    recipe.model.config.moe_enable_deepep = True
+    recipe.model.config.moe_shared_expert_overlap = False
+
     return recipe
 
 
@@ -192,6 +198,7 @@ def finetune_recipe(
     recipe.model.config.seq_length = seq_length
     recipe.data.seq_length = seq_length
     if packed_sequence:
-        raise ValueError("Packed sequence for DeepSeek is not yet supported. Please set packed_sequence=False.")
+        recipe.data.dataset_kwargs = {'pad_to_max_length': True}
+        recipe.data.packed_sequence_specs = run.Config(PackedSequenceSpecs, packed_sequence_size=seq_length)
 
     return recipe

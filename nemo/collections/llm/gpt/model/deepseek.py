@@ -26,6 +26,7 @@ from megatron.core.transformer.identity_op import IdentityOp
 from megatron.core.transformer.transformer_config import MLATransformerConfig
 from safetensors.torch import load_file
 from torch import nn
+from transformers import AutoConfig
 
 from nemo.collections.llm.gpt.model.base import (
     HAVE_TE,
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
 
     from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
     from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
+
+if HAVE_TE:
+    from megatron.core.utils import is_te_min_version
 
 
 @dataclass
@@ -86,6 +90,7 @@ class DeepSeekConfig(MLATransformerConfig, GPTConfig):
     moe_token_dispatcher_type: str = "alltoall"
     moe_router_load_balancing_type: str = 'seq_aux_loss'
     moe_shared_expert_overlap: bool = True
+    moe_router_dtype: Optional[str] = 'fp32'
 
     # MLA
     q_lora_rank: int = 1536
@@ -116,6 +121,9 @@ class DeepSeekConfig(MLATransformerConfig, GPTConfig):
     bias_dropout_fusion: bool = True
     masked_softmax_fusion: bool = True
     gradient_accumulation_fusion: bool = True
+    cross_entropy_loss_fusion: bool = True
+    cross_entropy_fusion_impl: str = "te"
+    moe_permute_fusion: bool = is_te_min_version("2.1.0") if HAVE_TE else False
 
     def __post_init__(self):
         super().__post_init__()
@@ -220,6 +228,7 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
         from transformers import AutoModelForCausalLM
 
         self.convert_mtp = convert_mtp
+        self._verify_source()
         source = AutoModelForCausalLM.from_pretrained(str(self), trust_remote_code=True, torch_dtype='auto')
         target = self.init()
         trainer = self.nemo_setup(target)
@@ -232,6 +241,15 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
         del trainer, target
 
         return output_path
+
+    def _verify_source(self):
+        source_config = AutoConfig.from_pretrained(str(self), trust_remote_code=True)
+        assert 'quantization_config' not in source_config, (
+            "HuggingFace cannot load DeepSeek V3's FP8 checkpoint directly. You must convert the checkpoint "
+            "to BF16. See NeMo documentation for more details: "
+            "https://nemo-framework-tme.gitlab-master-pages.nvidia.com/documentation/user-guide/latest/llms/"
+            "deepseek_v3.html#nemo-2-0-finetuning-recipes "
+        )
 
     def _modify_source_state(self, source: nn.Module) -> _ModelState:
         """
@@ -419,7 +437,7 @@ class HFDeepSeekImporter(io.ModelConnector["AutoModelForCausalLM", DeepSeekModel
             moe_router_num_groups=source.n_group,
             moe_router_group_topk=source.topk_group,
             moe_router_topk_scaling_factor=source.routed_scaling_factor,
-            moe_aux_loss_coeff=source.aux_loss_alpha,
+            moe_aux_loss_coeff=getattr(source, "aux_loss_alpha", 0.001),
             kv_lora_rank=source.kv_lora_rank,
             qk_head_dim=source.qk_nope_head_dim,
             qk_pos_emb_head_dim=source.qk_rope_head_dim,

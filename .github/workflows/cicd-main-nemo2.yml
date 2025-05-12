@@ -55,6 +55,8 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_Hyena_DDP_Pretraining_Test
             runner: self-hosted-azure
+          - script: L2_NeMo_2_Hyena_Mixer_Test
+            runner: self-hosted-azure-gpus-2-h100
           - script: L2_NeMo_2_Hyena_PP_Pretraining_Test
             runner: self-hosted-azure
           - script: L2_NeMo_2_Hyena_TP_Pretraining_Test

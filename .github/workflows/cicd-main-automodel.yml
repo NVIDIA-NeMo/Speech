@@ -116,12 +116,11 @@ jobs:
             script: L2_HF_Transformer_SFT_nemorun
           - runner: self-hosted-azure-gpus-1
             script: L2_HF_Transformer_SFT_TE_Acceleration
-            is_optional: true
           - runner: self-hosted-azure-gpus-1
             script: L2_HF_Transformer_PT_TE_Acceleration
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
-    name: ${{ matrix.script }}
+    name: ${{ matrix.is-optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,4 +133,4 @@ jobs:
           script: ${{ matrix.script }}
           tests_to_run: ${{ inputs.test_to_run }}
           image: ${{ inputs.image-name }}
-          is_optional: ${{ matrix.is_optional || false }}
+          is_optional: ${{ matrix.is-optional || false }}

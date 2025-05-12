@@ -412,9 +412,6 @@ jobs:
 
             So it might be time to merge this PR or get some approvals.
 
-            Due to a major CI change, merges are currently handled by the automation team.  
-            We will reach out to you quickly to merge this PR, but you can always reach us with the following handles:
-
             //cc @chtruong814 @ko3n1g @pablo-garay @thomasdhc
 
       - name: "Pipeline not successful and not cancelled: Send Slack alert & create step summary"

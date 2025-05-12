@@ -1264,6 +1264,108 @@ class BatchedFrameASRRNNT(FrameBatchASR):
         return hypothesis
 
 
+class BatchedFrameASRTDT(BatchedFrameASRRNNT):
+    """
+    Batched implementation of FrameBatchASR for TDT models, where the batch dimension is independent audio samples.
+    It's mostly similar to BatchedFrameASRRNNT with special handling of boundary cases due to the frame-skipping
+    resulted by TDT models.
+    """
+
+    def __init__(
+        self,
+        asr_model,
+        frame_len=1.6,
+        total_buffer=4.0,
+        batch_size=32,
+        max_steps_per_timestep: int = 5,
+        stateful_decoding: bool = False,
+        tdt_search_boundary: int = 4,
+    ):
+        '''
+        Args:
+            asr_model: An RNNT model.
+            frame_len: frame's duration, seconds.
+            total_buffer: duration of total audio chunk size, in seconds.
+            batch_size: Number of independent audio samples to process at each step.
+            max_steps_per_timestep: Maximum number of tokens (u) to process per acoustic timestep (t).
+            stateful_decoding: Boolean whether to enable stateful decoding for preservation of state across buffers.
+            tdt_search_boundary: The max number of frames that we search between chunks to match the token at boundary.
+        '''
+        super().__init__(asr_model, frame_len=frame_len, total_buffer=total_buffer, batch_size=batch_size)
+        self.tdt_search_boundary = tdt_search_boundary
+
+    def transcribe(
+        self,
+        tokens_per_chunk: int,
+        delay: int,
+    ):
+        """
+        Performs "middle token" alignment prediction using the buffered audio chunk.
+        """
+        self.infer_logits()
+
+        self.unmerged = [[] for _ in range(self.batch_size)]
+        for idx, alignments in enumerate(self.all_alignments):
+
+            signal_end_idx = self.frame_bufferer.signal_end_index[idx]
+            if signal_end_idx is None:
+                raise ValueError("Signal did not end")
+
+            for a_idx, alignment in enumerate(alignments):
+                if delay == len(alignment):  # chunk size = buffer size
+                    offset = 0
+                else:  # all other cases
+                    offset = 1
+
+                longer_alignment = alignment[
+                    len(alignment)
+                    - offset
+                    - delay
+                    - self.tdt_search_boundary : len(alignment)
+                    - offset
+                    - delay
+                    + tokens_per_chunk
+                ]
+
+                alignment = alignment[
+                    len(alignment) - offset - delay : len(alignment) - offset - delay + tokens_per_chunk
+                ]
+
+                longer_ids, longer_toks = self._alignment_decoder(
+                    longer_alignment, self.asr_model.tokenizer, self.blank_id
+                )
+                ids, _ = self._alignment_decoder(alignment, self.asr_model.tokenizer, self.blank_id)
+
+                if len(longer_ids) > 0 and a_idx < signal_end_idx:
+                    if a_idx == 0 or len(self.unmerged[idx]) == 0:
+                        self.unmerged[idx] = inplace_buffer_merge(
+                            self.unmerged[idx],
+                            ids,
+                            delay,
+                            model=self.asr_model,
+                        )
+                    elif len(self.unmerged[idx]) > 0 and len(longer_toks) > 1:
+                        id_to_match = self.unmerged[idx][-1]
+                        start = min(len(longer_ids) - len(ids), len(longer_ids) - 1)
+                        end = -1
+                        for i in range(start, end, -1):
+                            if longer_ids[i] == id_to_match:
+                                ids = longer_ids[i + 1 :]
+                                break
+
+                        self.unmerged[idx] = inplace_buffer_merge(
+                            self.unmerged[idx],
+                            ids,
+                            delay,
+                            model=self.asr_model,
+                        )
+
+        output = []
+        for idx in range(self.batch_size):
+            output.append(self.greedy_merge(self.unmerged[idx]))
+        return output
+
+
 class LongestCommonSubsequenceBatchedFrameASRRNNT(BatchedFrameASRRNNT):
     """
     Implements a token alignment algorithm for text alignment instead of middle token alignment.

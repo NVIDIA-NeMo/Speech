@@ -23,6 +23,9 @@ The difference between streaming and buffered inference is the chunk size (or th
 Buffered inference will use large chunk sizes (5-10 seconds) + some additional buffer for context.
 Streaming inference will use small chunk sizes (0.1 to 0.25 seconds) + some additional buffer for context.
 
+Note, currently greedy_batched inferece for TDT is not supported. Decoding strategy will be set to greedy for
+TDT automatically.
+
 # Middle Token merge algorithm
 
 python speech_to_text_buffered_infer_rnnt.py \
@@ -73,6 +76,7 @@ from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConf
 from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.streaming_utils import (
     BatchedFrameASRRNNT,
+    BatchedFrameASRTDT,
     LongestCommonSubsequenceBatchedFrameASRRNNT,
 )
 from nemo.collections.asr.parts.utils.transcribe_utils import (
@@ -135,7 +139,10 @@ class TranscriptionConfig:
     stateful_decoding: bool = False  # Whether to perform stateful decoding
 
     # Merge algorithm for transducers
-    merge_algo: Optional[str] = 'middle'  # choices=['middle', 'lcs'], choice of algorithm to apply during inference.
+    # choices=['middle', 'lcs', 'tdt'], choice of algorithm to apply during inference.
+    # if None, we use 'middle' for rnnt and 'tdt' for tdt.
+    merge_algo: Optional[str] = None
+
     lcs_alignment_dir: Optional[str] = None  # Path to a directory to store LCS algo alignments
 
     # Config for word / character error rate calculation
@@ -150,6 +157,8 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     """
     Transcribes the input audio and can be used to infer long audio files by chunking
     them into smaller segments.
+    Currently, greedy_batched inferece for TDT is not supported. Decoding strategy
+    will be set to greedy for TDT automatically.
     """
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     torch.set_grad_enabled(False)
@@ -212,9 +221,17 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model.freeze()
     asr_model = asr_model.to(asr_model.device)
 
+    model_is_tdt = hasattr(asr_model.loss, '_loss') and type(asr_model.loss._loss).__name__ == 'TDTLossNumba'
+    if cfg.merge_algo is None:
+        cfg.merge_algo = "tdt" if model_is_tdt else "middle"
+        logging.info(f"merge_algo not specified. We use the default algorithm (middle for rnnt and tdt for tdt).")
+
+    if model_is_tdt and cfg.merge_algo != "tdt":
+        raise ValueError("merge_algo must be 'tdt' for TDT models")
+
     # Change Decoding Config
     with open_dict(cfg.decoding):
-        if cfg.stateful_decoding:
+        if cfg.stateful_decoding or cfg.merge_algo == 'tdt':
             cfg.decoding.strategy = "greedy"
         else:
             cfg.decoding.strategy = "greedy_batch"
@@ -266,6 +283,16 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         )
         # Set the LCS algorithm delay.
         frame_asr.lcs_delay = math.floor(((total_buffer - chunk_len)) / model_stride_in_secs)
+
+    elif cfg.merge_algo == 'tdt':
+        frame_asr = BatchedFrameASRTDT(
+            asr_model=asr_model,
+            frame_len=chunk_len,
+            total_buffer=cfg.total_buffer_in_secs,
+            batch_size=cfg.batch_size,
+            max_steps_per_timestep=cfg.max_steps_per_timestep,
+            stateful_decoding=cfg.stateful_decoding,
+        )
 
     else:
         raise ValueError("Invalid choice of merge algorithm for transducer buffered inference.")

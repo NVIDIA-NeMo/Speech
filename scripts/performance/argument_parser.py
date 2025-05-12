@@ -338,7 +338,6 @@ def parse_cli_args():
         required=False,
         default=None,
     )
-
     parser.add_argument(
         "-cm",
         "--custom_mounts",
@@ -346,6 +345,12 @@ def parse_cli_args():
         help="Comma separated string of mounts",
         required=False,
         default=[],
+    )
+    parser.add_argument(
+        "--use_hf_tokenizer",
+        help="Use HuggingFace tokenizer. Disabled by default. Null tokenizer will be used if not provided.",
+        action="store_true",
+        required=False,
     )
 
     return parser

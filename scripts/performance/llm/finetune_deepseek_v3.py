@@ -19,6 +19,7 @@ import nemo_run as run
 from nemo.collections.llm.gpt.data.mock import MockDataModule
 from nemo.collections.llm.gpt.data.squad import SquadDataModule
 from nemo.collections.llm.recipes.deepseek_v3 import finetune_recipe, model
+from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.pytorch.callbacks.garbage_collection import GarbageCollectionCallback
 from nemo.lightning.pytorch.callbacks.megatron_comm_overlap import MegatronCommOverlapCallback
 from nemo.lightning.pytorch.callbacks.moe_token_drop import MegatronTokenDropCallback
@@ -108,7 +109,12 @@ def override_recipe_configs(
     recipe.resume.restore_config = None
 
     # data module configs
-    recipe.data.tokenizer = hf_tokenizer(HF_MODEL_URI)
+    if args.use_hf_tokenizer:
+        recipe.data.tokenizer = hf_tokenizer(HF_MODEL_URI)
+    else:
+        recipe.data.tokenizer = run.Config(
+            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=129280
+        )
     recipe.model.tokenizer = recipe.data.tokenizer
 
     if recipe.data.__fn_or_cls__ == SquadDataModule and not isfile_train_pack_metadata(HF_MODEL_URI, recipe.data):

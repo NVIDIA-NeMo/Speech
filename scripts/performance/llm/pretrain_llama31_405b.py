@@ -25,6 +25,7 @@ from nemo.collections.llm.recipes.tp_overlap_configs.userbuffers import (
     userbuffers_fp8_b200_h16384_tp4_cp2_mbs1_seqlen8192,
     userbuffers_fp8_h100_h16384_tp8_cp2_mbs1_seqlen8192,
 )
+from nemo.collections.nlp.modules.common.tokenizer_utils import get_nmt_tokenizer
 from nemo.lightning.run.plugins import MemoryProfilePlugin, NsysPlugin, PerfEnvPlugin
 
 from ..argument_parser import parse_cli_args
@@ -88,7 +89,13 @@ def override_recipe_configs(
     gpu_type = args.gpu.lower()
 
     # data module configs
-    recipe.data.tokenizer = hf_tokenizer("meta-llama/Llama-3.1-405B")
+    if args.use_hf_tokenizer:
+        recipe.data.tokenizer = hf_tokenizer("meta-llama/Llama-3.1-405B")
+    else:
+        recipe.data.tokenizer = run.Config(
+            get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=128256
+        )
+        recipe.model.tokenizer = recipe.data.tokenizer
 
     ub_cfg = {
         "h100": {

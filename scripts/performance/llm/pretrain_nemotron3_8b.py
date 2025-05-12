@@ -24,6 +24,7 @@ from ..argument_parser import parse_cli_args
 from ..utils import (
     args_sanity_check,
     get_user_configs,
+    logging,
     set_exp_logging_configs,
     set_primary_perf_configs,
     slurm_executor,
@@ -71,9 +72,12 @@ def override_recipe_configs(
     )
 
     # data module configs
+    if args.use_hf_tokenizer:
+        logging.warning("HuggingFace tokenizer not supported for Nemotron3 8B. Using NullTokenizer.")
     recipe.data.tokenizer = run.Config(
         get_nmt_tokenizer, library="null", model_name="NullTokenizer", vocab_size=256000
     )
+    recipe.model.tokenizer = recipe.data.tokenizer
 
     return recipe
 

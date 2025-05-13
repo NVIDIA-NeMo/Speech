@@ -9,7 +9,7 @@ Transformer Layer Recomputation
 NeMo supports transformer layer recomputation, which checkpoints the input of each transformer layer and recomputes the activations for the remaining layers. This technique significantly reduces activation memory usage. However, it increases the per-transformer layer computation cost by 30% due to re-executing the entire layer’s forward computation.
 NeMo also supports partial transformer layer recomputation, which is beneficial when recomputing a few transformer layers help to reduce enough GPU memory for model to fit. This approach avoids the need to recompute the rest of the layers.
 
-The recomputation config can be enabled via the transformer config `TransformerConfig <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py#L15>`_.
+The recomputation config can be enabled via the transformer config `TransformerConfig <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py#L25>`_.
 
 Transformer layer recomputation is enabled by setting ``recompute_method=full``.
 The number of transformer layers to recompute can be set using ``recompute_num_layers`` along with ``recompute_method=block``.

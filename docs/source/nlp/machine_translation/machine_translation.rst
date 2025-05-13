@@ -239,7 +239,7 @@ as follows:
 Applying BPE Tokenization, Batching, Bucketing and Padding
 ----------------------------------------------------------
 
-Given BPE tokenizers, and a cleaned parallel corpus, the following steps are applied to create a `TranslationDataset <https://github.com/NVIDIA/NeMo/blob/v1.0.2/nemo/collections/nlp/data/machine_translation/machine_translation_dataset.py#L64>`__ object.
+Given BPE tokenizers, and a cleaned parallel corpus, the following steps are applied to create a `TranslationDataset <https://github.com/NVIDIA/NeMo/blob/v1.0.2/nemo/collections/nlp/data/machine_translation/machine_translation_dataset.py#L67>`__ object.
 
 #. Text to IDs - This performs subword tokenization with the BPE model on an input string and maps it to a sequence of tokens for the 
    source and target text.

@@ -3,6 +3,8 @@
 SpellMapper (Spellchecking ASR Customization) Model
 =====================================================
 
+**Spellchecking tutorial is no longer supported in NeMo Framework.**
+
 `SpellMapper <https://arxiv.org/abs/2306.02317>`__ :cite:`nlp-ner-antonova2023spellmapper` is a non-autoregressive model for postprocessing of ASR output. It gets as input a single ASR hypothesis (text) and a custom vocabulary and predicts which fragments in the ASR hypothesis should be replaced by which custom words/phrases if any. Unlike traditional spellchecking approaches, which aim to correct known words using language models, SpellMapper's goal is to correct highly specific user terms, out-of-vocabulary (OOV) words or spelling variations (e.g., "John Koehn", "Jon Cohen").
 
 This model is an alternative to word boosting/shallow fusion approaches:

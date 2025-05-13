@@ -51,7 +51,7 @@ Below is the example of training `YouTokenToMe <https://github.com/VKCOM/YouToke
 Sentence Dataset Construction
 -----------------------------
 
-Given BPE tokenizer and a cleaned sentence-level text corpus, the following steps are applied to create a `SentenceDataset <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/nlp/data/language_modeling/sentence_dataset.py#L34>`__ object.
+Given BPE tokenizer and a cleaned sentence-level text corpus, the following steps are applied to create a `SentenceDataset <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/nlp/data/language_modeling/sentence_dataset.py#L35>`__ object.
 
 #. Text to IDs - Performs tokenization with the specified tokenizer model on an input sentence and maps it to a sequence of tokens.
 

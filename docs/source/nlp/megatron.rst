@@ -167,7 +167,7 @@ Since model parallel models always require more than one GPU, the ``Trainer`` is
 BioMegatron
 -----------
 
-BioMegatron has the same network architecture as the Megatron-LM, but is pretrained on a different dataset - `PubMed <https://catalog.data.gov/dataset/pubmed>`_, 
+BioMegatron has the same network architecture as the Megatron-LM, but is pretrained on a different dataset - PubMed,
 a large biomedical text corpus, which achieves better performance in biomedical downstream tasks than the original Megatron-LM.
 
 Examples of using BioMegatron on biomedical downstream tasks can be found at (can be executed with `Google's Colab <https://colab.research.google.com/notebooks/intro.ipynb>`_): 

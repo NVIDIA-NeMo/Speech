@@ -288,8 +288,6 @@ Set expert parallelism directly from CLI:
       
       nemo llm pretrain --factory mixtral_8x7b trainer.strategy.expert_model_parallel_size=4
 
-For further information on configuration, refer to the following documentation: `NeMo Megatron GPT Config <https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/language_modeling/conf/megatron_gpt_config.yaml#L68>`__.
-
 
 Enable Expert Tensor Parallelism
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -316,7 +314,7 @@ Set expert tensor parallelism directly from CLI:
 Expert Parallelism Implementation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The NeMo Framework implementation of EP uses functionality from Megatron Core. Please consult the `Megatron Core MoE layer <https://github.com/NVIDIA/Megatron-LM/blob/e2ec14ab5690fead7e33760b0f8fb20c83b4fd1f/megatron/core/transformer/moe/moe_layer.py#L29>`_ for more MoE implementation details.
+The NeMo Framework implementation of EP uses functionality from Megatron Core. Please consult the `Megatron Core MoE layer <https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/moe/moe_layer.py#L42>`_ for more MoE implementation details.
 
 
 

@@ -52,7 +52,7 @@ In case of the reduce-scatter overlap, NeMo also provides the option to pipeline
 TP communication overlap configurations are added via the callback `MegatronCommOverlapCallback <https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61>`_.
 Pipelined TP communication overlap is implemented in Transformer Engine and can be enabled by setting ``tp_comm_overlap=True``.
 The individual bulk, pipelined all-gather, and reduce-scatter operations can be enabled or disabled using ``tp_comm_overlap_cfg``.
-For detailed configuration, refer to `TransformerLayerTPOverlapCfg <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L50>`_.
+For detailed configuration, refer to `TransformerLayerTPOverlapCfg <https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L64>`_.
 
 To modify these configurations, manually update the training recipe as follows:
 

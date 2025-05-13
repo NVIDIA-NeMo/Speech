@@ -71,14 +71,6 @@
   "info": "HTTPConnectionPool(host='todourl', port=80): Max retries exceeded with url: / (Caused by NameResolutionError(\"<urllib3.connection.HTTPConnection object at 0x10fe3a270>: Failed to resolve 'todourl' ([Errno 8] nodename nor servname provided, or not known)\"))"
 }
 {
-  "filename": "nlp/megatron.rst",
-  "lineno": 170,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://catalog.data.gov/dataset/pubmed",
-  "info": "404 Client Error: Not Found for url: https://catalog.data.gov/dataset/pubmed"
-}
-{
   "filename": "multimodal/mllm/datasets.rst",
   "lineno": 29,
   "status": "broken",
@@ -111,28 +103,12 @@
   "info": "Anchor 'distributed-optimizer' not found"
 }
 {
-  "filename": "nlp/bert_pretraining.rst",
-  "lineno": 53,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/LanguageModeling/BERT#quick-start-guide",
-  "info": "Anchor 'quick-start-guide' not found"
-}
-{
   "filename": "multimodal/mllm/neva.rst",
   "lineno": 132,
   "status": "broken",
   "code": 0,
   "uri": "https://github.com/NVIDIA/Megatron-LM#distributed-pretraining",
   "info": "Anchor 'distributed-pretraining' not found"
-}
-{
-  "filename": "features/parallelisms.rst",
-  "lineno": 319,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/Megatron-LM/blob/e2ec14ab5690fead7e33760b0f8fb20c83b4fd1f/megatron/core/transformer/moe/moe_layer.py#L29",
-  "info": "Anchor 'L29' not found"
 }
 {
   "filename": "checkpoints/dist_ckpt.rst",
@@ -143,132 +119,12 @@
   "info": "Anchor 'L793' not found"
 }
 {
-  "filename": "features/optimizations/attention_optimizations.rst",
-  "lineno": 96,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/attention.py#L49",
-  "info": "Anchor 'L49' not found"
-}
-{
   "filename": "tools/nemo_forced_aligner.rst",
   "lineno": 22,
   "status": "broken",
   "code": 0,
   "uri": "https://github.com/NVIDIA/NeMo#installation",
   "info": "Anchor 'installation' not found"
-}
-{
-  "filename": "features/optimizations/activation_recomputation.rst",
-  "lineno": 12,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/transformer_config.py#L15",
-  "info": "Anchor 'L15' not found"
-}
-{
-  "filename": "nlp/text_normalization/wfst/wfst_customization.rst",
-  "lineno": 17,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo-text-processing#from-source",
-  "info": "Anchor 'from-source' not found"
-}
-{
-  "filename": "features/mixed_precision.rst",
-  "lineno": 63,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/2e1814c9f031ad2aeeebad44597365e97253d2c4/examples/nlp/language_modeling/conf/megatron_gpt_config.yaml/#L192-L200",
-  "info": "Anchor 'L192-L200' not found"
-}
-{
-  "filename": "nlp/nemo_megatron/gpt/gpt_training.rst",
-  "lineno": 115,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/examples/llm/pretrain/README.md#run-pre-training-with-a-default-recipe",
-  "info": "Anchor 'run-pre-training-with-a-default-recipe' not found"
-}
-{
-  "filename": "nlp/nemo_megatron/gpt/gpt_training.rst",
-  "lineno": 115,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/examples/llm/pretrain/README.md#create-and-run-a-custom-recipe",
-  "info": "Anchor 'create-and-run-a-custom-recipe' not found"
-}
-{
-  "filename": "features/parallelisms.rst",
-  "lineno": 291,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/examples/nlp/language_modeling/conf/megatron_gpt_config.yaml#L68",
-  "info": "Anchor 'L68' not found"
-}
-{
-  "filename": "features/optimizations/communication_overlap.rst",
-  "lineno": 52,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/collections/llm/recipes/tp_overlap_configs/userbuffers.py#L50",
-  "info": "Anchor 'L50' not found"
-}
-{
-  "filename": "features/optimizations/communication_overlap.rst",
-  "lineno": 52,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/main/nemo/lightning/pytorch/callbacks/megatron_comm_overlap.py#L61",
-  "info": "Anchor 'L61' not found"
-}
-{
-  "filename": "nlp/joint_intent_slot.rst",
-  "lineno": 155,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/docs/source/nlp/nlp_model.rst#model-nlp",
-  "info": "Anchor 'model-nlp' not found"
-}
-{
-  "filename": "nlp/glue_benchmark.rst",
-  "lineno": 6,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/GLUE_Benchmark.ipynb"
-}
-{
-  "filename": "nlp/spellchecking_asr_customization.rst",
-  "lineno": 38,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/SpellMapper_English_ASR_Customization.ipynb",
-  "info": "404 Client Error: Not Found for url: https://github.com/NVIDIA/NeMo/blob/stable/tutorials/nlp/SpellMapper_English_ASR_Customization.ipynb"
-}
-{
-  "filename": "nlp/machine_translation/machine_translation.rst",
-  "lineno": 242,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/blob/v1.0.2/nemo/collections/nlp/data/machine_translation/machine_translation_dataset.py#L64",
-  "info": "Anchor 'L64' not found"
-}
-{
-  "filename": "nlp/punctuation_and_capitalization_lexical_audio.rst",
-  "lineno": 255,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/common/parts/adapter_modules.py#L141",
-  "info": "Anchor 'L141' not found"
-}
-{
-  "filename": "nlp/language_modeling.rst",
-  "lineno": 54,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/nlp/data/language_modeling/sentence_dataset.py#L34",
-  "info": "Anchor 'L34' not found"
 }
 {
   "filename": "nlp/quantization.rst",
@@ -293,22 +149,6 @@
   "code": 0,
   "uri": "https://github.com/webdataset/webdataset#multinode-training",
   "info": "Anchor 'multinode-training' not found"
-}
-{
-  "filename": "nlp/question_answering.rst",
-  "lineno": 196,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://msmarco.blob.core.windows.net/msmarco/dev_v2.1.json.gz",
-  "info": "409 Client Error: Public access is not permitted on this storage account. for url: https://msmarco.blob.core.windows.net/msmarco/dev_v2.1.json.gz"
-}
-{
-  "filename": "nlp/question_answering.rst",
-  "lineno": 195,
-  "status": "broken",
-  "code": 0,
-  "uri": "https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz",
-  "info": "409 Client Error: Public access is not permitted on this storage account. for url: https://msmarco.blob.core.windows.net/msmarco/train_v2.1.json.gz"
 }
 {
   "filename": "checkpoints/intro.rst",

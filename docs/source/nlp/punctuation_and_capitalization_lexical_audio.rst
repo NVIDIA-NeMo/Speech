@@ -252,7 +252,7 @@ Audio Encoder config
    * - **config**
      - ``LinearAdapterConfig``
      - ``null``
-     - For more details see `nemo.collections.common.parts.LinearAdapterConfig <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/common/parts/adapter_modules.py#L141>`_ class.
+     - For more details see `nemo.collections.common.parts.LinearAdapterConfig <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/common/parts/adapter_modules.py#L157>`_ class.
 
 
 .. _fusion-config-label:

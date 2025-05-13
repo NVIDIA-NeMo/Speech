@@ -61,7 +61,7 @@ jobs:
       - name: Pin MCore in Dockerfile
         run: |
           cd ${{ github.run_id }}
-          sed -i 's/^ARG MCORE_TAG=.*$/ARG MCORE_TAG=${{ inputs.mcore_version }}/' Dockerfile.ci
+          sed -i 's/^ARG MCORE_TAG=.*$/ARG MCORE_TAG=${{ inputs.mcore_version }}/' docker/Dockerfile.ci
 
       - name: Show status
         run: |

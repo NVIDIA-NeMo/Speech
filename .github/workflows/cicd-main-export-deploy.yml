@@ -28,7 +28,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: ${{ inputs.image-name }}
-      dockerfile: Dockerfile.ci.export_deploy
+      dockerfile: docker/Dockerfile.ci.export_deploy
 
   unit-tests:
     strategy:

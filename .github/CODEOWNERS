@@ -1,4 +1,4 @@
 .github/ @pablo-garay @ko3n1g @thomasdhc @chtruong814
-Dockerfile.ci @pablo-garay @ko3n1g @thomasdhc @chtruong814
+docker/Dockerfile.ci @pablo-garay @ko3n1g @thomasdhc @chtruong814
 .pylintrc.* @pablo-garay @ko3n1g @thomasdhc @chtruong814
 .flake8.* @pablo-garay @ko3n1g @thomasdhc @chtruong814

@@ -28,7 +28,7 @@ jobs:
     uses: ./.github/workflows/_build_container.yml
     with:
       image-name: ${{ inputs.image-name }}
-      dockerfile: Dockerfile.ci
+      dockerfile: docker/Dockerfile.ci
 
   e2e-tests:
     strategy:

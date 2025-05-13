@@ -41,7 +41,8 @@ jobs:
             export NEMO_REPO
             export INSTALL_DIR=$(pwd)
             
-            bash reinstall.sh --library all --mode install
+            bash docker/common/install_dep.sh --library all --mode install
+            bash docker/common/install_nemo.sh --module all
           fi
 
       - name: Run import checks
@@ -77,7 +78,8 @@ jobs:
             pip install ".[all]"
           else
             export INSTALL_DIR=$(pwd)
-            bash reinstall.sh --library all --mode install
+            bash docker/common/install_dep.sh --library all --mode install
+            bash docker/common/install_nemo.sh --module all
           fi
 
       - name: Run import checks
@@ -113,7 +115,8 @@ jobs:
             pip install -vvv ".[all]"
           else
             export INSTALL_DIR=$(pwd)
-            bash reinstall.sh --library all --mode install
+            bash docker/common/install_dep.sh --library all --mode install
+            bash docker/common/install_nemo.sh --module all
           fi
 
       - name: Run import checks

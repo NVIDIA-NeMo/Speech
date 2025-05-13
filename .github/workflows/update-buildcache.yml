@@ -85,15 +85,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dockerfile: Dockerfile.ci
+          - dockerfile: docker/Dockerfile.ci
             image-name: nemo_container_automodel
-          - dockerfile: Dockerfile.ci
+          - dockerfile: docker/Dockerfile.ci
             image-name: nemo_container_nemo2
-          - dockerfile: Dockerfile.ci
+          - dockerfile: docker/Dockerfile.ci
             image-name: nemo_container_speech
-          - dockerfile: Dockerfile.ci
+          - dockerfile: docker/Dockerfile.ci
             image-name: nemo_container
-          - dockerfile: Dockerfile.ci.export_deploy
+          - dockerfile: docker/Dockerfile.ci.export_deploy
             image-name: nemo_container_export_deploy
     with:
       image-name: ${{ matrix.image-name }}

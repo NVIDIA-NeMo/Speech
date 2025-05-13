@@ -99,9 +99,9 @@ class Llama33NemotronSuper49BConfig(Llama31Config70B, HeterogeneousTransformerCo
 class Llama31NemotronUltra253BConfig(Llama31Config405B, HeterogeneousTransformerConfig):
     """Configuration for an Llama31-Nemotron-Ultra model."""
 
-    hidden_size: int = 8192
-    num_attention_heads: int = 64
-    num_layers: int = 126
+    hidden_size: int = 16384
+    num_attention_heads: int = 128
+    num_layers: int = 162
     heterogeneous_layers_config_path: str = None
     heterogeneous_layers_config_encoded_json: str = LLAMA_31_NEMOTRON_ULTRA_253B_HETEROGENEOUS_CONFIG
     transformer_layer_spec: Union[ModuleSpec, Callable[["GPTConfig"], ModuleSpec]] = heterogeneous_layer_spec

@@ -30,6 +30,8 @@ from nemo.collections.llm.gpt.data.utils import (
     _JSONLMemMapDataset,
     _OnlineSampleMapping,
     _preprocess,
+    _preprocess_hf_chat_template,
+    _transform_to_chat_message,
 )
 from nemo.core.classes import Dataset
 from nemo.lightning.base import NEMO_DATASETS_CACHE
@@ -76,6 +78,7 @@ def create_sft_dataset(
     pack_metadata_file_path: Path = None,
     pad_cu_seqlens: bool = False,
     chat: bool = False,
+    use_hf_tokenizer_chat_template: bool = False,
     **kwargs,
 ) -> "GPTSFTDataset":
     """
@@ -105,6 +108,7 @@ def create_sft_dataset(
     if chat:
         return GPTSFTChatDataset(
             **gpt_sft_dataset_kwargs,
+            use_hf_tokenizer_chat_template=use_hf_tokenizer_chat_template,
             **kwargs,
         )
     elif path.suffix == '.npy':
@@ -330,7 +334,7 @@ class GPTSFTDataset(Dataset):
         if self.samples_mapping is not None:
             assert idx < len(self.samples_mapping)
             idx, _, _ = self.samples_mapping[idx]
-            if isinstance(idx, np.uint32):
+            if isinstance(idx, (np.uint32, np.int64)):
                 idx = idx.item()
 
         assert idx < len(self.indexed_dataset)
@@ -587,11 +591,7 @@ class GPTSFTDataset(Dataset):
 
     @torch.no_grad()
     def _create_attention_mask(self, max_length):
-        """Create `attention_mask`.
-        Args:
-            input_ids: A 1D tensor that holds the indices of tokens.
-        """
-        # seq_length = len(input_ids)
+        """Create `attention_mask`."""
         # `attention_mask` has the shape of [1, seq_length, seq_length]
         attention_mask = torch.tril(torch.ones((max_length, max_length))).unsqueeze(0)
         attention_mask = attention_mask < 0.5
@@ -885,7 +885,87 @@ class GPTSFTPackedDataset(GPTSFTDataset):
 
 
 class GPTSFTChatDataset(GPTSFTDataset):
-    """ """
+    """
+    Dataset for fine-tuning a chat model.
+
+    Accepts conversational data in ShareGPT format. If use_hf_tokenizer_chat_template is True, the dataset will
+    accept both ShareGPT and HuggingFace chat template format. In the case of ShareGPT format, it will try to convert
+    to HuggingFace format.
+
+    ShareGPT format:
+    {"conversations": [{"value": "...", "from": "User"}, {"value": "...", "from": "Assistant"}]}
+    HuggingFace chat template format:
+    {
+        "messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."},
+                     {"role": "assistant", "content": "..."}]
+    }
+    """
+
+    def __init__(
+        self,
+        file_path: str,
+        tokenizer: TokenizerSpec,
+        max_seq_length: int = 1024,
+        min_seq_length: int = 1,
+        pad_seq_length_to_mult: int = 16,
+        add_bos: bool = False,
+        add_eos: bool = True,
+        add_sep: bool = False,
+        sep_id: int = None,
+        max_num_samples: int = None,
+        seed: int = 1234,
+        label_key: str = "answer",
+        answer_only_loss: bool = True,
+        truncation_field: str = "text",
+        pad_to_max_length: bool = False,  # (@adithyare) allows for much faster training especially in PEFT settings.
+        index_mapping_dir: str = None,
+        prompt_template: str = None,
+        virtual_tokens: int = 0,
+        tokens_to_generate: int = 0,
+        memmap_workers: Optional[int] = None,
+        hf_dataset: bool = False,
+        global_sample_mapping: bool = False,
+        truncation_method: str = 'right',
+        special_tokens: Optional[Mapping[str, str]] = None,  # special tokens, a dictory of {token_type: token}
+        is_test: bool = False,
+        output_original_text: bool = False,
+        ceil_to_power_2: bool = False,
+        get_attention_mask_from_fusion: bool = False,
+        sanity_check_dist_workers: bool = True,
+        use_hf_tokenizer_chat_template: bool = False,
+    ):
+        super().__init__(
+            file_path,
+            tokenizer,
+            max_seq_length,
+            min_seq_length,
+            pad_seq_length_to_mult,
+            add_bos,
+            add_eos,
+            add_sep,
+            sep_id,
+            max_num_samples,
+            seed,
+            label_key,
+            answer_only_loss,
+            truncation_field,
+            pad_to_max_length,
+            index_mapping_dir,
+            prompt_template,
+            virtual_tokens,
+            tokens_to_generate,
+            memmap_workers,
+            hf_dataset,
+            global_sample_mapping,
+            truncation_method,
+            special_tokens,
+            is_test,
+            output_original_text,
+            ceil_to_power_2,
+            get_attention_mask_from_fusion,
+            sanity_check_dist_workers,
+        )
+        self.use_hf_tokenizer_chat_template = use_hf_tokenizer_chat_template
 
     def _maybe_validate_prompt_template(self):
         pass
@@ -913,17 +993,24 @@ class GPTSFTChatDataset(GPTSFTDataset):
         Truncation is carried out when needed, but it is performed only on the prompt side.
         BOS, EOS, and SEP, are added if specified.
         """
-        result = _preprocess(
-            example,
-            self.tokenizer,
-            self.name_end_token_ids,
-            self.label_start_tokens,
-            self.special_tokens,
-            self.num_turn_start_tokens,
-        )
-
+        if not self.use_hf_tokenizer_chat_template:
+            result = _preprocess(
+                example,
+                self.tokenizer,
+                self.name_end_token_ids,
+                self.label_start_tokens,
+                self.special_tokens,
+                self.num_turn_start_tokens,
+            )
+        else:
+            if "conversations" in example:  # convert ShareGPT format to HuggingFace chat template format
+                example = _transform_to_chat_message(example)
+            result = _preprocess_hf_chat_template(
+                example,
+                self.tokenizer,
+            )
         # store metadata in dataset, in case user may have keys required in the prediction json files
-        metadata = {k: v for k, v in example.items() if k not in ['conversations']}
+        metadata = {k: v for k, v in example.items() if k not in ['conversations', 'messages']}
         result['metadata'] = metadata
         if self.output_original_text:
             result['metadata']['conversations'] = example['conversations']
@@ -933,19 +1020,32 @@ class GPTSFTChatDataset(GPTSFTDataset):
     def collate_fn(self, batch):
         input_ids = [item['input_ids'][:-1].tolist() for item in batch]
         labels = [item['input_ids'][1:].tolist() for item in batch]
-        contexts = [item['context_ids'].tolist() for item in batch]
-        answers = [item['answer_ids'].tolist() for item in batch]
         loss_mask = [item['mask'][1:].tolist() for item in batch]
         metadata = [item['metadata'] for item in batch]
-
-        max_length = max(max([len(x) for x in input_ids]), max([len(x) for x in contexts]) + self.tokens_to_generate)
+        if not self.use_hf_tokenizer_chat_template:
+            contexts = [item['context_ids'].tolist() for item in batch]
+            answers = [item['answer_ids'].tolist() for item in batch]
+            max_length = max(
+                max([len(x) for x in input_ids]), max([len(x) for x in contexts]) + self.tokens_to_generate
+            )
+        else:
+            max_length = max([len(x) for x in input_ids])
         if max_length > self.max_seq_length:
             # truncate the sequences if it is longer than max_seq_length
             input_ids = [x[: self.max_seq_length] for x in input_ids]
             labels = [x[: self.max_seq_length] for x in labels]
             loss_mask = [x[: self.max_seq_length] for x in loss_mask]
-            contexts = [x[: self.max_seq_length] for x in contexts]
-            answers = [x[: self.max_seq_length] for x in answers]
+            for i, x in enumerate(loss_mask):
+                x = torch.tensor(x)
+                if x.sum().item() == 0:
+                    logger.warning(
+                        "Due to truncation to max_seq_length, no assistant tokens are found in sample. "
+                        "Setting loss_mask to all ones."
+                    )
+                    loss_mask[i] = [1] * self.max_seq_length
+            if not self.use_hf_tokenizer_chat_template:
+                contexts = [x[: self.max_seq_length] for x in contexts]
+                answers = [x[: self.max_seq_length] for x in answers]
 
         # increase max length to nearest multiple of 4 or 8
         if self.pad_to_max_length:
@@ -964,20 +1064,26 @@ class GPTSFTChatDataset(GPTSFTDataset):
         )
         labels = torch.LongTensor(self._collate_item(labels, max_length=max_length, pad_id=self.tokenizer.eos_id))
         loss_mask = torch.LongTensor(self._collate_item(loss_mask, max_length=max_length, pad_id=0))
-        context_lengths = torch.LongTensor([len(x) for x in contexts])
-        contexts = torch.LongTensor(self._collate_item(contexts, max_length=max_length, pad_id=self.tokenizer.eos_id))
-        answers = torch.LongTensor(self._collate_item(answers, max_length=max_length, pad_id=self.tokenizer.eos_id))
+        if not self.use_hf_tokenizer_chat_template:
+            context_lengths = torch.LongTensor([len(x) for x in contexts])
+            contexts = torch.LongTensor(
+                self._collate_item(contexts, max_length=max_length, pad_id=self.tokenizer.eos_id)
+            )
+            answers = torch.LongTensor(
+                self._collate_item(answers, max_length=max_length, pad_id=self.tokenizer.eos_id)
+            )
 
         processed_batch = {
             'tokens': input_ids,
             'labels': labels,
             'loss_mask': loss_mask,
             'position_ids': position_ids,
-            'contexts': contexts,
-            'context_lengths': context_lengths,
-            'answers': answers,
             'metadata': metadata,
         }
+        if not self.use_hf_tokenizer_chat_template:
+            processed_batch['contexts'] = contexts
+            processed_batch['answers'] = answers
+            processed_batch['context_lengths'] = context_lengths
 
         if not self.get_attention_mask_from_fusion:
             processed_batch['attention_mask'] = attention_mask

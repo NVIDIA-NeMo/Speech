@@ -802,6 +802,59 @@ def _preprocess(
     return dict(input_ids=input_ids, mask=mask, context_ids=context_ids, answer_ids=answer_ids)
 
 
+def _transform_to_chat_message(source: dict[str, list]):
+    """
+    Convert ShareGPT conversation format to HuggingFace chat message format.
+
+    Input format:
+    {"conversations": [{"value": "...", "from": "User"}, {"value": "...", "from": "Assistant"}]}
+
+    Output format:
+    {
+      "messages": [{"role": "system", "content": "..."}, {"role": "user", "content": "..."},
+                   {"role": "assistant", "content": "..."}]
+    }
+    """
+    messages = []
+    for conv in source["conversations"]:
+        role = conv["from"].lower()  # Convert User/Assistant to user/assistant
+        message = {"role": role, "content": conv["value"]}
+        messages.append(message)
+    return {"messages": messages}
+
+
+def _preprocess_hf_chat_template(
+    hf_chat_dict: dict,
+    tokenizer: TokenizerSpec,
+):
+    """
+    Given a conversation list (source) this function applies the following transformations:
+    1. Convert JSONL conversation format to chat message format.
+    2. Tokenize the chat message by applying the chat template.
+    3. Calculate the mask for the assistant tokens.
+
+    Args:
+        hf_chat_dict: dict, the chat message dict from HuggingFace tokenizer.
+        tokenizer: TokenizerSpec, the tokenizer object.
+    """
+    # Use HuggingFace tokenizer to apply the chat template.
+    template_has_generation_kwd = (
+        '{% generation %}' in tokenizer.tokenizer.chat_template
+    )  # assistant mask only works if chat template has generation keyword
+    tokens = tokenizer.tokenizer.apply_chat_template(
+        hf_chat_dict['messages'],
+        return_dict=True,
+        return_assistant_tokens_mask=template_has_generation_kwd,
+        return_tensors='pt',
+    )
+    input_ids = tokens['input_ids'][0]
+    if template_has_generation_kwd:
+        mask = torch.tensor(tokens['assistant_masks']).to(bool)
+    else:
+        mask = torch.ones_like(input_ids)
+    return dict(input_ids=input_ids, mask=mask)
+
+
 def _mask_targets(
     target,
     tokenized_lens,

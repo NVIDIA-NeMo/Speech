@@ -65,7 +65,7 @@ AnyPath = Union[Path, str]
 
 @run.cli.entrypoint(namespace="llm")
 def train(
-    model: pl.LightningModule,
+    model: Union[pl.LightningModule, AnyPath],
     data: pl.LightningDataModule,
     trainer: Trainer,
     log: Annotated[Optional[NeMoLogger], run.Config[NeMoLogger]] = None,
@@ -79,7 +79,7 @@ def train(
     Trains a model using the specified data and trainer, with optional tokenizer, source, and export.
 
     Args:
-        model (pl.LightningModule): The model to be trained.
+        model (Union[pl.LightningModule, AnyPath]): The model to be trained or a path to the NeMo 2 checkpoint.
         data (pl.LightningDataModule): The data module containing training data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
         log (NeMoLogger): A nemologger instance.
@@ -106,6 +106,8 @@ def train(
         >>> llm.train(model, data, trainer, tokenizer="data")
         PosixPath('/path/to/log_dir')
     """
+    model = _load_model_from_path(model)
+
     # [ModelOpt]: If modelopt_state exists, overwrite transformer_layer_spec to modelopt spec
     if resume:
         if resume.restore_config and resume.restore_config.path:
@@ -131,7 +133,7 @@ def train(
 
 @run.cli.entrypoint(namespace="llm")
 def pretrain(
-    model: pl.LightningModule,
+    model: Union[pl.LightningModule, AnyPath],
     data: pl.LightningDataModule,
     trainer: Trainer,
     log: Annotated[Optional[NeMoLogger], run.Config[NeMoLogger]] = None,
@@ -145,7 +147,7 @@ def pretrain(
     Note, by default it will use the tokenizer from the model.
 
     Args:
-        model (pl.LightningModule): The model to be pretrained.
+        model (Union[pl.LightningModule, AnyPath]): The model to be pretrained or a path to the NeMo 2 checkpoint.
         data (pl.LightningDataModule): The data module containing pretraining data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
         log (NeMoLogger): A nemologger instance.
@@ -166,6 +168,7 @@ def pretrain(
         >>> llm.pretrain(model, data, trainer)
         PosixPath('/path/to/log_dir')
     """
+    model = _load_model_from_path(model)
     _validate_config(model, data, trainer, log=log, resume=resume, optim=optim)
 
     return train(
@@ -181,13 +184,14 @@ def pretrain(
 
 @run.cli.entrypoint(namespace="llm")
 def finetune(
-    model: pl.LightningModule,
+    model: Union[pl.LightningModule, AnyPath],
     data: pl.LightningDataModule,
     trainer: Trainer,
     log: Annotated[Optional[NeMoLogger], run.Config[NeMoLogger]] = None,
     resume: Annotated[Optional[AutoResume], run.Config[AutoResume]] = None,
     optim: Optional[OptimizerModule] = None,
     peft: Optional[Union[PEFT, ModelTransform, Callable]] = None,
+    tokenizer: Optional[TokenizerType] = "model",
 ) -> Path:
     """
     Finetunes a model using the specified data and trainer, with optional logging, resuming, and PEFT.
@@ -195,7 +199,7 @@ def finetune(
     Note, by default it will use the tokenizer from the model.
 
     Args:
-        model (pl.LightningModule): The model to be finetuned.
+        model (Union[pl.LightningModule, AnyPath]): The model to be finetuned.
         data (pl.LightningDataModule): The data module containing finetuning data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
         log (NeMoLogger): A nemologger instance.
@@ -203,6 +207,10 @@ def finetune(
         optim (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default
             optimizer from the model will be used.
         peft (Optional[PEFT]): A PEFT (Parameter-Efficient Fine-Tuning) configuration to be applied.
+        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model'
+            or an instance of TokenizerSpec. If 'data' uses the data loader's tokenizer instead of the tokenizer
+            from the model checkpoint, which is useful for expanding vocabulary or adding special tokens
+            (such as chat template tokens).
 
     Returns:
         Path: The directory path where finetuning artifacts are saved.
@@ -217,7 +225,7 @@ def finetune(
         >>> llm.finetune(model, data, trainer, peft=llm.peft.LoRA()])
         PosixPath('/path/to/log_dir')
     """
-
+    model = _load_model_from_path(model)
     _validate_config(model, data, trainer, log=log, resume=resume, optim=optim, model_transform=peft)
     return train(
         model=model,
@@ -226,7 +234,7 @@ def finetune(
         log=log,
         resume=resume,
         optim=optim,
-        tokenizer="model",
+        tokenizer=tokenizer,
         model_transform=peft,
     )
 
@@ -630,6 +638,7 @@ def deploy(
             the trtllm backend).
     """
     import os
+
     import uvicorn
 
     from nemo.deploy import DeployPyTriton
@@ -1345,3 +1354,9 @@ def _build_directory_tree(path, tree=None, root_name=None):
                 tree.add(f"[white]{item.name}[/white]")
 
     return tree
+
+
+def _load_model_from_path(model: Union[pl.LightningModule, AnyPath]):
+    if isinstance(model, AnyPath):
+        model = io.load_context(ckpt_to_context_subdir(model), subpath="model")
+    return model

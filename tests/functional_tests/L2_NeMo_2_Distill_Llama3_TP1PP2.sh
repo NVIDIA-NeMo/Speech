@@ -11,10 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/llm/gpt_distillation.py \
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo scripts/llm/gpt_train.py \
   --name nemo2_llama_distill \
   --teacher_path /home/TestData/nemo2_ckpt/llama_68M_v4 \
-  --student_path /home/TestData/nemo2_ckpt/llama_68M_v4 \
+  --model_path /home/TestData/nemo2_ckpt/llama_68M_v4 \
   --tp_size 1 \
   --cp_size 1 \
   --pp_size 2 \

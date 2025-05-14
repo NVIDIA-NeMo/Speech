@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import lightning.pytorch as pl
 import nemo_run as run
@@ -31,6 +31,8 @@ from nemo.utils.exp_manager import TimingCallback
 if TYPE_CHECKING:
     from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
+TokenizerType = Any
+
 
 def default_finetune_recipe(
     model: run.Config[pl.LightningModule],
@@ -40,6 +42,7 @@ def default_finetune_recipe(
     num_nodes: int = 1,
     num_gpus_per_node: int = 8,
     packed_sequence: bool = False,  # once packing recipe is well tested, change this default to true
+    tokenizer: Optional[TokenizerType] = "model",
 ) -> run.Partial:
     """
     Create a default fine-tuning recipe for any model.
@@ -54,6 +57,9 @@ def default_finetune_recipe(
         name (str): Name of the fine-tuning run.
         num_nodes (int): Number of compute nodes to use.
         num_gpus_per_node (int): Number of GPUs per node.
+        packed_sequence (bool): Whether to use packed sequence.
+        tokenizer (Optional[TokenizerType]): Tokenizer setting to be applied. Can be 'data' or 'model'
+            or an instance of TokenizerSpec.
 
     Returns:
         run.Partial: Partial configuration for fine-tuning.
@@ -81,6 +87,7 @@ def default_finetune_recipe(
         log=default_finetune_log(dir=dir, name=name, tensorboard_logger=tensorboard_logger(name=name)),
         optim=distributed_fused_adam_with_cosine_annealing(max_lr=1e-4, min_lr=0, warmup_steps=50, adam_beta2=0.98),
         resume=nemo_resume(resume_path),
+        tokenizer=tokenizer,
     )
 
     return recipe

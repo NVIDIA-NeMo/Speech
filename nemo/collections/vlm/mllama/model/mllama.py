@@ -15,23 +15,29 @@
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.distributed
 from megatron.core.transformer import TransformerConfig
 from torch import Tensor
+from transformers import MllamaConfig as HFMllamaConfig
+from transformers import MllamaForConditionalGeneration
+from transformers.models.mllama.configuration_mllama import MllamaTextConfig, MllamaVisionConfig
 
 from nemo.collections.common.tokenizers.huggingface.auto_tokenizer import AutoTokenizer
+from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.collections.vlm.mllama.model.base import (
     CrossAttentionTextConfig,
     CrossAttentionVisionConfig,
     MLlamaModel,
     MLlamaModelConfig,
 )
+from nemo.export.trt_llm.nemo_ckpt_loader.nemo_file import load_distributed_model_weights
 from nemo.lightning import io, teardown
 from nemo.lightning.io.state import _ModelState
 from nemo.lightning.pytorch.utils import dtype_from_hf
+from nemo.utils import logging
 
 # pylint: disable=C0115,C0116,C0301
 
@@ -84,9 +90,7 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
         return output_path
 
     def apply(self, output_path: Path) -> Path:
-        from transformers import MllamaForConditionalGeneration
-
-        source = MllamaForConditionalGeneration.from_pretrained(str(self), torch_dtype='auto')
+        source = MllamaForConditionalGeneration.from_pretrained(str(self), torch_dtype="auto")
 
         state_dict = _rename_xattn_layer_nums_hf(source.state_dict())
         source = _ModelState(state_dict)
@@ -271,7 +275,8 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
             rotary_base=source.text_config.rope_theta,
             seq_length=8192,
             num_layers=_calculate_num_layers(
-                source.text_config.num_hidden_layers, source.text_config.cross_attention_layers
+                source.text_config.num_hidden_layers,
+                source.text_config.cross_attention_layers,
             ),
             num_cross_attention_layers=len(source.text_config.cross_attention_layers),
             hidden_size=source.text_config.hidden_size,
@@ -298,16 +303,390 @@ class HFMLlamaImporter(io.ModelConnector["MLlamaModel", MLlamaModel]):
         )
 
 
+@io.model_exporter(MLlamaModel, "hf")
+class HFMLlamaExporter(io.ModelConnector[MLlamaModel, "MllamaForConditionalGeneration"]):
+    """
+    Exporter class for converting NeMo MLlama model to HuggingFace format.
+
+    Inherits:
+        io.ModelConnector: Connector interface to handle setup, save, and load using the Lightning framework.
+
+    Methods:
+        init: Initializes a new HuggingFace MLlama model instance.
+        apply: Converts the NeMo model to HuggingFace format and saves it.
+        convert_state: Maps and transforms the state dictionary from NeMo to HuggingFace format.
+        config: Generates and returns the HuggingFace MLlama config for the model.
+    """
+
+    def init(self, dtype=torch.bfloat16) -> "MllamaForConditionalGeneration":
+        """
+        Initializes a HuggingFace MllamaForConditionalGeneration model.
+
+        Args:
+            dtype: The data type to use for the model (default: torch.bfloat16)
+
+        Returns:
+            MllamaForConditionalGeneration: A HuggingFace MLlama model initialized with the configuration.
+        """
+        from transformers.modeling_utils import no_init_weights
+
+        with no_init_weights():
+            return MllamaForConditionalGeneration._from_config(self.config, torch_dtype=dtype)
+
+    def apply(self, output_path: Path) -> Path:
+        """
+        Converts the NeMo MLlama model to HuggingFace format and saves it to the specified path.
+
+        Args:
+            output_path (Path): The path where the converted HuggingFace model will be saved.
+
+        Returns:
+            Path: The output path where the HuggingFace model was saved.
+        """
+        logging.info("Loading MLlama NeMo checkpoint. This may take a while...")
+        source, source_config = self.ckpt_load(self)
+        logging.info("MLlama NeMo checkpoint loaded.")
+        logging.info("Initializing the HF model..")
+        target = self.init()
+        logging.info("Start Converting the model..")
+        target = self.convert_state(source, target, source_config)
+        target = target.cpu()
+        target.save_pretrained(output_path)
+
+        try:
+            self.tokenizer.tokenizer.save_pretrained(output_path)
+        except Exception:
+            logging.warning("Failed to save tokenizer")
+
+        print(f"Converted MLlama model saved to {output_path}")
+
+        return output_path
+
+    def convert_state(self, source, target, source_config):
+        # pylint: disable=C0115,C0116,line-too-long
+        """
+        Maps and transforms the state dictionary from NeMo to HuggingFace format.
+
+        Args:
+            source: The source NeMo model.
+            target: The target HuggingFace model.
+
+        Returns:
+            The target HuggingFace model with the converted state.
+        """
+        source = self._modify_mllama_source_state(source, source_config)
+        mapping = {}
+        transforms = []
+        # Define the state mapping from NeMo to HuggingFace
+        mapping.update(
+            {
+                "language_model.decoder.layers.*.self_attention.linear_proj.weight": "language_model.model.layers.*.self_attn.o_proj.weight",
+                "language_model.decoder.layers.*.self_attention.linear_qkv.layer_norm_weight": "language_model.model.layers.*.input_layernorm.weight",
+                "language_model.decoder.layers.*.mlp.linear_fc1.layer_norm_weight": "language_model.model.layers.*.post_attention_layernorm.weight",
+                "language_model.decoder.layers.*.mlp.linear_fc2.weight": "language_model.model.layers.*.mlp.down_proj.weight",
+                "language_model.decoder.xattn_layers.*.cross_attention.q_layernorm.weight": "language_model.model.layers.*.cross_attn.q_norm.weight",
+                "language_model.decoder.xattn_layers.*.cross_attention.linear_q.weight": "language_model.model.layers.*.cross_attn.q_proj.weight",
+                "language_model.decoder.xattn_layers.*.cross_attention.k_layernorm.weight": "language_model.model.layers.*.cross_attn.k_norm.weight",
+                "language_model.decoder.xattn_layers.*.cross_attention.linear_proj.weight": "language_model.model.layers.*.cross_attn.o_proj.weight",
+                "language_model.decoder.final_layernorm.weight": "language_model.model.norm.weight",
+                "language_model.output_layer.weight": "language_model.lm_head.weight",
+            }
+        )
+        transforms.extend(
+            [
+                io.state_transform(
+                    source_key="language_model.decoder.xattn_layers.*.gate_attn",
+                    target_key="language_model.model.layers.*.cross_attn_attn_gate",
+                    fn=_export_gate,
+                ),
+                io.state_transform(
+                    source_key="language_model.decoder.xattn_layers.*.gate_ffn",
+                    target_key="language_model.model.layers.*.cross_attn_mlp_gate",
+                    fn=_export_gate,
+                ),
+                io.state_transform(
+                    source_key="language_model.decoder.layers.*.self_attention.linear_qkv.weight",
+                    target_key=(
+                        "language_model.model.layers.*.self_attn.q_proj.weight",
+                        "language_model.model.layers.*.self_attn.k_proj.weight",
+                        "language_model.model.layers.*.self_attn.v_proj.weight",
+                    ),
+                    fn=_export_text_qkv,
+                ),
+                io.state_transform(
+                    source_key="language_model.decoder.layers.*.mlp.linear_fc1.weight",
+                    target_key=(
+                        "language_model.model.layers.*.mlp.gate_proj.weight",
+                        "language_model.model.layers.*.mlp.up_proj.weight",
+                    ),
+                    fn=_export_simple_split,
+                ),
+                io.state_transform(
+                    source_key="language_model.decoder.xattn_layers.*.cross_attention.linear_kv.weight",
+                    target_key=(
+                        "language_model.model.layers.*.cross_attn.k_proj.weight",
+                        "language_model.model.layers.*.cross_attn.v_proj.weight",
+                    ),
+                    fn=_export_text_kv,
+                ),
+                io.state_transform(
+                    source_key=(
+                        "language_model.embedding.word_embeddings.weight",
+                        "language_model.learnable_embedding.weight",
+                    ),
+                    target_key="language_model.model.embed_tokens.weight",
+                    fn=_export_embedding_hf,
+                ),
+            ]
+        )
+        v = "vision_model.vision_encoder"
+        mapping.update(
+            {
+                f"{v}.global_transformer.layers.*.self_attention.linear_proj.weight": "vision_model.global_transformer.layers.*.self_attn.o_proj.weight",
+                f"{v}.global_transformer.layers.*.gate_attn": "vision_model.global_transformer.layers.*.gate_attn",
+                f"{v}.global_transformer.layers.*.gate_ffn": "vision_model.global_transformer.layers.*.gate_ffn",
+                f"{v}.global_transformer.layers.*.input_layernorm.bias": "vision_model.global_transformer.layers.*.input_layernorm.bias",
+                f"{v}.global_transformer.layers.*.input_layernorm.weight": "vision_model.global_transformer.layers.*.input_layernorm.weight",
+                f"{v}.global_transformer.layers.*.pre_mlp_layernorm.bias": "vision_model.global_transformer.layers.*.post_attention_layernorm.bias",
+                f"{v}.global_transformer.layers.*.pre_mlp_layernorm.weight": "vision_model.global_transformer.layers.*.post_attention_layernorm.weight",
+                f"{v}.global_transformer.layers.*.mlp.linear_fc1.bias": "vision_model.global_transformer.layers.*.mlp.fc1.bias",
+                f"{v}.global_transformer.layers.*.mlp.linear_fc1.weight": "vision_model.global_transformer.layers.*.mlp.fc1.weight",
+                f"{v}.global_transformer.layers.*.mlp.linear_fc2.bias": "vision_model.global_transformer.layers.*.mlp.fc2.bias",
+                f"{v}.global_transformer.layers.*.mlp.linear_fc2.weight": "vision_model.global_transformer.layers.*.mlp.fc2.weight",
+                f"{v}.transformer.layers.*.self_attention.linear_proj.weight": "vision_model.transformer.layers.*.self_attn.o_proj.weight",
+                f"{v}.transformer.layers.*.input_layernorm.bias": "vision_model.transformer.layers.*.input_layernorm.bias",
+                f"{v}.transformer.layers.*.input_layernorm.weight": "vision_model.transformer.layers.*.input_layernorm.weight",
+                f"{v}.transformer.layers.*.pre_mlp_layernorm.bias": "vision_model.transformer.layers.*.post_attention_layernorm.bias",
+                f"{v}.transformer.layers.*.pre_mlp_layernorm.weight": "vision_model.transformer.layers.*.post_attention_layernorm.weight",
+                f"{v}.transformer.layers.*.mlp.linear_fc1.bias": "vision_model.transformer.layers.*.mlp.fc1.bias",
+                f"{v}.transformer.layers.*.mlp.linear_fc1.weight": "vision_model.transformer.layers.*.mlp.fc1.weight",
+                f"{v}.transformer.layers.*.mlp.linear_fc2.bias": "vision_model.transformer.layers.*.mlp.fc2.bias",
+                f"{v}.transformer.layers.*.mlp.linear_fc2.weight": "vision_model.transformer.layers.*.mlp.fc2.weight",
+                f"{v}.class_embedding": "vision_model.class_embedding",
+                f"{v}.positional_embedding": "vision_model.gated_positional_embedding.embedding",
+                f"{v}.gated_tile_positional_embedding.weight": "vision_model.gated_positional_embedding.tile_embedding.weight",
+                f"{v}.gated_positional_embedding_gate": "vision_model.gated_positional_embedding.gate",
+                f"{v}.ln_post.bias": "vision_model.layernorm_post.bias",
+                f"{v}.ln_post.weight": "vision_model.layernorm_post.weight",
+                f"{v}.ln_pre.bias": "vision_model.layernorm_pre.bias",
+                f"{v}.ln_pre.weight": "vision_model.layernorm_pre.weight",
+                f"{v}.post_tile_pos_embed.embedding.weight": "vision_model.post_tile_positional_embedding.embedding.weight",
+                f"{v}.post_tile_pos_embed.gate": "vision_model.post_tile_positional_embedding.gate",
+                f"{v}.pre_tile_pos_embed.embedding.weight": "vision_model.pre_tile_positional_embedding.embedding.weight",
+                f"{v}.pre_tile_pos_embed.gate": "vision_model.pre_tile_positional_embedding.gate",
+                "vision_model.vision_projection.encoder.bias": "multi_modal_projector.bias",
+                "vision_model.vision_projection.encoder.weight": "multi_modal_projector.weight",
+            }
+        )
+        transforms.extend(
+            [
+                io.state_transform(
+                    source_key=(f"{v}.global_transformer.layers.*.self_attention.linear_qkv.weight"),
+                    target_key=(
+                        "vision_model.global_transformer.layers.*.self_attn.q_proj.weight",
+                        "vision_model.global_transformer.layers.*.self_attn.k_proj.weight",
+                        "vision_model.global_transformer.layers.*.self_attn.v_proj.weight",
+                    ),
+                    fn=_export_vision_qkv,
+                ),
+                io.state_transform(
+                    source_key=(f"{v}.transformer.layers.*.self_attention.linear_qkv.weight"),
+                    target_key=(
+                        "vision_model.transformer.layers.*.self_attn.q_proj.weight",
+                        "vision_model.transformer.layers.*.self_attn.k_proj.weight",
+                        "vision_model.transformer.layers.*.self_attn.v_proj.weight",
+                    ),
+                    fn=_export_vision_qkv,
+                ),
+                io.state_transform(
+                    source_key=f"{v}.conv1._linear.weight",
+                    target_key="vision_model.patch_embedding.weight",
+                    fn=_export_patch_embedding_hf,
+                ),
+            ]
+        )
+        return io.apply_transforms(source, target, mapping=mapping, transforms=transforms)
+
+    @property
+    def tokenizer(self) -> "TokenizerSpec":
+        """
+        Gets the tokenizer from the loaded model context.
+
+        Returns:
+            The tokenizer specification.
+        """
+        return io.load_context(str(self), subpath="model").tokenizer
+
+    def ckpt_load(self, path: Path) -> Tuple[Dict, Dict]:
+        """
+        This function loads the state dict directly from a distributed checkpoint, and modify the state dict
+        so that it is consistent with the key names you would get from loading the checkpoint into a model.
+        This is a more memory-efficient method to obtain a state dict without initializing the nemo model.
+
+        Args:
+            path (Path): The path from which the model will be loaded.
+
+        Returns
+        -------
+            Tuple[Dict, Dict]: The loaded state dict and the yaml config dict.
+        """
+        config = io.load_context(str(self), subpath="model.config")
+        dist_ckpt_folder = path / "weights"
+        state_dict = {}
+
+        langauge_layers = config.language_model_config.num_layers
+        vision_layers = config.vision_model_config.num_layers
+        distributed_model_weights = load_distributed_model_weights(dist_ckpt_folder, True).items()
+        for k, v in distributed_model_weights:
+            if "_extra_state" in k:
+                continue
+            new_k = k.replace("module.", "")
+            if "layers" in new_k and (v.size(0) == langauge_layers or v.size(0) == vision_layers):
+                # Only split layers
+                for i in range(v.size(0)):
+                    state_dict[new_k.replace("layers", f"layers.{str(i)}")] = v[i]
+            elif "global_transformer.layers" in new_k:
+                for i in range(v.size(0)):
+                    state_dict[new_k.replace("layers", f"layers.{str(i)}")] = v[i]
+            state_dict[new_k] = v
+        return state_dict, config
+
+    def _modify_mllama_source_state(self, state_dict, source_config):
+        """
+        - Modify state dict to integrate cross-attention layers into self-attention layer.
+        e.g. 11B: 32 self-attn + 8 cross-attn -> 40 layers, 90B: 80 self-attn + 20 cross-attn -> 100 layers
+        - Change the layer index to match the cross_attention_layers in the model config.
+        e.g. 11B: [3, 7, 11, 15, 19, 23, 27, 31] -> [3, 8, 13, 18, 23, 28, 33, 38]
+
+        Args:
+            state_dict: Source model state dict
+            source_config: Model config dict
+
+        Returns:
+            _ModelState: Modified state
+        """
+
+        def convert_layer_num(match):
+            layer_num = int(match.group(1))
+            x_num = (layer_num - 3) // (cross_attention_frequency)
+            if (layer_num - 3) % (cross_attention_frequency) == 0:
+                new_layer_num = x_num + layer_num
+                return f".{new_layer_num}."
+            raise ValueError(
+                f"Unexpected layer_num: {layer_num} (does not align with cross_attention_frequency={cross_attention_frequency})"
+            )
+
+        text_config = source_config.language_model_config
+        cross_attention_frequency = text_config.num_layers // text_config.num_cross_attention_layers
+        total_num_layer = text_config.num_layers + text_config.num_cross_attention_layers
+        prefix = "language_model.decoder"
+
+        new_state_dict = {}
+        # Integrating layer indexes of self-attention and cross-attention
+        for i in range(total_num_layer):
+            cross_num = (i - 3) // (cross_attention_frequency + 1)
+            if (i - 3) % (cross_attention_frequency + 1) == 0:
+                xattn_index = cross_num * cross_attention_frequency + 3
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc1.layer_norm_weight"] = state_dict.pop(
+                    f"{prefix}.xattn_layers.{xattn_index}.mlp.linear_fc1.layer_norm_weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc2.weight"] = state_dict.pop(
+                    f"{prefix}.xattn_layers.{xattn_index}.mlp.linear_fc2.weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.self_attention.linear_qkv.layer_norm_weight"] = state_dict.pop(
+                    f"{prefix}.xattn_layers.{xattn_index}.cross_attention.linear_q.layer_norm_weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc1.weight"] = state_dict.pop(
+                    f"{prefix}.xattn_layers.{xattn_index}.mlp.linear_fc1.weight"
+                )
+            else:
+                attn_index = i - cross_num - 1
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc1.layer_norm_weight"] = state_dict.pop(
+                    f"{prefix}.layers.{attn_index}.mlp.linear_fc1.layer_norm_weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc2.weight"] = state_dict.pop(
+                    f"{prefix}.layers.{attn_index}.mlp.linear_fc2.weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.self_attention.linear_qkv.layer_norm_weight"] = state_dict.pop(
+                    f"{prefix}.layers.{attn_index}.self_attention.linear_qkv.layer_norm_weight"
+                )
+                new_state_dict[f"{prefix}.layers.{i}.mlp.linear_fc1.weight"] = state_dict.pop(
+                    f"{prefix}.layers.{attn_index}.mlp.linear_fc1.weight"
+                )
+
+        for k, v in new_state_dict.items():
+            state_dict[k] = v
+
+        new_state_dict = {}
+        # Align the cross-attention layer index with HF
+        for k, v in state_dict.items():
+            if "xattn_layers" in k:
+                new_state_dict[re.sub(r"\.(\d+)\.", convert_layer_num, k)] = v
+            else:
+                new_state_dict[k] = v
+
+        source = _ModelState(new_state_dict)
+        return source
+
+    @property
+    def config(self) -> "HFMllamaConfig":
+        """
+        Generates the configuration for the HuggingFace MLlama model based on the NeMo model.
+
+        Returns:
+            HFMllamaConfig: A configuration object for the HuggingFace MLlama model.
+        """
+        source = io.load_context(str(self), subpath="model.config")
+        vision_model_config = source.vision_model_config
+        language_config = source.language_model_config
+
+        vision_config = MllamaVisionConfig(
+            num_hidden_layers=vision_model_config.num_layers,
+            hidden_size=vision_model_config.hidden_size,
+            attention_heads=vision_model_config.num_attention_heads,
+            image_size=vision_model_config.vision_chunk_size,
+            max_num_tiles=vision_model_config.vision_max_num_chunks,
+            torch_dtype="bfloat16",
+        )
+        cross_attention_layers = [
+            x + i
+            for i, x in enumerate(language_config._init_fusion_schedule(language_config.num_cross_attention_layers))
+        ]
+        # Create text config for HuggingFace model
+        text_config = MllamaTextConfig(
+            rope_theta=language_config.rotary_base,
+            num_hidden_layers=language_config.num_layers + language_config.num_cross_attention_layers,
+            tie_word_embeddings=language_config.share_embeddings_and_output_weights,
+            cross_attention_layers=cross_attention_layers,
+            hidden_size=language_config.hidden_size,
+            intermediate_size=language_config.ffn_hidden_size,
+            num_attention_heads=language_config.num_attention_heads,
+            num_key_value_heads=language_config.num_query_groups,
+            vocab_size=language_config.vocab_size,
+            rope_scaling={
+                "factor": 8.0,
+                "high_freq_factor": 4.0,
+                "low_freq_factor": 1.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+            eos_token_id=[128001, 128008, 128009],
+            torch_dtype="bfloat16",
+        )
+        # Create the MllamaConfig for HuggingFace
+        return HFMllamaConfig(vision_config=vision_config, text_config=text_config, torch_dtype="bfloat16")
+
+
 def _rename_xattn_layer_nums_hf(source: Dict):
     def convert_layer_num(match):
         layer_num = int(match.group(1))
         cross_num = (layer_num - 3) // (cross_attention_frequency + 1)
         if (layer_num - 3) % (cross_attention_frequency + 1) == 0:
             new_layer_num = cross_num * cross_attention_frequency + 3
-            return f'xattn_layers.{new_layer_num}.'
+            return f"xattn_layers.{new_layer_num}."
 
         new_layer_num = layer_num - cross_num - 1
-        return f'layers.{new_layer_num}.'
+        return f"layers.{new_layer_num}."
 
     cross_attention_frequency = 4
 
@@ -362,7 +741,19 @@ def _import_text_kv(ctx: io.TransformCTX, k, v):
     return _merge_kv(k, v, head_num, num_query_groups, head_size, hidden_size)
 
 
-def _merge_kv(k: Tensor, v: Tensor, head_num: int, num_query_groups: int, head_size: int, hidden_size: int):
+def _import_simple_concat(a, b):
+    # for both (w1, w3) -> fc1, and (wk, wv) -> wkv
+    return torch.cat((a, b), dim=0)
+
+
+def _merge_kv(
+    k: Tensor,
+    v: Tensor,
+    head_num: int,
+    num_query_groups: int,
+    head_size: int,
+    hidden_size: int,
+):
     old_tensor_shape = k.size()
     new_kv_tensor_shape = (num_query_groups, head_size) + old_tensor_shape[1:]
 
@@ -381,7 +772,13 @@ def _merge_kv(k: Tensor, v: Tensor, head_num: int, num_query_groups: int, head_s
 
 
 def _merge_qkv(
-    q: Tensor, k: Tensor, v: Tensor, head_num: int, num_query_groups: int, head_size: int, hidden_size: int
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    head_num: int,
+    num_query_groups: int,
+    head_size: int,
+    hidden_size: int,
 ):
     heads_per_group = head_num // num_query_groups
     old_tensor_shape = q.size()
@@ -408,6 +805,26 @@ def _merge_qkv(
     return qkv_weights
 
 
+def _split_kv(
+    kv: Tensor,
+    head_num: int,
+    num_query_groups: int,
+    head_size: int,
+    hidden_size: int,
+):
+    kv_total_dim = 2 * num_query_groups
+
+    linear_kv = kv.reshape([kv_total_dim, head_size, hidden_size])
+
+    k_slice = torch.arange(0, kv_total_dim, 2)
+    v_slice = torch.arange(1, kv_total_dim, 2)
+
+    k_proj = linear_kv[k_slice].reshape(-1, hidden_size).cpu()
+    v_proj = linear_kv[v_slice].reshape(-1, hidden_size).cpu()
+
+    return k_proj, v_proj
+
+
 def _split_qkv(qkv, head_num: int, num_query_groups: int, head_size: int, hidden_size: int):
     heads_per_group = head_num // num_query_groups
     qkv_total_dim = head_num + 2 * num_query_groups
@@ -429,20 +846,50 @@ def _split_qkv(qkv, head_num: int, num_query_groups: int, head_size: int, hidden
     return q_proj, k_proj, v_proj
 
 
-def _import_simple_concat(a, b):
-    # for both (w1, w3) -> fc1, and (wk, wv) -> wkv
-    return torch.cat((a, b), dim=0)
+def _export_gate(gate):
+    return gate[0:1]
 
 
-def _rename_xattn_layer_nums(source: Dict):
-    def convert_layer_num(match):
-        new_layer_num = int(match.group(1)) * 4 + 3
-        return f'.{new_layer_num}.'
+def _export_patch_embedding_hf(a):
+    return a.reshape(a.shape[0], 3, 14, 14)
 
-    output_dict = {}
-    for k, v in source.items():
-        if "cross_attention_layers" in k:
-            output_dict[re.sub(r"\.(\d+)\.", convert_layer_num, k)] = v
-        else:
-            output_dict[k] = v
-    return output_dict
+
+def _export_vision_qkv(ctx: io.TransformCTX, qkv):
+    vision_config = ctx.target.config.vision_config
+
+    head_num = vision_config.attention_heads
+    num_query_groups = vision_config.attention_heads
+    hidden_size = vision_config.hidden_size
+    head_size = hidden_size // head_num
+    return _split_qkv(qkv, head_num, num_query_groups, head_size, hidden_size)
+
+
+def _export_text_kv(ctx: io.TransformCTX, kv):
+    text_config = ctx.target.config.text_config
+
+    head_num = text_config.num_attention_heads
+    num_query_groups = text_config.num_key_value_heads
+    hidden_size = text_config.hidden_size
+    head_size = hidden_size // head_num
+    return _split_kv(kv, head_num, num_query_groups, head_size, hidden_size)
+
+
+def _export_text_qkv(ctx: io.TransformCTX, qkv):
+    text_config = ctx.target.config.text_config
+
+    head_num = text_config.num_attention_heads
+    num_query_groups = text_config.num_key_value_heads
+    hidden_size = text_config.hidden_size
+    head_size = hidden_size // head_num
+    return _split_qkv(qkv, head_num, num_query_groups, head_size, hidden_size)
+
+
+def _export_simple_split(linear_fc1):
+    """Splits NeMo's fused MLP linear_fc1 weight into gate_proj and up_proj for HuggingFace format."""
+    gate_proj, up_proj = torch.chunk(linear_fc1, 2, dim=0)
+    return gate_proj, up_proj
+
+
+def _export_embedding_hf(word_embeddings, learnable_embedding):
+    """Transforms the word embeddings from NeMo to HuggingFace format."""
+    return torch.cat((word_embeddings, learnable_embedding), dim=0)

@@ -198,7 +198,7 @@ def build_dependency_graph(nemo_root: str) -> Dict[str, List[str]]:
 
         parts = relative_path.split(os.sep)
 
-        if len(parts) == 1 or parts[-1] == "__init__.py" or (parts[0] != "nemo" and parts[0] != "tests"):
+        if len(parts) == 1 or (parts[0] != "nemo" and parts[0] != "tests"):
             continue
 
         module_path = relative_path.replace(".py", "").replace("/", ".")

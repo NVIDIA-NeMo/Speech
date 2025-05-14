@@ -86,9 +86,9 @@ def test_llama33_nemotron_super_49b_config():
 
 def test_llama33_nemotron_ultra_253b_config():
     config = Llama31NemotronUltra253BConfig()
-    assert config.num_layers == 126
-    assert config.hidden_size == 8192
-    assert config.num_attention_heads == 64
+    assert config.num_layers == 162
+    assert config.hidden_size == 16384
+    assert config.num_attention_heads == 128
     assert config.rotary_base == 500_000
     assert config.seq_length == 131072
     assert config.normalization == "RMSNorm"

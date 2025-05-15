@@ -13,9 +13,19 @@
 # limitations under the License.
 
 import torch.nn as nn
-from megatron.core.extensions.transformer_engine import TELayerNormColumnParallelLinear, TERowParallelLinear
-from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
-from megatron.core.transformer.spec_utils import ModuleSpec
+
+try:
+    from megatron.core.extensions.transformer_engine import TELayerNormColumnParallelLinear, TERowParallelLinear
+    from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
+    from megatron.core.transformer.spec_utils import ModuleSpec
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+    from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+    ModuleSpec = ApexGuardDefaults
+    HAVE_MEGATRON_CORE = False
 
 from nemo.collections.nlp.modules.common.hyena.hyena import (
     CausalDepthWiseConv1d,
@@ -32,6 +42,12 @@ from nemo.collections.nlp.modules.common.hyena.hyena_filter import (
 
 
 def get_hyena_layer_with_transformer_engine_spec(hyena_cfg):
+    if not HAVE_MEGATRON_CORE:
+        raise ImportError(
+            "megatron-core was not found. "
+            "Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        )
+
     return ModuleSpec(
         module=HyenaOperator,
         params=hyena_cfg,

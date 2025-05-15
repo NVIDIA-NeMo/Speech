@@ -37,10 +37,23 @@ from typing import Union
 import torch
 import torch.nn as nn
 from einops import rearrange
-from megatron.core.extensions.transformer_engine import TELayerNormColumnParallelLinear, TERowParallelLinear
-from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
-from megatron.core.transformer.spec_utils import ModuleSpec, build_module
-from megatron.core.transformer.transformer_config import TransformerConfig
+
+try:
+    from megatron.core.extensions.transformer_engine import TELayerNormColumnParallelLinear, TERowParallelLinear
+    from megatron.core.transformer.identity_op import IdentityFuncOp, IdentityOp
+    from megatron.core.transformer.spec_utils import ModuleSpec, build_module
+    from megatron.core.transformer.transformer_config import TransformerConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+    from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+    ModuleSpec = ApexGuardDefaults
+    IdentityFuncOp = ApexGuardDefaults
+    IdentityOp = ApexGuardDefaults
+    TransformerConfig = ApexGuardDefaults
+    HAVE_MEGATRON_CORE = False
 
 from nemo.collections.common.parts.utils import activation_registry
 from nemo.collections.nlp.modules.common.hyena.hyena_filter import HyenaFilter, HyenaFilterSubmodules

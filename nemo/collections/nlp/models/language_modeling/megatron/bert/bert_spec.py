@@ -33,7 +33,9 @@ try:
     HAVE_MEGATRON_CORE = True
 
 except (ImportError, ModuleNotFoundError):
-    TransformerConfig = ApexGuardDefaults
+    from nemo.collections.nlp.modules.common.megatron.utils import ApexGuardDefaults
+
+    ModuleSpec = ApexGuardDefaults
     HAVE_MEGATRON_CORE = False
 
 from nemo.collections.nlp.models.language_modeling.megatron.bert.bert_model import (
@@ -41,60 +43,78 @@ from nemo.collections.nlp.models.language_modeling.megatron.bert.bert_model impo
     TransformerLayerWithPostLNSupport,
 )
 
+
 # Use this spec to use lower level Transformer Engine modules (required for fp8 training)
-bert_layer_with_transformer_engine_spec_postln = ModuleSpec(
-    module=TransformerLayerWithPostLNSupport,
-    submodules=TransformerLayerSubmodulesWithPostLNSupport(
-        self_attention=ModuleSpec(
-            module=SelfAttention,
-            params={"attn_mask_type": AttnMaskType.padding},
-            submodules=SelfAttentionSubmodules(
-                linear_qkv=TEColumnParallelLinear,
-                core_attention=TEDotProductAttention,
-                linear_proj=TERowParallelLinear,
-                q_layernorm=IdentityOp,
-                k_layernorm=IdentityOp,
+def get_bert_layer_with_transformer_engine_spec_postln() -> ModuleSpec:
+    if not HAVE_MEGATRON_CORE:
+        raise ImportError(
+            "megatron-core was not found. "
+            "Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        )
+
+    bert_layer_with_transformer_engine_spec_postln = ModuleSpec(
+        module=TransformerLayerWithPostLNSupport,
+        submodules=TransformerLayerSubmodulesWithPostLNSupport(
+            self_attention=ModuleSpec(
+                module=SelfAttention,
+                params={"attn_mask_type": AttnMaskType.padding},
+                submodules=SelfAttentionSubmodules(
+                    linear_qkv=TEColumnParallelLinear,
+                    core_attention=TEDotProductAttention,
+                    linear_proj=TERowParallelLinear,
+                    q_layernorm=IdentityOp,
+                    k_layernorm=IdentityOp,
+                ),
             ),
-        ),
-        self_attn_bda=get_bias_dropout_add,
-        post_att_layernorm=TENorm,
-        mlp=ModuleSpec(
-            module=MLP,
-            submodules=MLPSubmodules(
-                linear_fc1=TEColumnParallelLinear,
-                linear_fc2=TERowParallelLinear,
+            self_attn_bda=get_bias_dropout_add,
+            post_att_layernorm=TENorm,
+            mlp=ModuleSpec(
+                module=MLP,
+                submodules=MLPSubmodules(
+                    linear_fc1=TEColumnParallelLinear,
+                    linear_fc2=TERowParallelLinear,
+                ),
             ),
+            mlp_bda=get_bias_dropout_add,
+            post_mlp_layernorm=TENorm,
         ),
-        mlp_bda=get_bias_dropout_add,
-        post_mlp_layernorm=TENorm,
-    ),
-)
+    )
+    return bert_layer_with_transformer_engine_spec_postln
+
 
 # Use this spec for an implementation using only modules in megatron core
-bert_layer_local_spec_postln = ModuleSpec(
-    module=TransformerLayerWithPostLNSupport,
-    submodules=TransformerLayerSubmodulesWithPostLNSupport(
-        self_attention=ModuleSpec(
-            module=SelfAttention,
-            params={"attn_mask_type": AttnMaskType.padding},
-            submodules=SelfAttentionSubmodules(
-                linear_qkv=ColumnParallelLinear,
-                core_attention=DotProductAttention,
-                linear_proj=RowParallelLinear,
-                q_layernorm=IdentityOp,
-                k_layernorm=IdentityOp,
+def get_bert_layer_local_spec_postln() -> ModuleSpec:
+    if not HAVE_MEGATRON_CORE:
+        raise ImportError(
+            "megatron-core was not found. "
+            "Please see the NeMo README for installation instructions: https://github.com/NVIDIA/NeMo#megatron-gpt."
+        )
+
+    bert_layer_local_spec_postln = ModuleSpec(
+        module=TransformerLayerWithPostLNSupport,
+        submodules=TransformerLayerSubmodulesWithPostLNSupport(
+            self_attention=ModuleSpec(
+                module=SelfAttention,
+                params={"attn_mask_type": AttnMaskType.padding},
+                submodules=SelfAttentionSubmodules(
+                    linear_qkv=ColumnParallelLinear,
+                    core_attention=DotProductAttention,
+                    linear_proj=RowParallelLinear,
+                    q_layernorm=IdentityOp,
+                    k_layernorm=IdentityOp,
+                ),
             ),
-        ),
-        self_attn_bda=get_bias_dropout_add,
-        post_att_layernorm=FusedLayerNorm,
-        mlp=ModuleSpec(
-            module=MLP,
-            submodules=MLPSubmodules(
-                linear_fc1=ColumnParallelLinear,
-                linear_fc2=RowParallelLinear,
+            self_attn_bda=get_bias_dropout_add,
+            post_att_layernorm=FusedLayerNorm,
+            mlp=ModuleSpec(
+                module=MLP,
+                submodules=MLPSubmodules(
+                    linear_fc1=ColumnParallelLinear,
+                    linear_fc2=RowParallelLinear,
+                ),
             ),
+            mlp_bda=get_bias_dropout_add,
+            post_mlp_layernorm=FusedLayerNorm,
         ),
-        mlp_bda=get_bias_dropout_add,
-        post_mlp_layernorm=FusedLayerNorm,
-    ),
-)
+    )
+    return bert_layer_local_spec_postln

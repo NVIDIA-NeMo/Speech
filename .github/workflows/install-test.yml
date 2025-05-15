@@ -48,7 +48,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts"; do
+          for collection in "asr" "tts" "nlp"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -85,7 +85,7 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts"; do
+          for collection in "asr" "tts" "nlp"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done
 
@@ -122,6 +122,6 @@ jobs:
       - name: Run import checks
         run: |
           # Run import checks
-          for collection in "asr" "tts"; do
+          for collection in "asr" "tts" "nlp"; do
             python tests/core_ptl/check_imports.py --domain "$collection"
           done

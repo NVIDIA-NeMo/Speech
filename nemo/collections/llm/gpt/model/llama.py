@@ -765,7 +765,7 @@ class HFLlamaImporter(io.ModelConnector["LlamaForCausalLM", LlamaModel]):
             params_dtype=dtype_from_hf(source),
             generation_config=generation_config,
             vocab_size=source.vocab_size,
-            kv_channels=getattr(source, "head_dim"),
+            kv_channels=getattr(source, "head_dim", None),
             **args,
         )
 

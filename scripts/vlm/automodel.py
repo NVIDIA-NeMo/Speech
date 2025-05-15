@@ -44,6 +44,7 @@ def make_strategy(strategy, model, devices, num_nodes, adapter_only=False):
     elif strategy == 'ddp':
         return pl.strategies.DDPStrategy(
             checkpoint_io=model.make_checkpoint_io(adapter_only=adapter_only),
+            find_unused_parameters=True,
         )
     elif strategy == 'fsdp2':
         return nl.FSDP2Strategy(
@@ -64,8 +65,8 @@ if __name__ == '__main__':
     parser.add_argument('--strategy', type=str, default='auto', choices=['auto', 'ddp', 'fsdp2'])
     parser.add_argument('--devices', default=1, type=int)
     parser.add_argument('--num-nodes', default=1, type=int)
-    parser.add_argument('--mbs', default=1)
-    parser.add_argument('--gbs', default=4)
+    parser.add_argument('--mbs', default=1, type=int)
+    parser.add_argument('--gbs', default=4, type=int)
     parser.add_argument(
         "--log_dir", type=str, required=False, default="/results", help="Directory for logging and checkpoints"
     )
@@ -146,7 +147,7 @@ if __name__ == '__main__':
             log_every_n_steps=1,
             limit_val_batches=0.0,
             num_sanity_val_steps=0,
-            accumulate_grad_batches=1,
+            accumulate_grad_batches=max(1, args.gbs // args.mbs),
             gradient_clip_val=1,
             use_distributed_sampler=False,
             enable_checkpointing=args.disable_ckpt,

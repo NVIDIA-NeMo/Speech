@@ -36,52 +36,77 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
+def get_chat_template(tokenizer):
+    # attempt to unwrap NeMo's tokenizer wrapper and check if wrapped tokenizer has chat_template
+    tmp_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+    has_chat_template = getattr(tmp_tokenizer, 'chat_template', None) is not None
+    if has_chat_template:
+        return tmp_tokenizer, getattr(tmp_tokenizer, 'eos_token_id', None), has_chat_template
+    else:
+        return tokenizer, getattr(tokenizer, 'eos_id', None), has_chat_template
+
+
 @FirstRankPerNode()
 def make_squad_hf_dataset(
     tokenizer,
     micro_batch_size,
-    seq_length,
-    packed_sequence_size,
+    seq_length=None,
+    packed_sequence_size=None,
     limit_dataset_samples=None,
+    start_of_turn_token=None,
     fp8=False,
-    num_replicas=1,
-    rank=0,
 ):
+    tokenizer, eos_token_id, has_chat_template = get_chat_template(tokenizer)
+
+    def pad_to_seq_length(sample):
+        seq_pad_len_ar = max(0, seq_length - len(next(iter(sample.values()))))
+        return {k: v + [eos_token_id if v != 'loss_mask' else 0] * seq_pad_len_ar for k, v in sample.items()}
+
     def formatting_prompts_func(example):
         formatted_text = [
-            f"Context: {example['context']} Question: {example['question']} Answer:",
-            f" {example['answers']['text'][0].strip()}",
+            f"{example['context']} {example['question']} ",
+            example['answers']['text'][0].strip(),
         ]
         context_ids, answer_ids = list(map(tokenizer.text_to_ids, formatted_text))
-        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id and tokenizer.bos_id is not None:
-            context_ids.insert(0, tokenizer.bos_id)
-        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id and tokenizer.eos_id is not None:
-            answer_ids.append(tokenizer.eos_id)
+        bos_id = getattr(tokenizer, 'bos_id', None)
+        eos_id = getattr(tokenizer, 'eos_id', None)
+        if len(context_ids) > 0 and bos_id is not None and context_ids[0] != bos_id:
+            context_ids.insert(0, bos_id)
+        if len(answer_ids) > 0 and eos_id is not None and answer_ids[-1] != eos_id:
+            answer_ids.append(eos_id)
 
-        # Do not perform padding for packed sequences
-        if packed_sequence_size > 0:
-            return dict(
-                labels=(context_ids + answer_ids)[1:],
-                input_ids=(context_ids + answer_ids)[:-1],
-                loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
-            )
+        input_ids = context_ids + answer_ids
+        return dict(
+            input_ids=input_ids,
+            labels=input_ids[1:] + [eos_token_id] or [input_ids[-1]],
+            loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
+        )
+
+    def formatting_prompts_func_with_chat_template(example, start_of_turn_token=None):
+        formatted_text = [
+            {'role': 'user', 'content': f"{example['context']} {example['question']}"},
+            {'role': 'assistant', 'content': example['answers']['text'][0].strip()},
+        ]
+        input_ids = tokenizer.apply_chat_template(formatted_text)
+        if isinstance(start_of_turn_token, str):
+            start_of_turn_token_id = tokenizer(start_of_turn_token, add_special_tokens=False)['input_ids'][0]
+            first_start_of_turn_token_id = input_ids.index(start_of_turn_token_id)
+            response_start = input_ids.index(start_of_turn_token_id, first_start_of_turn_token_id + 1) + 1
         else:
-            # Set input and labels, and pad to sequence length.
-            combined_query_answer = context_ids + answer_ids
-            seq_pad_len_ar = max(0, seq_length - len(combined_query_answer) + 1)
-            pad_token_id = tokenizer.eos_id if tokenizer.eos_id is not None else 0
-            return dict(
-                labels=combined_query_answer[1:] + [pad_token_id] * seq_pad_len_ar,
-                input_ids=combined_query_answer[:-1] + [pad_token_id] * seq_pad_len_ar,
-                loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids) + [0] * seq_pad_len_ar,
-            )
+            response_start = 0
+        loss_mask = [0] * response_start + [1] * (len(input_ids) - response_start)
+        return dict(
+            input_ids=input_ids,
+            labels=input_ids[1:] + [getattr(tokenizer, 'eos_token_id', None) or input_ids[-1]],
+            loss_mask=loss_mask,
+        )
 
     splits = ['train', 'validation']
     if limit_dataset_samples is not None:
         assert isinstance(limit_dataset_samples, int), "Expected limit_dataset_samples to be an int"
         splits = list(map(lambda x: f'{x}[:{limit_dataset_samples}]', splits))
 
-    if packed_sequence_size > 0:
+    if isinstance(packed_sequence_size, int) and packed_sequence_size > 0:
         # If packed_sequence_size > 0 instantiate HFDatasetDataModulePacked class
         datamodule = llm.HFDatasetDataModulePacked(
             "rajpurkar/squad",
@@ -90,22 +115,25 @@ def make_squad_hf_dataset(
             micro_batch_size=micro_batch_size,
             pad_token_id=tokenizer.eos_id if tokenizer.eos_id is not None else 0,
             pad_seq_len_divisible=16 if fp8 else None,  # FP8 training requires seq length to be divisible by 16.
-            num_replicas=num_replicas,
-            rank=rank,
         )
     else:
         datamodule = llm.HFDatasetDataModule(
             "rajpurkar/squad",
             split=splits,
             micro_batch_size=micro_batch_size,
-            pad_token_id=tokenizer.eos_id if tokenizer.eos_id is not None else 0,
+            pad_token_id=getattr(tokenizer, 'eos_id', 0) or 0,
             pad_seq_len_divisible=16 if fp8 else None,  # FP8 training requires seq length to be divisible by 16.
-            num_replicas=num_replicas,
-            rank=rank,
         )
-    ## tokenization is happening here
+
+    fmt_fn = formatting_prompts_func
+    if has_chat_template:
+        fmt_fn = lambda x: formatting_prompts_func_with_chat_template(x, start_of_turn_token)
+    if isinstance(seq_length, int):
+        fmt_fn_ = fmt_fn
+        fmt_fn = lambda x: pad_to_seq_length(fmt_fn_(x))
+
     datamodule.map(
-        formatting_prompts_func,
+        fmt_fn,
         batched=False,
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
@@ -197,7 +225,7 @@ def main():
     )
     parser.add_argument('--devices', type=int, default=2, help='Number of GPUs to use')
     parser.add_argument('--num-nodes', type=int, default=1, help='Number of Nodes to use; to be used with torchrun')
-    parser.add_argument('--dp-size', type=int, default=2, help='Data Parallel size; to be used with fsdp2')
+    parser.add_argument('--dp-size', type=int, default=None, help='Data Parallel size; to be used with fsdp2')
     parser.add_argument('--tp-size', type=int, default=1, help='Tensor Parallel size; to be used with fsdp2')
     parser.add_argument('--cp-size', type=int, default=1, help='Context Parallel size; to be used with fsdp2')
     parser.add_argument(
@@ -235,7 +263,14 @@ def main():
         '--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name, help='Directory to save checkpoints'
     )
     parser.add_argument('--global-batch-size', default=32, type=int, help='Global batch size to use for training.')
-    parser.add_argument('--micro-batch-size', default=1, type=int, help='Micro batch size to use for training.')
+    parser.add_argument(
+        '--batch-size',
+        '--micro-batch-size',
+        dest='batch_size',
+        default=1,
+        type=int,
+        help='Micro batch size to use for training.',
+    )
     parser.add_argument(
         '--limit-val-batches',
         default=0.0,
@@ -256,6 +291,7 @@ def main():
     parser.add_argument(
         '--use-chunked-ce', action='store_true', help='Use chunked cross entropy loss instead of the standard CE loss.'
     )
+    parser.add_argument('--no-lce', action='store_false', help='Disables LCE')
     parser.add_argument('--mock-dataset', action='store_true', help='Use HFMockDataModule for training.')
     parser.add_argument(
         '--limit-dataset-samples',
@@ -272,8 +308,11 @@ def main():
         'are currently supported only with position_ids and not attention_mask. Hence packed sequences needs to be'
         'run with --attn-implementation=flash_attention_2',
     )
+    parser.add_argument('--start-of-turn-token', default=None, help='Chat turn token')
 
     args = parser.parse_args()
+    if args.dp_size is None:
+        args.dp_size = args.devices
 
     # CPUOffload WA for known issue
     if args.enable_cpu_offload and args.use_te_optimizer:
@@ -301,7 +340,7 @@ def main():
 
         wandb = WandbLogger(
             project=args.wandb_project,
-            name=f"{model}_nodes{args.num_nodes}_dev{args.devices}_strat_{args.strategy}_dp{args.dp_size}_cp{args.cp_size}_tp{args.tp_size}_sp{args.sequence_parallel}_seqlen{args.seq_length}_gb{args.global_batch_size}_mb{args.micro_batch_size}_lr{args.lr}",
+            name=f"{model}_nodes{args.num_nodes}_dev{args.devices}_strat_{args.strategy}_dp{args.dp_size}_cp{args.cp_size}_tp{args.tp_size}_sp{args.sequence_parallel}_seqlen{args.seq_length}_gb{args.global_batch_size}_mb{args.batch_size}_lr{args.lr}",
         )
 
     callbacks = []
@@ -333,6 +372,7 @@ def main():
         trust_remote_code=args.trust_remote_code,
         use_liger_kernel=args.liger,
         enable_grad_ckpt=args.enable_grad_ckpt,
+        use_linear_ce_loss=not args.no_lce,
     )
 
     assert (
@@ -371,7 +411,7 @@ def main():
     if args.mock_dataset:
         dataset = HFMockDataModule(
             seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
+            micro_batch_size=args.atch_size,
             pad_seq_len_divisible=16 if args.fp8 else None,
         )
     else:
@@ -382,13 +422,11 @@ def main():
             )
         dataset = make_squad_hf_dataset(
             tokenizer=model.tokenizer,
-            micro_batch_size=args.micro_batch_size,
+            micro_batch_size=args.batch_size,
             seq_length=args.seq_length,
             packed_sequence_size=args.packed_sequence_size,
             limit_dataset_samples=args.limit_dataset_samples,
             fp8=args.fp8,
-            num_replicas=args.dp_size,
-            rank=0,
         )
 
     llm.api.finetune(

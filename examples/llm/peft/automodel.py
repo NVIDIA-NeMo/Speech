@@ -34,36 +34,87 @@ from nemo.lightning.pytorch.callbacks import JitConfig, JitTransform
 # Note: ensure that the --nproc-per-node and --devices values match.
 
 
+def get_chat_template(tokenizer):
+    # attempt to unwrap NeMo's tokenizer wrapper and check if wrapped tokenizer has chat_template
+    tmp_tokenizer = getattr(tokenizer, 'tokenizer', tokenizer)
+    has_chat_template = getattr(tmp_tokenizer, 'chat_template', None) is not None
+    if has_chat_template:
+        return tmp_tokenizer, getattr(tmp_tokenizer, 'eos_token_id', None), has_chat_template
+    else:
+        return tokenizer, getattr(tokenizer, 'eos_id', None), has_chat_template
+
+
 @FirstRankPerNode()
-def make_squad_hf_dataset(tokenizer, batch_size, fp8=False):
+def make_squad_hf_dataset(
+    tokenizer, micro_batch_size, seq_length=None, limit_dataset_samples=None, start_of_turn_token=None, fp8=False
+):
+    tokenizer, eos_token_id, has_chat_template = get_chat_template(tokenizer)
+
+    def pad_to_seq_length(sample):
+        seq_pad_len_ar = max(0, seq_length - len(next(iter(sample.values()))))
+        return {k: v + [eos_token_id if v != 'loss_mask' else 0] * seq_pad_len_ar for k, v in sample.items()}
+
     def formatting_prompts_func(example):
         formatted_text = [
-            f"Context: {example['context']} Question: {example['question']} Answer:",
-            f" {example['answers']['text'][0].strip()}",
+            f"{example['context']} {example['question']} ",
+            example['answers']['text'][0].strip(),
         ]
         context_ids, answer_ids = list(map(tokenizer.text_to_ids, formatted_text))
-        if len(context_ids) > 0 and context_ids[0] != tokenizer.bos_id and tokenizer.bos_id is not None:
-            context_ids.insert(0, tokenizer.bos_id)
-        if len(answer_ids) > 0 and answer_ids[-1] != tokenizer.eos_id and tokenizer.eos_id is not None:
-            answer_ids.append(tokenizer.eos_id)
+        bos_id = getattr(tokenizer, 'bos_id', None)
+        eos_id = getattr(tokenizer, 'eos_id', None)
+        if len(context_ids) > 0 and bos_id is not None and context_ids[0] != bos_id:
+            context_ids.insert(0, bos_id)
+        if len(answer_ids) > 0 and eos_id is not None and answer_ids[-1] != eos_id:
+            answer_ids.append(eos_id)
 
+        input_ids = context_ids + answer_ids
         return dict(
-            labels=(context_ids + answer_ids)[1:],
-            input_ids=(context_ids + answer_ids)[:-1],
+            input_ids=input_ids,
+            labels=input_ids[1:] + [eos_token_id] or [input_ids[-1]],
             loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
         )
 
+    def formatting_prompts_func_with_chat_template(example, start_of_turn_token=None):
+        formatted_text = [
+            {'role': 'user', 'content': f"{example['context']} {example['question']}"},
+            {'role': 'assistant', 'content': example['answers']['text'][0].strip()},
+        ]
+        input_ids = tokenizer.apply_chat_template(formatted_text)
+        if isinstance(start_of_turn_token, str):
+            start_of_turn_token_id = tokenizer(start_of_turn_token, add_special_tokens=False)['input_ids'][0]
+            first_start_of_turn_token_id = input_ids.index(start_of_turn_token_id)
+            response_start = input_ids.index(start_of_turn_token_id, first_start_of_turn_token_id + 1) + 1
+        else:
+            response_start = 0
+        loss_mask = [0] * response_start + [1] * (len(input_ids) - response_start)
+        return dict(
+            input_ids=input_ids,
+            labels=input_ids[1:] + [getattr(tokenizer, 'eos_token_id', None) or input_ids[-1]],
+            loss_mask=loss_mask,
+        )
+
+    splits = ['train', 'validation']
+    if limit_dataset_samples is not None:
+        assert isinstance(limit_dataset_samples, int), "Expected limit_dataset_samples to be an int"
+        splits = list(map(lambda x: f'{x}[:{limit_dataset_samples}]', splits))
+
+    fmt_fn = formatting_prompts_func
+    if has_chat_template:
+        fmt_fn = lambda x: formatting_prompts_func_with_chat_template(x, start_of_turn_token)
+    if isinstance(seq_length, int):
+        fmt_fn_ = fmt_fn
+        fmt_fn = lambda x: pad_to_seq_length(fmt_fn_(x))
+
     datamodule = llm.HFDatasetDataModule(
         "rajpurkar/squad",
-        split="train",
-        micro_batch_size=batch_size,
-        pad_token_id=tokenizer.eos_id or 0,
+        split=splits,
+        micro_batch_size=micro_batch_size,
+        pad_token_id=getattr(tokenizer, 'eos_id', 0) or 0,
         pad_seq_len_divisible=16 if fp8 else None,  # FP8 training requires seq length to be divisible by 16.
     )
     datamodule.map(
-        formatting_prompts_func,
+        fmt_fn,
         batched=False,
-        batch_size=2,
         remove_columns=["id", "title", "context", "question", 'answers'],
     )
     return datamodule
@@ -139,6 +190,13 @@ def main():
     )
     parser.add_argument('--load-in-4bit', action='store_true', help='Use 4-bit quantization for e.g. for qlora')
     parser.add_argument('--max-steps', type=int, default=100, help='Maximum number of training steps')
+    parser.add_argument(
+        '--attn-implementation',
+        type=str,
+        default="sdpa",
+        choices=["flash_attention_2", "sdpa", "eager"],
+        help='Attention implementation to use. Default: sdpa',
+    )
     parser.add_argument('--wandb-project', type=str, default=None, help='Wandb project to use')
     parser.add_argument('--use-torch-jit', action='store_true', help='Enables torch.compile on model')
     parser.add_argument('--auto-resume', action='store_true', help='Enables autoresume from a previous training job')
@@ -148,7 +206,14 @@ def main():
     parser.add_argument(
         '--ckpt-folder', type=str, default=tempfile.TemporaryDirectory().name, help='Directory to save checkpoints'
     )
-    parser.add_argument('--batch-size', default=1, type=int, help='Batch size to use for training')
+    parser.add_argument(
+        '--batch-size',
+        '--micro-batch-size',
+        dest='batch_size',
+        default=1,
+        type=int,
+        help='Micro batch size to use for training.',
+    )
     parser.add_argument(
         '--trust-remote-code',
         action='store_true',
@@ -156,6 +221,15 @@ def main():
     )
     parser.add_argument('--fp8', action='store_true', help='Enables fp8 training')
     parser.add_argument('--lr', type=float, default=5e-5, help='Learning rate')
+    parser.add_argument('--no-lce', action='store_false', help='Disables LCE')
+    parser.add_argument('--start-of-turn-token', default=None, help='Chat turn token')
+    parser.add_argument(
+        '--limit-dataset-samples',
+        type=int,
+        default=None,
+        help='If set will limit num of dataset samples. Default None (disabled)',
+    )
+    parser.add_argument('--seq-length', default=None, type=int, help='Sequence length to use for training')
     args = parser.parse_args()
 
     # CPUOffload WA for known issue
@@ -193,10 +267,12 @@ def main():
     model = llm.HFAutoModelForCausalLM(
         model_name=args.model,
         model_accelerator=model_accelerator,
+        attn_implementation=args.attn_implementation,
         trust_remote_code=args.trust_remote_code,
         use_liger_kernel=args.liger,
         load_in_4bit=args.load_in_4bit,
         enable_grad_ckpt=args.enable_grad_ckpt,
+        use_linear_ce_loss=not args.no_lce,
     )
     strategy = make_strategy(args.strategy, model, args.devices, args.num_nodes, True, args.enable_cpu_offload)
 
@@ -208,10 +284,17 @@ def main():
         if args.auto_resume
         else None
     )
-
+    dataset = make_squad_hf_dataset(
+        tokenizer=model.tokenizer,
+        micro_batch_size=args.batch_size,
+        seq_length=args.seq_length,
+        start_of_turn_token=args.start_of_turn_token,
+        limit_dataset_samples=args.limit_dataset_samples,
+        fp8=args.fp8,
+    )
     llm.api.finetune(
         model=model,
-        data=make_squad_hf_dataset(model.tokenizer, args.batch_size, args.fp8),
+        data=dataset,
         trainer=nl.Trainer(
             devices=args.devices,
             num_nodes=args.num_nodes,

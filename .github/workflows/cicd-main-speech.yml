@@ -85,9 +85,9 @@ jobs:
             script: ASR_dev_run_Speech_Pre-training_-_CitriNet
           - runner: self-hosted-azure-gpus-1
             script: Optional_ASR_dev_run_Speech_To_Text_Finetuning
-            is-optional: true
           - runner: self-hosted-azure-gpus-1
             script: Optional_ASR_dev_run_Speech_To_Text_HF_Finetuning
+            is-optional: true
           - runner: self-hosted-azure-gpus-1
             script: ASR_dev_run_Speech_to_Text_WPE_-_Conformer
           - runner: self-hosted-azure-gpus-1

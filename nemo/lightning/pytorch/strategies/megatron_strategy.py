@@ -956,14 +956,19 @@ class MegatronStrategy(DDPStrategy, io.IOMixin):
             if mto.ModeloptStateManager.is_converted(core_model):
                 logging.info("Restored Model-Optimizer state from checkpoint.")
 
+        restore_optimizers = self.should_restore_optimizer_states(selective_restore=selective_restore)
+
         # After dist_checkpointing.load, sharded tensors will be replaced with tensors
         sharded_state_dict = {}
-        sharded_state_dict["state_dict"] = self.megatron_parallel.sharded_state_dict()
+        with ExitStack() as stack:
+            if HAVE_MODELOPT and hasattr(core_model, "hide_loss_modules"):
+                if not restore_optimizers and self.trainer.state.fn == TrainerFn.FITTING:
+                    # Assume no optimizer means it's first time loading checkpoint into ModelOpt distillation model.
+                    # We hide any extra parameters (i.e. hidden projection layers) the loss modules might have added.
+                    stack.enter_context(core_model.hide_loss_modules())
+            sharded_state_dict["state_dict"] = self.megatron_parallel.sharded_state_dict()
 
-        if (
-            self.should_restore_optimizer_states(selective_restore=selective_restore)
-            and self.trainer.state.fn == TrainerFn.FITTING
-        ):
+        if restore_optimizers and self.trainer.state.fn == TrainerFn.FITTING:
             if self.lightning_module.optimizers(use_pl_optimizer=False):
                 sharded_state_dict["optimizer"] = [self.optimizer_sharded_state_dict(is_loading=True)]
 

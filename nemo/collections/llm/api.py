@@ -379,6 +379,7 @@ def distill(
     teacher_model_path: AnyPath,
     data: pl.LightningDataModule,
     trainer: Trainer,
+    distillation_config_path: Optional[AnyPath] = None,
     log: Annotated[Optional[NeMoLogger], run.Config[NeMoLogger]] = None,
     resume: Annotated[Optional[AutoResume], run.Config[AutoResume]] = None,
     optim: Optional[OptimizerModule] = None,
@@ -397,6 +398,8 @@ def distill(
         teacher_model_path (Path): Path to teacher model NeMo checkpoint to distill from.
         data (pl.LightningDataModule): The data module containing training data.
         trainer (Trainer): The trainer instance configured with a MegatronStrategy.
+        distillation_config_path (Optional[Path]): Path to distillation config YAML file.
+            If not provided, by default will perform logits-only distillation.
         log (NeMoLogger): A nemologger instance.
         resume (Optional[Union[AutoResume, Resume]]): Resume training from a checkpoint.
         optim (Optional[OptimizerModule]): The optimizer module to be used. If not provided, the default optimizer
@@ -435,6 +438,7 @@ def distill(
         _student_model.config,
         _teacher_model.config,
         teacher_ckpt_path=teacher_model_path,
+        distillation_config_path=distillation_config_path,
     )
     model.__io__ = _student_model.__io__
 

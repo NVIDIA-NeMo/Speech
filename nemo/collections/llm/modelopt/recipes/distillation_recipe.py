@@ -116,6 +116,7 @@ def trainer(
 def distillation_recipe(
     student_model_path: str,
     teacher_model_path: str,
+    distillation_config_path: Optional[str] = None,
     dir: Optional[str] = None,
     name: str = "default",
     num_nodes: int = 1,
@@ -130,6 +131,7 @@ def distillation_recipe(
     Args:
         student_model_path (Path): Path to student model NeMo checkpoint to be trained.
         teacher_model_path (Path): Path to teacher model NeMo checkpoint to distill from.
+        distillation_config_path (Optional[str]): Path to distillation config file.
         dir (Optional[str]): Directory for saving logs and checkpoints.
         name (str): Name of the distillation run.
         num_nodes (int): Number of compute nodes to use.
@@ -146,6 +148,7 @@ def distillation_recipe(
         >>> recipe = distillation_recipe(
         ...     student_model_path="/path/to/student/nemo/ckpt/",
         ...     teacher_model_path="/path/to/teacher/nemo/ckpt/",
+        ...     distillation_config_path="/path/to/distillation/config.yaml",
         ... )
         >>> # Override the configuration with desired components:
         >>> recipe.data = run.Config(llm.PreTrainingDataModule, ...)
@@ -157,6 +160,7 @@ def distillation_recipe(
         llm.distill,
         student_model_path=student_model_path,
         teacher_model_path=teacher_model_path,
+        distillation_config_path=distillation_config_path,
         trainer=trainer(
             num_nodes=num_nodes,
             num_gpus_per_node=num_gpus_per_node,

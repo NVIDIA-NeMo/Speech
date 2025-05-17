@@ -35,7 +35,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def get_args():
-    """Parse the command line arguments."""
+    """Parse the command-line arguments."""
     parser = ArgumentParser(
         description="""
             Script for training GPT models. Supports 4 modes, with different arguments needed in addition to the required arguments:
@@ -58,6 +58,7 @@ def get_args():
         required=False,
         help="Path to NeMo 2 checkpoint to use as a distillation teacher. Will trigger distillation mode if provided.",
     )
+    parser.add_argument("--kd_config", type=str, default=None, help="""Path to Knowledge-Distillation config file""")
     parser.add_argument("--tp_size", type=int, default=1, help="Tensor parallel size")
     parser.add_argument("--cp_size", type=int, default=1, help="Context parallel size")
     parser.add_argument("--pp_size", type=int, default=1, help="Pipeline parallel size")
@@ -88,8 +89,8 @@ def get_args():
         type=str,
         help="Name of tokenizer model to override default. Required if using chat data (--use-chat-data).",
     )
-    parser.add_argument("--lr", type=float, default=3e-5, help="Base LR for Cosine-Annealing scheduler")
-    parser.add_argument("--min_lr", type=float, default=2e-7, help="Minimum LR for Cosine-Annealing scheduler")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Base LR for Cosine-Annealing scheduler")
+    parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum LR for Cosine-Annealing scheduler")
     parser.add_argument("--warmup_steps", type=int, default=50, help="Number of scheduler warmup steps")
     parser.add_argument("--val_check_interval", type=int, default=100, help="Validate + checkpoint every _ steps")
     parser.add_argument("--limit_val_batches", type=int, default=32, help="Number of batches per validation stage")
@@ -227,6 +228,7 @@ if __name__ == "__main__":
         llm.distill(
             student_model_path=args.model_path,
             teacher_model_path=args.teacher_path,
+            distillation_config_path=args.kd_config,
             data=data,
             trainer=trainer,
             log=logger,

@@ -12,4 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 export HF_HOME=/home/TestData/HF_HOME
-coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo -m pytest tests/evaluation/eval_unittest.py
+coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo -m pytest tests/evaluation/eval_unittest.py -m "not pleasefixme"

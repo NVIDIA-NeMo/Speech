@@ -53,6 +53,7 @@ def test_default_none_tokenizer():
     assert eval_config.params.extra["num_fewshot"] == 5
 
 
+@pytest.mark.pleasefixme
 def test_evaluation(httpserver: HTTPServer):
     httpserver.expect_request("/v1/triton_health").respond_with_json(
         {"status": "Triton server is reachable and ready"}

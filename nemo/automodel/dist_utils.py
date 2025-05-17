@@ -66,7 +66,7 @@ class FirstRankPerNode(ContextDecorator):
                 # Re‑sync the whole world so that non‑rank‑0s can proceed
                 dist.barrier()
                 if exc_type is not None:
-                    dist.abort()  # propagate failure to the entire job
+                    dist.destroy_process_group()
         finally:
             if self._created_pg:
                 dist.destroy_process_group()

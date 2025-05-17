@@ -100,6 +100,7 @@ extras_require['common'] = list(
 )
 extras_require['test'] = list(
     chain(
+        extras_require['test'],
         extras_require['tts'],
         extras_require['common'],
     )

@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2024, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,13 +24,7 @@ def get_args():
     )
     parser.add_argument('--nemo2_ckpt_path', type=str, help="NeMo 2.0 ckpt path")
     parser.add_argument('--max_batch_size', type=int, help="Max BS for the model")
-    parser.add_argument(
-        '--trtllm_dir',
-        type=str,
-        help="Folder for the trt-llm conversion, trt-llm engine gets saved \
-                        in this specified dir",
-    )
-
+    parser.add_argument('--legacy_ckpt', action="store_true", help="Whether the nemo checkpoint is in legacy format")
     return parser.parse_args()
 
 
@@ -40,8 +34,8 @@ if __name__ == '__main__':
         api.deploy(
             nemo_checkpoint=args.nemo2_ckpt_path,
             max_batch_size=args.max_batch_size,
-            triton_model_repository=args.trtllm_dir,
-            backend="trtllm",
+            fastapi_port=8886,
+            legacy_ckpt=args.legacy_ckpt,
         )
     except Exception as e:
         logging.error(f"Deploy process encountered an error: {e}")

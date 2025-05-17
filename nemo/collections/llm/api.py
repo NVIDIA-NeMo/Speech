@@ -594,6 +594,7 @@ def deploy(
     output_context_logits: bool = True,
     output_generation_logits: bool = True,
     enable_flash_decode: bool = True,
+    legacy_ckpt: bool = False,
 ):
     """
     Deploys nemo model on a PyTriton server either "in-framework" or by converting to trtllm depending on the backend.
@@ -640,6 +641,7 @@ def deploy(
             benchmarks (like MMLU, lambada). Default: True. Used only with "trtllm" backend.
         enable_flash_decode (bool): If True runs in-framework deployment with flash decode enabled (not supported for
             the trtllm backend).
+        legacy_ckpt (bool): Indicates whether the checkpoint is in the legacy format. Default: False
     """
     import os
 
@@ -679,6 +681,7 @@ def deploy(
             inference_max_seq_length=max_input_len,
             enable_flash_decode=enable_flash_decode,
             max_batch_size=max_batch_size,
+            legacy_ckpt=legacy_ckpt,
         )
 
         if torch.distributed.is_initialized():

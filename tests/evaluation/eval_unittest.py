@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2025, NVIDIA CORPORATION.
+# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,114 +12,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import unittest
-from unittest.mock import MagicMock, patch
+import pytest
+from pytest_httpserver import HTTPServer
 
-from nemo.collections.llm.api import evaluate  # Replace 'your_module' with the actual module name
-
-
-class TestEvaluateFunction(unittest.TestCase):
-
-    def setUp(self):
-        # Mocking EvaluationTarget and EvaluationConfig
-        self.target_cfg = MagicMock()
-        self.target_cfg.api_endpoint = MagicMock()
-        self.target_cfg.api_endpoint.nemo_checkpoint_path = "path/to/checkpoint"
-        self.target_cfg.api_endpoint.url = "http://example.com"
-        self.target_cfg.api_endpoint.nemo_triton_http_port = 8000
-        self.target_cfg.api_endpoint.model_id = "model_id"
-
-        self.eval_cfg = MagicMock()
-        self.eval_cfg.type = "gsm8k"
-        self.eval_cfg.params = MagicMock()
-        self.eval_cfg.params.batch_size = 16
-        self.eval_cfg.params.max_new_tokens = 128
-        self.eval_cfg.params.temperature = 1.0
-        self.eval_cfg.params.top_p = 0.9
-        self.eval_cfg.params.top_k = 50
-        self.eval_cfg.params.add_bos = True
-        self.eval_cfg.params.limit_samples = 100
-        self.eval_cfg.params.num_fewshot = 4
-        self.eval_cfg.params.bootstrap_iters = 1000
-
-    @patch('nemo.lightning.io.load_context')
-    @patch('nemo.collections.llm.evaluation.base.wait_for_server_ready')
-    @patch('lm_eval.evaluator.simple_evaluate')
-    @patch('nemo.collections.llm.evaluation.base.NeMoFWLMEval')
-    def test_evaluate_success(
-        self, mock_NeMoFWLMEval, mock_simple_evaluate, mock_wait_for_server_ready, mock_load_context
-    ):
-        # Mocking necessary methods
-        mock_load_context.return_value = "tokenizer"
-        mock_NeMoFWLMEval.return_value = "model"
-        mock_simple_evaluate.return_value = {"results": {"gsm8k": "score"}}
-
-        # Call the function
-        evaluate(self.target_cfg, self.eval_cfg)
-
-        # Asserts
-        mock_load_context.assert_called_once_with("path/to/checkpoint/context", subpath="model.tokenizer")
-        mock_wait_for_server_ready.assert_called_once_with(
-            url="http://example.com", triton_http_port=8000, model_name="model_id"
-        )
-        mock_NeMoFWLMEval.assert_called_once_with(
-            model_name="model_id",
-            api_url="http://example.com",
-            tokenizer="tokenizer",
-            batch_size=16,
-            max_tokens_to_generate=128,
-            temperature=1.0,
-            top_p=0.9,
-            top_k=50,
-            add_bos=True,
-        )
-        mock_simple_evaluate.assert_called_once_with(
-            model="model",
-            tasks="gsm8k",
-            limit=100,
-            num_fewshot=4,
-            bootstrap_iters=1000,
-        )
-
-    @patch('nemo.lightning.io.load_context')
-    @patch('nemo.collections.llm.evaluation.base.wait_for_server_ready')
-    @patch('lm_eval.evaluator.simple_evaluate')
-    @patch('nemo.collections.llm.evaluation.base.NeMoFWLMEval')
-    def test_evaluate_nemo_checkpoint_path_none(
-        self, mock_NeMoFWLMEval, mock_simple_evaluate, mock_wait_for_server_ready, mock_load_context
-    ):
-        # Set nemo_checkpoint_path to None
-        self.target_cfg.api_endpoint.nemo_checkpoint_path = None
-
-        # Call the function and assert it raises ValueError
-        with self.assertRaises(ValueError):
-            evaluate(self.target_cfg, self.eval_cfg)
-
-        # No other methods should be called
-        mock_load_context.assert_not_called()
-        mock_wait_for_server_ready.assert_not_called()
-        mock_NeMoFWLMEval.assert_not_called()
-        mock_simple_evaluate.assert_not_called()
-
-    @patch('nemo.lightning.io.load_context')
-    @patch('nemo.collections.llm.evaluation.base.wait_for_server_ready')
-    @patch('lm_eval.evaluator.simple_evaluate')
-    @patch('nemo.collections.llm.evaluation.base.NeMoFWLMEval')
-    def test_evaluate_import_error(
-        self, mock_NeMoFWLMEval, mock_simple_evaluate, mock_wait_for_server_ready, mock_load_context
-    ):
-        # Mocking ImportError for lm-evaluation-harness
-        with patch('builtins.__import__', side_effect=ImportError("Mocked ImportError")):
-            # Call the function and assert it raises ImportError
-            with self.assertRaises(ImportError):
-                evaluate(self.target_cfg, self.eval_cfg)
-
-            # No other methods should be called
-            mock_load_context.assert_not_called()
-            mock_wait_for_server_ready.assert_not_called()
-            mock_NeMoFWLMEval.assert_not_called()
-            mock_simple_evaluate.assert_not_called()
+from nemo.collections.llm.api import evaluate
+from nemo.collections.llm.evaluation.api import ConfigParams, EvaluationConfig, EvaluationTarget
 
 
-if __name__ == '__main__':
-    unittest.main()
+@pytest.fixture(scope="session")
+def httpserver_listen_address():
+    return ("127.0.0.1", 8000)
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {
+            "top_p": 0.1,
+            "temperature": 0.001,
+        },
+        {"limit_samples": 10},
+        {"limit_samples": 0.1},
+        {"max_new_tokens": 64},
+        {"max_retries": 10, "parallelism": 16, "request_timeout": 100},
+        {"task": "my_task", "extra": {"num_fewshot": 5, "tokenizer": "my_tokenizer"}},
+    ],
+)
+def test_configuration(params: dict):
+    eval_config = EvaluationConfig(type="custom", params=params)
+    assert isinstance(eval_config.params, ConfigParams)
+    assert eval_config.type == "custom"
+    for param_name, param_value in params.items():
+        assert getattr(eval_config.params, param_name) == param_value
+
+
+def test_default_none_tokenizer():
+    eval_config = EvaluationConfig(type="custom", params={"extra": {"num_fewshot": 5}})
+    assert eval_config.type == "custom"
+    assert eval_config.params.extra["tokenizer"] is None
+    assert eval_config.params.extra["num_fewshot"] == 5
+
+
+def test_evaluation(httpserver: HTTPServer):
+    httpserver.expect_request("/v1/triton_health").respond_with_json(
+        {"status": "Triton server is reachable and ready"}
+    )
+    httpserver.expect_request("/v1/completions/", method="POST").respond_with_json(
+        {
+            'id': 'cmpl-123456',
+            'object': 'text_completion',
+            'created': 1234567,
+            'model': 'triton_model',
+            'choices': [
+                {
+                    'text': ' Janet eats 3 eggs and bakes 4 eggs, so she has 16 - 3 - 4 = <<16-3-4=9>>9 eggs left.\n'
+                    'She sells 9 eggs for $2 each, so she makes 9 x 2 = <<9*2=18>>18 dollars.\n#### 18'
+                }
+            ],
+        },
+    )
+    target_config = EvaluationTarget(
+        api_endpoint={"url": "http://localhost:8000/v1/completions/", "type": "completions"}
+    )
+    eval_config = EvaluationConfig(
+        type="gsm8k",
+        params=ConfigParams(
+            extra={"tokenizer": "Qwen/Qwen2.5-0.5B", "num_fewshot": 13}, limit_samples=1, parallelism=1
+        ),
+    )
+
+    results = evaluate(target_cfg=target_config, eval_cfg=eval_config)
+    assert (
+        results['tasks']['gsm8k']['metrics']['exact_match__strict-match']['scores']['exact_match__strict-match'][
+            'value'
+        ]
+        == 1.0
+    )

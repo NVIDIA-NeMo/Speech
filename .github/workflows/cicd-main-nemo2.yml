@@ -196,8 +196,6 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_CLIP_INFER
             runner: self-hosted-azure
-          - script: L2_NeMo_2_EVAL
-            runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Auto_Configurator_llama_TP1_PP1_MBS124
             runner: self-hosted-azure-gpus-1
           - script: L2_NeMo_2_Auto_Configurator_bert_TP1_PP1_MBS124

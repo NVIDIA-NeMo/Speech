@@ -40,6 +40,8 @@ jobs:
           - script: L0_Unit_Tests_CPU_Export_Deploy
             runner: self-hosted-azure-cpu
             cpu-only: true
+          - script: L0_Unit_Tests_Eval_Legacy
+            runner: self-hosted-azure
           - script: L0_Unit_Tests_Eval
             runner: self-hosted-azure
     needs: [build]
@@ -79,6 +81,11 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_VLLM_VISION
             runner: self-hosted-azure
+          - script: L2_NeMo_2_EVAL_Legacy
+            runner: self-hosted-azure-gpus-1
+            is-optional: true
+          - script: L2_NeMo_2_EVAL
+            runner: self-hosted-azure-gpus-1
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is_optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}

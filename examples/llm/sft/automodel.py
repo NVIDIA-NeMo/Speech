@@ -78,8 +78,8 @@ def make_squad_hf_dataset(
         input_ids = context_ids + answer_ids
         return dict(
             input_ids=input_ids,
-            labels=input_ids[1:] + [eos_token_id] or [input_ids[-1]],
-            loss_mask=[0] * (len(context_ids) - 1) + [1] * len(answer_ids),
+            labels=input_ids[1:] + [eos_token_id or input_ids[-1]],
+            loss_mask=[0] * len(context_ids) + [1] * len(answer_ids),
         )
 
     def formatting_prompts_func_with_chat_template(example, start_of_turn_token=None):
@@ -320,7 +320,7 @@ def main():
     try:
         args.accumulate_grad_batches = calculate_valid_accumulate_grad_batches(
             global_batch_size=args.global_batch_size,
-            micro_batch_size=args.micro_batch_size,
+            micro_batch_size=args.batch_size,
             devices=args.devices,
             num_nodes=args.num_nodes,
             tp_size=args.tp_size,
@@ -410,7 +410,7 @@ def main():
     if args.mock_dataset:
         dataset = HFMockDataModule(
             seq_length=args.seq_length,
-            micro_batch_size=args.atch_size,
+            micro_batch_size=args.batch_size,
             pad_seq_len_divisible=16 if args.fp8 else None,
         )
     else:

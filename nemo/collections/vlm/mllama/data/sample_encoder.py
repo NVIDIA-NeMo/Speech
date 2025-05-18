@@ -51,7 +51,7 @@ class Llama3SampleEncoder(VQASampleEncoder):
         self.conversation_template_config = multimodal_sample_config.conversation_template_config
 
     def process_image(self, image) -> Dict[str, torch.Tensor]:
-        image_dict = self.image_processor.preprocess(image, return_tensors='pt', do_rescale=False)
+        image_dict = self.image_processor.preprocess(image, return_tensors='pt')
         return image_dict
 
     def apply_prompt_template(self, input_text: VQASample, use_plain=False):

@@ -53,7 +53,7 @@ class LlavaNextSampleEncoder(VQASampleEncoder):
         Returns:
         torch.Tensor: The processed image tensor.
         """
-        image_array = self.image_processor.preprocess(image, return_tensors='pt', do_rescale=False)['pixel_values'][0]
+        image_array = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
         return image_array
 
     def encode(self, input_sample: VQASample, output_sample: LlavaNextTextSample):

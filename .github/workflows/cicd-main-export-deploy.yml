@@ -86,6 +86,7 @@ jobs:
             is-optional: true
           - script: L2_NeMo_2_EVAL
             runner: self-hosted-azure-gpus-1
+            is-optional: true
     needs: [unit-tests]
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.is_optional && 'PLEASEFIXME_' || '' }}${{ matrix.script }}

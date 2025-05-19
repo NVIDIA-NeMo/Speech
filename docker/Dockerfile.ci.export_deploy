@@ -81,7 +81,6 @@ RUN \
   --mount=type=bind,source=requirements,target=/tmp/NeMo/requirements \
   --mount=type=bind,source=tools/ctc_segmentation/requirements.txt,target=/tmp/NeMo/tools/ctc_segmentation/requirements.txt \
   --mount=type=bind,source=docker/common/install_dep.sh,target=/tmp/NeMo/install_dep.sh \
-  --mount=type=bind,source=docker/common/install_nemo.sh,target=/tmp/NeMo/install_nemo.sh \
   --mount=type=bind,source=setup.py,target=/tmp/NeMo/setup.py \
   --mount=type=bind,source=external/patches,target=/tmp/NeMo/external/patches \
   --mount=type=bind,source=README.md,target=/tmp/NeMo/README.md \
@@ -89,7 +88,7 @@ RUN \
   --mount=type=bind,source=nemo/__init__.py,target=/tmp/NeMo/nemo/__init__.py <<"EOF" bash -ex
 
     bash /tmp/NeMo/install_dep.sh --library all --mode install
-    bash /tmp/NeMo/install_nemo.sh --module deploy
+    pip install --no-cache-dir ".[deploy,test]"
     rm -rf $NEMO_DIR || true
 EOF
 

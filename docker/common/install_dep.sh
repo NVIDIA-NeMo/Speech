@@ -9,6 +9,7 @@ ALL_LIBRARIES=(
   "te"
   "mcore"
   "vllm"
+  "extra"
 )
 
 export INSTALL_OPTION=${1:-dev}
@@ -294,6 +295,34 @@ vllm() {
 
 }
 
+extra() {
+  local mode="$1"
+  DEPS=(
+    "llama-index==0.10.43"                                                                     # incompatible with nvidia-pytriton
+    "ctc_segmentation==1.7.1 ; (platform_machine == 'x86_64' and platform_system != 'Darwin')" # requires numpy<2.0.0 to be installed before
+    "nemo_run"
+    "nvidia-modelopt[torch]==0.27.1 ; platform_system != 'Darwin'"                             # We want a specific version of nvidia-modelopt
+  )
+  if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
+    DEPS+=(
+      "git+https://github.com/NVIDIA/nvidia-resiliency-ext.git@b6eb61dbf9fe272b1a943b1b0d9efdde99df0737 ; platform_machine == 'x86_64'" # Compiling NvRX requires CUDA
+    )
+  fi
+  if [[ "${NVIDIA_PYTORCH_VERSION}" != "" ]]; then
+    patch \
+      /usr/local/lib/python3.12/dist-packages/torch/accelerator/__init__.py \
+      /$CURR/external/patches/torch_accelerator_144567_fix.patch
+  fi
+
+  if [[ "$mode" == "install" ]]; then
+    pip install --force-reinstall --no-deps --no-cache-dir "${DEPS[@]}"
+    pip install --no-cache-dir "${DEPS[@]}"
+    # needs no-deps to avoid installing triton on top of pytorch-triton.
+    pip install --no-deps --no-cache-dir "liger-kernel==0.5.8; (platform_machine == 'x86_64' and platform_system != 'Darwin')"
+    pip install --no-deps "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git@87a86aba72cfd2f0d8abecaf81c13c4528ea07d8; (platform_machine == 'x86_64' and platform_system != 'Darwin')"
+  fi
+}
+
 echo 'Uninstalling stuff'
 # Some of these packages are uninstalled for legacy purposes
 ${PIP} uninstall -y nemo_toolkit sacrebleu nemo_asr nemo_nlp nemo_tts
@@ -314,7 +343,7 @@ else
   fi
 fi
 
-echo 'Installing nemo'
+echo 'Installing nemo dependencies'
 cd $CURR
 
 if [[ "$INSTALL_OPTION" == "dev" ]]; then

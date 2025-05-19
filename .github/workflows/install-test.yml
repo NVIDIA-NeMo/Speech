@@ -42,7 +42,7 @@ jobs:
             export INSTALL_DIR=$(pwd)
             
             bash docker/common/install_dep.sh --library all --mode install
-            bash docker/common/install_nemo.sh --module all
+            pip install --no-cache-dir ".[all]"
           fi
 
       - name: Run import checks
@@ -79,7 +79,7 @@ jobs:
           else
             export INSTALL_DIR=$(pwd)
             bash docker/common/install_dep.sh --library all --mode install
-            bash docker/common/install_nemo.sh --module all
+            pip install --no-cache-dir ".[all]"
           fi
 
       - name: Run import checks
@@ -116,7 +116,7 @@ jobs:
           else
             export INSTALL_DIR=$(pwd)
             bash docker/common/install_dep.sh --library all --mode install
-            bash docker/common/install_nemo.sh --module all
+            pip install --no-cache-dir ".[all]"
           fi
 
       - name: Run import checks

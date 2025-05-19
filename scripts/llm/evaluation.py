@@ -102,7 +102,7 @@ def get_parser():
         choices=EVAL_TASKS,
     )
     parser.add_argument(
-        "--limit", type=int, default=None, help="Limit evaluation to `limit` samples. Default: use all samples."
+        "--limit", type=float, default=None, help="Limit evaluation to `limit` samples. Default: use all samples."
     )
     parser.add_argument(
         "--parallel_requests",
@@ -113,8 +113,8 @@ def get_parser():
     parser.add_argument(
         "--request_timeout",
         type=int,
-        default=None,
-        help="Request timeout for querying the server. Default: use default for the task.",
+        default=1000,
+        help="Time in seconds for the eval client. Default: 1000s",
     )
     parser.add_argument(
         "--tag",
@@ -135,7 +135,7 @@ def get_parser():
         help="Run on slurm using run.SlurmExecutor",
         default=False,
     )
-    parser.add_argument('--nodes', type=int, default=2, help="Num nodes for the executor")
+    parser.add_argument('--nodes', type=int, default=1, help="Num nodes for the executor")
     parser.add_argument('--devices', type=int, default=8, help="Num devices per node for the executor")
     parser.add_argument(
         '--container_image',
@@ -173,7 +173,8 @@ def slurm_executor(
 
     env_vars = {
         # required for some eval benchmarks from lm-eval-harness
-        "HF_DATASETS_TRUST_REMOTE_CODE": "1"
+        "HF_DATASETS_TRUST_REMOTE_CODE": "1",
+        "HF_TOKEN": "xxxxxx",
     }
     if custom_env_vars:
         env_vars |= custom_env_vars
@@ -187,8 +188,9 @@ def slurm_executor(
             job_dir=remote_job_dir,
         ),
         nodes=nodes,
-        ntasks_per_node=1,
+        ntasks_per_node=devices,
         exclusive=True,
+        # archives and uses the local code. Use packager=run.Packager() to use the code code mounted on clusters
         packager=run.GitArchivePackager(),
     )
 
@@ -204,7 +206,8 @@ def slurm_executor(
 def local_executor_torchrun() -> run.LocalExecutor:
     env_vars = {
         # required for some eval benchmarks from lm-eval-harness
-        "HF_DATASETS_TRUST_REMOTE_CODE": "1"
+        "HF_DATASETS_TRUST_REMOTE_CODE": "1",
+        "HF_TOKEN": "xxxxxx",
     }
 
     executor = run.LocalExecutor(env_vars=env_vars)
@@ -227,6 +230,8 @@ def main():
         tensor_parallelism_size=args.tensor_parallelism_size,
         pipeline_parallelism_size=args.pipeline_parallelism_size,
         max_batch_size=args.batch_size,
+        num_gpus=args.devices,
+        num_nodes=args.nodes,
     )
 
     api_endpoint = run.Config(
@@ -260,8 +265,10 @@ def main():
             container_image=args.container_image,
             custom_mounts=[],
         )
-        executor.srun_args = ["--mpi=pmix", "--overlap", "--ntasks-per-node=1"]
+        executor.srun_args = ["--mpi=pmix", "--overlap"]
         executor_eval = executor.clone()
+        executor_eval.srun_args = ["--ntasks-per-node=1", "--nodes=1"]  ## so that eval is laucnhed only on main node
+        # or node with index 0
     else:
         executor = local_executor_torchrun()
         executor_eval = None

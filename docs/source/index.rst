@@ -71,7 +71,7 @@ For more information, browse the developer docs for your area of interest in the
    :name: evaluation
    :titlesonly:
 
-   evaluation/evaluation_doc.rst
+   evaluation/evaluation-doc.rst
 
 .. toctree::
    :maxdepth: 1

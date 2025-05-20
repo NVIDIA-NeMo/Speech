@@ -228,6 +228,8 @@ jobs:
             runner: self-hosted-azure
           - script: L2_NeMo_2_Conversion_Test_Qwen2
             runner: self-hosted-azure
+          - script: L2_NeMo_2_Conversion_Test_Qwen3
+            runner: self-hosted-azure
           - script: L2_NeMo_2_Conversion_Test_Starcoder
             runner: self-hosted-azure
           - script: L2_NeMo_2_Conversion_Test_Starcoder2

@@ -302,6 +302,7 @@ class StateDictTransform(Generic[F]):
                     target_dict[layer_names[-1]] = self.call_transform(
                         ctx, **dict(zip(param_names, [source_dict[x] for x in layer_names[:-1]]))
                     )
+                logging.debug(f"Matched (transform)! {layer_names_group=}")
         else:
             source_keys = list(source_dict.keys())
             target_keys = list(target_dict.keys())

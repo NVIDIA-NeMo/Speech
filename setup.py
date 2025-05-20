@@ -80,7 +80,7 @@ extras_require = {
     'nlp-only': req_file("requirements_nlp.txt"),
     'tts': req_file("requirements_tts.txt"),
     'slu': req_file("requirements_slu.txt"),
-    'multimodal': req_file("requirements_multimodal.txt"),
+    'multimodal-only': req_file("requirements_multimodal.txt"),
     'audio': req_file("requirements_audio.txt"),
     'deploy': req_file("requirements_deploy.txt"),
     'eval': req_file("requirements_eval.txt"),
@@ -128,6 +128,7 @@ extras_require['tts'] = list(
         extras_require['common'],
     )
 )
+extras_require['multimodal'] = extras_require['multimodal-only']
 extras_require['multimodal'] = list(
     chain(
         extras_require['multimodal'],

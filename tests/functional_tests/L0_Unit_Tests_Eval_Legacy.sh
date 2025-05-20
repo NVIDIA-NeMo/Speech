@@ -11,5 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+export HF_DATASETS_OFFLINE=1
 export HF_HOME=/home/TestData/HF_HOME
+export HF_DATASETS_CACHE=${HF_HOME}/datasets
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo -m tests.evaluation.eval_unittest_legacy

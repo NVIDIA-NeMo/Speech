@@ -1116,12 +1116,15 @@ def generate(
     inference_wrapped_model.inference_wrapper_config.inference_max_seq_length = max_seq_length
     inference_wrapped_model.inference_context.max_sequence_length = max_seq_length
 
-    dp_size = trainer.strategy.distributed_sampler_kwargs['num_replicas']
-    dp_rank = trainer.strategy.distributed_sampler_kwargs['rank']
-    chunk_size = (len(inputs) + dp_size - 1) // dp_size
-    start_idx = dp_rank * chunk_size
-    end_idx = min(start_idx + chunk_size, len(inputs))
-    inputs_on_this_dp_rank = inputs[start_idx:end_idx]
+    if trainer.strategy.expert_model_parallel_size > 1:
+        inputs_on_this_dp_rank = inputs
+    else:
+        dp_size = trainer.strategy.distributed_sampler_kwargs['num_replicas']
+        dp_rank = trainer.strategy.distributed_sampler_kwargs['rank']
+        chunk_size = (len(inputs) + dp_size - 1) // dp_size
+        start_idx = dp_rank * chunk_size
+        end_idx = min(start_idx + chunk_size, len(inputs))
+        inputs_on_this_dp_rank = inputs[start_idx:end_idx]
 
     results_on_this_dp_rank = inference.generate(
         model=inference_wrapped_model,
@@ -1133,16 +1136,20 @@ def generate(
         random_seed=random_seed,
         inference_params=inference_params,
     )
-    gathered_results = [None] * dp_size
 
-    all_gather_object(
-        gathered_results,
-        [r.generated_text if text_only else r for r in results_on_this_dp_rank],
-        group=parallel_state.get_data_parallel_group(),
-    )
-    gathered_results = [result for sublist in gathered_results for result in sublist]
+    if trainer.strategy.expert_model_parallel_size > 1:
+        gathered_results = results_on_this_dp_rank
+    else:
+        gathered_results = [None] * dp_size
 
-    assert len(gathered_results) == len(inputs)
+        all_gather_object(
+            gathered_results,
+            [r.generated_text if text_only else r for r in results_on_this_dp_rank],
+            group=parallel_state.get_data_parallel_group(),
+        )
+        gathered_results = [result for sublist in gathered_results for result in sublist]
+
+        assert len(gathered_results) == len(inputs)
 
     if output_path is not None and is_global_rank_zero():
         with open(output_path, "w") as f:

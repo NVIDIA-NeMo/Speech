@@ -226,6 +226,87 @@ def predictive_model_streaming_conformer():
     return model
 
 
+@pytest.fixture()
+def predictive_model_transformer_unet_params_base():
+    model = {
+        'sample_rate': 16000,
+        'num_outputs': 1,
+        'normalize_input': True,
+        'max_utts_evaluation_metrics': 50,
+    }
+    encoder = {
+        '_target_': 'nemo.collections.audio.modules.transforms.AudioToSpectrogram',
+        'fft_length': 510,
+        'hop_length': 128,
+        'magnitude_power': 0.5,
+        'scale': 0.33,
+    }
+    decoder = {
+        '_target_': 'nemo.collections.audio.modules.transforms.SpectrogramToAudio',
+        'fft_length': encoder['fft_length'],
+        'hop_length': encoder['hop_length'],
+        'magnitude_power': encoder['magnitude_power'],
+        'scale': encoder['scale'],
+    }
+    estimator = {
+        '_target_': 'nemo.collections.audio.parts.submodules.transformerunet.SpectrogramTransformerUNet',
+        'in_channels': 1,  # single-channel noisy input
+        'out_channels': 1,  # single-channel estimate
+        'freq_dim': 256,  # input feature dimension = number of subbands
+        'depth': 8,  # number of layers in the model
+        'dim': 64,  # the hidden size of the model
+        'heads': 8,  # number of heads for the model
+        'adaptive_rmsnorm': False,  # should be false for predictive model
+    }
+
+    loss = {
+        '_target_': 'nemo.collections.audio.losses.MSELoss',  # computed in the time domain
+    }
+
+    model_config = DictConfig(
+        {
+            'sample_rate': model['sample_rate'],
+            'num_outputs': model['num_outputs'],
+            'normalize_input': model['normalize_input'],
+            'max_utts_evaluation_metrics': model['max_utts_evaluation_metrics'],
+            'encoder': DictConfig(encoder),
+            'decoder': DictConfig(decoder),
+            'estimator': DictConfig(estimator),
+            'loss': DictConfig(loss),
+            'optim': {
+                'optimizer': 'Adam',
+                'lr': 0.001,
+                'betas': (0.9, 0.98),
+            },
+        }
+    )
+    return model_config
+
+
+@pytest.fixture
+def predictive_model_transformer_unet_params(predictive_model_transformer_unet_params_base, request):
+    overrides = getattr(request, "param", {})
+
+    for section, values in overrides.items():
+        if section in predictive_model_transformer_unet_params_base and isinstance(
+            predictive_model_transformer_unet_params_base[section], DictConfig
+        ):
+            for k, v in values.items():
+                predictive_model_transformer_unet_params_base[section][k] = v
+        else:
+            predictive_model_transformer_unet_params_base[section] = values
+    return predictive_model_transformer_unet_params_base
+
+
+@pytest.fixture()
+def predictive_model_transformer_unet(predictive_model_transformer_unet_params):
+    # deterministic model init
+    with torch.random.fork_rng():
+        torch.random.manual_seed(0)
+        model = PredictiveAudioToAudioModel(cfg=predictive_model_transformer_unet_params)
+    return model
+
+
 class TestPredictiveModelNCSN:
     """Test predictive model with NCSN estimator."""
 
@@ -398,3 +479,90 @@ class TestPredictiveModelStreamingConformer:
 
         diff = torch.max(torch.abs(output_instance - output_batch))
         assert diff <= abs_tol
+
+
+class TestPredictiveModelTransformerUNet:
+    """Test predictive model with transformer_unet estimator."""
+
+    @pytest.mark.unit
+    def test_constructor(self, predictive_model_transformer_unet):
+        """Test that the model can be constructed from a config dict."""
+        model = predictive_model_transformer_unet.train()
+        confdict = model.to_config_dict()
+        instance2 = PredictiveAudioToAudioModel.from_config_dict(confdict)
+        assert isinstance(instance2, PredictiveAudioToAudioModel)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "batch_size, sample_len",
+        [
+            (4, 4),  # Example 1
+            (2, 8),  # Example 2
+            (1, 10),  # Example 3
+        ],
+    )
+    def test_forward_infer(self, predictive_model_transformer_unet, batch_size, sample_len):
+        """Test that the model can run forward inference."""
+        model = predictive_model_transformer_unet.eval()
+        confdict = model.to_config_dict()
+        sampling_rate = confdict['sample_rate']
+        rng = torch.Generator()
+        rng.manual_seed(0)
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
+        input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
+
+        abs_tol = 5e-5
+
+        with torch.no_grad():
+            # batch size 1
+            output_list = []
+            output_length_list = []
+            for i in range(input_signal.size(0)):
+                output, output_length = model.forward(
+                    input_signal=input_signal[i : i + 1], input_length=input_signal_length[i : i + 1]
+                )
+                output_list.append(output)
+                output_length_list.append(output_length)
+            output_instance = torch.cat(output_list, 0)
+            output_length_instance = torch.cat(output_length_list, 0)
+
+            # batch size batch_size
+            output_batch, output_length_batch = model.forward(
+                input_signal=input_signal, input_length=input_signal_length
+            )
+
+        # Check that the output and output length are the same for the instance and batch
+        assert output_instance.shape == output_batch.shape
+        assert output_length_instance.shape == output_length_batch.shape
+
+        diff = torch.max(torch.abs(output_instance - output_batch))
+        assert diff <= abs_tol
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "batch_size, sample_len",
+        [
+            (4, 4),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "predictive_model_transformer_unet_params", [{"estimator": {"adaptive_rmsnorm": True}}], indirect=True
+    )
+    def test_adaptive_rms_ebabled_fails(self, predictive_model_transformer_unet, batch_size, sample_len):
+        """Test that the predictive model raises TypeError when adaptive RMS turned on"""
+        model = predictive_model_transformer_unet.eval()
+
+        confdict = model.to_config_dict()
+
+        sampling_rate = confdict['sample_rate']
+
+        rng = torch.Generator()
+        rng.manual_seed(0)
+
+        input_signal = torch.randn(size=(batch_size, 1, sample_len * sampling_rate), generator=rng)
+        input_signal_length = (sample_len * sampling_rate) * torch.ones(batch_size, dtype=torch.int)
+
+        with pytest.raises(TypeError):
+            # fail because of adaptive RMS turned on for predictive model
+            with torch.no_grad():
+                _, _ = model.forward(input_signal=input_signal, input_length=input_signal_length)

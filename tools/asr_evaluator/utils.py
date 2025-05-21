@@ -29,7 +29,7 @@ def run_asr_inference(cfg: DictConfig) -> DictConfig:
     if (cfg.model_path and cfg.pretrained_name) or (not cfg.model_path and not cfg.pretrained_name):
         raise ValueError("Please specify either cfg.model_path or cfg.pretrained_name!")
 
-    if cfg.inference.decoder_type not in [None, 'ctc', 'rnnt']:
+    if cfg.inference.decoder_type not in [None, 'ctc', 'rnnt', 'aed']:
         raise ValueError("decoder_type could only be null, ctc or rnnt")
 
     if cfg.inference.mode == "offline":
@@ -98,13 +98,17 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
         / "ctc"
         / "speech_to_text_buffered_infer_ctc.py"
     )
+
     use_rnnt_scrpit = False
+    use_aed_script = False
+
     # hybrid model
     if (cfg.pretrained_name and 'hybrid' in cfg.pretrained_name.lower()) or (
         cfg.model_path and 'hybrid' in cfg.model_path.lower()
     ):
         if cfg.inference.decoder_type != 'ctc':
             use_rnnt_scrpit = True
+
     # rnnt model
     elif (
         (cfg.pretrained_name and 'rnnt' in cfg.pretrained_name.lower())
@@ -114,7 +118,7 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
     ):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'rnnt':
             raise ValueError(
-                f"rnnt models only support rnnt deocoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or rnnt for rnnt models"
+                f"rnnt models only support rnnt decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or rnnt for rnnt models"
             )
         use_rnnt_scrpit = True
 
@@ -124,14 +128,26 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
     ):
         if cfg.inference.decoder_type and cfg.inference.decoder_type != 'ctc':
             raise ValueError(
-                f"ctc models only support ctc deocoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or ctc for ctc models"
+                f"ctc models only support ctc decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or ctc for ctc models"
             )
+
+    # aed model
+    elif (cfg.pretrained_name and 'canary' in cfg.pretrained_name.lower()) or (
+        cfg.model_path and 'canary' in cfg.model_path.lower()
+    ):
+        if cfg.inference.decoder_type and cfg.inference.decoder_type != 'aed':
+            raise ValueError(
+                f"Canary models only support aed decoding! Current decoder_type: {cfg.inference.decoder_type}! Change it to null or aed for aed models"
+            )
+        use_aed_script = True
+
     else:
         raise ValueError(
             "Please make sure your pretrained_name or model_path contains \n\
             'hybrid' for EncDecHybridRNNTCTCModel model, \n\
-            'transducer/rnnt' for EncDecRNNTModel model  or \n\
-            'ctc' for EncDecCTCModel."
+            'transducer/rnnt' for EncDecRNNTModel model, \n\
+            'ctc' for EncDecCTCModel, or \n\
+            'aed' for EncDecMultiTaskModel."
         )
 
     if use_rnnt_scrpit:
@@ -142,6 +158,15 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
             / "asr_chunked_inference"
             / "rnnt"
             / "speech_to_text_buffered_infer_rnnt.py"
+        )
+    elif use_aed_script:
+        script_path = (
+            Path(__file__).parents[2]
+            / "examples"
+            / "asr"
+            / "asr_chunked_inference"
+            / "aed"
+            / "speech_to_text_aed_chunked_infer.py"
         )
 
     # If need to change other config such as decoding strategy, could either:
@@ -156,13 +181,16 @@ def run_chunked_inference(cfg: DictConfig) -> DictConfig:
     output_filename={cfg.output_filename} \
     random_seed={cfg.random_seed} \
     batch_size={cfg.test_ds.batch_size} \
-    num_workers={cfg.test_ds.num_workers} \
+    ++num_workers={cfg.test_ds.num_workers} \
     chunk_len_in_secs={cfg.inference.chunk_len_in_secs} \
-    total_buffer_in_secs={cfg.inference.total_buffer_in_secs} \
-    model_stride={cfg.inference.model_stride} "
+    ++total_buffer_in_secs={cfg.inference.total_buffer_in_secs} \
+    model_stride={cfg.inference.model_stride} \
+    timestamps={cfg.inference.timestamps}"
 
     subprocess.run(
-        base_cmd, shell=True, check=True,
+        base_cmd,
+        shell=True,
+        check=True,
     )
     return cfg
 
@@ -220,23 +248,28 @@ def run_offline_inference(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
-def cal_target_metadata_wer(manifest: str, target: str, meta_cfg: DictConfig, eval_metric: str = "wer",) -> dict:
-    """ 
-    Caculating number of samples (samples), number of words/characters/tokens (tokens), 
-    wer/cer, insertion error rate (ins_rate), deletion error rate (del_rate), substitution error rate (sub_rate) of the group/slot of target metadata. 
+def cal_target_metadata_wer(
+    manifest: str,
+    target: str,
+    meta_cfg: DictConfig,
+    eval_metric: str = "wer",
+) -> dict:
+    """
+    Caculating number of samples (samples), number of words/characters/tokens (tokens),
+    wer/cer, insertion error rate (ins_rate), deletion error rate (del_rate), substitution error rate (sub_rate) of the group/slot of target metadata.
 
     The group could be [female, male] or slot group like [0-2s, 2-5s, >5s audios]
 
 
     Args:
-        manifest (str): Filepath of the generated manifest which contains prediction and eval result for each samples.  
-        target (str): Target metadata. Execute the target metadata if field presents in manifest. 
+        manifest (str): Filepath of the generated manifest which contains prediction and eval result for each samples.
+        target (str): Target metadata. Execute the target metadata if field presents in manifest.
             such as 'duration', 'speaker', 'emotion', etc.
         meta_cfg (DictConfig): Config for calculating group eval_metric for the target metadata.
         eval_metric: (str): Supported evaluation metrics. Currently support 'wer' and 'cer'.
 
-    Return: 
-        ret (dict): Generated dictionary containing all results regarding the target metadata. 
+    Return:
+        ret (dict): Generated dictionary containing all results regarding the target metadata.
     """
     if eval_metric not in ['wer', 'cer']:
         raise ValueError(

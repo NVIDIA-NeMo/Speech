@@ -1,7 +1,23 @@
 comment: false
 coverage:
   status:
-    patch: false
     project: false
+    patch:
+      default:
+        target: 80%
+        threshold: 0%
+        base: auto
+        if_ci_failed: error
+        paths:
+          - "!nemo/collections/asr"
+          - "!nemo/collections/audio"
+          - "!nemo/collections/speechlm"
+          - "!nemo/collections/tts"
+          - "!nemo/core"
+          - "!nemo/collections/common"
+          - "!nemo/collections/multimodal_autoregressive"
+          - "!nemo/collections/diffusion"
+          - "!nemo/collections/nlp"
+
 fixes:
   - "/workspace/::"

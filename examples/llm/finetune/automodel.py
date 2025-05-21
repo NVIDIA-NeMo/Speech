@@ -429,7 +429,7 @@ def main():
             limit_dataset_samples=args.limit_dataset_samples,
             fp8=args.fp8,
         )
-    if args.peft:
+    if args.lora:
         peft = llm.peft.LoRA(
             target_modules=['*_proj'],
             dim=8,

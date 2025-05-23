@@ -41,6 +41,14 @@ def parse_cli_args():
         required=True,
     )
     parser.add_argument(
+        "-g",
+        "--gpu",
+        type=str,
+        choices=["h100", "b200", "gb200"],
+        help="Target gpu type.",
+        required=True,
+    )
+    parser.add_argument(
         "-l",
         "--log_dir",
         type=str,
@@ -242,14 +250,6 @@ def parse_cli_args():
         type=int,
         required=False,
         default=None,
-    )
-    parser.add_argument(
-        "-g",
-        "--gpu",
-        type=str,
-        help="Target gpu type. Defaults to 'h100'.",
-        required=False,
-        default="h100",
     )
     parser.add_argument(
         "-ng",

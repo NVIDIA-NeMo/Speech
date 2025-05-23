@@ -13,4 +13,5 @@
 # limitations under the License.
 export HF_DATASETS_OFFLINE=1
 export HF_HOME=/home/TestData/HF_HOME
+export HF_DATASETS_CACHE=${HF_HOME}/datasets
 coverage run -a --data-file=/workspace/.coverage --source=/workspace/nemo -m pytest tests/evaluation/eval_unittest.py -m "not pleasefixme"
